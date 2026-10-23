@@ -1,0 +1,29 @@
+{
+  "name": "movera-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Movera backend: one server for the rider, driver and admin apps, built against movera-contracts.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "contract:verify": "cd contracts && sha256sum -c --quiet CHECKSUMS && echo contract ok"
+  },
+  "dependencies": {
+    "fastify": "^5.12.7",
+    "fastify-plugin": "^5.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

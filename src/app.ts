@@ -1,0 +1,72 @@
+import { randomUUID } from "node:crypto";
+import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
+import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
+import type { Env } from "./env.js";
+import { ApiError, badRequest, notFound } from "./http/errors.js";
+
+/** Every contract operation lives under this prefix (openapi `servers`); health checks live outside it. */
+export const API_PREFIX = "/api/v1";
+
+const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
+
+export type BuildOptions = { env: Env; logger?: boolean };
+
+export async function buildApp({ env, logger = true }: BuildOptions): Promise<FastifyInstance> {
+  const app = Fastify({
+    logger: logger ? { level: env.LOG_LEVEL } : false,
+    // X-Request-Id: the client's id when it sends a sane one, else ours. Echoed on every response (§1 Headers).
+    genReqId: (request) => {
+      const sent = request.headers["x-request-id"];
+      return typeof sent === "string" && REQUEST_ID.test(sent) ? sent : randomUUID();
+    },
+    requestIdHeader: false,
+    bodyLimit: 1024 * 1024,
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
+    reply.header("X-Request-Id", request.id);
+    reply.header("X-Api-Version", API_VERSION);
+    // X-Api-Version is optional; when sent it must be this server's (contract headers). An app built for
+    // another contract version is told so plainly instead of being served a shape it does not expect.
+    const sent = request.headers["x-api-version"];
+    if (request.url.startsWith(API_PREFIX) && sent !== undefined && sent !== API_VERSION) {
+      throw badRequest(`This server speaks API ${API_VERSION}; the request said ${String(sent)}.`, "unsupported_api_version");
+    }
+  });
+
+  app.setErrorHandler((error: FastifyError | ApiError, request, reply) => {
+    if (error instanceof ApiError) {
+      if (error.options.retryAfterSeconds !== undefined) reply.header("Retry-After", String(error.options.retryAfterSeconds));
+      return reply.status(error.status).send(error.body(request.id));
+    }
+    if (error.validation) {
+      return reply.status(400).send(badRequest(error.message, "invalid_body").body(request.id));
+    }
+    if (error.statusCode === 415 || error.code === "FST_ERR_CTP_INVALID_MEDIA_TYPE") {
+      return reply.status(400).send(badRequest("Send application/json.", "unsupported_media_type").body(request.id));
+    }
+    if (error.code === "FST_ERR_CTP_INVALID_JSON_BODY" || error.code === "FST_ERR_CTP_EMPTY_JSON_BODY" || error.statusCode === 400) {
+      return reply.status(400).send(badRequest("The body is not valid JSON.", "invalid_json").body(request.id));
+    }
+    if (error.statusCode === 413) {
+      return reply.status(400).send(badRequest("The body is too large.", "body_too_large").body(request.id));
+    }
+    request.log.error({ err: error }, "unhandled error");
+    return reply.status(500).send(new ApiError("internal", "Something went wrong on the server.").body(request.id));
+  });
+
+  app.setNotFoundHandler((request, reply) => {
+    // A contract operation this server does not serve yet answers 404 with a reason, so an app can tell
+    // "not enabled on this server" from "this trip does not exist".
+    const error = request.url.startsWith(API_PREFIX)
+      ? notFound("This operation is not enabled on this server.", "operation_not_enabled")
+      : notFound();
+    return reply.status(404).send(error.body(request.id));
+  });
+
+  app.get("/healthz", async () => ({ status: "ok", contract: CONTRACT_VERSION, apiVersion: API_VERSION, env: env.MOVERA_ENV }));
+  // Ready to take traffic. The database check joins here when the database steps land.
+  app.get("/readyz", async () => ({ status: "ready" }));
+
+  return app;
+}
