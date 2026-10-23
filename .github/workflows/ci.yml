@@ -6,6 +6,21 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: movera
+          POSTGRES_PASSWORD: movera
+          POSTGRES_DB: movera
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U movera"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgres://movera:movera@127.0.0.1:5432/movera
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

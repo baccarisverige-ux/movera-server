@@ -10,8 +10,18 @@ const schema = z.object({
   HOST: z.string().default("0.0.0.0"),
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
-  /** postgres://user:pass@host:5432/db. Optional until the database steps land. */
+  /** postgres://user:pass@host:5432/db. Required on staging and production; a laptop may run without one. */
   DATABASE_URL: z.string().url().optional(),
+  /** Apply new migrations when the server starts (safe with several instances: they take turns). */
+  MIGRATE_ON_START: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+}).superRefine((env, ctx) => {
+  if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
+  }
 });
 
 export type Env = z.infer<typeof schema>;

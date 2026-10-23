@@ -16,8 +16,9 @@ TypeScript on Node 22, Fastify, PostgreSQL 16. One stateless container; the data
 ```sh
 npm ci
 npm run dev            # http://localhost:8080/healthz
-npm test               # unit and API tests
+npm test               # unit, API and database tests (needs PostgreSQL, see below)
 npm run contract:verify
+npm run migrate        # apply new migrations to DATABASE_URL
 docker compose up --build   # server + PostgreSQL
 ```
 
@@ -27,8 +28,13 @@ Settings come from the environment (`src/env.ts`):
 |---|---|---|
 | `MOVERA_ENV` | `development`, `staging` or `production`. Test sign-in numbers exist only outside production. | `development` |
 | `PORT`, `HOST` | Where the server listens | `8080`, `0.0.0.0` |
-| `DATABASE_URL` | `postgres://user:pass@host:5432/db` | none yet |
+| `DATABASE_URL` | `postgres://user:pass@host:5432/db`. Required on staging and production. | none |
+| `MIGRATE_ON_START` | Apply new migrations at start (instances take turns) | `true` |
+| `DATABASE_POOL_MAX` | Connections per instance | `10` |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
+
+Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).
+The run builds a template database with every migration, and each test file gets its own copy.
 
 ## The contract
 
@@ -40,14 +46,29 @@ Settings come from the environment (`src/env.ts`):
 
 Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_copy.test.ts` fails on any drift.
 
+## Database rules
+
+- Migrations live in `migrations/NNNN_name.sql` and are append-only: an applied file that changes stops the
+  server. The database's allowed values (trip statuses, event kinds, …) are checked against the contract by
+  `test/db/schema_contract.test.ts`.
+- Every change runs in one transaction with its `Idempotency-Key` (`src/http/idempotency.ts`): the same key and
+  request replays the first answer, the same key with a different request is `409 conflict`
+  (`idempotency_key_reused`), and a failed attempt keeps nothing, so it can be retried.
+- Trip commands lock the trip row, check `expectedVersion` (`409 version_mismatch` with the projection), and
+  append one realtime event with the next per-trip `sequence` (`src/db/tripLog.ts`). Lock order: trip, offer,
+  driver. Driver locations live in their own table so they never wait on a command.
+- Timers (offer expiry, dispatch steps, …) are rows written with the change that needs them
+  (`src/jobs/timers.ts`). Any instance may run them; each runs once, a failure is undone and retried with a
+  growing delay, and after 8 failures it is parked and logged.
+
 ## Build plan
 
 The server lands in small pull requests, each tested:
 
-1. Skeleton: headers, error shape, health, contract copy, container, CI. *(this)*
+1. Skeleton: headers, error shape, health, contract copy, container, CI. *(done)*
 2. Rule engines tested against the contract's own fixtures: money, trip transitions, realtime gate, cancel
-   fees, pickup pay, surge.
-3. Database, idempotency, versioned commands, trip event log, timers.
+   fees, pickup pay, surge. *(done)*
+3. Database, idempotency, versioned commands, trip event log, timers. *(done)*
 4. Sign-in: phone code with test numbers, tokens, push devices, admin sign-in.
 5. Config documents and admin publish.
 6. Places, routes and quotes.

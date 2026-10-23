@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
+import { sql } from "kysely";
+import type { Db } from "./db/db.js";
 import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
 import type { Env } from "./env.js";
 import { ApiError, badRequest, notFound } from "./http/errors.js";
@@ -9,9 +11,11 @@ export const API_PREFIX = "/api/v1";
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean };
+export type BuildOptions = { env: Env; logger?: boolean; db?: Db };
 
-export async function buildApp({ env, logger = true }: BuildOptions): Promise<FastifyInstance> {
+const READY_TIMEOUT_MS = 2000;
+
+export async function buildApp({ env, logger = true, db }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger ? { level: env.LOG_LEVEL } : false,
     // X-Request-Id: the client's id when it sends a sane one, else ours. Echoed on every response (§1 Headers).
@@ -65,8 +69,24 @@ export async function buildApp({ env, logger = true }: BuildOptions): Promise<Fa
   });
 
   app.get("/healthz", async () => ({ status: "ok", contract: CONTRACT_VERSION, apiVersion: API_VERSION, env: env.MOVERA_ENV }));
-  // Ready to take traffic. The database check joins here when the database steps land.
-  app.get("/readyz", async () => ({ status: "ready" }));
+  // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
+  app.get("/readyz", async () => {
+    if (db === undefined) return { status: "ready", database: "not_configured" };
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        sql`SELECT 1`.execute(db),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("timeout")), READY_TIMEOUT_MS);
+        }),
+      ]);
+    } catch {
+      throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
+    } finally {
+      clearTimeout(timer);
+    }
+    return { status: "ready", database: "ok" };
+  });
 
   return app;
 }
