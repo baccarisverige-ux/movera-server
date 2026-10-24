@@ -18,6 +18,15 @@ What the server does for the test week, as the owner chose it. Change a line her
 | 13 | Test drivers | Created on the server already approved, with the real first name, car model, colour, plate and car type the owner sends. Each test number works in both apps. |
 | 14 | Second-admin approval | A Super admin never needs a second admin: their changes go live at once and are written in the history. Big changes by other admins still wait for another admin's approval. |
 | 15 | Zones open in the test week | Norrmalm (Z001), Södermalm (Z002), Östermalm (Z003), Kungsholmen (Z004), Vasastan (Z005) and Södertälje (Z009). Rides can end anywhere; a pickup elsewhere is "not available here yet". |
+| 16 | Premium commission | Premium keeps the admin panel's 22 % commission and 12 % app fee; every other car type 20 % and 10 %. |
+| 17 | Waiting money | 100 % to the driver; no commission on waiting. |
+| 18 | Money split | The admin panel's way in every app: the rider pays ride + extras + app fee (+ pickup fee). Movera keeps the app fee, the pickup fee and the commission on the ride and extras except waiting; the driver gets the rest and all waiting money. |
+| 19 | Rider ends early (details) | The same surge as booked, the minimum price, the app fee and the pickup fee apply; never more than the booked price; rounded to the price step. |
+| 20 | Extra stops | Pricing's amounts per car type (stop fee, waiting per minute at a stop) with the first 3 minutes at each stop free. The duplicate money fields in Dispatch › Stops go away. |
+| 21 | Surge | Automatic surge off in the test week; an admin can start one by hand. At most ×3. |
+| 22 | Search gap | When the admin steps are used up before the search ends, offers keep going: Radar again at the widest area every Radar period, Exclusive to drivers not yet asked (newly free drivers count). |
+| 23 | A driver who declined | May get the same ride again later (on a later Radar round), like a driver who missed it. |
+| 24 | "Keep waiting?" | Keep waiting = the search gets the step's extra minutes (3) and "busy" moves later; Stop = free cancel; no answer = the search continues. |
 | 11 | Trip GPS paths | Kept 30 days, then deleted. Only each driver's latest position is kept beyond that. |
 
 ## Requested features (later round: driver sign-up)
