@@ -46,7 +46,7 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
       const who = await authenticate(request, guard, ["driver"]);
       const id = tripId(request);
       const body = parseBody(Command, request.body);
-      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, body.expectedVersion, now()), "driver") }))).body;
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, body.expectedVersion, now(), body.location), "driver") }))).body;
     });
   }
 

@@ -132,10 +132,13 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
 
 /** POST /driver/availability: online or offline (contract: 409 with the Driver when it cannot be). */
 export async function setAvailability(trx: Trx, driverId: string, body: { expectedVersion: number; onlineStatus: "online" | "offline"; location?: Fix }, now: Date) {
+  // The fix first: on a trip it locks the trip row, and the lock order is trip, then driver.
+  if (body.location) await storeFixes(trx, driverId, [body.location], undefined, now);
   const row = await loadDriver(trx, driverId, true);
   const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await stale(row, trx)() });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "Your status changed since you last saw it.", { projection: await stale(row, trx)() });
-  if (body.onlineStatus === row.online_status) return driverView(trx, row, "driver");
+  // On a trip the driver already counts as online; "online" must not turn on_trip into free.
+  if (body.onlineStatus === row.online_status || (body.onlineStatus === "online" && row.online_status === "on_trip")) return driverView(trx, row, "driver");
   if (body.onlineStatus === "online") {
     if (row.account_status !== "active") throw await refuse("Your account is not active yet.", "account_not_active");
     if (row.vehicle_id === null) throw await refuse("Choose an approved car first.", "no_vehicle");
@@ -151,7 +154,6 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     .set({ online_status: body.onlineStatus, online_since: online ? now : null, ...(online ? { last_free_at: now } : {}), version: row.version + 1, updated_at: now })
     .where("driver_id", "=", driverId)
     .execute();
-  if (body.location) await storeFixes(trx, driverId, [body.location], undefined, now);
   // Going offline withdraws the driver's open offers (a job locks each trip in turn).
   if (!online) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
   return driverView(trx, await loadDriver(trx, driverId), "driver");

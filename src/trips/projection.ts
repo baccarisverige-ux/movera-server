@@ -43,6 +43,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     ...(row.payment_method_id ? { paymentMethodId: row.payment_method_id } : {}),
     ...(row.payment_status ? { paymentStatus: row.payment_status } : {}),
     ratingStatus: viewer === "driver" ? row.driver_rating_status : row.rating_status,
+    // The driver's own rating status, for admins and for the driver's realtime stream (redactProjection).
+    ...(viewer === "admin" ? { driverRatingStatus: row.driver_rating_status } : {}),
     pinRequired: row.pin_required,
     ...(row.driver_summary ? { driver: row.driver_summary } : {}),
     ...(row.waiting ? { waiting: row.waiting } : {}),

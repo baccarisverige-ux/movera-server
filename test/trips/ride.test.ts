@@ -165,6 +165,10 @@ describe("the ride", () => {
     expect((await step(tripId, "complete", version)).json()).toMatchObject({ code: "invalid_transition" });
     // A rider cannot drive the trip.
     expect((await step(tripId, "head-to-pickup", version, {}, rider)).statusCode).toBe(403);
+    // "Online" while on a trip does not make the driver free for new offers.
+    const me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+    await call(app, "POST", "/driver/availability", drivers.A.headers, { expectedVersion: me.version, onlineStatus: "online", location: { ...SPOTS.A, accuracy: 5, measuredAt: clock.now.toISOString() } });
+    expect((await driverRow("A")).online_status).toBe("on_trip");
   });
 });
 
@@ -307,7 +311,7 @@ describe("the rider ends early", () => {
     const res = await call(app, "POST", `/trips/${tripId}/end-early`, rider, { expectedVersion: before.version });
     expect(res.statusCode).toBe(200);
     const ended = res.json();
-    expect(ended).toMatchObject({ status: "cancelled_by_rider", ratingStatus: "pending", paymentStatus: "captured", cancellation: { actor: "rider", reasonCode: "rider_requested_early_end" } });
+    expect(ended).toMatchObject({ status: "cancelled_by_rider", ratingStatus: "pending", paymentStatus: "captured", cancellation: { actor: "rider", reasonCode: "something_else" } });
     expect(ended.fare.amountMinor).toBeLessThanOrEqual(quote.total.amountMinor);
     expect(ended.fareLines.map((l: { code: string }) => l.code)).toEqual(expect.arrayContaining(["base", "distance", "time", "app_fee"]));
     expect((await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 3 })).statusCode).toBe(201);

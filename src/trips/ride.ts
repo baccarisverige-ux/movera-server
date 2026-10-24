@@ -13,6 +13,7 @@ import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
 import { lockTripNow, startSearch } from "../dispatch/runtime.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
+import { nextStatus } from "../rules/transitions.js";
 import { tripProjection } from "./projection.js";
 
 /**
@@ -41,6 +42,8 @@ export const NEAR_DROPOFF = "near_dropoff";
  * minutes a cancel is charged only when the driver came at least this much closer to the pickup since accepting.
  */
 export const CAME_CLOSER_PCT = 25;
+/** "Arrived" is accepted within this distance of the pickup (the driver's latest fix). */
+export const ARRIVE_MAX_METERS = 300;
 
 const ONBOARD = ["rider_onboard", "in_trip", "approaching_dropoff"];
 
@@ -97,10 +100,19 @@ async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSeconds: numb
 
 /** Km driven on board: the driver's trace since boarding, else the straight line from the pickup × 1.25. */
 async function kmOnBoard(ex: Executor, trip: TripRow, since: Date): Promise<number> {
-  const fixes = await ex.selectFrom("trip_locations").select(["lat", "lng"]).where("trip_id", "=", trip.trip_id).where("measured_at", ">=", since).orderBy("measured_at").execute();
+  const fixes = await ex.selectFrom("trip_locations").select(["lat", "lng", "accuracy", "measured_at"]).where("trip_id", "=", trip.trip_id).where("measured_at", ">=", since).where("accuracy", "<=", 50).orderBy("measured_at").execute();
   if (fixes.length >= 2) {
+    // Count a step only once the car moved 25 m (parked jitter), and never faster than 150 km/h (a wild fix).
     let km = 0;
-    for (let i = 1; i < fixes.length; i++) km += haversineKm(fixes[i - 1]!, fixes[i]!);
+    let from = fixes[0]!;
+    for (const next of fixes.slice(1)) {
+      const step = haversineKm(from, next);
+      if (step < 0.025) continue;
+      const hours = Math.max(1, next.measured_at.getTime() - from.measured_at.getTime()) / 3_600_000;
+      if (step / hours > 150) continue;
+      km += step;
+      from = next;
+    }
     return km;
   }
   const last = trip.driver_id ? await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", trip.driver_id).executeTakeFirst() : undefined;
@@ -204,11 +216,13 @@ function feeColumns(fee: Money, sharePct: number) {
  * A cash trip that carried an owed fee completed and was paid: the fees it carried are paid (§3.7). The line holds
  * the sum owed when the rider was quoted, so the oldest owed fees up to that sum are the ones it paid.
  */
-async function settleCarriedFees(trx: Trx, trip: TripRow, now: Date) {
+async function settleCarriedFees(trx: Trx, trip: TripRow, cash: number, now: Date) {
   const line = outstandingLine(trip);
   if (!line) return;
+  // The ride is paid first; only cash beyond it pays old fees (a short count leaves them owed).
+  const towardFees = Math.max(0, Math.min(line.amount.amountMinor, cash - (Number(trip.fare_minor) - line.amount.amountMinor)));
   const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", trip.rider_id).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").forUpdate().execute();
-  let left = line.amount.amountMinor;
+  let left = towardFees;
   for (const fee of owed) {
     const amount = Number(fee.amount_minor);
     if (amount > left) break;
@@ -224,12 +238,20 @@ async function settleCarriedFees(trx: Trx, trip: TripRow, now: Date) {
 
 type StepCommand = "head_to_pickup" | "arrive" | "board" | "start_trip";
 
-export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date): Promise<TripRow> {
+export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, expectedVersion, "driver");
   if (command === "arrive") {
+    if (trip.status === "driver_to_pickup") {
+      const here = location ?? (await trx.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driverId).executeTakeFirst());
+      if (!here || haversineKm(here, trip.pickup as Place) * 1000 > ARRIVE_MAX_METERS) {
+        throw new ApiError("invalid_transition", "You are not at the pickup yet.", { reason: "not_at_pickup", projection: tripProjection(trip, "driver") });
+      }
+    }
     const rules = waitingRules(await pricingOf(trx, trip), trip.category_id);
-    const at = (min: number) => new Date(now.getTime() + min * 60_000).toISOString();
+    // A reservation's clock starts at the booked time, not when an early driver arrives.
+    const start = trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
+    const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
     const waiting: Waiting = { arrivedAt: now.toISOString(), freeUntil: at(rules.freeWaitMin), noShowAt: at(rules.noShowAfterMin), chargedSeconds: 0 };
     return applyCommand(trx, trip, { command, actor: "driver", now, set: { arrived_at: now, waiting: JSON.stringify(waiting) } });
   }
@@ -263,9 +285,9 @@ export const nearDropoffHandler: TimerHandler = async (trx, timer) => {
 /* ---------------------------------------------------------------- no-show */
 
 export async function noShow(trx: Trx, driverId: string, tripId: string, body: { expectedVersion: number; reasonCode?: string }, now: Date): Promise<TripRow> {
-  if (body.reasonCode !== undefined && !REASONS["noShow"]!.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a no-show reason.`, "invalid_reason_code");
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, body.expectedVersion, "driver");
+  if (body.reasonCode !== undefined && !REASONS["noShow"]!.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a no-show reason.`, "invalid_reason_code");
   const waiting = trip.waiting as Waiting | null;
   // Guard "waited >= noShowAfterMin" (contract.json#transitions).
   if (trip.status === "arrived" && (waiting === null || now.getTime() < Date.parse(waiting.noShowAt))) {
@@ -318,10 +340,13 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
 }
 
 /** After the rider's cancel: the driver is free again and gets their share of a fee (owed by the rider). */
+export async function riderFeeColumns(ex: Executor, trip: TripRow, fee: Money) {
+  return feeColumns(fee, await feeSharePct(ex, trip.zone_id));
+}
+
 export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: TripRow, fee: Money | null, now: Date) {
   if (fee && before.driver_id) {
     const share = await feeSharePct(trx, before.zone_id);
-    await trx.updateTable("trips").set(feeColumns(fee, share)).where("trip_id", "=", cancelled.trip_id).execute();
     await chargeRiderFee(trx, cancelled, "cancel", fee, now);
     await credit(trx, { driverId: before.driver_id, tripId: before.trip_id, kind: "fee_share", currency: fee.currency, amount: feeSplit(fee, share).driver }, now);
   }
@@ -333,10 +358,14 @@ export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: Tri
 export async function driverCancel(trx: Trx, driverId: string, tripId: string, body: { expectedVersion: number; reasonCode: string; note?: string }, now: Date): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, body.expectedVersion, "driver");
+  if (nextStatus(trip.status as never, "cancel", "driver", trip.kind) === null) {
+    throw new ApiError("invalid_transition", `A driver cannot cancel a trip that is ${trip.status}.`, { projection: tripProjection(trip, "driver") });
+  }
   const onboard = ONBOARD.includes(trip.status);
   const allowed = onboard ? REASONS["driverDuringTrip"]! : trip.kind === "scheduled" ? [...REASONS["scheduled"]!, ...REASONS["driverBeforeTrip"]!] : REASONS["driverBeforeTrip"]!;
   if (!allowed.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a reason for a driver cancel now.`, "invalid_reason_code");
-  const cancellation = { actor: "driver", reasonCode: body.reasonCode, at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
+  // The driver's note is for Movera only (driver_cancels); the rider sees the reason code.
+  const cancellation = { actor: "driver", reasonCode: body.reasonCode, at: now.toISOString(), fee: null };
   // Counts in the driver's cancel rate (§3 "counts in cancel rate").
   await trx.insertInto("driver_cancels").values({ trip_id: tripId, driver_id: driverId, at: now, from_status: trip.status, reason_code: body.reasonCode, note: body.note ?? null }).execute();
 
@@ -394,7 +423,7 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
     throw new ApiError("invalid_transition", `A rider cannot end_early a trip that is ${trip.status}.`, { projection: tripProjection(trip, "rider") });
   }
   const fare = await drivenFare(trx, trip, now);
-  const cancellation = { actor: "rider", reasonCode: body.reasonCode ?? "rider_requested_early_end", at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
+  const cancellation = { actor: "rider", reasonCode: body.reasonCode ?? "something_else", at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
   const ended = await applyCommand(trx, trip, {
     command: "end_early",
     actor: "rider",
@@ -431,7 +460,7 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
     set: { ended_by_command: "complete", ended_at: now, payment_status: "captured", cash_collected_minor: cash, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, done, now);
-  if (done.payment_method === "cash") await settleCarriedFees(trx, done, now);
+  if (done.payment_method === "cash") await settleCarriedFees(trx, done, cash, now);
   await releaseDriver(trx, done.driver_id, now);
   return done;
 }

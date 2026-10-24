@@ -6,7 +6,7 @@ import type { TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { nextStatus, TERMINAL } from "../rules/transitions.js";
-import { afterRiderCancel, riderCancelFee } from "./ride.js";
+import { afterRiderCancel, riderCancelFee, riderFeeColumns } from "./ride.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { tripProjection, type Viewer } from "./projection.js";
@@ -149,10 +149,12 @@ export async function riderCancel(
     ...(charged ? { feeStatus: "owed" } : {}),
     ...(body.note ? { note: body.note } : {}),
   };
-  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "rider", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null } });
+  // The fee is the trip's money in the same change, so the one trip_projection event shows it (§4).
+  const money = charged ? await riderFeeColumns(trx, trip, charged) : {};
+  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "rider", now, set: { ...money, cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null } });
   await stopSearch(trx, cancelled, now);
   await afterRiderCancel(trx, trip, cancelled, charged, now);
-  return charged ? trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow() : cancelled;
+  return cancelled;
 }
 
 /** POST /trips/{id}/cancel-reason (v0.4.4): the reason after a cancel-first; no version change, no event. */

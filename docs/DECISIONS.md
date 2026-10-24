@@ -54,11 +54,15 @@ Built with these, each easy to change; the owner confirms or changes them before
 - **Driver's share of a rider cancel fee**: 80 %, the same as the no-show share (`waiting.driverSharePct`). The admin panel has no separate setting.
 - **Rider PIN at boarding**: off in the test week (the rider config has `features.pin` false).
 - **Driver ends the trip with the rider on board**: the rider pays for what was driven, like an early end; an admin can refund.
+- **Pickup pay on a no-show or a paid rider cancel**: not paid now (the driver gets the 80 % fee share instead).
 
 Technical rules for the ride (no owner decision needed):
 
 - The waiting clock starts at `arrive`; the seconds after the free wait are charged when the rider boards, and the fare is priced again then (waiting is 100 % the driver's). A no-show is allowed from `waiting.noShowAt`.
 - Waiting money and the no-show fee come from the pricing document (the admin's Pricing page), the cancel fee rules from the published rider settings; with no rider settings published, a cancel after accept is free.
+- `arrive` is accepted only within 300 m of the pickup (the driver's latest fix); a reservation's waiting clock starts at the booked time, not at an early arrival.
+- The driver's free-text cancel note is kept for Movera and never shown to the rider.
+- A short cash count pays the ride first; owed fees are cleared only by cash beyond the ride.
 - "Almost there" (`near_dropoff`) when the driver's fix is within 500 m of the drop-off during the ride.
 - A no-show or cancel fee nobody collected is owed (Rider.outstanding) and rides on the next quote; the driver's share is credited at once. When a cash trip that carries it completes, the oldest owed fees up to the carried amount are paid.
 - A driver who cancels before boarding is not offered that trip again; every driver cancel is recorded for the cancel rate.

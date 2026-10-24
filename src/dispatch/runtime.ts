@@ -174,6 +174,8 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
       idleMin: d.last_free_at ? (now.getTime() - d.last_free_at.getTime()) / 60_000 : 0,
       ...(d.rating_count > 0 ? { rating: d.rating_sum / d.rating_count } : {}),
       ...(Number(answered.all) > 0 ? { acceptancePct: (Number(answered.took) / Number(answered.all)) * 100 } : {}),
+      // Cancel rate: the driver's cancels against the trips they took, last 30 days (§3.6 factor "cancel").
+      ...(Number(answered.took) > 0 ? { cancelPct: Math.min(100, (Number((await trx.selectFrom("driver_cancels").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("at", ">", since).executeTakeFirstOrThrow()).n) / Number(answered.took)) * 100) } : {}),
     };
     pool.candidates.push(candidate);
     const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600));
