@@ -112,7 +112,7 @@ The server lands in small pull requests, each tested:
 7. Trips: request, read, rider profile, cash payment. *(done: book from a quote, read, lists, active, cancel before a driver, cancel reason, events replay, /rides aliases, profile, cash, account deletion)*
 8. Live updates (SSE). *(done: trip events and config_published streams, resume, per-viewer redaction)*
 9. Driver availability and location. *(done: online/offline, location batches, trip traces, cars, admin live map)*
-10. Dispatch: offers, accept, decline, admin assign and radar groups.
+10. Dispatch: offers, accept, decline, admin assign and radar groups. *(done: automatic dispatch, offers, accept/decline, offer feed, keep-waiting, dispatch control; admin assign and radar groups come with step 12)*
 11. Trip steps, cancel, fees, waiting, no-show, rating.
 12. Admin lists, commands and audit.
 13. Staging deploy, seed data, end-to-end run with all three apps.

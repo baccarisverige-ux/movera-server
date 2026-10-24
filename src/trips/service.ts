@@ -7,6 +7,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL } from "../rules/transitions.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
+import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { tripProjection, type Viewer } from "./projection.js";
 
 /** Trip requests, reads and the rider's cancel (contract §3, §7). */
@@ -32,7 +33,7 @@ const samePlace = (a: Place, b: Place) => Math.abs(a.lat - b.lat) < 1e-7 && Math
 /**
  * POST /trips: books the rider's quote. The trip starts `quoted` with the quote's price, takes `request`, and a
  * live trip takes `start_search` at once (a scheduled one stays `requested` until its time, §6.1). Dispatch starts
- * when it is built.
+ * from the search started in the same transaction (dispatch/runtime.ts).
  */
 export async function createTrip(trx: Trx, riderId: string, request: unknown, options: { paymentMethods: readonly string[]; now: Date }): Promise<TripRow> {
   const problem = schemaProblem("CreateTripRequest", request);
@@ -113,8 +114,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   let trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   trip = await applyCommand(trx, trip, { command: "request", actor: "rider", now });
   if (trip.kind === "live") {
-    // Automatic dispatch (step 10) picks searching trips up from here.
     trip = await applyCommand(trx, trip, { command: "start_search", actor: "system", now, set: { search_started_at: now } });
+    await startSearch(trx, trip, now);
   }
   return trip;
 }
@@ -146,7 +147,9 @@ export async function riderCancel(
     fee: charged,
     ...(body.note ? { note: body.note } : {}),
   };
-  return applyCommand(trx, trip, { command: "cancel", actor: "rider", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel" } });
+  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "rider", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", search_step: null } });
+  await stopSearch(trx, cancelled, now);
+  return cancelled;
 }
 
 /** POST /trips/{id}/cancel-reason (v0.4.4): the reason after a cancel-first; no version change, no event. */

@@ -168,3 +168,16 @@ describe("listen connection", () => {
     sse.close();
   });
 });
+
+describe("driver offer feed", () => {
+  it("replays the driver's offer events from ?after= as a JSON page", async () => {
+    const driver = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+    const page = await fetch(`${base}/driver/offers/stream?after=0`, { headers: driver });
+    expect(page.status).toBe(200);
+    expect(await page.json()).toEqual({ items: [], nextCursor: null });
+    const sse = await listen("/driver/offers/stream", driver);
+    expect(sse.status).toBe(200);
+    expect(sse.headers["content-type"]).toContain("text/event-stream");
+    sse.close();
+  });
+});

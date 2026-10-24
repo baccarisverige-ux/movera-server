@@ -18,6 +18,8 @@ export type TripRow = Selectable<TripsTable>;
 
 /** The channel the realtime streams LISTEN on. The payload names the event; streams read it from trip_events. */
 export const TRIP_EVENTS_CHANNEL = "movera_trip_events";
+/** The channel the driver offer feeds LISTEN on ({ driverId, sequence }). */
+export const OFFER_EVENTS_CHANNEL = "movera_offer_events";
 
 export async function lockTrip(trx: Trx, tripId: string): Promise<TripRow> {
   const row = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forUpdate().executeTakeFirst();

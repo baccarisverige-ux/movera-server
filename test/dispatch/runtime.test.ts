@@ -1,0 +1,180 @@
+import { readFileSync } from "node:fs";
+import type { FastifyInstance } from "fastify";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { TEST_PHONES } from "../../src/auth/testPhones.js";
+import { CONTRACTS_DIR } from "../../src/contract/contract.js";
+import { dispatchHandlers } from "../../src/dispatch/runtime.js";
+import { seedDriver } from "../../src/drivers/service.js";
+import { TimerWorker } from "../../src/jobs/timers.js";
+import { adminSession } from "../support/admin.js";
+import { freshDatabase, type TestDatabase } from "../support/db.js";
+import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
+
+let database: TestDatabase;
+let app: FastifyInstance;
+let worker: TimerWorker;
+const clock = { now: new Date("2026-10-24T12:00:00Z") };
+const advance = async (seconds: number) => {
+  clock.now = new Date(clock.now.getTime() + seconds * 1000);
+  await worker.runDue();
+};
+const sample = (name: string) => JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/${name}.json`, "utf8"));
+
+// Three drivers near Sergels torg (Norrmalm): A closest, then B, then C.
+const SPOTS = { A: { lat: 59.3335, lng: 18.0655 }, B: { lat: 59.3360, lng: 18.0700 }, C: { lat: 59.3400, lng: 18.0750 } };
+const drivers: Record<"A" | "B" | "C", { id: string; headers: Record<string, string> }> = {} as never;
+let rider: Record<string, string>;
+
+beforeAll(async () => {
+  database = await freshDatabase();
+  app = await testWorld(database.db, database.url, clock);
+  await database.db.insertInto("config_live").values({ doc: "dispatch", zone_id: "Z001", version: 1, document: JSON.stringify(sample("dispatch_document")), published_at: clock.now, published_by: null }).execute();
+  worker = new TimerWorker(database.db, { handlers: dispatchHandlers, logger: { warn: () => undefined, error: (d, m) => console.error(m, d) }, clock: () => clock.now });
+  const phones = { A: TEST_PHONES[1]!, B: TEST_PHONES[2]!, C: TEST_PHONES[3]! };
+  for (const key of ["A", "B", "C"] as const) {
+    const made = await database.db.transaction().execute((trx) =>
+      seedDriver(trx, { phone: phones[key], firstName: `Driver ${key}`, make: "Volvo", model: "V60", year: 2021, color: "Black", plate: `TST00${key}`, categoryIds: ["economy"], zoneIds: ["Z001", "Z002"] }, clock.now),
+    );
+    drivers[key] = { id: made.driverId, headers: {} };
+  }
+});
+afterAll(async () => {
+  await app.close();
+  await database.drop();
+});
+
+async function everyoneOnline() {
+  clock.now = new Date(clock.now.getTime() + 3600_000);
+  rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+  for (const key of ["A", "B", "C"] as const) {
+    drivers[key].headers = (await signIn(app, ({ A: TEST_PHONES[1], B: TEST_PHONES[2], C: TEST_PHONES[3] } as const)[key]!, "driver")).headers;
+    await database.db.updateTable("drivers").set({ online_status: "online", last_free_at: clock.now }).where("driver_id", "=", drivers[key].id).execute();
+    await call(app, "POST", "/driver/location", drivers[key].headers, { fixes: [{ ...SPOTS[key], accuracy: 5, measuredAt: clock.now.toISOString() }] });
+  }
+}
+
+async function book() {
+  await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("status", "not in", ["completed", "cancelled_by_admin", "cancelled_by_rider", "expired"]).execute();
+  await database.db.deleteFrom("timers").execute();
+  // Each test starts with no offer history, so acceptance rates (part of the score) do not carry over.
+  await database.db.deleteFrom("offers").execute();
+  const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+  const trip = (await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash" })).json();
+  await worker.runDue();
+  return trip.tripId as string;
+}
+const openOffers = async (key: "A" | "B" | "C") => (await call(app, "GET", "/driver/offers", drivers[key].headers)).json().items;
+const tripOf = async (tripId: string, headers = rider) => (await call(app, "GET", `/trips/${tripId}`, headers)).json();
+
+beforeEach(async () => {
+  await everyoneOnline();
+});
+
+describe("automatic dispatch at run time", () => {
+  it("a calm zone offers Exclusive to the best driver first, then the next one when the 15 s run out", async () => {
+    const tripId = await book();
+    expect((await tripOf(tripId)).status).toBe("offered");
+    const [first] = await openOffers("A");
+    expect(first).toMatchObject({ tripId, kind: "exclusive", status: "open", reasonCode: "best-match", fare: { amountMinor: 21700 }, driverEarnings: { amountMinor: 15760 } });
+    expect(new Date(first.expiresAt).getTime() - clock.now.getTime()).toBe(15_000);
+    expect(await openOffers("B")).toEqual([]);
+
+    await advance(15);
+    expect(await openOffers("A")).toEqual([]);
+    const [second] = await openOffers("B");
+    // Ranked again before every offer: A missed one, so its acceptance fell and B now ranks first.
+    expect(second).toMatchObject({ tripId, kind: "exclusive", reasonCode: "best-match" });
+    const events = await database.db.selectFrom("offer_events").select(["kind", "sequence"]).where("driver_id", "=", drivers.A.id).orderBy("sequence").execute();
+    expect(events.slice(-2).map((e) => e.kind)).toEqual(["offer_created", "offer_withdrawn"]);
+  });
+
+  it("a decline moves on at once; an accept assigns the driver and the rider sees the car", async () => {
+    const tripId = await book();
+    const [offerA] = await openOffers("A");
+    const declined = await call(app, "POST", `/offers/${offerA.offerId}/decline`, drivers.A.headers, { expectedVersion: offerA.version, reasonCode: "too_far" });
+    expect(declined.json()).toMatchObject({ status: "declined" });
+    await worker.runDue();
+    const [offerB] = await openOffers("B");
+    expect(offerB).toBeDefined();
+    const accepted = await call(app, "POST", `/offers/${offerB.offerId}/accept`, drivers.B.headers, { expectedVersion: offerB.version });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ tripId, status: "accepted", driverId: drivers.B.id, driverEarnings: { amountMinor: 15760 } });
+    const seen = await tripOf(tripId);
+    expect(seen).toMatchObject({ status: "accepted", driverId: drivers.B.id, driver: { driverId: drivers.B.id, firstName: "Driver B", vehicle: { make: "Volvo", model: "V60", plate: "TST00B" } } });
+    expect(seen.acceptedAt).toBe(clock.now.toISOString());
+    expect(seen).not.toHaveProperty("driverEarnings");
+    expect((await call(app, "GET", "/driver/profile", drivers.B.headers)).json()).toMatchObject({ onlineStatus: "on_trip", activeTripId: tripId });
+    // No more rounds for this trip.
+    await advance(60);
+    expect((await tripOf(tripId)).status).toBe("accepted");
+    expect(await database.db.selectFrom("timers").selectAll().where("ref_id", "like", `${tripId}%`).execute()).toEqual([]);
+  });
+
+  it("a late or second accept loses: 409 with the offer", async () => {
+    const tripId = await book();
+    const [offerA] = await openOffers("A");
+    await advance(15);
+    const late = await call(app, "POST", `/offers/${offerA.offerId}/accept`, drivers.A.headers, { expectedVersion: offerA.version + 1 });
+    expect(late.statusCode).toBe(409);
+    const [offerB] = await openOffers("B");
+    const stale = await call(app, "POST", `/offers/${offerB.offerId}/accept`, drivers.B.headers, { expectedVersion: 99 });
+    expect(stale.json()).toMatchObject({ code: "version_mismatch" });
+    expect((await tripOf(tripId)).status).toBe("offered");
+  });
+
+  it("nobody answers: Exclusive to each in turn, then Radar to everyone; the rider sees the waiting steps; at 8 min the trip expires", async () => {
+    const tripId = await book();
+    for (let i = 0; i < 12; i++) await advance(15);
+    const kinds = await database.db.selectFrom("offers").select(["kind", "driver_id", "sent_at"]).where("trip_id", "=", tripId).orderBy("sent_at").orderBy("offer_id").execute();
+    expect(kinds.slice(0, 3).map((o) => [o.kind, o.driver_id])).toEqual([["exclusive", drivers.A.id], ["exclusive", drivers.B.id], ["exclusive", drivers.C.id]]);
+    expect(kinds.some((o) => o.kind === "radar")).toBe(true);
+    await advance(0);
+    clock.now = new Date(clock.now.getTime() + 0);
+    for (let t = 0; t < 40; t++) await advance(10);
+    const steps = await database.db.selectFrom("searches").select(["fired"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(steps.fired).toEqual(expect.arrayContaining(["w3", "w4"]));
+    for (let t = 0; t < 10; t++) await advance(10);
+    const done = await tripOf(tripId);
+    expect(done.status).toBe("expired");
+    expect(await openOffers("A")).toEqual([]);
+  });
+
+  it("Keep waiting? wait adds 3 minutes; stop is a free cancel", async () => {
+    const tripId = await book();
+    for (let t = 0; t < 30; t++) await advance(10);
+    const asked = await tripOf(tripId);
+    expect(asked.searchStep).toMatchObject({ id: "w4", kind: "keep_waiting", extraMin: 3 });
+    const wait = await call(app, "POST", `/trips/${tripId}/keep-waiting`, rider, { answer: "wait" });
+    expect(wait.statusCode).toBe(200);
+    const again = await call(app, "POST", `/trips/${tripId}/keep-waiting`, rider, { answer: "wait" });
+    expect(again.json()).toMatchObject({ code: "invalid_transition" });
+    const search = await database.db.selectFrom("searches").select(["started_at", "end_at"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect((search.end_at.getTime() - search.started_at.getTime()) / 1000).toBe(660);
+    for (let t = 0; t < 21; t++) await advance(10);
+    expect(["searching", "offered"]).toContain((await tripOf(tripId)).status);
+
+    const second = await book();
+    for (let t = 0; t < 30; t++) await advance(10);
+    const stop = await call(app, "POST", `/trips/${second}/keep-waiting`, rider, { answer: "stop" });
+    expect(stop.json()).toMatchObject({ status: "cancelled_by_rider", cancellation: { reasonCode: "wait_too_long", fee: null } });
+    expect(await openOffers("A")).toEqual([]);
+  });
+
+  it("a paused zone sends no offers until resumed (a Super admin pauses at once)", async () => {
+    const owner = await adminSession(app, database.db, "super", { now: clock.now });
+    const pause = await call(app, "PUT", "/admin/zones/Z001/dispatch-control", owner.headers, { expectedVersion: 0, paused: true, mode: null });
+    expect(pause.statusCode).toBe(200);
+    expect(pause.json()).toMatchObject({ zoneId: "Z001", paused: true, mode: null, version: 1 });
+    const tripId = await book();
+    await advance(30);
+    expect(await database.db.selectFrom("offers").selectAll().where("trip_id", "=", tripId).execute()).toEqual([]);
+    const ops = await adminSession(app, database.db, "ops", { now: clock.now });
+    const resume = await call(app, "PUT", "/admin/zones/Z001/dispatch-control", ops.headers, { expectedVersion: 1, paused: false, mode: null });
+    expect(resume.statusCode).toBe(200);
+    await advance(15);
+    expect((await openOffers("A")).length).toBe(1);
+    const force = await call(app, "PUT", "/admin/zones/Z001/dispatch-control", ops.headers, { expectedVersion: 2, paused: false, mode: "radar" });
+    expect(force.statusCode).toBe(202);
+    expect(force.json()).toMatchObject({ status: "pending_approval", action: "dispatch.control" });
+  });
+});

@@ -16,6 +16,8 @@ export type Timer = {
   dueAt: Date;
   payload: unknown;
   attempts: number;
+  /** The worker's clock when it took the timer (handlers use this, not their own clock). */
+  firedAt: Date;
 };
 
 export type TimerHandler = (trx: Trx, timer: Timer) => Promise<void>;
@@ -95,6 +97,7 @@ export class TimerWorker {
           dueAt: row.due_at,
           payload: row.payload,
           attempts: row.attempts,
+          firedAt: now,
         };
         await trx.deleteFrom("timers").where("timer_id", "=", row.timer_id).execute();
         const handler = this.options.handlers[row.kind];

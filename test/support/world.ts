@@ -31,7 +31,7 @@ export async function signIn(app: FastifyInstance, phone: string, appName: "ride
   return { headers: { authorization: `Bearer ${body.accessToken}` } as Record<string, string>, token: body.accessToken as string };
 }
 
-export function call(app: FastifyInstance, method: "GET" | "POST" | "PATCH", url: string, headers: Record<string, string>, payload?: unknown, key: string = newKey()) {
+export function call(app: FastifyInstance, method: "GET" | "POST" | "PATCH" | "PUT", url: string, headers: Record<string, string>, payload?: unknown, key: string = newKey()) {
   return app.inject({
     method,
     url: `/api/v1${url}`,

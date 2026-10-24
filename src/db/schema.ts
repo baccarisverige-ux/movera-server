@@ -104,6 +104,7 @@ export interface TripsTable {
   quote_expires_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   notes: ColumnType<string | null, string | null | undefined, string | null>;
   search_step: ColumnType<unknown, string | null | undefined, string | null>;
+  driver_summary: ColumnType<unknown, string | null | undefined, string | null>;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -364,6 +365,63 @@ export interface TripLocationsTable {
   moving: Generated<boolean>;
 }
 
+export interface SearchesTable {
+  trip_id: string;
+  started_at: Timestamp;
+  start_mode: "radar" | "exclusive" | null;
+  busy: ColumnType<string, number | string, number | string>;
+  document: Json;
+  doc_version: number;
+  state: ColumnType<unknown, string | null, string | null>;
+  end_at: Timestamp;
+  steps: JsonDefault<unknown[]>;
+  fired: JsonDefault<unknown[]>;
+  answered: JsonDefault<unknown[]>;
+  rounds: Generated<number>;
+  updated_at: Timestamp;
+}
+
+export interface OffersTable {
+  offer_id: string;
+  trip_id: string;
+  driver_id: string;
+  kind: "radar" | "exclusive" | "assigned" | "reservation" | "next_trip";
+  status: Generated<"open" | "claimed" | "claimed_elsewhere" | "declined" | "expired" | "withdrawn">;
+  version: Generated<number>;
+  round: number;
+  source: Generated<"system" | "admin">;
+  group_id: string | null;
+  reason_code: string | null;
+  currency: string;
+  fare_minor: ColumnType<string, number | string, number | string>;
+  driver_earnings_minor: ColumnType<string, number | string, number | string>;
+  pickup_pay_minor: ColumnType<string, number | string | undefined, number | string>;
+  pickup_meters: number;
+  pickup_eta_seconds: number;
+  sent_at: Timestamp;
+  expires_at: Timestamp;
+  answered_at: Timestamp | null;
+  decline_reason: string | null;
+}
+
+export interface OfferEventsTable {
+  driver_id: string;
+  sequence: ColumnType<string, number | string, number | string>;
+  event_id: string;
+  kind: "offer_created" | "offer_updated" | "offer_withdrawn";
+  offer: Json;
+  occurred_at: Timestamp;
+}
+
+export interface DispatchControlsTable {
+  zone_id: string;
+  paused: boolean;
+  mode: "radar" | "exclusive" | null;
+  by: string | null;
+  at: Timestamp;
+  version: number;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -389,4 +447,8 @@ export interface Database {
   quotes: QuotesTable;
   vehicles: VehiclesTable;
   trip_locations: TripLocationsTable;
+  searches: SearchesTable;
+  offers: OffersTable;
+  offer_events: OfferEventsTable;
+  dispatch_controls: DispatchControlsTable;
 }

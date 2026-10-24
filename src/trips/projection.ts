@@ -44,6 +44,7 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     ...(row.payment_status ? { paymentStatus: row.payment_status } : {}),
     ratingStatus: row.rating_status,
     pinRequired: row.pin_required,
+    ...(row.driver_summary ? { driver: row.driver_summary } : {}),
     ...(row.waiting ? { waiting: row.waiting } : {}),
     ...(row.cancellation ? { cancellation: row.cancellation } : {}),
   };

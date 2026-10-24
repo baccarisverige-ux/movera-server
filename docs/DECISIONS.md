@@ -43,6 +43,7 @@ Technical rules decided without the owner (they match what the apps already do):
 - A quote is valid 5 minutes. Until our OSRM runs, the server estimates a route as straight line × 1.25 at 24 km/h (the admin panel's dispatch formula) and stores which one it used.
 - Settings: a zone with no draft yet takes its first save with `expectedVersion` 1; on publish the server stamps the next live `version` and `publishedAt` into the document.
 - A trip is booked only from the rider's own unused, unexpired quote with the same car type, places and kind (else `quote_used`, `quote_expired`, `quote_mismatch`); payment methods come from the `PAYMENT_METHODS` setting (test week: `cash`), and `GET /payment-methods` lists cash as the one default.
+- Dispatch: a search that starts while its zone is paused begins its steps when the zone resumes; a zone with no published dispatch rules sends no automatic offers and its trips expire after 10 minutes (an admin can still assign). Offers go only to active, online drivers with a fix in the last 120 s, the trip's car type and zone.
 - A pickup outside the open zones is `403 forbidden`, reason `service_not_available`; an open zone without published prices is `503`, reason `pricing_not_published`.
 
 ## Before every test round

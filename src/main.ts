@@ -6,7 +6,8 @@ import { seedTestPhones } from "./auth/testPhones.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
 import { TimerWorker } from "./jobs/timers.js";
 import { NotificationHub } from "./realtime/hub.js";
-import { TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
+import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
+import { dispatchHandlers } from "./dispatch/runtime.js";
 import { CONFIG_CHANNEL } from "./config/service.js";
 
 const env = readEnv();
@@ -21,7 +22,7 @@ if (env.DATABASE_URL !== undefined) {
   const pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX, (error) => warn(error));
   if (env.MIGRATE_ON_START) await migrate(pool);
   db = createDb(pool);
-  hub = new NotificationHub(env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  hub = new NotificationHub(env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();
 }
 
@@ -32,7 +33,7 @@ if (db !== undefined) {
   await ensureMaintenanceTimers(db);
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db);
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers }, logger: app.log });
+  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers }, logger: app.log });
   worker.start();
 } else {
   app.log.warn("DATABASE_URL is not set: running without a database (development only)");
