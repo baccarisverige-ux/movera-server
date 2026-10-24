@@ -38,7 +38,7 @@ type DriverRow = {
 
 type Fix = { lat: number; lng: number; accuracy: number; heading?: number; speedMps?: number; moving?: boolean; measuredAt: string };
 
-async function loadDriver(ex: Executor, driverId: string, lock = false): Promise<DriverRow> {
+export async function loadDriver(ex: Executor, driverId: string, lock = false): Promise<DriverRow> {
   let query = ex.selectFrom("drivers").selectAll().where("driver_id", "=", driverId);
   if (lock) query = query.forUpdate();
   const row = await query.executeTakeFirst();

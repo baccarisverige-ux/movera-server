@@ -195,6 +195,8 @@ async function loadOffer(ex: Executor, offerId: string, lock = false) {
 
 export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<string, unknown> {
   const money = (minor: string | number) => ({ amountMinor: Number(minor), currency: offer.currency });
+  // A Movera bonus is inside the fare and earnings the driver sees (contract.json#adminDispatch.driverBonus).
+  const bonus = Number(trip.driver_bonus_minor ?? 0);
   return {
     offerId: offer.offer_id,
     tripId: offer.trip_id,
@@ -202,8 +204,9 @@ export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<s
     status: offer.status,
     version: offer.version,
     expiresAt: offer.expires_at.toISOString(),
-    fare: money(offer.fare_minor),
-    driverEarnings: money(offer.driver_earnings_minor),
+    fare: money(Number(offer.fare_minor) + bonus),
+    driverEarnings: money(Number(offer.driver_earnings_minor) + bonus),
+    ...(bonus > 0 ? { driverBonus: money(bonus) } : {}),
     ...(Number(offer.pickup_pay_minor) > 0 ? { pickupPay: money(offer.pickup_pay_minor) } : {}),
     priority: trip.priority,
     source: offer.source,
@@ -356,6 +359,89 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: expiresAt, payload: {} });
 }
 
+/* ---------------------------------------------------------------- admin offers (§3.1) */
+
+const ASSIGNED_TRIP = ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"];
+
+/**
+ * Direct assign (kind assigned, one driver) or a radar group (kind radar, 1–10 drivers, one groupId), sent by an
+ * admin. The caller holds the trip lock and has applied `assign`. Drivers must be active, online and free.
+ * The search keeps running: its next round waits until these offers are answered or run out.
+ */
+export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string[], kind: "assigned" | "radar", now: Date): Promise<{ offers: Record<string, unknown>[]; expiresAt: Date; groupId: string | null }> {
+  const driverDoc = await liveDocument<{ offers?: { radarSeconds?: number; exclusiveSeconds?: number; assignAcceptSeconds?: number }; pickupPay?: { offers?: Record<string, boolean>; byCategory?: Record<string, PickupPayRate> } }>(trx, "driver_app_config", trip.zone_id);
+  const dispatchDoc = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
+  const offersDoc = driverDoc?.document.offers ?? {};
+  const seconds = kind === "radar"
+    ? offersDoc.radarSeconds ?? dispatchDoc?.document.radar.seconds ?? 15
+    : offersDoc.assignAcceptSeconds ?? offersDoc.exclusiveSeconds ?? dispatchDoc?.document.exclusive.seconds ?? 15;
+  const search = await loadSearch(trx, trip.trip_id);
+  const end = search && ["searching", "offered"].includes(trip.status) ? search.end_at.getTime() : Infinity;
+  const expiresAt = new Date(Math.min(now.getTime() + seconds * 1000, end));
+  const rate = driverDoc?.document.pickupPay?.byCategory?.[trip.category_id];
+  const kinds = driverDoc?.document.pickupPay?.offers ?? {};
+  const groupId = kind === "radar" ? newId("grp", now.getTime()) : null;
+  const sorted = [...driverIds].sort();
+  // Lock order: trip (held), then drivers by id.
+  const rows = await trx.selectFrom("drivers").selectAll().where("driver_id", "in", sorted).orderBy("driver_id").forUpdate().execute();
+  const queue = new FeedQueue();
+  const made: Record<string, unknown>[] = [];
+  for (const driverId of driverIds) {
+    const d = rows.find((r) => r.driver_id === driverId);
+    if (!d) throw new ApiError("not_found", "No such driver.", { reason: "driver_not_found" });
+    const busy = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", ASSIGNED_TRIP).executeTakeFirst();
+    const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "received_at"]).where("driver_id", "=", driverId).executeTakeFirst();
+    const fresh = fix && now.getTime() - fix.received_at.getTime() <= STALE_AFTER_SECONDS * 1000;
+    if (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh) {
+      throw new ApiError("conflict", `${d.first_name || driverId} cannot take a ride now.`, { reason: busy ? "driver_on_trip" : "driver_not_available" });
+    }
+    const already = await trx.selectFrom("offers").select("offer_id").where("trip_id", "=", trip.trip_id).where("driver_id", "=", driverId).where("status", "=", "open").executeTakeFirst();
+    if (already) throw new ApiError("conflict", `${d.first_name || driverId} already has this ride.`, { reason: "offer_already_open" });
+    const km = dispatchKm(fix!, trip.pickup as Place);
+    const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600));
+    const pickupPay = rate ? pickupPayMinor(rate, kinds, kind, km, etaSeconds / 60) : 0;
+    const offer = {
+      offer_id: newId("ofr", now.getTime()),
+      trip_id: trip.trip_id,
+      driver_id: driverId,
+      kind,
+      round: 0,
+      source: "admin" as const,
+      group_id: groupId,
+      reason_code: null,
+      currency: trip.currency,
+      fare_minor: Number(trip.fare_minor),
+      driver_earnings_minor: Number(trip.driver_earnings_minor ?? 0),
+      pickup_pay_minor: pickupPay,
+      pickup_meters: Math.round(km * 1000),
+      pickup_eta_seconds: etaSeconds,
+      sent_at: now,
+      expires_at: expiresAt,
+      answered_at: null,
+      decline_reason: null,
+    };
+    await trx.insertInto("offers").values(offer).execute();
+    const view = offerView((await loadOffer(trx, offer.offer_id))!, trip);
+    queue.push(driverId, "offer_created", view);
+    made.push(view);
+  }
+  await queue.flush(trx, now);
+  // The round timer expires these offers (and lets the search go on) when they run out.
+  if (search) await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: expiresAt, payload: {} });
+  return { offers: made, expiresAt, groupId };
+}
+
+/** Open offers of a trip are sent again with the trip's new money (a bonus was added). */
+export async function refreshOpenOffers(trx: Trx, trip: TripRow, now: Date): Promise<void> {
+  const open = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip.trip_id).where("status", "=", "open").orderBy("offer_id").forUpdate().execute();
+  const queue = new FeedQueue();
+  for (const offer of open) {
+    await trx.updateTable("offers").set({ version: offer.version + 1 }).where("offer_id", "=", offer.offer_id).execute();
+    queue.push(offer.driver_id, "offer_updated", offerView({ ...offer, version: offer.version + 1 }, trip));
+  }
+  await queue.flush(trx, now);
+}
+
 /* ---------------------------------------------------------------- driver answers */
 
 function staleOffer(offer: NonNullable<OfferRow>, trip: TripRow) {
@@ -405,7 +491,7 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       driver_earnings_minor: earnings,
       pickup_pay_minor: pickupPay,
       // Movera keeps fare − driverEarnings − pickupPay (§3.2).
-      commission_minor: Number(trip.fare_minor) - earnings - pickupPay,
+      commission_minor: Number(trip.fare_minor) - earnings - pickupPay - Number(trip.driver_bonus_minor ?? 0),
       driver_summary: JSON.stringify(summary),
       search_step: null,
       // Where the driver started from: the rider cancel "came closer" check measures against it.

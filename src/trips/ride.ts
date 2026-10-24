@@ -11,7 +11,7 @@ import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
 import { haversineKm } from "../maps/routing.js";
 import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
-import { lockTripNow, startSearch } from "../dispatch/runtime.js";
+import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
 import { nextStatus } from "../rules/transitions.js";
 import { tripProjection } from "./projection.js";
@@ -52,7 +52,7 @@ const ONBOARD = ["rider_onboard", "in_trip", "approaching_dropoff"];
 /* ---------------------------------------------------------------- prices and settings */
 
 /** The pricing document the trip was quoted with (its version), else the live one. */
-async function pricingOf(ex: Executor, trip: TripRow): Promise<PricingDocument> {
+export async function pricingOf(ex: Executor, trip: TripRow): Promise<PricingDocument> {
   if (trip.pricing_version !== null) {
     const kept = await ex.selectFrom("config_history").select("document").where("doc", "=", "pricing").where("zone_id", "=", trip.zone_id).where("version", "=", trip.pricing_version).executeTakeFirst();
     if (kept) return kept.document as PricingDocument;
@@ -69,7 +69,7 @@ function waitingRules(doc: PricingDocument, categoryId: string) {
 }
 
 /** The driver's share of a no-show fee: DriverAppConfig.waiting.driverSharePct (80 % by default, per country). */
-async function noShowSharePct(ex: Executor, zoneId: string): Promise<number> {
+export async function noShowSharePct(ex: Executor, zoneId: string): Promise<number> {
   const live = await liveDocument<{ waiting?: { driverSharePct?: unknown } }>(ex, "driver_app_config", zoneId);
   return sharePct(live?.document.waiting?.driverSharePct, DEFAULT_NO_SHOW_SHARE);
 }
@@ -98,7 +98,7 @@ async function cancelRule(ex: Executor, trip: TripRow): Promise<FeeRule | null> 
 const outstandingLine = (trip: TripRow) => ((trip.fare_lines as FareLine[]) ?? []).find((l) => l.code === "outstanding_fee");
 
 /** The fare with the quote's route and the waiting so far (§3.5 "Quote and fare"). */
-async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSeconds: number): Promise<Fare> {
+export async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSeconds: number): Promise<Fare> {
   const doc = await pricingOf(ex, trip);
   const owed = outstandingLine(trip);
   return priceFare(doc, {
@@ -152,6 +152,20 @@ async function drivenFare(ex: Executor, trip: TripRow, now: Date): Promise<Fare>
   });
 }
 
+/** An admin sets the fare by hand: the driver's part keeps its share of the fare. */
+export function scaledFare(trip: TripRow, fareMinor: number) {
+  const before = Number(trip.fare_minor);
+  const earnings = before > 0 ? Math.round((Number(trip.driver_earnings_minor ?? 0) * fareMinor) / before) : 0;
+  const pickupPay = Number(trip.pickup_pay_minor ?? 0);
+  return {
+    fare_minor: fareMinor,
+    // The lines stay; one "adjustment" line carries the difference, so they still add up to the fare.
+    fare_lines: JSON.stringify([...((trip.fare_lines as FareLine[]) ?? []), ...(fareMinor !== before ? [{ code: "adjustment", amount: { amountMinor: fareMinor - before, currency: trip.currency } }] : [])]),
+    driver_earnings_minor: earnings,
+    commission_minor: fareMinor - earnings - pickupPay - Number(trip.driver_bonus_minor ?? 0),
+  };
+}
+
 /** The trip columns for a fare: Movera keeps fare − driverEarnings − pickupPay (§3.2). */
 function fareColumns(trip: TripRow, fare: Fare) {
   const pickupPay = Number(trip.pickup_pay_minor ?? 0);
@@ -159,13 +173,13 @@ function fareColumns(trip: TripRow, fare: Fare) {
     fare_minor: fare.total.amountMinor,
     fare_lines: JSON.stringify(fare.fareLines),
     driver_earnings_minor: fare.driverEarnings.amountMinor,
-    commission_minor: fare.total.amountMinor - fare.driverEarnings.amountMinor - pickupPay,
+    commission_minor: fare.total.amountMinor - fare.driverEarnings.amountMinor - pickupPay - Number(trip.driver_bonus_minor ?? 0),
   };
 }
 
 /* ---------------------------------------------------------------- money records */
 
-async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Promise<void> {
+export async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Promise<void> {
   if (driverId === null) return;
   await trx
     .updateTable("drivers")
@@ -174,7 +188,7 @@ async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Prom
     .execute();
 }
 
-async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
+export async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share" | "bonus" | "adjustment"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
   if (entry.amount === 0 && entry.kind !== "trip") return;
   await trx
     .insertInto("earnings_entries")
@@ -190,12 +204,13 @@ async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind:
       cash_minor: entry.cash ?? null,
       at: now,
     })
-    .onConflict((c) => c.columns(["driver_id", "trip_id", "kind"]).doNothing())
+    // At most one trip / pickup pay / fee share entry per trip (bonuses and adjustments may repeat).
+    .onConflict((c) => c.columns(["driver_id", "trip_id", "kind"]).where("kind", "in", ["trip", "pickup_pay", "fee_share"]).doNothing())
     .execute();
 }
 
 /** Rider.outstanding = the sum of owed fees; the oldest one names the source trip (§3.7). */
-async function refreshOutstanding(trx: Trx, riderId: string, now: Date) {
+export async function refreshOutstanding(trx: Trx, riderId: string, now: Date) {
   const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
   const total = owed.reduce((sum, f) => sum + Number(f.amount_minor), 0);
   await trx.updateTable("riders").set({ outstanding_minor: total, outstanding_source_trip_id: owed[0]?.trip_id ?? null, updated_at: now }).where("rider_id", "=", riderId).execute();
@@ -210,7 +225,7 @@ async function chargeRiderFee(trx: Trx, trip: TripRow, kind: "cancel" | "no_show
   await refreshOutstanding(trx, trip.rider_id, now);
 }
 
-function feeSplit(fee: Money, sharePct: number) {
+export function feeSplit(fee: Money, sharePct: number) {
   const driver = Math.floor((fee.amountMinor * sharePct * 2 + 100) / 200);
   return { driver, movera: fee.amountMinor - driver };
 }
@@ -249,6 +264,25 @@ async function settleCarriedFees(trx: Trx, trip: TripRow, cash: number, now: Dat
   await refreshOutstanding(trx, trip.rider_id, now);
 }
 
+/* ---------------------------------------------------------------- the wallet */
+
+/** What the rider's wallet would pay of this fare now (used first, contract §1 Payment methods). */
+async function walletCovers(ex: Executor, riderId: string, fareMinor: number): Promise<number> {
+  const rider = await ex.selectFrom("riders").select("wallet_minor").where("rider_id", "=", riderId).executeTakeFirstOrThrow();
+  return Math.max(0, Math.min(Number(rider.wallet_minor), fareMinor));
+}
+
+/** The trip is paid: the wallet pays first (a charge entry), the driver collects the rest in cash. */
+async function spendWallet(trx: Trx, trip: TripRow, fareMinor: number, now: Date): Promise<number> {
+  const rider = await trx.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).forUpdate().executeTakeFirstOrThrow();
+  const applied = Math.max(0, Math.min(Number(rider.wallet_minor), fareMinor));
+  if (applied > 0) {
+    await trx.updateTable("riders").set({ wallet_minor: sql`wallet_minor - ${applied}`, updated_at: now }).where("rider_id", "=", trip.rider_id).execute();
+    await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: trip.rider_id, kind: "charge", currency: trip.currency, amount_minor: -applied, trip_id: trip.trip_id, at: now }).execute();
+  }
+  return applied;
+}
+
 /* ---------------------------------------------------------------- the driver's steps */
 
 type StepCommand = "head_to_pickup" | "arrive" | "board" | "start_trip";
@@ -277,6 +311,8 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     const set: Updateable<TripsTable> = { boarded_at: now };
     if (waiting) set["waiting"] = JSON.stringify({ ...waiting, chargedSeconds: charged });
     if (charged > 0 && trip.status === "arrived") Object.assign(set, fareColumns(trip, await fareWithWaiting(trx, trip, charged)));
+    // The wallet pays first: the driver sees the cash to collect from boarding on.
+    set.wallet_applied_minor = await walletCovers(trx, trip.rider_id, Number(set.fare_minor ?? trip.fare_minor));
     return applyCommand(trx, trip, { command, actor: "driver", now, set });
   }
   if (command === "start_trip") return applyCommand(trx, trip, { command, actor: "driver", now, set: { started_at: now } });
@@ -308,21 +344,29 @@ export async function noShow(trx: Trx, driverId: string, tripId: string, body: {
   if (trip.status === "arrived" && (waiting === null || now.getTime() < Date.parse(waiting.noShowAt))) {
     throw new ApiError("invalid_transition", "Wait until the no-show time before marking a no-show.", { reason: "no_show_too_early", projection: tripProjection(trip, "driver") });
   }
+  return markNoShow(trx, trip, "driver", false, now);
+}
+
+/** The no-show itself (driver after the wait, or an admin who may waive the fee). */
+export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "admin", waive: boolean, now: Date): Promise<TripRow> {
   const rules = waitingRules(await pricingOf(trx, trip), trip.category_id);
-  const fee: Money | null = rules.noShowFee.amountMinor > 0 ? { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency } : null;
+  const fee: Money | null = !waive && rules.noShowFee.amountMinor > 0 ? { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency } : null;
   const share = await noShowSharePct(trx, trip.zone_id);
-  const cancellation = { actor: "driver", reasonCode: "rider_no_show", at: now.toISOString(), fee, ...(fee ? { feeStatus: "owed" } : {}) };
+  const cancellation = { actor, reasonCode: "rider_no_show", at: now.toISOString(), fee, ...(fee ? { feeStatus: "owed" } : {}) };
   const ended = await applyCommand(trx, trip, {
     command: "no_show",
-    actor: "driver",
+    actor,
     now,
-    set: { cancellation: JSON.stringify(cancellation), ended_by_command: "no_show", ended_at: now, ...(fee ? feeColumns(fee, share) : {}) },
+    set: { cancellation: JSON.stringify(cancellation), ended_by_command: "no_show", ended_at: now, search_step: null, ...(fee ? feeColumns(fee, share) : {}) },
   });
-  if (fee) {
+  if (fee && trip.driver_id) {
     await chargeRiderFee(trx, ended, "no_show", fee, now);
-    await credit(trx, { driverId, tripId, kind: "fee_share", currency: fee.currency, amount: feeSplit(fee, share).driver }, now);
+    await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "fee_share", currency: fee.currency, amount: feeSplit(fee, share).driver }, now);
+  } else if (fee) {
+    await chargeRiderFee(trx, ended, "no_show", fee, now);
   }
-  await releaseDriver(trx, driverId, now);
+  await stopSearch(trx, ended, now);
+  await releaseDriver(trx, trip.driver_id, now);
   return ended;
 }
 
@@ -388,11 +432,12 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
   if (onboard) {
     // Ended on board: the rider pays for what was driven, in cash, like an early end (owner decision 8).
     const fare = await drivenFare(trx, trip, now);
+    const wallet = await spendWallet(trx, trip, fare.total.amountMinor, now);
     const ended = await applyCommand(trx, trip, {
       command: "cancel",
       actor: "driver",
       now,
-      set: { ...fareColumns(trip, fare), cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: fare.total.amountMinor },
+      set: { ...fareColumns(trip, fare), cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: fare.total.amountMinor - wallet, wallet_applied_minor: wallet },
     });
     await creditTrip(trx, ended, now);
     await releaseDriver(trx, driverId, now);
@@ -400,11 +445,20 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
   }
 
   // Before boarding: back to dispatch (or a reservation back to the list), without this driver.
+  return backToDispatch(trx, trip, { command: "cancel", actor: "driver", now, exclude: driverId });
+}
+
+/**
+ * The trip leaves its driver and goes back to dispatch (driver cancel before boarding, admin reassign): the
+ * driver is free, open offers are withdrawn and a new search starts (§3.6 "One search per driver cancel").
+ */
+export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: "cancel" | "reassign"; actor: "driver" | "admin"; now: Date; exclude?: string }): Promise<TripRow> {
+  const now = input.now;
   const quote = trip.quote_id ? await trx.selectFrom("quotes").select("driver_earnings_minor").where("quote_id", "=", trip.quote_id).executeTakeFirst() : undefined;
   const earnings = quote ? Number(quote.driver_earnings_minor) : Number(trip.driver_earnings_minor ?? 0);
   const back = await applyCommand(trx, trip, {
-    command: "cancel",
-    actor: "driver",
+    command: input.command,
+    actor: input.actor,
     now,
     set: {
       driver_id: null,
@@ -416,13 +470,15 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
       accept_pickup_meters: null,
       pickup_pay_minor: 0,
       driver_earnings_minor: earnings,
-      commission_minor: Number(trip.fare_minor) - earnings,
+      commission_minor: Number(trip.fare_minor) - earnings - Number(trip.driver_bonus_minor ?? 0),
+      wallet_applied_minor: 0,
       search_step: null,
-      cancelled_driver_ids: sql<string[]>`array_append(cancelled_driver_ids, ${driverId})`,
+      ...(input.exclude ? { cancelled_driver_ids: sql<string[]>`array_append(cancelled_driver_ids, ${input.exclude})` } : {}),
       ...(trip.status === "accepted" && trip.kind === "scheduled" ? {} : { search_started_at: now }),
     },
   });
-  await releaseDriver(trx, driverId, now);
+  await stopSearch(trx, back, now);
+  await releaseDriver(trx, trip.driver_id, now);
   if (back.status === "searching") await startSearch(trx, back, now);
   return back;
 }
@@ -439,13 +495,14 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
     throw new ApiError("invalid_transition", `A rider cannot end_early a trip that is ${trip.status}.`, { projection: tripProjection(trip, "rider") });
   }
   const fare = await drivenFare(trx, trip, now);
+  const wallet = await spendWallet(trx, trip, fare.total.amountMinor, now);
   const cancellation = { actor: "rider", reasonCode: body.reasonCode ?? "something_else", at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
   const ended = await applyCommand(trx, trip, {
     command: "end_early",
     actor: "rider",
     now,
     // An owed fee the trip carried stays owed: the trip did not complete (§3.7).
-    set: { ...fareColumns(trip, fare), cancellation: JSON.stringify(cancellation), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: fare.total.amountMinor, rating_status: "pending" },
+    set: { ...fareColumns(trip, fare), cancellation: JSON.stringify(cancellation), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: fare.total.amountMinor - wallet, wallet_applied_minor: wallet, rating_status: "pending" },
   });
   await creditTrip(trx, ended, now);
   await releaseDriver(trx, trip.driver_id, now);
@@ -454,7 +511,7 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
 
 /* ---------------------------------------------------------------- completion */
 
-async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
+export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
   if (trip.driver_id === null) return;
   const fare = Number(trip.fare_minor);
   const earnings = Number(trip.driver_earnings_minor ?? 0);
@@ -462,21 +519,27 @@ async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
   const owedMinor = trip.status === "completed" && owed ? owed.amount.amountMinor : 0;
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "trip", currency: trip.currency, amount: earnings, gross: fare - owedMinor, commission: fare - owedMinor - earnings, cash: Number(trip.cash_collected_minor ?? 0) }, now);
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "pickup_pay", currency: trip.currency, amount: Number(trip.pickup_pay_minor ?? 0) }, now);
+  // A Movera bonus on the trip is paid when the trip ends with this driver.
+  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: Number(trip.driver_bonus_minor ?? 0) }, now);
 }
 
-export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; subjectId: string }, tripId: string, body: { expectedVersion: number; cashCollected?: Money }, now: Date): Promise<TripRow> {
+export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; subjectId: string }, tripId: string, body: { expectedVersion: number; cashCollected?: Money; fare?: Money }, now: Date): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, who);
+  if (body.fare && body.fare.currency !== trip.currency) throw badRequest(`The fare is in ${trip.currency}.`, "currency_mismatch");
   expectVersion(trip, body.expectedVersion, who.actor);
   if (body.cashCollected && body.cashCollected.currency !== trip.currency) throw badRequest(`Cash is counted in ${trip.currency}.`, "currency_mismatch");
-  const cash = body.cashCollected?.amountMinor ?? Number(trip.fare_minor);
+  const fare = body.fare?.amountMinor ?? Number(trip.fare_minor);
+  const money = body.fare ? scaledFare(trip, fare) : {};
+  const wallet = await spendWallet(trx, trip, fare, now);
+  const cash = body.cashCollected?.amountMinor ?? fare - wallet;
   const done = await applyCommand(trx, trip, {
     command: "complete",
     actor: who.actor,
     now,
-    set: { ended_by_command: "complete", ended_at: now, payment_status: "captured", cash_collected_minor: cash, rating_status: "pending", driver_rating_status: "pending" },
+    set: { ...money, ended_by_command: "complete", ended_at: now, payment_status: "captured", cash_collected_minor: cash, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, done, now);
-  if (done.payment_method === "cash") await settleCarriedFees(trx, done, cash, now);
+  if (done.payment_method === "cash") await settleCarriedFees(trx, done, cash + wallet, now);
   await releaseDriver(trx, done.driver_id, now);
   return done;
 }

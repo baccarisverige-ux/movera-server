@@ -2,7 +2,7 @@ import type { Trx } from "../db/db.js";
 import type { TripsTable } from "../db/schema.js";
 import { appendTripEvent, lockTrip, type TripRow } from "../db/tripLog.js";
 import { ApiError } from "../http/errors.js";
-import { nextStatus, isTripStatus, type Actor } from "../rules/transitions.js";
+import { nextStatus, isTripStatus, TERMINAL, type Actor } from "../rules/transitions.js";
 import { tripProjection, type Viewer } from "./projection.js";
 import type { Updateable } from "kysely";
 
@@ -57,3 +57,18 @@ export function expectVersion(trip: TripRow, expectedVersion: number, viewer: Vi
   }
 }
 
+
+/**
+ * A change that is not a lifecycle step (an admin's bonus, fare correction, refund): new version, one event.
+ * After a terminal status only afterTerminal kinds pass the apps' gate (§4), so money changes then go out as
+ * payment_updated.
+ */
+export async function touchTrip(trx: Trx, trip: TripRow, set: Updateable<TripsTable>, now: Date): Promise<TripRow> {
+  const version = trip.version + 1;
+  await trx.updateTable("trips").set({ ...set, version, updated_at: now }).where("trip_id", "=", trip.trip_id).execute();
+  const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+  const sequence = Number(updated.sequence) + 1;
+  const kind = isTripStatus(updated.status) && TERMINAL.has(updated.status) ? "payment_updated" : "trip_projection";
+  await appendTripEvent(trx, { tripId: trip.trip_id, kind, version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence }) });
+  return { ...updated, sequence: String(sequence) };
+}

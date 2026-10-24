@@ -20,6 +20,7 @@ export interface RidersTable {
   deletion_requested_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   rating_sum: Generated<number>;
   rating_count: Generated<number>;
+  wallet_minor: ColumnType<string, number | string | undefined, number | string>;
   version: Generated<number>;
   created_at: Timestamp;
   updated_at: Timestamp;
@@ -112,6 +113,7 @@ export interface TripsTable {
   cash_collected_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   driver_rating_status: Generated<string>;
   accept_pickup_meters: ColumnType<number | null, number | null | undefined, number | null>;
+  wallet_applied_minor: ColumnType<string, number | string | undefined, number | string>;
   cancelled_driver_ids: ColumnType<string[], string[] | undefined, string[] | RawBuilder<string[]>>;
   created_at: Timestamp;
   updated_at: Timestamp;
@@ -455,7 +457,7 @@ export interface EarningsEntriesTable {
   entry_id: string;
   driver_id: string;
   trip_id: string | null;
-  kind: "trip" | "pickup_pay" | "fee_share" | "adjustment" | "tip";
+  kind: "trip" | "pickup_pay" | "fee_share" | "adjustment" | "tip" | "bonus";
   currency: string;
   amount_minor: ColumnType<string, number | string, number | string>;
   gross_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
@@ -471,6 +473,35 @@ export interface RatingsTable {
   tags: ColumnType<string[], string[] | undefined, string[]>;
   comment: string | null;
   at: Timestamp;
+}
+
+export interface WalletEntriesTable {
+  entry_id: string;
+  rider_id: string;
+  kind: "topup" | "charge" | "refund" | "payout" | "adjustment";
+  currency: string;
+  amount_minor: ColumnType<string, number | string, number | string>;
+  trip_id: string | null;
+  at: Timestamp;
+}
+
+export interface RefundsTable {
+  refund_id: string;
+  trip_id: string;
+  rider_id: string;
+  currency: string;
+  amount_minor: ColumnType<string, number | string, number | string>;
+  reason: string;
+  status: "pending_approval" | "done" | "rejected";
+  approval_id: string | null;
+  from_driver: Generated<boolean>;
+  destination: "wallet" | "swish" | "bank" | null;
+  payout_to: ColumnType<unknown, string | null | undefined, string | null>;
+  payout_status: "pending" | "paid" | null;
+  paid_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  paid_by: string | null;
+  created_by: string;
+  created_at: Timestamp;
 }
 
 export interface Database {
@@ -506,4 +537,6 @@ export interface Database {
   rider_fees: RiderFeesTable;
   earnings_entries: EarningsEntriesTable;
   ratings: RatingsTable;
+  wallet_entries: WalletEntriesTable;
+  refunds: RefundsTable;
 }

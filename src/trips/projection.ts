@@ -62,6 +62,14 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (viewer !== "rider") {
     const pickupPay = money(row.pickup_pay_minor, currency);
     if (pickupPay && pickupPay.amountMinor > 0) projection["pickupPay"] = pickupPay;
+    const bonus = money(row.driver_bonus_minor, currency);
+    if (bonus && bonus.amountMinor > 0) projection["driverBonus"] = bonus;
+  }
+  // The wallet pays first; the driver collects the rest in cash (shown once the wallet covers part of it).
+  const wallet = Number(row.wallet_applied_minor ?? 0);
+  if (wallet > 0) {
+    projection["walletApplied"] = money(wallet, currency);
+    projection["cashToCollect"] = money(Math.max(0, Number(row.fare_minor) - wallet), currency);
   }
   // The rider's latest waiting step, while searching or offered, and the busy message on an expired trip (§3.6).
   if (viewer !== "driver" && row.search_step && ["searching", "offered", "expired"].includes(row.status)) projection["searchStep"] = row.search_step;

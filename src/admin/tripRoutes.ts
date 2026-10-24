@@ -1,0 +1,162 @@
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
+import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
+import type { Db, Trx } from "../db/db.js";
+import { API_PREFIX } from "../http/prefix.js";
+import { runIdempotent } from "../http/idempotency.js";
+import { parseBody } from "../http/validate.js";
+import { chooseRefundDestination, getWallet, payoutsToMake, riderRefunds, walletEntries } from "../riders/wallet.js";
+import { tripProjection } from "../trips/projection.js";
+import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus } from "./lists.js";
+import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminRadarGroup, adminReassign, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
+
+/** contract §3.1, §7: the admin's trip tools, lists, account status, audit; the rider's wallet and refunds. */
+
+export type AdminTripDeps = { db: Db; jwtSecret: string; currency: string; clock?: () => Date };
+
+const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+const Money = z.object({ amountMinor: z.number().int(), currency: z.string().regex(/^[A-Z]{3}$/) });
+const Version = { expectedVersion: z.number().int().min(1) };
+const Note = z.string().min(1).max(1000);
+const many = <T extends z.ZodTypeAny>(item: T) => z.union([item, z.array(item)]).optional().transform((v) => (v === undefined ? undefined : Array.isArray(v) ? v : [v]));
+const Page = { cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) };
+const When = { from: z.string().datetime().optional(), to: z.string().datetime().optional() };
+
+const ReasonBody = z.object({ ...Version, reasonCode: z.string(), note: Note, driverBonus: Money.optional() });
+const AssignBody = z.object({ ...Version, driverId: ID, note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
+const RadarBody = z.object({ ...Version, driverIds: z.array(ID).min(1).max(10), note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
+const NoShowBody = z.object({ ...Version, note: Note, waiveFee: z.boolean().optional() });
+const CompleteBody = z.object({ ...Version, note: Note, fare: Money.optional() });
+const AdjustBody = z.object({ ...Version, fare: Money.optional(), waitingSeconds: z.number().int().min(0).optional(), waiveCancelFee: z.boolean().optional(), reason: Note });
+const RefundBody = z.object({ ...Version, amount: Money, paymentId: z.string().optional(), reason: Note, fromDriver: z.boolean().optional() });
+const BonusBody = z.object({ ...Version, amount: Money, priority: z.boolean().optional(), note: z.string().max(1000).optional() });
+const DriverStatusBody = z.object({ ...Version, accountStatus: z.enum(["pending", "active", "on_hold", "suspended"]), note: Note });
+const RiderStatusBody = z.object({ ...Version, status: z.enum(["active", "suspended"]), note: Note });
+
+const TripsQuery = z.object({ ...Page, ...When, status: many(z.string()), kind: z.enum(["live", "scheduled"]).optional(), zoneId: ID.optional(), categoryId: z.string().optional(), riderId: ID.optional(), driverId: ID.optional(), paymentStatus: z.string().optional(), q: z.string().max(100).optional() });
+const RidersQuery = z.object({ ...Page, status: z.enum(["active", "suspended"]).optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
+const DriversQuery = z.object({ ...Page, accountStatus: many(z.string()), onlineStatus: many(z.string()), zoneId: ID.optional(), categoryId: z.string().optional(), q: z.string().max(100).optional() });
+const PaymentsQuery = z.object({ ...Page, ...When, status: z.string().optional(), method: z.string().optional(), tripId: ID.optional(), riderId: ID.optional(), zoneId: ID.optional() });
+const AuditQuery = z.object({ ...Page, ...When, actorId: z.string().optional(), targetType: z.string().optional(), targetId: z.string().optional(), action: z.string().optional(), result: z.string().optional() });
+const NearbyQuery = z.object({ scope: z.enum(["radius", "zone", "zone_and_neighbours"]).default("radius"), radiusKm: z.coerce.number().min(0.1).max(100).optional() });
+const OffersQuery = z.object(Page);
+const PayoutsQuery = z.object({ payoutStatus: z.enum(["pending", "paid"]).default("pending") });
+
+const keyOf = (request: FastifyRequest) => {
+  const value = request.headers["idempotency-key"];
+  return Array.isArray(value) ? value[0] : value;
+};
+const clean = <T extends Record<string, unknown>>(o: T) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
+
+export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps): Promise<void> {
+  const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
+  const now = () => deps.clock?.() ?? new Date();
+  const idem = (request: FastifyRequest, who: Principal) => ({ actor: who.actor as "admin" | "rider", subjectId: who.subjectId, key: keyOf(request), method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null });
+  const tripParam = (request: FastifyRequest) => parseBody(z.object({ tripId: ID }), request.params).tripId;
+
+  /* ---- reads */
+  app.get(`${API_PREFIX}/admin/trips`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    return listTrips(deps.db, who, clean(parseBody(TripsQuery, request.query)) as never);
+  });
+  app.get(`${API_PREFIX}/admin/trips/:tripId`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    return tripProjection(await adminTrip(deps.db, who, tripParam(request)), "admin");
+  });
+  app.get(`${API_PREFIX}/admin/trips/:tripId/offers`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    const trip = await adminTrip(deps.db, who, tripParam(request));
+    return tripOffers(deps.db, trip, clean(parseBody(OffersQuery, request.query)));
+  });
+  app.get(`${API_PREFIX}/admin/trips/:tripId/nearby-drivers`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    const trip = await adminTrip(deps.db, who, tripParam(request));
+    return nearbyDrivers(deps.db, trip, clean(parseBody(NearbyQuery, request.query)), now());
+  });
+  app.get(`${API_PREFIX}/admin/riders`, async (request) => {
+    await authenticateAdmin(request, guard, "riders.read");
+    return listRiders(deps.db, clean(parseBody(RidersQuery, request.query)), deps.currency);
+  });
+  app.get(`${API_PREFIX}/admin/drivers`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "drivers.read");
+    return listDrivers(deps.db, who, clean(parseBody(DriversQuery, request.query)) as never);
+  });
+  app.get(`${API_PREFIX}/admin/payments`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.read");
+    return listPayments(deps.db, who, clean(parseBody(PaymentsQuery, request.query)));
+  });
+  app.get(`${API_PREFIX}/admin/audit`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "audit.read");
+    return listAudit(deps.db, who, clean(parseBody(AuditQuery, request.query)));
+  });
+  app.get(`${API_PREFIX}/admin/refunds/payouts`, async (request) => {
+    await authenticateAdmin(request, guard, "finance.read");
+    return payoutsToMake(deps.db, { status: parseBody(PayoutsQuery, request.query).payoutStatus });
+  });
+
+  /* ---- trip commands */
+  const command = <B extends z.ZodTypeAny>(path: string, permission: string, schema: B, run: (trx: Trx, who: Principal, tripId: string, body: z.infer<B>) => Promise<{ status: number; body: unknown }>) => {
+    app.post(`${API_PREFIX}/admin/trips/:tripId/${path}`, async (request, reply) => {
+      const who = await authenticateAdmin(request, guard, permission);
+      const tripId = tripParam(request);
+      const body = parseBody(schema, request.body);
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => run(trx, who, tripId, body));
+      return reply.status(result.status).send(result.body);
+    });
+  };
+  const view = async (trip: Promise<Parameters<typeof tripProjection>[0]>) => ({ status: 200, body: tripProjection(await trip, "admin") });
+
+  command("cancel", "trips.intervene", ReasonBody, (trx, who, id, body) => view(adminCancel(trx, who, id, clean(body) as never, now())));
+  command("reassign", "trips.intervene", ReasonBody, (trx, who, id, body) => view(adminReassign(trx, who, id, clean(body) as never, now())));
+  command("assign", "trips.intervene", AssignBody, (trx, who, id, body) => view(adminAssign(trx, who, id, clean(body) as never, now())));
+  command("radar-group", "trips.intervene", RadarBody, async (trx, who, id, body) => ({ status: 200, body: await adminRadarGroup(trx, who, id, clean(body) as never, now()) }));
+  command("no-show", "trips.intervene", NoShowBody, (trx, who, id, body) => view(adminNoShow(trx, who, id, clean(body) as never, now())));
+  command("complete", "trips.intervene", CompleteBody, (trx, who, id, body) => view(adminComplete(trx, who, id, clean(body) as never, now())));
+  command("driver-bonus", "trips.intervene", BonusBody, (trx, who, id, body) => view(adminDriverBonus(trx, who, id, clean(body) as never, now())));
+  command("adjust", "trips.intervene", AdjustBody, (trx, who, id, body) => adminAdjust(trx, who, id, clean(body) as never, now()));
+  command("refund", "payments.refund", RefundBody, (trx, who, id, body) => {
+    const { paymentId: _p, ...rest } = clean(body);
+    void _p;
+    return adminRefund(trx, who, id, rest as never, now());
+  });
+
+  app.post(`${API_PREFIX}/admin/refunds/:refundId/paid`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const { refundId } = parseBody(z.object({ refundId: ID }), request.params);
+    const body = parseBody(z.object({ note: z.string().max(1000).optional() }), request.body ?? {});
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await markRefundPaid(trx, who, refundId, clean(body), now()) }))).body;
+  });
+
+  /* ---- account status */
+  app.post(`${API_PREFIX}/admin/drivers/:driverId/status`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "drivers.activate");
+    const { driverId } = parseBody(z.object({ driverId: ID }), request.params);
+    const body = parseBody(DriverStatusBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setDriverStatus(trx, who, driverId, body, now()) }))).body;
+  });
+  app.post(`${API_PREFIX}/admin/riders/:riderId/status`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "riders.block");
+    const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
+    const body = parseBody(RiderStatusBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setRiderStatus(trx, who, riderId, body, deps.currency, now()) }))).body;
+  });
+
+  /* ---- the rider's wallet and refunds */
+  app.get(`${API_PREFIX}/wallet`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    return getWallet(deps.db, who.subjectId, deps.currency);
+  });
+  app.get(`${API_PREFIX}/wallet/entries`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    return walletEntries(deps.db, who.subjectId, clean(parseBody(z.object({ ...Page, ...When }), request.query)));
+  });
+  app.get(`${API_PREFIX}/rider/refunds`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    return riderRefunds(deps.db, who.subjectId);
+  });
+  app.post(`${API_PREFIX}/rider/refunds/:refundId/destination`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const { refundId } = parseBody(z.object({ refundId: ID }), request.params);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await chooseRefundDestination(trx, who.subjectId, refundId, request.body ?? {}, now()) }))).body;
+  });
+}

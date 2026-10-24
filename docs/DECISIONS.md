@@ -71,6 +71,21 @@ Technical rules for the ride (no owner decision needed):
 - Cash: `complete` marks the payment `captured`; `cashCollected` is stored as the driver reports it (the admin sees any difference). Tips are refused (`tips_not_available`) until a later round.
 - A skipped rating answers `204` (the contract's `Rating` needs stars).
 
+## Admin tools (step 12)
+
+Technical rules:
+
+- Every admin trip change is audited (`GET /admin/audit`); the admin's note stays in the audit, never on the rider's screen.
+- Assign and radar group need an active, online driver with a fix in the last 2 minutes and no ride; the automatic search waits while the admin's offers are open. Bonus per trip at most `driver.driverBonus.defaultLimit` (200 kr), never above `hardMax`.
+- A paid trip's fare is changed with a refund, not an adjust. A changed fare keeps the lines and adds one `adjustment` line with the difference; the driver keeps the same share of the fare.
+- Changes after a trip ended go out as `payment_updated` events (the apps accept those after the end).
+- Refunds: at most what the trip was paid, in total. Non-super admins' refunds and adjusts wait for a second admin.
+- Wallet: used first on the next ride (from boarding the driver sees `cashToCollect`); the driver's earnings do not change, Movera covers the wallet part.
+- A blocked driver goes offline (a ride already going runs to its end) and loses open offers; a blocked rider cannot book.
+
+Contract v0.5.2 additions this needs (the server already does them; the contract and the apps follow):
+`TripProjection.walletApplied` and `cashToCollect`; fare line `adjustment`; `driverBonus` on admin cancel and reassign (money for the driver who lost the ride); `fromDriver` on refunds; `Refund.destination`, `payoutStatus`, `paidAt`, `fromDriver`; `GET /rider/refunds`, `POST /rider/refunds/{refundId}/destination` (wallet / swish / bank, Swish only in Sweden), `GET /admin/refunds/payouts`, `POST /admin/refunds/{refundId}/paid`; `DriverAppConfig.cancelFees.driverSharePct` (decision 26); `PaymentIntent.cashCollected` and `walletApplied` in the admin list.
+
 ## Before every test round
 
 No tester starts a round until its features pass this gate:
