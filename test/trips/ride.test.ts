@@ -242,13 +242,13 @@ describe("the rider's cancel after accept", () => {
     expect((await driverRow("A")).online_status).toBe("online");
   });
 
-  it("after 2 minutes with the driver on the way: 35 kr owed, 80 % to the driver", async () => {
+  it("after 2 minutes with the driver on the way: 35 kr owed, all of it to the driver", async () => {
     const { tripId } = await accepted();
     await advance(150);
     await moveTo("A", NORRMALM);
     const res = await cancel(tripId);
     expect(res.json()).toMatchObject({ status: "cancelled_by_rider", fare: { amountMinor: 3500 }, cancellation: { fee: { amountMinor: 3500, currency: "SEK" }, feeStatus: "owed" } });
-    expect(await entries(tripId)).toEqual([{ kind: "fee_share", amount_minor: "2800", gross_minor: null, commission_minor: null, cash_minor: null }]);
+    expect(await entries(tripId)).toEqual([{ kind: "fee_share", amount_minor: "3500", gross_minor: null, commission_minor: null, cash_minor: null }]);
     expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toEqual({ amountMinor: 3500, currency: "SEK" });
   });
 
@@ -265,6 +265,22 @@ describe("the rider's cancel after accept", () => {
       expect(res.json().cancellation.fee?.amountMinor ?? null).toBe(fee);
       await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
       await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
+    }
+  });
+
+  it("no rider settings published: 65 kr after 2 minutes; an admin share setting applies", async () => {
+    await database.db.deleteFrom("config_live").where("doc", "=", "rider_app_config").execute();
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify({ cancelFees: { driverSharePct: 60 } }), published_at: clock.now, published_by: null }).execute();
+    try {
+      const { tripId } = await accepted();
+      await advance(150);
+      await moveTo("A", NORRMALM);
+      const res = await cancel(tripId);
+      expect(res.json()).toMatchObject({ fare: { amountMinor: 6500 }, cancellation: { fee: { amountMinor: 6500 } } });
+      expect(await entries(tripId)).toEqual([{ kind: "fee_share", amount_minor: "3900", gross_minor: null, commission_minor: null, cash_minor: null }]);
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+      await database.db.insertInto("config_live").values({ doc: "rider_app_config", zone_id: "Z001", version: 1, document: JSON.stringify(sample("rider_app_config")), published_at: clock.now, published_by: null }).execute();
     }
   });
 

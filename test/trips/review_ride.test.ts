@@ -136,7 +136,7 @@ describe("review: realtime", () => {
     expect(toRider.projection.status).toBe("cancelled_by_rider");
     expect(toRider.projection.fare.amountMinor).toBe(3500);
     expect(toRider.projection.fareLines.map((l) => l.code)).toEqual(["cancel_fee"]);
-    expect(toDriver.projection.driverEarnings.amountMinor).toBe(2800);
+    expect(toDriver.projection.driverEarnings.amountMinor).toBe(3500);
     expect(trip.fare.amountMinor).toBe(21700);
   });
 });
