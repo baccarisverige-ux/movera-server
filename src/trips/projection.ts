@@ -1,0 +1,61 @@
+import type { TripRow } from "../db/tripLog.js";
+
+/**
+ * TripProjection (contract §2) from a trips row, per viewer: the rider never sees the driver's money
+ * (driverEarnings, commission) or driver-only fare lines; the driver and admin do. One function, so every answer
+ * and every realtime event of a trip has the same shape.
+ */
+
+export type Viewer = "rider" | "driver" | "admin";
+
+const DRIVER_ONLY_LINES = new Set(["pickup_pay", "driver_bonus"]);
+
+type Money = { amountMinor: number; currency: string };
+const money = (minor: string | number | null | undefined, currency: string): Money | undefined =>
+  minor === null || minor === undefined ? undefined : { amountMinor: Number(minor), currency };
+const iso = (value: Date | null | undefined) => (value ? value.toISOString() : undefined);
+
+export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number } = {}): Record<string, unknown> {
+  const currency = row.currency;
+  const lines = (row.fare_lines as Array<{ code: string; amount: Money }>) ?? [];
+  const projection: Record<string, unknown> = {
+    tripId: row.trip_id,
+    rideId: row.trip_id,
+    status: row.status,
+    version: row.version,
+    sequence: overrides.sequence ?? Number(row.sequence),
+    kind: row.kind,
+    ...(row.scheduled_at ? { scheduledAt: iso(row.scheduled_at) } : {}),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    acceptedAt: iso(row.accepted_at) ?? null,
+    riderId: row.rider_id,
+    ...(row.driver_id ? { driverId: row.driver_id } : {}),
+    ...(row.vehicle_id ? { vehicleId: row.vehicle_id } : {}),
+    zoneId: row.zone_id,
+    categoryId: row.category_id,
+    pickup: row.pickup,
+    dropoff: row.dropoff,
+    stops: row.stops ?? [],
+    fare: money(row.fare_minor, currency),
+    fareLines: viewer === "rider" ? lines.filter((l) => !DRIVER_ONLY_LINES.has(l.code)) : lines,
+    paymentMethod: row.payment_method,
+    ...(row.payment_method_id ? { paymentMethodId: row.payment_method_id } : {}),
+    ...(row.payment_status ? { paymentStatus: row.payment_status } : {}),
+    ratingStatus: row.rating_status,
+    pinRequired: row.pin_required,
+    ...(row.waiting ? { waiting: row.waiting } : {}),
+    ...(row.cancellation ? { cancellation: row.cancellation } : {}),
+  };
+  if (row.quote_id) {
+    projection["quote"] = { quoteId: row.quote_id, total: money(row.booked_fare_minor, currency), expiresAt: iso(row.quote_expires_at ?? row.created_at) };
+  }
+  if (viewer !== "rider") {
+    const earnings = money(row.driver_earnings_minor, currency);
+    if (earnings) projection["driverEarnings"] = earnings;
+    const commission = money(row.commission_minor, currency);
+    if (commission) projection["commission"] = commission;
+  }
+  if (viewer === "rider" && row.search_step && row.status === "searching") projection["searchStep"] = row.search_step;
+  return projection;
+}

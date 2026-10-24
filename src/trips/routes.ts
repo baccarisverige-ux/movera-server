@@ -1,0 +1,180 @@
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
+import { authenticate } from "../auth/guard.js";
+import type { Db } from "../db/db.js";
+import { tripEventsAfter } from "../db/tripLog.js";
+import { ApiError, badRequest } from "../http/errors.js";
+import { API_PREFIX } from "../http/prefix.js";
+import { runIdempotent } from "../http/idempotency.js";
+import { parseBody } from "../http/validate.js";
+import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
+import { tripProjection } from "./projection.js";
+import { activeTrip, createTrip, getTrip, riderCancel, riderTrips, setCancelReason } from "./service.js";
+
+/** contract §3, §7: trips for the rider (with the deprecated /rides aliases), the rider profile, payment methods. */
+
+export type TripDeps = { db: Db; jwtSecret: string; paymentMethods: readonly string[]; currency: string; clock?: () => Date };
+
+const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional() });
+const ReasonBody = z.object({ reasonCode: z.string().min(1), note: z.string().max(1000).optional() });
+const ListQuery = z.object({
+  cursor: z.string().max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  status: z.union([z.string(), z.array(z.string())]).optional(),
+  kind: z.enum(["live", "scheduled"]).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+const EventsQuery = z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(500).default(200) });
+const DefaultMethodBody = z.object({ method: z.string(), paymentMethodId: z.string().optional() });
+
+const keyOf = (request: FastifyRequest) => {
+  const value = request.headers["idempotency-key"];
+  return Array.isArray(value) ? value[0] : value;
+};
+
+export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<void> {
+  const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
+  const now = () => deps.clock?.() ?? new Date();
+  const idem = (request: FastifyRequest, who: { actor: "rider" | "driver" | "admin"; subjectId: string }, method = request.method) => ({
+    actor: who.actor,
+    subjectId: who.subjectId,
+    key: keyOf(request),
+    method,
+    // The alias and the real path are one route: a retry on either replays the same answer.
+    route: request.url.split("?")[0]!.replace(`${API_PREFIX}/rides/`, `${API_PREFIX}/trips/`),
+    body: request.body ?? null,
+  });
+
+  app.post(`${API_PREFIX}/trips`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => {
+      const trip = await createTrip(trx, who.subjectId, request.body ?? {}, { paymentMethods: deps.paymentMethods, now: now() });
+      return { status: 201, body: tripProjection(trip, "rider") };
+    });
+    return reply.status(result.status).send(result.body);
+  });
+
+  for (const base of ["trips", "rides"] as const) {
+    const param = base === "trips" ? "tripId" : "rideId";
+    app.get(`${API_PREFIX}/${base}/:${param}`, async (request) => {
+      const who = await authenticate(request, guard, base === "rides" ? ["rider"] : ["rider", "driver", "admin"]);
+      const id = parseBody(z.object({ [param]: ID }), request.params)[param] as string;
+      return getTrip(deps.db, id, { actor: who.actor as "rider" | "driver" | "admin", subjectId: who.subjectId });
+    });
+
+    app.post(`${API_PREFIX}/${base}/:${param}/cancel`, async (request) => {
+      const who = await authenticate(request, guard, ["rider", "driver"]);
+      if (who.actor !== "rider") throw new ApiError("forbidden", "Drivers cancel from the trip screen (coming with dispatch).", { reason: "not_enabled_yet" });
+      const id = parseBody(z.object({ [param]: ID }), request.params)[param] as string;
+      const body = parseBody(CancelBody, request.body);
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => {
+        // A driver can only be assigned once dispatch runs; until then a cancel is always before accept: free.
+        const trip = await riderCancel(trx, who.subjectId, id, body, now(), async () => null);
+        return { status: 200, body: tripProjection(trip, "rider") };
+      });
+      return result.body;
+    });
+  }
+
+  app.post(`${API_PREFIX}/trips/:tripId/cancel-reason`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    const body = parseBody(ReasonBody, request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await setCancelReason(trx, who.subjectId, tripId, body), "rider") }));
+    return result.body;
+  });
+
+  app.get(`${API_PREFIX}/trips/:tripId/events`, async (request) => {
+    const who = await authenticate(request, guard, ["rider", "driver", "admin"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    const query = parseBody(EventsQuery, request.query);
+    const lastEventId = request.headers["last-event-id"];
+    const after = query.after ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : 0);
+    const viewer = who.actor as "rider" | "driver" | "admin";
+    await getTrip(deps.db, tripId, { actor: viewer, subjectId: who.subjectId });
+    const rows = await tripEventsAfter(deps.db, tripId, after, query.limit + 1);
+    const serverTime = now().toISOString();
+    const items = rows.slice(0, query.limit).map((row) => ({
+      eventId: row.event_id,
+      tripId: row.trip_id,
+      sequence: Number(row.sequence),
+      version: row.version,
+      kind: row.kind,
+      occurredAt: row.occurred_at.toISOString(),
+      serverTime,
+      ...(row.projection ? { projection: redact(row.projection as Record<string, unknown>, viewer) } : {}),
+      ...(row.location ? { location: row.location } : {}),
+      ...(row.eta_seconds !== null ? { etaSeconds: row.eta_seconds } : {}),
+      ...(row.cancel_fee ? { cancelFee: row.cancel_fee } : {}),
+      ...(row.message ? { message: row.message } : {}),
+    }));
+    const last = items[items.length - 1];
+    return { items, nextCursor: rows.length > query.limit && last ? String(last.sequence) : null };
+  });
+
+  app.get(`${API_PREFIX}/rider/trips/active`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const trip = await activeTrip(deps.db, who.subjectId);
+    return trip === undefined ? reply.status(204).send() : tripProjection(trip, "rider");
+  });
+
+  app.get(`${API_PREFIX}/rider/trips`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const query = parseBody(ListQuery, request.query);
+    const statuses = query.status === undefined ? undefined : Array.isArray(query.status) ? query.status : [query.status];
+    return riderTrips(deps.db, who.subjectId, { limit: query.limit, ...(query.cursor ? { cursor: query.cursor } : {}), ...(statuses ? { statuses } : {}), ...(query.kind ? { kind: query.kind } : {}), ...(query.from ? { from: query.from } : {}), ...(query.to ? { to: query.to } : {}) });
+  });
+
+  app.get(`${API_PREFIX}/rider/profile`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    return getRiderProfile(deps.db, who.subjectId, deps.currency);
+  });
+
+  app.patch(`${API_PREFIX}/rider/profile`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await updateRiderProfile(trx, who.subjectId, request.body ?? {}, deps.currency, now()) }));
+    return result.body;
+  });
+
+  // Payment methods (test week: cash only, owner decision). Cash is always there and is the default.
+  const methodsPage = () => ({ items: deps.paymentMethods.filter((m) => m === "cash").map((m) => ({ paymentMethodId: m, method: m, isDefault: true })), nextCursor: null });
+  app.get(`${API_PREFIX}/payment-methods`, async (request) => {
+    await authenticate(request, guard, ["rider"]);
+    return methodsPage();
+  });
+  app.post(`${API_PREFIX}/payment-methods`, async (request) => {
+    await authenticate(request, guard, ["rider"]);
+    throw badRequest("Only cash is available for now.", "payment_method_not_available");
+  });
+  app.post(`${API_PREFIX}/payment-methods/default`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const body = parseBody(DefaultMethodBody, request.body);
+    if (!deps.paymentMethods.includes(body.method)) throw badRequest("Only cash is available for now.", "payment_method_not_available");
+    const result = await runIdempotent(deps.db, idem(request, who), async () => ({ status: 200, body: methodsPage() }));
+    return result.body;
+  });
+
+  app.post(`${API_PREFIX}/account/deletion`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 202, body: await requestDeletion(trx, who.subjectId, now()) }));
+    return reply.status(result.status).send(result.body);
+  });
+}
+
+const RIDER_HIDDEN = ["driverEarnings", "commission"];
+const DRIVER_ONLY_LINES = new Set(["pickup_pay", "driver_bonus"]);
+
+/** The stored event projection is the full one; each viewer gets what it may see (§4). */
+function redact(projection: Record<string, unknown>, viewer: "rider" | "driver" | "admin"): Record<string, unknown> {
+  if (viewer !== "rider") {
+    const { searchStep: _s, ...rest } = projection;
+    void _s;
+    return rest;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(projection)) if (!RIDER_HIDDEN.includes(k)) out[k] = v;
+  if (Array.isArray(out["fareLines"])) out["fareLines"] = (out["fareLines"] as Array<{ code: string }>).filter((l) => !DRIVER_ONLY_LINES.has(l.code));
+  return out;
+}

@@ -42,6 +42,7 @@ Technical rules decided without the owner (they match what the apps already do):
 - Approvals and Idempotency-Keys are kept 24 hours.
 - A quote is valid 5 minutes. Until our OSRM runs, the server estimates a route as straight line × 1.25 at 24 km/h (the admin panel's dispatch formula) and stores which one it used.
 - Settings: a zone with no draft yet takes its first save with `expectedVersion` 1; on publish the server stamps the next live `version` and `publishedAt` into the document.
+- A trip is booked only from the rider's own unused, unexpired quote with the same car type, places and kind (else `quote_used`, `quote_expired`, `quote_mismatch`); payment methods come from the `PAYMENT_METHODS` setting (test week: `cash`), and `GET /payment-methods` lists cash as the one default.
 - A pickup outside the open zones is `403 forbidden`, reason `service_not_available`; an open zone without published prices is `503`, reason `pricing_not_published`.
 
 ## Before every test round

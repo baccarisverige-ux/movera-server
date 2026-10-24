@@ -99,7 +99,7 @@ The server lands in small pull requests, each tested:
 4. Sign-in: phone code with test numbers, tokens, push devices. *(done; admin sign-in comes with contract v0.5.1)*
 5. Config documents and admin publish. *(done: admin sign-in, drafts, publish, second-admin approvals, audit)*
 6. Places, routes and quotes. *(done: fare engine on the contract's 17 cases, POST /quotes, address search, routes)*
-7. Trips: request, read, rider profile, cash payment.
+7. Trips: request, read, rider profile, cash payment. *(done: book from a quote, read, lists, active, cancel before a driver, cancel reason, events replay, /rides aliases, profile, cash, account deletion)*
 8. Live updates (SSE).
 9. Driver availability and location.
 10. Dispatch: offers, accept, decline, admin assign and radar groups.

@@ -27,6 +27,11 @@ const schema = z.object({
   OSRM_URL: z.string().url().optional(),
   /** Google Places / Geocoding key for address search (owner decision 4). Unset: address search answers 503. */
   GOOGLE_MAPS_API_KEY: z.string().min(10).optional(),
+  /** Payment methods riders may book with (test week: cash only). Comma-separated. */
+  PAYMENT_METHODS: z
+    .string()
+    .default("cash")
+    .transform((value) => value.split(",").map((m) => m.trim()).filter(Boolean)),
   /** The zone an app gets when it asks for settings without naming one. */
   DEFAULT_ZONE_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).default("Z001"),
   /** Where the admin panel lives; setup links point at its /setup-password page. */

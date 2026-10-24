@@ -60,6 +60,11 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   const km = leg.distanceMeters / 1000;
   const minutes = leg.durationSeconds / 60;
 
+  // An unpaid cash fee from an earlier trip rides along on the next price (§3.7, owner decision 7).
+  const rider = await trx.selectFrom("riders").select(["outstanding_minor", "outstanding_source_trip_id"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
+  const owed = Number(rider.outstanding_minor);
+  const outstanding = owed > 0 ? { outstandingFee: { amountMinor: owed, currency: pricing.document.currency }, ...(rider.outstanding_source_trip_id ? { outstandingSourceTripId: rider.outstanding_source_trip_id } : {}) } : {};
+
   const wanted = body.categoryIds ?? Object.keys(pricing.document.categories).sort(byCatalogOrder);
   const quotes: QuoteView[] = [];
   const expiresAt = new Date(now.getTime() + QUOTE_TTL_SECONDS * 1000);
@@ -72,7 +77,7 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
     let fare;
     try {
       // Stops are quoted with no waiting; the fare at the end adds what really happened.
-      fare = priceFare(pricing.document, { categoryId, km, minutes, kind, stopWaitSeconds: body.stops.map(() => 0) });
+      fare = priceFare(pricing.document, { categoryId, km, minutes, kind, stopWaitSeconds: body.stops.map(() => 0), ...outstanding });
     } catch (error) {
       if (error instanceof FareError) throw new ApiError("unavailable", "Prices for this area are not usable right now.", { reason: "pricing_invalid" });
       throw error;

@@ -14,6 +14,10 @@ export interface RidersTable {
   email: string | null;
   status: Generated<"active" | "suspended">;
   language: string | null;
+  outstanding_minor: ColumnType<string, number | string | undefined, number | string>;
+  outstanding_source_trip_id: ColumnType<string | null, string | null | undefined, string | null>;
+  consents: JsonDefault;
+  deletion_requested_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   rating_sum: Generated<number>;
   rating_count: Generated<number>;
   version: Generated<number>;
@@ -91,6 +95,13 @@ export interface TripsTable {
   cancellation: Json | null;
   pin_required: Generated<boolean>;
   config_versions: JsonDefault;
+  distance_meters: ColumnType<number | null, number | null | undefined, number | null>;
+  duration_seconds: ColumnType<number | null, number | null | undefined, number | null>;
+  surge_multiplier: ColumnType<string, number | string | undefined, number | string>;
+  pricing_version: ColumnType<number | null, number | null | undefined, number | null>;
+  quote_expires_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  notes: ColumnType<string | null, string | null | undefined, string | null>;
+  search_step: ColumnType<unknown, string | null | undefined, string | null>;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
