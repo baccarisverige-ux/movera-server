@@ -35,7 +35,7 @@ What the server does for the test week, as the owner chose it. Change a line her
 
 Technical rules decided without the owner (they match what the apps already do):
 
-- A live trip can be accepted only while `searching` or `offered`; `accepted` from `requested` is for scheduled trips.
+- A live trip is accepted only from an open offer (`offered`); `accepted` straight from `requested` is for scheduled trips only (contract v0.5.1).
 - `acceptedAt` is cleared when a trip goes back to searching.
 - One driver declining in a Radar group leaves the trip `offered` while other offers are open.
 - `ratingStatus` follows the rider's rating; driver ratings are stored separately.
