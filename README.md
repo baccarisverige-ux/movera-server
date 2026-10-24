@@ -81,6 +81,8 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
 - `npm run admin -- create --email <e-mail> --name "<name>" --role super` creates an admin and prints a one-time
   link (72 h) to choose the password; `npm run admin -- link --email <e-mail>` makes a new one. In the container:
   `node dist/admin/cli.js …`.
+- `npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123
+  --categories economy` creates an approved test driver with an approved car, in every open zone.
 - The admin panel saves a draft per document and zone (`PUT /admin/config/{doc}`), then publishes it. The server
   checks every document against the contract's schema and its zone, stamps the next `version` and `publishedAt`,
   keeps every version in `config_history`, and tells the apps (`config_published`). Pricing and dispatch are read by
@@ -109,7 +111,7 @@ The server lands in small pull requests, each tested:
 6. Places, routes and quotes. *(done: fare engine on the contract's 17 cases, POST /quotes, address search, routes)*
 7. Trips: request, read, rider profile, cash payment. *(done: book from a quote, read, lists, active, cancel before a driver, cancel reason, events replay, /rides aliases, profile, cash, account deletion)*
 8. Live updates (SSE). *(done: trip events and config_published streams, resume, per-viewer redaction)*
-9. Driver availability and location.
+9. Driver availability and location. *(done: online/offline, location batches, trip traces, cars, admin live map)*
 10. Dispatch: offers, accept, decline, admin assign and radar groups.
 11. Trip steps, cancel, fees, waiting, no-show, rating.
 12. Admin lists, commands and audit.

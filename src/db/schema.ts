@@ -38,6 +38,7 @@ export interface DriversTable {
   scheduled_rides: Json | null;
   missed_exclusive: Generated<number>;
   offer_seq: Generated<string>;
+  last_free_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   rating_sum: Generated<number>;
   rating_count: Generated<number>;
   version: Generated<number>;
@@ -55,6 +56,7 @@ export interface DriverLocationsTable {
   moving: Generated<boolean>;
   measured_at: Timestamp;
   received_at: Timestamp;
+  zone_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface TripsTable {
@@ -334,6 +336,34 @@ export interface QuotesTable {
   created_at: Timestamp;
 }
 
+export interface VehiclesTable {
+  vehicle_id: string;
+  driver_id: string;
+  make: string;
+  model: string;
+  year: number;
+  color: string;
+  plate: string;
+  seats: Generated<number>;
+  category_ids: Generated<string[]>;
+  status: Generated<"pending" | "approved" | "rejected" | "blocked">;
+  version: Generated<number>;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export interface TripLocationsTable {
+  trip_id: string;
+  driver_id: string;
+  measured_at: Timestamp;
+  lat: number;
+  lng: number;
+  accuracy: number;
+  heading: number | null;
+  speed_mps: number | null;
+  moving: Generated<boolean>;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -357,4 +387,6 @@ export interface Database {
   approvals: ApprovalsTable;
   admin_audit: AdminAuditTable;
   quotes: QuotesTable;
+  vehicles: VehiclesTable;
+  trip_locations: TripLocationsTable;
 }

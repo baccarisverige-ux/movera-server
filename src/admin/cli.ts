@@ -4,6 +4,7 @@ import { createDb, createPool } from "../db/db.js";
 import { migrate } from "../db/migrate.js";
 import { createAdmin, createSetupLink } from "./auth.js";
 import { isAdminRole } from "./permissions.js";
+import { seedDriver } from "../drivers/service.js";
 
 /**
  * npm run admin -- create --email you@example.com --name "Your Name" [--role super]
@@ -12,17 +13,52 @@ import { isAdminRole } from "./permissions.js";
  */
 const { positionals, values } = parseArgs({
   allowPositionals: true,
-  options: { email: { type: "string" }, name: { type: "string" }, role: { type: "string", default: "super" } },
+  options: {
+    email: { type: "string" },
+    name: { type: "string" },
+    role: { type: "string", default: "super" },
+    phone: { type: "string" },
+    make: { type: "string" },
+    model: { type: "string" },
+    year: { type: "string", default: "2020" },
+    color: { type: "string" },
+    plate: { type: "string" },
+    categories: { type: "string", default: "economy" },
+    zones: { type: "string" },
+  },
 });
 const command = positionals[0];
 const env = readEnv();
 if (env.DATABASE_URL === undefined) throw new Error("Set DATABASE_URL first.");
-if ((command !== "create" && command !== "link") || values.email === undefined) {
-  console.error('usage: npm run admin -- create --email <e-mail> --name "<name>" [--role super] | link --email <e-mail>');
-  process.exit(1);
-}
+const usage = [
+  'npm run admin -- create --email <e-mail> --name "<name>" [--role super]',
+  "npm run admin -- link --email <e-mail>",
+  'npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123 [--year 2020] [--categories economy,comfort] [--zones Z001,Z002]',
+].join("\n  ");
 const pool = createPool(env.DATABASE_URL, 2);
 const db = createDb(pool);
+if (command === "driver") {
+  const v = values;
+  if (!v.phone || !v.name || !v.make || !v.model || !v.color || !v.plate) {
+    console.error(`usage:\n  ${usage}`);
+    process.exit(1);
+  }
+  try {
+    await migrate(pool);
+    const zones = v.zones ? v.zones.split(",") : (await db.selectFrom("zones").select("zone_id").where("open", "=", true).execute()).map((z) => z.zone_id);
+    const made = await db.transaction().execute((trx) =>
+      seedDriver(trx, { phone: v.phone!, firstName: v.name!, make: v.make!, model: v.model!, year: Number(v.year), color: v.color!, plate: v.plate!, categoryIds: v.categories!.split(","), zoneIds: zones }),
+    );
+    console.log(`driver ${made.driverId} ready (car ${made.vehicleId}), zones ${zones.join(", ")}`);
+  } finally {
+    await db.destroy();
+  }
+  process.exit(0);
+}
+if ((command !== "create" && command !== "link") || values.email === undefined) {
+  console.error(`usage:\n  ${usage}`);
+  process.exit(1);
+}
 try {
   await migrate(pool);
   let adminId: string;

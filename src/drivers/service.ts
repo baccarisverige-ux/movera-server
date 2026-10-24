@@ -1,0 +1,303 @@
+import { schemaProblem } from "../contract/schemas.js";
+import type { Executor, Trx } from "../db/db.js";
+import { appendTripEvent } from "../db/tripLog.js";
+import { ApiError, badRequest } from "../http/errors.js";
+import { newId } from "../ids.js";
+import { zoneAt } from "../config/zoneLookup.js";
+import { DRIVER_ASSIGNED } from "../rules/transitions.js";
+
+/**
+ * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
+ * online only with an active account and an approved vehicle; while on a trip they cannot go offline. Every fix
+ * keeps the driver's latest position (driver_locations, never the driver row, so it never waits on a command);
+ * during a trip each fix also goes to the trip's trace and stream as a `location` event.
+ */
+
+/** No fix for this long: excluded from dispatch and shown as stale, still online (contract §12). */
+export const STALE_AFTER_SECONDS = 120;
+/** Fixes older than this, or from the future, are dropped. */
+const MAX_FIX_AGE_MS = 10 * 60 * 1000;
+const MAX_FIX_AHEAD_MS = 60 * 1000;
+
+type DriverRow = {
+  driver_id: string;
+  phone: string;
+  first_name: string;
+  account_status: string;
+  online_status: string;
+  zone_ids: string[];
+  category_ids: string[];
+  vehicle_id: string | null;
+  scheduled_rides: unknown;
+  rating_sum: number;
+  rating_count: number;
+  version: number;
+};
+
+type Fix = { lat: number; lng: number; accuracy: number; heading?: number; speedMps?: number; moving?: boolean; measuredAt: string };
+
+async function loadDriver(ex: Executor, driverId: string, lock = false): Promise<DriverRow> {
+  let query = ex.selectFrom("drivers").selectAll().where("driver_id", "=", driverId);
+  if (lock) query = query.forUpdate();
+  const row = await query.executeTakeFirst();
+  if (row === undefined) throw new ApiError("not_found", "No such driver.", { reason: "driver_not_found" });
+  return row as unknown as DriverRow;
+}
+
+async function activeTripOf(ex: Executor, driverId: string) {
+  return ex.selectFrom("trips").select(["trip_id", "status", "version"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+}
+
+export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin"): Promise<Record<string, unknown>> {
+  const location = await ex.selectFrom("driver_locations").selectAll().where("driver_id", "=", row.driver_id).executeTakeFirst();
+  const active = await activeTripOf(ex, row.driver_id);
+  return {
+    driverId: row.driver_id,
+    accountStatus: row.account_status,
+    onlineStatus: row.online_status,
+    ...(location ? { moving: location.moving } : {}),
+    firstName: row.first_name,
+    ...(row.rating_count > 0 ? { rating: Math.round((row.rating_sum / row.rating_count) * 100) / 100 } : {}),
+    zoneIds: row.zone_ids,
+    categoryIds: row.category_ids,
+    ...(row.vehicle_id ? { vehicleId: row.vehicle_id } : {}),
+    documents: [],
+    ...(active ? { activeTripId: active.trip_id } : {}),
+    ...(row.scheduled_rides ? { scheduledRides: row.scheduled_rides } : {}),
+    version: row.version,
+    ...(viewer === "admin" && location
+      ? {
+          location: fixView(location),
+          lastFixAt: location.received_at.toISOString(),
+        }
+      : {}),
+  };
+}
+
+function fixView(row: { lat: number; lng: number; accuracy: number; heading: number | null; speed_mps: number | null; moving: boolean; measured_at: Date }) {
+  return {
+    lat: row.lat,
+    lng: row.lng,
+    accuracy: row.accuracy,
+    ...(row.heading !== null ? { heading: row.heading } : {}),
+    ...(row.speed_mps !== null ? { speedMps: row.speed_mps } : {}),
+    moving: row.moving,
+    measuredAt: row.measured_at.toISOString(),
+  };
+}
+
+export async function getDriverProfile(ex: Executor, driverId: string) {
+  return driverView(ex, await loadDriver(ex, driverId), "driver");
+}
+
+function stale(row: DriverRow, ex: Executor) {
+  return async () => driverView(ex, await loadDriver(ex, row.driver_id), "driver");
+}
+
+export async function updateDriverProfile(trx: Trx, driverId: string, body: unknown, now: Date) {
+  const problem = schemaProblem("DriverProfileUpdate", body);
+  if (problem !== null) throw badRequest(`The profile change is not valid: ${problem}.`, "invalid_body");
+  const update = body as { expectedVersion: number; firstName?: string; vehicleId?: string; categoryIds?: string[] };
+  const row = await loadDriver(trx, driverId, true);
+  if (row.version !== update.expectedVersion) throw new ApiError("version_mismatch", "Your profile changed since you last saw it.", { projection: await stale(row, trx)() });
+  let categoryIds = update.categoryIds;
+  if (update.vehicleId !== undefined) {
+    const vehicle = await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", update.vehicleId).where("driver_id", "=", driverId).executeTakeFirst();
+    if (vehicle === undefined) throw badRequest("That vehicle is not yours.", "vehicle_not_found");
+    if (vehicle.status !== "approved") throw badRequest("That vehicle is not approved yet.", "vehicle_not_approved");
+    categoryIds ??= vehicle.category_ids.filter((c) => row.category_ids.includes(c));
+  }
+  if (categoryIds !== undefined) {
+    const vehicleId = update.vehicleId ?? row.vehicle_id;
+    const vehicle = vehicleId ? await trx.selectFrom("vehicles").select("category_ids").where("vehicle_id", "=", vehicleId).executeTakeFirst() : undefined;
+    const allowed = vehicle?.category_ids ?? [];
+    const outside = categoryIds.filter((c) => !allowed.includes(c));
+    if (outside.length) throw badRequest(`Your car is not approved for ${outside.join(", ")}.`, "category_not_allowed");
+  }
+  await trx
+    .updateTable("drivers")
+    .set({
+      ...(update.firstName !== undefined ? { first_name: update.firstName.trim() } : {}),
+      ...(update.vehicleId !== undefined ? { vehicle_id: update.vehicleId } : {}),
+      ...(categoryIds !== undefined ? { category_ids: categoryIds } : {}),
+      version: row.version + 1,
+      updated_at: now,
+    })
+    .where("driver_id", "=", driverId)
+    .execute();
+  return driverView(trx, await loadDriver(trx, driverId), "driver");
+}
+
+/** POST /driver/availability: online or offline (contract: 409 with the Driver when it cannot be). */
+export async function setAvailability(trx: Trx, driverId: string, body: { expectedVersion: number; onlineStatus: "online" | "offline"; location?: Fix }, now: Date) {
+  const row = await loadDriver(trx, driverId, true);
+  const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await stale(row, trx)() });
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "Your status changed since you last saw it.", { projection: await stale(row, trx)() });
+  if (body.onlineStatus === row.online_status) return driverView(trx, row, "driver");
+  if (body.onlineStatus === "online") {
+    if (row.account_status !== "active") throw await refuse("Your account is not active yet.", "account_not_active");
+    if (row.vehicle_id === null) throw await refuse("Choose an approved car first.", "no_vehicle");
+    const vehicle = await trx.selectFrom("vehicles").select("status").where("vehicle_id", "=", row.vehicle_id).executeTakeFirst();
+    if (vehicle?.status !== "approved") throw await refuse("Your car is not approved.", "vehicle_not_approved");
+    if (row.category_ids.length === 0) throw await refuse("No car type is chosen.", "no_category");
+  } else if (await activeTripOf(trx, driverId)) {
+    throw await refuse("Finish or hand back your trip before going offline.", "on_trip");
+  }
+  const online = body.onlineStatus === "online";
+  await trx
+    .updateTable("drivers")
+    .set({ online_status: body.onlineStatus, online_since: online ? now : null, ...(online ? { last_free_at: now } : {}), version: row.version + 1, updated_at: now })
+    .where("driver_id", "=", driverId)
+    .execute();
+  if (body.location) await storeFixes(trx, driverId, [body.location], undefined, now);
+  return driverView(trx, await loadDriver(trx, driverId), "driver");
+}
+
+/** POST /driver/location: up to 50 fixes; answers how many were taken. */
+export async function postLocations(trx: Trx, driverId: string, body: unknown, now: Date): Promise<{ accepted: number; serverTime: string }> {
+  const problem = schemaProblem("LocationBatch", body);
+  if (problem !== null) throw badRequest(`The location batch is not valid: ${problem}.`, "invalid_body");
+  const batch = body as { fixes: Fix[]; tripId?: string };
+  const accepted = await storeFixes(trx, driverId, batch.fixes, batch.tripId, now);
+  return { accepted, serverTime: now.toISOString() };
+}
+
+async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: string | undefined, now: Date): Promise<number> {
+  const fresh = fixes
+    .map((fix) => ({ fix, at: new Date(fix.measuredAt) }))
+    .filter(({ at }) => !Number.isNaN(at.getTime()) && now.getTime() - at.getTime() <= MAX_FIX_AGE_MS && at.getTime() - now.getTime() <= MAX_FIX_AHEAD_MS)
+    .sort((a, b) => a.at.getTime() - b.at.getTime());
+  if (fresh.length === 0) return 0;
+  const latest = fresh[fresh.length - 1]!;
+  const zone = await zoneAt(trx, latest.fix);
+  const values = {
+    driver_id: driverId,
+    lat: latest.fix.lat,
+    lng: latest.fix.lng,
+    accuracy: latest.fix.accuracy,
+    heading: latest.fix.heading ?? null,
+    speed_mps: latest.fix.speedMps ?? null,
+    moving: latest.fix.moving ?? false,
+    measured_at: latest.at,
+    received_at: now,
+    zone_id: zone?.zoneId ?? null,
+  };
+  // Only a newer fix replaces the stored one (batches can arrive out of order on a bad connection).
+  await trx
+    .insertInto("driver_locations")
+    .values(values)
+    .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<", latest.at))
+    .execute();
+
+  // On a trip, the trip is the one the server knows, whatever tripId the app sent.
+  const active = await activeTripOf(trx, driverId);
+  if (active) {
+    await trx
+      .insertInto("trip_locations")
+      .values(fresh.map(({ fix, at }) => ({ trip_id: active.trip_id, driver_id: driverId, measured_at: at, lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy, heading: fix.heading ?? null, speed_mps: fix.speedMps ?? null, moving: fix.moving ?? false })))
+      .onConflict((c) => c.columns(["trip_id", "measured_at", "driver_id"]).doNothing())
+      .execute();
+    // One location event per batch, with the newest fix; it never changes the projection version (§4).
+    await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
+  }
+  return fresh.length;
+}
+
+/* ---------------------------------------------------------------- vehicles */
+
+type VehicleRow = { vehicle_id: string; make: string; model: string; year: number; color: string; plate: string; seats: number; category_ids: string[]; status: string; version: number };
+export const vehicleView = (v: VehicleRow) => ({ vehicleId: v.vehicle_id, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate, seats: v.seats, categoryIds: v.category_ids, status: v.status, version: v.version });
+
+export async function listVehicles(ex: Executor, driverId: string) {
+  const rows = await ex.selectFrom("vehicles").selectAll().where("driver_id", "=", driverId).orderBy("created_at").execute();
+  return { items: rows.map((r) => vehicleView(r as unknown as VehicleRow)), nextCursor: null };
+}
+
+export async function addVehicle(trx: Trx, driverId: string, body: unknown, now: Date) {
+  const problem = schemaProblem("VehicleRequest", body);
+  if (problem !== null) throw badRequest(`The vehicle is not valid: ${problem}.`, "invalid_body");
+  const v = body as { make: string; model: string; year: number; color: string; plate: string; seats?: number; categoryIds?: string[] };
+  const vehicleId = newId("veh", now.getTime());
+  try {
+    await trx
+      .insertInto("vehicles")
+      .values({ vehicle_id: vehicleId, driver_id: driverId, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate.toUpperCase(), seats: v.seats ?? 4, category_ids: v.categoryIds ?? [], created_at: now, updated_at: now })
+      .execute();
+  } catch (error) {
+    if ((error as { constraint?: string }).constraint === "vehicles_plate") throw new ApiError("conflict", "A car with this plate is already registered.", { reason: "plate_taken" });
+    throw error;
+  }
+  // A new car waits for an admin's review (status pending).
+  const row = await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", vehicleId).executeTakeFirstOrThrow();
+  return vehicleView(row as unknown as VehicleRow);
+}
+
+/* ---------------------------------------------------------------- admin views */
+
+export async function liveDrivers(ex: Executor, zoneId: string | undefined, zones: string[], now: Date) {
+  let query = ex
+    .selectFrom("drivers")
+    .leftJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
+    .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
+    .select([
+      "drivers.driver_id", "drivers.first_name", "drivers.online_status", "drivers.vehicle_id", "drivers.zone_ids",
+      "driver_locations.lat", "driver_locations.lng", "driver_locations.accuracy", "driver_locations.heading", "driver_locations.speed_mps", "driver_locations.moving", "driver_locations.measured_at", "driver_locations.received_at", "driver_locations.zone_id",
+      "vehicles.plate",
+    ])
+    .where("drivers.online_status", "!=", "offline");
+  if (zoneId) query = query.where("driver_locations.zone_id", "=", zoneId);
+  const rows = await query.execute();
+  const items = [];
+  for (const r of rows) {
+    const where = r.zone_id ?? r.zone_ids[0] ?? null;
+    if (!zones.includes("*") && (where === null || !zones.includes(where))) continue;
+    const active = await activeTripOf(ex, r.driver_id);
+    const hasFix = r.lat !== null && r.measured_at !== null && r.received_at !== null;
+    items.push({
+      driverId: r.driver_id,
+      firstName: r.first_name,
+      onlineStatus: r.online_status,
+      ...(r.moving !== null ? { moving: r.moving } : {}),
+      ...(hasFix ? { location: fixView({ lat: r.lat!, lng: r.lng!, accuracy: r.accuracy!, heading: r.heading, speed_mps: r.speed_mps, moving: r.moving ?? false, measured_at: r.measured_at! }), lastFixAt: r.received_at!.toISOString() } : {}),
+      stale: !hasFix || now.getTime() - r.received_at!.getTime() > STALE_AFTER_SECONDS * 1000,
+      ...(active ? { activeTripId: active.trip_id, tripStatus: active.status } : {}),
+      ...(r.vehicle_id ? { vehicleId: r.vehicle_id } : {}),
+      ...(r.plate ? { plate: r.plate } : {}),
+      ...(where ? { zoneId: where } : {}),
+    });
+  }
+  return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString() };
+}
+
+export async function tripTrace(ex: Executor, tripId: string) {
+  const trip = await ex.selectFrom("trips").select(["trip_id", "updated_at"]).where("trip_id", "=", tripId).executeTakeFirst();
+  if (trip === undefined) throw new ApiError("not_found", "No such trip.", { reason: "trip_not_found" });
+  const fixes = await ex.selectFrom("trip_locations").selectAll().where("trip_id", "=", tripId).orderBy("measured_at").execute();
+  if (fixes.length === 0 && Date.now() - trip.updated_at.getTime() > 30 * 24 * 3600_000) throw new ApiError("not_found", "This trace was deleted after 30 days.", { reason: "trace_deleted" });
+  return { tripId, fixes: fixes.map((f) => fixView(f)), keptUntil: new Date(trip.updated_at.getTime() + 30 * 24 * 3600_000).toISOString() };
+}
+
+/* ---------------------------------------------------------------- test drivers (CLI) */
+
+/** Creates or updates an approved test driver with an approved car (owner decision 13). */
+export async function seedDriver(
+  trx: Trx,
+  input: { phone: string; firstName: string; make: string; model: string; year: number; color: string; plate: string; categoryIds: string[]; zoneIds: string[] },
+  now: Date = new Date(),
+): Promise<{ driverId: string; vehicleId: string }> {
+  const existing = await trx.selectFrom("drivers").select(["driver_id", "vehicle_id", "version"]).where("phone", "=", input.phone).executeTakeFirst();
+  const driverId = existing?.driver_id ?? newId("drv", now.getTime());
+  if (!existing) await trx.insertInto("drivers").values({ driver_id: driverId, phone: input.phone, online_since: null, vehicle_id: null, scheduled_rides: null }).execute();
+  const plate = input.plate.toUpperCase();
+  const car = await trx.selectFrom("vehicles").select("vehicle_id").where("driver_id", "=", driverId).where("plate", "=", plate).executeTakeFirst();
+  const vehicleId = car?.vehicle_id ?? newId("veh", now.getTime());
+  const vehicle = { make: input.make, model: input.model, year: input.year, color: input.color, plate, category_ids: input.categoryIds, status: "approved" as const, updated_at: now };
+  if (car) await trx.updateTable("vehicles").set(vehicle).where("vehicle_id", "=", vehicleId).execute();
+  else await trx.insertInto("vehicles").values({ vehicle_id: vehicleId, driver_id: driverId, created_at: now, ...vehicle }).execute();
+  await trx
+    .updateTable("drivers")
+    .set({ first_name: input.firstName, account_status: "active", vehicle_id: vehicleId, category_ids: input.categoryIds, zone_ids: input.zoneIds, version: (existing?.version ?? 1) + 1, updated_at: now })
+    .where("driver_id", "=", driverId)
+    .execute();
+  return { driverId, vehicleId };
+}
