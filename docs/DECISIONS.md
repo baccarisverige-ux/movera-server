@@ -14,7 +14,13 @@ What the server does for the test week, as the owner chose it. Change a line her
 | 8 | Rider ends the ride early | Base + km driven × price per km + minutes on board × price per minute, never more than the booked price, rounded to the price step. |
 | 9 | Admin sign-in | E-mail, password (argon2id) and a 6-digit authenticator code, the screen the admin panel already has. Accounts are created from the command line. |
 | 10 | Extras in the test week | Main ride only: book, find driver, pickup, drive, cash, rating. Safety, promotions, raise price and pickup move stay hidden; the rider-waiting steps "raise price" and "upgrade" are skipped. |
+| 12 | Apple / Google sign-in | Off in the test week (buttons hidden); added before the public launch. |
+| 13 | Test drivers | Created on the server already approved, with the real first name, car model, colour, plate and car type the owner sends. Each test number works in both apps. |
 | 11 | Trip GPS paths | Kept 30 days, then deleted. Only each driver's latest position is kept beyond that. |
+
+## Requested features (later round: driver sign-up)
+
+- **Driver sign-up with fleets.** A new driver creates their own account and chooses: *fleet owner account*, or *driver*. A driver can later use a menu option to ask to join a fleet (fleet name, phone, e-mail); an admin approves it after checking with the fleet owner. The admin panel already has fleet owners (codes like FO-SE-01); the driver app has neither the choice nor the join request yet. Needs a contract addition, server, driver app and admin approval screen.
 
 Technical rules decided without the owner (they match what the apps already do):
 
