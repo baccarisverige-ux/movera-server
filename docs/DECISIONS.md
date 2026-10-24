@@ -23,3 +23,12 @@ Technical rules decided without the owner (they match what the apps already do):
 - One driver declining in a Radar group leaves the trip `offered` while other offers are open.
 - `ratingStatus` follows the rider's rating; driver ratings are stored separately.
 - Approvals and Idempotency-Keys are kept 24 hours.
+
+## Before every test round
+
+No tester starts a round until its features pass this gate:
+
+1. Deep audit of the round's features in all four repos (server, rider, driver, admin): contract agreement, money agreement, bad network / double tap / restart, who may see and change what. Independent reviewers, each finding double-checked.
+2. Every high and medium finding fixed; small ones fixed or listed.
+3. An automatic full ride against the staging server playing rider, driver and admin together, including cancels and timeouts. Earlier rounds get a lighter re-check.
+4. A short report to the owner; testers start on the owner's "go".
