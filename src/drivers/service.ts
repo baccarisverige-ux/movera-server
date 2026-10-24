@@ -5,6 +5,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { zoneAt } from "../config/zoneLookup.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
+import { scheduleTimer } from "../jobs/timers.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -150,6 +151,8 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     .where("driver_id", "=", driverId)
     .execute();
   if (body.location) await storeFixes(trx, driverId, [body.location], undefined, now);
+  // Going offline withdraws the driver's open offers (a job locks each trip in turn).
+  if (!online) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
   return driverView(trx, await loadDriver(trx, driverId), "driver");
 }
 

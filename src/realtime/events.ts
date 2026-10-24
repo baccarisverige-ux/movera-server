@@ -4,11 +4,12 @@ import type { Viewer } from "../trips/projection.js";
 
 /** The realtime envelope (contract §4, RealtimeEvent) for one stored event, as one viewer may see it. */
 
-const RIDER_HIDDEN = new Set(["driverEarnings", "commission"]);
+const RIDER_HIDDEN = new Set(["driverEarnings", "commission", "pickupPay"]);
 const DRIVER_ONLY_LINES = new Set(["pickup_pay", "driver_bonus"]);
 
 export function redactProjection(projection: Record<string, unknown>, viewer: Viewer): Record<string, unknown> {
-  if (viewer !== "rider") {
+  if (viewer === "admin") return projection;
+  if (viewer === "driver") {
     const { searchStep: _s, ...rest } = projection;
     void _s;
     return rest;

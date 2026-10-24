@@ -29,6 +29,14 @@ export type TimerLogger = {
 
 export const MAX_ATTEMPTS = 8;
 
+/**
+ * A handler that cannot take the lock it needs right now throws this. The timer is rolled back and comes back
+ * shortly, without counting as a failure. Handlers lock what they need with NOWAIT and throw this instead of
+ * waiting, so a worker holding a timer never waits on a row a command holds while that command waits on the timer.
+ */
+export class TimerBusy extends Error {}
+export const BUSY_RETRY_MS = 250;
+
 /** At most one pending timer per (kind, refId): scheduling again moves it. */
 export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }): Promise<void> {
   const payload = JSON.stringify(timer.payload ?? {});
@@ -108,6 +116,10 @@ export class TimerWorker {
       return ran;
     } catch (error) {
       if (taken === undefined) throw error;
+      if (error instanceof TimerBusy) {
+        await this.db.updateTable("timers").set({ due_at: new Date(now.getTime() + BUSY_RETRY_MS) }).where("timer_id", "=", taken.timerId).execute();
+        return true;
+      }
       await this.recordFailure(taken, error as Error, now);
       return true;
     }

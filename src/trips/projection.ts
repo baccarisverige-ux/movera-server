@@ -57,6 +57,11 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     const commission = money(row.commission_minor, currency);
     if (commission) projection["commission"] = commission;
   }
-  if (viewer === "rider" && row.search_step && row.status === "searching") projection["searchStep"] = row.search_step;
+  if (viewer !== "rider") {
+    const pickupPay = money(row.pickup_pay_minor, currency);
+    if (pickupPay && pickupPay.amountMinor > 0) projection["pickupPay"] = pickupPay;
+  }
+  // The rider's latest waiting step, while searching or offered, and the busy message on an expired trip (§3.6).
+  if (viewer !== "driver" && row.search_step && ["searching", "offered", "expired"].includes(row.status)) projection["searchStep"] = row.search_step;
   return projection;
 }

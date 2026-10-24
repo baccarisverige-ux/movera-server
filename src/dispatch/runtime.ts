@@ -3,7 +3,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent, lockTrip, OFFER_EVENTS_CHANNEL, type TripRow } from "../db/tripLog.js";
 import { ApiError } from "../http/errors.js";
 import { newId } from "../ids.js";
-import { cancelTimer, scheduleTimer, type TimerHandler } from "../jobs/timers.js";
+import { cancelTimer, scheduleTimer, TimerBusy, type TimerHandler } from "../jobs/timers.js";
 import { liveDocument } from "../config/service.js";
 import { STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { pickupPayMinor, type PickupPayRate } from "../rules/pickupPay.js";
@@ -36,12 +36,26 @@ import {
 export const ROUND = "dispatch_round";
 export const STEP = "search_step";
 export const END = "search_end";
+/** Withdraws a driver's open offers after they took another trip or went offline (one trip lock at a time). */
+export const WITHDRAW = "withdraw_driver_offers";
 
 type Place = { lat: number; lng: number };
 type Step = { id: string; kind: string; message: string; extraMin?: number | null; atSec: number };
 
 const OPEN_STATUSES = ["searching", "offered"];
 const PICKUP_KMH = DISPATCH.score.pickupKmh;
+/** At most this many open Radar offers per driver (DriverAppConfig.offers.radarApp.full default, §3.3). */
+const RADAR_LIST_MAX = 8;
+
+/** Timer handlers lock the trip without waiting: a command holding it may be waiting on this very timer. */
+async function lockTripNow(trx: Trx, tripId: string): Promise<TripRow | undefined> {
+  try {
+    return await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forUpdate().noWait().executeTakeFirst();
+  } catch (error) {
+    if ((error as { code?: string }).code === "55P03") throw new TimerBusy(`trip ${tripId} is busy`);
+    throw error;
+  }
+}
 
 function localTime(zone: string, at: Date): string {
   return new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(at);
@@ -117,6 +131,9 @@ type Pool = { candidates: Candidate[]; meta: Map<string, { km: number; etaSecond
 /** Drivers who may get an offer now, with what the score needs (contract §3.6; stale ones are left out, §12). */
 async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Date): Promise<Pool> {
   const pickup = trip.pickup as Place;
+  // Lock the online drivers in id order before counting their open offers, so two rounds at once (two server
+  // instances) cannot both give one free driver an Exclusive (lock order: trip, offers, then drivers by id).
+  await trx.selectFrom("drivers").select("driver_id").where("account_status", "=", "active").where("online_status", "=", "online").orderBy("driver_id").forUpdate().execute();
   const rows = await trx
     .selectFrom("drivers")
     .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
@@ -133,16 +150,14 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
     // A free driver holds at most one open Exclusive; one with a rider at most exclusiveWhileDriving.count (§3.6).
     const open = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).executeTakeFirstOrThrow();
     const active = await trx.selectFrom("trips").select(["trip_id", "status", "dropoff"]).where("driver_id", "=", d.driver_id).where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).executeTakeFirst();
-    if (active && !["in_trip", "approaching_dropoff"].includes(active.status)) continue;
-    if (!active && Number(open.n) >= 1) continue;
-    if (active && Number(open.n) >= doc.exclusiveWhileDriving.count) continue;
+    // Next trips (an offer to a driver who still has a rider) are a later round (owner decision 10): only free
+    // drivers get offers in the test week.
+    if (active || d.online_status !== "online") continue;
+    if (Number(open.n) >= 1) continue;
+    const radarOpen = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "=", "radar").executeTakeFirstOrThrow();
+    if (Number(radarOpen.n) >= RADAR_LIST_MAX) continue;
     const here = { lat: d.lat, lng: d.lng };
-    let finishing: Candidate["finishing"];
-    if (active) {
-      const drop = active.dropoff as Place;
-      finishing = { inMin: Math.max(0, Math.round((dispatchKm(here, drop) / PICKUP_KMH) * 60)), dropKm: dispatchKm(drop, pickup) };
-    }
-    const km = finishing ? finishing.dropKm : dispatchKm(here, pickup);
+    const km = dispatchKm(here, pickup);
     const answered = await trx
       .selectFrom("offers")
       .select([sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status IN ('claimed', 'declined', 'expired'))`.as("all")])
@@ -154,13 +169,12 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
       driverId: d.driver_id,
       km,
       categoryIds: d.category_ids,
-      idleMin: d.last_free_at && !active ? (now.getTime() - d.last_free_at.getTime()) / 60_000 : 0,
+      idleMin: d.last_free_at ? (now.getTime() - d.last_free_at.getTime()) / 60_000 : 0,
       ...(d.rating_count > 0 ? { rating: d.rating_sum / d.rating_count } : {}),
       ...(Number(answered.all) > 0 ? { acceptancePct: (Number(answered.took) / Number(answered.all)) * 100 } : {}),
-      ...(finishing ? { finishing } : {}),
     };
     pool.candidates.push(candidate);
-    const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600)) + (finishing ? finishing.inMin * 60 : 0);
+    const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600));
     pool.meta.set(d.driver_id, { km, etaSeconds, meters: Math.round(km * 1000) });
   }
   return pool;
@@ -204,21 +218,42 @@ export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<s
   };
 }
 
-/** One event on a driver's offer feed, with the next per-driver sequence (the driver row's lock orders them). */
-async function feed(trx: Trx, driverId: string, kind: "offer_created" | "offer_updated" | "offer_withdrawn", offer: Record<string, unknown>, now: Date) {
-  const bumped = await trx.updateTable("drivers").set({ offer_seq: sql`offer_seq + 1` }).where("driver_id", "=", driverId).returning("offer_seq").executeTakeFirstOrThrow();
-  const sequence = Number(bumped.offer_seq);
-  await trx.insertInto("offer_events").values({ driver_id: driverId, sequence, event_id: newId("evt", now.getTime()), kind, offer: JSON.stringify(offer), occurred_at: now }).execute();
-  await sql`SELECT pg_notify(${OFFER_EVENTS_CHANNEL}, ${JSON.stringify({ driverId, sequence })})`.execute(trx);
+type FeedKind = "offer_created" | "offer_updated" | "offer_withdrawn";
+
+/**
+ * Offer feed events of one transaction, written at its end: the driver rows are locked once, sorted by id, so two
+ * transactions feeding the same drivers in another order wait instead of deadlocking. Each driver's sequence is
+ * contiguous (drivers.offer_seq, bumped under that lock).
+ */
+export class FeedQueue {
+  private readonly events: Array<{ driverId: string; kind: FeedKind; offer: Record<string, unknown> }> = [];
+  push(driverId: string, kind: FeedKind, offer: Record<string, unknown>) {
+    this.events.push({ driverId, kind, offer });
+  }
+  drivers(): string[] {
+    return [...new Set(this.events.map((e) => e.driverId))].sort();
+  }
+  async flush(trx: Trx, now: Date, alsoLock: string[] = []): Promise<void> {
+    const ids = [...new Set([...this.drivers(), ...alsoLock])].sort();
+    if (ids.length === 0) return;
+    await trx.selectFrom("drivers").select("driver_id").where("driver_id", "in", ids).orderBy("driver_id").forUpdate().execute();
+    for (const e of this.events) {
+      const bumped = await trx.updateTable("drivers").set({ offer_seq: sql`offer_seq + 1` }).where("driver_id", "=", e.driverId).returning("offer_seq").executeTakeFirstOrThrow();
+      const sequence = Number(bumped.offer_seq);
+      await trx.insertInto("offer_events").values({ driver_id: e.driverId, sequence, event_id: newId("evt", now.getTime()), kind: e.kind, offer: JSON.stringify(e.offer), occurred_at: now }).execute();
+      await sql`SELECT pg_notify(${OFFER_EVENTS_CHANNEL}, ${JSON.stringify({ driverId: e.driverId, sequence })})`.execute(trx);
+    }
+    this.events.length = 0;
+  }
 }
 
 /** Closes every open offer of a trip with `status` and tells each driver. */
-async function closeOpenOffers(trx: Trx, trip: TripRow, status: "claimed_elsewhere" | "expired" | "withdrawn", now: Date, exceptOfferId?: string) {
+async function closeOpenOffers(trx: Trx, trip: TripRow, status: "claimed_elsewhere" | "expired" | "withdrawn", now: Date, queue: FeedQueue, exceptOfferId?: string) {
   const open = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip.trip_id).where("status", "=", "open").orderBy("offer_id").forUpdate().execute();
   for (const offer of open) {
     if (offer.offer_id === exceptOfferId) continue;
     await trx.updateTable("offers").set({ status, version: offer.version + 1, answered_at: now }).where("offer_id", "=", offer.offer_id).execute();
-    await feed(trx, offer.driver_id, "offer_withdrawn", offerView({ ...offer, status, version: offer.version + 1 }, trip), now);
+    queue.push(offer.driver_id, "offer_withdrawn", offerView({ ...offer, status, version: offer.version + 1 }, trip));
   }
 }
 
@@ -231,11 +266,15 @@ async function loadSearch(trx: Trx, tripId: string) {
 /** dispatch_round: expire what lapsed, then send the next round (or wait). */
 export const roundHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
-  await runRound(trx, timer.refId, now);
+  const queue = new FeedQueue();
+  await runRound(trx, timer.refId, now, queue);
+  await queue.flush(trx, now);
 };
 
-export async function runRound(trx: Trx, tripId: string, now: Date): Promise<void> {
-  let trip = await lockTrip(trx, tripId);
+export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQueue): Promise<void> {
+  const locked = await lockTripNow(trx, tripId);
+  if (!locked) return;
+  let trip = locked;
   const search = await loadSearch(trx, tripId);
   if (!search || !OPEN_STATUSES.includes(trip.status)) return;
 
@@ -243,7 +282,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date): Promise<voi
   const open = await trx.selectFrom("offers").selectAll().where("trip_id", "=", tripId).where("status", "=", "open").forUpdate().execute();
   for (const offer of open.filter((o) => o.expires_at.getTime() <= now.getTime())) {
     await trx.updateTable("offers").set({ status: "expired", version: offer.version + 1, answered_at: now }).where("offer_id", "=", offer.offer_id).execute();
-    await feed(trx, offer.driver_id, "offer_withdrawn", offerView({ ...offer, status: "expired", version: offer.version + 1 }, trip), now);
+    queue.push(offer.driver_id, "offer_withdrawn", offerView({ ...offer, status: "expired", version: offer.version + 1 }, trip));
   }
   const stillOpen = open.filter((o) => o.expires_at.getTime() > now.getTime());
   if (stillOpen.length > 0) {
@@ -295,7 +334,8 @@ export async function runRound(trx: Trx, tripId: string, now: Date): Promise<voi
       reason_code: round.reasonCode ?? null,
       currency: trip.currency,
       fare_minor: Number(trip.fare_minor),
-      driver_earnings_minor: Number(trip.driver_earnings_minor ?? 0) + pickupPay,
+      // Pickup pay is Movera's, on top of the driver's share: the card shows fare + pickupPay (§3.2).
+      driver_earnings_minor: Number(trip.driver_earnings_minor ?? 0),
       pickup_pay_minor: pickupPay,
       pickup_meters: meta.meters,
       pickup_eta_seconds: meta.etaSeconds,
@@ -306,7 +346,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date): Promise<voi
     };
     await trx.insertInto("offers").values(offer).execute();
     const row = (await loadOffer(trx, offer.offer_id))!;
-    await feed(trx, driverId, "offer_created", offerView(row, trip), now);
+    queue.push(driverId, "offer_created", offerView(row, trip));
   }
   trip = await applyCommand(trx, trip, { command: "send_offer", actor: "system", now });
   await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: expiresAt, payload: {} });
@@ -329,10 +369,19 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
     const status = offer.status === "open" ? "expired" : offer.status;
     throw new ApiError("conflict", status === "claimed_elsewhere" ? "Another driver took this ride." : "This offer is no longer open.", { reason: `offer_${status}`, projection: offerView({ ...offer, status }, trip) });
   }
-  const driver = await trx.selectFrom("drivers").selectAll().where("driver_id", "=", driverId).forUpdate().executeTakeFirstOrThrow();
-  const vehicle = driver.vehicle_id ? await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", driver.vehicle_id).executeTakeFirst() : undefined;
+  const queue = new FeedQueue();
+  // The trip's other offers are closed first (trip → offer), then every driver to tell is locked in id order.
+  await closeOpenOffers(trx, trip, "claimed_elsewhere", now, queue, offerId);
+  queue.push(driverId, "offer_updated", offerView({ ...offer, status: "claimed", version: offer.version + 1 }, trip));
+  await queue.flush(trx, now, [driverId]);
+  const driver = await trx.selectFrom("drivers").selectAll().where("driver_id", "=", driverId).executeTakeFirstOrThrow();
+  // Only an active, online driver with no trip can take one (a driver who went offline keeps no offer, §3.6).
+  const busy = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).executeTakeFirst();
+  if (driver.account_status !== "active" || driver.online_status !== "online" || busy) {
+    throw new ApiError("conflict", busy ? "You already have a trip." : "Go online to take rides.", { reason: busy ? "driver_on_trip" : "driver_not_available", projection: offerView(offer, trip) });
+  }
   await trx.updateTable("offers").set({ status: "claimed", version: offer.version + 1, answered_at: now }).where("offer_id", "=", offerId).execute();
-  await closeOpenOffers(trx, trip, "claimed_elsewhere", now, offerId);
+  const vehicle = driver.vehicle_id ? await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", driver.vehicle_id).executeTakeFirst() : undefined;
   const summary = {
     driverId,
     firstName: driver.first_name || "Driver",
@@ -340,6 +389,7 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
     vehicle: vehicle ? { vehicleId: vehicle.vehicle_id, make: vehicle.make, model: vehicle.model, color: vehicle.color, plate: vehicle.plate, categoryId: trip.category_id } : {},
   };
   const earnings = Number(offer.driver_earnings_minor);
+  const pickupPay = Number(offer.pickup_pay_minor);
   trip = await applyCommand(trx, trip, {
     command: "accept",
     actor: "driver",
@@ -349,14 +399,17 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       vehicle_id: driver.vehicle_id,
       accepted_at: now,
       driver_earnings_minor: earnings,
-      pickup_pay_minor: Number(offer.pickup_pay_minor),
-      commission_minor: Number(trip.fare_minor) - earnings,
+      pickup_pay_minor: pickupPay,
+      // Movera keeps fare − driverEarnings − pickupPay (§3.2).
+      commission_minor: Number(trip.fare_minor) - earnings - pickupPay,
       driver_summary: JSON.stringify(summary),
       search_step: null,
     },
   });
   await trx.updateTable("drivers").set({ online_status: "on_trip", version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
   await endSearchTimers(trx, trip.trip_id);
+  // The driver's offers for other trips are withdrawn by a job that locks each of those trips in turn.
+  await scheduleTimer(trx, { kind: WITHDRAW, refId: driverId, dueAt: now, payload: {} });
   return trip;
 }
 
@@ -370,7 +423,9 @@ export async function declineOffer(trx: Trx, driverId: string, offerId: string, 
   if (offer.status !== "open") throw new ApiError("invalid_transition", "This offer is no longer open.", { reason: `offer_${offer.status}`, projection: offerView(offer, trip) });
   await trx.updateTable("offers").set({ status: "declined", version: offer.version + 1, answered_at: now, decline_reason: reasonCode ?? null }).where("offer_id", "=", offerId).execute();
   const declined = { ...offer, status: "declined" as const, version: offer.version + 1 };
-  await feed(trx, driverId, "offer_updated", offerView(declined, trip), now);
+  const queue = new FeedQueue();
+  queue.push(driverId, "offer_updated", offerView(declined, trip));
+  await queue.flush(trx, now);
   const left = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("trip_id", "=", trip.trip_id).where("status", "=", "open").executeTakeFirstOrThrow();
   if (Number(left.n) === 0) await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: now, payload: {} });
   return offerView(declined, trip);
@@ -386,7 +441,9 @@ async function endSearchTimers(trx: Trx, tripId: string) {
 
 /** A trip that leaves the search some other way (rider cancel, admin cancel): offers withdrawn, timers gone. */
 export async function stopSearch(trx: Trx, trip: TripRow, now: Date): Promise<void> {
-  await closeOpenOffers(trx, trip, "withdrawn", now);
+  const queue = new FeedQueue();
+  await closeOpenOffers(trx, trip, "withdrawn", now, queue);
+  await queue.flush(trx, now);
   await endSearchTimers(trx, trip.trip_id);
 }
 
@@ -402,11 +459,14 @@ async function showStep(trx: Trx, trip: TripRow, step: Step, now: Date) {
 export const stepHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
   const { tripId, stepId } = timer.payload as { tripId: string; stepId: string };
-  const trip = await lockTrip(trx, tripId);
+  const trip = await lockTripNow(trx, tripId);
+  if (!trip) return;
   const search = await loadSearch(trx, tripId);
   if (!search || !OPEN_STATUSES.includes(trip.status)) return;
   const step = (search.steps as Step[]).find((s) => s.id === stepId);
   if (!step || (search.fired as string[]).includes(stepId)) return;
+  // Only busy ends the search at its own time; any other step at or after the end never shows.
+  if (step.kind !== "busy" && now.getTime() >= search.end_at.getTime()) return;
   await trx.updateTable("searches").set({ fired: JSON.stringify([...(search.fired as string[]), stepId]), updated_at: now }).where("trip_id", "=", tripId).execute();
   if (step.kind === "busy") {
     await showStep(trx, trip, step, now);
@@ -421,18 +481,24 @@ export const endHandler: TimerHandler = async (trx, timer) => {
 };
 
 async function expireSearch(trx: Trx, tripId: string, now: Date) {
-  let trip = await lockTrip(trx, tripId);
-  if (!OPEN_STATUSES.includes(trip.status)) return;
-  await closeOpenOffers(trx, trip, "expired", now);
+  const locked = await lockTripNow(trx, tripId);
+  if (!locked || !OPEN_STATUSES.includes(locked.status)) return;
+  let trip = locked;
+  const queue = new FeedQueue();
+  await closeOpenOffers(trx, trip, "expired", now, queue);
+  await queue.flush(trx, now);
   trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   await applyCommand(trx, trip, { command: "expire", actor: "system", now, set: { ended_by_command: "expire" } });
   await endSearchTimers(trx, tripId);
 }
 
 /** POST /trips/{tripId}/keep-waiting (owner decision 24). */
-export async function keepWaiting(trx: Trx, riderId: string, tripId: string, answer: "wait" | "stop", now: Date, cancel: (trip: TripRow) => Promise<TripRow>): Promise<TripRow> {
+export async function keepWaiting(trx: Trx, riderId: string, tripId: string, answer: "wait" | "stop", now: Date, cancel: (trip: TripRow) => Promise<TripRow>, expectedVersion?: number): Promise<TripRow> {
   const trip = await lockTrip(trx, tripId);
   if (trip.rider_id !== riderId) throw new ApiError("not_found", "No such trip.", { reason: "trip_not_found" });
+  if (expectedVersion !== undefined && expectedVersion !== trip.version) {
+    throw new ApiError("version_mismatch", "The trip changed since you last saw it.", { projection: tripProjection(trip, "rider") });
+  }
   const search = await loadSearch(trx, tripId);
   const step = trip.search_step as { id: string; kind: string; extraMin: number | null } | null;
   const answered = (search?.answered as string[] | undefined) ?? [];
@@ -451,4 +517,24 @@ export async function keepWaiting(trx: Trx, riderId: string, tripId: string, ans
   return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
 }
 
-export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler };
+/** Closes a driver's open offers on other trips, one trip at a time (trip → offer → driver). */
+export const withdrawHandler: TimerHandler = async (trx, timer) => {
+  const driverId = timer.refId;
+  const now = timer.firedAt;
+  const open = await trx.selectFrom("offers").select(["offer_id", "trip_id"]).where("driver_id", "=", driverId).where("status", "=", "open").orderBy("trip_id").execute();
+  const queue = new FeedQueue();
+  for (const { trip_id } of open) {
+    const trip = await lockTripNow(trx, trip_id);
+    if (!trip) continue;
+    const offers = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip_id).where("driver_id", "=", driverId).where("status", "=", "open").forUpdate().execute();
+    for (const offer of offers) {
+      await trx.updateTable("offers").set({ status: "withdrawn", version: offer.version + 1, answered_at: now }).where("offer_id", "=", offer.offer_id).execute();
+      queue.push(driverId, "offer_withdrawn", offerView({ ...offer, status: "withdrawn", version: offer.version + 1 }, trip));
+    }
+    const left = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("trip_id", "=", trip_id).where("status", "=", "open").executeTakeFirstOrThrow();
+    if (Number(left.n) === 0 && trip.status === "offered") await scheduleTimer(trx, { kind: ROUND, refId: trip_id, dueAt: now, payload: {} });
+  }
+  await queue.flush(trx, now);
+};
+
+export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler };
