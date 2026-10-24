@@ -25,6 +25,8 @@ const schema = z.object({
   JWT_SECRET: z.string().min(32).optional(),
   /** Movera's own OSRM (owner decision 4), e.g. http://osrm:5000. Unset: distances are estimated. */
   OSRM_URL: z.string().url().optional(),
+  /** Google Places / Geocoding key for address search (owner decision 4). Unset: address search answers 503. */
+  GOOGLE_MAPS_API_KEY: z.string().min(10).optional(),
   /** The zone an app gets when it asks for settings without naming one. */
   DEFAULT_ZONE_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).default("Z001"),
   /** Where the admin panel lives; setup links point at its /setup-password page. */

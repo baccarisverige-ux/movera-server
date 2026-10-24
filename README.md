@@ -32,6 +32,10 @@ Settings come from the environment (`src/env.ts`):
 | `MIGRATE_ON_START` | Apply new migrations at start (instances take turns) | `true` |
 | `DATABASE_POOL_MAX` | Connections per instance | `10` |
 | `JWT_SECRET` | Signs access tokens, at least 32 characters. Required on staging and production. | random per start |
+| `OSRM_URL` | Movera's own route service (e.g. `http://osrm:5000`). Unset: distances are estimated | none |
+| `GOOGLE_MAPS_API_KEY` | Address search through Google. Unset: address search answers `503` | none |
+| `ADMIN_PANEL_URL` | Where setup links point | `http://localhost:5173` |
+| `DEFAULT_ZONE_ID` | Zone for settings when an app names none | `Z001` |
 | `TRUST_PROXY_HOPS` | Proxies in front of the server (the host's load balancer = 1), so limits see the phone's real address and it cannot be faked | `0` |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
@@ -94,7 +98,7 @@ The server lands in small pull requests, each tested:
 3. Database, idempotency, versioned commands, trip event log, timers. *(done)*
 4. Sign-in: phone code with test numbers, tokens, push devices. *(done; admin sign-in comes with contract v0.5.1)*
 5. Config documents and admin publish. *(done: admin sign-in, drafts, publish, second-admin approvals, audit)*
-6. Places, routes and quotes.
+6. Places, routes and quotes. *(done: fare engine on the contract's 17 cases, POST /quotes, address search, routes)*
 7. Trips: request, read, rider profile, cash payment.
 8. Live updates (SSE).
 9. Driver availability and location.

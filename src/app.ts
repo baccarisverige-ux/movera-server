@@ -12,16 +12,18 @@ import { adminAuthRoutes } from "./admin/routes.js";
 import { configRoutes } from "./config/routes.js";
 import { EstimateRouter, OsrmRouter, type Router } from "./maps/routing.js";
 import { quoteRoutes } from "./quotes/routes.js";
+import { mapsRoutes } from "./maps/routes.js";
+import { CachedPlaces, GooglePlaces, NoPlaces, type Places } from "./maps/places.js";
 
 export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router };
+export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router; places?: Places };
 
 const READY_TIMEOUT_MS = 2000;
 
-export async function buildApp({ env, logger = true, db, clock, router }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger ? { level: env.LOG_LEVEL } : false,
     // X-Request-Id: the client's id when it sends a sane one, else ours. Echoed on every response (§1 Headers).
@@ -114,6 +116,8 @@ export async function buildApp({ env, logger = true, db, clock, router }: BuildO
       router ??
       (env.OSRM_URL !== undefined ? new OsrmRouter(env.OSRM_URL, 2500, (error) => app.log.warn({ err: error }, "OSRM unavailable; distance estimated")) : new EstimateRouter());
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
+    const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
+    await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
 
   return app;
