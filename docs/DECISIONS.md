@@ -27,6 +27,7 @@ What the server does for the test week, as the owner chose it. Change a line her
 | 22 | Search gap | When the admin steps are used up before the search ends, offers keep going: Radar again at the widest area every Radar period, Exclusive to drivers not yet asked (newly free drivers count). |
 | 23 | A driver who declined | May get the same ride again later (on a later Radar round), like a driver who missed it. |
 | 24 | "Keep waiting?" | Keep waiting = the search gets the step's extra minutes (3) and "busy" moves later; Stop = free cancel; no answer = the search continues. |
+| 25 | Rider cancel fee: was the driver coming? | After the free 2 minutes the rider pays only if the driver came closer to the pickup by at least half of what a normal car covers since accepting (400 m a minute, so 200 m per minute). A driver at the pickup counts; no driver position means no fee. Replaces the admin's flat 25 %, which fails for far pickups. |
 | 11 | Trip GPS paths | Kept 30 days, then deleted. Only each driver's latest position is kept beyond that. |
 
 ## Requested features (later round: driver sign-up)
@@ -50,7 +51,6 @@ Technical rules decided without the owner (they match what the apps already do):
 
 Built with these, each easy to change; the owner confirms or changes them before the test round:
 
-- **"Came closer" check on a rider cancel** (admin Dispatch › Rider cancel fees, `closerPct` 25): after the free 2 minutes the rider pays the cancel fee only if the driver came at least 25 % closer to the pickup since accepting (a driver already at the pickup counts). The admin panel has this rule; the contract names it but has no setting yet, so the server uses the panel's 25 %.
 - **Driver's share of a rider cancel fee**: 80 %, the same as the no-show share (`waiting.driverSharePct`). The admin panel has no separate setting.
 - **Rider PIN at boarding**: off in the test week (the rider config has `features.pin` false).
 - **Driver ends the trip with the rider on board**: the rider pays for what was driven, like an early end; an admin can refund.

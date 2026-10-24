@@ -38,10 +38,12 @@ const DEFAULT_NO_SHOW_SHARE = C.configDefaults.noShowDriverSharePct;
 export const NEAR_DROPOFF_METERS = 500;
 export const NEAR_DROPOFF = "near_dropoff";
 /**
- * The admin's rider-cancel check (Dispatch › Rider cancel fees, riderCancel.closerPct, default 25): after the free
- * minutes a cancel is charged only when the driver came at least this much closer to the pickup since accepting.
+ * The rider-cancel "was the driver really coming?" check (owner decision 25, 2026-10-24): after the free minutes the
+ * rider pays only when the driver came closer to the pickup by at least half of what a normal car covers in the
+ * minutes since accepting (24 km/h = 400 m a minute, the dispatch pickup speed). A driver at the pickup counts.
  */
-export const CAME_CLOSER_PCT = 25;
+export const NORMAL_PICKUP_METERS_PER_MIN = 400;
+export const CAME_CLOSER_SHARE = 0.5;
 /** "Arrived" is accepted within this distance of the pickup (the driver's latest fix). */
 export const ARRIVE_MAX_METERS = 300;
 
@@ -315,8 +317,8 @@ export async function noShow(trx: Trx, driverId: string, tripId: string, body: {
 
 /**
  * The rider's cancel fee (contract §3, §5 "Live cancel fees per category"): nothing before a driver accepted or
- * inside the free minutes; a live trip is charged only when the driver came CAME_CLOSER_PCT closer to the pickup
- * since accepting (already at the pickup counts). The fee is on the booked fare without an outstanding fee.
+ * inside the free minutes; a live trip is charged only when the driver was really coming (see
+ * NORMAL_PICKUP_METERS_PER_MIN). The fee is on the booked fare without an outstanding fee.
  */
 export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<Money | null> {
   if (trip.accepted_at === null || trip.driver_id === null) return null;
@@ -328,13 +330,14 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   const minutesBeforePickup = trip.scheduled_at ? (trip.scheduled_at.getTime() - now.getTime()) / 60_000 : 0;
   const amount = cancelFee({ kind: trip.kind === "scheduled" ? "reservation" : "live", rule, fare: fare as Parameters<typeof cancelFee>[0]["fare"], minutesSinceAccept, minutesBeforePickup });
   if (amount.amountMinor <= 0) return null;
-  if (trip.kind === "live" && trip.status !== "arrived" && trip.accept_pickup_meters !== null && trip.accept_pickup_meters > 0) {
+  if (trip.kind === "live" && trip.status !== "arrived" && trip.accept_pickup_meters !== null) {
+    // No position from the driver means no proof they were coming: no fee.
     const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", trip.driver_id).executeTakeFirst();
-    if (fix) {
-      const nowMeters = haversineKm(fix, trip.pickup as Place) * 1.25 * 1000;
-      const closerPct = Math.round(((trip.accept_pickup_meters - nowMeters) / trip.accept_pickup_meters) * 100);
-      if (closerPct < CAME_CLOSER_PCT) return null;
-    }
+    if (!fix) return null;
+    const nowMeters = haversineKm(fix, trip.pickup as Place) * 1.25 * 1000;
+    const atPickup = haversineKm(fix, trip.pickup as Place) * 1000 <= ARRIVE_MAX_METERS;
+    const needed = minutesSinceAccept * NORMAL_PICKUP_METERS_PER_MIN * CAME_CLOSER_SHARE;
+    if (!atPickup && trip.accept_pickup_meters - nowMeters < needed) return null;
   }
   return amount;
 }

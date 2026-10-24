@@ -7,6 +7,7 @@ import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { rideHandlers } from "../../src/trips/ride.js";
+import { haversineKm } from "../../src/maps/routing.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -251,9 +252,26 @@ describe("the rider's cancel after accept", () => {
     expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toEqual({ amountMinor: 3500, currency: "SEK" });
   });
 
-  it("after 2 minutes but the driver did not come closer: no fee", async () => {
+  it("far pickup: after 3 minutes the driver must have come 600 m closer (half of 400 m a minute)", async () => {
+    const away = Math.round(haversineKm(SPOTS.B, NORRMALM) * 1.25 * 1000);
+    for (const [gained, fee] of [[300, null], [800, 3500]] as const) {
+      await advance(1);
+      const { tripId } = await accepted();
+      // As if A had accepted from further away and drove to where B stands now.
+      await database.db.updateTable("trips").set({ accept_pickup_meters: away + gained }).where("trip_id", "=", tripId).execute();
+      await advance(180);
+      await moveTo("A", SPOTS.B);
+      const res = await cancel(tripId);
+      expect(res.json().cancellation.fee?.amountMinor ?? null).toBe(fee);
+      await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+      await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
+    }
+  });
+
+  it("after 2 minutes but the driver drove away from the pickup: no fee", async () => {
     const { tripId } = await accepted();
     await advance(150);
+    await moveTo("A", SPOTS.B);
     const res = await cancel(tripId);
     expect(res.json().cancellation.fee).toBeNull();
   });
