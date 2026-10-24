@@ -32,3 +32,7 @@ No tester starts a round until its features pass this gate:
 2. Every high and medium finding fixed; small ones fixed or listed.
 3. An automatic full ride against the staging server playing rider, driver and admin together, including cancels and timeouts. Earlier rounds get a lighter re-check.
 4. A short report to the owner; testers start on the owner's "go".
+
+## Questions before every part
+
+Before building a part, every decision only the owner can make is asked, one question at a time, each with a recommendation. What the apps or the admin panel already decide is checked first and not asked again. Answers are recorded in this file.
