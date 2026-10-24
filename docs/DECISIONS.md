@@ -29,6 +29,9 @@ What the server does for the test week, as the owner chose it. Change a line her
 | 24 | "Keep waiting?" | Keep waiting = the search gets the step's extra minutes (3) and "busy" moves later; Stop = free cancel; no answer = the search continues. |
 | 25 | Rider cancel fee: was the driver coming? | After the free 2 minutes the rider pays only if the driver came closer to the pickup by at least half of what a normal car covers since accepting (400 m a minute, so 200 m per minute). A driver at the pickup counts; no driver position means no fee. Replaces the admin's flat 25 %, which fails for far pickups. |
 | 26 | Rider late cancel fee | 65 kr for every car type after the free minutes, all of it to the driver. An admin can change the fee per car type and set another driver share (contract and admin panel to add the share setting; until then the server uses 100 %). |
+| 27 | Rider PIN | Off in the test week. |
+| 28 | Driver ends the ride with the rider on board | The rider pays for what was driven, like an early end, never more than booked; an admin can refund. |
+| 29 | Pickup pay on a no-show or late cancel | Not paid; the fee share is the driver's money for it. |
 | 11 | Trip GPS paths | Kept 30 days, then deleted. Only each driver's latest position is kept beyond that. |
 
 ## Requested features (later round: driver sign-up)
@@ -48,13 +51,7 @@ Technical rules decided without the owner (they match what the apps already do):
 - Dispatch: a search that starts while its zone is paused begins its steps when the zone resumes; a zone with no published dispatch rules sends no automatic offers and its trips expire after 10 minutes (an admin can still assign). Offers go only to active, online drivers with a fix in the last 120 s, the trip's car type and zone. A driver who still has a rider gets no offer in the test week (next trips while driving are a later round, decision 10). Going offline or taking a trip withdraws the driver's other open offers.
 - A pickup outside the open zones is `403 forbidden`, reason `service_not_available`; an open zone without published prices is `503`, reason `pricing_not_published`.
 
-## The ride (step 11): choices waiting for the owner's OK
-
-Built with these, each easy to change; the owner confirms or changes them before the test round:
-
-- **Rider PIN at boarding**: off in the test week (the rider config has `features.pin` false).
-- **Driver ends the trip with the rider on board**: the rider pays for what was driven, like an early end; an admin can refund.
-- **Pickup pay on a no-show or a paid rider cancel**: not paid now (the driver gets the 80 % fee share instead).
+## The ride (step 11)
 
 Technical rules for the ride (no owner decision needed):
 
