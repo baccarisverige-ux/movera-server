@@ -1,6 +1,7 @@
 import { schemaProblem } from "../contract/schemas.js";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent } from "../db/tripLog.js";
+import { maybeNearDropoff } from "../trips/ride.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { zoneAt } from "../config/zoneLookup.js";
@@ -202,6 +203,7 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
       .execute();
     // One location event per batch, with the newest fix; it never changes the projection version (§4).
     await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
+    await maybeNearDropoff(trx, active, latest.fix, now);
   }
   return fresh.length;
 }

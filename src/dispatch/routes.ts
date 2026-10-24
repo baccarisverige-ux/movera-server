@@ -139,7 +139,7 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => {
       const trip = await keepWaiting(trx, who.subjectId, tripId, body.answer, now(), (current) =>
         // Stop = the normal free rider cancel, reason wait_too_long (owner decision 24).
-        riderCancel(trx, who.subjectId, tripId, { expectedVersion: current.version, reasonCode: "wait_too_long" }, now(), async () => null),
+        riderCancel(trx, who.subjectId, tripId, { expectedVersion: current.version, reasonCode: "wait_too_long" }, now()),
         body.expectedVersion,
       );
       return { status: 200, body: tripProjection(trip, "rider") };

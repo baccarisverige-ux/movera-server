@@ -42,7 +42,7 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     paymentMethod: row.payment_method,
     ...(row.payment_method_id ? { paymentMethodId: row.payment_method_id } : {}),
     ...(row.payment_status ? { paymentStatus: row.payment_status } : {}),
-    ratingStatus: row.rating_status,
+    ratingStatus: viewer === "driver" ? row.driver_rating_status : row.rating_status,
     pinRequired: row.pin_required,
     ...(row.driver_summary ? { driver: row.driver_summary } : {}),
     ...(row.waiting ? { waiting: row.waiting } : {}),

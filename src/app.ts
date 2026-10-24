@@ -14,6 +14,7 @@ import { EstimateRouter, OsrmRouter, type Router } from "./maps/routing.js";
 import { quoteRoutes } from "./quotes/routes.js";
 import { mapsRoutes } from "./maps/routes.js";
 import { tripRoutes } from "./trips/routes.js";
+import { rideRoutes } from "./trips/rideRoutes.js";
 import { driverRoutes } from "./drivers/routes.js";
 import { dispatchRoutes } from "./dispatch/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
@@ -125,6 +126,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
     await tripRoutes(app, { db, jwtSecret, paymentMethods: env.PAYMENT_METHODS, currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", ...(clock ? { clock } : {}) });
     await driverRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await dispatchRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });

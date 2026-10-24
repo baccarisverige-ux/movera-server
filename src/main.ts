@@ -8,6 +8,7 @@ import { TimerWorker } from "./jobs/timers.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { dispatchHandlers } from "./dispatch/runtime.js";
+import { rideHandlers } from "./trips/ride.js";
 import { CONFIG_CHANNEL } from "./config/service.js";
 
 const env = readEnv();
@@ -33,7 +34,7 @@ if (db !== undefined) {
   await ensureMaintenanceTimers(db);
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db);
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers }, logger: app.log });
+  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, ...rideHandlers }, logger: app.log });
   worker.start();
 } else {
   app.log.warn("DATABASE_URL is not set: running without a database (development only)");

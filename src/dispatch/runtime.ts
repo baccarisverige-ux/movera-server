@@ -48,7 +48,7 @@ const PICKUP_KMH = DISPATCH.score.pickupKmh;
 const RADAR_LIST_MAX = 8;
 
 /** Timer handlers lock the trip without waiting: a command holding it may be waiting on this very timer. */
-async function lockTripNow(trx: Trx, tripId: string): Promise<TripRow | undefined> {
+export async function lockTripNow(trx: Trx, tripId: string): Promise<TripRow | undefined> {
   try {
     return await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forUpdate().noWait().executeTakeFirst();
   } catch (error) {
@@ -146,6 +146,8 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
   const pool: Pool = { candidates: [], meta: new Map() };
   for (const d of rows) {
     if (!d.zone_ids.includes(trip.zone_id)) continue;
+    // A driver who cancelled this trip is not offered it again.
+    if (trip.cancelled_driver_ids.includes(d.driver_id)) continue;
     if (!d.category_ids.includes(trip.category_id)) continue;
     // A free driver holds at most one open Exclusive; one with a rider at most exclusiveWhileDriving.count (§3.6).
     const open = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).executeTakeFirstOrThrow();
@@ -404,6 +406,8 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       commission_minor: Number(trip.fare_minor) - earnings - pickupPay,
       driver_summary: JSON.stringify(summary),
       search_step: null,
+      // Where the driver started from: the rider cancel "came closer" check measures against it.
+      accept_pickup_meters: offer.pickup_meters,
     },
   });
   await trx.updateTable("drivers").set({ online_status: "on_trip", version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();

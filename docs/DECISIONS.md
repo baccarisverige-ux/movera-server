@@ -46,6 +46,25 @@ Technical rules decided without the owner (they match what the apps already do):
 - Dispatch: a search that starts while its zone is paused begins its steps when the zone resumes; a zone with no published dispatch rules sends no automatic offers and its trips expire after 10 minutes (an admin can still assign). Offers go only to active, online drivers with a fix in the last 120 s, the trip's car type and zone. A driver who still has a rider gets no offer in the test week (next trips while driving are a later round, decision 10). Going offline or taking a trip withdraws the driver's other open offers.
 - A pickup outside the open zones is `403 forbidden`, reason `service_not_available`; an open zone without published prices is `503`, reason `pricing_not_published`.
 
+## The ride (step 11): choices waiting for the owner's OK
+
+Built with these, each easy to change; the owner confirms or changes them before the test round:
+
+- **"Came closer" check on a rider cancel** (admin Dispatch › Rider cancel fees, `closerPct` 25): after the free 2 minutes the rider pays the cancel fee only if the driver came at least 25 % closer to the pickup since accepting (a driver already at the pickup counts). The admin panel has this rule; the contract names it but has no setting yet, so the server uses the panel's 25 %.
+- **Driver's share of a rider cancel fee**: 80 %, the same as the no-show share (`waiting.driverSharePct`). The admin panel has no separate setting.
+- **Rider PIN at boarding**: off in the test week (the rider config has `features.pin` false).
+- **Driver ends the trip with the rider on board**: the rider pays for what was driven, like an early end; an admin can refund.
+
+Technical rules for the ride (no owner decision needed):
+
+- The waiting clock starts at `arrive`; the seconds after the free wait are charged when the rider boards, and the fare is priced again then (waiting is 100 % the driver's). A no-show is allowed from `waiting.noShowAt`.
+- Waiting money and the no-show fee come from the pricing document (the admin's Pricing page), the cancel fee rules from the published rider settings; with no rider settings published, a cancel after accept is free.
+- "Almost there" (`near_dropoff`) when the driver's fix is within 500 m of the drop-off during the ride.
+- A no-show or cancel fee nobody collected is owed (Rider.outstanding) and rides on the next quote; the driver's share is credited at once. When a cash trip that carries it completes, the oldest owed fees up to the carried amount are paid.
+- A driver who cancels before boarding is not offered that trip again; every driver cancel is recorded for the cancel rate.
+- Cash: `complete` marks the payment `captured`; `cashCollected` is stored as the driver reports it (the admin sees any difference). Tips are refused (`tips_not_available`) until a later round.
+- A skipped rating answers `204` (the contract's `Rating` needs stars).
+
 ## Before every test round
 
 No tester starts a round until its features pass this gate:

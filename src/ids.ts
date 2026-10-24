@@ -24,7 +24,7 @@ function encodeRandom(chars: number): string {
   return out;
 }
 
-export type IdPrefix = "trp" | "ofr" | "rdr" | "drv" | "veh" | "doc" | "evt" | "qte" | "otp" | "adm" | "apr" | "aud" | "pay" | "grp" | "sid" | "fam";
+export type IdPrefix = "trp" | "ofr" | "rdr" | "drv" | "veh" | "doc" | "evt" | "qte" | "otp" | "adm" | "apr" | "aud" | "pay" | "grp" | "sid" | "fam" | "ern";
 
 export function newId(prefix: IdPrefix, now: number = Date.now()): string {
   return `${prefix}_${encodeTime(now)}${encodeRandom(16)}`;

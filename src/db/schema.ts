@@ -1,4 +1,4 @@
-import type { ColumnType, Generated } from "kysely";
+import type { ColumnType, Generated, RawBuilder } from "kysely";
 
 /** Kysely table types for migrations/*.sql. Keep in step with every migration. */
 
@@ -105,6 +105,14 @@ export interface TripsTable {
   notes: ColumnType<string | null, string | null | undefined, string | null>;
   search_step: ColumnType<unknown, string | null | undefined, string | null>;
   driver_summary: ColumnType<unknown, string | null | undefined, string | null>;
+  arrived_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  boarded_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  started_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  ended_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  cash_collected_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  driver_rating_status: Generated<string>;
+  accept_pickup_meters: ColumnType<number | null, number | null | undefined, number | null>;
+  cancelled_driver_ids: ColumnType<string[], string[] | undefined, string[] | RawBuilder<string[]>>;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -422,6 +430,49 @@ export interface DispatchControlsTable {
   version: number;
 }
 
+export interface DriverCancelsTable {
+  trip_id: string;
+  driver_id: string;
+  at: Timestamp;
+  from_status: string;
+  reason_code: string;
+  note: string | null;
+}
+
+export interface RiderFeesTable {
+  trip_id: string;
+  rider_id: string;
+  kind: "cancel" | "no_show";
+  currency: string;
+  amount_minor: ColumnType<string, number | string, number | string>;
+  status: "owed" | "paid" | "waived";
+  carried_by: string | null;
+  created_at: Timestamp;
+  settled_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
+export interface EarningsEntriesTable {
+  entry_id: string;
+  driver_id: string;
+  trip_id: string | null;
+  kind: "trip" | "pickup_pay" | "fee_share" | "adjustment" | "tip";
+  currency: string;
+  amount_minor: ColumnType<string, number | string, number | string>;
+  gross_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  commission_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  cash_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  at: Timestamp;
+}
+
+export interface RatingsTable {
+  trip_id: string;
+  rater: "rider" | "driver";
+  stars: number;
+  tags: ColumnType<string[], string[] | undefined, string[]>;
+  comment: string | null;
+  at: Timestamp;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -451,4 +502,8 @@ export interface Database {
   offers: OffersTable;
   offer_events: OfferEventsTable;
   dispatch_controls: DispatchControlsTable;
+  driver_cancels: DriverCancelsTable;
+  rider_fees: RiderFeesTable;
+  earnings_entries: EarningsEntriesTable;
+  ratings: RatingsTable;
 }

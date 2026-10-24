@@ -145,7 +145,7 @@ describe("dispatch runtime review", () => {
       fired = worker.runOne(); // meanwhile the worker takes the ROUND timer and waits for the trip
       await sleep(300);
       const trip = await lockTrip(trx, tripId);
-      await riderCancel(trx, riderId, tripId, { expectedVersion: trip.version, reasonCode: "plans_changed" }, clock.now, async () => null).catch((e) => {
+      await riderCancel(trx, riderId, tripId, { expectedVersion: trip.version, reasonCode: "plans_changed" }, clock.now).catch((e) => {
         commandError = e;
         throw e;
       });

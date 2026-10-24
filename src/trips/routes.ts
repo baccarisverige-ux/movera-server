@@ -13,6 +13,7 @@ import { eventEnvelope } from "../realtime/events.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
 import { streamTrip } from "../realtime/streams.js";
+import { DriverCancelBody, driverCancel } from "./rideRoutes.js";
 import { activeTrip, createTrip, getTrip, riderCancel, riderTrips, setCancelReason } from "./service.js";
 
 /** contract §3, §7: trips for the rider (with the deprecated /rides aliases), the rider profile, payment methods. */
@@ -69,15 +70,14 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     });
 
     app.post(`${API_PREFIX}/${base}/:${param}/cancel`, async (request) => {
-      const who = await authenticate(request, guard, ["rider", "driver"]);
-      if (who.actor !== "rider") throw new ApiError("forbidden", "Drivers cancel from the trip screen (coming with dispatch).", { reason: "not_enabled_yet" });
+      const who = await authenticate(request, guard, base === "rides" ? ["rider"] : ["rider", "driver"]);
       const id = parseBody(z.object({ [param]: ID }), request.params)[param] as string;
+      if (who.actor === "driver") {
+        const body = parseBody(DriverCancelBody, request.body);
+        return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverCancel(trx, who.subjectId, id, body, now()), "driver") }))).body;
+      }
       const body = parseBody(CancelBody, request.body);
-      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => {
-        // A driver can only be assigned once dispatch runs; until then a cancel is always before accept: free.
-        const trip = await riderCancel(trx, who.subjectId, id, body, now(), async () => null);
-        return { status: 200, body: tripProjection(trip, "rider") };
-      });
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await riderCancel(trx, who.subjectId, id, body, now()), "rider") }));
       return result.body;
     });
   }

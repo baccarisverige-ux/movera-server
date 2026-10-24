@@ -1,0 +1,529 @@
+import { sql, type Updateable } from "kysely";
+import type { TripsTable } from "../db/schema.js";
+import { contract } from "../contract/contract.js";
+import { schemaProblem } from "../contract/schemas.js";
+import { liveDocument } from "../config/service.js";
+import type { Executor, Trx } from "../db/db.js";
+import { appendTripEvent, type TripRow } from "../db/tripLog.js";
+import { ApiError, badRequest } from "../http/errors.js";
+import { newId } from "../ids.js";
+import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
+import { haversineKm } from "../maps/routing.js";
+import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
+import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
+import { lockTripNow, startSearch } from "../dispatch/runtime.js";
+import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
+import { tripProjection } from "./projection.js";
+
+/**
+ * The ride after a driver accepted (contract §3, §3.5, §3.7): the driver's steps, the waiting clock and no-show,
+ * driver cancels (back to dispatch, or ended on board), the rider ending early, completion with cash, the rider's
+ * cancel fee after accept, unpaid fees and ratings. Cash only in the test week (owner decision).
+ */
+
+type Money = { amountMinor: number; currency: string };
+type Place = { lat: number; lng: number };
+type Waiting = { arrivedAt: string; freeUntil: string; noShowAt: string; chargedSeconds: number };
+type Who = { actor: "rider" | "driver" | "admin"; subjectId: string };
+
+const C = contract as unknown as {
+  cancelReasons: Record<string, string[]>;
+  configDefaults: { noShowDriverSharePct: number };
+};
+const REASONS = C.cancelReasons;
+const DEFAULT_NO_SHOW_SHARE = C.configDefaults.noShowDriverSharePct;
+
+/** Within this distance of the drop-off the trip shows "Almost there" (near_dropoff). */
+export const NEAR_DROPOFF_METERS = 500;
+export const NEAR_DROPOFF = "near_dropoff";
+/**
+ * The admin's rider-cancel check (Dispatch › Rider cancel fees, riderCancel.closerPct, default 25): after the free
+ * minutes a cancel is charged only when the driver came at least this much closer to the pickup since accepting.
+ */
+export const CAME_CLOSER_PCT = 25;
+
+const ONBOARD = ["rider_onboard", "in_trip", "approaching_dropoff"];
+
+/* ---------------------------------------------------------------- prices and settings */
+
+/** The pricing document the trip was quoted with (its version), else the live one. */
+async function pricingOf(ex: Executor, trip: TripRow): Promise<PricingDocument> {
+  if (trip.pricing_version !== null) {
+    const kept = await ex.selectFrom("config_history").select("document").where("doc", "=", "pricing").where("zone_id", "=", trip.zone_id).where("version", "=", trip.pricing_version).executeTakeFirst();
+    if (kept) return kept.document as PricingDocument;
+  }
+  const live = await liveDocument<PricingDocument>(ex, "pricing", trip.zone_id);
+  if (live === null) throw new ApiError("unavailable", "Prices are not set for this area.", { reason: "pricing_not_published", retryAfterSeconds: 60 });
+  return live.document;
+}
+
+function waitingRules(doc: PricingDocument, categoryId: string) {
+  const category = doc.categories[categoryId];
+  if (category === undefined) throw new ApiError("unavailable", "Prices for this car type are missing.", { reason: "pricing_invalid" });
+  return category.waiting;
+}
+
+/** The driver's share of a rider fee: DriverAppConfig.waiting.driverSharePct (80 % by default, per country). */
+async function feeSharePct(ex: Executor, zoneId: string): Promise<number> {
+  const live = await liveDocument<{ waiting?: { driverSharePct?: unknown } }>(ex, "driver_app_config", zoneId);
+  const pct = live?.document.waiting?.driverSharePct;
+  return typeof pct === "number" && pct >= 0 && pct <= 100 ? pct : DEFAULT_NO_SHOW_SHARE;
+}
+
+/** RiderAppConfig.cancelFees.live|reservation[categoryId], or null when the zone has none published. */
+async function cancelRule(ex: Executor, trip: TripRow): Promise<FeeRule | null> {
+  const live = await liveDocument<{ cancelFees?: { live?: Record<string, FeeRule>; reservation?: Record<string, FeeRule> } }>(ex, "rider_app_config", trip.zone_id);
+  const table = trip.kind === "scheduled" ? live?.document.cancelFees?.reservation : live?.document.cancelFees?.live;
+  return table?.[trip.category_id] ?? null;
+}
+
+const outstandingLine = (trip: TripRow) => ((trip.fare_lines as FareLine[]) ?? []).find((l) => l.code === "outstanding_fee");
+
+/** The fare with the quote's route and the waiting so far (§3.5 "Quote and fare"). */
+async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSeconds: number): Promise<Fare> {
+  const doc = await pricingOf(ex, trip);
+  const owed = outstandingLine(trip);
+  return priceFare(doc, {
+    categoryId: trip.category_id,
+    km: (trip.distance_meters ?? 0) / 1000,
+    minutes: (trip.duration_seconds ?? 0) / 60,
+    kind: trip.kind,
+    surgeMultiplier: Number(trip.surge_multiplier),
+    waitingChargedSeconds: chargedSeconds,
+    stopWaitSeconds: ((trip.stops as unknown[]) ?? []).map(() => 0),
+    ...(owed ? { outstandingFee: owed.amount, ...(owed.sourceTripId ? { outstandingSourceTripId: owed.sourceTripId } : {}) } : {}),
+  });
+}
+
+/** Km driven on board: the driver's trace since boarding, else the straight line from the pickup × 1.25. */
+async function kmOnBoard(ex: Executor, trip: TripRow, since: Date): Promise<number> {
+  const fixes = await ex.selectFrom("trip_locations").select(["lat", "lng"]).where("trip_id", "=", trip.trip_id).where("measured_at", ">=", since).orderBy("measured_at").execute();
+  if (fixes.length >= 2) {
+    let km = 0;
+    for (let i = 1; i < fixes.length; i++) km += haversineKm(fixes[i - 1]!, fixes[i]!);
+    return km;
+  }
+  const last = trip.driver_id ? await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", trip.driver_id).executeTakeFirst() : undefined;
+  return last ? haversineKm(trip.pickup as Place, last) * 1.25 : 0;
+}
+
+/** What was driven (owner decisions 8, 19): the rider ends early, or the driver ends the trip on board. */
+async function drivenFare(ex: Executor, trip: TripRow, now: Date): Promise<Fare> {
+  const doc = await pricingOf(ex, trip);
+  const since = trip.boarded_at ?? now;
+  const km = Math.round((await kmOnBoard(ex, trip, since)) * 1000) / 1000;
+  const minutes = Math.round(Math.max(0, now.getTime() - since.getTime()) / 600) / 100;
+  const owed = outstandingLine(trip);
+  const booked = Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0);
+  return priceFare(doc, {
+    categoryId: trip.category_id,
+    km,
+    minutes,
+    kind: trip.kind,
+    surgeMultiplier: Number(trip.surge_multiplier),
+    endEarly: { kmDriven: km, minutesOnBoard: minutes, bookedFare: { amountMinor: booked, currency: trip.currency } },
+  });
+}
+
+/** The trip columns for a fare: Movera keeps fare − driverEarnings − pickupPay (§3.2). */
+function fareColumns(trip: TripRow, fare: Fare) {
+  const pickupPay = Number(trip.pickup_pay_minor ?? 0);
+  return {
+    fare_minor: fare.total.amountMinor,
+    fare_lines: JSON.stringify(fare.fareLines),
+    driver_earnings_minor: fare.driverEarnings.amountMinor,
+    commission_minor: fare.total.amountMinor - fare.driverEarnings.amountMinor - pickupPay,
+  };
+}
+
+/* ---------------------------------------------------------------- money records */
+
+async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Promise<void> {
+  if (driverId === null) return;
+  await trx
+    .updateTable("drivers")
+    .set({ online_status: sql`CASE WHEN online_status = 'on_trip' THEN 'online' ELSE online_status END`, last_free_at: now, version: sql`version + 1`, updated_at: now })
+    .where("driver_id", "=", driverId)
+    .execute();
+}
+
+async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
+  if (entry.amount === 0 && entry.kind !== "trip") return;
+  await trx
+    .insertInto("earnings_entries")
+    .values({
+      entry_id: newId("ern", now.getTime()),
+      driver_id: entry.driverId,
+      trip_id: entry.tripId,
+      kind: entry.kind,
+      currency: entry.currency,
+      amount_minor: entry.amount,
+      gross_minor: entry.gross ?? null,
+      commission_minor: entry.commission ?? null,
+      cash_minor: entry.cash ?? null,
+      at: now,
+    })
+    .onConflict((c) => c.columns(["driver_id", "trip_id", "kind"]).doNothing())
+    .execute();
+}
+
+/** Rider.outstanding = the sum of owed fees; the oldest one names the source trip (§3.7). */
+async function refreshOutstanding(trx: Trx, riderId: string, now: Date) {
+  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
+  const total = owed.reduce((sum, f) => sum + Number(f.amount_minor), 0);
+  await trx.updateTable("riders").set({ outstanding_minor: total, outstanding_source_trip_id: owed[0]?.trip_id ?? null, updated_at: now }).where("rider_id", "=", riderId).execute();
+}
+
+/**
+ * A rider fee in cash nobody collected: owed by the rider (carried to the next trip), the driver's share credited
+ * at once; Movera carries the risk (§3.7, owner decision 7).
+ */
+async function chargeRiderFee(trx: Trx, trip: TripRow, kind: "cancel" | "no_show", fee: Money, now: Date) {
+  await trx.insertInto("rider_fees").values({ trip_id: trip.trip_id, rider_id: trip.rider_id, kind, currency: fee.currency, amount_minor: fee.amountMinor, status: "owed", created_at: now }).execute();
+  await refreshOutstanding(trx, trip.rider_id, now);
+}
+
+function feeSplit(fee: Money, sharePct: number) {
+  const driver = Math.floor((fee.amountMinor * sharePct * 2 + 100) / 200);
+  return { driver, movera: fee.amountMinor - driver };
+}
+
+/** The fee becomes the trip's money: fare = fee (cancel_fee line), the driver's share as earnings. */
+function feeColumns(fee: Money, sharePct: number) {
+  const split = feeSplit(fee, sharePct);
+  return {
+    fare_minor: fee.amountMinor,
+    fare_lines: JSON.stringify([{ code: "cancel_fee", amount: fee }]),
+    driver_earnings_minor: split.driver,
+    commission_minor: split.movera,
+    pickup_pay_minor: 0,
+  };
+}
+
+/**
+ * A cash trip that carried an owed fee completed and was paid: the fees it carried are paid (§3.7). The line holds
+ * the sum owed when the rider was quoted, so the oldest owed fees up to that sum are the ones it paid.
+ */
+async function settleCarriedFees(trx: Trx, trip: TripRow, now: Date) {
+  const line = outstandingLine(trip);
+  if (!line) return;
+  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", trip.rider_id).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").forUpdate().execute();
+  let left = line.amount.amountMinor;
+  for (const fee of owed) {
+    const amount = Number(fee.amount_minor);
+    if (amount > left) break;
+    left -= amount;
+    await trx.updateTable("rider_fees").set({ status: "paid", carried_by: trip.trip_id, settled_at: now }).where("trip_id", "=", fee.trip_id).execute();
+    const source = await trx.selectFrom("trips").select("cancellation").where("trip_id", "=", fee.trip_id).executeTakeFirst();
+    if (source?.cancellation) await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...(source.cancellation as object), feeStatus: "paid" }) }).where("trip_id", "=", fee.trip_id).execute();
+  }
+  await refreshOutstanding(trx, trip.rider_id, now);
+}
+
+/* ---------------------------------------------------------------- the driver's steps */
+
+type StepCommand = "head_to_pickup" | "arrive" | "board" | "start_trip";
+
+export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date): Promise<TripRow> {
+  const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
+  expectVersion(trip, expectedVersion, "driver");
+  if (command === "arrive") {
+    const rules = waitingRules(await pricingOf(trx, trip), trip.category_id);
+    const at = (min: number) => new Date(now.getTime() + min * 60_000).toISOString();
+    const waiting: Waiting = { arrivedAt: now.toISOString(), freeUntil: at(rules.freeWaitMin), noShowAt: at(rules.noShowAfterMin), chargedSeconds: 0 };
+    return applyCommand(trx, trip, { command, actor: "driver", now, set: { arrived_at: now, waiting: JSON.stringify(waiting) } });
+  }
+  if (command === "board") {
+    // The waiting clock stops: every second after the free wait is charged, 100 % the driver's (§3.5).
+    const waiting = trip.waiting as Waiting | null;
+    const charged = waiting ? Math.max(0, Math.floor((now.getTime() - Date.parse(waiting.freeUntil)) / 1000)) : 0;
+    const set: Updateable<TripsTable> = { boarded_at: now };
+    if (waiting) set["waiting"] = JSON.stringify({ ...waiting, chargedSeconds: charged });
+    if (charged > 0 && trip.status === "arrived") Object.assign(set, fareColumns(trip, await fareWithWaiting(trx, trip, charged)));
+    return applyCommand(trx, trip, { command, actor: "driver", now, set });
+  }
+  if (command === "start_trip") return applyCommand(trx, trip, { command, actor: "driver", now, set: { started_at: now } });
+  return applyCommand(trx, trip, { command, actor: "driver", now });
+}
+
+/** Rider at the drop-off soon: the system's near_dropoff, from the driver's fixes (a timer, so it locks the trip on its own). */
+export async function maybeNearDropoff(trx: Trx, trip: { trip_id: string; status: string }, fix: Place, now: Date) {
+  if (trip.status !== "in_trip") return;
+  const row = await trx.selectFrom("trips").select("dropoff").where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+  if (haversineKm(fix, row.dropoff as Place) * 1000 > NEAR_DROPOFF_METERS) return;
+  await scheduleTimer(trx, { kind: NEAR_DROPOFF, refId: trip.trip_id, dueAt: now, payload: {} });
+}
+
+export const nearDropoffHandler: TimerHandler = async (trx, timer) => {
+  const trip = await lockTripNow(trx, timer.refId);
+  if (!trip || trip.status !== "in_trip") return;
+  await applyCommand(trx, trip, { command: "near_dropoff", actor: "system", now: timer.firedAt });
+};
+
+/* ---------------------------------------------------------------- no-show */
+
+export async function noShow(trx: Trx, driverId: string, tripId: string, body: { expectedVersion: number; reasonCode?: string }, now: Date): Promise<TripRow> {
+  if (body.reasonCode !== undefined && !REASONS["noShow"]!.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a no-show reason.`, "invalid_reason_code");
+  const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
+  expectVersion(trip, body.expectedVersion, "driver");
+  const waiting = trip.waiting as Waiting | null;
+  // Guard "waited >= noShowAfterMin" (contract.json#transitions).
+  if (trip.status === "arrived" && (waiting === null || now.getTime() < Date.parse(waiting.noShowAt))) {
+    throw new ApiError("invalid_transition", "Wait until the no-show time before marking a no-show.", { reason: "no_show_too_early", projection: tripProjection(trip, "driver") });
+  }
+  const rules = waitingRules(await pricingOf(trx, trip), trip.category_id);
+  const fee: Money | null = rules.noShowFee.amountMinor > 0 ? { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency } : null;
+  const share = await feeSharePct(trx, trip.zone_id);
+  const cancellation = { actor: "driver", reasonCode: "rider_no_show", at: now.toISOString(), fee, ...(fee ? { feeStatus: "owed" } : {}) };
+  const ended = await applyCommand(trx, trip, {
+    command: "no_show",
+    actor: "driver",
+    now,
+    set: { cancellation: JSON.stringify(cancellation), ended_by_command: "no_show", ended_at: now, ...(fee ? feeColumns(fee, share) : {}) },
+  });
+  if (fee) {
+    await chargeRiderFee(trx, ended, "no_show", fee, now);
+    await credit(trx, { driverId, tripId, kind: "fee_share", currency: fee.currency, amount: feeSplit(fee, share).driver }, now);
+  }
+  await releaseDriver(trx, driverId, now);
+  return ended;
+}
+
+/* ---------------------------------------------------------------- the rider's cancel fee after accept */
+
+/**
+ * The rider's cancel fee (contract §3, §5 "Live cancel fees per category"): nothing before a driver accepted or
+ * inside the free minutes; a live trip is charged only when the driver came CAME_CLOSER_PCT closer to the pickup
+ * since accepting (already at the pickup counts). The fee is on the booked fare without an outstanding fee.
+ */
+export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<Money | null> {
+  if (trip.accepted_at === null || trip.driver_id === null) return null;
+  const rule = await cancelRule(ex, trip);
+  if (rule === null) return null;
+  const owed = outstandingLine(trip);
+  const fare = { amountMinor: Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0), currency: trip.currency };
+  const minutesSinceAccept = (now.getTime() - trip.accepted_at.getTime()) / 60_000;
+  const minutesBeforePickup = trip.scheduled_at ? (trip.scheduled_at.getTime() - now.getTime()) / 60_000 : 0;
+  const amount = cancelFee({ kind: trip.kind === "scheduled" ? "reservation" : "live", rule, fare: fare as Parameters<typeof cancelFee>[0]["fare"], minutesSinceAccept, minutesBeforePickup });
+  if (amount.amountMinor <= 0) return null;
+  if (trip.kind === "live" && trip.status !== "arrived" && trip.accept_pickup_meters !== null && trip.accept_pickup_meters > 0) {
+    const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", trip.driver_id).executeTakeFirst();
+    if (fix) {
+      const nowMeters = haversineKm(fix, trip.pickup as Place) * 1.25 * 1000;
+      const closerPct = Math.round(((trip.accept_pickup_meters - nowMeters) / trip.accept_pickup_meters) * 100);
+      if (closerPct < CAME_CLOSER_PCT) return null;
+    }
+  }
+  return amount;
+}
+
+/** After the rider's cancel: the driver is free again and gets their share of a fee (owed by the rider). */
+export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: TripRow, fee: Money | null, now: Date) {
+  if (fee && before.driver_id) {
+    const share = await feeSharePct(trx, before.zone_id);
+    await trx.updateTable("trips").set(feeColumns(fee, share)).where("trip_id", "=", cancelled.trip_id).execute();
+    await chargeRiderFee(trx, cancelled, "cancel", fee, now);
+    await credit(trx, { driverId: before.driver_id, tripId: before.trip_id, kind: "fee_share", currency: fee.currency, amount: feeSplit(fee, share).driver }, now);
+  }
+  await releaseDriver(trx, before.driver_id, now);
+}
+
+/* ---------------------------------------------------------------- the driver's cancel */
+
+export async function driverCancel(trx: Trx, driverId: string, tripId: string, body: { expectedVersion: number; reasonCode: string; note?: string }, now: Date): Promise<TripRow> {
+  const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
+  expectVersion(trip, body.expectedVersion, "driver");
+  const onboard = ONBOARD.includes(trip.status);
+  const allowed = onboard ? REASONS["driverDuringTrip"]! : trip.kind === "scheduled" ? [...REASONS["scheduled"]!, ...REASONS["driverBeforeTrip"]!] : REASONS["driverBeforeTrip"]!;
+  if (!allowed.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a reason for a driver cancel now.`, "invalid_reason_code");
+  const cancellation = { actor: "driver", reasonCode: body.reasonCode, at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
+  // Counts in the driver's cancel rate (§3 "counts in cancel rate").
+  await trx.insertInto("driver_cancels").values({ trip_id: tripId, driver_id: driverId, at: now, from_status: trip.status, reason_code: body.reasonCode, note: body.note ?? null }).execute();
+
+  if (onboard) {
+    // Ended on board: the rider pays for what was driven, in cash, like an early end (owner decision 8).
+    const fare = await drivenFare(trx, trip, now);
+    const ended = await applyCommand(trx, trip, {
+      command: "cancel",
+      actor: "driver",
+      now,
+      set: { ...fareColumns(trip, fare), cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: fare.total.amountMinor },
+    });
+    await creditTrip(trx, ended, now);
+    await releaseDriver(trx, driverId, now);
+    return ended;
+  }
+
+  // Before boarding: back to dispatch (or a reservation back to the list), without this driver.
+  const quote = trip.quote_id ? await trx.selectFrom("quotes").select("driver_earnings_minor").where("quote_id", "=", trip.quote_id).executeTakeFirst() : undefined;
+  const earnings = quote ? Number(quote.driver_earnings_minor) : Number(trip.driver_earnings_minor ?? 0);
+  const back = await applyCommand(trx, trip, {
+    command: "cancel",
+    actor: "driver",
+    now,
+    set: {
+      driver_id: null,
+      vehicle_id: null,
+      accepted_at: null,
+      arrived_at: null,
+      waiting: null,
+      driver_summary: null,
+      accept_pickup_meters: null,
+      pickup_pay_minor: 0,
+      driver_earnings_minor: earnings,
+      commission_minor: Number(trip.fare_minor) - earnings,
+      search_step: null,
+      cancelled_driver_ids: sql<string[]>`array_append(cancelled_driver_ids, ${driverId})`,
+      ...(trip.status === "accepted" && trip.kind === "scheduled" ? {} : { search_started_at: now }),
+    },
+  });
+  await releaseDriver(trx, driverId, now);
+  if (back.status === "searching") await startSearch(trx, back, now);
+  return back;
+}
+
+/* ---------------------------------------------------------------- the rider ends early */
+
+export async function endEarly(trx: Trx, riderId: string, tripId: string, body: { expectedVersion: number; reasonCode?: string; note?: string }, now: Date): Promise<TripRow> {
+  const problem = schemaProblem("EndEarlyCommand", body);
+  if (problem !== null) throw badRequest(`The request is not valid: ${problem}.`, "invalid_body");
+  if (body.reasonCode !== undefined && !REASONS["rider"]!.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a rider reason.`, "invalid_reason_code");
+  const trip = await lockOwnTrip(trx, tripId, { actor: "rider", subjectId: riderId });
+  expectVersion(trip, body.expectedVersion, "rider");
+  if (!ONBOARD.includes(trip.status)) {
+    throw new ApiError("invalid_transition", `A rider cannot end_early a trip that is ${trip.status}.`, { projection: tripProjection(trip, "rider") });
+  }
+  const fare = await drivenFare(trx, trip, now);
+  const cancellation = { actor: "rider", reasonCode: body.reasonCode ?? "rider_requested_early_end", at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
+  const ended = await applyCommand(trx, trip, {
+    command: "end_early",
+    actor: "rider",
+    now,
+    // An owed fee the trip carried stays owed: the trip did not complete (§3.7).
+    set: { ...fareColumns(trip, fare), cancellation: JSON.stringify(cancellation), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: fare.total.amountMinor, rating_status: "pending" },
+  });
+  await creditTrip(trx, ended, now);
+  await releaseDriver(trx, trip.driver_id, now);
+  return ended;
+}
+
+/* ---------------------------------------------------------------- completion */
+
+async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
+  if (trip.driver_id === null) return;
+  const fare = Number(trip.fare_minor);
+  const earnings = Number(trip.driver_earnings_minor ?? 0);
+  const owed = outstandingLine(trip);
+  const owedMinor = trip.status === "completed" && owed ? owed.amount.amountMinor : 0;
+  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "trip", currency: trip.currency, amount: earnings, gross: fare - owedMinor, commission: fare - owedMinor - earnings, cash: Number(trip.cash_collected_minor ?? 0) }, now);
+  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "pickup_pay", currency: trip.currency, amount: Number(trip.pickup_pay_minor ?? 0) }, now);
+}
+
+export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; subjectId: string }, tripId: string, body: { expectedVersion: number; cashCollected?: Money }, now: Date): Promise<TripRow> {
+  const trip = await lockOwnTrip(trx, tripId, who);
+  expectVersion(trip, body.expectedVersion, who.actor);
+  if (body.cashCollected && body.cashCollected.currency !== trip.currency) throw badRequest(`Cash is counted in ${trip.currency}.`, "currency_mismatch");
+  const cash = body.cashCollected?.amountMinor ?? Number(trip.fare_minor);
+  const done = await applyCommand(trx, trip, {
+    command: "complete",
+    actor: who.actor,
+    now,
+    set: { ended_by_command: "complete", ended_at: now, payment_status: "captured", cash_collected_minor: cash, rating_status: "pending", driver_rating_status: "pending" },
+  });
+  await creditTrip(trx, done, now);
+  if (done.payment_method === "cash") await settleCarriedFees(trx, done, now);
+  await releaseDriver(trx, done.driver_id, now);
+  return done;
+}
+
+/* ---------------------------------------------------------------- ratings */
+
+type RatingBody = { stars?: number; tags?: string[]; comment?: string; skip?: boolean; tip?: Money };
+
+export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subjectId: string }, tripId: string, body: unknown, now: Date): Promise<{ status: number; body: unknown }> {
+  const problem = schemaProblem("RatingRequest", body);
+  if (problem !== null) throw badRequest(`The rating is not valid: ${problem}.`, "invalid_body");
+  const rating = body as RatingBody;
+  if (!rating.skip && rating.stars === undefined) throw badRequest("Give 1 to 5 stars, or skip.", "stars_missing");
+  if (rating.tip) throw badRequest("Tips are not available yet.", "tips_not_available");
+  const trip = await lockOwnTrip(trx, tripId, who);
+  const allowed =
+    trip.status === "completed" ||
+    (who.actor === "rider" && trip.status === "cancelled_by_rider" && trip.ended_by_command === "end_early");
+  const column = who.actor === "rider" ? "rating_status" : "driver_rating_status";
+  if (!allowed || trip[column] !== "pending") {
+    throw new ApiError("invalid_transition", allowed ? "This trip was already rated." : "This trip cannot be rated.", { reason: allowed ? "already_rated" : "rating_not_allowed", projection: tripProjection(trip, who.actor) });
+  }
+  let answer: Record<string, unknown> | null = null;
+  if (rating.skip) {
+    await trx.updateTable("trips").set({ [column]: "skipped" }).where("trip_id", "=", tripId).execute();
+  } else {
+    const stars = rating.stars!;
+    const tags = rating.tags ?? [];
+    await trx.insertInto("ratings").values({ trip_id: tripId, rater: who.actor, stars, tags, comment: rating.comment ?? null, at: now }).execute();
+    await trx.updateTable("trips").set({ [column]: "submitted" }).where("trip_id", "=", tripId).execute();
+    // The rider rates the driver; the driver rates the rider.
+    if (who.actor === "rider" && trip.driver_id) {
+      await trx.updateTable("drivers").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("driver_id", "=", trip.driver_id).execute();
+    } else if (who.actor === "driver") {
+      await trx.updateTable("riders").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("rider_id", "=", trip.rider_id).execute();
+    }
+    answer = { tripId, from: who.actor, stars, tags, ...(rating.comment ? { comment: rating.comment } : {}) };
+  }
+  // Not a lifecycle change: no new version; rating_updated passes the terminal gate (§4).
+  const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+  await appendTripEvent(trx, { tripId, kind: "rating_updated", version: updated.version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence: Number(updated.sequence) + 1 }) });
+  return answer === null ? { status: 204, body: null } : { status: 201, body: answer };
+}
+
+/* ---------------------------------------------------------------- earnings */
+
+type Period = "day" | "week" | "month";
+
+/** GET /driver/earnings (EarningsReport): periods in the zone's clock (Europe/Stockholm in the test week). */
+export async function driverEarnings(ex: Executor, driverId: string, input: { period: Period; from?: string; to?: string; timeZone: string; currency: string }, now: Date) {
+  const tz = input.timeZone;
+  // Up to now, this instant included.
+  const to = input.to ? new Date(input.to) : new Date(now.getTime() + 1);
+  const from = input.from
+    ? new Date(input.from)
+    : (await sql<{ start: Date }>`SELECT (date_trunc(${input.period}, ${now}::timestamptz AT TIME ZONE ${tz}) AT TIME ZONE ${tz}) AS start`.execute(ex)).rows[0]!.start;
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) throw badRequest("from must be before to.", "invalid_range");
+  const rows = await sql<{ start: Date; trips: string; gross: string; commission: string; earnings: string; pickup: string; fees: string; tips: string; adjustments: string; cash: string }>`
+    SELECT (date_trunc(${input.period}, at AT TIME ZONE ${tz}) AT TIME ZONE ${tz}) AS start,
+           count(*) FILTER (WHERE kind = 'trip') AS trips,
+           coalesce(sum(gross_minor) FILTER (WHERE kind = 'trip'), 0) AS gross,
+           coalesce(sum(commission_minor) FILTER (WHERE kind = 'trip'), 0) AS commission,
+           coalesce(sum(amount_minor) FILTER (WHERE kind = 'trip'), 0) AS earnings,
+           coalesce(sum(amount_minor) FILTER (WHERE kind = 'pickup_pay'), 0) AS pickup,
+           coalesce(sum(amount_minor) FILTER (WHERE kind = 'fee_share'), 0) AS fees,
+           coalesce(sum(amount_minor) FILTER (WHERE kind = 'tip'), 0) AS tips,
+           coalesce(sum(amount_minor) FILTER (WHERE kind = 'adjustment'), 0) AS adjustments,
+           coalesce(sum(cash_minor) FILTER (WHERE kind = 'trip'), 0) AS cash
+      FROM earnings_entries
+     WHERE driver_id = ${driverId} AND at >= ${from} AND at < ${to}
+     GROUP BY 1 ORDER BY 1`.execute(ex);
+  const money = (v: string | number) => ({ amountMinor: Number(v), currency: input.currency });
+  const periods = [];
+  for (const r of rows.rows) {
+    const end = (await sql<{ end: Date }>`SELECT ((${r.start}::timestamptz AT TIME ZONE ${tz} + ${`1 ${input.period}`}::interval) AT TIME ZONE ${tz}) AS end`.execute(ex)).rows[0]!.end;
+    const net = Number(r.earnings) + Number(r.pickup) + Number(r.fees) + Number(r.tips) + Number(r.adjustments);
+    periods.push({
+      periodStart: r.start.toISOString(),
+      periodEnd: end.toISOString(),
+      tripCount: Number(r.trips),
+      gross: money(r.gross),
+      commission: money(r.commission),
+      pickupPay: money(r.pickup),
+      tips: money(r.tips),
+      adjustments: money(r.adjustments),
+      cashCollected: money(r.cash),
+      fees: money(r.fees),
+      net: money(net),
+    });
+  }
+  return { driverId, period: input.period, timeZone: tz, periods };
+}
+
+export const rideHandlers: Record<string, TimerHandler> = { [NEAR_DROPOFF]: nearDropoffHandler };
+export type { Who };
