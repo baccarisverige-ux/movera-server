@@ -32,6 +32,11 @@ What the server does for the test week, as the owner chose it. Change a line her
 | 27 | Rider PIN | Off in the test week. |
 | 28 | Driver ends the ride with the rider on board | The rider pays for what was driven, like an early end, never more than booked; an admin can refund. |
 | 29 | Pickup pay on a no-show or late cancel | Not paid; the fee share is the driver's money for it. |
+| 30 | Refunds (cash week) | The rider chooses: credit in the Movera wallet at once (used first on the next ride), or money back in 2–3 days. Sweden: Swish or bank account; France and Tunisia: bank account only. An admin sends it by hand and marks it paid in the admin panel. |
+| 31 | Who pays a refund | The admin chooses each time: Movera by default (the driver keeps their earnings), or "take from driver", which lowers the driver's earnings by the driver's share. |
+| 32 | Reassign after accept | The driver gets nothing by default; the admin can add a driver bonus (Movera pays, within the bonus limit). |
+| 33 | Admin cancel after accept | The rider pays nothing (as the admin panel decides); the driver as in 32. |
+| 34 | Admin waives an owed fee | The driver keeps the share already credited; Movera carries the loss. |
 | 11 | Trip GPS paths | Kept 30 days, then deleted. Only each driver's latest position is kept beyond that. |
 
 ## Requested features (later round: driver sign-up)
