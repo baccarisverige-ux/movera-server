@@ -14,9 +14,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "migrate": "tsx src/db/migrateCli.ts",
+    "admin": "tsx src/admin/cli.ts",
     "contract:verify": "cd contracts && sha256sum -c --quiet CHECKSUMS && echo contract ok"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.2.2",
     "fastify": "^5.12.7",
     "fastify-plugin": "^5.1.0",
     "kysely": "^0.28.18",

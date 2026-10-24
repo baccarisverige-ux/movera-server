@@ -188,6 +188,39 @@ export interface PushDevicesTable {
   updated_at: Timestamp;
 }
 
+export interface AdminsTable {
+  admin_id: string;
+  email: string;
+  name: string;
+  role: string;
+  zone_ids: string[] | null;
+  countries: string[] | null;
+  fleet_partner_id: string | null;
+  language: string | null;
+  active: Generated<boolean>;
+  password_hash: string | null;
+  idle_timeout_seconds: Generated<number>;
+  version: Generated<number>;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export interface AdminSetupLinksTable {
+  token_sha256: string;
+  admin_id: string;
+  expires_at: Timestamp;
+  used_at: Timestamp | null;
+  created_by: string | null;
+  created_at: Timestamp;
+}
+
+export interface AdminSignInFailuresTable {
+  id: Generated<string>;
+  email: string;
+  ip: string | null;
+  at: Timestamp;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -201,4 +234,7 @@ export interface Database {
   auth_sessions: AuthSessionsTable;
   refresh_tokens: RefreshTokensTable;
   push_devices: PushDevicesTable;
+  admins: AdminsTable;
+  admin_setup_links: AdminSetupLinksTable;
+  admin_sign_in_failures: AdminSignInFailuresTable;
 }

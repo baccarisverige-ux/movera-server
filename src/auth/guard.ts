@@ -5,7 +5,7 @@ import { verifyAccessToken, type Actor } from "./jwt.js";
 import { REFRESH_TTL_MS, sessionIsActive } from "./service.js";
 
 /** Who is calling, from the access token (contract: actor and ids come from the token, never from the body). */
-export type Principal = { actor: Actor; subjectId: string; sessionId: string; zones: string[] };
+export type Principal = { actor: Actor; subjectId: string; sessionId: string; zones: string[]; role?: string; perms?: string[] };
 
 export type GuardDeps = { db: Executor; jwtSecret: string; clock?: () => Date };
 
@@ -38,5 +38,25 @@ export async function authenticate(
   if (options.allowEndedSession !== true && !(await sessionIsActive(deps.db, claims.sid, now))) {
     throw new ApiError("unauthenticated", "Please sign in again.", { reason: "session_ended" });
   }
-  return { actor: claims.actor, subjectId: claims.sub, sessionId: claims.sid, zones: claims.zones };
+  return {
+    actor: claims.actor,
+    subjectId: claims.sub,
+    sessionId: claims.sid,
+    zones: claims.zones,
+    ...(claims.role !== undefined ? { role: claims.role, perms: claims.perms ?? [] } : {}),
+  };
+}
+
+/** An admin with this permission (contract x-permission); 403 forbidden, reason missing_permission, otherwise. */
+export async function authenticateAdmin(request: FastifyRequest, deps: GuardDeps, permission?: string): Promise<Principal> {
+  const who = await authenticate(request, deps, ["admin"]);
+  if (permission !== undefined && !(who.perms ?? []).includes(permission)) {
+    throw new ApiError("forbidden", "You do not have permission to do that.", { reason: "missing_permission" });
+  }
+  return who;
+}
+
+/** May this admin act in this zone? ("*" = every zone.) */
+export function adminCoversZone(who: Principal, zoneId: string): boolean {
+  return who.zones.includes("*") || who.zones.includes(zoneId);
 }

@@ -17,6 +17,9 @@ export type AccessClaims = {
   exp: number;
   iss: "movera";
   typ: "access";
+  /** Admins only: the role and the fully expanded permissions (contract §9). */
+  role?: string;
+  perms?: string[];
 };
 
 const HEADER = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
@@ -30,7 +33,7 @@ function sign(data: string, secret: string): string {
 }
 
 export function signAccessToken(
-  claims: { sub: string; actor: Actor; sid: string; zones: string[] },
+  claims: { sub: string; actor: Actor; sid: string; zones: string[]; role?: string; perms?: string[] },
   secret: string,
   ttlSeconds: number,
   now: Date = new Date(),

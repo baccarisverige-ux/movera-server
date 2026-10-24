@@ -23,6 +23,8 @@ const schema = z.object({
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   /** Signs access tokens. At least 32 characters; required on staging and production (a laptop gets a random one). */
   JWT_SECRET: z.string().min(32).optional(),
+  /** Where the admin panel lives; setup links point at its /setup-password page. */
+  ADMIN_PANEL_URL: z.string().url().default("http://localhost:5173"),
   /**
    * How many proxies sit in front of the server (the host's load balancer = 1). The client address is read from
    * X-Forwarded-For only that many hops deep, so a phone cannot fake its address. 0: no proxy.

@@ -108,6 +108,7 @@ describe("verifying the code", () => {
     const first = await signIn(phone);
     expect(first).toMatchObject({ actor: "rider", expiresIn: 900, isNewRider: true });
     expect(first.refreshToken).toMatch(/^rt_/);
+    expect(Object.keys(first).sort()).toEqual(["accessToken", "actor", "expiresIn", "isNewRider", "refreshToken"]);
     expect(first.isNewDriver).toBeUndefined();
     advance(60);
     expect((await signIn(phone)).isNewRider).toBe(false);

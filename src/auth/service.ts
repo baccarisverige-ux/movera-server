@@ -197,7 +197,8 @@ export async function verifyOtp(
     await trx.updateTable("otp_sessions").set({ consumed_at: now, attempts: session.attempts + 1 }).where("session_id", "=", session.session_id).execute();
 
     const account = await findOrCreateAccount(trx, session.app, session.phone, now);
-    const tokens = await startSession(trx, deps, { actor: session.app, subjectId: account.id, zones: account.zones }, client, now);
+    const { sessionId: _sid, ...tokens } = await startSession(trx, deps, { actor: session.app, subjectId: account.id, zones: account.zones }, client, now);
+    void _sid;
     return {
       ok: true,
       tokens: {
@@ -238,7 +239,7 @@ async function findOrCreateAccount(trx: Trx, app: App, phone: string, now: Date)
 
 /* ---------------------------------------------------------------- sessions and tokens */
 
-type Subject = { actor: Actor; subjectId: string; zones: string[] };
+type Subject = { actor: Actor; subjectId: string; zones: string[]; role?: string; perms?: readonly string[] };
 
 function newRefreshToken(): string {
   return `rt_${randomBytes(32).toString("base64url")}`;
@@ -246,13 +247,14 @@ function newRefreshToken(): string {
 
 export async function startSession(
   trx: Trx,
-  deps: AuthDeps,
+  deps: Pick<AuthDeps, "jwtSecret">,
   subject: Subject,
   client: ClientInfo,
   now: Date,
-): Promise<{ accessToken: string; refreshToken: string; expiresIn: number }> {
+  ttlMs: number = REFRESH_TTL_MS,
+): Promise<{ accessToken: string; refreshToken: string; expiresIn: number; sessionId: string }> {
   const sessionId = newId("sid", now.getTime());
-  const expiresAt = new Date(now.getTime() + REFRESH_TTL_MS);
+  const expiresAt = new Date(now.getTime() + ttlMs);
   await trx
     .insertInto("auth_sessions")
     .values({
@@ -271,62 +273,78 @@ export async function startSession(
   const refreshToken = newRefreshToken();
   await trx.insertInto("refresh_tokens").values({ token_sha256: sha256(refreshToken), session_id: sessionId, expires_at: expiresAt, used_at: null, replaced_by: null, created_at: now }).execute();
   return {
-    accessToken: signAccessToken({ sub: subject.subjectId, actor: subject.actor, sid: sessionId, zones: subject.zones }, deps.jwtSecret, ACCESS_TTL_SECONDS, now),
+    accessToken: signAccessToken(
+      { sub: subject.subjectId, actor: subject.actor, sid: sessionId, zones: subject.zones, ...(subject.role ? { role: subject.role, perms: [...(subject.perms ?? [])] } : {}) },
+      deps.jwtSecret,
+      ACCESS_TTL_SECONDS,
+      now,
+    ),
     refreshToken,
     expiresIn: ACCESS_TTL_SECONDS,
+    sessionId,
   };
 }
 
 const unauthenticated = (reason: string) => new ApiError("unauthenticated", "Please sign in again.", { reason });
 
-type RefreshOutcome = { ok: true; tokens: AuthTokens } | { ok: false; error: ApiError };
+type Rotated = { ok: true; sessionId: string; actor: Actor; subjectId: string; refreshToken: string } | { ok: false; error: ApiError };
 
 /**
- * Rotates the refresh token. A token used before is theft unless it is a lost-answer retry (same token again
- * within REFRESH_RETRY_WINDOW_MS while its replacement was never used); theft ends the whole session.
+ * Rotates a refresh token inside `trx`. A token used before is theft unless it is a lost-answer retry (same token
+ * again within REFRESH_RETRY_WINDOW_MS while its replacement was never used); theft ends the whole session.
+ * `actors` keeps the app and admin token families apart; `ttlMs` is the new token's lifetime.
  */
+export async function rotateRefresh(trx: Trx, refreshToken: string, now: Date, options: { actors: readonly Actor[]; ttlMs: number }): Promise<Rotated> {
+  const hash = sha256(refreshToken);
+  // Lock order: the session first, then its tokens. Every refresh of a session queues on that one row, so two
+  // refreshes at once (a retry and a normal one) wait for each other instead of deadlocking.
+  const owner = await trx.selectFrom("refresh_tokens").select("session_id").where("token_sha256", "=", hash).executeTakeFirst();
+  if (owner === undefined) return { ok: false, error: unauthenticated("refresh_token_unknown") };
+  const session = await trx.selectFrom("auth_sessions").selectAll().where("session_id", "=", owner.session_id).forUpdate().executeTakeFirstOrThrow();
+  const token = await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", hash).forUpdate().executeTakeFirstOrThrow();
+  if (!options.actors.includes(session.actor)) return { ok: false, error: unauthenticated("refresh_token_unknown") };
+  if (session.revoked_at !== null) return { ok: false, error: unauthenticated("session_ended") };
+  if (session.expires_at.getTime() <= now.getTime() || token.expires_at.getTime() <= now.getTime()) {
+    return { ok: false, error: unauthenticated("session_expired") };
+  }
+
+  if (token.used_at !== null) {
+    const replacement = token.replaced_by
+      ? await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", token.replaced_by).forUpdate().executeTakeFirst()
+      : undefined;
+    const isRetry = now.getTime() - token.used_at.getTime() <= REFRESH_RETRY_WINDOW_MS && replacement !== undefined && replacement.used_at === null;
+    if (!isRetry) {
+      await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "refresh_token_reused" }).where("session_id", "=", session.session_id).execute();
+      return { ok: false, error: unauthenticated("refresh_token_reused") };
+    }
+    // Drop the replacement the app never received; it can no longer be used.
+    await trx.updateTable("refresh_tokens").set({ used_at: now }).where("token_sha256", "=", replacement.token_sha256).execute();
+  }
+
+  const next = newRefreshToken();
+  const nextHash = sha256(next);
+  const expiresAt = new Date(now.getTime() + options.ttlMs);
+  await trx.insertInto("refresh_tokens").values({ token_sha256: nextHash, session_id: session.session_id, expires_at: expiresAt, used_at: null, replaced_by: null, created_at: now }).execute();
+  await trx.updateTable("refresh_tokens").set({ used_at: token.used_at ?? now, replaced_by: nextHash }).where("token_sha256", "=", hash).execute();
+  await trx.updateTable("auth_sessions").set({ expires_at: expiresAt, last_refresh_at: now }).where("session_id", "=", session.session_id).execute();
+  return { ok: true, sessionId: session.session_id, actor: session.actor, subjectId: session.subject_id, refreshToken: next };
+}
+
+type RefreshOutcome = { ok: true; tokens: AuthTokens } | { ok: false; error: ApiError };
+
+/** POST /auth/refresh for the rider and driver apps. */
 export async function refreshTokens(deps: AuthDeps, refreshToken: string): Promise<AuthTokens> {
   const now = deps.clock?.() ?? new Date();
-  const hash = sha256(refreshToken);
   const outcome = await deps.db.transaction().execute(async (trx): Promise<RefreshOutcome> => {
-    // Lock order: the session first, then its tokens. Every refresh of a session queues on that one row, so two
-    // refreshes at once (a retry and a normal one) wait for each other instead of deadlocking.
-    const owner = await trx.selectFrom("refresh_tokens").select("session_id").where("token_sha256", "=", hash).executeTakeFirst();
-    if (owner === undefined) return { ok: false, error: unauthenticated("refresh_token_unknown") };
-    const session = await trx.selectFrom("auth_sessions").selectAll().where("session_id", "=", owner.session_id).forUpdate().executeTakeFirstOrThrow();
-    const token = await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", hash).forUpdate().executeTakeFirstOrThrow();
-    if (session.revoked_at !== null) return { ok: false, error: unauthenticated("session_ended") };
-    if (session.expires_at.getTime() <= now.getTime() || token.expires_at.getTime() <= now.getTime()) {
-      return { ok: false, error: unauthenticated("session_expired") };
-    }
-    if (session.actor === "admin") return { ok: false, error: unauthenticated("refresh_token_unknown") };
-
-    if (token.used_at !== null) {
-      const replacement = token.replaced_by
-        ? await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", token.replaced_by).forUpdate().executeTakeFirst()
-        : undefined;
-      const isRetry = now.getTime() - token.used_at.getTime() <= REFRESH_RETRY_WINDOW_MS && replacement !== undefined && replacement.used_at === null;
-      if (!isRetry) {
-        await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "refresh_token_reused" }).where("session_id", "=", session.session_id).execute();
-        return { ok: false, error: unauthenticated("refresh_token_reused") };
-      }
-      // Drop the replacement the app never received; it can no longer be used.
-      await trx.updateTable("refresh_tokens").set({ used_at: now }).where("token_sha256", "=", replacement.token_sha256).execute();
-    }
-
-    const zones = await currentZones(trx, session.actor, session.subject_id);
-    const next = newRefreshToken();
-    const nextHash = sha256(next);
-    const expiresAt = new Date(now.getTime() + REFRESH_TTL_MS);
-    await trx.insertInto("refresh_tokens").values({ token_sha256: nextHash, session_id: session.session_id, expires_at: expiresAt, used_at: null, replaced_by: null, created_at: now }).execute();
-    await trx.updateTable("refresh_tokens").set({ used_at: token.used_at ?? now, replaced_by: nextHash }).where("token_sha256", "=", hash).execute();
-    await trx.updateTable("auth_sessions").set({ expires_at: expiresAt, last_refresh_at: now }).where("session_id", "=", session.session_id).execute();
-    const actor = session.actor as App;
+    const rotated = await rotateRefresh(trx, refreshToken, now, { actors: ["rider", "driver"], ttlMs: REFRESH_TTL_MS });
+    if (!rotated.ok) return rotated;
+    const actor = rotated.actor as App;
+    const zones = await currentZones(trx, actor, rotated.subjectId);
     return {
       ok: true,
       tokens: {
-        accessToken: signAccessToken({ sub: session.subject_id, actor, sid: session.session_id, zones }, deps.jwtSecret, ACCESS_TTL_SECONDS, now),
-        refreshToken: next,
+        accessToken: signAccessToken({ sub: rotated.subjectId, actor, sid: rotated.sessionId, zones }, deps.jwtSecret, ACCESS_TTL_SECONDS, now),
+        refreshToken: rotated.refreshToken,
         expiresIn: ACCESS_TTL_SECONDS,
         actor,
       },
