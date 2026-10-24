@@ -132,6 +132,62 @@ export interface TimersTable {
   created_at: Timestamp;
 }
 
+export interface TestPhonesTable {
+  phone: string;
+  app: "rider" | "driver";
+  note: Generated<string>;
+  created_at: Timestamp;
+}
+
+export interface OtpSessionsTable {
+  session_id: string;
+  phone: string;
+  app: "rider" | "driver";
+  code_sha256: string;
+  is_test: boolean;
+  locale: string | null;
+  ip: string | null;
+  attempts: Generated<number>;
+  max_attempts: number;
+  expires_at: Timestamp;
+  consumed_at: Timestamp | null;
+  created_at: Timestamp;
+}
+
+export interface AuthSessionsTable {
+  session_id: string;
+  actor: "rider" | "driver" | "admin";
+  subject_id: string;
+  expires_at: Timestamp;
+  revoked_at: Timestamp | null;
+  revoked_reason: string | null;
+  user_agent: string | null;
+  ip: string | null;
+  created_at: Timestamp;
+  last_refresh_at: Timestamp | null;
+}
+
+export interface RefreshTokensTable {
+  token_sha256: string;
+  session_id: string;
+  expires_at: Timestamp;
+  used_at: Timestamp | null;
+  replaced_by: string | null;
+  created_at: Timestamp;
+}
+
+export interface PushDevicesTable {
+  token: string;
+  actor: "rider" | "driver";
+  subject_id: string;
+  session_id: string | null;
+  provider: "fcm" | "apns";
+  platform: "ios" | "android" | "web";
+  app_version: string | null;
+  locale: string | null;
+  updated_at: Timestamp;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -140,4 +196,9 @@ export interface Database {
   trip_events: TripEventsTable;
   idempotency_keys: IdempotencyKeysTable;
   timers: TimersTable;
+  test_phones: TestPhonesTable;
+  otp_sessions: OtpSessionsTable;
+  auth_sessions: AuthSessionsTable;
+  refresh_tokens: RefreshTokensTable;
+  push_devices: PushDevicesTable;
 }

@@ -2,6 +2,7 @@ import { buildApp } from "./app.js";
 import { createDb, createPool, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { readEnv } from "./env.js";
+import { seedTestPhones } from "./auth/testPhones.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
 import { TimerWorker } from "./jobs/timers.js";
 
@@ -23,6 +24,8 @@ warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 
 if (db !== undefined) {
   await ensureMaintenanceTimers(db);
+  // Test numbers exist only outside production (contract §8); production never reads them.
+  if (env.MOVERA_ENV !== "production") await seedTestPhones(db);
   worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers }, logger: app.log });
   worker.start();
 } else {

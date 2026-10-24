@@ -18,9 +18,19 @@ const schema = z.object({
     .default("true")
     .transform((value) => value === "true"),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  /** Signs access tokens. At least 32 characters; required on staging and production (a laptop gets a random one). */
+  JWT_SECRET: z.string().min(32).optional(),
+  /** Behind a proxy (the host's load balancer), read the client address from X-Forwarded-For. */
+  TRUST_PROXY: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
 }).superRefine((env, ctx) => {
   if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
+  }
+  if (env.MOVERA_ENV !== "development" && env.JWT_SECRET === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["JWT_SECRET"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
   }
 });
 

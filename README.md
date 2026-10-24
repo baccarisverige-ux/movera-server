@@ -31,6 +31,8 @@ Settings come from the environment (`src/env.ts`):
 | `DATABASE_URL` | `postgres://user:pass@host:5432/db`. Required on staging and production. | none |
 | `MIGRATE_ON_START` | Apply new migrations at start (instances take turns) | `true` |
 | `DATABASE_POOL_MAX` | Connections per instance | `10` |
+| `JWT_SECRET` | Signs access tokens, at least 32 characters. Required on staging and production. | random per start |
+| `TRUST_PROXY` | `true` behind the host's proxy, so rate limits see the phone's address | `false` |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
 Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).
@@ -61,6 +63,15 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
   (`src/jobs/timers.ts`). Any instance may run them; each runs once, a failure is undone and retried with a
   growing delay, and after 8 failures it is parked and logged.
 
+## Sign-in (contract §8)
+
+- Test numbers (`src/auth/testPhones.ts`, owner decision 1) sign in with the fixed code `1234`, only outside
+  production. Any other number is `403 forbidden`, reason `sign_in_restricted`, until an SMS provider exists.
+- Codes: 4 digits, 5 minutes, 5 tries, a new one after 30 s, at most 10 per number per hour. Only hashes are stored.
+- Access token: 15-minute JWT (HS256, `JWT_SECRET`); its session is checked on every call, so sign-out works at once.
+- Refresh token: opaque, 30 days, rotated on every refresh. A token used twice ends the session, except the same
+  token again within a minute (an answer lost on a bad connection).
+
 ## Build plan
 
 The server lands in small pull requests, each tested:
@@ -69,7 +80,7 @@ The server lands in small pull requests, each tested:
 2. Rule engines tested against the contract's own fixtures: money, trip transitions, realtime gate, cancel
    fees, pickup pay, surge. *(done)*
 3. Database, idempotency, versioned commands, trip event log, timers. *(done)*
-4. Sign-in: phone code with test numbers, tokens, push devices, admin sign-in.
+4. Sign-in: phone code with test numbers, tokens, push devices. *(done; admin sign-in comes with contract v0.5.1)*
 5. Config documents and admin publish.
 6. Places, routes and quotes.
 7. Trips: request, read, rider profile, cash payment.

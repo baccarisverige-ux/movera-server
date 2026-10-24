@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
 import type { Db } from "./db/db.js";
@@ -6,16 +6,18 @@ import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
 import type { Env } from "./env.js";
 import { ApiError, badRequest, notFound } from "./http/errors.js";
 
-/** Every contract operation lives under this prefix (openapi `servers`); health checks live outside it. */
-export const API_PREFIX = "/api/v1";
+import { API_PREFIX } from "./http/prefix.js";
+import { authRoutes } from "./auth/routes.js";
+
+export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean; db?: Db };
+export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date };
 
 const READY_TIMEOUT_MS = 2000;
 
-export async function buildApp({ env, logger = true, db }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger ? { level: env.LOG_LEVEL } : false,
     // X-Request-Id: the client's id when it sends a sane one, else ours. Echoed on every response (§1 Headers).
@@ -25,6 +27,16 @@ export async function buildApp({ env, logger = true, db }: BuildOptions): Promis
     },
     requestIdHeader: false,
     bodyLimit: 1024 * 1024,
+    trustProxy: env.TRUST_PROXY,
+  });
+
+  // An empty body with Content-Type: application/json (the apps' sign-out) is "no body", not bad JSON.
+  const json = app.getDefaultJsonParser("error", "error");
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const text = typeof body === "string" ? body : body.toString("utf8");
+    if (text.trim() === "") return done(null, undefined);
+    json(request, text, done);
   });
 
   app.addHook("onRequest", async (request, reply) => {
@@ -88,5 +100,13 @@ export async function buildApp({ env, logger = true, db }: BuildOptions): Promis
     return { status: "ready", database: "ok" };
   });
 
+  if (db !== undefined) {
+    const jwtSecret = env.JWT_SECRET ?? DEV_JWT_SECRET;
+    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", ...(clock ? { clock } : {}) });
+  }
+
   return app;
 }
+
+/** A laptop without JWT_SECRET gets a fresh secret per start (sign-ins end on restart); staging and production must set one. */
+const DEV_JWT_SECRET = randomBytes(32).toString("hex");

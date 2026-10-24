@@ -33,10 +33,10 @@ async function tables(database: TestDatabase): Promise<string[]> {
 describe("migrate", () => {
   it("applies every migration once; a second run applies nothing", async () => {
     const database = await emptyDb();
-    expect(await migrate(database.pool)).toEqual(["0001_foundation.sql"]);
+    expect(await migrate(database.pool)).toEqual(["0001_foundation.sql", "0002_auth.sql"]);
     expect(await migrate(database.pool)).toEqual([]);
     expect(await tables(database)).toEqual(
-      ["driver_locations", "drivers", "idempotency_keys", "riders", "schema_migrations", "timers", "trip_events", "trips"],
+      ["auth_sessions", "driver_locations", "drivers", "idempotency_keys", "otp_sessions", "push_devices", "refresh_tokens", "riders", "schema_migrations", "test_phones", "timers", "trip_events", "trips"],
     );
   });
 
@@ -45,7 +45,7 @@ describe("migrate", () => {
     const other = createPool(database.url, 2);
     cleanups.push(() => other.end());
     const [a, b] = await Promise.all([migrate(database.pool), migrate(other)]);
-    expect([...a, ...b]).toEqual(["0001_foundation.sql"]);
+    expect([...a, ...b].sort()).toEqual(["0001_foundation.sql", "0002_auth.sql"]);
   });
 
   it("refuses to start when an applied migration was edited", async () => {
@@ -59,11 +59,11 @@ describe("migrate", () => {
   it("a failing migration leaves nothing half-done", async () => {
     const database = await emptyDb();
     const dir = copyOfMigrations();
-    writeFileSync(join(dir, "0002_broken.sql"), "CREATE TABLE half_done (id int);\nSELECT * FROM no_such_table;\n");
-    await expect(migrate(database.pool, dir)).rejects.toThrow(/Migration 0002_broken\.sql failed/);
+    writeFileSync(join(dir, "0099_broken.sql"), "CREATE TABLE half_done (id int);\nSELECT * FROM no_such_table;\n");
+    await expect(migrate(database.pool, dir)).rejects.toThrow(/Migration 0099_broken\.sql failed/);
     expect(await tables(database)).not.toContain("half_done");
     const applied = await database.pool.query("SELECT name FROM schema_migrations ORDER BY name");
-    expect(applied.rows).toEqual([{ name: "0001_foundation.sql" }]);
+    expect(applied.rows).toEqual([{ name: "0001_foundation.sql" }, { name: "0002_auth.sql" }]);
   });
 });
 
