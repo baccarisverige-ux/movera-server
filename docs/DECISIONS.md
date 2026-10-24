@@ -16,6 +16,8 @@ What the server does for the test week, as the owner chose it. Change a line her
 | 10 | Extras in the test week | Main ride only: book, find driver, pickup, drive, cash, rating. Safety, promotions, raise price and pickup move stay hidden; the rider-waiting steps "raise price" and "upgrade" are skipped. |
 | 12 | Apple / Google sign-in | Off in the test week (buttons hidden); added before the public launch. |
 | 13 | Test drivers | Created on the server already approved, with the real first name, car model, colour, plate and car type the owner sends. Each test number works in both apps. |
+| 14 | Second-admin approval | A Super admin never needs a second admin: their changes go live at once and are written in the history. Big changes by other admins still wait for another admin's approval. |
+| 15 | Zones open in the test week | Norrmalm (Z001), Södermalm (Z002), Östermalm (Z003), Kungsholmen (Z004), Vasastan (Z005) and Södertälje (Z009). Rides can end anywhere; a pickup elsewhere is "not available here yet". |
 | 11 | Trip GPS paths | Kept 30 days, then deleted. Only each driver's latest position is kept beyond that. |
 
 ## Requested features (later round: driver sign-up)
