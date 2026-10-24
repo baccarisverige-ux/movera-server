@@ -9,6 +9,7 @@ RUN npm run build
 
 FROM node:22-slim
 ENV NODE_ENV=production
+# The deploy sets MOVERA_ENV=staging for the test week; without it the server runs as production.
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

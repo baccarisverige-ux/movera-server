@@ -11,7 +11,9 @@ describe("access tokens", () => {
     const ok = verifyAccessToken(token, SECRET, new Date(T.getTime() + 899_000));
     expect(ok).toMatchObject({ ok: true, claims: { ...claims, iss: "movera", typ: "access", exp: T.getTime() / 1000 + 900 } });
     expect(verifyAccessToken(token, SECRET, new Date(T.getTime() + 900_000))).toEqual({ ok: false, reason: "expired" });
-    expect(verifyAccessToken(token, SECRET, new Date(T.getTime() + 10 ** 9), true).ok).toBe(true);
+    // Sign-out's grace: an expired token is accepted only within the grace.
+    expect(verifyAccessToken(token, SECRET, new Date(T.getTime() + 900_000 + 59_000), 60).ok).toBe(true);
+    expect(verifyAccessToken(token, SECRET, new Date(T.getTime() + 900_000 + 60_000), 60)).toEqual({ ok: false, reason: "expired" });
   });
 
   it("refuses another secret, a changed payload, another algorithm and junk", () => {

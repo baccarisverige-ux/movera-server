@@ -52,9 +52,11 @@ describe("environment", () => {
     expect(readEnv({ MOVERA_ENV: "staging", DATABASE_URL: "postgres://a:b@db:5432/movera", JWT_SECRET: "k".repeat(32) })).toMatchObject({
       MIGRATE_ON_START: true,
       DATABASE_POOL_MAX: 10,
-      TRUST_PROXY: false,
+      TRUST_PROXY_HOPS: 0,
     });
-    expect(readEnv({ MIGRATE_ON_START: "false" }).MIGRATE_ON_START).toBe(false);
+    expect(readEnv({ MOVERA_ENV: "development", MIGRATE_ON_START: "false" }).MIGRATE_ON_START).toBe(false);
+    // A deploy that forgets MOVERA_ENV is production: no test sign-in, and a database and secret are required.
+    expect(() => readEnv({ NODE_ENV: "production", DATABASE_URL: "postgres://a:b@db:5432/movera" })).toThrow(/JWT_SECRET: required when MOVERA_ENV is production/);
   });
 });
 

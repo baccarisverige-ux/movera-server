@@ -43,8 +43,11 @@ export function signAccessToken(
 
 export type VerifyResult = { ok: true; claims: AccessClaims } | { ok: false; reason: "malformed" | "bad_signature" | "expired" };
 
-/** Checks the signature first, then the claims. `ignoreExpiry` is only for sign-out, which must work with an old token. */
-export function verifyAccessToken(token: string, secret: string, now: Date = new Date(), ignoreExpiry = false): VerifyResult {
+/**
+ * Checks the signature first, then the claims. `graceSeconds` accepts a token that expired at most that long ago;
+ * only sign-out uses it, so an app can always sign out, but a token from long ago cannot.
+ */
+export function verifyAccessToken(token: string, secret: string, now: Date = new Date(), graceSeconds = 0): VerifyResult {
   const parts = token.split(".");
   if (parts.length !== 3) return { ok: false, reason: "malformed" };
   const [header, payload, signature] = parts as [string, string, string];
@@ -69,6 +72,6 @@ export function verifyAccessToken(token: string, secret: string, now: Date = new
   ) {
     return { ok: false, reason: "malformed" };
   }
-  if (!ignoreExpiry && claims.exp <= Math.floor(now.getTime() / 1000)) return { ok: false, reason: "expired" };
+  if (claims.exp + graceSeconds <= Math.floor(now.getTime() / 1000)) return { ok: false, reason: "expired" };
   return { ok: true, claims };
 }

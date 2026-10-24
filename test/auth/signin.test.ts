@@ -261,3 +261,42 @@ describe("push devices", () => {
     expect(bad.json()).toMatchObject({ reason: "invalid_body" });
   });
 });
+
+describe("review fixes", () => {
+  it("two refreshes at the same moment (a retry and a normal one) never fail with 500", async () => {
+    for (let round = 0; round < 8; round++) {
+      const first = await signIn(RIDER_PHONE);
+      const second = (await post("/auth/refresh", { refreshToken: first.refreshToken })).json();
+      const [retry, normal] = await Promise.all([
+        post("/auth/refresh", { refreshToken: first.refreshToken }),
+        post("/auth/refresh", { refreshToken: second.refreshToken }),
+      ]);
+      for (const res of [retry, normal]) expect([200, 401]).toContain(res.statusCode);
+      advance(3600);
+    }
+  });
+
+  it("sign-out refuses a token older than any session could be", async () => {
+    const tokens = await signIn(RIDER_PHONE);
+    advance(31 * 24 * 3600 + 900);
+    const res = await post("/auth/sign-out", undefined, bearer(tokens.accessToken));
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toMatchObject({ reason: "token_expired" });
+  });
+
+  it("behind one proxy, a faked X-Forwarded-For does not change the address limits see", async () => {
+    const proxied = await buildApp({
+      env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: SECRET, TRUST_PROXY_HOPS: "1" }),
+      logger: false,
+      db: database.db,
+      clock: () => clock.now,
+    });
+    let seen = "";
+    proxied.addHook("onRequest", async (request) => {
+      seen = request.ip;
+    });
+    await proxied.inject({ method: "GET", url: "/healthz", headers: { "x-forwarded-for": "1.2.3.4, 203.0.113.9" }, remoteAddress: "10.0.0.2" });
+    await proxied.close();
+    expect(seen).toBe("203.0.113.9");
+  });
+});

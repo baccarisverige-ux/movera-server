@@ -289,9 +289,12 @@ export async function refreshTokens(deps: AuthDeps, refreshToken: string): Promi
   const now = deps.clock?.() ?? new Date();
   const hash = sha256(refreshToken);
   const outcome = await deps.db.transaction().execute(async (trx): Promise<RefreshOutcome> => {
-    const token = await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", hash).forUpdate().executeTakeFirst();
-    if (token === undefined) return { ok: false, error: unauthenticated("refresh_token_unknown") };
-    const session = await trx.selectFrom("auth_sessions").selectAll().where("session_id", "=", token.session_id).forUpdate().executeTakeFirstOrThrow();
+    // Lock order: the session first, then its tokens. Every refresh of a session queues on that one row, so two
+    // refreshes at once (a retry and a normal one) wait for each other instead of deadlocking.
+    const owner = await trx.selectFrom("refresh_tokens").select("session_id").where("token_sha256", "=", hash).executeTakeFirst();
+    if (owner === undefined) return { ok: false, error: unauthenticated("refresh_token_unknown") };
+    const session = await trx.selectFrom("auth_sessions").selectAll().where("session_id", "=", owner.session_id).forUpdate().executeTakeFirstOrThrow();
+    const token = await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", hash).forUpdate().executeTakeFirstOrThrow();
     if (session.revoked_at !== null) return { ok: false, error: unauthenticated("session_ended") };
     if (session.expires_at.getTime() <= now.getTime() || token.expires_at.getTime() <= now.getTime()) {
       return { ok: false, error: unauthenticated("session_expired") };

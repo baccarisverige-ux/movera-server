@@ -27,7 +27,8 @@ export async function buildApp({ env, logger = true, db, clock }: BuildOptions):
     },
     requestIdHeader: false,
     bodyLimit: 1024 * 1024,
-    trustProxy: env.TRUST_PROXY,
+    // Trust exactly TRUST_PROXY_HOPS proxies: the address is the one the nearest trusted proxy saw.
+    trustProxy: env.TRUST_PROXY_HOPS > 0 ? (_address: string, hop: number) => hop < env.TRUST_PROXY_HOPS : false,
   });
 
   // An empty body with Content-Type: application/json (the apps' sign-out) is "no body", not bad JSON.

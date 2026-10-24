@@ -26,13 +26,13 @@ Settings come from the environment (`src/env.ts`):
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `MOVERA_ENV` | `development`, `staging` or `production`. Test sign-in numbers exist only outside production. | `development` |
+| `MOVERA_ENV` | `development`, `staging` or `production`. Test sign-in numbers exist only outside production. | `production` (the safe side; `npm run dev` sets `development`) |
 | `PORT`, `HOST` | Where the server listens | `8080`, `0.0.0.0` |
 | `DATABASE_URL` | `postgres://user:pass@host:5432/db`. Required on staging and production. | none |
 | `MIGRATE_ON_START` | Apply new migrations at start (instances take turns) | `true` |
 | `DATABASE_POOL_MAX` | Connections per instance | `10` |
 | `JWT_SECRET` | Signs access tokens, at least 32 characters. Required on staging and production. | random per start |
-| `TRUST_PROXY` | `true` behind the host's proxy, so rate limits see the phone's address | `false` |
+| `TRUST_PROXY_HOPS` | Proxies in front of the server (the host's load balancer = 1), so limits see the phone's real address and it cannot be faked | `0` |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
 Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).

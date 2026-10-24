@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "MOVERA_ENV=development tsx watch src/main.ts",
     "start": "node dist/main.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",

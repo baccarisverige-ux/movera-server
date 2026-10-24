@@ -2,7 +2,7 @@ import type { FastifyRequest } from "fastify";
 import type { Executor } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
 import { verifyAccessToken, type Actor } from "./jwt.js";
-import { sessionIsActive } from "./service.js";
+import { REFRESH_TTL_MS, sessionIsActive } from "./service.js";
 
 /** Who is calling, from the access token (contract: actor and ids come from the token, never from the body). */
 export type Principal = { actor: Actor; subjectId: string; sessionId: string; zones: string[] };
@@ -29,7 +29,9 @@ export async function authenticate(
   const token = bearer(request);
   if (token === undefined) throw new ApiError("unauthenticated", "Please sign in.", { reason: "token_missing" });
   const now = deps.clock?.() ?? new Date();
-  const result = verifyAccessToken(token, deps.jwtSecret, now, options.allowEndedSession === true);
+  // Sign-out accepts an expired token, but only one young enough that its session could still be alive.
+  const grace = options.allowEndedSession === true ? REFRESH_TTL_MS / 1000 : 0;
+  const result = verifyAccessToken(token, deps.jwtSecret, now, grace);
   if (!result.ok) throw new ApiError("unauthenticated", "Please sign in again.", { reason: result.reason === "expired" ? "token_expired" : "token_invalid" });
   const { claims } = result;
   if (!actors.includes(claims.actor)) throw new ApiError("forbidden", "This app cannot do that.", { reason: "wrong_actor" });
