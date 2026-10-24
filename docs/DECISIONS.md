@@ -40,6 +40,9 @@ Technical rules decided without the owner (they match what the apps already do):
 - One driver declining in a Radar group leaves the trip `offered` while other offers are open.
 - `ratingStatus` follows the rider's rating; driver ratings are stored separately.
 - Approvals and Idempotency-Keys are kept 24 hours.
+- A quote is valid 5 minutes. Until our OSRM runs, the server estimates a route as straight line × 1.25 at 24 km/h (the admin panel's dispatch formula) and stores which one it used.
+- Settings: a zone with no draft yet takes its first save with `expectedVersion` 1; on publish the server stamps the next live `version` and `publishedAt` into the document.
+- A pickup outside the open zones is `403 forbidden`, reason `service_not_available`; an open zone without published prices is `503`, reason `pricing_not_published`.
 
 ## Before every test round
 

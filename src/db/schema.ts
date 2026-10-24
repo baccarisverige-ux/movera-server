@@ -232,6 +232,10 @@ export interface ZonesTable {
   center_lng: number;
   open: Generated<boolean>;
   created_at: Timestamp;
+  south: number;
+  west: number;
+  north: number;
+  east: number;
 }
 
 export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch";
@@ -293,6 +297,32 @@ export interface AdminAuditTable {
   at: Timestamp;
 }
 
+export interface QuotesTable {
+  quote_id: string;
+  rider_id: string;
+  zone_id: string;
+  category_id: string;
+  kind: "live" | "scheduled";
+  scheduled_at: Timestamp | null;
+  pickup: Json;
+  dropoff: Json;
+  stops: JsonDefault<unknown[]>;
+  distance_meters: number;
+  duration_seconds: number;
+  route_source: "osrm" | "estimate";
+  /** numeric comes back as a string. */
+  surge_multiplier: ColumnType<string, number | string | undefined, number | string>;
+  currency: string;
+  total_minor: ColumnType<string, number | string, number | string>;
+  fare_lines: Json;
+  driver_earnings_minor: ColumnType<string, number | string, number | string>;
+  pricing_version: number;
+  payment_method: string | null;
+  expires_at: Timestamp;
+  used_at: Timestamp | null;
+  created_at: Timestamp;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -315,4 +345,5 @@ export interface Database {
   config_history: ConfigHistoryTable;
   approvals: ApprovalsTable;
   admin_audit: AdminAuditTable;
+  quotes: QuotesTable;
 }

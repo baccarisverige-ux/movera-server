@@ -8,10 +8,12 @@ export const IDEMPOTENCY_KEY_TTL_MS = 24 * HOUR_MS;
 
 export const SWEEP_IDEMPOTENCY_KEYS = "sweep_idempotency_keys";
 
-/** Every hour: forget Idempotency-Keys older than a day, then book the next sweep. */
+/** Every hour: forget Idempotency-Keys older than a day and unused quotes, then book the next sweep. */
 export const sweepIdempotencyKeysHandler: TimerHandler = async (trx) => {
   const now = new Date();
   await trx.deleteFrom("idempotency_keys").where("created_at", "<", new Date(now.getTime() - IDEMPOTENCY_KEY_TTL_MS)).execute();
+  // Quotes nobody booked, a day after they expired.
+  await trx.deleteFrom("quotes").where("expires_at", "<", new Date(now.getTime() - 24 * HOUR_MS)).where("used_at", "is", null).execute();
   await trx
     .insertInto("timers")
     .values({ kind: SWEEP_IDEMPOTENCY_KEYS, ref_id: "all", due_at: new Date(now.getTime() + HOUR_MS) })
