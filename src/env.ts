@@ -23,6 +23,8 @@ const schema = z.object({
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   /** Signs access tokens. At least 32 characters; required on staging and production (a laptop gets a random one). */
   JWT_SECRET: z.string().min(32).optional(),
+  /** The zone an app gets when it asks for settings without naming one. */
+  DEFAULT_ZONE_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).default("Z001"),
   /** Where the admin panel lives; setup links point at its /setup-password page. */
   ADMIN_PANEL_URL: z.string().url().default("http://localhost:5173"),
   /**

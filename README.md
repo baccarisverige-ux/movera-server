@@ -72,6 +72,18 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
 - Refresh token: opaque, 30 days, rotated on every refresh. A token used twice ends the session, except the same
   token again within a minute (an answer lost on a bad connection).
 
+## Admin sign-in and settings (contract §9, §6)
+
+- `npm run admin -- create --email <e-mail> --name "<name>" --role super` creates an admin and prints a one-time
+  link (72 h) to choose the password; `npm run admin -- link --email <e-mail>` makes a new one. In the container:
+  `node dist/admin/cli.js …`.
+- The admin panel saves a draft per document and zone (`PUT /admin/config/{doc}`), then publishes it. The server
+  checks every document against the contract's schema and its zone, stamps the next `version` and `publishedAt`,
+  keeps every version in `config_history`, and tells the apps (`config_published`). Pricing and dispatch are read by
+  the server only.
+- A Super admin publishes at once; anyone else's publish waits for a second admin (`/admin/approvals`, 24 h).
+  Every change is written to `admin_audit`.
+
 ## Build plan
 
 The server lands in small pull requests, each tested:
@@ -81,7 +93,7 @@ The server lands in small pull requests, each tested:
    fees, pickup pay, surge. *(done)*
 3. Database, idempotency, versioned commands, trip event log, timers. *(done)*
 4. Sign-in: phone code with test numbers, tokens, push devices. *(done; admin sign-in comes with contract v0.5.1)*
-5. Config documents and admin publish.
+5. Config documents and admin publish. *(done: admin sign-in, drafts, publish, second-admin approvals, audit)*
 6. Places, routes and quotes.
 7. Trips: request, read, rider profile, cash payment.
 8. Live updates (SSE).

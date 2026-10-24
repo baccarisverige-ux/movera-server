@@ -9,6 +9,7 @@ import { ApiError, badRequest, notFound } from "./http/errors.js";
 import { API_PREFIX } from "./http/prefix.js";
 import { authRoutes } from "./auth/routes.js";
 import { adminAuthRoutes } from "./admin/routes.js";
+import { configRoutes } from "./config/routes.js";
 
 export { API_PREFIX };
 
@@ -106,6 +107,7 @@ export async function buildApp({ env, logger = true, db, clock }: BuildOptions):
     const jwtSecret = env.JWT_SECRET ?? DEV_JWT_SECRET;
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", ...(clock ? { clock } : {}) });
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });
+    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(clock ? { clock } : {}) });
   }
 
   return app;

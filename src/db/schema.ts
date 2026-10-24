@@ -221,6 +221,78 @@ export interface AdminSignInFailuresTable {
   at: Timestamp;
 }
 
+export interface ZonesTable {
+  zone_id: string;
+  name: string;
+  country: string;
+  currency: string;
+  time_zone: string;
+  kind: Generated<"operating" | "airport">;
+  center_lat: number;
+  center_lng: number;
+  open: Generated<boolean>;
+  created_at: Timestamp;
+}
+
+export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch";
+
+export interface ConfigDraftsTable {
+  doc: ConfigDoc;
+  zone_id: string;
+  version: number;
+  document: Json;
+  updated_at: Timestamp;
+  updated_by: string | null;
+}
+
+export interface ConfigLiveTable {
+  doc: ConfigDoc;
+  zone_id: string;
+  version: number;
+  document: Json;
+  published_at: Timestamp;
+  published_by: string | null;
+}
+
+export interface ConfigHistoryTable {
+  doc: ConfigDoc;
+  zone_id: string;
+  version: number;
+  document: Json;
+  published_at: Timestamp;
+  published_by: string | null;
+  approved_by: string | null;
+  note: string | null;
+}
+
+export interface ApprovalsTable {
+  approval_id: string;
+  action: string;
+  target_type: "trip" | "payment" | "refund" | "payout" | "config" | "driver" | "rider";
+  target_id: string;
+  payload: JsonDefault;
+  approve_permission: string;
+  zone_id: string | null;
+  status: Generated<"pending_approval" | "approved" | "rejected" | "expired">;
+  requested_by: string;
+  requested_at: Timestamp;
+  expires_at: Timestamp;
+  decided_by: string | null;
+  decided_at: Timestamp | null;
+  decision_note: string | null;
+}
+
+export interface AdminAuditTable {
+  audit_id: Generated<string>;
+  admin_id: string | null;
+  action: string;
+  target_type: string;
+  target_id: string;
+  zone_id: string | null;
+  detail: JsonDefault;
+  at: Timestamp;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -237,4 +309,10 @@ export interface Database {
   admins: AdminsTable;
   admin_setup_links: AdminSetupLinksTable;
   admin_sign_in_failures: AdminSignInFailuresTable;
+  zones: ZonesTable;
+  config_drafts: ConfigDraftsTable;
+  config_live: ConfigLiveTable;
+  config_history: ConfigHistoryTable;
+  approvals: ApprovalsTable;
+  admin_audit: AdminAuditTable;
 }
