@@ -181,7 +181,7 @@ export async function setDriverStatus(trx: Trx, who: Principal, driverId: string
   const online = blocked && ["online", "going_online"].includes(row.online_status) ? { online_status: "offline" as const, online_since: null } : {};
   await trx.updateTable("drivers").set({ account_status: body.accountStatus, ...online, version: row.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
   if (blocked) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
-  await audit(trx, { adminId: who.subjectId, action: "driver.status", targetType: "driver", targetId: driverId, detail: { from: row.account_status, to: body.accountStatus, note: body.note }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "driver.status", targetType: "driver", targetId: driverId, zoneId: row.zone_ids[0] ?? null, detail: { from: row.account_status, to: body.accountStatus, note: body.note }, at: now });
   return driverView(trx, await loadDriver(trx, driverId), "admin");
 }
 

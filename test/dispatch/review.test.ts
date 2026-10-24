@@ -164,6 +164,8 @@ describe("dispatch runtime review", () => {
     await worker.runDue();
     clock.now = new Date(start + 480_000);
     await Promise.all([worker.runOne(), worker2.runOne()]);
+    // A worker that found the trip busy retries 250 ms later (TimerBusy): move the clock past that.
+    clock.now = new Date(start + 481_000);
     await worker.runDue();
     const trip = await database.db.selectFrom("trips").select(["status", "search_step"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
     expect({ warnings: warnings.join(), status: trip.status, step: (trip.search_step as { id: string } | null)?.id }).toEqual({ warnings: "", status: "expired", step: "w5" });

@@ -62,11 +62,20 @@ async function bonusLimit(ex: Executor, trip: TripRow): Promise<number> {
   return Math.min(limit, hardMax);
 }
 
-async function checkBonus(ex: Executor, trip: TripRow, amount: Money, already: number) {
+/**
+ * Every bonus on a trip counts toward its limit: the bonus waiting on the trip plus what was already paid out on
+ * it (lost drivers, or the bonus paid at completion, which is the same money then).
+ */
+async function bonusSoFar(ex: Executor, trip: TripRow): Promise<number> {
+  const paid = await ex.selectFrom("earnings_entries").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("kind", "=", "bonus").executeTakeFirstOrThrow();
+  return (trip.status === "completed" ? 0 : Number(trip.driver_bonus_minor ?? 0)) + Number(paid.n);
+}
+
+async function checkBonus(ex: Executor, trip: TripRow, amount: Money) {
   sameCurrency(trip, amount, "The bonus");
   if (amount.amountMinor <= 0) throw badRequest("The bonus must be more than 0.", "invalid_amount");
   const limit = await bonusLimit(ex, trip);
-  if (already + amount.amountMinor > limit) {
+  if ((await bonusSoFar(ex, trip)) + amount.amountMinor > limit) {
     throw badRequest(`A trip can carry at most ${limit / 100} ${trip.currency} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
   }
 }
@@ -75,8 +84,7 @@ async function checkBonus(ex: Executor, trip: TripRow, amount: Money, already: n
 async function payLostDriver(trx: Trx, trip: TripRow, bonus: Money | undefined, now: Date) {
   if (!bonus) return;
   if (!trip.driver_id) throw badRequest("This trip has no driver to pay.", "no_driver");
-  const given = await trx.selectFrom("earnings_entries").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("driver_id", "=", trip.driver_id).where("kind", "=", "bonus").executeTakeFirstOrThrow();
-  await checkBonus(trx, trip, bonus, Number(given.n));
+  await checkBonus(trx, trip, bonus);
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: bonus.amountMinor }, now);
 }
 
@@ -113,7 +121,7 @@ type OfferBody = { expectedVersion: number; note?: string; driverBonus?: Money; 
 async function withBonus(trx: Trx, trip: TripRow, body: OfferBody): Promise<TripRow> {
   if (!body.driverBonus && body.priority === undefined) return trip;
   const already = Number(trip.driver_bonus_minor ?? 0);
-  if (body.driverBonus) await checkBonus(trx, trip, body.driverBonus, already);
+  if (body.driverBonus) await checkBonus(trx, trip, body.driverBonus);
   const bonus = already + (body.driverBonus?.amountMinor ?? 0);
   await trx.updateTable("trips").set({ driver_bonus_minor: bonus, commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus, ...(body.priority !== undefined ? { priority: body.priority } : {}) }).where("trip_id", "=", trip.trip_id).execute();
   return trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
@@ -145,7 +153,7 @@ export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string,
   if (["cancelled_by_rider", "cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system", "expired", "failed", "no_show"].includes(trip.status)) {
     throw new ApiError("invalid_transition", "This trip is over; pay a lost driver with the cancel or reassign bonus.", { reason: "trip_over", projection: tripProjection(trip, "admin") });
   }
-  await checkBonus(trx, trip, body.amount, Number(trip.driver_bonus_minor ?? 0));
+  await checkBonus(trx, trip, body.amount);
   const bonus = Number(trip.driver_bonus_minor ?? 0) + body.amount.amountMinor;
   const updated = await touchTrip(trx, trip, { driver_bonus_minor: bonus, commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus, ...(body.priority !== undefined ? { priority: body.priority } : {}) }, now);
   // A completed trip's earnings are already written: the bonus is its own entry now.
@@ -188,6 +196,9 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
     // The rider owes nothing more; the driver keeps the share already credited (owner decision 34).
     const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", trip.trip_id).forUpdate().executeTakeFirst();
     if (!fee || fee.status !== "owed") throw new ApiError("conflict", "There is no unpaid fee on this trip.", { reason: "no_fee_to_waive", projection: tripProjection(trip, "admin") });
+    // A ride going now already carries it in its price: waive it after that ride, or refund it then.
+    const carrying = await trx.selectFrom("trips").select("trip_id").where("rider_id", "=", trip.rider_id).where("status", "not in", [...TERMINAL]).where(sql<boolean>`fare_lines @> '[{"code":"outstanding_fee"}]'::jsonb`).executeTakeFirst();
+    if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; waive it when that ride is over.", { reason: "fee_on_running_trip", projection: tripProjection(trip, "admin") });
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
     set["cancellation"] = JSON.stringify({ ...(trip.cancellation as object), feeStatus: "waived" });
     await refreshOutstanding(trx, trip.rider_id, now);
@@ -195,6 +206,8 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
   if (p.waitingSeconds !== undefined || p.fare !== undefined) {
     // A paid trip is corrected with a refund, so cash and the record never disagree.
     if (terminal(trip.status)) throw new ApiError("invalid_transition", "This trip is paid; use a refund.", { reason: "use_refund", projection: tripProjection(trip, "admin") });
+    // Before accept the offers carry the price; change it once a driver has it.
+    if (["draft", "quoted", "requested", "searching", "offered"].includes(trip.status)) throw new ApiError("invalid_transition", "Change the fare after a driver accepted.", { reason: "adjust_after_accept", projection: tripProjection(trip, "admin") });
     let row = trip;
     if (p.waitingSeconds !== undefined) {
       if (!trip.waiting) throw new ApiError("invalid_transition", "The driver has not arrived yet.", { reason: "no_waiting", projection: tripProjection(trip, "admin") });
@@ -245,23 +258,30 @@ export function refundView(r: { refund_id: string; trip_id: string; currency: st
   };
 }
 
-async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: Date): Promise<Record<string, unknown>> {
-  const trip = await lockTrip(trx, p.tripId);
-  expectVersion(trip, p.expectedVersion, "admin");
-  sameCurrency(trip, p.amount, "The refund");
+/** What can still be refunded: what the rider paid (cash taken + wallet), less the refunds already made. */
+async function refundRoom(ex: Executor, trip: TripRow, amount: Money) {
+  sameCurrency(trip, amount, "The refund");
   if (!terminal(trip.status) || !["captured", "partially_refunded"].includes(trip.payment_status ?? "")) {
     throw new ApiError("invalid_transition", "Only a paid trip can be refunded.", { reason: "not_paid", projection: tripProjection(trip, "admin") });
   }
-  if (p.amount.amountMinor <= 0) throw badRequest("The refund must be more than 0.", "invalid_amount");
-  const done = await trx.selectFrom("refunds").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("status", "=", "done").executeTakeFirstOrThrow();
-  const paid = Number(trip.fare_minor);
+  if (amount.amountMinor <= 0) throw badRequest("The refund must be more than 0.", "invalid_amount");
+  const done = await ex.selectFrom("refunds").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("status", "=", "done").executeTakeFirstOrThrow();
+  const paid = trip.cash_collected_minor === null ? Number(trip.fare_minor) : Number(trip.cash_collected_minor) + Number(trip.wallet_applied_minor ?? 0);
   const left = paid - Number(done.n);
-  if (p.amount.amountMinor > left) throw badRequest(`At most ${left / 100} ${trip.currency} is left to refund.`, "refund_too_large");
+  if (amount.amountMinor > left) throw badRequest(`At most ${Math.max(0, left) / 100} ${trip.currency} is left to refund.`, "refund_too_large");
+  return { paid, left };
+}
+
+async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: Date): Promise<Record<string, unknown>> {
+  const trip = await lockTrip(trx, p.tripId);
+  expectVersion(trip, p.expectedVersion, "admin");
+  const { paid, left } = await refundRoom(trx, trip, p.amount);
   const refundId = newId("rfd", now.getTime());
   await trx.insertInto("refunds").values({ refund_id: refundId, trip_id: trip.trip_id, rider_id: trip.rider_id, currency: trip.currency, amount_minor: p.amount.amountMinor, reason: p.reason, status: "done", approval_id: null, from_driver: p.fromDriver === true, destination: null, payout_to: null, payout_status: null, created_by: createdBy, created_at: now }).execute();
   // "Take from driver": the driver loses their share of the refunded money (owner decision 31).
   if (p.fromDriver && trip.driver_id && paid > 0) {
-    const share = Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / paid);
+    const fare = Number(trip.fare_minor);
+    const share = fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0;
     if (share > 0) await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
   }
   const all = p.amount.amountMinor === left;
@@ -274,6 +294,9 @@ registerApprovalHandler(REFUND_ACTION, async (trx, payload, _approvedBy, request
 
 export async function adminRefund(trx: Trx, who: Principal, tripId: string, body: Omit<RefundPayload, "tripId">, now: Date): Promise<{ status: number; body: unknown }> {
   const trip = await adminTrip(trx, who, tripId);
+  // Checked now too, so a request that cannot work is refused at once instead of waiting for a second admin.
+  expectVersion(trip, body.expectedVersion, "admin");
+  await refundRoom(trx, trip, body.amount);
   const ran = await runOrRequest<Record<string, unknown>>(trx, who, { action: REFUND_ACTION, targetType: "refund", targetId: tripId, zoneId: trip.zone_id, payload: { ...body, tripId }, approvePermission: "approval.decide" }, now);
   return ran.ran ? { status: 201, body: ran.result } : { status: 202, body: ran.pending };
 }
@@ -282,10 +305,10 @@ export async function adminRefund(trx: Trx, who: Principal, tripId: string, body
 export async function markRefundPaid(trx: Trx, who: Principal, refundId: string, body: { note?: string }, now: Date) {
   const r = await trx.selectFrom("refunds").selectAll().where("refund_id", "=", refundId).forUpdate().executeTakeFirst();
   if (!r) throw new ApiError("not_found", "No such refund.", { reason: "refund_not_found" });
-  await adminTrip(trx, who, r.trip_id);
+  const trip = await adminTrip(trx, who, r.trip_id);
   if (r.payout_status !== "pending") throw new ApiError("conflict", r.payout_status === "paid" ? "This refund is already paid." : "The rider has not chosen Swish or a bank account.", { reason: r.payout_status === "paid" ? "already_paid" : "no_payout" });
   await trx.updateTable("refunds").set({ payout_status: "paid", paid_at: now, paid_by: who.subjectId }).where("refund_id", "=", refundId).execute();
-  await audit(trx, { adminId: who.subjectId, action: "refund.paid", targetType: "refund", targetId: refundId, detail: { note: body.note ?? null, destination: r.destination }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "refund.paid", targetType: "refund", targetId: refundId, zoneId: trip.zone_id, detail: { note: body.note ?? null, destination: r.destination }, at: now });
   return refundView((await trx.selectFrom("refunds").selectAll().where("refund_id", "=", refundId).executeTakeFirstOrThrow()));
 }
 

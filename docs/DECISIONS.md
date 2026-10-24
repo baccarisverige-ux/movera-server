@@ -82,6 +82,12 @@ Technical rules:
 - Refunds: at most what the trip was paid, in total. Non-super admins' refunds and adjusts wait for a second admin.
 - Wallet: used first on the next ride (from boarding the driver sees `cashToCollect`); the driver's earnings do not change, Movera covers the wallet part.
 - A blocked driver goes offline (a ride already going runs to its end) and loses open offers; a blocked rider cannot book.
+- The wallet pays exactly what the driver was shown at boarding; money reaching the wallet later stays there for the next ride.
+- A fee carried by a ride still going cannot be waived until that ride is over. The fare can be changed only after a driver accepted (before, the offers carry the price).
+- The bonus limit counts everything on a trip: the trip bonus and money given to drivers who lost it.
+- A refund is at most what the rider paid (cash taken + wallet). A refund that cannot work is refused at once, also for admins whose refunds wait for approval.
+- Payout accounts are shown only to finance admins of the trip's zone.
+- Later: `GET /admin/refunds` (list), a `pending_approval` refund row while it waits, and rider lists by zone (riders have no home zone yet).
 
 Contract v0.5.2 additions this needs (the server already does them; the contract and the apps follow):
 `TripProjection.walletApplied` and `cashToCollect`; fare line `adjustment`; `driverBonus` on admin cancel and reassign (money for the driver who lost the ride); `fromDriver` on refunds; `Refund.destination`, `payoutStatus`, `paidAt`, `fromDriver`; `GET /rider/refunds`, `POST /rider/refunds/{refundId}/destination` (wallet / swish / bank, Swish only in Sweden), `GET /admin/refunds/payouts`, `POST /admin/refunds/{refundId}/paid`; `DriverAppConfig.cancelFees.driverSharePct` (decision 26); `PaymentIntent.cashCollected` and `walletApplied` in the admin list.

@@ -111,13 +111,17 @@ export async function chooseRefundDestination(trx: Trx, riderId: string, refundI
 }
 
 /** The admin's list of refunds to pay by hand (Swish / bank), with the full account so they can send it. */
-export async function payoutsToMake(ex: Executor, input: { status: "pending" | "paid" }) {
-  const rows = await ex
+export async function payoutsToMake(ex: Executor, input: { status: "pending" | "paid"; zones: string[] | null }) {
+  let q = ex
     .selectFrom("refunds")
     .innerJoin("riders", "riders.rider_id", "refunds.rider_id")
+    .innerJoin("trips", "trips.trip_id", "refunds.trip_id")
     .selectAll("refunds")
     .select(["riders.first_name", "riders.phone"])
-    .where("refunds.payout_status", "=", input.status)
+    .where("refunds.payout_status", "=", input.status);
+  // Only the admin's zones: payout accounts are personal data.
+  if (input.zones) q = q.where("trips.zone_id", "in", input.zones.length ? input.zones : ["-"]);
+  const rows = await q
     .orderBy("refunds.created_at")
     .limit(200)
     .execute();

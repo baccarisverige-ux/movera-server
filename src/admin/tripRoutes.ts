@@ -90,8 +90,8 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     return listAudit(deps.db, who, clean(parseBody(AuditQuery, request.query)));
   });
   app.get(`${API_PREFIX}/admin/refunds/payouts`, async (request) => {
-    await authenticateAdmin(request, guard, "finance.read");
-    return payoutsToMake(deps.db, { status: parseBody(PayoutsQuery, request.query).payoutStatus });
+    const who = await authenticateAdmin(request, guard, "finance.read");
+    return payoutsToMake(deps.db, { status: parseBody(PayoutsQuery, request.query).payoutStatus, zones: who.zones.includes("*") ? null : who.zones });
   });
 
   /* ---- trip commands */

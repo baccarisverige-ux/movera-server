@@ -272,10 +272,13 @@ async function walletCovers(ex: Executor, riderId: string, fareMinor: number): P
   return Math.max(0, Math.min(Number(rider.wallet_minor), fareMinor));
 }
 
-/** The trip is paid: the wallet pays first (a charge entry), the driver collects the rest in cash. */
+/**
+ * The trip is paid: the wallet pays the part the driver was shown at boarding (never more, so money that reaches
+ * the wallet later stays there), the driver collects the rest in cash.
+ */
 async function spendWallet(trx: Trx, trip: TripRow, fareMinor: number, now: Date): Promise<number> {
   const rider = await trx.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).forUpdate().executeTakeFirstOrThrow();
-  const applied = Math.max(0, Math.min(Number(rider.wallet_minor), fareMinor));
+  const applied = Math.max(0, Math.min(Number(rider.wallet_minor), fareMinor, Number(trip.wallet_applied_minor ?? 0)));
   if (applied > 0) {
     await trx.updateTable("riders").set({ wallet_minor: sql`wallet_minor - ${applied}`, updated_at: now }).where("rider_id", "=", trip.rider_id).execute();
     await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: trip.rider_id, kind: "charge", currency: trip.currency, amount_minor: -applied, trip_id: trip.trip_id, at: now }).execute();
@@ -455,7 +458,10 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
 export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: "cancel" | "reassign"; actor: "driver" | "admin"; now: Date; exclude?: string }): Promise<TripRow> {
   const now = input.now;
   const quote = trip.quote_id ? await trx.selectFrom("quotes").select("driver_earnings_minor").where("quote_id", "=", trip.quote_id).executeTakeFirst() : undefined;
-  const earnings = quote ? Number(quote.driver_earnings_minor) : Number(trip.driver_earnings_minor ?? 0);
+  const booked = Number(trip.booked_fare_minor);
+  const quoted = quote ? Number(quote.driver_earnings_minor) : Number(trip.driver_earnings_minor ?? 0);
+  // An admin may have changed the fare: the driver's share follows it.
+  const earnings = booked > 0 && Number(trip.fare_minor) !== booked ? Math.round((quoted * Number(trip.fare_minor)) / booked) : quoted;
   const back = await applyCommand(trx, trip, {
     command: input.command,
     actor: input.actor,
