@@ -1,4 +1,6 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { NotificationHub } from "../realtime/hub.js";
+import { streamConfig } from "../realtime/streams.js";
 import { z } from "zod";
 import { adminCoversZone, authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
 import type { Db } from "../db/db.js";
@@ -23,7 +25,7 @@ import {
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
-export type ConfigDeps = { db: Db; jwtSecret: string; defaultZoneId: string; clock?: () => Date };
+export type ConfigDeps = { db: Db; jwtSecret: string; defaultZoneId: string; hub?: NotificationHub; clock?: () => Date };
 
 const ZONE_ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const DocParam = z.object({ doc: z.enum(CONFIG_DOCS as [ConfigDoc, ...ConfigDoc[]]) });
@@ -63,6 +65,21 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
   };
   app.get(`${API_PREFIX}/rider/config`, serveAppDoc("rider_app_config", "rider"));
   app.get(`${API_PREFIX}/driver/config`, serveAppDoc("driver_app_config", "driver"));
+
+  // config_published streams (contract §4): the apps re-fetch the document when one arrives.
+  const streamAppDoc = (doc: ConfigDoc, actor: "rider" | "driver") => async (request: FastifyRequest, reply: FastifyReply) => {
+    const who = await authenticate(request, guard, [actor]);
+    const { zoneId: asked } = parseBody(OptionalZoneQuery, request.query);
+    const zoneId = asked ?? (actor === "driver" ? who.zones[0] : undefined) ?? deps.defaultZoneId;
+    await getZone(deps.db, zoneId);
+    if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available.", { reason: "realtime_unavailable", retryAfterSeconds: 5 });
+    const lastEventId = request.headers["last-event-id"];
+    const seen = typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : (await liveDocument(deps.db, doc, zoneId))?.version ?? 0;
+    await streamConfig(request, reply, { db: deps.db, hub: deps.hub, ...(deps.clock ? { clock: deps.clock } : {}) }, doc, zoneId, seen);
+    return reply;
+  };
+  app.get(`${API_PREFIX}/rider/config/stream`, streamAppDoc("rider_app_config", "rider"));
+  app.get(`${API_PREFIX}/driver/config/stream`, streamAppDoc("driver_app_config", "driver"));
 
   app.get(`${API_PREFIX}/admin/config/:doc`, async (request) => {
     const who = await authenticateAdmin(request, guard, "settings.read");

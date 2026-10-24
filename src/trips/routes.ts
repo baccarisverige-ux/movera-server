@@ -9,11 +9,15 @@ import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
 import { tripProjection } from "./projection.js";
+import { eventEnvelope } from "../realtime/events.js";
+import type { NotificationHub } from "../realtime/hub.js";
+import { wantsEventStream } from "../realtime/sse.js";
+import { streamTrip } from "../realtime/streams.js";
 import { activeTrip, createTrip, getTrip, riderCancel, riderTrips, setCancelReason } from "./service.js";
 
 /** contract §3, §7: trips for the rider (with the deprecated /rides aliases), the rider profile, payment methods. */
 
-export type TripDeps = { db: Db; jwtSecret: string; paymentMethods: readonly string[]; currency: string; clock?: () => Date };
+export type TripDeps = { db: Db; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional() });
@@ -86,7 +90,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     return result.body;
   });
 
-  app.get(`${API_PREFIX}/trips/:tripId/events`, async (request) => {
+  app.get(`${API_PREFIX}/trips/:tripId/events`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider", "driver", "admin"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
     const query = parseBody(EventsQuery, request.query);
@@ -94,24 +98,16 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const after = query.after ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : 0);
     const viewer = who.actor as "rider" | "driver" | "admin";
     await getTrip(deps.db, tripId, { actor: viewer, subjectId: who.subjectId });
+    if (wantsEventStream(request)) {
+      if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available; poll the trip instead.", { reason: "realtime_unavailable", retryAfterSeconds: 5 });
+      await streamTrip(request, reply, { db: deps.db, hub: deps.hub, ...(deps.clock ? { clock: deps.clock } : {}) }, tripId, who, after);
+      return reply;
+    }
     const rows = await tripEventsAfter(deps.db, tripId, after, query.limit + 1);
-    const serverTime = now().toISOString();
-    const items = rows.slice(0, query.limit).map((row) => ({
-      eventId: row.event_id,
-      tripId: row.trip_id,
-      sequence: Number(row.sequence),
-      version: row.version,
-      kind: row.kind,
-      occurredAt: row.occurred_at.toISOString(),
-      serverTime,
-      ...(row.projection ? { projection: redact(row.projection as Record<string, unknown>, viewer) } : {}),
-      ...(row.location ? { location: row.location } : {}),
-      ...(row.eta_seconds !== null ? { etaSeconds: row.eta_seconds } : {}),
-      ...(row.cancel_fee ? { cancelFee: row.cancel_fee } : {}),
-      ...(row.message ? { message: row.message } : {}),
-    }));
+    const serverTime = now();
+    const items = rows.slice(0, query.limit).map((row) => eventEnvelope(row, viewer, serverTime));
     const last = items[items.length - 1];
-    return { items, nextCursor: rows.length > query.limit && last ? String(last.sequence) : null };
+    return { items, nextCursor: rows.length > query.limit && last ? String(last["sequence"]) : null };
   });
 
   app.get(`${API_PREFIX}/rider/trips/active`, async (request, reply) => {
@@ -161,20 +157,4 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 202, body: await requestDeletion(trx, who.subjectId, now()) }));
     return reply.status(result.status).send(result.body);
   });
-}
-
-const RIDER_HIDDEN = ["driverEarnings", "commission"];
-const DRIVER_ONLY_LINES = new Set(["pickup_pay", "driver_bonus"]);
-
-/** The stored event projection is the full one; each viewer gets what it may see (§4). */
-function redact(projection: Record<string, unknown>, viewer: "rider" | "driver" | "admin"): Record<string, unknown> {
-  if (viewer !== "rider") {
-    const { searchStep: _s, ...rest } = projection;
-    void _s;
-    return rest;
-  }
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(projection)) if (!RIDER_HIDDEN.includes(k)) out[k] = v;
-  if (Array.isArray(out["fareLines"])) out["fareLines"] = (out["fareLines"] as Array<{ code: string }>).filter((l) => !DRIVER_ONLY_LINES.has(l.code));
-  return out;
 }

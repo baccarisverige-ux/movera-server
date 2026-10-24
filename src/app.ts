@@ -14,17 +14,19 @@ import { EstimateRouter, OsrmRouter, type Router } from "./maps/routing.js";
 import { quoteRoutes } from "./quotes/routes.js";
 import { mapsRoutes } from "./maps/routes.js";
 import { tripRoutes } from "./trips/routes.js";
+import type { NotificationHub } from "./realtime/hub.js";
+import { closeAllStreams } from "./realtime/sse.js";
 import { CachedPlaces, GooglePlaces, NoPlaces, type Places } from "./maps/places.js";
 
 export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router; places?: Places };
+export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub };
 
 const READY_TIMEOUT_MS = 2000;
 
-export async function buildApp({ env, logger = true, db, clock, router, places }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger ? { level: env.LOG_LEVEL } : false,
     // X-Request-Id: the client's id when it sends a sane one, else ours. Echoed on every response (§1 Headers).
@@ -88,6 +90,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places }
     return reply.status(404).send(error.body(request.id));
   });
 
+  app.addHook("preClose", async () => closeAllStreams(app));
+
   app.get("/healthz", async () => ({ status: "ok", contract: CONTRACT_VERSION, apiVersion: API_VERSION, env: env.MOVERA_ENV }));
   // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
   app.get("/readyz", async () => {
@@ -112,13 +116,13 @@ export async function buildApp({ env, logger = true, db, clock, router, places }
     const jwtSecret = env.JWT_SECRET ?? DEV_JWT_SECRET;
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", ...(clock ? { clock } : {}) });
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });
-    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(clock ? { clock } : {}) });
+    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??
       (env.OSRM_URL !== undefined ? new OsrmRouter(env.OSRM_URL, 2500, (error) => app.log.warn({ err: error }, "OSRM unavailable; distance estimated")) : new EstimateRouter());
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
-    await tripRoutes(app, { db, jwtSecret, paymentMethods: env.PAYMENT_METHODS, currency: "SEK", ...(clock ? { clock } : {}) });
+    await tripRoutes(app, { db, jwtSecret, paymentMethods: env.PAYMENT_METHODS, currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
 

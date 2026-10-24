@@ -88,6 +88,14 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
 - A Super admin publishes at once; anyone else's publish waits for a second admin (`/admin/approvals`, 24 h).
   Every change is written to `admin_audit`.
 
+## Live updates (contract §4)
+
+- `GET /trips/{tripId}/events` with `Accept: text/event-stream` is a live stream (`id:` = sequence, a heartbeat
+  comment every 15 s); without it, the same path answers a JSON page. `?after=` or `Last-Event-ID` resumes.
+- `GET /rider/config/stream` and `/driver/config/stream` send `config_published`.
+- One LISTEN connection per instance wakes the streams; each stream reads the events itself, so nothing is
+  skipped or repeated, and it reconnects on its own. Who may see a trip is checked again on every event.
+
 ## Build plan
 
 The server lands in small pull requests, each tested:
@@ -100,7 +108,7 @@ The server lands in small pull requests, each tested:
 5. Config documents and admin publish. *(done: admin sign-in, drafts, publish, second-admin approvals, audit)*
 6. Places, routes and quotes. *(done: fare engine on the contract's 17 cases, POST /quotes, address search, routes)*
 7. Trips: request, read, rider profile, cash payment. *(done: book from a quote, read, lists, active, cancel before a driver, cancel reason, events replay, /rides aliases, profile, cash, account deletion)*
-8. Live updates (SSE).
+8. Live updates (SSE). *(done: trip events and config_published streams, resume, per-viewer redaction)*
 9. Driver availability and location.
 10. Dispatch: offers, accept, decline, admin assign and radar groups.
 11. Trip steps, cancel, fees, waiting, no-show, rating.
