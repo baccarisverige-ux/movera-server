@@ -695,6 +695,17 @@ S["LiveDriverList"] = obj({"items": arr(ref("LiveDriver")), "staleAfterSeconds":
                           ["items", "staleAfterSeconds", "serverTime"], f"Drivers on the admin live map; the panel polls about every {LD['pollSeconds']} s.")
 S["TripTrace"] = obj({"tripId": ref("Id"), "fixes": arr(ref("GeoFix"), description="In time order."), "keptUntil": ref("Timestamp")}, ["tripId", "fixes"],
                      f"The trip's GPS trace; deleted {LD['traceKeepDays']} days after the trip (owner decision 11).")
+RN = C["riderNearby"]
+S["NearbyVehicle"] = obj(OrderedDict([
+    ("key", s("Opaque, the same for one car through the day (it changes every day), so the app can move the car smoothly between answers. Not a driver or vehicle id.", minLength=6, maxLength=32)),
+    ("lat", n(f"Rounded to {RN['roundDecimals']} decimals.", minimum=-90, maximum=90)),
+    ("lng", n(f"Rounded to {RN['roundDecimals']} decimals.", minimum=-180, maximum=180)),
+    ("heading", n("Degrees clockwise from north, from the latest fix; absent when unknown.", minimum=0, maximum=360)),
+]), ["key", "lat", "lng"], "A free car near the rider (v0.5.2). Nothing that tells who drives it.")
+S["NearbyVehicleList"] = obj({"items": arr(ref("NearbyVehicle"), maxItems=RN["maxVehicles"], description="Nearest first."),
+                              "refreshSeconds": {**i(minimum=1), "default": RN["refreshSeconds"]},
+                              "radiusMeters": {**i(minimum=1), "default": RN["radiusMeters"]}},
+                             ["items", "refreshSeconds"], "CONTRACT.md §13: " + RN["note"])
 S["AccountDeletion"] = obj({"status": s(enum=C["accountDeletion"]["status"])}, ["status"], C["accountDeletion"]["note"])
 S["RiderConsents"] = obj({"rideUpdates": b(), "emailUpdates": b(), "promotions": b()})
 
@@ -1028,6 +1039,12 @@ op("get", "/rider/trips", "listRiderTrips", "Rider trip history and reservations
 op("get", "/rider/trips/active", "getRiderActiveTrip", "The rider's current non-terminal live trip", ["rider"], "Rider · Booking",
    ok=(200, TP), desc="204 when there is none.")
 PATHS["/rider/trips/active"]["get"]["responses"]["204"] = {"description": "No active trip", "headers": HDR_REQ}
+op("get", "/rider/nearby-vehicles", "getRiderNearbyVehicles", "Free cars near a point, for the rider's map", ["rider"], "Rider · Booking",
+   params=[{**q("lat", n(minimum=-90, maximum=90)), "required": True}, {**q("lng", n(minimum=-180, maximum=180)), "required": True}],
+   ok=(200, "NearbyVehicleList"), read_only=True,
+   desc=f"CONTRACT.md §13 (v0.5.2). Drivers online and free within {RN['radiusMeters']} m of the point with a fix not older than "
+        f"{RN['freshSeconds']} s, nearest first, at most {RN['maxVehicles']}. No id, name, plate or trip; positions rounded to "
+        f"{RN['roundDecimals']} decimals. The app asks again every refreshSeconds while the rider chooses a ride. An empty list is normal.")
 op("get", "/rider/config", "getRiderConfig", "Published RiderAppConfig for a zone", ["rider"], "Config",
    params=[pref("ZoneIdQuery")], ok=(200, "RiderAppConfig"))
 op("get", "/rider/config/stream", "streamRiderConfig", "config_published events for the rider document", ["rider"], "Realtime",
