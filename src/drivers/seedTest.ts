@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import type { Trx } from "../db/db.js";
 import { newId } from "../ids.js";
 import { requiredDocuments } from "./onboardingRules.js";
@@ -76,7 +77,8 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
   for (const d of accounts.drivers) {
     const driverId = driverIds.get(d.phone)!;
     const plate = d.car.plate.toUpperCase();
-    const car = await trx.selectFrom("vehicles").select("vehicle_id").where("plate", "=", plate).executeTakeFirst();
+    // The plate index ignores case and spaces (vehicles_plate), so the lookup does too.
+    const car = await trx.selectFrom("vehicles").select("vehicle_id").where(sql<boolean>`upper(replace(plate, ' ', '')) = ${plate.replace(/\s+/g, "")}`).executeTakeFirst();
     const vehicleId = car?.vehicle_id ?? newId("veh", now.getTime());
     const carValues = { driver_id: driverId, fleet_id: fleetId, make: d.car.make, model: d.car.model, year: d.car.year, color: d.car.color, plate, seats: 4, category_ids: d.car.categoryIds, status: "approved" as const, updated_at: now };
     if (car) await trx.updateTable("vehicles").set(carValues).where("vehicle_id", "=", vehicleId).execute();
