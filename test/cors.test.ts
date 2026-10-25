@@ -53,3 +53,12 @@ describe("cross-site browser calls", () => {
     expect(() => readEnv({ MOVERA_ENV: "development", CORS_ORIGINS: "owner.github.io" })).toThrow(/CORS_ORIGINS/);
   });
 });
+
+describe("blank settings", () => {
+  it("count as not set, as a host's dashboard keeps an empty field", () => {
+    const env = readEnv({ MOVERA_ENV: "development", GOOGLE_MAPS_API_KEY: "", ADMIN_BOOTSTRAP_EMAIL: "  ", CORS_ORIGINS: "" });
+    expect(env.GOOGLE_MAPS_API_KEY).toBeUndefined();
+    expect(env.ADMIN_BOOTSTRAP_EMAIL).toBeUndefined();
+    expect(env.CORS_ORIGINS).toEqual([]);
+  });
+});

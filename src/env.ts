@@ -101,7 +101,9 @@ const schema = z.object({
 export type Env = z.infer<typeof schema>;
 
 export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  const parsed = schema.safeParse(source);
+  // A host's dashboard may keep a variable that was left blank as an empty string: that means "not set".
+  const given = Object.fromEntries(Object.entries(source).filter(([, value]) => value !== undefined && value.trim() !== ""));
+  const parsed = schema.safeParse(given);
   if (!parsed.success) {
     const lines = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
     throw new Error(`Invalid environment:\n${lines.join("\n")}`);
