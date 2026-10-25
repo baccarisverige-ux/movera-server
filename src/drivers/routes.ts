@@ -146,7 +146,7 @@ export async function readUpload(request: FastifyRequest): Promise<Upload> {
   const fields: Record<string, string> = {};
   let file: { fileName: string; mediaType: string; bytes: Buffer; truncated: boolean } | undefined;
   // A file over the limit is cut, not thrown: the upload then answers 400 file_too_large with the reason named.
-  for await (const part of request.parts({ limits: { fileSize: ONBOARDING.documents.upload.maxBytes, files: 1, fields: 8 }, throwFileSizeLimit: false })) {
+  for await (const part of request.parts({ limits: { fileSize: ONBOARDING.documents.upload.maxBytes, files: 1, fields: 8 } })) {
     if (part.type === "file") {
       const bytes = await part.toBuffer();
       file = { fileName: part.filename, mediaType: part.mimetype, bytes, truncated: part.file.truncated };

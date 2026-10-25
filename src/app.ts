@@ -57,7 +57,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   });
 
   // Document uploads (contract v0.5.3 §14): multipart, one file of at most 10 MB, read by the upload route itself.
-  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 + 1, files: 1, fields: 8, parts: 10 } });
+  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 + 1, files: 1, fields: 8, parts: 10 }, throwFileSizeLimit: false });
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("X-Request-Id", request.id);
