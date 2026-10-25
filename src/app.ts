@@ -35,6 +35,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>> };
 
 const READY_TIMEOUT_MS = 2000;
+const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
 export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
@@ -61,6 +62,24 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
 
   // Document uploads (contract v0.5.3 §14): multipart, one file of at most 10 MB, read by the upload route itself.
   await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 + 1, files: 1, fields: 8, parts: 10 }, throwFileSizeLimit: false });
+
+  // Browsers on the allowed web origins (CORS_ORIGINS) may call the API; the token travels in a header, never a cookie.
+  const corsOrigins = new Set(env.CORS_ORIGINS);
+  if (corsOrigins.size > 0) {
+    app.addHook("onRequest", async (request, reply) => {
+      const origin = request.headers.origin;
+      if (typeof origin !== "string" || !corsOrigins.has(origin)) return;
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Vary", "Origin");
+      reply.header("Access-Control-Expose-Headers", "X-Request-Id, X-Api-Version, Retry-After");
+      if (request.method === "OPTIONS" && request.headers["access-control-request-method"] !== undefined) {
+        reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE");
+        reply.header("Access-Control-Allow-Headers", CORS_HEADERS);
+        reply.header("Access-Control-Max-Age", "600");
+        return reply.status(204).send();
+      }
+    });
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("X-Request-Id", request.id);

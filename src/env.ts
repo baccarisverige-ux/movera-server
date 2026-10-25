@@ -61,6 +61,16 @@ const schema = z.object({
    * X-Forwarded-For only that many hops deep, so a phone cannot fake its address. 0: no proxy.
    */
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+  /**
+   * Web pages on another site that may call the API from a browser (the apps' web builds on GitHub Pages), as exact
+   * origins, comma-separated: https://owner.github.io. Unset: no cross-site browser calls (the phone apps and a
+   * same-site panel never need it).
+   */
+  CORS_ORIGINS: z
+    .string()
+    .optional()
+    .transform((value) => (value ?? "").split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean))
+    .pipe(z.array(z.string().regex(/^https?:\/\/[^/\s]+$/, "an origin like https://example.github.io"))),
 }).superRefine((env, ctx) => {
   if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });

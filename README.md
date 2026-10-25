@@ -22,6 +22,8 @@ npm run migrate        # apply new migrations to DATABASE_URL
 docker compose up --build   # server + PostgreSQL
 ```
 
+Test week on Render: `render.yaml` and [`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md).
+
 Settings come from the environment (`src/env.ts`):
 
 | Variable | Meaning | Default |
@@ -40,6 +42,7 @@ Settings come from the environment (`src/env.ts`):
 | `ADMIN_PANEL_URL` | Where setup links point | `http://localhost:5173` |
 | `DEFAULT_ZONE_ID` | Zone for settings when an app names none | `Z001` |
 | `TRUST_PROXY_HOPS` | Proxies in front of the server (the host's load balancer = 1), so limits see the phone's real address and it cannot be faked | `0` |
+| `CORS_ORIGINS` | Web pages on another site that may call the API from a browser (the apps' web builds), e.g. `https://owner.github.io`. Unset: none | none |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
 Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).
@@ -94,7 +97,8 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
   --categories economy` creates an approved test driver with an approved car, in every open zone.
 - `npm run admin -- seed-test` (staging and development only) makes the test week's ready accounts on the test
   numbers: three activated drivers in the approved fleet "Movera Test AB" (code `MV-TESTA`), each with an approved
-  car and every document approved, and three active riders; all sign in with the fixed code `1234`. Running it again
+  car and every document approved, and three active riders; all sign in with the fixed code `1234`. It also publishes
+  the contract's sample settings (prices, dispatch, both apps') in every open zone that has none yet. Running it again
   updates the same accounts; the testers' real numbers replace the placeholders in `src/drivers/seedTest.ts`.
 - The admin panel saves a draft per document and zone (`PUT /admin/config/{doc}`), then publishes it. The server
   checks every document against the contract's schema and its zone, stamps the next `version` and `publishedAt`,

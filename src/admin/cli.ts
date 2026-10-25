@@ -6,6 +6,7 @@ import { createAdmin, createSetupLink } from "./auth.js";
 import { isAdminRole } from "./permissions.js";
 import { seedDriver } from "../drivers/service.js";
 import { seedTestAccounts } from "../drivers/seedTest.js";
+import { seedSampleConfig } from "../config/seedConfig.js";
 
 /**
  * npm run admin -- create --email you@example.com --name "Your Name" [--role super]
@@ -35,7 +36,7 @@ const usage = [
   'npm run admin -- create --email <e-mail> --name "<name>" [--role super]',
   "npm run admin -- link --email <e-mail>",
   'npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123 [--year 2020] [--categories economy,comfort] [--zones Z001,Z002]',
-  "npm run admin -- seed-test   (the test week's activated drivers, fleet and riders on the test numbers; not for production)",
+  "npm run admin -- seed-test   (the test week's activated drivers, fleet and riders on the test numbers, and sample settings in open zones that have none; not for production)",
 ].join("\n  ");
 const pool = createPool(env.DATABASE_URL, 2);
 const db = createDb(pool);
@@ -47,6 +48,9 @@ if (command === "seed-test") {
     console.log(`test fleet ${made.fleetId} approved, code ${made.code}`);
     for (const d of made.drivers) console.log(`driver ${d.phone} active: ${d.driverId} (car ${d.vehicleId})`);
     for (const r of made.riders) console.log(`rider ${r.phone} active: ${r.riderId}`);
+    const settings = await db.transaction().execute((trx) => seedSampleConfig(trx));
+    for (const s of settings) console.log(`${s.doc} v${s.version} published in ${s.zoneId} (contract sample)`);
+    if (settings.length === 0) console.log("settings: every open zone already has its own");
     console.log("sign in with the fixed code from contract.json#auth.testSignIn (1234)");
   } finally {
     await db.destroy();
