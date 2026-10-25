@@ -136,7 +136,8 @@ export async function createSetupLink(deps: AdminDeps, adminId: string, createdB
     await trx.updateTable("admin_setup_links").set({ used_at: now }).where("admin_id", "=", adminId).where("used_at", "is", null).execute();
     await trx.insertInto("admin_setup_links").values({ token_sha256: sha256(token), admin_id: adminId, expires_at: expiresAt, used_at: null, created_by: createdBy, created_at: now }).execute();
   });
-  const url = new URL("/setup-password", deps.panelUrl);
+  // Relative to the panel's own path, so a panel under a sub-path (GitHub Pages: /<repo>/live/) keeps it.
+  const url = new URL("setup-password", deps.panelUrl.endsWith("/") ? deps.panelUrl : `${deps.panelUrl}/`);
   // The token travels in the fragment, so it never reaches a web server's logs.
   url.hash = `token=${token}`;
   return { url: url.toString(), expiresAt: expiresAt.toISOString() };

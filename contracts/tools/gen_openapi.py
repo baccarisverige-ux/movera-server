@@ -233,6 +233,75 @@ S["Vehicle"] = obj({"vehicleId": ref("Id"), "make": s(), "model": s(), "year": i
                     "plate": s(), "seats": i(minimum=1, maximum=20), "categoryIds": arr(ref("CategoryId")),
                     "status": ref("VehicleStatus"), "version": i(minimum=1)},
                    ["vehicleId", "make", "model", "year", "color", "plate", "seats", "categoryIds", "status", "version"])
+# ---- v0.5.3 (CONTRACT.md §14): driver onboarding, fleets and documents
+DO = C["driverOnboarding"]
+S["DriverAccountType"] = s("v0.5.3: driver = works for a fleet; fleet = a company with cars and drivers (its owner may drive too).",
+                           enum=DO["accountTypes"])
+S["DriverCountry"] = s("v0.5.3: ISO 3166-1 alpha-2 of the countries the driver app offers (contract.json#driverOnboarding.countries); "
+                       "only an open one is accepted on POST /driver/onboarding (else 400 invalid_request, reason country_not_open).",
+                       enum=list(DO["countries"].keys()))
+S["FleetStatus"] = s("pending until an admin reviews the fleet; approved gives it a code.", enum=["pending", "approved", "rejected", "blocked"])
+S["FleetLink"] = obj({"fleetId": ref("Id"), "name": s(), "role": s(enum=["owner", "member"]), "status": ref("FleetStatus"),
+                      "linkedAt": ref("Timestamp")}, ["fleetId", "name", "role", "status", "linkedAt"],
+                     "v0.5.3: the fleet this driver belongs to (owner = the fleet account itself).")
+S["Fleet"] = obj({"fleetId": ref("Id"), "name": s(), "orgNumber": s("Organisationsnummer (SE) or SIREN / SIRET (FR)."), "address": s(),
+                  "country": ref("DriverCountry"), "cityId": s(), "ownerDriverId": ref("Id"), "ownerName": s("The owner's first and last name."),
+                  "ownerEmail": s("Owner and admin views only.", format="email"), "status": ref("FleetStatus"),
+                  "code": s("The join code (contract.json#driverOnboarding.fleetCode); only after approval, and only to the owner and admins.",
+                            pattern="^MV-[A-Z2-9]{5}$"),
+                  "driverCount": i(minimum=0), "vehicleCount": i(minimum=0), "createdAt": ref("Timestamp"), "version": i(minimum=1)},
+                 ["fleetId", "name", "orgNumber", "country", "cityId", "ownerDriverId", "ownerName", "status", "driverCount", "vehicleCount",
+                  "createdAt", "version"], "v0.5.3: a fleet (company) account's company.")
+S["FleetDriver"] = obj({"driverId": ref("Id"), "firstName": s(), "lastName": s(), "accountStatus": ref("DriverAccountStatus"),
+                        "onlineStatus": ref("DriverOnlineStatus"), "vehicleId": ref("Id"), "linkedAt": ref("Timestamp")},
+                       ["driverId", "firstName", "accountStatus", "onlineStatus", "linkedAt"])
+S["FleetInvitationStatus"] = s(enum=["pending", "accepted", "declined", "cancelled", "expired"])
+S["FleetInvitation"] = obj({"invitationId": ref("Id"), "fleetId": ref("Id"), "fleetName": s(),
+                            "direction": s("driver_request: the driver asked with the code; owner_invite: the owner invited a phone number.", enum=["driver_request", "owner_invite"]),
+                            "driverId": {"allOf": [ref("Id")], "description": "The driver concerned; missing while an owner_invite waits for a number without an account."},
+                            "driverName": s(), "phone": s("owner_invite: the invited number (owner and admin views)."),
+                            "status": ref("FleetInvitationStatus"), "createdAt": ref("Timestamp"), "expiresAt": ref("Timestamp"),
+                            "decidedAt": ref("Timestamp"), "version": i(minimum=1)},
+                           ["invitationId", "fleetId", "fleetName", "direction", "status", "createdAt", "expiresAt", "version"],
+                           "v0.5.3 (contract.json#driverOnboarding.fleetInvitations): one side asks, the other accepts.")
+S["FleetInvitationList"] = obj({"items": arr(ref("FleetInvitation"))}, ["items"])
+S["FleetInviteRequest"] = obj({"phone": s("E.164; the driver's sign-in number.", pattern=r"^\+[1-9]\d{6,14}$")}, ["phone"], "v0.5.3: the owner invites a number.")
+S["FleetView"] = obj({"fleet": ref("Fleet"), "drivers": arr(ref("FleetDriver")), "vehicles": arr(ref("Vehicle")),
+                      "invitations": arr(ref("FleetInvitation"), description="v0.5.3: the pending invitations and requests (owner and admins; a member gets none).")},
+                     ["fleet", "drivers", "vehicles"],
+                     "v0.5.3: the fleet with its drivers (owner and admins; a member gets an empty list) and its cars.")
+S["FleetDriverEarnings"] = obj({"driverId": ref("Id"), "firstName": s(), "lastName": s(), "trips": i(minimum=0), "earnings": ref("Money")},
+                               ["driverId", "firstName", "trips", "earnings"])
+S["FleetEarnings"] = obj({"from": ref("Timestamp"), "to": ref("Timestamp"), "items": arr(ref("FleetDriverEarnings")), "total": ref("Money")},
+                         ["from", "to", "items", "total"], "v0.5.3: every driver's earnings in the period, for the fleet owner.")
+S["Driver"]["properties"].update({
+    "accountType": {"allOf": [ref("DriverAccountType")], "description": "v0.5.3; missing before POST /driver/onboarding."},
+    "lastName": s("v0.5.3"), "dateOfBirth": s("v0.5.3: YYYY-MM-DD; at least contract.json#driverOnboarding.minAge years.", format="date"),
+    "email": s("v0.5.3", format="email"), "country": {"allOf": [ref("DriverCountry")], "description": "v0.5.3"},
+    "cityId": s("v0.5.3: a cityId of the country (contract.json#driverOnboarding.countries); sets zoneIds."),
+    "language": s("v0.5.3: the driver's app language.", pattern="^[a-z]{2}(-[A-Z]{2})?$"),
+    "termsAcceptedAt": {"allOf": [ref("Timestamp")], "description": "v0.5.3: when the terms were accepted (POST /driver/onboarding)."},
+    "fleet": {"allOf": [ref("FleetLink")], "description": "v0.5.3: the fleet this driver belongs to; missing = none (a driver account waits for a fleet)."},
+    "payoutTo": s("v0.5.3: who Movera pays (contract.json#driverOnboarding.payouts): fleet for a driver linked to a fleet, self for a fleet account.",
+                  enum=["self", "fleet"]),
+    "requiredDocuments": arr(ref("DocumentType"), description="v0.5.3: the person's documents this account must have approved (contract.json#driverOnboarding.documents.required[country].driver)."),
+    "requiredFleetDocuments": arr(ref("DocumentType"), description="v0.5.3: fleet accounts only: the company's documents (…required[country].fleet)."),
+    "pendingFleetInvitations": i("v0.5.3: pending invitations waiting for this account's answer (a driver's incoming invites, or an owner's incoming requests), for the badge.", minimum=0),
+})
+S["Vehicle"]["properties"].update({
+    "fleetId": {"allOf": [ref("Id")], "description": "v0.5.3: the fleet that owns the car."},
+    "driverId": {"allOf": [ref("Id")], "description": "v0.5.3: the driver who has the car picked now (PATCH /driver/profile { vehicleId }); missing = free."},
+    "inUse": b("v0.5.3: that driver is online or on a trip, so another driver cannot pick the car (409 conflict, vehicle_in_use)."),
+    "documents": arr(ref("DocumentSummary"), description="v0.5.3: the car's documents."),
+    "requiredDocuments": arr(ref("DocumentType"), description="v0.5.3: contract.json#driverOnboarding.documents.required[country].vehicle."),
+})
+S["Document"]["properties"].update({
+    "fileName": s("v0.5.3: the uploaded file's name, for display."), "mediaType": s("v0.5.3: one of contract.json#driverOnboarding.documents.upload.mediaTypes."),
+    "uploadedAt": {"allOf": [ref("Timestamp")], "description": "v0.5.3"},
+    "reviewedAt": {"allOf": [ref("Timestamp")], "description": "v0.5.3: when an admin decided."},
+})
+S["Document"]["properties"]["fileUrl"]["description"] = ("v0.5.3: the path of the file endpoint (GET /driver/documents/{documentId}/file for the owner, "
+                                                          "GET /admin/documents/{documentId}/file for admins), never a public link; missing for terms and admin checks.")
 S["PaymentIntent"] = obj({"paymentId": ref("Id"), "tripId": ref("Id"), "amount": ref("Money"), "method": ref("PaymentMethod"),
                           "paymentMethodId": ref("Id"), "purpose": s(enum=["trip", "wallet_topup", "tip"]),
                           "status": ref("PaymentStatus"), "failureCode": s(),
@@ -476,7 +545,9 @@ S["AuthTokens"] = obj({"accessToken": s("JWT bearer token.", minLength=1), "refr
                       ["accessToken", "refreshToken"], "Signed in. Actor, subject id and zone scope are inside the access token.")
 S["ProviderSignInRequest"] = obj({"provider": s(enum=AU["providers"]), "idToken": s("The provider's identity token, verified server-side.", minLength=1),
                                   "app": s(enum=["rider", "driver"]), "name": s(maxLength=120)}, ["provider", "idToken", "app"])
-S["PhoneRequired"] = obj({"code": s(const="PHONE_REQUIRED"), "linkToken": s(minLength=1), "name": s()}, ["code", "linkToken"],
+S["PhoneRequired"] = obj({"code": s(const="PHONE_REQUIRED"), "linkToken": s(minLength=1), "name": s(),
+                          "firstName": s("v0.5.3: what the provider gave, for the driver's details screen; editable."), "lastName": s("v0.5.3"),
+                          "email": s("v0.5.3: may be Apple's hidden relay address; editable.", format="email")}, ["code", "linkToken"],
                          "No account is linked to this provider identity yet: verify a phone with this linkToken on the OTP calls and the account is created linked.")
 S["ProviderSignInResult"] = {"oneOf": [ref("AuthTokens"), ref("PhoneRequired")], "description": AU["providerNote"]}
 S["RefreshRequest"] = obj({"refreshToken": s(minLength=1)}, ["refreshToken"])
@@ -755,7 +826,7 @@ S["Page"] = obj({"items": arr({}), "nextCursor": {"type": ["string", "null"], "d
                 ["items", "nextCursor"], "Generic cursor page Page<T>. Concrete pages below narrow `items`.")
 PAGES = ["TripProjection", "Offer", "Rider", "Driver", "Vehicle", "Document", "PaymentIntent", "Refund", "Payout",
          "WalletEntry", "Notification", "Message", "SupportTicket", "Incident", "AuditEntry", "Approval",
-         "SavedPlace", "SavedPaymentMethod", "RealtimeEvent", "Quote", "AdminDispatchEvent"]
+         "SavedPlace", "SavedPaymentMethod", "RealtimeEvent", "Quote", "AdminDispatchEvent", "Fleet"]
 for p in PAGES:
     S[f"{p}Page"] = {"allOf": [ref("Page"), {"type": "object", "properties": {"items": arr(ref(p))}}],
                      "description": f"Page<{p}>"}
@@ -865,6 +936,28 @@ S["VehicleReviewCommand"] = obj(dict(EV, decision=s(enum=["approved", "rejected"
 S["DocumentReviewCommand"] = obj({"decision": s(enum=["approved", "rejected"]), "expiresAt": ref("Timestamp"),
                                   "note": s(maxLength=1000)}, ["decision"],
                                  "Document has no version in CONTRACT.md §2; Idempotency-Key only.")
+S["FleetCompany"] = obj({"name": s(minLength=1, maxLength=120), "orgNumber": s("Organisationsnummer (SE) or SIREN / SIRET (FR).", minLength=5, maxLength=20),
+                         "address": s(minLength=1, maxLength=200)}, ["name", "orgNumber", "address"], "v0.5.3: the company of a fleet account.")
+S["FleetJoinRequest"] = obj({"code": s("Case-insensitive; spaces and a missing MV- are forgiven.", minLength=5, maxLength=12),
+                             "ownerName": s("The fleet owner's first and last name as registered (case and spaces are forgiven).", minLength=1, maxLength=120),
+                             "ownerEmail": s("The fleet owner's e-mail as registered (case is forgiven).", format="email")},
+                            ["code", "ownerName", "ownerEmail"],
+                            "v0.5.3: all three must match one approved fleet; any mismatch is 400 invalid_request with reason fleet_join_mismatch "
+                            "(one message for all three). Limited to contract.json#driverOnboarding.fleetCode.joinAttemptsPerHour, then 429.")
+S["DriverOnboardingRequest"] = obj({"firstName": s(minLength=1, maxLength=60), "lastName": s(minLength=1, maxLength=60),
+                                    "dateOfBirth": s("YYYY-MM-DD; younger than minAge → 400 invalid_request (under_age).", format="date"),
+                                    "email": s(format="email"), "country": ref("DriverCountry"),
+                                    "cityId": s("A cityId of the country (invalid_city)."), "language": s(pattern="^[a-z]{2}(-[A-Z]{2})?$"),
+                                    "accountType": ref("DriverAccountType"),
+                                    "termsAccepted": {"type": "boolean", "const": True, "description": "Must be true (terms_required); stored as the terms document, approved."},
+                                    "company": {"allOf": [ref("FleetCompany")], "description": "Required for accountType fleet (company_required); ignored for driver."},
+                                    "fleetJoin": {"allOf": [ref("FleetJoinRequest")], "description": "Optional for accountType driver: join a fleet now (or later with POST /driver/fleet/join)."}},
+                                   ["firstName", "lastName", "dateOfBirth", "email", "country", "cityId", "language", "accountType", "termsAccepted"],
+                                   "v0.5.3: the details screen after the first sign-in. Allowed while accountStatus is pending or on_hold "
+                                   "(a resend replaces the details); active or suspended → 409 invalid_transition. Moves pending → on_hold.")
+S["FleetCodeCommand"] = obj(EV, ["expectedVersion"], "v0.5.3: POST /admin/fleets/{fleetId}/code.")
+S["FleetReviewCommand"] = obj(dict(EV, decision=s(enum=["approved", "rejected", "blocked"]), note=s(maxLength=1000)), ["expectedVersion", "decision"],
+                              "v0.5.3: approved makes the fleet code (first approval) and lets drivers join; blocked takes every linked driver offline and withdraws their offers.")
 S["ConfigDraftUpdate"] = obj(dict(EV, zoneId=ref("Id"), document={"oneOf": [ref("RiderAppConfig"), ref("DriverAppConfig"), ref("PricingDocument"), ref("DispatchDocument")]}),
                              ["expectedVersion", "zoneId", "document"])
 S["ConfigPublishCommand"] = obj(dict(EV, zoneId=ref("Id"), note=s(maxLength=1000)), ["expectedVersion", "zoneId"])
@@ -877,7 +970,7 @@ def path_id(name, desc=None):
     if desc: p["description"] = desc
     return p
 for nm in ["tripId", "offerId", "paymentId", "paymentMethodId", "placeId", "notificationId", "driverId", "riderId",
-           "vehicleId", "documentId", "approvalId"]:
+           "vehicleId", "documentId", "approvalId", "fleetId", "invitationId"]:
     PARAMS[nm[0].upper() + nm[1:]] = path_id(nm)
 PARAMS["RideId"] = path_id("rideId", "Deprecated alias of tripId.")
 PARAMS["ZoneId"] = path_id("zoneId")
@@ -1149,6 +1242,41 @@ op("get", "/driver/documents", "listDriverDocuments", "Own and vehicle documents
 op("post", "/driver/documents", "uploadDriverDocument", "Upload a document (status in_review)", ["driver"], "Driver · Account",
    body="DocumentUpload", body_type="multipart/form-data", ok=(201, "Document"), mutation=True)
 
+# ---- v0.5.3 (CONTRACT.md §14): onboarding, fleets, document files
+FILE_CONTENT = {mt: {"schema": {"type": "string", "format": "binary"}} for mt in DO["documents"]["upload"]["mediaTypes"]}
+op("post", "/driver/onboarding", "submitDriverOnboarding", "Send the sign-up details (once; the account goes on hold)", ["driver"], "Driver · Account",
+   body="DriverOnboardingRequest", ok=(200, "Driver"), mutation=True,
+   desc="v0.5.3. Validation reasons: under_age, country_not_open, invalid_city, invalid_email, terms_required, company_required, fleet_join_mismatch. "
+        "A fleet account gets a Fleet in status pending; a driver account with fleetJoin is linked at once (the fleet must be approved: fleet_join_mismatch otherwise). "
+        "accountStatus pending → on_hold.")
+op("get", "/driver/fleet", "getDriverFleet", "Own fleet: company, drivers and cars", ["driver"], "Driver · Fleet", ok=(200, "FleetView"),
+   desc="v0.5.3. The owner sees the code (after approval), the drivers and the cars; a member sees the company and the cars, no code and no drivers. No fleet → 404.")
+op("post", "/driver/fleet/join", "joinFleet", "Ask to join a fleet with its code, the owner's name and e-mail", ["driver"], "Driver · Fleet",
+   body="FleetJoinRequest", ok=(201, "FleetInvitation"), mutation=True,
+   desc="v0.5.3. A pending driver_request the owner accepts or declines (contract.json#driverOnboarding.fleetInvitations); a pending request already open → 200 with it. "
+        "Driver accounts only (a fleet account → 409 invalid_transition, fleet_account); already in a fleet → 409 invalid_transition (already_in_fleet).")
+op("post", "/driver/fleet/invite", "inviteFleetDriver", "Owner: invite a driver by phone number", ["driver"], "Driver · Fleet",
+   body="FleetInviteRequest", ok=(201, "FleetInvitation"), mutation=True,
+   desc="v0.5.3. Owner of an approved fleet only (else 403 / 409 fleet_not_approved). A number already in a fleet → 409 invalid_transition (already_in_fleet); the owner's own number → 400. An open invite to the same number → 200 with it.")
+op("get", "/driver/fleet/invitations", "listFleetInvitations", "Pending invitations: incoming and own", ["driver"], "Driver · Fleet",
+   ok=(200, "FleetInvitationList"), desc="v0.5.3. A driver account: owner invites waiting for him and his own open request; an owner: his fleet's open requests and invites.")
+for seg, opid, summ, d in [
+    ("accept", "acceptFleetInvitation", "Accept (the driver an invite, the owner a request)", "Links the driver; his other pending invitations close. The driver on a trip → 409 (on_trip); already in a fleet → 409 (already_in_fleet); expired → 409 (invitation_expired)."),
+    ("decline", "declineFleetInvitation", "Decline (the driver an invite, the owner a request)", "Closed; the sender is told."),
+    ("cancel", "cancelFleetInvitation", "Cancel one's own request or invite", "Only the side that created it."),
+]:
+    op("post", f"/driver/fleet/invitations/{{invitationId}}/{seg}", opid, summ, ["driver"], "Driver · Fleet",
+       params=[pref("InvitationId")], ok=(200, "FleetInvitation"), mutation=True, desc=f"v0.5.3. {d} Not pending → 409 invalid_transition.")
+op("post", "/driver/fleet/leave", "leaveFleet", "Leave the fleet (not during a trip)", ["driver"], "Driver · Fleet", ok=(200, "Driver"), mutation=True,
+   desc="v0.5.3. The car is released and the driver goes offline if online; on a trip → 409 invalid_transition (on_trip); the owner cannot leave (fleet_owner).")
+op("post", "/driver/fleet/drivers/{driverId}/remove", "removeFleetDriver", "Owner: remove a driver from the fleet", ["driver"], "Driver · Fleet",
+   params=[pref("DriverId")], ok=(204, None), mutation=True,
+   desc="v0.5.3. Owner only (else 403). The driver's car is released and he goes offline; on a trip → 409 invalid_transition (on_trip).")
+op("get", "/driver/fleet/earnings", "getFleetEarnings", "Owner: every driver's earnings in a period", ["driver"], "Driver · Fleet",
+   params=[pref("From"), pref("To")], ok=(200, "FleetEarnings"), desc="v0.5.3. Owner only (else 403). Defaults to the current week (zone time).")
+op("get", "/driver/documents/{documentId}/file", "getDriverDocumentFile", "The uploaded file (own or own fleet's)", ["driver"], "Driver · Account",
+   params=[pref("DocumentId")], content=FILE_CONTENT, ok=(200, None), ok_desc="The file, with its media type.",
+   desc="v0.5.3. The owner of the document, or the fleet owner for his drivers' and cars' documents; anyone else → 404.")
 # ---- Admin
 AL = [pref("Cursor"), pref("Limit")]
 lists = {
@@ -1158,7 +1286,8 @@ lists = {
     "riders": ("RiderPage", "riders.read", [q("status", {"type": "string", "enum": ["active", "suspended"]}), pref("ZoneIdQuery"), pref("Q")]),
     "drivers": ("DriverPage", "drivers.read", [q("accountStatus", ref("DriverAccountStatus"), multi=True),
                 q("onlineStatus", ref("DriverOnlineStatus"), multi=True), pref("ZoneIdQuery"), q("categoryId", ref("CategoryId")), pref("Q")]),
-    "vehicles": ("VehiclePage", "drivers.read", [q("status", ref("VehicleStatus"), multi=True), q("driverId", ref("Id")),
+    "fleets": ("FleetPage", "drivers.read", [q("status", ref("FleetStatus"), multi=True), q("country", ref("DriverCountry")), pref("ZoneIdQuery"), pref("Q")]),
+    "vehicles": ("VehiclePage", "drivers.read", [q("status", ref("VehicleStatus"), multi=True), q("driverId", ref("Id")), q("fleetId", ref("Id")),
                  q("categoryId", ref("CategoryId")), pref("Q")]),
     "payments": ("PaymentIntentPage", "finance.read", [q("status", ref("PaymentStatus"), multi=True), q("method", ref("PaymentMethod")),
                  q("tripId", ref("Id")), q("riderId", ref("Id")), pref("ZoneIdQuery"), pref("From"), pref("To")]),
@@ -1214,6 +1343,26 @@ op("post", "/admin/vehicles/{vehicleId}/review", "adminReviewVehicle", "Approve 
    params=[pref("VehicleId")], body="VehicleReviewCommand", ok=(200, "Vehicle"), mutation=True, permission="vehicles.edit", permission_v050="fleet.edit")
 op("post", "/admin/documents/{documentId}/review", "adminReviewDocument", "Approve / reject a document", ["admin"], "Admin · People",
    params=[pref("DocumentId")], body="DocumentReviewCommand", ok=(200, "Document"), mutation=True, permission="documents.approve", permission_v050="drivers.edit")
+# ---- v0.5.3 (CONTRACT.md §14): fleets and document files
+op("get", "/admin/drivers/{driverId}", "adminGetDriver", "Driver detail (details, fleet, documents)", ["admin"], "Admin · People",
+   params=[pref("DriverId")], ok=(200, "Driver"), permission="drivers.read", desc="v0.5.3.")
+op("get", "/admin/fleets/{fleetId}", "adminGetFleet", "Fleet detail: company, code, drivers and cars", ["admin"], "Admin · People",
+   params=[pref("FleetId")], ok=(200, "FleetView"), permission="drivers.read", desc="v0.5.3.")
+op("post", "/admin/fleets/{fleetId}/review", "adminReviewFleet", "Approve / reject / block a fleet", ["admin"], "Admin · People",
+   params=[pref("FleetId")], body="FleetReviewCommand", ok=(200, "Fleet"), mutation=True, permission="drivers.activate",
+   desc="v0.5.3. The first approval makes the join code (contract.json#driverOnboarding.fleetCode). Approving the fleet does not activate its owner as a driver: POST /admin/drivers/{driverId}/status does, when his own documents are approved.")
+op("post", "/admin/fleets/{fleetId}/code", "adminRenewFleetCode", "Make a new join code (the old one stops working)", ["admin"], "Admin · People",
+   params=[pref("FleetId")], body="FleetCodeCommand", ok=(200, "Fleet"), mutation=True, permission="drivers.activate", desc="v0.5.3. Approved fleets only (409 invalid_transition).")
+for seg, opid, summ in [("accept", "adminAcceptFleetInvitation", "Accept a pending invitation or request for the fleet"), ("cancel", "adminCancelFleetInvitation", "Cancel a pending invitation or request")]:
+    op("post", f"/admin/fleets/{{fleetId}}/invitations/{{invitationId}}/{seg}", opid, summ, ["admin"], "Admin · People",
+       params=[pref("FleetId"), pref("InvitationId")], ok=(200, "FleetInvitation"), mutation=True, permission="drivers.activate",
+       desc="v0.5.3. The same effect as the driver's or owner's answer; written in the audit.")
+op("post", "/admin/fleets/{fleetId}/drivers/{driverId}/remove", "adminRemoveFleetDriver", "Remove a driver from a fleet", ["admin"], "Admin · People",
+   params=[pref("FleetId"), pref("DriverId")], ok=(204, None), mutation=True, permission="drivers.activate",
+   desc="v0.5.3. Same effect as the owner's POST /driver/fleet/drivers/{driverId}/remove; written in the audit.")
+op("get", "/admin/documents/{documentId}/file", "adminGetDocumentFile", "The uploaded file", ["admin"], "Admin · People",
+   params=[pref("DocumentId")], content=FILE_CONTENT, ok=(200, None), ok_desc="The file, with its media type.", permission="documents.approve",
+   desc="v0.5.3. Read in the admin's zones only; every read is written in the audit.")
 op("get", "/admin/config/{doc}", "adminGetConfigDraft", "Get the config draft for a zone", ["admin"], "Admin · Config",
    params=[pref("ConfigDoc"), pref("ZoneIdRequired")], ok=(200, "ConfigDraft"), permission="settings.read", permission_v050="config.read",
    desc="pricing and dispatch (v0.5.1) are server-only documents: only admins with settings.read read them; GET /rider/config and /driver/config never include them.")

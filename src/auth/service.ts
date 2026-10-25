@@ -5,6 +5,8 @@ import type { Db, Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { signAccessToken, type Actor } from "./jwt.js";
+import { splitName, type Provider, type ProviderIdentity, type ProviderVerifier } from "./provider.js";
+import { attachInvitesToNewDriver } from "../drivers/invitations.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -12,6 +14,11 @@ import { signAccessToken, type Actor } from "./jwt.js";
  * Test week: only test numbers can sign in (owner decision 2); they get no SMS and the fixed code works, and
  * only outside production. Any other number is 403 forbidden, reason sign_in_restricted, until an SMS
  * provider is connected.
+ *
+ * Apple / Google (contract §8, v0.5.3): POST /auth/provider signs in an identity already linked to an account, or
+ * answers PHONE_REQUIRED with a link token; the app then verifies a phone with that token (the first time only) and
+ * the account is created or found by the phone and linked, with the provider's names and e-mail kept for the
+ * details screen. A provider without client ids answers 503 provider_not_configured.
  */
 
 type AuthContract = {
@@ -46,8 +53,12 @@ export type AuthDeps = {
   jwtSecret: string;
   /** Test numbers work only when this is true (never on production). */
   testSignInEnabled: boolean;
+  /** Apple / Google token verifiers, one per provider with client ids set. */
+  providers?: Partial<Record<Provider, ProviderVerifier>> | undefined;
   clock?: () => Date;
 };
+
+export const LINK_TOKEN_TTL_MS = 15 * 60_000;
 
 export type ClientInfo = { ip?: string | undefined; userAgent?: string | undefined };
 
@@ -72,11 +83,12 @@ export type OtpChallenge = { requestId: string; sessionId: string; expiresAt: st
 
 export async function requestOtp(
   deps: AuthDeps,
-  input: { phone: string; app: App; locale?: string | undefined; requestId: string },
+  input: { phone: string; app: App; locale?: string | undefined; linkToken?: string | undefined; requestId: string },
   client: ClientInfo,
 ): Promise<OtpChallenge> {
   const now = deps.clock?.() ?? new Date();
   if (!PHONE.test(input.phone)) throw badRequest("Send the phone number in international form, e.g. +46701234567.", "invalid_phone");
+  if (input.linkToken !== undefined) await loadLinkToken(deps.db, input.linkToken, input.app, now);
 
   return deps.db.transaction().execute(async (trx) => {
     // One sign-in start at a time per phone and app, so the resend and hourly limits cannot be raced.
@@ -168,7 +180,7 @@ type VerifyOutcome = { ok: true; tokens: AuthTokens } | { ok: false; error: ApiE
 
 export async function verifyOtp(
   deps: AuthDeps,
-  input: { phone: string; sessionId: string; code: string },
+  input: { phone: string; sessionId: string; code: string; linkToken?: string | undefined },
   client: ClientInfo,
 ): Promise<AuthTokens> {
   const now = deps.clock?.() ?? new Date();
@@ -196,7 +208,9 @@ export async function verifyOtp(
     }
     await trx.updateTable("otp_sessions").set({ consumed_at: now, attempts: session.attempts + 1 }).where("session_id", "=", session.session_id).execute();
 
+    const link = input.linkToken !== undefined ? await loadLinkToken(trx, input.linkToken, session.app, now) : undefined;
     const account = await findOrCreateAccount(trx, session.app, session.phone, now);
+    if (link !== undefined) await linkProvider(trx, link, session.app, account, now);
     const { sessionId: _sid, ...tokens } = await startSession(trx, deps, { actor: session.app, subjectId: account.id, zones: account.zones }, client, now);
     void _sid;
     return {
@@ -231,10 +245,118 @@ async function findOrCreateAccount(trx: Trx, app: App, phone: string, now: Date)
     .onConflict((conflict) => conflict.column("phone").doNothing())
     .returning("driver_id")
     .executeTakeFirst();
-  if (inserted !== undefined) return { id: inserted.driver_id, created: true, zones: [] };
+  if (inserted !== undefined) {
+    // v0.5.3: a fleet owner may have invited this number before it had an account.
+    await attachInvitesToNewDriver(trx, inserted.driver_id, phone, now);
+    return { id: inserted.driver_id, created: true, zones: [] };
+  }
   // A suspended driver still signs in: the driver app shows its Suspended screen (contract §6 account status).
   const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids"]).where("phone", "=", phone).executeTakeFirstOrThrow();
   return { id: driver.driver_id, created: false, zones: driver.zone_ids };
+}
+
+/* ---------------------------------------------------------------- Apple / Google */
+
+type LinkTokenRow = { token_sha256: string; provider: Provider; provider_subject: string; app: App; first_name: string | null; last_name: string | null; email: string | null; expires_at: Date; used_at: Date | null };
+
+export type PhoneRequired = { code: "PHONE_REQUIRED"; linkToken: string; name?: string; firstName?: string; lastName?: string; email?: string };
+
+/** POST /auth/provider: AuthTokens for a linked identity, PHONE_REQUIRED (with a link token) for a new one. */
+export async function signInWithProvider(
+  deps: AuthDeps,
+  input: { provider: Provider; idToken: string; app: App; name?: string | undefined },
+  client: ClientInfo,
+): Promise<AuthTokens | PhoneRequired> {
+  const now = deps.clock?.() ?? new Date();
+  const verifier = deps.providers?.[input.provider];
+  if (verifier === undefined) {
+    throw new ApiError("unavailable", `Sign-in with ${input.provider === "apple" ? "Apple" : "Google"} is coming soon. Use your phone number.`, { reason: "provider_not_configured" });
+  }
+  const identity: ProviderIdentity = await verifier.verify(input.idToken, now);
+  // Apple puts no name in its token: the app sends what Apple showed it, the first time.
+  const named = splitName(input.name);
+  const firstName = identity.firstName ?? named.firstName;
+  const lastName = identity.lastName ?? named.lastName;
+  return deps.db.transaction().execute(async (trx): Promise<AuthTokens | PhoneRequired> => {
+    const link = await trx.selectFrom("auth_provider_links").selectAll().where("provider", "=", input.provider).where("provider_subject", "=", identity.subject).where("actor", "=", input.app).executeTakeFirst();
+    if (link !== undefined) {
+      const account = await existingAccount(trx, input.app, link.subject_id);
+      if (account !== undefined) {
+        const { sessionId: _sid, ...tokens } = await startSession(trx, deps, { actor: input.app, subjectId: account.id, zones: account.zones }, client, now);
+        void _sid;
+        return { ...tokens, actor: input.app, ...(input.app === "rider" ? { isNewRider: false } : { isNewDriver: false }) };
+      }
+      // The account went away; the link is stale.
+      await trx.deleteFrom("auth_provider_links").where("provider", "=", input.provider).where("provider_subject", "=", identity.subject).where("actor", "=", input.app).execute();
+    }
+    const linkToken = `lt_${randomBytes(32).toString("base64url")}`;
+    await trx
+      .insertInto("auth_link_tokens")
+      .values({
+        token_sha256: sha256(linkToken),
+        provider: input.provider,
+        provider_subject: identity.subject,
+        app: input.app,
+        first_name: firstName ?? null,
+        last_name: lastName ?? null,
+        email: identity.email ?? null,
+        expires_at: new Date(now.getTime() + LINK_TOKEN_TTL_MS),
+        created_at: now,
+      })
+      .execute();
+    const fullName = [firstName, lastName].filter(Boolean).join(" ");
+    return {
+      code: "PHONE_REQUIRED",
+      linkToken,
+      ...(fullName ? { name: fullName } : {}),
+      ...(firstName ? { firstName } : {}),
+      ...(lastName ? { lastName } : {}),
+      ...(identity.email ? { email: identity.email } : {}),
+    };
+  });
+}
+
+async function existingAccount(ex: Executor, app: App, subjectId: string): Promise<{ id: string; zones: string[] } | undefined> {
+  if (app === "rider") {
+    const rider = await ex.selectFrom("riders").select(["rider_id", "status"]).where("rider_id", "=", subjectId).executeTakeFirst();
+    if (rider === undefined) return undefined;
+    if (rider.status === "suspended") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
+    return { id: rider.rider_id, zones: [] };
+  }
+  const driver = await ex.selectFrom("drivers").select(["driver_id", "zone_ids"]).where("driver_id", "=", subjectId).executeTakeFirst();
+  return driver === undefined ? undefined : { id: driver.driver_id, zones: driver.zone_ids };
+}
+
+async function loadLinkToken(ex: Executor, linkToken: string, app: App, now: Date): Promise<LinkTokenRow> {
+  const row = (await ex.selectFrom("auth_link_tokens").selectAll().where("token_sha256", "=", sha256(linkToken)).executeTakeFirst()) as LinkTokenRow | undefined;
+  if (row === undefined || row.app !== app || row.used_at !== null || row.expires_at.getTime() <= now.getTime()) {
+    throw badRequest("This sign-in link is not valid. Start again with Apple or Google, or sign in with your phone number.", "invalid_link_token");
+  }
+  return row;
+}
+
+/** The verified phone's account gets the provider identity; a new account also gets the provider's names and e-mail. */
+async function linkProvider(trx: Trx, link: LinkTokenRow, app: App, account: { id: string; created: boolean }, now: Date): Promise<void> {
+  await trx
+    .insertInto("auth_provider_links")
+    .values({ provider: link.provider, provider_subject: link.provider_subject, actor: app, subject_id: account.id, email: link.email, created_at: now })
+    .onConflict((c) => c.columns(["provider", "provider_subject", "actor"]).doUpdateSet({ subject_id: account.id, email: link.email, created_at: now }))
+    .execute();
+  await trx.updateTable("auth_link_tokens").set({ used_at: now }).where("token_sha256", "=", link.token_sha256).execute();
+  if (!account.created) return;
+  if (app === "driver") {
+    await trx
+      .updateTable("drivers")
+      .set({ ...(link.first_name ? { first_name: link.first_name } : {}), ...(link.last_name ? { last_name: link.last_name } : {}), ...(link.email ? { email: link.email } : {}), updated_at: now })
+      .where("driver_id", "=", account.id)
+      .execute();
+  } else {
+    await trx
+      .updateTable("riders")
+      .set({ ...(link.first_name ? { first_name: [link.first_name, link.last_name].filter(Boolean).join(" ") } : {}), ...(link.email ? { email: link.email } : {}), updated_at: now })
+      .where("rider_id", "=", account.id)
+      .execute();
+  }
 }
 
 /* ---------------------------------------------------------------- sessions and tokens */

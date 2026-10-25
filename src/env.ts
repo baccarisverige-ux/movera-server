@@ -4,6 +4,12 @@ import { z } from "zod";
  * Server settings, read from the environment once at start. Anything missing or malformed stops the server
  * before it listens, with the variable named, so a bad deploy never half-starts.
  */
+const ids = () =>
+  z
+    .string()
+    .optional()
+    .transform((value) => (value ?? "").split(",").map((m) => m.trim()).filter(Boolean));
+
 const schema = z.object({
   /**
    * development (laptop), staging (the test week), production (public). Test sign-in numbers exist only outside
@@ -27,6 +33,20 @@ const schema = z.object({
   OSRM_URL: z.string().url().optional(),
   /** Google Places / Geocoding key for address search (owner decision 4). Unset: address search answers 503. */
   GOOGLE_MAPS_API_KEY: z.string().min(10).optional(),
+  /**
+   * Seals uploaded driver documents at rest (AES-256-GCM): 32 random bytes, base64 (`openssl rand -base64 32`).
+   * Required in production; elsewhere a key derived from JWT_SECRET stands in (contract v0.5.3 §14).
+   */
+  DOCUMENT_FILES_KEY: z.string().min(40).optional(),
+  /**
+   * Apple / Google sign-in (contract §8, contract.json#auth.providerKeys): the client ids the apps' identity tokens
+   * are issued for, comma-separated (Apple: the bundle ids / service id; Google: the OAuth client ids). Unset: that
+   * provider answers 503 unavailable (provider_not_configured) and the apps show the button as coming soon.
+   */
+  APPLE_CLIENT_IDS: ids(),
+  GOOGLE_CLIENT_IDS: ids(),
+  /** Where a phone without an account is sent to install the driver app (the SMS of an owner's invitation). */
+  DRIVER_APP_LINK: z.string().url().optional(),
   /** Payment methods riders may book with (test week: cash only). Comma-separated. */
   PAYMENT_METHODS: z
     .string()
@@ -41,9 +61,37 @@ const schema = z.object({
    * X-Forwarded-For only that many hops deep, so a phone cannot fake its address. 0: no proxy.
    */
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+  /**
+   * Web pages on another site that may call the API from a browser (the apps' web builds on GitHub Pages), as exact
+   * origins, comma-separated: https://owner.github.io. Unset: no cross-site browser calls (the phone apps and a
+   * same-site panel never need it).
+   */
+  /**
+   * Hosts without a shell (Render's free plan): at start, make the test accounts once and publish the sample
+   * settings where a zone has none, as `npm run admin -- seed-test` does. Staging and development only.
+   */
+  SEED_TEST_ON_START: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  /** Also for a host without a shell: this Super admin is made at start and its password link written to the log. */
+  ADMIN_BOOTSTRAP_EMAIL: z.string().email().optional(),
+  ADMIN_BOOTSTRAP_NAME: z.string().min(1).max(120).optional(),
+  CORS_ORIGINS: z
+    .string()
+    .optional()
+    .transform((value) => (value ?? "").split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean))
+    .pipe(z.array(z.string().regex(/^https?:\/\/[^/\s]+$/, "an origin like https://example.github.io"))),
 }).superRefine((env, ctx) => {
   if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
+  }
+  if (env.MOVERA_ENV === "production" && env.DOCUMENT_FILES_KEY === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DOCUMENT_FILES_KEY"], message: "required when MOVERA_ENV is production" });
+  }
+  if (env.MOVERA_ENV === "production" && (env.SEED_TEST_ON_START || env.ADMIN_BOOTSTRAP_EMAIL !== undefined)) {
+    const path = env.SEED_TEST_ON_START ? "SEED_TEST_ON_START" : "ADMIN_BOOTSTRAP_EMAIL";
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message: "for staging and development only" });
   }
   if (env.MOVERA_ENV !== "development" && env.JWT_SECRET === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["JWT_SECRET"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });

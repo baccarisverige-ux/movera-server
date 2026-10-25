@@ -18,6 +18,7 @@
     "contract:verify": "cd contracts && sha256sum -c --quiet CHECKSUMS && echo contract ok"
   },
   "dependencies": {
+    "@fastify/multipart": "^10.1.6",
     "@node-rs/argon2": "^2.2.2",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",

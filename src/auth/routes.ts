@@ -1,13 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { API_PREFIX } from "../http/prefix.js";
-import { badRequest } from "../http/errors.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { authenticate } from "./guard.js";
-import { refreshTokens, requestOtp, signOut, verifyOtp, type AuthDeps } from "./service.js";
+import { refreshTokens, requestOtp, signInWithProvider, signOut, verifyOtp, type AuthDeps } from "./service.js";
 
-/** contract §8: /auth/otp/request, /auth/otp/verify, /auth/refresh, /auth/sign-out, /push/devices(/unregister). */
+/** contract §8: /auth/otp/request, /auth/otp/verify, /auth/provider, /auth/refresh, /auth/sign-out, /push/devices(/unregister). */
 
 const Language = z.enum(["en", "fr", "sv"]);
 const OtpRequestBody = z.object({
@@ -22,6 +21,7 @@ const OtpVerifyBody = z.object({
   code: z.string(),
   linkToken: z.string().min(1).optional(),
 });
+const ProviderBody = z.object({ provider: z.enum(["apple", "google"]), idToken: z.string().min(1).max(8192), app: z.enum(["rider", "driver"]), name: z.string().max(120).optional() });
 const RefreshBody = z.object({ refreshToken: z.string().min(1).max(512) });
 const PushDeviceBody = z.object({
   token: z.string().min(1).max(4096),
@@ -41,14 +41,18 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
 
   app.post(`${API_PREFIX}/auth/otp/request`, async (request) => {
     const body = parseBody(OtpRequestBody, request.body);
-    if (body.linkToken !== undefined) throw linkTokenUnknown();
-    return requestOtp(deps, { phone: body.phone, app: body.app, locale: body.locale, requestId: request.id }, client(request));
+    return requestOtp(deps, { phone: body.phone, app: body.app, locale: body.locale, linkToken: body.linkToken, requestId: request.id }, client(request));
   });
 
   app.post(`${API_PREFIX}/auth/otp/verify`, async (request) => {
     const body = parseBody(OtpVerifyBody, request.body);
-    if (body.linkToken !== undefined) throw linkTokenUnknown();
-    return verifyOtp(deps, { phone: body.phone, sessionId: body.sessionId, code: body.code }, client(request));
+    return verifyOtp(deps, { phone: body.phone, sessionId: body.sessionId, code: body.code, linkToken: body.linkToken }, client(request));
+  });
+
+  // v0.5.3: Apple / Google. Without the provider's client ids: 503 provider_not_configured (the apps say coming soon).
+  app.post(`${API_PREFIX}/auth/provider`, async (request) => {
+    const body = parseBody(ProviderBody, request.body);
+    return signInWithProvider(deps, { provider: body.provider, idToken: body.idToken, app: body.app, name: body.name }, client(request));
   });
 
   app.post(`${API_PREFIX}/auth/refresh`, async (request) => {
@@ -111,9 +115,4 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
 
 function header(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-/** Apple / Google sign-in is off in the test week (owner decision 12), so no link token can be valid yet. */
-function linkTokenUnknown() {
-  return badRequest("This sign-in link is not valid. Sign in with your phone number.", "invalid_link_token");
 }

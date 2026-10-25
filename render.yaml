@@ -1,0 +1,47 @@
+# Render Blueprint for trying the test week for free (docs/DEPLOY_RENDER.md): the server as one Docker web service
+# plus its PostgreSQL, both in Frankfurt, on Render's free plans (the server sleeps after a while without use; the
+# free database expires after some weeks). MOVERA_ENV=staging keeps the test numbers (code 1234). The free plan has
+# no shell, so the test accounts, sample settings and first admin are made at start (SEED_TEST_ON_START,
+# ADMIN_BOOTSTRAP_EMAIL). For a real test week: plan starter and basic-256mb.
+services:
+  - type: web
+    name: movera-server
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: frankfurt
+    plan: free
+    healthCheckPath: /readyz
+    envVars:
+      - key: MOVERA_ENV
+        value: staging
+      - key: DATABASE_URL
+        fromDatabase:
+          name: movera-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      # Render's load balancer sits in front of the server.
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      # The apps' live web builds on GitHub Pages.
+      - key: CORS_ORIGINS
+        value: https://baccarisverige-ux.github.io
+      - key: ADMIN_PANEL_URL
+        value: https://baccarisverige-ux.github.io/Admin-panel-movera-dispatch/live/
+      # Test accounts, sample settings and the first admin at start (the free plan has no shell).
+      - key: SEED_TEST_ON_START
+        value: "true"
+      # Your e-mail: the admin's password link appears in the service's Logs.
+      - key: ADMIN_BOOTSTRAP_EMAIL
+        sync: false
+      # Address search; filled in Render's dashboard (never committed).
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+
+databases:
+  - name: movera-db
+    region: frankfurt
+    plan: free
+    postgresMajorVersion: "16"
+    databaseName: movera
+    user: movera

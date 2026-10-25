@@ -53,6 +53,11 @@ describe("roles", () => {
 describe("setup link and first password", () => {
   it("the link is checked, sets the password once and signs in with the contract's AdminSession", async () => {
     const { adminId } = await createAdmin(database.db, { email: "Owner@Movera.TEST ", name: "Owner", role: "super" }, clock.now);
+    // (Each new link replaces the last, so these come first.) A panel under a sub-path (GitHub Pages) keeps it, with or without the closing slash.
+    for (const panelUrl of ["https://owner.github.io/Admin-panel/live/", "https://owner.github.io/Admin-panel/live"]) {
+      const sub = await createSetupLink({ ...deps(), panelUrl }, adminId, "cli");
+      expect(sub.url.startsWith("https://owner.github.io/Admin-panel/live/setup-password#token=")).toBe(true);
+    }
     const link = await createSetupLink(deps(), adminId, "cli");
     expect(link.url.startsWith(`${PANEL}/setup-password#token=`)).toBe(true);
     expect(link.expiresAt).toBe(new Date(clock.now.getTime() + 72 * 3600_000).toISOString());

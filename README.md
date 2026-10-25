@@ -22,6 +22,8 @@ npm run migrate        # apply new migrations to DATABASE_URL
 docker compose up --build   # server + PostgreSQL
 ```
 
+Test week on Render: `render.yaml` and [`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md).
+
 Settings come from the environment (`src/env.ts`):
 
 | Variable | Meaning | Default |
@@ -34,9 +36,15 @@ Settings come from the environment (`src/env.ts`):
 | `JWT_SECRET` | Signs access tokens, at least 32 characters. Required on staging and production. | random per start |
 | `OSRM_URL` | Movera's own route service (e.g. `http://osrm:5000`). Unset: distances are estimated | none |
 | `GOOGLE_MAPS_API_KEY` | Address search through Google. Unset: address search answers `503` | none |
+| `APPLE_CLIENT_IDS`, `GOOGLE_CLIENT_IDS` | Apple / Google sign-in (contract §8): the client ids the apps' identity tokens are issued for, comma-separated (Apple: bundle ids / service id; Google: OAuth client ids). Unset: that provider answers `503` `provider_not_configured` and the apps show the button as coming soon | none |
+| `DRIVER_APP_LINK` | Install link added to the SMS when a fleet owner invites a number that has no account yet | none |
+| `DOCUMENT_FILES_KEY` | Seals uploaded driver documents at rest (AES-256-GCM): 32 random bytes, base64 (`openssl rand -base64 32`). Required in production; elsewhere a key derived from `JWT_SECRET` stands in | derived outside production |
 | `ADMIN_PANEL_URL` | Where setup links point | `http://localhost:5173` |
 | `DEFAULT_ZONE_ID` | Zone for settings when an app names none | `Z001` |
 | `TRUST_PROXY_HOPS` | Proxies in front of the server (the host's load balancer = 1), so limits see the phone's real address and it cannot be faked | `0` |
+| `CORS_ORIGINS` | Web pages on another site that may call the API from a browser (the apps' web builds), e.g. `https://owner.github.io`. Unset: none | none |
+| `SEED_TEST_ON_START` | `true`: at start, make the test accounts once and publish sample settings where a zone has none (a host without a shell; not in production) | `false` |
+| `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_NAME` | At start, make this Super admin and write its password link to the log while it has no password (not in production) | none |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
 Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).
@@ -75,6 +83,12 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
 - Access token: 15-minute JWT (HS256, `JWT_SECRET`); its session is checked on every call, so sign-out works at once.
 - Refresh token: opaque, 30 days, rotated on every refresh. A token used twice ends the session, except the same
   token again within a minute (an answer lost on a bad connection).
+- Apple / Google (v0.5.3): `POST /auth/provider` checks the identity token against the provider's published keys
+  and the owner's client ids. A linked identity signs in at once; a new one gets `PHONE_REQUIRED` with a link token
+  (15 minutes) and the names / e-mail the provider gave; the phone is then verified once with that token and the
+  account (found or made by the phone) is linked. Without client ids the provider is not configured (`503`).
+- SMS: there is no provider yet (the owner picks 46elks or Twilio). Every message the server wants sent (fleet
+  invitations today) is written to `sms_outbox`, as `skipped` while no provider exists, so nothing is lost.
 
 ## Admin sign-in and settings (contract §9, §6)
 
@@ -83,6 +97,11 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
   `node dist/admin/cli.js …`.
 - `npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123
   --categories economy` creates an approved test driver with an approved car, in every open zone.
+- `npm run admin -- seed-test` (staging and development only) makes the test week's ready accounts on the test
+  numbers: three activated drivers in the approved fleet "Movera Test AB" (code `MV-TESTA`), each with an approved
+  car and every document approved, and three active riders; all sign in with the fixed code `1234`. It also publishes
+  the contract's sample settings (prices, dispatch, both apps') in every open zone that has none yet. Running it again
+  updates the same accounts; the testers' real numbers replace the placeholders in `src/drivers/seedTest.ts`.
 - The admin panel saves a draft per document and zone (`PUT /admin/config/{doc}`), then publishes it. The server
   checks every document against the contract's schema and its zone, stamps the next `version` and `publishedAt`,
   keeps every version in `config_history`, and tells the apps (`config_published`). Pricing and dispatch are read by
