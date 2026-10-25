@@ -1,11 +1,11 @@
-# Movera API v0.5.2 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.5.3 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.5.2
+  version: 0.5.3
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.5.2 in this folder; this file must agree with them.
+    v0.5.3 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -51,6 +51,7 @@ tags:
 - name: Driver · Trip
 - name: Driver · Money
 - name: Driver · Account
+- name: Driver · Fleet
 - name: Admin · Lists
 - name: Admin · Trips
 - name: Admin · Dispatch
@@ -67,7 +68,7 @@ tags:
   description: Legacy /rides aliases kept for one release
 x-contract:
   name: movera
-  version: 0.5.2
+  version: 0.5.3
   source: contract.json
 paths:
   /auth/otp/request:
@@ -3018,6 +3019,302 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /driver/onboarding:
+    post:
+      operationId: submitDriverOnboarding
+      summary: Send the sign-up details (once; the account goes on hold)
+      description: 'v0.5.3. Validation reasons: under_age, country_not_open, invalid_city, invalid_email, terms_required,
+        company_required, fleet_join_mismatch. A fleet account gets a Fleet in status pending; a driver account with fleetJoin
+        is linked at once (the fleet must be approved: fleet_join_mismatch otherwise). accountStatus pending → on_hold.'
+      tags:
+      - Driver · Account
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverOnboardingRequest'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Driver'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/fleet:
+    get:
+      operationId: getDriverFleet
+      summary: 'Own fleet: company, drivers and cars'
+      description: v0.5.3. The owner sees the code (after approval), the drivers and the cars; a member sees the company and
+        the cars, no code and no drivers. No fleet → 404.
+      tags:
+      - Driver · Fleet
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/fleet/join:
+    post:
+      operationId: joinFleet
+      summary: Join a fleet with its code, the owner's name and e-mail
+      description: v0.5.3. Driver accounts only (a fleet account → 409 invalid_transition, fleet_account); already in a fleet
+        → 409 invalid_transition (already_in_fleet).
+      tags:
+      - Driver · Fleet
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FleetJoinRequest'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Driver'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/fleet/leave:
+    post:
+      operationId: leaveFleet
+      summary: Leave the fleet (not during a trip)
+      description: v0.5.3. The car is released and the driver goes offline if online; on a trip → 409 invalid_transition (on_trip);
+        the owner cannot leave (fleet_owner).
+      tags:
+      - Driver · Fleet
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Driver'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/fleet/drivers/{driverId}/remove:
+    post:
+      operationId: removeFleetDriver
+      summary: 'Owner: remove a driver from the fleet'
+      description: v0.5.3. Owner only (else 403). The driver's car is released and he goes offline; on a trip → 409 invalid_transition
+        (on_trip).
+      tags:
+      - Driver · Fleet
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/DriverId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '204':
+          description: No content
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/fleet/earnings:
+    get:
+      operationId: getFleetEarnings
+      summary: 'Owner: every driver''s earnings in a period'
+      description: v0.5.3. Owner only (else 403). Defaults to the current week (zone time).
+      tags:
+      - Driver · Fleet
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/From'
+      - $ref: '#/components/parameters/To'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetEarnings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/documents/{documentId}/file:
+    get:
+      operationId: getDriverDocumentFile
+      summary: The uploaded file (own or own fleet's)
+      description: v0.5.3. The owner of the document, or the fleet owner for his drivers' and cars' documents; anyone else
+        → 404.
+      tags:
+      - Driver · Account
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The file, with its media type.
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/heic:
+              schema:
+                type: string
+                format: binary
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /admin/trips:
     get:
       operationId: adminListTrips
@@ -3208,6 +3505,61 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /admin/fleets:
+    get:
+      operationId: adminListFleets
+      summary: List fleets (cursor paging)
+      description: Results are limited to the zones in the admin's token scope.
+      tags:
+      - Admin · Lists
+      x-actor:
+      - admin
+      x-permission: drivers.read
+      parameters:
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetStatus'
+        style: form
+        explode: true
+      - name: country
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/DriverCountry'
+      - $ref: '#/components/parameters/ZoneIdQuery'
+      - $ref: '#/components/parameters/Q'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /admin/vehicles:
     get:
       operationId: adminListVehicles
@@ -3232,6 +3584,11 @@ paths:
         style: form
         explode: true
       - name: driverId
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/Id'
+      - name: fleetId
         in: query
         required: false
         schema:
@@ -4419,6 +4776,267 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/drivers/{driverId}:
+    get:
+      operationId: adminGetDriver
+      summary: Driver detail (details, fleet, documents)
+      description: v0.5.3.
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: drivers.read
+      parameters:
+      - $ref: '#/components/parameters/DriverId'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Driver'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/fleets/{fleetId}:
+    get:
+      operationId: adminGetFleet
+      summary: 'Fleet detail: company, code, drivers and cars'
+      description: v0.5.3.
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: drivers.read
+      parameters:
+      - $ref: '#/components/parameters/FleetId'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetView'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/fleets/{fleetId}/review:
+    post:
+      operationId: adminReviewFleet
+      summary: Approve / reject / block a fleet
+      description: 'v0.5.3. The first approval makes the join code (contract.json#driverOnboarding.fleetCode). Approving the
+        fleet does not activate its owner as a driver: POST /admin/drivers/{driverId}/status does, when his own documents
+        are approved.'
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: drivers.activate
+      parameters:
+      - $ref: '#/components/parameters/FleetId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FleetReviewCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fleet'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/fleets/{fleetId}/code:
+    post:
+      operationId: adminRenewFleetCode
+      summary: Make a new join code (the old one stops working)
+      description: v0.5.3. Approved fleets only (409 invalid_transition).
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: drivers.activate
+      parameters:
+      - $ref: '#/components/parameters/FleetId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FleetCodeCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fleet'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/fleets/{fleetId}/drivers/{driverId}/remove:
+    post:
+      operationId: adminRemoveFleetDriver
+      summary: Remove a driver from a fleet
+      description: v0.5.3. Same effect as the owner's POST /driver/fleet/drivers/{driverId}/remove; written in the audit.
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: drivers.activate
+      parameters:
+      - $ref: '#/components/parameters/FleetId'
+      - $ref: '#/components/parameters/DriverId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '204':
+          description: No content
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/documents/{documentId}/file:
+    get:
+      operationId: adminGetDocumentFile
+      summary: The uploaded file
+      description: v0.5.3. Read in the admin's zones only; every read is written in the audit.
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: documents.approve
+      parameters:
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: The file, with its media type.
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/heic:
+              schema:
+                type: string
+                format: binary
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -6053,6 +6671,12 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/Id'
+    FleetId:
+      name: fleetId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
     RideId:
       name: rideId
       in: path
@@ -7350,11 +7974,27 @@ components:
           type: string
           format: uri
           readOnly: true
+          description: 'v0.5.3: the path of the file endpoint (GET /driver/documents/{documentId}/file for the owner, GET
+            /admin/documents/{documentId}/file for admins), never a public link; missing for terms and admin checks.'
         reviewNote:
           type: string
         version:
           type: integer
           minimum: 1
+        fileName:
+          type: string
+          description: 'v0.5.3: the uploaded file''s name, for display.'
+        mediaType:
+          type: string
+          description: 'v0.5.3: one of contract.json#driverOnboarding.documents.upload.mediaTypes.'
+        uploadedAt:
+          allOf:
+          - $ref: '#/components/schemas/Timestamp'
+          description: v0.5.3
+        reviewedAt:
+          allOf:
+          - $ref: '#/components/schemas/Timestamp'
+          description: 'v0.5.3: when an admin decided.'
     Driver:
       type: object
       required:
@@ -7412,6 +8052,57 @@ components:
           allOf:
           - $ref: '#/components/schemas/Timestamp'
           description: 'v0.5.1, admin view only: when the latest fix was received.'
+        accountType:
+          allOf:
+          - $ref: '#/components/schemas/DriverAccountType'
+          description: v0.5.3; missing before POST /driver/onboarding.
+        lastName:
+          type: string
+          description: v0.5.3
+        dateOfBirth:
+          type: string
+          format: date
+          description: 'v0.5.3: YYYY-MM-DD; at least contract.json#driverOnboarding.minAge years.'
+        email:
+          type: string
+          format: email
+          description: v0.5.3
+        country:
+          allOf:
+          - $ref: '#/components/schemas/DriverCountry'
+          description: v0.5.3
+        cityId:
+          type: string
+          description: 'v0.5.3: a cityId of the country (contract.json#driverOnboarding.countries); sets zoneIds.'
+        language:
+          type: string
+          pattern: ^[a-z]{2}(-[A-Z]{2})?$
+          description: 'v0.5.3: the driver''s app language.'
+        termsAcceptedAt:
+          allOf:
+          - $ref: '#/components/schemas/Timestamp'
+          description: 'v0.5.3: when the terms were accepted (POST /driver/onboarding).'
+        fleet:
+          allOf:
+          - $ref: '#/components/schemas/FleetLink'
+          description: 'v0.5.3: the fleet this driver belongs to; missing = none (a driver account waits for a fleet).'
+        payoutTo:
+          type: string
+          enum:
+          - self
+          - fleet
+          description: 'v0.5.3: who Movera pays (contract.json#driverOnboarding.payouts): fleet for a driver linked to a fleet,
+            self for a fleet account.'
+        requiredDocuments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentType'
+          description: 'v0.5.3: the person''s documents this account must have approved (contract.json#driverOnboarding.documents.required[country].driver).'
+        requiredFleetDocuments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentType'
+          description: 'v0.5.3: fleet accounts only: the company''s documents (…required[country].fleet).'
     DriverScheduledRides:
       type: object
       description: 'Owner decision 2 (v0.4.2): an admin''s reservations on/off for this one driver (CONTRACT.md §6.1). Missing
@@ -7476,6 +8167,208 @@ components:
         version:
           type: integer
           minimum: 1
+        fleetId:
+          allOf:
+          - $ref: '#/components/schemas/Id'
+          description: 'v0.5.3: the fleet that owns the car.'
+        driverId:
+          allOf:
+          - $ref: '#/components/schemas/Id'
+          description: 'v0.5.3: the driver who has the car picked now (PATCH /driver/profile { vehicleId }); missing = free.'
+        inUse:
+          type: boolean
+          description: 'v0.5.3: that driver is online or on a trip, so another driver cannot pick the car (409 conflict, vehicle_in_use).'
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentSummary'
+          description: 'v0.5.3: the car''s documents.'
+        requiredDocuments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentType'
+          description: 'v0.5.3: contract.json#driverOnboarding.documents.required[country].vehicle.'
+    DriverAccountType:
+      type: string
+      enum:
+      - driver
+      - fleet
+      description: 'v0.5.3: driver = works for a fleet; fleet = a company with cars and drivers (its owner may drive too).'
+    DriverCountry:
+      type: string
+      enum:
+      - SE
+      - FR
+      - TN
+      description: 'v0.5.3: ISO 3166-1 alpha-2 of the countries the driver app offers (contract.json#driverOnboarding.countries);
+        only an open one is accepted on POST /driver/onboarding (else 400 invalid_request, reason country_not_open).'
+    FleetStatus:
+      type: string
+      enum:
+      - pending
+      - approved
+      - rejected
+      - blocked
+      description: pending until an admin reviews the fleet; approved gives it a code.
+    FleetLink:
+      type: object
+      description: 'v0.5.3: the fleet this driver belongs to (owner = the fleet account itself).'
+      required:
+      - fleetId
+      - name
+      - role
+      - status
+      - linkedAt
+      properties:
+        fleetId:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+        role:
+          type: string
+          enum:
+          - owner
+          - member
+        status:
+          $ref: '#/components/schemas/FleetStatus'
+        linkedAt:
+          $ref: '#/components/schemas/Timestamp'
+    Fleet:
+      type: object
+      description: 'v0.5.3: a fleet (company) account''s company.'
+      required:
+      - fleetId
+      - name
+      - orgNumber
+      - country
+      - cityId
+      - ownerDriverId
+      - ownerName
+      - status
+      - driverCount
+      - vehicleCount
+      - createdAt
+      - version
+      properties:
+        fleetId:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+        orgNumber:
+          type: string
+          description: Organisationsnummer (SE) or SIREN / SIRET (FR).
+        address:
+          type: string
+        country:
+          $ref: '#/components/schemas/DriverCountry'
+        cityId:
+          type: string
+        ownerDriverId:
+          $ref: '#/components/schemas/Id'
+        ownerName:
+          type: string
+          description: The owner's first and last name.
+        ownerEmail:
+          type: string
+          format: email
+          description: Owner and admin views only.
+        status:
+          $ref: '#/components/schemas/FleetStatus'
+        code:
+          type: string
+          pattern: ^MV-[A-Z2-9]{5}$
+          description: The join code (contract.json#driverOnboarding.fleetCode); only after approval, and only to the owner
+            and admins.
+        driverCount:
+          type: integer
+          minimum: 0
+        vehicleCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        version:
+          type: integer
+          minimum: 1
+    FleetDriver:
+      type: object
+      required:
+      - driverId
+      - firstName
+      - accountStatus
+      - onlineStatus
+      - linkedAt
+      properties:
+        driverId:
+          $ref: '#/components/schemas/Id'
+        firstName:
+          type: string
+        lastName:
+          type: string
+        accountStatus:
+          $ref: '#/components/schemas/DriverAccountStatus'
+        onlineStatus:
+          $ref: '#/components/schemas/DriverOnlineStatus'
+        vehicleId:
+          $ref: '#/components/schemas/Id'
+        linkedAt:
+          $ref: '#/components/schemas/Timestamp'
+    FleetView:
+      type: object
+      description: 'v0.5.3: the fleet with its drivers (owner and admins; a member gets an empty list) and its cars.'
+      required:
+      - fleet
+      - drivers
+      - vehicles
+      properties:
+        fleet:
+          $ref: '#/components/schemas/Fleet'
+        drivers:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetDriver'
+        vehicles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vehicle'
+    FleetDriverEarnings:
+      type: object
+      required:
+      - driverId
+      - firstName
+      - trips
+      - earnings
+      properties:
+        driverId:
+          $ref: '#/components/schemas/Id'
+        firstName:
+          type: string
+        lastName:
+          type: string
+        trips:
+          type: integer
+          minimum: 0
+        earnings:
+          $ref: '#/components/schemas/Money'
+    FleetEarnings:
+      type: object
+      description: 'v0.5.3: every driver''s earnings in the period, for the fleet owner.'
+      required:
+      - from
+      - to
+      - items
+      - total
+      properties:
+        from:
+          $ref: '#/components/schemas/Timestamp'
+        to:
+          $ref: '#/components/schemas/Timestamp'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FleetDriverEarnings'
+        total:
+          $ref: '#/components/schemas/Money'
     PaymentIntent:
       type: object
       description: tripId is required for purpose=trip|tip and absent for wallet_topup.
@@ -11162,6 +12055,16 @@ components:
             items:
               $ref: '#/components/schemas/AdminDispatchEvent'
       description: Page<AdminDispatchEvent>
+    FleetPage:
+      allOf:
+      - $ref: '#/components/schemas/Page'
+      - type: object
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/Fleet'
+      description: Page<Fleet>
     TripCommand:
       type: object
       description: Body of driver trip commands.
@@ -12008,6 +12911,133 @@ components:
           - rejected
         expiresAt:
           $ref: '#/components/schemas/Timestamp'
+        note:
+          type: string
+          maxLength: 1000
+    FleetCompany:
+      type: object
+      description: 'v0.5.3: the company of a fleet account.'
+      required:
+      - name
+      - orgNumber
+      - address
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        orgNumber:
+          type: string
+          minLength: 5
+          maxLength: 20
+          description: Organisationsnummer (SE) or SIREN / SIRET (FR).
+        address:
+          type: string
+          minLength: 1
+          maxLength: 200
+    FleetJoinRequest:
+      type: object
+      description: 'v0.5.3: all three must match one approved fleet; any mismatch is 400 invalid_request with reason fleet_join_mismatch
+        (one message for all three). Limited to contract.json#driverOnboarding.fleetCode.joinAttemptsPerHour, then 429.'
+      required:
+      - code
+      - ownerName
+      - ownerEmail
+      properties:
+        code:
+          type: string
+          minLength: 5
+          maxLength: 12
+          description: Case-insensitive; spaces and a missing MV- are forgiven.
+        ownerName:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: The fleet owner's first and last name as registered (case and spaces are forgiven).
+        ownerEmail:
+          type: string
+          format: email
+          description: The fleet owner's e-mail as registered (case is forgiven).
+    DriverOnboardingRequest:
+      type: object
+      description: 'v0.5.3: the details screen after the first sign-in. Allowed while accountStatus is pending or on_hold
+        (a resend replaces the details); active or suspended → 409 invalid_transition. Moves pending → on_hold.'
+      required:
+      - firstName
+      - lastName
+      - dateOfBirth
+      - email
+      - country
+      - cityId
+      - language
+      - accountType
+      - termsAccepted
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 60
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 60
+        dateOfBirth:
+          type: string
+          format: date
+          description: YYYY-MM-DD; younger than minAge → 400 invalid_request (under_age).
+        email:
+          type: string
+          format: email
+        country:
+          $ref: '#/components/schemas/DriverCountry'
+        cityId:
+          type: string
+          description: A cityId of the country (invalid_city).
+        language:
+          type: string
+          pattern: ^[a-z]{2}(-[A-Z]{2})?$
+        accountType:
+          $ref: '#/components/schemas/DriverAccountType'
+        termsAccepted:
+          type: boolean
+          const: true
+          description: Must be true (terms_required); stored as the terms document, approved.
+        company:
+          allOf:
+          - $ref: '#/components/schemas/FleetCompany'
+          description: Required for accountType fleet (company_required); ignored for driver.
+        fleetJoin:
+          allOf:
+          - $ref: '#/components/schemas/FleetJoinRequest'
+          description: 'Optional for accountType driver: join a fleet now (or later with POST /driver/fleet/join).'
+    FleetCodeCommand:
+      type: object
+      description: 'v0.5.3: POST /admin/fleets/{fleetId}/code.'
+      required:
+      - expectedVersion
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 1
+          description: Version the caller last saw; stale → 409 version_mismatch.
+    FleetReviewCommand:
+      type: object
+      description: 'v0.5.3: approved makes the fleet code (first approval) and lets drivers join; blocked takes every linked
+        driver offline and withdraws their offers.'
+      required:
+      - expectedVersion
+      - decision
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 1
+          description: Version the caller last saw; stale → 409 version_mismatch.
+        decision:
+          type: string
+          enum:
+          - approved
+          - rejected
+          - blocked
         note:
           type: string
           maxLength: 1000

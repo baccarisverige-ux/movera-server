@@ -17,6 +17,9 @@ import { tripRoutes } from "./trips/routes.js";
 import { rideRoutes } from "./trips/rideRoutes.js";
 import { adminTripRoutes } from "./admin/tripRoutes.js";
 import { driverRoutes } from "./drivers/routes.js";
+import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
+import { documentKeyFrom } from "./documents/files.js";
+import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
@@ -52,6 +55,9 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     if (text.trim() === "") return done(null, undefined);
     json(request, text, done);
   });
+
+  // Document uploads (contract v0.5.3 §14): multipart, one file of at most 10 MB, read by the upload route itself.
+  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 + 1, files: 1, fields: 8, parts: 10 } });
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("X-Request-Id", request.id);
@@ -129,7 +135,9 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await tripRoutes(app, { db, jwtSecret, paymentMethods: env.PAYMENT_METHODS, currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", ...(clock ? { clock } : {}) });
-    await driverRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    const documentKey = documentKeyFrom(env, jwtSecret);
+    await driverRoutes(app, { db, jwtSecret, documentKey, ...(clock ? { clock } : {}) });
+    await adminPeopleRoutes(app, { db, jwtSecret, documentKey, ...(clock ? { clock } : {}) });
     await dispatchRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }

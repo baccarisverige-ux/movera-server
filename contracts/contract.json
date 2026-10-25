@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -1147,6 +1147,271 @@
     "roundDecimals": 4,
     "keyRotation": "daily, Europe/Stockholm",
     "who": "drivers online and free (not on a trip, no accepted trip), with a fix not older than freshSeconds"
+  },
+  "driverOnboarding": {
+    "note": "v0.5.3 (CONTRACT.md §14), owner decisions of 2026-10-25: the driver app signs in with the phone and the code (§8) and then sends its details once (POST /driver/onboarding); the account waits on hold until Movera approves it. Two account types: a driver who works for a fleet, and a fleet (a company with cars and drivers; its owner may drive too). Documents are listed per country and account type and uploaded to the server for review in the admin panel. Tunisia is shown but not open yet.",
+    "accountTypes": [
+      "driver",
+      "fleet"
+    ],
+    "minAge": 21,
+    "countries": {
+      "SE": {
+        "open": true,
+        "cities": [
+          {
+            "cityId": "stockholm_lan",
+            "name": "Stockholm län",
+            "zoneId": "Z001"
+          }
+        ]
+      },
+      "FR": {
+        "open": true,
+        "cities": [
+          {
+            "cityId": "paris",
+            "name": "Paris",
+            "zoneId": "FR-PC"
+          }
+        ]
+      },
+      "TN": {
+        "open": false,
+        "cities": []
+      }
+    },
+    "accountStatus": {
+      "pending": "signed in, details not sent yet (the app shows the details screen)",
+      "on_hold": "details sent, waiting for Movera (the app opens with the account on hold; the driver uploads documents, cannot go online)",
+      "active": "approved by an admin (POST /admin/drivers/{driverId}/status); may go online with an approved vehicle",
+      "suspended": "blocked by an admin"
+    },
+    "fleetCode": {
+      "note": "Made by the server when an admin approves the fleet; shown only to the fleet owner (GET /driver/fleet) and admins. A driver joins with the code plus the owner's full name and e-mail as registered; all three must match, and one mismatch message covers all three (fleet_join_mismatch). An admin can make a new code (POST /admin/fleets/{fleetId}/code); the old one stops working at once.",
+      "prefix": "MV-",
+      "length": 5,
+      "alphabet": "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",
+      "caseInsensitive": true,
+      "joinAttemptsPerHour": 10
+    },
+    "vehicles": {
+      "note": "Fleet accounts own the cars (POST /driver/vehicles); an admin approves each (POST /admin/vehicles/{vehicleId}/review). A linked driver sees the fleet's approved cars (GET /driver/vehicles) and picks the one he drives (PATCH /driver/profile { vehicleId }). One car has one driver at a time: a car is in use while another driver has it picked and is online or on a trip (409 conflict, reason vehicle_in_use); picking a car another offline driver had moves it (that driver picks again before going online). A driver account that is not linked to a fleet has no cars (the app says the fleet's vehicle details are awaited)."
+    },
+    "payouts": {
+      "note": "Driver.payoutTo tells who is paid: fleet for a driver linked to a fleet (the fleet's bank; the driver sees his own trips and earnings, the owner sees every driver's earnings with GET /driver/fleet/earnings), self for a fleet account."
+    },
+    "documents": {
+      "note": "kind file: uploaded with POST /driver/documents (multipart) and reviewed by an admin; acceptance: terms, accepted on POST /driver/onboarding (termsAccepted) and stored approved; admin_check: no file, an admin marks it approved (the session was held). required[country].driver are the person's documents (every account); required[country].fleet are the company's (fleet accounts; the fleet is approved on them, and the owner needs his driver documents too to go online himself); required[country].vehicle per car. Driver.requiredDocuments and Vehicle.requiredDocuments carry the lists so the app never computes them.",
+      "types": {
+        "terms": {
+          "owner": "driver",
+          "kind": "acceptance",
+          "name": {
+            "en": "Terms and conditions",
+            "sv": "Villkor",
+            "fr": "Conditions générales"
+          }
+        },
+        "info_session": {
+          "owner": "driver",
+          "kind": "admin_check",
+          "name": {
+            "en": "Virtual information session",
+            "sv": "Digitalt informationsmöte",
+            "fr": "Session d’information en ligne"
+          }
+        },
+        "driving_license": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "Driving licence",
+            "sv": "Körkort",
+            "fr": "Permis de conduire"
+          }
+        },
+        "profile_photo": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "Profile photo",
+            "sv": "Profilbild",
+            "fr": "Photo de profil"
+          }
+        },
+        "national_id": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "ID card or passport",
+            "sv": "ID-kort eller pass",
+            "fr": "Pièce d’identité ou passeport"
+          }
+        },
+        "taxi_driver_license": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "Taxi driver licence",
+            "sv": "Taxiförarlegitimation",
+            "fr": "Carte de chauffeur de taxi"
+          }
+        },
+        "vtc_card": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "VTC professional card",
+            "sv": "VTC-yrkeskort",
+            "fr": "Carte professionnelle VTC"
+          }
+        },
+        "company_registration": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "Company registration",
+            "sv": "Registreringsbevis (Bolagsverket)",
+            "fr": "Extrait Kbis ou avis SIRENE (moins de 3 mois)"
+          }
+        },
+        "taxi_traffic_permit": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "Taxi traffic permit",
+            "sv": "Taxitrafiktillstånd (Transportstyrelsen)",
+            "fr": "Licence de taxi"
+          }
+        },
+        "tax_settings": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "Tax settings (F-skatt)",
+            "sv": "F-skattsedel",
+            "fr": "Attestation fiscale"
+          }
+        },
+        "bank_statement": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "Bank details",
+            "sv": "Kontobevis",
+            "fr": "RIB de la société"
+          }
+        },
+        "vtc_register_certificate": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "VTC operators register certificate",
+            "sv": "Intyg från VTC-registret",
+            "fr": "Certificat d’inscription au registre des exploitants VTC"
+          }
+        },
+        "rc_pro_insurance": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "Professional liability insurance (RC pro)",
+            "sv": "Ansvarsförsäkring (RC pro)",
+            "fr": "Attestation RC professionnelle"
+          }
+        },
+        "urssaf_certificate": {
+          "owner": "driver",
+          "kind": "file",
+          "name": {
+            "en": "URSSAF certificate",
+            "sv": "URSSAF-intyg",
+            "fr": "Attestation de vigilance URSSAF"
+          }
+        },
+        "vehicle_registration": {
+          "owner": "vehicle",
+          "kind": "file",
+          "name": {
+            "en": "Registration certificate",
+            "sv": "Registreringsbevis",
+            "fr": "Certificat d’immatriculation (carte grise)"
+          }
+        },
+        "insurance": {
+          "owner": "vehicle",
+          "kind": "file",
+          "name": {
+            "en": "Vehicle insurance",
+            "sv": "Försäkringsbrev",
+            "fr": "Assurance transport de personnes"
+          }
+        },
+        "vtc_sticker": {
+          "owner": "vehicle",
+          "kind": "file",
+          "name": {
+            "en": "VTC sticker (macaron)",
+            "sv": "VTC-dekal",
+            "fr": "Macaron VTC"
+          }
+        }
+      },
+      "required": {
+        "SE": {
+          "driver": [
+            "terms",
+            "info_session",
+            "driving_license",
+            "profile_photo",
+            "taxi_driver_license"
+          ],
+          "fleet": [
+            "company_registration",
+            "taxi_traffic_permit",
+            "tax_settings",
+            "bank_statement"
+          ],
+          "vehicle": [
+            "vehicle_registration",
+            "insurance"
+          ]
+        },
+        "FR": {
+          "driver": [
+            "terms",
+            "vtc_card",
+            "driving_license",
+            "national_id",
+            "profile_photo"
+          ],
+          "fleet": [
+            "company_registration",
+            "vtc_register_certificate",
+            "rc_pro_insurance",
+            "urssaf_certificate",
+            "national_id",
+            "bank_statement"
+          ],
+          "vehicle": [
+            "vehicle_registration",
+            "insurance",
+            "vtc_sticker"
+          ]
+        }
+      },
+      "upload": {
+        "maxBytes": 10485760,
+        "mediaTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/heic",
+          "application/pdf"
+        ],
+        "note": "Files are stored by the server (encrypted at rest, Europe) and read only through GET /driver/documents/{documentId}/file (the owner) and GET /admin/documents/{documentId}/file (documents.approve). fileUrl is that path, never a public link."
+      }
+    }
   },
   "outstandingFee": {
     "note": "v0.5.1 (CONTRACT.md §3.7), owner decision 7: an unpaid cash cancel or no-show fee puts the rider in minus (Rider.outstanding) and is added to the next trip as the outstanding_fee line.",

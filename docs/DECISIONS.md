@@ -39,9 +39,24 @@ What the server does for the test week, as the owner chose it. Change a line her
 | 34 | Admin waives an owed fee | The driver keeps the share already credited; Movera carries the loss. |
 | 11 | Trip GPS paths | Kept 30 days, then deleted. Only each driver's latest position is kept beyond that. |
 
-## Requested features (later round: driver sign-up)
+## Driver sign-up and fleets (round 4, owner decisions of 2026-10-25; contract v0.5.3 §14)
 
-- **Driver sign-up with fleets.** A new driver creates their own account and chooses: *fleet owner account*, or *driver*. A driver can later use a menu option to ask to join a fleet (fleet name, phone, e-mail); an admin approves it after checking with the fleet owner. The admin panel already has fleet owners (codes like FO-SE-01); the driver app has neither the choice nor the join request yet. Needs a contract addition, server, driver app and admin approval screen.
+| # | Question | Decision |
+|---|---|---|
+| R4-1 | Sign-in screens | The driver app signs in like the rider (phone and code), with "Driver" under the logo and no Apple / Google. Then one details screen (white, plain): first and last name, date of birth, e-mail, country, city, language, Driver or Fleet. The app opens with the account on hold. |
+| R4-2 | Countries and cities | Sweden (Stockholm län, which includes Södertälje) and France (Paris) are open; Tunisia is shown but cannot be chosen yet. |
+| R4-3 | Minimum age | 21. |
+| R4-4 | Account types | *Driver*: works for a fleet, paid through it, no company or bank documents of his own. *Fleet*: a company with cars and drivers; its owner may drive too (then he needs his driver documents as well). |
+| R4-5 | Sweden documents | Driver: terms, information session, driving licence, profile photo, taxi driver licence (no Transportstyrelsen permit, no F-skatt, no company registration, no bank statement). Fleet: all of today's list (company registration, taxi traffic permit, tax settings, bank statement, plus the owner's driver documents). Car: registration certificate, insurance. |
+| R4-6 | France documents | As Uber / Bolt ask there. Driver: VTC card, driving licence, ID, profile photo (and the terms). Fleet: Kbis / SIRENE under 3 months, VTC operators register certificate, RC pro, URSSAF certificate, the manager's ID, the company RIB. Car: carte grise, passenger transport insurance, VTC macaron. The information session is Sweden only; the terms are for everyone. |
+| R4-7 | Joining a fleet | The server makes the fleet's code (`MV-` + 5 characters) when an admin approves the fleet; the owner sees it in his app and shares it. A driver joins with the code **and** the owner's full name **and** e-mail as registered; all three must match, one mismatch message, 10 tries per hour. An admin can make a new code. |
+| R4-8 | Cars | The fleet owner adds the cars in his app and an admin approves each. A linked driver sees the fleet's approved cars and picks the one he drives; one car has one driver at a time (in use while that driver is online or on a trip). Before he is linked, the app says the fleet's vehicle details are awaited. |
+| R4-9 | Money | A fleet driver's earnings are paid to the fleet's bank; the driver sees his own trips and earnings, the owner sees every driver's earnings. |
+| R4-10 | Leaving | The owner can remove a driver, the driver can leave (not during a trip), an admin can do both. The driver is back to waiting for a fleet. |
+| R4-11 | Documents upload | For real: files go to the server (Europe), sealed at rest (`DOCUMENT_FILES_KEY`), read only by their owner, his fleet owner and admins with `documents.approve` (every admin read is in the audit). Approve / reject in the admin panel; the account leaves on hold when an admin activates it. |
+| R4-12 | Demo address search | Left as it is (the owner does not care about the demo); the test week searches through the server and Google, which needs `GOOGLE_MAPS_API_KEY`. |
+
+Implementation notes (server): new drivers stay `pending` until the details are sent (`on_hold` afterwards); drivers made before v0.5.3 by the CLI keep the old rules (own car, no fleet needed). A blocked fleet takes its drivers offline; a trip under way runs to its end. A car that is no longer approved takes its driver offline too.
 
 Technical rules decided without the owner (they match what the apps already do):
 
@@ -89,7 +104,7 @@ Technical rules:
 - Payout accounts are shown only to finance admins of the trip's zone.
 - Later: `GET /admin/refunds` (list), a `pending_approval` refund row while it waits, and rider lists by zone (riders have no home zone yet).
 
-Contract v0.5.3 additions this needs (the server already does them; the contract and the apps follow; v0.5.2 was the rider map's nearby cars):
+Contract v0.5.4 additions this needs (the server already does them; the contract and the apps follow; v0.5.2 was the rider map's nearby cars, v0.5.3 the driver sign-up and fleets):
 `TripProjection.walletApplied` and `cashToCollect`; fare line `adjustment`; `driverBonus` on admin cancel and reassign (money for the driver who lost the ride); `fromDriver` on refunds; `Refund.destination`, `payoutStatus`, `paidAt`, `fromDriver`; `GET /rider/refunds`, `POST /rider/refunds/{refundId}/destination` (wallet / swish / bank, Swish only in Sweden), `GET /admin/refunds/payouts`, `POST /admin/refunds/{refundId}/paid`; `DriverAppConfig.cancelFees.driverSharePct` (decision 26); `PaymentIntent.cashCollected` and `walletApplied` in the admin list.
 
 ## Before every test round

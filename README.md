@@ -34,6 +34,7 @@ Settings come from the environment (`src/env.ts`):
 | `JWT_SECRET` | Signs access tokens, at least 32 characters. Required on staging and production. | random per start |
 | `OSRM_URL` | Movera's own route service (e.g. `http://osrm:5000`). Unset: distances are estimated | none |
 | `GOOGLE_MAPS_API_KEY` | Address search through Google. Unset: address search answers `503` | none |
+| `DOCUMENT_FILES_KEY` | Seals uploaded driver documents at rest (AES-256-GCM): 32 random bytes, base64 (`openssl rand -base64 32`). Required in production; elsewhere a key derived from `JWT_SECRET` stands in | derived outside production |
 | `ADMIN_PANEL_URL` | Where setup links point | `http://localhost:5173` |
 | `DEFAULT_ZONE_ID` | Zone for settings when an app names none | `Z001` |
 | `TRUST_PROXY_HOPS` | Proxies in front of the server (the host's load balancer = 1), so limits see the phone's real address and it cannot be faked | `0` |

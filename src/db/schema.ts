@@ -45,6 +45,69 @@ export interface DriversTable {
   version: Generated<number>;
   created_at: Timestamp;
   updated_at: Timestamp;
+  // v0.5.3 (§14): the sign-up details; NULL account_type = a driver from before v0.5.3 (old rules).
+  account_type: ColumnType<"driver" | "fleet" | null, "driver" | "fleet" | null | undefined, "driver" | "fleet" | null>;
+  last_name: Generated<string>;
+  date_of_birth: ColumnType<Date | null, string | null | undefined, string | null>;
+  email: ColumnType<string | null, string | null | undefined, string | null>;
+  country: ColumnType<string | null, string | null | undefined, string | null>;
+  city_id: ColumnType<string | null, string | null | undefined, string | null>;
+  language: ColumnType<string | null, string | null | undefined, string | null>;
+  terms_accepted_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  fleet_id: ColumnType<string | null, string | null | undefined, string | null>;
+  fleet_linked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
+export interface FleetsTable {
+  fleet_id: string;
+  name: string;
+  org_number: string;
+  address: Generated<string>;
+  country: string;
+  city_id: string;
+  zone_id: string;
+  owner_driver_id: string;
+  status: Generated<"pending" | "approved" | "rejected" | "blocked">;
+  code: ColumnType<string | null, string | null | undefined, string | null>;
+  review_note: ColumnType<string | null, string | null | undefined, string | null>;
+  reviewed_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  reviewed_by: ColumnType<string | null, string | null | undefined, string | null>;
+  version: Generated<number>;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export interface FleetJoinAttemptsTable {
+  driver_id: string;
+  at: Timestamp;
+}
+
+export interface DocumentsTable {
+  document_id: string;
+  driver_id: string;
+  owner_kind: "driver" | "vehicle";
+  owner_id: string;
+  type: string;
+  status: Generated<"missing" | "in_review" | "approved" | "rejected" | "expired">;
+  expires_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  file_name: ColumnType<string | null, string | null | undefined, string | null>;
+  media_type: ColumnType<string | null, string | null | undefined, string | null>;
+  file_size: ColumnType<number | null, number | null | undefined, number | null>;
+  uploaded_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  reviewed_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  reviewed_by: ColumnType<string | null, string | null | undefined, string | null>;
+  review_note: ColumnType<string | null, string | null | undefined, string | null>;
+  version: Generated<number>;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export interface DocumentFilesTable {
+  document_id: string;
+  key_id: string;
+  iv: Buffer;
+  tag: Buffer;
+  ciphertext: Buffer;
 }
 
 export interface DriverLocationsTable {
@@ -349,7 +412,10 @@ export interface QuotesTable {
 
 export interface VehiclesTable {
   vehicle_id: string;
-  driver_id: string;
+  /** v0.5.3: who has the car picked (NULL = free); for a car from before v0.5.3, its owner. */
+  driver_id: string | null;
+  /** v0.5.3: the fleet that owns the car; NULL for a car from before v0.5.3. */
+  fleet_id: ColumnType<string | null, string | null | undefined, string | null>;
   make: string;
   model: string;
   year: number;
@@ -528,6 +594,10 @@ export interface Database {
   admin_audit: AdminAuditTable;
   quotes: QuotesTable;
   vehicles: VehiclesTable;
+  fleets: FleetsTable;
+  fleet_join_attempts: FleetJoinAttemptsTable;
+  documents: DocumentsTable;
+  document_files: DocumentFilesTable;
   trip_locations: TripLocationsTable;
   searches: SearchesTable;
   offers: OffersTable;

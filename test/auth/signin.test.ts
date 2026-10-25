@@ -17,7 +17,7 @@ beforeAll(async () => {
   database = await freshDatabase();
   await seedTestPhones(database.db);
   app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: SECRET }), logger: false, db: database.db, clock: () => clock.now });
-  production = await buildApp({ env: readEnv({ MOVERA_ENV: "production", DATABASE_URL: database.url, JWT_SECRET: SECRET }), logger: false, db: database.db, clock: () => clock.now });
+  production = await buildApp({ env: readEnv({ MOVERA_ENV: "production", DATABASE_URL: database.url, JWT_SECRET: SECRET, DOCUMENT_FILES_KEY: Buffer.alloc(32, 7).toString("base64") }), logger: false, db: database.db, clock: () => clock.now });
 });
 afterAll(async () => {
   await app.close();

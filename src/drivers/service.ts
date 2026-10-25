@@ -7,6 +7,8 @@ import { newId } from "../ids.js";
 import { zoneAt } from "../config/zoneLookup.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
+import { documentSummaries } from "../documents/service.js";
+import { requiredDocuments } from "./onboardingRules.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -21,7 +23,7 @@ export const STALE_AFTER_SECONDS = 120;
 const MAX_FIX_AGE_MS = 10 * 60 * 1000;
 const MAX_FIX_AHEAD_MS = 60 * 1000;
 
-type DriverRow = {
+export type DriverRow = {
   driver_id: string;
   phone: string;
   first_name: string;
@@ -34,6 +36,17 @@ type DriverRow = {
   rating_sum: number;
   rating_count: number;
   version: number;
+  // v0.5.3 (§14)
+  account_type: "driver" | "fleet" | null;
+  last_name: string;
+  date_of_birth: Date | null;
+  email: string | null;
+  country: string | null;
+  city_id: string | null;
+  language: string | null;
+  terms_accepted_at: Date | null;
+  fleet_id: string | null;
+  fleet_linked_at: Date | null;
 };
 
 type Fix = { lat: number; lng: number; accuracy: number; heading?: number; speedMps?: number; moving?: boolean; measuredAt: string };
@@ -53,6 +66,8 @@ async function activeTripOf(ex: Executor, driverId: string) {
 export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin"): Promise<Record<string, unknown>> {
   const location = await ex.selectFrom("driver_locations").selectAll().where("driver_id", "=", row.driver_id).executeTakeFirst();
   const active = await activeTripOf(ex, row.driver_id);
+  const fleet = row.fleet_id ? await ex.selectFrom("fleets").select(["fleet_id", "name", "status", "owner_driver_id", "created_at"]).where("fleet_id", "=", row.fleet_id).executeTakeFirst() : undefined;
+  const dob = row.date_of_birth;
   return {
     driverId: row.driver_id,
     accountStatus: row.account_status,
@@ -63,7 +78,22 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     zoneIds: row.zone_ids,
     categoryIds: row.category_ids,
     ...(row.vehicle_id ? { vehicleId: row.vehicle_id } : {}),
-    documents: [],
+    documents: await documentSummaries(ex, "driver", row.driver_id),
+    // v0.5.3 (§14): the sign-up details, the fleet and the documents this account needs.
+    ...(row.account_type ? { accountType: row.account_type } : {}),
+    ...(row.last_name ? { lastName: row.last_name } : {}),
+    ...(dob ? { dateOfBirth: dob instanceof Date ? dob.toISOString().slice(0, 10) : String(dob) } : {}),
+    ...(row.email ? { email: row.email } : {}),
+    ...(row.country ? { country: row.country } : {}),
+    ...(row.city_id ? { cityId: row.city_id } : {}),
+    ...(row.language ? { language: row.language } : {}),
+    ...(row.terms_accepted_at ? { termsAcceptedAt: row.terms_accepted_at.toISOString() } : {}),
+    ...(fleet
+      ? { fleet: { fleetId: fleet.fleet_id, name: fleet.name, role: fleet.owner_driver_id === row.driver_id ? "owner" : "member", status: fleet.status, linkedAt: (row.fleet_linked_at ?? fleet.created_at).toISOString() } }
+      : {}),
+    ...(row.account_type === "fleet" ? { payoutTo: "self" } : row.account_type === "driver" && fleet ? { payoutTo: "fleet" } : {}),
+    requiredDocuments: requiredDocuments(row.country, "driver"),
+    ...(row.account_type === "fleet" ? { requiredFleetDocuments: requiredDocuments(row.country, "fleet") } : {}),
     ...(active ? { activeTripId: active.trip_id } : {}),
     ...(row.scheduled_rides ? { scheduledRides: row.scheduled_rides } : {}),
     version: row.version,
@@ -104,10 +134,24 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
   if (row.version !== update.expectedVersion) throw new ApiError("version_mismatch", "Your profile changed since you last saw it.", { projection: await stale(row, trx)() });
   let categoryIds = update.categoryIds;
   if (update.vehicleId !== undefined) {
-    const vehicle = await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", update.vehicleId).where("driver_id", "=", driverId).executeTakeFirst();
-    if (vehicle === undefined) throw badRequest("That vehicle is not yours.", "vehicle_not_found");
+    const vehicle = await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", update.vehicleId).forUpdate().executeTakeFirst();
+    // v0.5.3: one of the fleet's cars, or (a driver from before v0.5.3) the driver's own.
+    const mine = vehicle !== undefined && (vehicle.fleet_id !== null ? vehicle.fleet_id === row.fleet_id : vehicle.driver_id === driverId);
+    if (vehicle === undefined || !mine) throw badRequest("That vehicle is not yours.", "vehicle_not_found");
     if (vehicle.status !== "approved") throw badRequest("That vehicle is not approved yet.", "vehicle_not_approved");
-    categoryIds ??= vehicle.category_ids.filter((c) => row.category_ids.includes(c));
+    if (vehicle.fleet_id !== null && vehicle.driver_id !== null && vehicle.driver_id !== driverId) {
+      // One car, one driver at a time: in use while the other driver is online or on a trip; an offline driver's pick moves.
+      const other = await trx.selectFrom("drivers").select(["online_status", "vehicle_id"]).where("driver_id", "=", vehicle.driver_id).executeTakeFirst();
+      if (other && other.vehicle_id === vehicle.vehicle_id && other.online_status !== "offline") {
+        throw new ApiError("conflict", "Another driver is driving this car right now.", { reason: "vehicle_in_use" });
+      }
+      if (other && other.vehicle_id === vehicle.vehicle_id) await trx.updateTable("drivers").set({ vehicle_id: null, updated_at: now }).where("driver_id", "=", vehicle.driver_id).execute();
+    }
+    if (vehicle.fleet_id !== null) {
+      await releaseCar(trx, driverId);
+      await trx.updateTable("vehicles").set({ driver_id: driverId, updated_at: now }).where("vehicle_id", "=", vehicle.vehicle_id).execute();
+    }
+    categoryIds ??= row.category_ids.length ? vehicle.category_ids.filter((c) => row.category_ids.includes(c)) : vehicle.category_ids;
   }
   if (categoryIds !== undefined) {
     const vehicleId = update.vehicleId ?? row.vehicle_id;
@@ -141,9 +185,16 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
   if (body.onlineStatus === row.online_status || (body.onlineStatus === "online" && row.online_status === "on_trip")) return driverView(trx, row, "driver");
   if (body.onlineStatus === "online") {
     if (row.account_status !== "active") throw await refuse("Your account is not active yet.", "account_not_active");
+    // v0.5.3: a driver account works for a fleet; the fleet must be approved (not blocked).
+    if (row.account_type === "driver" && row.fleet_id === null) throw await refuse("Join a fleet first.", "no_fleet");
+    if (row.fleet_id !== null) {
+      const fleet = await trx.selectFrom("fleets").select("status").where("fleet_id", "=", row.fleet_id).executeTakeFirst();
+      if (fleet?.status !== "approved") throw await refuse("Your fleet is not approved.", "fleet_not_approved");
+    }
     if (row.vehicle_id === null) throw await refuse("Choose an approved car first.", "no_vehicle");
-    const vehicle = await trx.selectFrom("vehicles").select("status").where("vehicle_id", "=", row.vehicle_id).executeTakeFirst();
+    const vehicle = await trx.selectFrom("vehicles").select(["status", "driver_id", "fleet_id"]).where("vehicle_id", "=", row.vehicle_id).executeTakeFirst();
     if (vehicle?.status !== "approved") throw await refuse("Your car is not approved.", "vehicle_not_approved");
+    if (vehicle.fleet_id !== null && vehicle.driver_id !== driverId) throw await refuse("Another driver has this car now; pick a car again.", "vehicle_in_use");
     if (row.category_ids.length === 0) throw await refuse("No car type is chosen.", "no_category");
   } else if (await activeTripOf(trx, driverId)) {
     throw await refuse("Finish or hand back your trip before going offline.", "on_trip");
@@ -212,23 +263,79 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
 
 /* ---------------------------------------------------------------- vehicles */
 
-type VehicleRow = { vehicle_id: string; make: string; model: string; year: number; color: string; plate: string; seats: number; category_ids: string[]; status: string; version: number };
-export const vehicleView = (v: VehicleRow) => ({ vehicleId: v.vehicle_id, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate, seats: v.seats, categoryIds: v.category_ids, status: v.status, version: v.version });
+export type VehicleRow = { vehicle_id: string; driver_id: string | null; fleet_id: string | null; make: string; model: string; year: number; color: string; plate: string; seats: number; category_ids: string[]; status: string; version: number };
+export const vehicleView = (v: VehicleRow) => ({
+  vehicleId: v.vehicle_id,
+  make: v.make,
+  model: v.model,
+  year: v.year,
+  color: v.color,
+  plate: v.plate,
+  seats: v.seats,
+  categoryIds: v.category_ids,
+  status: v.status,
+  version: v.version,
+  ...(v.fleet_id ? { fleetId: v.fleet_id } : {}),
+  ...(v.fleet_id && v.driver_id ? { driverId: v.driver_id } : {}),
+});
 
+/** Vehicle with its v0.5.3 fields: who has it picked, whether that driver is out with it, its documents. */
+export async function vehicleFullView(ex: Executor, v: VehicleRow) {
+  let inUse = false;
+  let country: string | null = null;
+  if (v.fleet_id) {
+    const fleet = await ex.selectFrom("fleets").select("country").where("fleet_id", "=", v.fleet_id).executeTakeFirst();
+    country = fleet?.country ?? null;
+    if (v.driver_id) {
+      const picker = await ex.selectFrom("drivers").select(["online_status", "vehicle_id"]).where("driver_id", "=", v.driver_id).executeTakeFirst();
+      inUse = picker?.vehicle_id === v.vehicle_id && picker.online_status !== "offline";
+    }
+  } else if (v.driver_id) {
+    const owner = await ex.selectFrom("drivers").select("country").where("driver_id", "=", v.driver_id).executeTakeFirst();
+    country = owner?.country ?? null;
+  }
+  return {
+    ...vehicleView(v),
+    ...(v.fleet_id ? { inUse } : {}),
+    documents: await documentSummaries(ex, "vehicle", v.vehicle_id),
+    requiredDocuments: requiredDocuments(country, "vehicle"),
+  };
+}
+
+/** The driver's car goes back to the fleet pool (v0.5.3). */
+export async function releaseCar(trx: Trx, driverId: string): Promise<void> {
+  await trx.updateTable("vehicles").set({ driver_id: null }).where("driver_id", "=", driverId).where("fleet_id", "is not", null).execute();
+}
+
+/** GET /driver/vehicles: the fleet's cars (a member sees the approved ones), or a pre-v0.5.3 driver's own. */
 export async function listVehicles(ex: Executor, driverId: string) {
-  const rows = await ex.selectFrom("vehicles").selectAll().where("driver_id", "=", driverId).orderBy("created_at").execute();
-  return { items: rows.map((r) => vehicleView(r as unknown as VehicleRow)), nextCursor: null };
+  const me = await loadDriver(ex, driverId);
+  let q = ex.selectFrom("vehicles").selectAll();
+  if (me.fleet_id !== null) {
+    q = q.where("fleet_id", "=", me.fleet_id);
+    if (me.account_type !== "fleet") q = q.where("status", "=", "approved");
+  } else {
+    q = q.where("driver_id", "=", driverId).where("fleet_id", "is", null);
+  }
+  const rows = await q.orderBy("created_at").execute();
+  const items = [];
+  for (const r of rows) items.push(await vehicleFullView(ex, r as unknown as VehicleRow));
+  return { items, nextCursor: null };
 }
 
 export async function addVehicle(trx: Trx, driverId: string, body: unknown, now: Date) {
   const problem = schemaProblem("VehicleRequest", body);
   if (problem !== null) throw badRequest(`The vehicle is not valid: ${problem}.`, "invalid_body");
   const v = body as { make: string; model: string; year: number; color: string; plate: string; seats?: number; categoryIds?: string[] };
+  const me = await loadDriver(trx, driverId);
+  // v0.5.3: fleet accounts own the cars; a driver account picks one of its fleet's.
+  if (me.account_type === "driver") throw new ApiError("forbidden", "Your fleet adds its cars; you pick one of them.", { reason: "fleet_vehicles_only" });
+  const fleetId = me.account_type === "fleet" ? me.fleet_id : null;
   const vehicleId = newId("veh", now.getTime());
   try {
     await trx
       .insertInto("vehicles")
-      .values({ vehicle_id: vehicleId, driver_id: driverId, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate.toUpperCase(), seats: v.seats ?? 4, category_ids: v.categoryIds ?? [], created_at: now, updated_at: now })
+      .values({ vehicle_id: vehicleId, driver_id: fleetId ? null : driverId, fleet_id: fleetId, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate.toUpperCase(), seats: v.seats ?? 4, category_ids: v.categoryIds ?? [], created_at: now, updated_at: now })
       .execute();
   } catch (error) {
     if ((error as { constraint?: string }).constraint === "vehicles_plate") throw new ApiError("conflict", "A car with this plate is already registered.", { reason: "plate_taken" });
@@ -236,7 +343,7 @@ export async function addVehicle(trx: Trx, driverId: string, body: unknown, now:
   }
   // A new car waits for an admin's review (status pending).
   const row = await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", vehicleId).executeTakeFirstOrThrow();
-  return vehicleView(row as unknown as VehicleRow);
+  return vehicleFullView(trx, row as unknown as VehicleRow);
 }
 
 /* ---------------------------------------------------------------- admin views */

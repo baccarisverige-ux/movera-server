@@ -27,6 +27,11 @@ const schema = z.object({
   OSRM_URL: z.string().url().optional(),
   /** Google Places / Geocoding key for address search (owner decision 4). Unset: address search answers 503. */
   GOOGLE_MAPS_API_KEY: z.string().min(10).optional(),
+  /**
+   * Seals uploaded driver documents at rest (AES-256-GCM): 32 random bytes, base64 (`openssl rand -base64 32`).
+   * Required in production; elsewhere a key derived from JWT_SECRET stands in (contract v0.5.3 §14).
+   */
+  DOCUMENT_FILES_KEY: z.string().min(40).optional(),
   /** Payment methods riders may book with (test week: cash only). Comma-separated. */
   PAYMENT_METHODS: z
     .string()
@@ -44,6 +49,9 @@ const schema = z.object({
 }).superRefine((env, ctx) => {
   if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
+  }
+  if (env.MOVERA_ENV === "production" && env.DOCUMENT_FILES_KEY === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DOCUMENT_FILES_KEY"], message: "required when MOVERA_ENV is production" });
   }
   if (env.MOVERA_ENV !== "development" && env.JWT_SECRET === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["JWT_SECRET"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
