@@ -89,7 +89,7 @@ Technical rules:
 - Payout accounts are shown only to finance admins of the trip's zone.
 - Later: `GET /admin/refunds` (list), a `pending_approval` refund row while it waits, and rider lists by zone (riders have no home zone yet).
 
-Contract v0.5.2 additions this needs (the server already does them; the contract and the apps follow):
+Contract v0.5.3 additions this needs (the server already does them; the contract and the apps follow; v0.5.2 was the rider map's nearby cars):
 `TripProjection.walletApplied` and `cashToCollect`; fare line `adjustment`; `driverBonus` on admin cancel and reassign (money for the driver who lost the ride); `fromDriver` on refunds; `Refund.destination`, `payoutStatus`, `paidAt`, `fromDriver`; `GET /rider/refunds`, `POST /rider/refunds/{refundId}/destination` (wallet / swish / bank, Swish only in Sweden), `GET /admin/refunds/payouts`, `POST /admin/refunds/{refundId}/paid`; `DriverAppConfig.cancelFees.driverSharePct` (decision 26); `PaymentIntent.cashCollected` and `walletApplied` in the admin list.
 
 ## Before every test round

@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -1137,6 +1137,16 @@
     "pollSeconds": 5,
     "traceKeepDays": 30,
     "keep": "trip GPS traces are deleted after traceKeepDays; only each driver's latest position is kept beyond that"
+  },
+  "riderNearby": {
+    "note": "v0.5.2 (CONTRACT.md §13): the free cars near the rider, drawn on the rider's map while it chooses a ride. No driver id, name, plate or trip; positions rounded; the key changes every day.",
+    "radiusMeters": 3000,
+    "maxVehicles": 15,
+    "freshSeconds": 120,
+    "refreshSeconds": 5,
+    "roundDecimals": 4,
+    "keyRotation": "daily, Europe/Stockholm",
+    "who": "drivers online and free (not on a trip, no accepted trip), with a fix not older than freshSeconds"
   },
   "outstandingFee": {
     "note": "v0.5.1 (CONTRACT.md §3.7), owner decision 7: an unpaid cash cancel or no-show fee puts the rider in minus (Rider.outstanding) and is added to the next trip as the outstanding_fee line.",

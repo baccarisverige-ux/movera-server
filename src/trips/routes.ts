@@ -7,6 +7,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
+import { nearbyVehicles } from "../riders/nearby.js";
 import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
 import { tripProjection } from "./projection.js";
 import { eventEnvelope } from "../realtime/events.js";
@@ -17,6 +18,8 @@ import { DriverCancelBody, driverCancel } from "./rideRoutes.js";
 import { activeTrip, createTrip, getTrip, riderCancel, riderTrips, setCancelReason } from "./service.js";
 
 /** contract §3, §7: trips for the rider (with the deprecated /rides aliases), the rider profile, payment methods. */
+
+const NearbyQuery = z.object({ lat: z.coerce.number().min(-90).max(90), lng: z.coerce.number().min(-180).max(180) });
 
 export type TripDeps = { db: Db; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date };
 
@@ -126,6 +129,13 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   app.get(`${API_PREFIX}/rider/profile`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
     return getRiderProfile(deps.db, who.subjectId, deps.currency);
+  });
+
+  // contract v0.5.2 §13: the free cars around the rider's map, with nothing that tells who drives.
+  app.get(`${API_PREFIX}/rider/nearby-vehicles`, async (request) => {
+    await authenticate(request, guard, ["rider"]);
+    const point = parseBody(NearbyQuery, request.query);
+    return nearbyVehicles(deps.db, point, deps.jwtSecret, now());
   });
 
   app.patch(`${API_PREFIX}/rider/profile`, async (request) => {
