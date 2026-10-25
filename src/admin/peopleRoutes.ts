@@ -10,6 +10,7 @@ import { parseBody } from "../http/validate.js";
 import { adminDocumentFile, reviewDocument } from "../documents/service.js";
 import type { DocumentKey } from "../documents/files.js";
 import { adminGetFleet, adminRemoveFleetDriver, listFleets, renewFleetCode, reviewFleet } from "../drivers/onboarding.js";
+import { adminDecideInvitation, type InviteDeps } from "../drivers/invitations.js";
 import { driverView, loadDriver, vehicleFullView, type VehicleRow } from "../drivers/service.js";
 import { sendFile } from "../drivers/routes.js";
 import { scheduleTimer } from "../jobs/timers.js";
@@ -17,7 +18,7 @@ import { audit } from "./audit.js";
 
 /** contract v0.5.3 §14 (admin side): fleets, driver detail, vehicles list and review, document review and file. */
 
-export type PeopleDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; clock?: () => Date };
+export type PeopleDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Version = { expectedVersion: z.number().int().min(1) };
@@ -49,7 +50,7 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
   });
   app.get(`${API_PREFIX}/admin/fleets/:fleetId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "drivers.read");
-    return adminGetFleet(deps.db, who, param(request, "fleetId"));
+    return adminGetFleet(deps.db, who, param(request, "fleetId"), now());
   });
   app.post(`${API_PREFIX}/admin/fleets/:fleetId/review`, async (request) => {
     const who = await authenticateAdmin(request, guard, "drivers.activate");
@@ -72,6 +73,15 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
     });
     return reply.status(204).send();
   });
+
+  // v0.5.3: an admin may accept or cancel a pending invitation or request.
+  for (const action of ["accept", "cancel"] as const) {
+    app.post(`${API_PREFIX}/admin/fleets/:fleetId/invitations/:invitationId/${action}`, async (request) => {
+      const who = await authenticateAdmin(request, guard, "drivers.activate");
+      const { fleetId, invitationId } = parseBody(z.object({ fleetId: ID, invitationId: ID }), request.params);
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminDecideInvitation(trx, deps.invites, who, fleetId, invitationId, action, now()) }))).body;
+    });
+  }
 
   /* ---- drivers */
   app.get(`${API_PREFIX}/admin/drivers/:driverId`, async (request) => {

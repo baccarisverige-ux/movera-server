@@ -7,14 +7,16 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { addVehicle, getDriverProfile, liveDrivers, listVehicles, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
-import { fleetEarnings, getDriverFleet, joinFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, submitOnboarding } from "./onboarding.js";
+import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, submitOnboarding } from "./onboarding.js";
+import { acceptInvitation, cancelInvitation, declineInvitation, inviteByPhone, listInvitations, requestJoin, type InviteDeps } from "./invitations.js";
+import { schemaProblem } from "../contract/schemas.js";
 import { driverDocumentFile, listDocuments, uploadDocument, type Upload } from "../documents/service.js";
 import type { DocumentKey } from "../documents/files.js";
 import { ONBOARDING } from "./onboardingRules.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
-export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; clock?: () => Date };
+export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const FixSchema = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracy: z.number().min(0), heading: z.number().min(0).lt(360).optional(), speedMps: z.number().min(0).optional(), moving: z.boolean().optional(), measuredAt: z.string().datetime() });
@@ -76,16 +78,40 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   };
   app.post(`${API_PREFIX}/driver/onboarding`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    return countingJoinTries(who.subjectId, async () => (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await submitOnboarding(trx, who.subjectId, request.body ?? {}, now()) }))).body);
+    return countingJoinTries(who.subjectId, async () => (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await submitOnboarding(trx, deps.invites, who.subjectId, request.body ?? {}, now()) }))).body);
   });
   app.get(`${API_PREFIX}/driver/fleet`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    return getDriverFleet(deps.db, who.subjectId);
+    return getDriverFleet(deps.db, who.subjectId, now());
   });
-  app.post(`${API_PREFIX}/driver/fleet/join`, async (request) => {
+  // v0.5.3: joining is an invitation the other side accepts (contract.json#driverOnboarding.fleetInvitations).
+  app.post(`${API_PREFIX}/driver/fleet/join`, async (request, reply) => {
     const who = await authenticate(request, guard, ["driver"]);
-    return countingJoinTries(who.subjectId, async () => (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await joinFleet(trx, who.subjectId, request.body ?? {}, now()) }))).body);
+    const body = request.body ?? {};
+    const problem = schemaProblem("FleetJoinRequest", body);
+    if (problem !== null) throw new ApiError("invalid_request", `The join request is not valid: ${problem}.`, { reason: "invalid_body" });
+    const result = await countingJoinTries(who.subjectId, () => runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 201, body: await requestJoin(trx, deps.invites, who.subjectId, body as { code: string; ownerName: string; ownerEmail: string }, now()) })));
+    return reply.status(result.status).send(result.body);
   });
+  app.post(`${API_PREFIX}/driver/fleet/invite`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const body = request.body ?? {};
+    const problem = schemaProblem("FleetInviteRequest", body);
+    if (problem !== null) throw new ApiError("invalid_request", `The invitation is not valid: ${problem}.`, { reason: "invalid_body" });
+    const result = await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 201, body: await inviteByPhone(trx, deps.invites, who.subjectId, body as { phone: string }, now()) }));
+    return reply.status(result.status).send(result.body);
+  });
+  app.get(`${API_PREFIX}/driver/fleet/invitations`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    return listInvitations(deps.db, who.subjectId, now());
+  });
+  for (const [segment, decide] of [["accept", acceptInvitation], ["decline", declineInvitation], ["cancel", cancelInvitation]] as const) {
+    app.post(`${API_PREFIX}/driver/fleet/invitations/:invitationId/${segment}`, async (request) => {
+      const who = await authenticate(request, guard, ["driver"]);
+      const { invitationId } = parseBody(z.object({ invitationId: ID }), request.params);
+      return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await decide(trx, deps.invites, who.subjectId, invitationId, now()) }))).body;
+    });
+  }
   app.post(`${API_PREFIX}/driver/fleet/leave`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await leaveFleet(trx, who.subjectId, now()) }))).body;

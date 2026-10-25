@@ -5,7 +5,7 @@ import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
-/** contract v0.5.3 §14: the details screen, fleets with a join code, fleet cars, documents, the admin side. */
+/** contract v0.5.3 §14: the details screen, fleets with a join code (an invitation the owner accepts), fleet cars, documents, the admin side. */
 
 let database: TestDatabase;
 let app: FastifyInstance;
@@ -34,6 +34,13 @@ const details = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 const me = async (headers: Record<string, string>) => (await call(app, "GET", "/driver/profile", headers)).json();
+/** v0.5.3: joining is a request the owner accepts (invitations.test.ts covers the invitation itself). */
+async function joinAndAccept(driver: Record<string, string>) {
+  const request = await call(app, "POST", "/driver/fleet/join", driver, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
+  expect(request.statusCode).toBe(201);
+  const accepted = await call(app, "POST", `/driver/fleet/invitations/${request.json().invitationId}/accept`, owner);
+  expect(accepted.statusCode).toBe(200);
+}
 
 /** A multipart body with the fields and one file, as the app sends it. */
 function multipart(fields: Record<string, string>, file: { name: string; type: string; bytes: Buffer }) {
@@ -167,16 +174,30 @@ describe("joining the fleet", () => {
     expect(wrongCode.json()).toMatchObject({ reason: "fleet_join_mismatch" });
   });
 
-  it("links the driver when all three match (case, spaces and name order forgiven)", async () => {
+  it("a matching request waits for the owner, who accepts it; then the driver is linked", async () => {
     const res = await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode.toLowerCase().replace("mv-", "mv "), ownerName: "  åkesson   FREDRIK ", ownerEmail: "Fredrik@Example.SE" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ fleet: { fleetId, role: "member", status: "approved" }, payoutTo: "fleet" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ fleetId, direction: "driver_request", status: "pending", driverId: memberId, driverName: "Karim Ben Ali" });
+    const invitationId = res.json().invitationId;
+    expect(await me(member)).not.toHaveProperty("fleet");
+    expect((await call(app, "GET", "/driver/fleet/invitations", member)).json().items).toEqual([expect.objectContaining({ invitationId })]);
+    // The owner is told and sees it on his fleet.
+    expect((await me(owner)).pendingFleetInvitations).toBe(1);
+    const ownerFleet = (await call(app, "GET", "/driver/fleet", owner)).json();
+    expect(ownerFleet.invitations).toEqual([expect.objectContaining({ invitationId, direction: "driver_request" })]);
+    const twice = await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
+    expect(twice.json()).toMatchObject({ code: "conflict", reason: "request_pending" });
+    const accepted = await call(app, "POST", `/driver/fleet/invitations/${invitationId}/accept`, owner);
+    expect(accepted.json()).toMatchObject({ invitationId, status: "accepted" });
+    expect(await me(member)).toMatchObject({ fleet: { fleetId, role: "member", status: "approved" }, payoutTo: "fleet" });
     const view = (await call(app, "GET", "/driver/fleet", member)).json();
     expect(view.fleet).not.toHaveProperty("code");
     expect(view.fleet).not.toHaveProperty("ownerEmail");
     expect(view.drivers).toEqual([]);
+    expect(view).not.toHaveProperty("invitations");
     const ownerView = (await call(app, "GET", "/driver/fleet", owner)).json();
     expect(ownerView.drivers.map((d: { driverId: string }) => d.driverId)).toEqual([ownerId, memberId]);
+    expect(ownerView.invitations).toEqual([]);
     const again = await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
     expect(again.json()).toMatchObject({ code: "invalid_transition", reason: "already_in_fleet" });
     const asOwner = await call(app, "POST", "/driver/fleet/join", owner, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
@@ -319,11 +340,11 @@ describe("leaving and removing", () => {
   });
 
   it("the owner removes a driver; the admin removes a driver and renews the code", async () => {
-    await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
+    await joinAndAccept(member);
     expect((await call(app, "POST", `/driver/fleet/drivers/${memberId}/remove`, owner)).statusCode).toBe(204);
     expect((await me(member))).not.toHaveProperty("fleet");
     expect((await call(app, "POST", `/driver/fleet/drivers/${memberId}/remove`, member)).statusCode).toBe(403);
-    await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
+    await joinAndAccept(member);
     expect((await call(app, "POST", `/admin/fleets/${fleetId}/drivers/${memberId}/remove`, admin.headers)).statusCode).toBe(204);
     expect((await me(member))).not.toHaveProperty("fleet");
     const fleet = (await call(app, "GET", `/admin/fleets/${fleetId}`, admin.headers)).json().fleet;
@@ -333,7 +354,7 @@ describe("leaving and removing", () => {
     const old = await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
     expect(old.json()).toMatchObject({ reason: "fleet_join_mismatch" });
     fleetCode = renewed.json().code;
-    expect((await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" })).statusCode).toBe(200);
+    await joinAndAccept(member);
   });
 
   it("the owner's earnings overview lists every driver; the member may not read it", async () => {

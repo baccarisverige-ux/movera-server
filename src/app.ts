@@ -19,6 +19,9 @@ import { adminTripRoutes } from "./admin/tripRoutes.js";
 import { driverRoutes } from "./drivers/routes.js";
 import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
+import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
+import { notificationRoutes } from "./notifications/routes.js";
+import type { SmsProvider } from "./sms/sms.js";
 import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
@@ -29,11 +32,11 @@ export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub };
+export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>> };
 
 const READY_TIMEOUT_MS = 2000;
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger ? { level: env.LOG_LEVEL } : false,
     // X-Request-Id: the client's id when it sends a sane one, else ours. Echoed on every response (§1 Headers).
@@ -124,7 +127,11 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
 
   if (db !== undefined) {
     const jwtSecret = env.JWT_SECRET ?? DEV_JWT_SECRET;
-    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", ...(clock ? { clock } : {}) });
+    const signInProviders = providers ?? providersFrom(env);
+    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", providers: signInProviders, ...(clock ? { clock } : {}) });
+    await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.
+    const invites = { sms: { provider: sms, warn: (data: Record<string, unknown>, message: string) => app.log.warn(data, message) }, appLink: env.DRIVER_APP_LINK };
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
@@ -136,8 +143,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
-    await driverRoutes(app, { db, jwtSecret, documentKey, ...(clock ? { clock } : {}) });
-    await adminPeopleRoutes(app, { db, jwtSecret, documentKey, ...(clock ? { clock } : {}) });
+    await driverRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
+    await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     await dispatchRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }

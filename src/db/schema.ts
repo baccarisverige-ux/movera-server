@@ -570,6 +570,74 @@ export interface RefundsTable {
   created_at: Timestamp;
 }
 
+// v0.5.3 (§14): joining a fleet is a two-sided invitation (contract.json#driverOnboarding.fleetInvitations).
+export interface FleetInvitationsTable {
+  invitation_id: string;
+  fleet_id: string;
+  direction: "driver_request" | "owner_invite";
+  driver_id: ColumnType<string | null, string | null | undefined, string | null>;
+  phone: ColumnType<string | null, string | null | undefined, string | null>;
+  status: Generated<"pending" | "accepted" | "declined" | "cancelled" | "expired">;
+  decided_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  decided_by: ColumnType<string | null, string | null | undefined, string | null>;
+  expires_at: Timestamp;
+  version: Generated<number>;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+// contract Notification: in-app notices for riders and drivers (GET /notifications).
+export interface NotificationsTable {
+  notification_id: string;
+  audience: "rider" | "driver";
+  subject_id: string;
+  kind: string;
+  title: string;
+  body: string;
+  deep_link: ColumnType<string | null, string | null | undefined, string | null>;
+  trip_id: ColumnType<string | null, string | null | undefined, string | null>;
+  data: JsonDefault<Record<string, unknown>>;
+  read_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  created_at: Timestamp;
+}
+
+// Every SMS asked for; skipped while no provider is connected.
+export interface SmsOutboxTable {
+  sms_id: string;
+  phone: string;
+  text: string;
+  kind: string;
+  status: "queued" | "sent" | "failed" | "skipped";
+  provider: ColumnType<string | null, string | null | undefined, string | null>;
+  provider_ref: ColumnType<string | null, string | null | undefined, string | null>;
+  error: ColumnType<string | null, string | null | undefined, string | null>;
+  created_at: Timestamp;
+  sent_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
+// contract §8: Apple / Google identities linked to accounts, and the PHONE_REQUIRED link tokens.
+export interface AuthProviderLinksTable {
+  provider: "apple" | "google";
+  provider_subject: string;
+  actor: "rider" | "driver";
+  subject_id: string;
+  email: ColumnType<string | null, string | null | undefined, string | null>;
+  created_at: Timestamp;
+}
+
+export interface AuthLinkTokensTable {
+  token_sha256: string;
+  provider: "apple" | "google";
+  provider_subject: string;
+  app: "rider" | "driver";
+  first_name: ColumnType<string | null, string | null | undefined, string | null>;
+  last_name: ColumnType<string | null, string | null | undefined, string | null>;
+  email: ColumnType<string | null, string | null | undefined, string | null>;
+  expires_at: Timestamp;
+  used_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  created_at: Timestamp;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -598,6 +666,11 @@ export interface Database {
   fleet_join_attempts: FleetJoinAttemptsTable;
   documents: DocumentsTable;
   document_files: DocumentFilesTable;
+  fleet_invitations: FleetInvitationsTable;
+  notifications: NotificationsTable;
+  sms_outbox: SmsOutboxTable;
+  auth_provider_links: AuthProviderLinksTable;
+  auth_link_tokens: AuthLinkTokensTable;
   trip_locations: TripLocationsTable;
   searches: SearchesTable;
   offers: OffersTable;

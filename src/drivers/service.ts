@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { schemaProblem } from "../contract/schemas.js";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent } from "../db/tripLog.js";
@@ -92,6 +93,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
       ? { fleet: { fleetId: fleet.fleet_id, name: fleet.name, role: fleet.owner_driver_id === row.driver_id ? "owner" : "member", status: fleet.status, linkedAt: (row.fleet_linked_at ?? fleet.created_at).toISOString() } }
       : {}),
     ...(row.account_type === "fleet" ? { payoutTo: "self" } : row.account_type === "driver" && fleet ? { payoutTo: "fleet" } : {}),
+    ...(row.account_type ? { pendingFleetInvitations: await pendingInvitations(ex, row) } : {}),
     requiredDocuments: requiredDocuments(row.country, "driver"),
     ...(row.account_type === "fleet" ? { requiredFleetDocuments: requiredDocuments(row.country, "fleet") } : {}),
     ...(active ? { activeTripId: active.trip_id } : {}),
@@ -104,6 +106,24 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
         }
       : {}),
   };
+}
+
+/** v0.5.3: invitations waiting for this account's answer (a driver's incoming invites, an owner's incoming requests). */
+async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id" | "account_type">): Promise<number> {
+  const q =
+    row.account_type === "fleet"
+      ? ex
+          .selectFrom("fleet_invitations")
+          .innerJoin("fleets", "fleets.fleet_id", "fleet_invitations.fleet_id")
+          .where("fleets.owner_driver_id", "=", row.driver_id)
+          .where("fleet_invitations.direction", "=", "driver_request")
+      : ex.selectFrom("fleet_invitations").where("fleet_invitations.driver_id", "=", row.driver_id).where("fleet_invitations.direction", "=", "owner_invite");
+  const n = await q
+    .select((eb) => eb.fn.countAll<string>().as("n"))
+    .where("fleet_invitations.status", "=", "pending")
+    .where("fleet_invitations.expires_at", ">", sql<Date>`now()`)
+    .executeTakeFirstOrThrow();
+  return Number(n.n);
 }
 
 function fixView(row: { lat: number; lng: number; accuracy: number; heading: number | null; speed_mps: number | null; moving: boolean; measured_at: Date }) {

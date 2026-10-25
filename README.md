@@ -34,6 +34,8 @@ Settings come from the environment (`src/env.ts`):
 | `JWT_SECRET` | Signs access tokens, at least 32 characters. Required on staging and production. | random per start |
 | `OSRM_URL` | Movera's own route service (e.g. `http://osrm:5000`). Unset: distances are estimated | none |
 | `GOOGLE_MAPS_API_KEY` | Address search through Google. Unset: address search answers `503` | none |
+| `APPLE_CLIENT_IDS`, `GOOGLE_CLIENT_IDS` | Apple / Google sign-in (contract §8): the client ids the apps' identity tokens are issued for, comma-separated (Apple: bundle ids / service id; Google: OAuth client ids). Unset: that provider answers `503` `provider_not_configured` and the apps show the button as coming soon | none |
+| `DRIVER_APP_LINK` | Install link added to the SMS when a fleet owner invites a number that has no account yet | none |
 | `DOCUMENT_FILES_KEY` | Seals uploaded driver documents at rest (AES-256-GCM): 32 random bytes, base64 (`openssl rand -base64 32`). Required in production; elsewhere a key derived from `JWT_SECRET` stands in | derived outside production |
 | `ADMIN_PANEL_URL` | Where setup links point | `http://localhost:5173` |
 | `DEFAULT_ZONE_ID` | Zone for settings when an app names none | `Z001` |
@@ -76,6 +78,12 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
 - Access token: 15-minute JWT (HS256, `JWT_SECRET`); its session is checked on every call, so sign-out works at once.
 - Refresh token: opaque, 30 days, rotated on every refresh. A token used twice ends the session, except the same
   token again within a minute (an answer lost on a bad connection).
+- Apple / Google (v0.5.3): `POST /auth/provider` checks the identity token against the provider's published keys
+  and the owner's client ids. A linked identity signs in at once; a new one gets `PHONE_REQUIRED` with a link token
+  (15 minutes) and the names / e-mail the provider gave; the phone is then verified once with that token and the
+  account (found or made by the phone) is linked. Without client ids the provider is not configured (`503`).
+- SMS: there is no provider yet (the owner picks 46elks or Twilio). Every message the server wants sent (fleet
+  invitations today) is written to `sms_outbox`, as `skipped` while no provider exists, so nothing is lost.
 
 ## Admin sign-in and settings (contract §9, §6)
 

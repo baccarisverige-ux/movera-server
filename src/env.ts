@@ -4,6 +4,12 @@ import { z } from "zod";
  * Server settings, read from the environment once at start. Anything missing or malformed stops the server
  * before it listens, with the variable named, so a bad deploy never half-starts.
  */
+const ids = () =>
+  z
+    .string()
+    .optional()
+    .transform((value) => (value ?? "").split(",").map((m) => m.trim()).filter(Boolean));
+
 const schema = z.object({
   /**
    * development (laptop), staging (the test week), production (public). Test sign-in numbers exist only outside
@@ -32,6 +38,15 @@ const schema = z.object({
    * Required in production; elsewhere a key derived from JWT_SECRET stands in (contract v0.5.3 §14).
    */
   DOCUMENT_FILES_KEY: z.string().min(40).optional(),
+  /**
+   * Apple / Google sign-in (contract §8, contract.json#auth.providerKeys): the client ids the apps' identity tokens
+   * are issued for, comma-separated (Apple: the bundle ids / service id; Google: the OAuth client ids). Unset: that
+   * provider answers 503 unavailable (provider_not_configured) and the apps show the button as coming soon.
+   */
+  APPLE_CLIENT_IDS: ids(),
+  GOOGLE_CLIENT_IDS: ids(),
+  /** Where a phone without an account is sent to install the driver app (the SMS of an owner's invitation). */
+  DRIVER_APP_LINK: z.string().url().optional(),
   /** Payment methods riders may book with (test week: cash only). Comma-separated. */
   PAYMENT_METHODS: z
     .string()

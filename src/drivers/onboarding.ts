@@ -8,38 +8,18 @@ import { schemaProblem } from "../contract/schemas.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { recordAcceptance } from "../documents/service.js";
 import { audit } from "../admin/audit.js";
-import { ONBOARDING, COUNTRY_CURRENCY, COUNTRY_TIME_ZONE, ageAt, cityOf, makeFleetCode, normalizeFleetCode, sameEmail, sameName } from "./onboardingRules.js";
+import { ONBOARDING, COUNTRY_CURRENCY, COUNTRY_TIME_ZONE, ageAt, cityOf, makeFleetCode, normalizeFleetCode } from "./onboardingRules.js";
 import { driverView, loadDriver, releaseCar, vehicleFullView, type DriverRow } from "./service.js";
+import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from "./fleets.js";
+import { cancelFleetInvitations, fleetInvitationViews, requestJoin, type InviteDeps } from "./invitations.js";
+
+export { loadFleet, ownedFleet } from "./fleets.js";
 
 /**
  * The details screen and fleets (contract v0.5.3 §14): the driver's sign-up details sent once, fleet accounts
  * with their company, the join code that works together with the owner's name and e-mail, joining, leaving and
  * removing drivers, the fleet view and the owner's earnings overview; the admin's fleet review and new code.
  */
-
-type FleetRow = {
-  fleet_id: string;
-  name: string;
-  org_number: string;
-  address: string;
-  country: string;
-  city_id: string;
-  zone_id: string;
-  owner_driver_id: string;
-  status: string;
-  code: string | null;
-  review_note: string | null;
-  version: number;
-  created_at: Date;
-};
-
-export async function loadFleet(ex: Executor, fleetId: string, lock = false): Promise<FleetRow> {
-  let q = ex.selectFrom("fleets").selectAll().where("fleet_id", "=", fleetId);
-  if (lock) q = q.forUpdate();
-  const row = await q.executeTakeFirst();
-  if (row === undefined) throw notFound("No such fleet.", "fleet_not_found");
-  return row as unknown as FleetRow;
-}
 
 /** Fleet as the contract shows it; the code and the owner's e-mail only to the owner and admins. */
 export async function fleetView(ex: Executor, row: FleetRow, viewer: "owner" | "member" | "admin") {
@@ -75,7 +55,7 @@ export async function fleetView(ex: Executor, row: FleetRow, viewer: "owner" | "
 }
 
 /** FleetView: the company, the drivers (owner and admins) and the cars (a member sees the approved ones). */
-export async function fleetFullView(ex: Executor, row: FleetRow, viewer: "owner" | "member" | "admin") {
+export async function fleetFullView(ex: Executor, row: FleetRow, viewer: "owner" | "member" | "admin", now: Date = new Date()) {
   const drivers =
     viewer === "member"
       ? []
@@ -97,6 +77,8 @@ export async function fleetFullView(ex: Executor, row: FleetRow, viewer: "owner"
       linkedAt: (d.fleet_linked_at ?? row.created_at).toISOString(),
     })),
     vehicles,
+    // v0.5.3: the open invitations and requests (owner and admins; a member gets none).
+    ...(viewer === "member" ? {} : { invitations: await fleetInvitationViews(ex, row, viewer, now) }),
   };
 }
 
@@ -117,7 +99,7 @@ type OnboardingBody = {
 };
 
 /** POST /driver/onboarding: pending → on_hold; a fleet account gets its (pending) fleet; a driver may join one now. */
-export async function submitOnboarding(trx: Trx, driverId: string, body: unknown, now: Date) {
+export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: string, body: unknown, now: Date) {
   const problem = schemaProblem("DriverOnboardingRequest", body);
   if (problem !== null) throw badRequest(`The details are not valid: ${problem}.`, "invalid_body");
   const d = body as OnboardingBody;
@@ -170,48 +152,17 @@ export async function submitOnboarding(trx: Trx, driverId: string, body: unknown
       await trx.updateTable("drivers").set({ fleet_id: fleetId, fleet_linked_at: now }).where("driver_id", "=", driverId).execute();
     }
   } else if (d.fleetJoin !== undefined && row.fleet_id === null) {
-    await linkToFleet(trx, driverId, d.fleetJoin, now);
+    // A request the owner must accept (an owner's earlier invite of this number links at once).
+    await requestJoin(trx, deps, driverId, d.fleetJoin, now, { quietIfPending: true });
   }
   return driverView(trx, await loadDriver(trx, driverId), "driver");
 }
 
 /* ---------------------------------------------------------------- joining and leaving */
 
-const MISMATCH = () => badRequest("The code, the owner's name and the e-mail do not match a fleet.", "fleet_join_mismatch");
-
 /** A failed try, written outside the (rolled back) command transaction so it counts towards the hourly limit. */
 export async function recordJoinTry(ex: Executor, driverId: string, now: Date): Promise<void> {
   await ex.insertInto("fleet_join_attempts").values({ driver_id: driverId, at: now }).execute();
-}
-
-/** The three must match one approved fleet; a failed try counts towards the hourly limit (recordJoinTry). */
-async function linkToFleet(trx: Trx, driverId: string, join: { code: string; ownerName: string; ownerEmail: string }, now: Date): Promise<void> {
-  const since = new Date(now.getTime() - 3600_000);
-  const tries = await trx
-    .selectFrom("fleet_join_attempts")
-    .select((eb) => eb.fn.countAll<string>().as("n"))
-    .where("driver_id", "=", driverId)
-    .where("at", ">", since)
-    .executeTakeFirstOrThrow();
-  if (Number(tries.n) >= ONBOARDING.fleetCode.joinAttemptsPerHour) throw new ApiError("rate_limited", "Too many tries; wait an hour.", { reason: "fleet_join_limit", retryAfterSeconds: 3600 });
-  const fleet = await trx.selectFrom("fleets").selectAll().where("code", "=", normalizeFleetCode(join.code)).where("status", "=", "approved").executeTakeFirst();
-  if (fleet === undefined) throw MISMATCH();
-  const owner = await trx.selectFrom("drivers").select(["first_name", "last_name", "email"]).where("driver_id", "=", fleet.owner_driver_id).executeTakeFirstOrThrow();
-  if (!sameName(join.ownerName, owner.first_name, owner.last_name) || owner.email === null || !sameEmail(join.ownerEmail, owner.email)) throw MISMATCH();
-  await trx.updateTable("drivers").set({ fleet_id: fleet.fleet_id, fleet_linked_at: now, updated_at: now }).where("driver_id", "=", driverId).execute();
-}
-
-/** POST /driver/fleet/join. */
-export async function joinFleet(trx: Trx, driverId: string, body: unknown, now: Date) {
-  const problem = schemaProblem("FleetJoinRequest", body);
-  if (problem !== null) throw badRequest(`The join request is not valid: ${problem}.`, "invalid_body");
-  const row = await loadDriver(trx, driverId, true);
-  const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await driverView(trx, row, "driver") });
-  if (row.account_type === "fleet") throw await refuse("A fleet account has its own fleet.", "fleet_account");
-  if (row.fleet_id !== null) throw await refuse("You are already in a fleet; leave it first.", "already_in_fleet");
-  await linkToFleet(trx, driverId, body as { code: string; ownerName: string; ownerEmail: string }, now);
-  await trx.updateTable("drivers").set({ version: row.version + 1 }).where("driver_id", "=", driverId).execute();
-  return driverView(trx, await loadDriver(trx, driverId), "driver");
 }
 
 /** Takes a driver out of his fleet: car released, offline, open offers withdrawn. Not during a trip. */
@@ -237,13 +188,6 @@ export async function leaveFleet(trx: Trx, driverId: string, now: Date) {
   return driverView(trx, await loadDriver(trx, driverId), "driver");
 }
 
-/** The fleet `driverId` owns, or 403. */
-export async function ownedFleet(ex: Executor, driverId: string): Promise<FleetRow> {
-  const fleet = await ex.selectFrom("fleets").selectAll().where("owner_driver_id", "=", driverId).executeTakeFirst();
-  if (fleet === undefined) throw new ApiError("forbidden", "Only a fleet owner can do that.", { reason: "not_fleet_owner" });
-  return fleet as unknown as FleetRow;
-}
-
 /** POST /driver/fleet/drivers/{driverId}/remove (the owner). */
 export async function ownerRemoveDriver(trx: Trx, ownerId: string, driverId: string, now: Date): Promise<void> {
   const fleet = await ownedFleet(trx, ownerId);
@@ -254,11 +198,11 @@ export async function ownerRemoveDriver(trx: Trx, ownerId: string, driverId: str
 }
 
 /** GET /driver/fleet. */
-export async function getDriverFleet(ex: Executor, driverId: string) {
+export async function getDriverFleet(ex: Executor, driverId: string, now: Date) {
   const row = await loadDriver(ex, driverId);
   if (row.fleet_id === null) throw notFound("You are not in a fleet yet.", "no_fleet");
   const fleet = await loadFleet(ex, row.fleet_id);
-  return fleetFullView(ex, fleet, fleet.owner_driver_id === driverId ? "owner" : "member");
+  return fleetFullView(ex, fleet, fleet.owner_driver_id === driverId ? "owner" : "member", now);
 }
 
 /** GET /driver/fleet/earnings?from&to (the owner): every driver's net earnings in the period; default this week. */
@@ -289,16 +233,10 @@ export async function fleetEarnings(ex: Executor, ownerId: string, input: { from
 
 /* ---------------------------------------------------------------- admin */
 
-type Admin = { subjectId: string; zones: string[] };
-
-function coversFleet(who: Admin, fleet: FleetRow): void {
-  if (!who.zones.includes("*") && !who.zones.includes(fleet.zone_id)) throw new ApiError("forbidden", "This fleet is outside your zones.", { reason: "zone_out_of_scope" });
-}
-
-export async function adminGetFleet(ex: Executor, who: Admin, fleetId: string) {
+export async function adminGetFleet(ex: Executor, who: Admin, fleetId: string, now: Date) {
   const fleet = await loadFleet(ex, fleetId);
   coversFleet(who, fleet);
-  return fleetFullView(ex, fleet, "admin");
+  return fleetFullView(ex, fleet, "admin", now);
 }
 
 async function freshCode(trx: Trx): Promise<string> {
@@ -321,6 +259,7 @@ export async function reviewFleet(trx: Trx, who: Admin, fleetId: string, body: {
     .set({ status: body.decision, code, review_note: body.note ?? null, reviewed_at: now, reviewed_by: who.subjectId, version: fleet.version + 1, updated_at: now })
     .where("fleet_id", "=", fleetId)
     .execute();
+  if (body.decision !== "approved") await cancelFleetInvitations(trx, fleetId, who.subjectId, now);
   if (body.decision === "blocked") {
     const members = await trx.selectFrom("drivers").selectAll().where("fleet_id", "=", fleetId).forUpdate().execute();
     for (const member of members) {
