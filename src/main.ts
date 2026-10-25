@@ -10,6 +10,7 @@ import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { dispatchHandlers } from "./dispatch/runtime.js";
 import { rideHandlers } from "./trips/ride.js";
 import { CONFIG_CHANNEL } from "./config/service.js";
+import { prepareTestWeek } from "./testWeek.js";
 
 const env = readEnv();
 
@@ -34,6 +35,7 @@ if (db !== undefined) {
   await ensureMaintenanceTimers(db);
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db);
+  await prepareTestWeek(db, env, app.log);
   worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, ...rideHandlers }, logger: app.log });
   worker.start();
 } else {

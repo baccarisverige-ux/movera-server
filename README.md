@@ -43,6 +43,8 @@ Settings come from the environment (`src/env.ts`):
 | `DEFAULT_ZONE_ID` | Zone for settings when an app names none | `Z001` |
 | `TRUST_PROXY_HOPS` | Proxies in front of the server (the host's load balancer = 1), so limits see the phone's real address and it cannot be faked | `0` |
 | `CORS_ORIGINS` | Web pages on another site that may call the API from a browser (the apps' web builds), e.g. `https://owner.github.io`. Unset: none | none |
+| `SEED_TEST_ON_START` | `true`: at start, make the test accounts once and publish sample settings where a zone has none (a host without a shell; not in production) | `false` |
+| `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_NAME` | At start, make this Super admin and write its password link to the log while it has no password (not in production) | none |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
 Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).

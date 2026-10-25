@@ -1,12 +1,15 @@
-# Render Blueprint for the test week (docs/DEPLOY_RENDER.md): the server as one Docker web service plus its
-# PostgreSQL, both in Frankfurt. MOVERA_ENV=staging keeps the test numbers (code 1234) and seed-test available.
+# Render Blueprint for trying the test week for free (docs/DEPLOY_RENDER.md): the server as one Docker web service
+# plus its PostgreSQL, both in Frankfurt, on Render's free plans (the server sleeps after a while without use; the
+# free database expires after some weeks). MOVERA_ENV=staging keeps the test numbers (code 1234). The free plan has
+# no shell, so the test accounts, sample settings and first admin are made at start (SEED_TEST_ON_START,
+# ADMIN_BOOTSTRAP_EMAIL). For a real test week: plan starter and basic-256mb.
 services:
   - type: web
     name: movera-server
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: frankfurt
-    plan: starter
+    plan: free
     healthCheckPath: /readyz
     envVars:
       - key: MOVERA_ENV
@@ -25,6 +28,12 @@ services:
         value: https://baccarisverige-ux.github.io
       - key: ADMIN_PANEL_URL
         value: https://baccarisverige-ux.github.io/Admin-panel-movera-dispatch/live/
+      # Test accounts, sample settings and the first admin at start (the free plan has no shell).
+      - key: SEED_TEST_ON_START
+        value: "true"
+      # Your e-mail: the admin's password link appears in the service's Logs.
+      - key: ADMIN_BOOTSTRAP_EMAIL
+        sync: false
       # Address search; filled in Render's dashboard (never committed).
       - key: GOOGLE_MAPS_API_KEY
         sync: false
@@ -32,7 +41,7 @@ services:
 databases:
   - name: movera-db
     region: frankfurt
-    plan: basic-256mb
+    plan: free
     postgresMajorVersion: "16"
     databaseName: movera
     user: movera

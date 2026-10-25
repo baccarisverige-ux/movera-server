@@ -66,6 +66,17 @@ const schema = z.object({
    * origins, comma-separated: https://owner.github.io. Unset: no cross-site browser calls (the phone apps and a
    * same-site panel never need it).
    */
+  /**
+   * Hosts without a shell (Render's free plan): at start, make the test accounts once and publish the sample
+   * settings where a zone has none, as `npm run admin -- seed-test` does. Staging and development only.
+   */
+  SEED_TEST_ON_START: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  /** Also for a host without a shell: this Super admin is made at start and its password link written to the log. */
+  ADMIN_BOOTSTRAP_EMAIL: z.string().email().optional(),
+  ADMIN_BOOTSTRAP_NAME: z.string().min(1).max(120).optional(),
   CORS_ORIGINS: z
     .string()
     .optional()
@@ -77,6 +88,10 @@ const schema = z.object({
   }
   if (env.MOVERA_ENV === "production" && env.DOCUMENT_FILES_KEY === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DOCUMENT_FILES_KEY"], message: "required when MOVERA_ENV is production" });
+  }
+  if (env.MOVERA_ENV === "production" && (env.SEED_TEST_ON_START || env.ADMIN_BOOTSTRAP_EMAIL !== undefined)) {
+    const path = env.SEED_TEST_ON_START ? "SEED_TEST_ON_START" : "ADMIN_BOOTSTRAP_EMAIL";
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message: "for staging and development only" });
   }
   if (env.MOVERA_ENV !== "development" && env.JWT_SECRET === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["JWT_SECRET"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
