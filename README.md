@@ -84,6 +84,10 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
   `node dist/admin/cli.js …`.
 - `npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123
   --categories economy` creates an approved test driver with an approved car, in every open zone.
+- `npm run admin -- seed-test` (staging and development only) makes the test week's ready accounts on the test
+  numbers: three activated drivers in the approved fleet "Movera Test AB" (code `MV-TESTA`), each with an approved
+  car and every document approved, and three active riders; all sign in with the fixed code `1234`. Running it again
+  updates the same accounts; the testers' real numbers replace the placeholders in `src/drivers/seedTest.ts`.
 - The admin panel saves a draft per document and zone (`PUT /admin/config/{doc}`), then publishes it. The server
   checks every document against the contract's schema and its zone, stamps the next `version` and `publishedAt`,
   keeps every version in `config_history`, and tells the apps (`config_published`). Pricing and dispatch are read by
