@@ -24,7 +24,6 @@ const sample = (name: string) => JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtu
 const SPOTS = { A: { lat: 59.3335, lng: 18.0655 }, B: { lat: 59.3360, lng: 18.07 } };
 const drivers: Record<"A" | "B", { id: string; headers: Record<string, string> }> = {} as never;
 let rider: Record<string, string>;
-let riderId: string;
 
 beforeAll(async () => {
   database = await freshDatabase();
@@ -60,7 +59,7 @@ beforeEach(async () => {
   await database.db.deleteFrom("offers").execute();
   const signedIn = await signIn(app, TEST_PHONES[0]!, "rider");
   rider = signedIn.headers;
-  riderId = (await call(app, "GET", "/rider/profile", rider)).json().riderId;
+  await call(app, "GET", "/rider/profile", rider);
   for (const key of ["A", "B"] as const) {
     drivers[key].headers = (await signIn(app, { A: TEST_PHONES[1], B: TEST_PHONES[2] }[key]!, "driver")).headers;
     await database.db.updateTable("drivers").set({ online_status: "online", last_free_at: clock.now }).where("driver_id", "=", drivers[key].id).execute();

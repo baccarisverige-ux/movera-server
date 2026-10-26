@@ -7,7 +7,6 @@ import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { rideHandlers } from "../../src/trips/ride.js";
-import { haversineKm } from "../../src/maps/routing.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 import { adminSession } from "../support/admin.js";
@@ -173,7 +172,9 @@ describe("the rider's \"I'm on the way\" (contract v0.5.4)", () => {
 describe("completed before the destination (owner decision 28)", () => {
   it("the rider pays for what was driven, never more than booked; at the drop-off the booked fare stands", async () => {
     // Ended 2 km short of the drop-off, a few minutes after boarding.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped JSON from the API in a test helper
     const total = (p: Record<string, any>) => Number((p.fare?.total ?? p.fare)?.amountMinor);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped JSON from the API in a test helper
     const lines = (p: Record<string, any>) => ((p.fareLines ?? p.fare?.fareLines ?? []) as { code: string }[]).map((l) => l.code);
     const a = await accepted();
     const booked = total(await riderView(a.tripId));

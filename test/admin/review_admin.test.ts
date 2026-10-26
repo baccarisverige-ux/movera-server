@@ -7,7 +7,6 @@ import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { rideHandlers } from "../../src/trips/ride.js";
-import { haversineKm } from "../../src/maps/routing.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 import { adminSession } from "../support/admin.js";
@@ -25,11 +24,7 @@ const sample = (name: string) => JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtu
 const SPOTS = { A: { lat: 59.3335, lng: 18.0655 }, B: { lat: 59.3360, lng: 18.07 } };
 const drivers: Record<"A" | "B", { id: string; headers: Record<string, string> }> = {} as never;
 let rider: Record<string, string>;
-let riderId: string;
 let admin: Record<string, string>;
-let dispatcherOther: Record<string, string>;
-let finance: Record<string, string>;
-let dispatcher: Record<string, string>;
 
 beforeAll(async () => {
   database = await freshDatabase();
@@ -66,7 +61,7 @@ beforeEach(async () => {
   await database.db.deleteFrom("offers").execute();
   const signedIn = await signIn(app, TEST_PHONES[0]!, "rider");
   rider = signedIn.headers;
-  riderId = (await call(app, "GET", "/rider/profile", rider)).json().riderId;
+  await call(app, "GET", "/rider/profile", rider);
   for (const key of ["A", "B"] as const) {
     drivers[key].headers = (await signIn(app, { A: TEST_PHONES[1], B: TEST_PHONES[2] }[key]!, "driver")).headers;
     await database.db.updateTable("drivers").set({ online_status: "online", last_free_at: clock.now }).where("driver_id", "=", drivers[key].id).execute();
@@ -76,9 +71,9 @@ beforeEach(async () => {
 
 beforeEach(async () => {
   admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
-  dispatcher = (await adminSession(app, database.db, "dispatcher", { now: clock.now })).headers;
-  dispatcherOther = (await adminSession(app, database.db, "dispatcher", { zoneIds: ["Z002"], now: clock.now })).headers;
-  finance = (await adminSession(app, database.db, "finance", { now: clock.now })).headers;
+  await adminSession(app, database.db, "dispatcher", { now: clock.now });
+  await adminSession(app, database.db, "dispatcher", { zoneIds: ["Z002"], now: clock.now });
+  await adminSession(app, database.db, "finance", { now: clock.now });
 });
 
 async function book() {
@@ -122,8 +117,6 @@ const step = async (tripId: string, path: string, version: number, body: Record<
   return call(app, "POST", `/trips/${tripId}/${path}`, who, { expectedVersion: version, ...body });
 };
 const riderView = async (tripId: string) => (await call(app, "GET", `/trips/${tripId}`, rider)).json();
-const driverRow = (key: "A" | "B") => database.db.selectFrom("drivers").selectAll().where("driver_id", "=", drivers[key].id).executeTakeFirstOrThrow();
-const entries = (tripId: string) => database.db.selectFrom("earnings_entries").select(["kind", "amount_minor", "gross_minor", "commission_minor", "cash_minor"]).where("trip_id", "=", tripId).orderBy("kind").execute();
 
 /** Drives an accepted trip to the pickup and waits `waitSeconds` before boarding. */
 async function toBoard(tripId: string, version: number, waitSeconds: number) {
@@ -140,7 +133,6 @@ async function toBoard(tripId: string, version: number, waitSeconds: number) {
 
 const adminPost = (path: string, body: Record<string, unknown>, who = admin) => call(app, "POST", `/admin${path}`, who, body);
 const adminView = async (tripId: string) => (await call(app, "GET", `/admin/trips/${tripId}`, admin)).json();
-const audits = async (tripId: string) => (await call(app, "GET", `/admin/audit?targetId=${tripId}`, admin)).json().items.map((a: { action: string }) => a.action);
 const clearFees = async () => {
   await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null, wallet_minor: 0 }).execute();

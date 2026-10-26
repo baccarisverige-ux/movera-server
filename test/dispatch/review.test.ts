@@ -70,6 +70,7 @@ async function create(who: Record<string, string>) {
   const trip = (await call(app, "POST", "/trips", who, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash" })).json();
   return trip.tripId as string;
 }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped JSON from the API in a test helper
 const openOffers = async (key: K) => (await call(app, "GET", "/driver/offers", drivers[key].headers)).json().items as Array<Record<string, any>>;
 const forceRadar = () => database.db.insertInto("dispatch_controls").values({ zone_id: "Z001", paused: false, mode: "radar", by: null, at: clock.now, version: 1 }).execute();
 const offline = (key: K) => database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", drivers[key].id).execute();

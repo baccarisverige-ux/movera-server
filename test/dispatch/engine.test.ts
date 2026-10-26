@@ -30,8 +30,11 @@ function simulate(c: Case) {
   const runUntil = (upto: number) => {
     while (S.outcome === null) {
       const fired = new Set(S.fired.map((f) => f.id));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous simulation items
       const items: Array<[number, number, any]> = [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous simulation items
         ...waits.filter((w) => !S.done.has(w.id)).map((w) => [w.atSec, 0, w] as [number, number, any]),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous simulation items
         ...answers.filter((a) => fired.has(a.stepId) && !S.done.has(a)).map((a) => [a.atSec, 1, a] as [number, number, any]),
       ];
       if (items.length === 0) return;
@@ -53,6 +56,7 @@ function simulate(c: Case) {
       }
     }
   };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous simulation items
   const offers: any[] = [];
   const nth = new Map<string, number>();
   const sendOffer = (kind: "radar" | "exclusive", t: number, km: number, ids: string[], reason?: string) => {
