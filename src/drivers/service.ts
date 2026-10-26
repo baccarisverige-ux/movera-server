@@ -126,7 +126,7 @@ async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id"
   return Number(n.n);
 }
 
-function fixView(row: { lat: number; lng: number; accuracy: number; heading: number | null; speed_mps: number | null; moving: boolean; measured_at: Date }) {
+export function fixView(row: { lat: number; lng: number; accuracy: number; heading: number | null; speed_mps: number | null; moving: boolean; measured_at: Date }) {
   return {
     lat: row.lat,
     lng: row.lng,

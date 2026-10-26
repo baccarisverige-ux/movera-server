@@ -206,3 +206,52 @@ describe("review: what the rider sees", () => {
     expect((await database.db.selectFrom("driver_cancels").select("note").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).note).toBe("Rider was drunk and abusive, reported to support");
   });
 });
+
+describe("the driver's position for the rider (TripProjection.driverLocation, etaSeconds)", () => {
+  it("P1 a read of the trip carries the driver's last fix and an ETA to the pickup, then to the drop-off; none without a driver", async () => {
+    const { tripId: searching } = await book();
+    expect(await riderView(searching)).not.toHaveProperty("driverLocation");
+    await call(app, "POST", `/trips/${searching}/cancel`, rider, { expectedVersion: (await riderView(searching)).version, reasonCode: "plans_changed" });
+
+    const { tripId, version } = await accepted();
+    const atAccept = await riderView(tripId);
+    expect(atAccept.driverLocation).toMatchObject({ lat: SPOTS.A.lat, lng: SPOTS.A.lng, accuracy: 5, measuredAt: clock.now.toISOString() });
+    // Driver A stands about a hundred metres from the pickup: the ETA is the one-minute floor.
+    expect(atAccept.etaSeconds).toBe(60);
+    let v = version;
+    await step(tripId, "head-to-pickup", v++);
+    await step(tripId, "arrive", v++);
+    expect(await riderView(tripId)).toMatchObject({ driverLocation: { lat: SPOTS.A.lat } });
+    expect(await riderView(tripId)).not.toHaveProperty("etaSeconds");
+    await advance(60);
+    await step(tripId, "board", v++);
+    // On board the ETA counts to the drop-off, a couple of kilometres away.
+    expect((await riderView(tripId)).etaSeconds).toBeGreaterThan(60);
+    const asDriver = (await call(app, "GET", `/trips/${tripId}`, drivers.A.headers)).json();
+    expect(asDriver.driverLocation).toMatchObject({ lat: SPOTS.A.lat, lng: SPOTS.A.lng });
+  });
+
+  it("P2 after the driver ends the trip on board, the rider reads where the car stopped, never where the driver went next", async () => {
+    const { tripId, version } = await accepted();
+    let v = version;
+    await step(tripId, "head-to-pickup", v++);
+    await step(tripId, "arrive", v++);
+    await advance(60);
+    await step(tripId, "board", v++);
+    await step(tripId, "start", v++);
+    // A kilometre into the trip the driver ends it there.
+    const midway = { lat: 59.3245, lng: 18.069 };
+    clock.now = new Date(clock.now.getTime() + 60_000);
+    await moveTo("A", midway);
+    clock.now = new Date(clock.now.getTime() + 1000);
+    const ended = await step(tripId, "cancel", v, { reasonCode: "rider_requested_early_end" });
+    expect(ended.json().status).toBe("cancelled_by_driver");
+    const view = await riderView(tripId);
+    expect(view.driverLocation).toMatchObject({ lat: midway.lat, lng: midway.lng });
+    expect(view).not.toHaveProperty("etaSeconds");
+    // Ten seconds on, the driver has driven away: the ended trip no longer shows the car.
+    clock.now = new Date(clock.now.getTime() + 10_000);
+    await moveTo("A", SPOTS.B);
+    expect(await riderView(tripId)).not.toHaveProperty("driverLocation");
+  });
+});

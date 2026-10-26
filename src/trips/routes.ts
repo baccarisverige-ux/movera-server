@@ -15,7 +15,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
 import { streamTrip } from "../realtime/streams.js";
 import { DriverCancelBody, driverCancel } from "./rideRoutes.js";
-import { activeTrip, createTrip, getTrip, riderCancel, riderTrips, setCancelReason, riderOnTheWay } from "./service.js";
+import { activeTrip, createTrip, getTrip, riderCancel, riderTrips, setCancelReason, riderOnTheWay, withDriverPosition } from "./service.js";
 
 /** contract §3, §7: trips for the rider (with the deprecated /rides aliases), the rider profile, payment methods. */
 
@@ -123,7 +123,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   app.get(`${API_PREFIX}/rider/trips/active`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider"]);
     const trip = await activeTrip(deps.db, who.subjectId);
-    return trip === undefined ? reply.status(204).send() : tripProjection(trip, "rider");
+    return trip === undefined ? reply.status(204).send() : withDriverPosition(deps.db, trip, tripProjection(trip, "rider"));
   });
 
   app.get(`${API_PREFIX}/rider/trips`, async (request) => {
