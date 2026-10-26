@@ -32,6 +32,11 @@ describe("the seeded test accounts", () => {
       const me = (await call(app, "GET", "/driver/profile", headers)).json();
       expect(me).toMatchObject({ accountStatus: "active", firstName: d.firstName, lastName: d.lastName, country: "SE", cityId: "stockholm_lan", fleet: { name: "Movera Test AB", status: "approved", role: d.owner ? "owner" : "member" } });
       expect(me.vehicleId).toBeDefined();
+      // Every open zone, so a trip anywhere in the test area reaches the testers (not only the fleet's zone).
+      const open = (await database.db.selectFrom("zones").select("zone_id").where("open", "=", true).execute()).map((z) => z.zone_id);
+      const zones = (await database.db.selectFrom("drivers").select("zone_ids").where("phone", "=", d.phone).executeTakeFirstOrThrow()).zone_ids;
+      expect(zones[0]).toBe("Z001");
+      expect([...zones].sort()).toEqual([...open].sort());
       const required = [...me.requiredDocuments, ...(me.requiredFleetDocuments ?? [])];
       const approved = me.documents.filter((x: { status: string }) => x.status === "approved").map((x: { type: string }) => x.type);
       for (const type of required) expect(approved).toContain(type);

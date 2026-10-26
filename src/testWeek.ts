@@ -6,6 +6,12 @@ import type { Env } from "./env.js";
 
 type Log = { info: (data: Record<string, unknown>, message: string) => void };
 
+async function testDriversMissOpenZones(db: Db | Parameters<typeof seedTestAccounts>[0], accounts: TestAccounts): Promise<boolean> {
+  const open = (await db.selectFrom("zones").select("zone_id").where("open", "=", true).execute()).map((z) => z.zone_id);
+  const drivers = await db.selectFrom("drivers").select("zone_ids").where("phone", "in", accounts.drivers.map((d) => d.phone)).execute();
+  return drivers.some((d) => open.some((z) => !d.zone_ids.includes(z)));
+}
+
 /**
  * What `seed-test` and `admin create` do, run at start instead, for a host without a shell (Render's free plan).
  * Staging and development only (env.ts refuses these settings in production). Safe on every start, so a server
@@ -26,6 +32,11 @@ export async function prepareTestWeek(
       if (fleet === undefined) {
         const made = await seedTestAccounts(trx, accounts, now);
         log.info({ fleetId: made.fleetId, drivers: made.drivers.length, riders: made.riders.length }, "test accounts made (sign in with code 1234)");
+      } else if (await testDriversMissOpenZones(trx, accounts)) {
+        // Accounts seeded by an earlier server worked one zone only: give them every open zone (names, cars and
+        // documents are set again to the same values).
+        const made = await seedTestAccounts(trx, accounts, now);
+        log.info({ drivers: made.drivers.length }, "test drivers registered in every open zone");
       }
       const settings = await seedSampleConfig(trx, now);
       if (settings.length > 0) log.info({ published: settings.map((s) => `${s.doc}@${s.zoneId}`) }, "sample settings published");
