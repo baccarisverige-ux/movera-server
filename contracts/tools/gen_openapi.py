@@ -1114,6 +1114,12 @@ op("post", "/trips/{tripId}/cancel-reason", "setCancelReason", "Rider tells the 
         "cancellation.reasonCode is still something_else (the code a cancel-first names): sets cancellation.reasonCode and "
         "cancellation.note. Not a lifecycle transition: status, version, sequence, fee and fare do not change and no realtime event "
         "is sent. Any other state (also a reason already told) → 409 invalid_transition; a code outside the rider group → 400 invalid_request.")
+op("post", "/trips/{tripId}/on-the-way", "riderOnTheWay", "Rider says they are on their way to the car", ["rider"], "Rider · Booking",
+   params=TID, ok=(200, TP), mutation=True,
+   desc="v0.5.4, CONTRACT.md §4. The rider's \"I'm on the way\" (shown once the driver has arrived, also while the driver is "
+        "coming) reaches the driver as a `rider_on_the_way` realtime event carrying the current projection. Not a lifecycle "
+        "transition: status and version do not change. Allowed while the trip is accepted, driver_to_pickup or arrived; any "
+        "other state → 409 invalid_transition. No request body.")
 op("get", "/trips/{tripId}/events", "streamTripEvents", "Trip realtime stream (SSE / WebSocket) or JSON replay",
    ["rider", "driver", "admin"], "Realtime", params=TID + [pref("After"), pref("Limit"), pref("LastEventId")],
    content=sse("Server-sent events. A WebSocket upgrade on the same URL carries the same JSON frames.", "RealtimeEvent", "RealtimeEventPage"),

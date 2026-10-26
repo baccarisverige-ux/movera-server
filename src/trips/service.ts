@@ -1,3 +1,4 @@
+import { appendTripEvent } from "../db/tripLog.js";
 import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
 import { schemaProblem } from "../contract/schemas.js";
@@ -168,6 +169,20 @@ export async function setCancelReason(trx: Trx, riderId: string, tripId: string,
   const next = { ...cancellation, reasonCode: body.reasonCode, ...(body.note ? { note: body.note } : {}) };
   await trx.updateTable("trips").set({ cancellation: JSON.stringify(next) }).where("trip_id", "=", tripId).execute();
   return { ...trip, cancellation: next };
+}
+
+/**
+ * POST /trips/{tripId}/on-the-way (contract v0.5.4, §4): the rider's "I'm on the way" reaches the driver as a
+ * rider_on_the_way event with the current projection. Not a lifecycle change: status and version stay.
+ */
+const ON_THE_WAY_FROM = new Set(["accepted", "driver_to_pickup", "arrived"]);
+export async function riderOnTheWay(trx: Trx, riderId: string, tripId: string, now: Date): Promise<TripRow> {
+  const trip = await lockOwnTrip(trx, tripId, { actor: "rider", subjectId: riderId });
+  if (!ON_THE_WAY_FROM.has(trip.status)) {
+    throw new ApiError("invalid_transition", "You can tell the driver once a driver is on the way.", { projection: tripProjection(trip, "rider") });
+  }
+  await appendTripEvent(trx, { tripId, kind: "rider_on_the_way", version: trip.version, occurredAt: now, projection: tripProjection(trip, "admin", { sequence: Number(trip.sequence) + 1 }) });
+  return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
 }
 
 const NOT_OVER = [...TERMINAL];

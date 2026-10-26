@@ -121,6 +121,38 @@ async function toBoard(tripId: string, version: number, waitSeconds: number) {
   return { version: ++v, boarded: res.json() };
 }
 
+describe("the rider's \"I'm on the way\" (contract v0.5.4)", () => {
+  it("reaches the driver as a rider_on_the_way event; status and version stay; refused before a driver is coming", async () => {
+    const { tripId, quote } = await book();
+    const early = await call(app, "POST", `/trips/${tripId}/on-the-way`, rider, {});
+    expect(early.statusCode).toBe(409);
+    expect(early.json()).toMatchObject({ code: "invalid_transition" });
+    // Booked, no driver yet: searching, or offered once dispatch has run.
+    expect(["searching", "offered"]).toContain(early.json().projection?.status);
+    // Cancelled through the API, so its open offers are withdrawn before the next booking.
+    const cancelled = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: early.json().projection.version, reasonCode: "plans_changed" });
+    expect(cancelled.statusCode).toBe(200);
+    void quote;
+
+    const a = await accepted();
+    let v = a.version;
+    await step(a.tripId, "head-to-pickup", v);
+    const arrived = await step(a.tripId, "arrive", ++v);
+    expect(arrived.json().status).toBe("arrived");
+    const before = (await call(app, "GET", `/trips/${a.tripId}/events`, drivers.A.headers)).json().items.length;
+
+    const told = await call(app, "POST", `/trips/${a.tripId}/on-the-way`, rider, {});
+    expect(told.statusCode).toBe(200);
+    expect(told.json()).toMatchObject({ status: "arrived", version: arrived.json().version });
+
+    const events = (await call(app, "GET", `/trips/${a.tripId}/events`, drivers.A.headers)).json().items;
+    expect(events).toHaveLength(before + 1);
+    expect(events[events.length - 1]).toMatchObject({ kind: "rider_on_the_way", version: arrived.json().version, projection: { status: "arrived" } });
+    // The driver's commands still send the same expectedVersion.
+    expect((await step(a.tripId, "board", arrived.json().version)).json().status).toBe("rider_onboard");
+  });
+});
+
 const adminPost = (path: string, body: Record<string, unknown>, who = admin) => call(app, "POST", `/admin${path}`, who, body);
 const adminView = async (tripId: string) => (await call(app, "GET", `/admin/trips/${tripId}`, admin)).json();
 const audits = async (tripId: string) => (await call(app, "GET", `/admin/audit?targetId=${tripId}`, admin)).json().items.map((a: { action: string }) => a.action);
