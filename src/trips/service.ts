@@ -18,6 +18,8 @@ import { tripProjection, type Viewer } from "./projection.js";
 /** Trip requests, reads and the rider's cancel (contract §3, §7). */
 
 const RIDER_REASONS: readonly string[] = (contract as unknown as { cancelReasons: { rider: string[] } }).cancelReasons.rider;
+/** contract.json#dispatch.raisePrice (owner decision 25): the new fare may not pass maxFactor × the quoted fare. */
+const RAISE_MAX_FACTOR: number = (contract as unknown as { dispatch: { raisePrice: { maxFactor: number } } }).dispatch.raisePrice.maxFactor;
 
 type Place = { address?: string; lat: number; lng: number };
 type CreateTrip = {
@@ -152,6 +154,48 @@ export async function withDriverPosition(ex: Executor, trip: TripRow, projection
   const target = ON_BOARD.includes(trip.status) ? (trip.dropoff as Place) : TO_PICKUP.includes(trip.status) ? (trip.pickup as Place) : null;
   if (target !== null) out["etaSeconds"] = Math.max(60, Math.round(((haversineKm(fix, target) * ROAD_FACTOR) / DISPATCH.score.pickupKmh) * 3600));
   return out;
+}
+
+/**
+ * The rider raises their offer while the search is on (contract v0.5.5, §3.6, owner decision 25): the fare grows by the
+ * increase as a `rider_raise` line and the whole raise goes to the driver (Movera's share is unchanged), so the drivers
+ * see a better price, not Movera. Open offers are withdrawn and a new search starts in which the drivers who already
+ * declined are asked again, since the price they said no to is gone.
+ */
+export async function raisePrice(trx: Trx, riderId: string, tripId: string, body: { expectedVersion: number; increase: { amountMinor: number; currency: string } }, now: Date): Promise<TripRow> {
+  const problem = schemaProblem("RaisePriceCommand", body);
+  if (problem !== null) throw badRequest(`The request is not valid: ${problem}.`, "invalid_body");
+  const trip = await lockOwnTrip(trx, tripId, { actor: "rider", subjectId: riderId });
+  expectVersion(trip, body.expectedVersion, "rider");
+  if (nextStatus(trip.status as never, "raise_price", "rider", trip.kind) === null) {
+    throw new ApiError("invalid_transition", `A rider cannot raise the offer of a trip that is ${trip.status}.`, { projection: tripProjection(trip, "rider") });
+  }
+  const increase = body.increase;
+  if (increase.currency !== trip.currency) throw badRequest(`The raise must be in ${trip.currency}.`, "currency_mismatch");
+  if (increase.amountMinor <= 0) throw badRequest("The raise must be more than nothing.", "increase_not_positive");
+  const fareMinor = Number(trip.fare_minor) + increase.amountMinor;
+  const booked = Number(trip.booked_fare_minor);
+  if (booked > 0 && fareMinor > booked * RAISE_MAX_FACTOR) {
+    throw badRequest(`The fare can be raised to at most ${RAISE_MAX_FACTOR} times the quoted price.`, "raise_too_high");
+  }
+  // The offers out there carry the old price: withdrawn, and the drivers who declined it may be asked again.
+  await stopSearch(trx, trip, now);
+  await trx.updateTable("searches").set({ state: sql`state - 'asked'` }).where("trip_id", "=", tripId).execute();
+  const lines = [...((trip.fare_lines as Array<{ code: string; amount: unknown }>) ?? []), { code: "rider_raise", amount: increase }];
+  const raised = await applyCommand(trx, trip, {
+    command: "raise_price",
+    actor: "rider",
+    now,
+    set: {
+      fare_minor: fareMinor,
+      fare_lines: JSON.stringify(lines),
+      driver_earnings_minor: Number(trip.driver_earnings_minor ?? 0) + increase.amountMinor,
+      search_step: null,
+      search_started_at: now,
+    },
+  });
+  await startSearch(trx, raised, now);
+  return raised;
 }
 
 /** The rider's cancel (contract §3): free before a driver accepted; after that the fee rules apply (§3, §5). */
