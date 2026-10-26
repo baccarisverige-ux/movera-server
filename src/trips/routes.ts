@@ -15,7 +15,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
 import { streamTrip } from "../realtime/streams.js";
 import { DriverCancelBody, driverCancel } from "./rideRoutes.js";
-import { activeTrip, createTrip, getTrip, riderCancel, riderTrips, setCancelReason, riderOnTheWay, withDriverPosition } from "./service.js";
+import { activeTrip, createTrip, getTrip, raisePrice, riderCancel, riderTrips, setCancelReason, riderOnTheWay, withDriverPosition } from "./service.js";
 
 /** contract §3, §7: trips for the rider (with the deprecated /rides aliases), the rider profile, payment methods. */
 
@@ -91,6 +91,12 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const body = parseBody(ReasonBody, request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await setCancelReason(trx, who.subjectId, tripId, body), "rider") }));
     return result.body;
+  });
+
+  app.post(`${API_PREFIX}/trips/:tripId/raise-price`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await raisePrice(trx, who.subjectId, tripId, (request.body ?? {}) as never, now()), "rider") }))).body;
   });
 
   app.post(`${API_PREFIX}/trips/:tripId/on-the-way`, async (request) => {
