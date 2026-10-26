@@ -11,13 +11,14 @@ const DRIVER_ONLY_LINES = new Set(["pickup_pay", "driver_bonus"]);
 export function redactProjection(projection: Record<string, unknown>, viewer: Viewer): Record<string, unknown> {
   if (viewer === "admin") return projection;
   if (viewer === "driver") {
-    const { searchStep: _s, driverRatingStatus, ...rest } = projection;
+    const { searchStep: _s, driverSilentAlert: _a, driverRatingStatus, ...rest } = projection;
     void _s;
+    void _a;
     // Each side sees its own ratingStatus; the stored (admin) projection carries the driver's separately.
     return driverRatingStatus === undefined ? rest : { ...rest, ratingStatus: driverRatingStatus };
   }
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(projection)) if (!RIDER_HIDDEN.has(k) && k !== "driverRatingStatus") out[k] = v;
+  for (const [k, v] of Object.entries(projection)) if (!RIDER_HIDDEN.has(k) && k !== "driverRatingStatus" && k !== "driverSilentAlert") out[k] = v;
   if (Array.isArray(out["fareLines"])) out["fareLines"] = (out["fareLines"] as Array<{ code: string }>).filter((l) => !DRIVER_ONLY_LINES.has(l.code));
   return out;
 }

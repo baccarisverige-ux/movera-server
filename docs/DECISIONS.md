@@ -37,6 +37,8 @@ What the server does for the test week, as the owner chose it. Change a line her
 | 32 | Reassign after accept | The driver gets nothing by default; the admin can add a driver bonus (Movera pays, within the bonus limit). |
 | 33 | Admin cancel after accept | The rider pays nothing (as the admin panel decides); the driver as in 32. |
 | 34 | Admin waives an owed fee | The driver keeps the share already credited; Movera carries the loss. |
+| 35 | Driver silent with the rider on board (2026-10-26) | No driver position for 30 minutes while the rider is on board (`rider_onboard`, `in_trip`, `approaching_dropoff`): an alert for admins (`driverSilentAlert` on the admin trip). Still none after 3 hours: the server fails the trip (system `fail` → `failed`) with no charge; the rider can book again and the driver is free. An admin is to set the right fare afterwards (not possible yet: adjust, complete and refund all refuse a failed trip). Before pickup nothing happens: the rider cancels and books again. |
+| 36 | Going offline after missed offers | 2026-10-26: a driver is put offline after **10** missed or declined Exclusive offers in a row (was 3). Radar offers never count. The number is `DriverAppConfig.offers.autoOffline.missedExclusive` (contract v0.5.6 default 10; the sample settings carry 10); the driver app counts and goes offline. A zone published with 3 keeps it until its driver settings are published again. |
 | 11 | Trip GPS paths | Kept 30 days, then deleted. Only each driver's latest position is kept beyond that. |
 
 ## Driver sign-up and fleets (round 4, owner decisions of 2026-10-25; contract v0.5.3 §14)
