@@ -49,6 +49,21 @@ describe("sample settings", () => {
     const quotes = await call(app, "POST", "/quotes", rider, { pickup: { address: "Place de la Concorde", lat: 48.8656, lng: 2.3212 }, dropoff: { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 }, stops: [], categoryIds: ["economy"] });
     expect(quotes.json()).toMatchObject({ zoneId: "FR-PC" });
     expect(quotes.json().quotes[0].total.currency).toBe("EUR");
+    // All of Île-de-France is Paris (owner, 2026-10-26): the outer towns of the region are priced in euro too.
+    for (const pickup of [
+      { address: "Fontainebleau", lat: 48.4047, lng: 2.7016 },
+      { address: "Provins", lat: 48.5597, lng: 3.2995 },
+      { address: "Mantes-la-Jolie", lat: 48.9908, lng: 1.7167 },
+      { address: "Rambouillet", lat: 48.6436, lng: 1.8296 },
+      { address: "Disneyland Paris", lat: 48.8722, lng: 2.7758 },
+    ]) {
+      const res = await call(app, "POST", "/quotes", rider, { pickup, dropoff: { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 }, stops: [], categoryIds: ["economy"] });
+      expect(res.statusCode, pickup.address).toBe(201);
+      expect(res.json()).toMatchObject({ zoneId: "FR-PC" });
+    }
+    // Outside the region: still no service.
+    const orleans = await call(app, "POST", "/quotes", rider, { pickup: { address: "Orléans", lat: 47.9029, lng: 1.9093 }, dropoff: { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 }, stops: [], categoryIds: ["economy"] });
+    expect(orleans.statusCode).toBe(403);
     // The whole county is one zone now: Nacka, outside the old districts, is Stockholm.
     const nacka = await call(app, "POST", "/quotes", rider, { pickup: { address: "Nacka Forum", lat: 59.3072, lng: 18.164 }, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] });
     expect(nacka.json()).toMatchObject({ zoneId: "Z001" });
