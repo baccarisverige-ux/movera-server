@@ -5,7 +5,7 @@ Base: `origin/main` @ 5e6edc7. Documentation only; no source, test or workflow c
 ## Done / Not done yet
 - [x] 1. Structure and architecture
 - [x] 2. Dependencies
-- [ ] 3. CI
+- [x] 3. CI
 - [ ] 4. Baseline run
 - [ ] 5. Coverage of critical logic
 - [ ] 6. Route inventory
@@ -66,3 +66,29 @@ No coverage provider installed (`@vitest/coverage-v8` / `-istanbul` absent from 
 |---|---|---|---|---|---|
 | `npm audit --omit=dev` | 0 | **1** | 0 | 0 | `zod <4.6.6` — GHSA-mrhx-c7xc-m3w5, memory exhaustion validating oversized constrained collections. Fix only in zod 4 (breaking). Runtime-relevant: zod validates request bodies. Mitigated in part by Fastify `bodyLimit` 1 MB (app.ts:46); not measured. |
 | `npm audit` (all) | **2** | 1 | 1 | 0 | `tinypool <=2.1.1` (critical, GHSA-5gmw-xhrv-c9v3, GHSA-85c8-ppgw-ccpr) and `vitest` (counted critical via tinypool), `@vitest/mocker <=4.1.11` (moderate, GHSA-82fw-gwwq-j7x9, GHSA-qxg6-89mg-rqv8), zod (high). Dev-only except zod; fix = vitest 5 (breaking). |
+
+## 3. CI
+
+One workflow: `.github/workflows/ci.yml` ("CI"), on every `pull_request` and on `push` to `main`. One job `checks` on `ubuntu-latest` with a `postgres:16` service (health-checked), `TEST_DATABASE_URL` set. Steps: checkout@v4 → setup-node@v4 (Node 22, `cache: npm`) → `npm ci` → `npm run contract:verify` (sha256 of `contracts/` against `contracts/CHECKSUMS`) → `npm run typecheck` → `npm test` → `npm run build`.
+
+History (`gh run list -L 100`): 61 success, 2 failure. The last 10 runs each took about 1 m 50 s – 2 m 10 s (createdAt → updatedAt).
+
+Gap against the plan's Phase 2 server column:
+
+| Check | Present? | Evidence |
+|---|---|---|
+| Lockfile install `npm ci` | yes | ci.yml step |
+| Format (Prettier) | **no** | no Prettier config or script in repo |
+| Static analysis `tsc --noEmit` | yes | `npm run typecheck` |
+| ESLint | **no** | no eslint config, not in devDependencies |
+| Unit tests + Postgres service | yes | `npm test` with postgres:16 service |
+| Coverage report | **no** | no coverage provider installed, no coverage step |
+| Build | yes | `npm run build` |
+| E2E API scenarios | partial | route-level tests via `app.inject` exist in `test/`; no separate e2e harness (`test/e2e/` absent) |
+| Security: `npm audit` | **no** | not in workflow (currently would fail: see §2) |
+| Secret scan | **no** | none |
+| Caching | yes (npm) | `cache: npm` |
+| Job timeout | **no** | no `timeout-minutes` (default 360 min) |
+| Concurrency cancel of superseded runs | **no** | no `concurrency:` block |
+| `permissions:` least privilege | **no** | not declared |
+| Required checks / branch protection on `main` | NOT VERIFIED | `gh api …/branches/main/protection` → HTTP 403 "Resource not accessible by integration"; owner decision D1 |
