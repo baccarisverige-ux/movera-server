@@ -37,7 +37,8 @@ describe("scenario 1: sign-in for rider, driver and admin; expired session; refr
     await sim.advance(31);
     const rider = await sim.rider(1);
     await sim.advance(901);
-    const expired = await rider.get("/rider/profile");
+    // Sent raw: the harness apps would refresh on their own.
+    const expired = await sim.request("GET", "/rider/profile", rider.token);
     expect(expired.status).toBe(401);
     expect(expired.body["reason"]).toBe("token_expired");
     const refreshed = await sim.request("POST", "/auth/refresh", undefined, { refreshToken: rider.session.refreshToken }, { key: null });
