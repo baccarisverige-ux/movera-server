@@ -6,7 +6,10 @@ import type { Executor, Trx } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
-import { nextStatus, TERMINAL } from "../rules/transitions.js";
+import { nextStatus, TERMINAL, type TripStatus } from "../rules/transitions.js";
+import { fixView } from "../drivers/service.js";
+import { haversineKm } from "../maps/routing.js";
+import { DISPATCH } from "../dispatch/engine.js";
 import { afterRiderCancel, riderCancelFee, riderFeeColumns } from "./ride.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
@@ -126,7 +129,31 @@ export async function getTrip(ex: Executor, tripId: string, who: { actor: "rider
   const trip = await ex.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirst();
   const own = trip !== undefined && (who.actor === "admin" || (who.actor === "rider" && trip.rider_id === who.subjectId) || (who.actor === "driver" && trip.driver_id === who.subjectId));
   if (!own) throw new ApiError("not_found", "No such trip.", { reason: "trip_not_found" });
-  return tripProjection(trip, who.actor);
+  return withDriverPosition(ex, trip, tripProjection(trip, who.actor));
+}
+
+const TO_PICKUP: readonly string[] = ["accepted", "driver_to_pickup"];
+const ON_BOARD: readonly string[] = ["rider_onboard", "in_trip", "approaching_dropoff"];
+/** Roads are longer than the straight line (the same factor as the driven distance in ride.ts). */
+const ROAD_FACTOR = 1.25;
+
+/**
+ * TripProjection.driverLocation and etaSeconds (contract §2) on a read of the trip: the driver's last fix while the
+ * trip has a driver and goes on (the rider's map follows the car; the rider app's Ride check watches the route),
+ * and, once the trip has ended, the fix from before the end, which is where the car stopped (Ride check measures
+ * it against the drop-off). A fix from after the end is the driver's own business and is never sent. The ETA is
+ * the road distance to the pickup (before boarding) or to the drop-off (on board) at dispatch's pickup speed.
+ */
+export async function withDriverPosition(ex: Executor, trip: TripRow, projection: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!trip.driver_id) return projection;
+  const fix = await ex.selectFrom("driver_locations").selectAll().where("driver_id", "=", trip.driver_id).executeTakeFirst();
+  if (fix === undefined) return projection;
+  const over = TERMINAL.has(trip.status as TripStatus);
+  if (over && (trip.ended_at === null || fix.measured_at.getTime() > trip.ended_at.getTime())) return projection;
+  const out: Record<string, unknown> = { ...projection, driverLocation: fixView(fix) };
+  const target = ON_BOARD.includes(trip.status) ? (trip.dropoff as Place) : TO_PICKUP.includes(trip.status) ? (trip.pickup as Place) : null;
+  if (target !== null) out["etaSeconds"] = Math.max(60, Math.round(((haversineKm(fix, target) * ROAD_FACTOR) / DISPATCH.score.pickupKmh) * 3600));
+  return out;
 }
 
 /** The rider's cancel (contract §3): free before a driver accepted; after that the fee rules apply (§3, §5). */
