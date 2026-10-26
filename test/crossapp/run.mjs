@@ -5,7 +5,7 @@
 //        [--rider http://localhost:7001] [--driver http://localhost:7002] [--admin http://localhost:7003] \
 //        [--api http://127.0.0.1:8080] [--canvaskit <rider build>/web/canvaskit]
 //
-// Needs `playwright` resolvable (e.g. NODE_PATH=$(npm root -g)). Steps: request, offer, accept, arrive, start,
+// Needs `playwright` (PLAYWRIGHT_ROOT=$(npm root -g) for a global install). Steps: request, offer, accept, arrive, start,
 // complete; at each step every app is screenshotted (<out>/<n>-<step>-<app>.png) and what it shows is written with
 // the server's own view of the trip (GET /admin/trips/{id}) to <out>/steps.json.
 //
@@ -13,9 +13,12 @@
 // getCurrentPosition only when the emulated position changes), and the rider's address lookups
 // (/locations/autocomplete, /geocode, /reverse-geocode) are answered in the browser because a local server has no
 // Google key. Trips, offers, dispatch, money and events are the real server's.
-import { chromium } from "playwright";
+import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+// Playwright from the repo, else from the global install (`npm root -g`), e.g. PLAYWRIGHT_ROOT=$(npm root -g).
+const { chromium } = createRequire(process.env.PLAYWRIGHT_ROOT ? join(process.env.PLAYWRIGHT_ROOT, "x.js") : import.meta.url)("playwright");
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => (args.includes(`--${name}`) ? args[args.indexOf(`--${name}`) + 1] : fallback);
@@ -87,6 +90,8 @@ async function tapLabel(page, pattern, timeout = 20000) {
 async function waitFor(what, test, timeout = 60000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) { const v = await test(); if (v) return v; await new Promise((r) => setTimeout(r, 500)); }
+  for (const [app, page] of [["rider", rider], ["driver", driver], ["admin", admin]]) await page.screenshot({ path: join(OUT, `failed-${app}.png`) }).catch(() => {});
+  writeFileSync(join(OUT, "network.json"), JSON.stringify(net, null, 1));
   throw new Error(`timed out waiting for ${what}`);
 }
 const lastCall = (name, re) => [...net[name]].reverse().find((c) => re.test(c.call));
@@ -112,27 +117,48 @@ await rider.context().route("**/api/v1/locations/**", (route) => {
   const url = req.url();
   if (url.endsWith("/autocomplete")) return json({ suggestions: [{ title: "Odenplan", subtitle: "Stockholm", placeId: "crossapp-odenplan" }] });
   if (url.endsWith("/reverse-geocode")) return json({ address: "Sergels torg, Stockholm", latitude: body.latitude, longitude: body.longitude });
-  if (url.endsWith("/geocode")) return json({ address: "Odenplan, Stockholm", latitude: DROPOFF.latitude, longitude: DROPOFF.longitude, placeId: "crossapp-odenplan" });
+  // The app also geocodes the pickup's own label: answer each place by what was asked.
+  if (url.endsWith("/geocode")) {
+    return /odenplan/i.test(`${body.query} ${body.placeId ?? ""}`)
+      ? json({ address: "Odenplan, Stockholm", latitude: DROPOFF.latitude, longitude: DROPOFF.longitude, placeId: "crossapp-odenplan" })
+      : json({ address: "Sergels torg, Stockholm", latitude: PICKUP.latitude, longitude: PICKUP.longitude, placeId: "crossapp-sergels-torg" });
+  }
   return route.continue();
 });
 
 // Phone sign-in shared by both apps (Sweden, code 1234 for the test numbers).
 async function phoneSignIn(page, url, phone) {
+  // The first screen settles slowly (fonts, flags); a try that does not reach the code step starts again.
+  for (let attempt = 1; ; attempt++) {
+    try { return await phoneSignInOnce(page, url, phone); } catch (error) { if (attempt >= 3) throw error; console.log(`sign-in retry: ${error.message}`); }
+  }
+}
+async function phoneSignInOnce(page, url, phone) {
   await page.goto(url);
-  await page.waitForTimeout(8000);
+  await page.waitForTimeout(10000);
   await enable(page);
+  await page.waitForTimeout(1000);
   const country = (await semantics(page)).find((s) => /Country code/.test(s.label));
   if (country && !/\+46/.test(country.label)) {
-    await page.mouse.click(country.x, country.y); await page.waitForTimeout(1200);
-    await page.mouse.click(195, 206); await page.keyboard.type("Sweden", { delay: 40 }); await page.waitForTimeout(800);
+    await page.mouse.click(country.x, country.y); await page.waitForTimeout(2000);
+    await page.mouse.click(195, 206); await page.waitForTimeout(500);
+    await page.keyboard.type("Sweden", { delay: 60 }); await page.waitForTimeout(1500);
     await tapLabel(page, /^Sweden, \+46/);
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(1500);
+    await waitFor("Sweden chosen", async () => (await enable(page), (await semantics(page)).some((s) => /Country code.*\+46/.test(s.label))), 10000);
   }
-  await page.mouse.click(250, 581); await page.keyboard.type(phone, { delay: 30 });
-  await page.mouse.click(32, 635); await page.mouse.click(195, 705);
-  await page.waitForTimeout(3000);
+  // The terms checkbox sits under the phone field; the layout moves a little once the flag font loads.
+  await enable(page);
+  const terms = await waitFor("terms checkbox", async () => (await semantics(page)).find((s) => /terms|villkor|conditions/i.test(s.label)), 20000);
+  await page.mouse.click(250, terms.y - 58); await page.waitForTimeout(600);
+  await page.keyboard.type(phone, { delay: 50 }); await page.waitForTimeout(500);
+  await page.mouse.click(32, terms.y);
+  await tapLabel(page, /^(Continue|Fortsätt)$/);
+  await waitFor("otp request", () => net[page === rider ? "rider" : "driver"].some((c) => /otp\/request/.test(c.call) && c.status === 200), 20000);
+  await page.waitForTimeout(2500);
   await page.mouse.click(54, 630); await page.keyboard.type("1234", { delay: 80 });
-  await page.waitForTimeout(800); await page.mouse.click(195, 798);
+  await page.waitForTimeout(800);
+  await tapLabel(page, /^(Verify|Verifiera)$/);
   await waitFor("otp verify", () => net[page === rider ? "rider" : "driver"].some((c) => /otp\/verify/.test(c.call) && c.status === 200));
   await page.waitForTimeout(4000);
 }
@@ -198,12 +224,18 @@ await driver.waitForTimeout(3000);
 await step(3, "accept");
 await setGeo(driver, { ...PICKUP, latitude: PICKUP.latitude + 0.00002 });
 await driver.waitForTimeout(15000);
+await driver.mouse.click(150, 770); // open the trip sheet
+await driver.waitForTimeout(1500);
 await driver.mouse.click(195, 790); // "I have arrived"
 await waitFor("arrive", () => lastCall("driver", /\/arrive$/)?.status === 200, 30000);
 await driver.waitForTimeout(3000);
 await step(4, "arrive");
 await tapLabel(rider, /^I'm on the way$/).catch(() => {});
-await swipe(driver, 45, 792, 375); // slide "Start the trip"
+await driver.waitForTimeout(2000);
+for (let i = 0; i < 4 && lastCall("driver", /\/start$/)?.status !== 200; i++) {
+  await swipe(driver, 45, 792, 375); // slide "Start the trip"
+  await driver.waitForTimeout(4000);
+}
 await waitFor("start", () => lastCall("driver", /\/start$/)?.status === 200, 30000);
 await driver.waitForTimeout(3000);
 await step(5, "start");

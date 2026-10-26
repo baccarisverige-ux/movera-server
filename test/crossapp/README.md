@@ -33,7 +33,7 @@ node test/crossapp/serve.mjs --cert cert.pem --key key.pem --api 8080 --tls 8443
   --site 7001=<rider>/build/web --site 7002=<driver>/build/web --site 7003=<admin>/webapp/dist
 
 # 5. The ride
-NODE_PATH=$(npm root -g) node test/crossapp/run.mjs --out out \
+PLAYWRIGHT_ROOT=$(npm root -g) node test/crossapp/run.mjs --out out \
   --setup-link '<setupLink from server.log>' --canvaskit <rider>/build/web/canvaskit
 ```
 
