@@ -191,9 +191,20 @@ function fareColumns(trip: TripRow, fare: Fare) {
 
 export async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Promise<void> {
   if (driverId === null) return;
+  // A driver, car or fleet blocked during the trip kept the trip to its end (DECISIONS.md): at the end the driver goes
+  // offline instead of back online, as if the block had come when they were free (lists.ts, peopleRoutes.ts).
+  const mayDrive = sql<boolean>`account_status = 'active'
+    AND (vehicle_id IS NULL OR EXISTS (SELECT 1 FROM vehicles v WHERE v.vehicle_id = drivers.vehicle_id AND v.status = 'approved'))
+    AND (fleet_id IS NULL OR EXISTS (SELECT 1 FROM fleets f WHERE f.fleet_id = drivers.fleet_id AND f.status = 'approved'))`;
   await trx
     .updateTable("drivers")
-    .set({ online_status: sql`CASE WHEN online_status = 'on_trip' THEN 'online' ELSE online_status END`, last_free_at: now, version: sql`version + 1`, updated_at: now })
+    .set({
+      online_status: sql`CASE WHEN online_status = 'on_trip' THEN (CASE WHEN ${mayDrive} THEN 'online' ELSE 'offline' END) ELSE online_status END`,
+      online_since: sql`CASE WHEN online_status = 'on_trip' AND NOT (${mayDrive}) THEN NULL ELSE online_since END`,
+      last_free_at: now,
+      version: sql`version + 1`,
+      updated_at: now,
+    })
     .where("driver_id", "=", driverId)
     .execute();
 }
@@ -654,6 +665,11 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   const fare = body.fare?.amountMinor ?? driven?.total.amountMinor ?? Number(trip.fare_minor);
   const money = body.fare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : {};
   const wallet = await spendWallet(trx, trip, fare, now);
+  // The rider owes the fare (outstanding fees included) less what the wallet paid; more cash than that is a miscount,
+  // and it would raise the driver's cash balance and the trip's refund room above the fare.
+  if (body.cashCollected && body.cashCollected.amountMinor > fare - wallet) {
+    throw badRequest(`At most ${(fare - wallet) / 100} ${trip.currency} is collected in cash on this trip.`, "cash_above_fare");
+  }
   const cash = body.cashCollected?.amountMinor ?? fare - wallet;
   const done = await applyCommand(trx, trip, {
     command: "complete",

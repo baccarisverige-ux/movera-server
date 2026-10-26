@@ -175,7 +175,7 @@ export async function raisePrice(trx: Trx, riderId: string, tripId: string, body
   if (increase.amountMinor <= 0) throw badRequest("The raise must be more than nothing.", "increase_not_positive");
   const fareMinor = Number(trip.fare_minor) + increase.amountMinor;
   const booked = Number(trip.booked_fare_minor);
-  if (booked > 0 && fareMinor > booked * RAISE_MAX_FACTOR) {
+  if (fareMinor > booked * RAISE_MAX_FACTOR) {
     throw badRequest(`The fare can be raised to at most ${RAISE_MAX_FACTOR} times the quoted price.`, "raise_too_high");
   }
   // The offers out there carry the old price: withdrawn, and the drivers who declined it may be asked again.

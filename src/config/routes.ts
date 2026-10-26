@@ -129,10 +129,10 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
   });
 
   app.get(`${API_PREFIX}/admin/approvals`, async (request) => {
-    await authenticateAdmin(request, guard, "approval.decide");
+    const who = await authenticateAdmin(request, guard, "approval.decide");
     const query = parseBody(ApprovalQuery, request.query);
     const statuses = query.status === undefined ? undefined : Array.isArray(query.status) ? query.status : [query.status];
-    return listApprovals(deps.db, { ...(statuses ? { statuses } : {}), ...(query.targetType ? { targetType: query.targetType } : {}), ...(query.cursor ? { cursor: query.cursor } : {}), limit: query.limit }, now());
+    return listApprovals(deps.db, who, { ...(statuses ? { statuses } : {}), ...(query.targetType ? { targetType: query.targetType } : {}), ...(query.cursor ? { cursor: query.cursor } : {}), limit: query.limit }, now());
   });
 
   for (const decision of ["approve", "reject"] as const) {

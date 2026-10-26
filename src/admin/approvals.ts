@@ -135,12 +135,15 @@ const STATUSES = ["pending_approval", "approved", "rejected", "expired"] as cons
 /** GET /admin/approvals: newest first, cursor = the last row's (requestedAt, approvalId). */
 export async function listApprovals(
   db: Db,
+  who: Principal,
   input: { statuses?: string[]; targetType?: string; cursor?: string; limit: number },
   now: Date,
 ): Promise<{ items: ApprovalView[]; nextCursor: string | null }> {
   const statuses = input.statuses ?? [];
   for (const status of statuses) if (!(STATUSES as readonly string[]).includes(status)) throw badRequest(`Unknown status ${status}.`, "invalid_query");
   let query = db.selectFrom("approvals").selectAll();
+  // Like every admin list: only the admin's zones (an approval with no zone is for everyone who may decide).
+  if (!who.zones.includes("*")) query = query.where((eb) => eb.or([eb("zone_id", "is", null), eb("zone_id", "in", who.zones.length ? who.zones : ["-"])]));
   if (input.targetType) query = query.where("target_type", "=", input.targetType as Selectable<ApprovalsTable>["target_type"]);
   if (statuses.length > 0) {
     const wantExpired = statuses.includes("expired");
