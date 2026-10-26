@@ -59,6 +59,9 @@ export class Sim {
   readonly startLog: Array<{ data: Record<string, unknown>; message: string }> = [];
   readonly timerErrors: Array<{ data: object; message: string }> = [];
   private readonly streams = new Set<Stream>();
+  /** Signed-in driver apps: like the real app they send their position every 30 s while time passes. */
+  readonly driverApps = new Set<Driver>();
+  private lastFixes = 0;
 
   private constructor(now: Date) {
     this.clock = { now };
@@ -115,6 +118,10 @@ export class Sim {
     // In steps of at most 5 s, so timers fire in the order and at the moment they would on a real server.
     while (this.clock.now.getTime() < end) {
       this.clock.now = new Date(Math.min(end, this.clock.now.getTime() + 5000));
+      if (this.clock.now.getTime() - this.lastFixes >= 30_000) {
+        this.lastFixes = this.clock.now.getTime();
+        for (const driver of this.driverApps) await driver.heartbeat();
+      }
       await this.worker.runDue();
     }
   }
@@ -153,6 +160,7 @@ export class Sim {
     const phone = TEST_PHONES[index]!;
     const session = await this.signIn(phone, "driver");
     const driver = new Driver(this, phone, session);
+    this.driverApps.add(driver);
     const profile = (await driver.get("/driver/profile")).body;
     driver.id = profile["driverId"];
     if (at !== null) {
@@ -276,6 +284,12 @@ export class Rider extends Actor {
 
 export class Driver extends Actor {
   private fixAt = 0;
+  /** Where the car is (the last fix sent); null before the first. */
+  position: { lat: number; lng: number } | null = null;
+  /** The app's periodic fix at the car's current place. */
+  async heartbeat(): Promise<void> {
+    if (this.position !== null) await this.post("/driver/location", { fixes: [this.fix(this.position)] });
+  }
   async goOnline(at: { lat: number; lng: number }): Promise<void> {
     const profile = (await this.get("/driver/profile")).body;
     const res = await this.post("/driver/availability", { expectedVersion: profile["version"], onlineStatus: "online", location: this.fix(at) });
@@ -283,6 +297,7 @@ export class Driver extends Actor {
   }
   /** A GPS fix from the driver app; each is measured at least a second after the last (only a newer fix counts). */
   fix(at: { lat: number; lng: number }) {
+    this.position = { lat: at.lat, lng: at.lng };
     const t = Math.max(this.sim.clock.now.getTime(), this.fixAt + 1000);
     this.fixAt = t;
     return { lat: at.lat, lng: at.lng, accuracy: 5, measuredAt: new Date(t).toISOString() };

@@ -29,10 +29,19 @@ The e2e files are under `test/e2e/*.test.ts`, so `npm test` / `npm run test:cove
 | 7 | Rider ends early after 0.4 km / 1 min = `end_early_minimum` (minimum_adjust, lines, driver earnings); driver completes far from the drop-off = driven fare; at the drop-off the booked fare stands; Priority 1 km / 2 min = `minimum_kicks_in` from quote to final fare | `07_endings.test.ts` | passes |
 | 8 | Same Idempotency-Key twice (also at the same moment) → one trip, replayed answer, other body 409; two drivers accept a radar group at once → exactly one 200, the other 409 and `offer_withdrawn`; events shuffled → the app keeping the highest version ends at the server's state; trip stream dropped and resumed with Last-Event-ID → no gap, no duplicate; offer feed resume; both apps "restart" mid-trip, reread (`/rider/trips/active`, `Driver.activeTripId`), a stale command gets 409 `version_mismatch` with the current projection | `08_concurrency.test.ts` | passes |
 | 9 | Admin manual booking: not served (404 `operation_not_enabled`); assign to a chosen driver; reassign (driver's stream closes, trip searches again without them); admin cancel (an admin outside the zone is refused); refund (finance → 202, approved by the Super admin; Super admin direct 201; never above what was paid); block a driver and block a car mid-trip (findings P3-3); reported cash above the fare (finding P3-2) | `09_admin.test.ts` | passes |
+| 10 | Rider touching another rider's trip (read, cancel, raise, end early, on the way, message, rate, stream: 404, nothing changes); driver taking another's offer or acting on another's trip (404), wrong app token (403); fleet owner vs a driver outside the fleet, a member is not an owner; admin limited to Z002 on a Z001 trip (read, act, lists, driver status); approvals list per zone (finding P3-4) | `10_authorization.test.ts` | passes |
+| 11 | Completed, cancelled by rider (with an old offer), by driver on board, by admin, no-show, expired: every rider, driver (assigned or not) and admin command, and accepting an old offer, is refused; status, version and fare stay; no offer goes out; the rider can book again | `11_terminal.test.ts` | passes |
+
+All 11 scenarios: 58 tests in 11 files, about 15 s locally.
 
 ## Not done yet
 
-Scenarios 10–11 and the remaining Phase 1 findings (in progress).
+- **The apps against the harness** (Rider and Driver web builds in Chromium, the admin with Playwright, one ride
+  together): not in this step (server part only, as asked).
+- **Not exposed by the server, so not tested:** admin manual booking (`POST /admin/trips` answers 404
+  `operation_not_enabled`), scheduled rides end to end, card payments (cash only in the test week).
+- **Multiple server instances:** the harness runs one server; two workers taking the same timer is covered by
+  `test/db/timers.test.ts`, not end to end.
 
 ## Findings
 
@@ -90,6 +99,33 @@ Scenarios 10–11 and the remaining Phase 1 findings (in progress).
   (`online_since` cleared). Nothing changes for a driver who was not blocked.
 - **Test.** `test/e2e/09_admin.test.ts` "blocking a driver mid-trip …" and "blocking the car mid-trip …": both failed
   before the fix (`expected 'online' not to be 'online'`, `expected 'online' to be 'offline'`), pass after.
+
+### P3-4 — `GET /admin/approvals` was not zone-filtered (Phase 1 finding; S3, fixed)
+
+- **Steps.** A finance admin limited to Z001 asks for a refund on a Z001 trip (`202 pending_approval`). A finance
+  admin limited to **Z002** calls `GET /admin/approvals` → the Z001 approval is listed (action, trip id, requester).
+  Deciding it is refused (`403 zone_out_of_scope`), so only the listing leaked.
+- **Expected.** Every other admin list is limited to the admin's zones (`src/admin/lists.ts` `zonesOf`), and
+  deciding checks the zone; an approval of another zone is not the admin's business.
+- **Root cause.** `listApprovals` (`src/admin/approvals.ts`) had no zone condition and was not given the admin.
+- **Fix.** It takes the admin and keeps approvals of their zones, plus approvals without a zone (as deciding allows);
+  `*` admins see all, as before.
+- **Test.** `test/e2e/10_authorization.test.ts` "GET /admin/approvals lists only …": failed before the fix
+  (`expected [ 'apr_…' ] to not include 'apr_…'`), passes after; Super and same-zone admins still see it.
+
+### Phase 1 finding — the admin password link is written to the log at start (S3, documented, not changed)
+
+- **What.** `src/testWeek.ts` logs `admin password link` with the `setupLink` (token in the URL fragment) when the
+  bootstrap admin has neither a password nor an unused link.
+- **Why it stays.** It is the free-plan bootstrap: Render's free plan has no shell, the server stores only the
+  token's SHA-256, and `POST /admin/agents/{id}/setup-link` needs an admin already. `docs/DEPLOY_RENDER.md` and
+  `HANDOFF.md` tell the owner to take the first link from the log. Not logging it would leave no way to make the
+  first admin on that plan.
+- **What limits it today** (read in the code, covered by `test/testWeek.test.ts`): staging and development only
+  (`env.ts` refuses `ADMIN_BOOTSTRAP_EMAIL` in production); one link at a time, valid 72 h, single use; never logged
+  again once a password is set; a new link replaces any unused one.
+- **Recommended when the owner can:** set the password once, then remove `ADMIN_BOOTSTRAP_EMAIL` (or move to a plan
+  with a shell and use `admin create`), and treat Render log access as admin access.
 
 ## Observations (not defects by the contract)
 
