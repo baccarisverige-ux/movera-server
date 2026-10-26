@@ -8,7 +8,7 @@ Base: `origin/main` @ 5e6edc7. Documentation only; no source, test or workflow c
 - [x] 3. CI
 - [ ] 4. Baseline run
 - [ ] 5. Coverage of critical logic
-- [ ] 6. Route inventory
+- [x] 6. Route inventory
 - [ ] 7. Code quality findings
 - [ ] 8. Known open issues and stale branches
 - [ ] 9. Untested features and risks
@@ -92,3 +92,123 @@ Gap against the plan's Phase 2 server column:
 | Concurrency cancel of superseded runs | **no** | no `concurrency:` block |
 | `permissions:` least privilege | **no** | not declared |
 | Required checks / branch protection on `main` | NOT VERIFIED | `gh api …/branches/main/protection` → HTTP 403 "Resource not accessible by integration"; owner decision D1 |
+
+## 6. Route inventory
+
+Built by reading every `app.get/post/put/patch/delete` call (112 registrations, loops expanded below). Paths are under `/api/v1` unless shown as `/healthz` / `/readyz`. "zone" = `adminCoversZone` or a zone filter. Line numbers are the registration line (approximate within a loop). Cross-checked against the contract's `x-permission`: NOT VERIFIED (Phase 4).
+
+| Method | Path | Actor / guard | Idempotency-Key | Where |
+|---|---|---|---|---|
+| GET | `/healthz` | public | n/a | app.ts:127 |
+| GET | `/readyz` | public | n/a | app.ts:129 |
+| POST | `/auth/otp/request` | public (rate limits per phone/IP, auth/service.ts:115-129) | no (pre-auth) | auth/routes.ts:42 |
+| POST | `/auth/otp/verify` | public (attempt limit, auth/service.ts:199) | no (pre-auth) | auth/routes.ts:47 |
+| POST | `/auth/provider` | public | no (pre-auth) | auth/routes.ts:53 |
+| POST | `/auth/refresh` | public (refresh token) | no | auth/routes.ts:58 |
+| POST | `/auth/sign-out` | rider, driver (ended session allowed) | no (naturally repeatable, 204) | auth/routes.ts:63 |
+| POST | `/push/devices` | rider, driver | yes | auth/routes.ts:70 |
+| POST | `/push/devices/unregister` | rider, driver (ended session allowed) | yes | auth/routes.ts:100 |
+| GET | `/notifications` | rider, driver | n/a | notifications/routes.ts:27 |
+| POST | `/notifications/{notificationId}/read` | rider, driver | **no** | notifications/routes.ts:33 |
+| POST | `/admin/auth/sign-in` | public (lockout, admin/auth.ts:116-121) | no (pre-auth) | admin/routes.ts:25 |
+| POST | `/admin/auth/setup-password/check` | public (setup token) | no | admin/routes.ts:27 |
+| POST | `/admin/auth/setup-password` | public (setup token) | no | admin/routes.ts:29 |
+| POST | `/admin/auth/refresh` | public (refresh token) | no | admin/routes.ts:31 |
+| POST | `/admin/auth/sign-out` | admin (ended session allowed) | no | admin/routes.ts:33 |
+| GET | `/admin/auth/me` | admin (any) | n/a | admin/routes.ts:39 |
+| POST | `/admin/agents/{adminId}/setup-link` | admin `team.edit` | key required, answer deliberately not stored (holds a live link) | admin/routes.ts:44 |
+| GET | `/rider/config, /driver/config` | rider / driver | n/a | config/routes.ts:66-67 |
+| GET | `/rider/config/stream, /driver/config/stream (SSE)` | rider / driver | n/a | config/routes.ts:81-82 |
+| GET | `/admin/config/{doc}` | admin `settings.read` + zone | n/a | config/routes.ts:84 |
+| PUT | `/admin/config/{doc}` | admin EDIT_PERMISSION[doc] + zone | yes | config/routes.ts:92 |
+| POST | `/admin/config/{doc}/publish` | admin PUBLISH_PERMISSION[doc] + zone; second-admin approval | yes | config/routes.ts:105 |
+| GET | `/admin/approvals` | admin `approval.decide` (no zone filter on the list) | n/a | config/routes.ts:131 |
+| POST | `/admin/approvals/{approvalId}/approve, /reject` | admin; permission, own-request and zone checked inside (approvals.ts:112-116) | yes | config/routes.ts:139 |
+| POST | `/quotes` | rider | yes | quotes/routes.ts:13 |
+| POST | `/trips` | rider | yes | trips/routes.ts:60 |
+| GET | `/trips/{tripId}` | rider, driver, admin (ownership in getTrip) | n/a | trips/routes.ts:71 |
+| GET | `/rides/{rideId} (alias)` | rider | n/a | trips/routes.ts:71 |
+| POST | `/trips/{tripId}/cancel` | rider or driver | yes | trips/routes.ts:77 |
+| POST | `/rides/{rideId}/cancel (alias)` | rider | yes (same key space as /trips) | trips/routes.ts:77 |
+| POST | `/trips/{tripId}/cancel-reason` | rider | yes | trips/routes.ts:90 |
+| POST | `/trips/{tripId}/raise-price` | rider (body not schema-parsed at route, `as never`) | yes | trips/routes.ts:98 |
+| POST | `/trips/{tripId}/on-the-way` | rider | yes | trips/routes.ts:104 |
+| GET | `/trips/{tripId}/events (JSON or SSE)` | rider, driver, admin (getTrip ownership check first) | n/a | trips/routes.ts:111 |
+| GET | `/trips/{tripId}/messages` | rider, driver, admin | n/a | trips/routes.ts:133 |
+| POST | `/trips/{tripId}/messages` | rider, driver, admin | yes | trips/routes.ts:140 |
+| GET | `/rider/trips/active` | rider | n/a | trips/routes.ts:147 |
+| GET | `/rider/trips` | rider | n/a | trips/routes.ts:153 |
+| GET | `/rider/profile` | rider | n/a | trips/routes.ts:160 |
+| GET | `/rider/nearby-vehicles` | rider | n/a | trips/routes.ts:166 |
+| PATCH | `/rider/profile` | rider | yes | trips/routes.ts:172 |
+| GET | `/payment-methods` | rider | n/a | trips/routes.ts:180 |
+| POST | `/payment-methods` | rider (always 400) | no (no state change) | trips/routes.ts:184 |
+| POST | `/payment-methods/default` | rider | yes (no state change) | trips/routes.ts:188 |
+| POST | `/account/deletion` | rider | yes | trips/routes.ts:196 |
+| POST | `/trips/{tripId}/head-to-pickup, /arrive, /board, /start` | driver | yes | trips/rideRoutes.ts:45 |
+| POST | `/trips/{tripId}/complete` | driver | yes | trips/rideRoutes.ts:53 |
+| POST | `/trips/{tripId}/no-show` | driver | yes | trips/rideRoutes.ts:60 |
+| POST | `/trips/{tripId}/end-early` | rider (body `as never` at route) | yes | trips/rideRoutes.ts:67 |
+| POST | `/trips/{tripId}/rating` | rider, driver | yes | trips/rideRoutes.ts:73 |
+| GET | `/driver/earnings` | driver | n/a | trips/rideRoutes.ts:81 |
+| GET | `/driver/offers` | driver (own offers) | n/a | dispatch/routes.ts:63 |
+| GET | `/driver/offers/stream (JSON or SSE)` | driver | n/a | dispatch/routes.ts:75 |
+| POST | `/offers/{offerId}/accept` | driver | yes | dispatch/routes.ts:119 |
+| POST | `/offers/{offerId}/decline` | driver | yes | dispatch/routes.ts:127 |
+| POST | `/trips/{tripId}/keep-waiting` | rider | yes | dispatch/routes.ts:135 |
+| GET | `/admin/zones/{zoneId}/dispatch-control` | admin `trips.read` + zone | n/a | dispatch/routes.ts:150 |
+| PUT | `/admin/zones/{zoneId}/dispatch-control` | admin `dispatch.edit` + zone; pause/force needs approval | yes | dispatch/routes.ts:158 |
+| GET | `/driver/profile` | driver | n/a | drivers/routes.ts:37 |
+| PATCH | `/driver/profile` | driver | yes | drivers/routes.ts:42 |
+| POST | `/driver/availability` | driver | yes | drivers/routes.ts:47 |
+| POST | `/driver/location` | driver | yes | drivers/routes.ts:53 |
+| GET | `/driver/vehicles` | driver | n/a | drivers/routes.ts:58 |
+| POST | `/driver/vehicles` | driver | yes | drivers/routes.ts:63 |
+| POST | `/driver/onboarding` | driver | yes | drivers/routes.ts:79 |
+| GET | `/driver/fleet` | driver | n/a | drivers/routes.ts:83 |
+| POST | `/driver/fleet/join` | driver (join-attempt limit, invitations.ts:129) | yes | drivers/routes.ts:88 |
+| POST | `/driver/fleet/invite` | driver (owner check in service) | yes | drivers/routes.ts:96 |
+| GET | `/driver/fleet/invitations` | driver | n/a | drivers/routes.ts:104 |
+| POST | `/driver/fleet/invitations/{invitationId}/accept, /decline, /cancel` | driver | yes | drivers/routes.ts:109 |
+| POST | `/driver/fleet/leave` | driver | yes | drivers/routes.ts:115 |
+| POST | `/driver/fleet/drivers/{driverId}/remove` | driver (owner check in service) | yes | drivers/routes.ts:119 |
+| GET | `/driver/fleet/earnings` | driver | n/a | drivers/routes.ts:128 |
+| GET | `/driver/documents` | driver | n/a | drivers/routes.ts:133 |
+| POST | `/driver/documents (multipart ≤10 MB)` | driver | yes (hash of a file summary, not the bytes) | drivers/routes.ts:139 |
+| GET | `/driver/documents/{documentId}/file` | driver (own) | n/a | drivers/routes.ts:146 |
+| GET | `/admin/live/drivers` | admin `trips.read` + zone | n/a | drivers/routes.ts:153 |
+| GET | `/admin/trips/{tripId}/trace` | admin `trips.read` + zone | n/a | drivers/routes.ts:160 |
+| GET | `/admin/fleets, /admin/fleets/{fleetId}` | admin `drivers.read` (zone in service) | n/a | admin/peopleRoutes.ts:47,51 |
+| POST | `/admin/fleets/{fleetId}/review, /code` | admin `drivers.activate` | yes | admin/peopleRoutes.ts:55,61 |
+| POST | `/admin/fleets/{fleetId}/drivers/{driverId}/remove` | admin `drivers.activate` | yes | admin/peopleRoutes.ts:67 |
+| POST | `/admin/fleets/{fleetId}/invitations/{invitationId}/accept, /cancel` | admin `drivers.activate` | yes | admin/peopleRoutes.ts:79 |
+| GET | `/admin/drivers/{driverId}` | admin `drivers.read` + zone | n/a | admin/peopleRoutes.ts:87 |
+| GET | `/admin/vehicles` | admin `drivers.read` + zone (filtered after read) | n/a | admin/peopleRoutes.ts:95 |
+| POST | `/admin/vehicles/{vehicleId}/review` | admin `vehicles.edit` + zone | yes | admin/peopleRoutes.ts:99 |
+| POST | `/admin/documents/{documentId}/review` | admin `documents.approve` | yes | admin/peopleRoutes.ts:107 |
+| GET | `/admin/documents/{documentId}/file` | admin `documents.approve` | n/a (runs in a transaction) | admin/peopleRoutes.ts:113 |
+| GET | `/admin/trips, /admin/trips/{tripId}, /offers, /nearby-drivers` | admin `trips.read` + zone | n/a | admin/tripRoutes.ts:58-71 |
+| GET | `/admin/riders` | admin `riders.read` (no zone filter; riders are not zoned) | n/a | admin/tripRoutes.ts:76 |
+| GET | `/admin/drivers` | admin `drivers.read` + zone | n/a | admin/tripRoutes.ts:80 |
+| GET | `/admin/payments, /admin/refunds/payouts` | admin `finance.read` + zone | n/a | admin/tripRoutes.ts:84,92 |
+| GET | `/admin/audit` | admin `audit.read` | n/a | admin/tripRoutes.ts:88 |
+| POST | `/admin/trips/{tripId}/cancel, /reassign, /assign, /radar-group, /no-show, /complete, /driver-bonus, /adjust` | admin `trips.intervene` | yes | admin/tripRoutes.ts:99-131 |
+| POST | `/admin/trips/{tripId}/refund` | admin `payments.refund` | yes | admin/tripRoutes.ts:132 |
+| POST | `/admin/refunds/{refundId}/paid` | admin `finance.edit` | yes | admin/tripRoutes.ts:123 |
+| POST | `/admin/drivers/{driverId}/status` | admin `drivers.activate` | yes | admin/tripRoutes.ts:131 |
+| POST | `/admin/riders/{riderId}/status` | admin `riders.block` | yes | admin/tripRoutes.ts:137 |
+| GET | `/wallet, /wallet/entries, /rider/refunds` | rider | n/a | admin/tripRoutes.ts:145-153 |
+| POST | `/rider/refunds/{refundId}/destination` | rider | yes | admin/tripRoutes.ts:157 |
+| POST | `/locations/autocomplete` | rider | n/a (read) | maps/routes.ts:56 |
+| POST | `/locations/geocode` | rider | n/a (read) | maps/routes.ts:71 |
+| POST | `/locations/reverse-geocode` | rider, driver | n/a (read) | maps/routes.ts:82 |
+| POST | `/routes` | rider, driver | n/a (read) | maps/routes.ts:91 |
+| GET | `/routes/driving/{coordinates}` | driver (in-memory 1-minute rate limit) | n/a | maps/routes.ts:100 |
+
+**Flags**
+- Routes without an auth guard: only `/healthz`, `/readyz`, `auth/otp/*`, `auth/provider`, `auth/refresh`, `admin/auth/sign-in`, `admin/auth/setup-password[/check]`, `admin/auth/refresh` — all pre-sign-in by design. No authenticated-looking route lacks a guard.
+- State change without idempotency: `POST /notifications/{id}/read` (repeat-safe by nature, S4); the sign-in/refresh/sign-out family (by design); `POST /admin/agents/{id}/setup-link` (key checked, reply not stored, by design).
+- Route-level body validation skipped (`request.body as never` / cast, validation left to the service): `raise-price` (trips/routes.ts:101), `end-early` (rideRoutes.ts:70), `locations/*` and `routes` (cast then `check()` against the contract schema, maps/routes.ts:58-93). Whether every service validates fully is NOT VERIFIED here (Phase 4).
+- `GET /admin/approvals` is not filtered by the admin's zones (config/routes.ts:131-136): a zone-scoped admin sees other zones' pending approvals (cannot decide them, approvals.ts:116). S3.
+- `GET /driver/offers` does one trip query per offer (N+1, dispatch/routes.ts:67-70). S4.
+- Rate limits on `/routes/driving` and the Places session map are in-process `Map`s keyed by subject that are never pruned (maps/routes.ts:30-31): per-instance only, and grow with the number of distinct users until restart. S4.
