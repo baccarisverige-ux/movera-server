@@ -16,6 +16,8 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   await trx.deleteFrom("idempotency_keys").where("created_at", "<", new Date(now.getTime() - IDEMPOTENCY_KEY_TTL_MS)).execute();
   // Trip GPS traces 30 days after the fix (owner decision 11); the driver's latest position stays.
   await trx.deleteFrom("trip_locations").where("measured_at", "<", new Date(now.getTime() - 30 * 24 * HOUR_MS)).execute();
+  // App telemetry after 30 days (contract §11).
+  await trx.deleteFrom("telemetry").where("at", "<", new Date(now.getTime() - 30 * 24 * HOUR_MS)).execute();
   // Quotes nobody booked, a day after they expired.
   await trx.deleteFrom("quotes").where("expires_at", "<", new Date(now.getTime() - 24 * HOUR_MS)).where("used_at", "is", null).execute();
   // Every trip with the rider on board has a driver-silence check (owner decision 2026-10-26), also one boarded

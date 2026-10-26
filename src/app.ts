@@ -20,6 +20,7 @@ import { driverRoutes } from "./drivers/routes.js";
 import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
 import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
+import { telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
 import multipart from "@fastify/multipart";
@@ -149,6 +150,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const signInProviders = providers ?? providersFrom(env);
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", providers: signInProviders, ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    await telemetryRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.
     const invites = { sms: { provider: sms, warn: (data: Record<string, unknown>, message: string) => app.log.warn(data, message) }, appLink: env.DRIVER_APP_LINK };
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });
