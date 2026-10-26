@@ -57,6 +57,11 @@ describe("address search (read-only: no Idempotency-Key)", () => {
     expect(third.session).not.toBe(a!.session);
   });
 
+  it("autocomplete asks for the countries with an open zone", async () => {
+    await post(app, "/locations/autocomplete", rider, { query: "rue de", latitude: 48.86, longitude: 2.35 });
+    expect((calls.filter((c) => c.kind === "a").at(-1)!.input as { regions: string[] }).regions.sort()).toEqual(["fr", "se"]);
+  });
+
   it("geocode: a match has coordinates; no match is 200 with none", async () => {
     expect((await post(app, "/locations/geocode", rider, { query: "Sergels torg" })).json()).toEqual({ address: "Sergels torg, Stockholm", latitude: 59.3326, longitude: 18.0649 });
     const none = await post(app, "/locations/geocode", rider, { query: "nowhere" });

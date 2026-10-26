@@ -38,6 +38,22 @@ describe("sample settings", () => {
     expect(await database.db.transaction().execute((trx) => seedSampleConfig(trx, now))).toEqual([]);
   });
 
+  it("prices Paris in euro, converted from the Swedish sample", async () => {
+    const live = await database.db.selectFrom("config_live").select("document").where("doc", "=", "pricing").where("zone_id", "=", "FR-PC").executeTakeFirstOrThrow();
+    const doc = live.document as { currency: string; country: string; timeZone: string; priceStep: { amountMinor: number; currency: string }; categories: Record<string, { base: { amountMinor: number; currency: string } }> };
+    expect(doc).toMatchObject({ zoneId: "FR-PC", currency: "EUR", country: "FR", timeZone: "Europe/Paris" });
+    // 29,00 kr × 0.09 = 2,61 € → whole 10 cents.
+    expect(doc.categories["economy"]!.base).toEqual({ amountMinor: 260, currency: "EUR" });
+    expect(doc.priceStep).toEqual({ amountMinor: 10, currency: "EUR" });
+    const rider = (await signIn(app, "+46701740609", "rider")).headers;
+    const quotes = await call(app, "POST", "/quotes", rider, { pickup: { address: "Place de la Concorde", lat: 48.8656, lng: 2.3212 }, dropoff: { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 }, stops: [], categoryIds: ["economy"] });
+    expect(quotes.json()).toMatchObject({ zoneId: "FR-PC" });
+    expect(quotes.json().quotes[0].total.currency).toBe("EUR");
+    // The whole county is one zone now: Nacka, outside the old districts, is Stockholm.
+    const nacka = await call(app, "POST", "/quotes", rider, { pickup: { address: "Nacka Forum", lat: 59.3072, lng: 18.164 }, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] });
+    expect(nacka.json()).toMatchObject({ zoneId: "Z001" });
+  });
+
   it("lets a rider get a price right away", async () => {
     const rider = (await signIn(app, "+46701740608", "rider")).headers;
     const quotes = await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] });

@@ -7,7 +7,7 @@ export type Suggestion = { title: string; subtitle?: string; latitude?: number; 
 export type GeocodeResult = { address?: string; latitude?: number; longitude?: number; placeId?: string };
 
 export interface Places {
-  autocomplete(input: { query: string; bias?: { lat: number; lng: number }; limit: number; language: string; session: string }): Promise<Suggestion[]>;
+  autocomplete(input: { query: string; bias?: { lat: number; lng: number }; limit: number; language: string; session: string; regions?: string[] }): Promise<Suggestion[]>;
   geocode(input: { query: string; placeId?: string; language: string; session?: string }): Promise<GeocodeResult>;
   reverse(input: { lat: number; lng: number; language: string }): Promise<string | null>;
 }
@@ -49,11 +49,12 @@ export class GooglePlaces implements Places {
     return (await response.json()) as Record<string, unknown>;
   }
 
-  async autocomplete(input: { query: string; bias?: { lat: number; lng: number }; limit: number; language: string; session: string }): Promise<Suggestion[]> {
+  async autocomplete(input: { query: string; bias?: { lat: number; lng: number }; limit: number; language: string; session: string; regions?: string[] }): Promise<Suggestion[]> {
     const body = {
       input: input.query,
       languageCode: input.language,
-      includedRegionCodes: [this.region],
+      // The countries the server is open in (the route passes them), else the default region.
+      includedRegionCodes: input.regions && input.regions.length > 0 ? input.regions : [this.region],
       sessionToken: input.session,
       ...(input.bias ? { locationBias: { circle: { center: { latitude: input.bias.lat, longitude: input.bias.lng }, radius: 30000 } } } : {}),
     };
