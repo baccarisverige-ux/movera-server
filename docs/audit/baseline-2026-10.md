@@ -9,7 +9,7 @@ Base: `origin/main` @ 5e6edc7. Documentation only; no source, test or workflow c
 - [ ] 4. Baseline run
 - [ ] 5. Coverage of critical logic
 - [x] 6. Route inventory
-- [ ] 7. Code quality findings
+- [x] 7. Code quality findings
 - [ ] 8. Known open issues and stale branches
 - [ ] 9. Untested features and risks
 - [ ] 10. Summary table
@@ -212,3 +212,31 @@ Built by reading every `app.get/post/put/patch/delete` call (112 registrations, 
 - `GET /admin/approvals` is not filtered by the admin's zones (config/routes.ts:131-136): a zone-scoped admin sees other zones' pending approvals (cannot decide them, approvals.ts:116). S3.
 - `GET /driver/offers` does one trip query per offer (N+1, dispatch/routes.ts:67-70). S4.
 - Rate limits on `/routes/driving` and the Places session map are in-process `Map`s keyed by subject that are never pruned (maps/routes.ts:30-31): per-instance only, and grow with the number of distinct users until restart. S4.
+
+## 7. Code quality findings
+
+**Duplicated logic**
+- `keyOf(request)` (read the Idempotency-Key header) is redefined in 7 route files, and the `idem(request, who)` builder in 6 (`grep -rn "const keyOf" src` = 7); `const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/)` is redefined in 7 files. Same behaviour today, but a fix to one copy (e.g. route normalisation of `/rides/` aliases, done only in trips/routes.ts:56 and rideRoutes.ts:39) will not reach the others. S4.
+- Idempotency key sweep exists twice: `sweepIdempotencyKeys` (http/idempotency.ts:110, used only by test/db/idempotency.test.ts) and the timer handler (jobs/maintenance.ts:12-16). S4.
+- Two great-circle distance functions: `haversineKm` (maps/routing.ts:22) and `dispatchKm` (dispatch/engine.ts:40). Not verified whether they differ on purpose (contract rounding). S4.
+
+**Dead code** (exported and referenced nowhere else in `src/` or `test/`, script over all 542 exported names): `APP_DOCS` (config/service.ts), `AccountType` (drivers/onboardingRules.ts), `ID_PATTERN` (ids.ts), `sweepQuotes` (quotes/service.ts — quotes are swept by jobs/maintenance.ts:19 instead), `unreadCount` (notifications/service.ts), `viewerFor` (trips/service.ts). ~150 more exports are used only inside their own file (unnecessary `export`). Unused dependency: `fastify-plugin` (§2). S4.
+
+**Large files/functions** (approximate, top-level declaration to next): `tripRoutes` 155 lines, `driverRoutes` 138, `buildApp` 136, `dispatchRoutes` 123, `adminTripRoutes` 112, `priceFare` 111 (rules/fare.ts:69), `runRound` 90 (dispatch/runtime.ts:281), `createTrip` 85. Files: `trips/ride.ts` 659, `dispatch/runtime.ts` 632. Route files put SSE pumping and DB queries inline (dispatch/routes.ts:63-117). S4.
+
+**Inconsistent error handling / validation**
+- Three validation styles: zod `parseBody` (92 call sites), contract-schema `schemaProblem`/`check` (20 sites), and casts with validation deferred to the service (`raise-price` trips/routes.ts:101, `end-early` rideRoutes.ts:70, maps routes). The same failure is reported as `badRequest(…, "invalid_body")` in some places and `new ApiError("invalid_request", …, {reason:"invalid_body"})` in others (drivers/routes.ts:91,99). Error-body equivalence of the two NOT VERIFIED. S4.
+- Errors swallowed with bare `catch {}`: 7 sites (auth/provider.ts:81,90,123, auth/jwt.ts:64, realtime/hub.ts:36, app.ts:139, maps/routes.ts:128); each maps to a defined outcome (invalid token, unavailable), none loses a write. S4.
+- `jobs/maintenance.ts:13` uses `new Date()` instead of the worker's `timer.firedAt`, unlike other handlers (timers.ts:18 comment). S4.
+
+**Money or state taken from the client**
+- Trip status changes only through `applyCommand` (trips/commands.ts:16; 21 call sites; no other `status` write on `trips` found). Version checked (`expectVersion`) before every command read.
+- Driver `complete`: route schema has no `fare` (rideRoutes.ts:18 — zod strips unknown keys), so a driver cannot set the fare; only admin `complete` can (ride.ts:548). `cashCollected` from the driver is stored as given with no upper bound (ride.ts:556); its effect on carried fees is capped by the fee line (ride.ts:263). S3 (a driver can record arbitrary cash; reporting only).
+- `raise-price`: increase must be >0, same currency, total ≤ 2× booked — but the cap is skipped when `booked_fare_minor` is 0 (`if (booked > 0 && …)`, trips/service.ts:178). Booked fare is always the quote total at creation (service.ts:96), so reachable only with a zero quote. The whole raise goes to `driver_earnings_minor` with no commission (service.ts:192) — confirm with the owner that this is intended. S3.
+
+**Secrets / personal data in logs**
+- SMS without a provider logs only the first 4 characters of the phone (sms/sms.ts:26). No log call found containing a token, code, e-mail or full phone (grep of `log.*|console.*|warn(` for phone/token/email/code/link/password).
+- **The admin password setup link is written to the server log** (testWeek.ts:61, `setupLink: link.url`) when `ADMIN_BOOTSTRAP_EMAIL` is set (staging only, refused in production by env.ts:94). Anyone with Render log access can set the Super-admin password until the link is used or expires. Deliberate (handoff §1) but a secret in logs. S2.
+- `admin/cli.ts:48-96` prints phones, fleet code and setup link to the operator's terminal (CLI, by design).
+
+**TODO/FIXME**: none (`grep -rnE "TODO|FIXME|XXX|HACK" src test` → 0).
