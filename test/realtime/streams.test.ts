@@ -122,13 +122,17 @@ describe("trip stream", () => {
     const rider = (await signIn(app, TEST_PHONES[5]!, "rider")).headers;
     const trip = await bookTrip(rider);
     const port = (extra.server.address() as AddressInfo).port;
+    let opened!: () => void;
+    const open = new Promise<void>((resolve) => (opened = resolve));
     const done = new Promise<boolean>((resolve) => {
       http.get(`http://127.0.0.1:${port}/api/v1/trips/${trip.tripId}/events`, { headers: { ...rider, accept: "text/event-stream" } }, (res) => {
+        opened();
         res.resume();
         res.on("end", () => resolve(true));
       });
     });
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait until the stream is open (headers received) instead of a fixed sleep, so close() never races the request.
+    await open;
     await extra.close();
     expect(await done).toBe(true);
   });
