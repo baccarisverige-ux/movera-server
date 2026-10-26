@@ -7,5 +7,7 @@ export default defineConfig({
     globalSetup: ["test/support/globalSetup.ts"],
     // Database tests take row locks and wait on each other on purpose; give them room on a slow CI runner.
     testTimeout: 20_000,
+    // afterAll teardown (app.close + dropping the per-file database) can exceed the 10 s default under load.
+    hookTimeout: 60_000,
   },
 });

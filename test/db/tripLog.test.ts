@@ -22,6 +22,11 @@ afterAll(async () => {
 });
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// LISTEN/NOTIFY delivery time depends on load; poll for the expected state instead of a fixed sleep.
+async function waitUntil(check: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (!check() && Date.now() < end) await sleep(20);
+}
 async function newTrip(): Promise<string> {
   return insertTrip(database.db, await insertRider(database.db));
 }
@@ -124,7 +129,8 @@ describe("appendTripEvent", () => {
     expect(notes.filter((note) => note.tripId === tripId)).toEqual([]);
     expect(await tripEventsAfter(database.db, tripId, 0)).toEqual([]);
     await database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId, kind: "trip_projection", version: 1 }));
-    await sleep(100);
+    await waitUntil(() => notes.some((note) => note.tripId === tripId));
+    // The committed event's notification has arrived; a rolled-back one would have been delivered before it.
     expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1 }]);
   });
 
@@ -136,7 +142,7 @@ describe("appendTripEvent", () => {
       await sleep(100);
       expect(notes.filter((note) => note.tripId === tripId)).toEqual([]);
     });
-    await sleep(100);
+    await waitUntil(() => notes.some((note) => note.tripId === tripId));
     expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1 }]);
   });
 

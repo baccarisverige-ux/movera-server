@@ -204,7 +204,8 @@ describe("dispatch runtime review", () => {
     }
     const offeredWithout = seen.filter(([status, step]) => status === "offered" && step === undefined);
     expect(offeredWithout.length, JSON.stringify(seen)).toBe(0);
-  });
+   // ~94 simulated 5 s steps, each with 3 HTTP location posts: needs more than the default 20 s on a loaded runner.
+  }, 120_000);
 
   it("M2b: the busy step's message shows on the expired trip", async () => {
     const tripId = await create(rider);
