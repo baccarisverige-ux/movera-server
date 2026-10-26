@@ -11,8 +11,8 @@ Base: `origin/main` @ 5e6edc7. Documentation only; no source, test or workflow c
 - [x] 6. Route inventory
 - [x] 7. Code quality findings
 - [x] 8. Known open issues and stale branches
-- [ ] 9. Untested features and risks
-- [ ] 10. Summary table
+- [x] 9. Untested features and risks
+- [x] 10. Summary table
 
 ## 1. Structure and architecture
 
@@ -259,7 +259,8 @@ CI on GitHub runs the same suite in about 2 minutes and was green on the last 10
 
 **Flaky (seen failing, then passing, with no code change):**
 1. `afterAll` teardown hooks (`app.close()` + `database.drop()`) exceed vitest's default **`hookTimeout` of 10 s** — `vitest.config.ts` raises `testTimeout` to 20 s but not `hookTimeout`. Seen in onboarding.test.ts:66, dispatch/runtime.test.ts:41, seedTest.test.ts:21. Load-dependent (all files run in parallel against one Postgres; wall time varied 131–292 s).
-2. `test/db/tripLog.test.ts:128` waits a fixed `sleep(100)` for a LISTEN/NOTIFY delivery (lines 123-139); under load the notification arrives later. Timing-based assertion.
+2. `test/dispatch/review.test.ts:192` ("M2 … keep_waiting …") timed out at 20 s during a coverage run with default workers (§5).
+3. `test/db/tripLog.test.ts:128` waits a fixed `sleep(100)` for a LISTEN/NOTIFY delivery (lines 123-139); under load the notification arrives later. Timing-based assertion.
 
 Neither is a product defect as far as observed; both make CI results unreliable on a slow runner. S3.
 
@@ -289,3 +290,39 @@ No coverage provider is in the project. Measured by installing `@vitest/coverage
 | Others | | | | **`maps/routing.ts` 40.9 % — `OsrmRouter` (lines 40-67) never runs in tests**; `sms/sms.ts` 50 % (provider send/fail paths 29-37: no provider exists yet); `main.ts`, `db/migrateCli.ts`, `admin/cli.ts` 0 % (entry points); `realtime/hub.ts` 87 % (reconnect paths 61-63, 75-78) |
 
 Reading: core money/lifecycle logic is well covered by line; branch coverage is the weaker signal (dispatch runtime 74 %, ride.ts 75 %, admin lists 48 %). Coverage is a single run on this machine; not measured in CI.
+
+## 9. Untested features and risks
+
+Method: grep of `test/` for each route path and feature, plus the coverage report (§5). "Untested" = no test found; "partly" = tested in some paths only.
+
+| # | Feature / risk | Status | Severity |
+|---|---|---|---|
+| 1 | Full multi-actor ride simulation (rider + driver + admin over HTTP + SSE together, Phase 3 harness) | untested — no `test/e2e/`; tests drive services/routes per area | S2 |
+| 2 | Route-by-route authorization matrix (every route × rider/driver/admin role/zone/another user's trip) | partly — per-feature `forbidden`/404 cases exist in trips, messages, admin tests; no systematic test | S2 (S1 if a gap is found) |
+| 3 | Real road routing: `OsrmRouter` (maps/routing.ts:40-67) incl. timeout fallback | untested (0 % lines) — and production will use it once `OSRM_URL` is set | S2 |
+| 4 | SMS provider send/fail paths (sms/sms.ts:29-37) | untested — no provider exists yet | S3 (becomes S2 when a provider is added) |
+| 5 | `GET /admin/payments` | no test references the path | S3 |
+| 6 | Admin list filters and cursors (`admin/lists.ts` 70.9 % lines, 47.5 % branches) | partly | S3 |
+| 7 | LISTEN connection loss and reconnect (`realtime/hub.ts` 61-63, 75-78) and SSE pump error paths (dispatch/routes.ts) | untested | S2 (live updates silently stop for the apps) |
+| 8 | Two server instances: in-memory rate limits and Places sessions (maps/routes.ts:30-31) are per instance | untested; design limitation | S4 |
+| 9 | Process start/stop (`main.ts`), `migrateCli`, `admin/cli` | 0 % (entry points) | S3 |
+| 10 | Apple / Google sign-in with real tokens | needs owner keys (verifier unit-tested with fakes in test/auth/provider.test.ts) | needs owner |
+| 11 | Document encryption with a real `DOCUMENT_FILES_KEY` vs derived key (`documents/files.ts` branches 66.7 %) | partly | S3 |
+| 12 | Behaviour on Render (sleeping free plan, cold start > 1 min, `TRUST_PROXY_HOPS`, real env) | NOT VERIFIED — no Render access | S2 |
+| 13 | Load / performance (query counts, N+1 in `GET /driver/offers`) | untested | S3 |
+| 14 | Concurrency: two workers on one timer, two requests with one Idempotency-Key, minute-8 race | **tested** (test/dispatch/review.test.ts:125-183, test/db/idempotency.test.ts, test/db/timers.test.ts) | — |
+
+## 10. Summary: top 10 findings
+
+| # | Sev | Finding (evidence) | Proposed action | Phase |
+|---|---|---|---|---|
+| 1 | S2 | Admin password setup link written to server logs at start (testWeek.ts:61) | Log only that a link was made; deliver it another way (CLI/one-time endpoint), or accept explicitly as a staging-only risk | 4 |
+| 2 | S2 | No end-to-end multi-app ride simulation; no route-by-route authorization test (§9 #1-2) | Build `test/e2e/` harness and an automated route × actor matrix from the §6 table | 3 / 4 |
+| 3 | S2 | `zod` high-severity advisory GHSA-mrhx-c7xc-m3w5 in production deps (§2); `vitest`/`tinypool` 2 critical + 1 moderate in dev deps | Assess zod 4 migration (breaking) or confirm body limits mitigate; upgrade vitest to 5 in CI hardening | 4 / 2 |
+| 4 | S2 | `OsrmRouter` and LISTEN reconnect paths have 0 tests (§5, §9 #3, #7), both on the live path once `OSRM_URL` is set | Add tests with a fake OSRM server and a dropped LISTEN connection | 3 |
+| 5 | S3 | Flaky suite: `afterAll` hooks exceed default 10 s `hookTimeout`; `tripLog.test.ts` fixed `sleep(100)` for NOTIFY; review M2 timeout under load (§4) — 2 of 3 local runs red | Set `hookTimeout`, replace sleeps with wait-until polling; keep tests unchanged otherwise | 2 |
+| 6 | S3 | CI lacks lint, format, coverage, `npm audit`, secret scan, `timeout-minutes`, concurrency; branch protection not verifiable (§3) | Add per Phase 2 table; owner decision D1 | 2 |
+| 7 | S3 | `raise-price` 2× cap skipped when booked fare is 0 (trips/service.ts:178); raise goes 100 % to driver earnings (192) | Confirm intent with owner; make cap unconditional | 4 |
+| 8 | S3 | Driver-declared `cashCollected` stored without bound (ride.ts:556) | Validate against fare (e.g. ≤ fare + carried fees) or flag for admin | 4 |
+| 9 | S3 | `GET /admin/approvals` not filtered by admin zones (config/routes.ts:131) | Filter list by `who.zones` | 4 |
+| 10 | S4 | Duplicated helpers (`keyOf` ×7, `ID` ×7, two sweeps, two haversines), 6 dead exports, unused `fastify-plugin`, unbounded in-memory maps (maps/routes.ts:30-31) | Small cleanup PR after Phase 2 | 2 / 8 |
