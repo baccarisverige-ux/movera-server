@@ -33,14 +33,24 @@ export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>> };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>> };
 
 const READY_TIMEOUT_MS = 2000;
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
 export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: logger ? { level: env.LOG_LEVEL } : false,
+    logger: logger
+      ? {
+          level: env.LOG_LEVEL,
+          ...(typeof logger === "object" ? { stream: logger.stream } : {}),
+          // Audit Phase 4 (P4-7): the request line is logged without its query string, which can hold a phone
+          // number or an e-mail (admin searches `?q=`) or a place; the path alone is enough to trace a request.
+          serializers: {
+            req: (request: { method: string; url: string; id: string }) => ({ method: request.method, url: request.url.split("?")[0], reqId: request.id }),
+          },
+        }
+      : false,
     // X-Request-Id: the client's id when it sends a sane one, else ours. Echoed on every response (§1 Headers).
     genReqId: (request) => {
       const sent = request.headers["x-request-id"];
