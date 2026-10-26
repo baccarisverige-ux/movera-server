@@ -82,6 +82,12 @@ export interface FleetJoinAttemptsTable {
   at: Timestamp;
 }
 
+/** Audit Phase 4 (P4-2): document uploads started, for the per-driver hourly limit. */
+export interface DocumentUploadAttemptsTable {
+  driver_id: string;
+  at: Timestamp;
+}
+
 export interface DocumentsTable {
   document_id: string;
   driver_id: string;
@@ -678,6 +684,7 @@ export interface Database {
   vehicles: VehiclesTable;
   fleets: FleetsTable;
   fleet_join_attempts: FleetJoinAttemptsTable;
+  document_upload_attempts: DocumentUploadAttemptsTable;
   documents: DocumentsTable;
   document_files: DocumentFilesTable;
   fleet_invitations: FleetInvitationsTable;

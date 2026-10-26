@@ -18,6 +18,9 @@ import { ONBOARDING } from "./onboardingRules.js";
 
 export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date };
 
+/** Document uploads a driver may start per hour (every required document of a fleet with several cars, plus retries). */
+export const UPLOADS_PER_HOUR = 30;
+
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const FixSchema = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracy: z.number().min(0), heading: z.number().min(0).lt(360).optional(), speedMps: z.number().min(0).optional(), moving: z.boolean().optional(), measuredAt: z.string().datetime() });
 const AvailabilityBody = z.object({ expectedVersion: z.number().int().min(1), onlineStatus: z.enum(["online", "offline"]), location: FixSchema.optional() });
@@ -138,6 +141,14 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   // The upload may be 10 MB; the app's bodyLimit (1 MB) is for JSON.
   app.post(`${API_PREFIX}/driver/documents`, { bodyLimit: ONBOARDING.documents.upload.maxBytes + 64 * 1024 }, async (request, reply) => {
     const who = await authenticate(request, guard, ["driver"]);
+    // Audit Phase 4 (P4-2): at most UPLOADS_PER_HOUR uploads per driver, counted before the file is read.
+    const since = new Date(now().getTime() - 3600_000);
+    const recent = await deps.db.selectFrom("document_upload_attempts").select("at").where("driver_id", "=", who.subjectId).where("at", ">", since).orderBy("at").execute();
+    if (recent.length >= UPLOADS_PER_HOUR) {
+      const retry = Math.max(1, Math.ceil((recent[recent.length - UPLOADS_PER_HOUR]!.at.getTime() + 3600_000 - now().getTime()) / 1000));
+      throw new ApiError("rate_limited", "Too many uploads; try again later.", { reason: "upload_limit", retryAfterSeconds: retry });
+    }
+    await deps.db.insertInto("document_upload_attempts").values({ driver_id: who.subjectId, at: now() }).execute();
     const upload = await readUpload(request);
     const summary = { type: upload.type, ownerId: upload.ownerId ?? null, fileName: upload.fileName, size: upload.bytes.length };
     const result = await runIdempotent(deps.db, { ...idem(request, who.subjectId), body: summary }, async (trx) => ({ status: 201, body: await uploadDocument(trx, deps.documentKey, who.subjectId, upload, now()) }));
