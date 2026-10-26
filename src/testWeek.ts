@@ -6,10 +6,14 @@ import type { Env } from "./env.js";
 
 type Log = { info: (data: Record<string, unknown>, message: string) => void };
 
-async function testDriversMissOpenZones(db: Db | Parameters<typeof seedTestAccounts>[0], accounts: TestAccounts): Promise<boolean> {
+/** Drivers seeded by an earlier server may lack an open zone or a category every test driver has now. */
+async function testDriversMissSomething(db: Db | Parameters<typeof seedTestAccounts>[0], accounts: TestAccounts): Promise<boolean> {
   const open = (await db.selectFrom("zones").select("zone_id").where("open", "=", true).execute()).map((z) => z.zone_id);
-  const drivers = await db.selectFrom("drivers").select("zone_ids").where("phone", "in", accounts.drivers.map((d) => d.phone)).execute();
-  return drivers.some((d) => open.some((z) => !d.zone_ids.includes(z)));
+  const drivers = await db.selectFrom("drivers").select(["zone_ids", "category_ids", "phone"]).where("phone", "in", accounts.drivers.map((d) => d.phone)).execute();
+  return drivers.some((d) => {
+    const wanted = accounts.drivers.find((a) => a.phone === d.phone)?.car.categoryIds ?? [];
+    return open.some((z) => !d.zone_ids.includes(z)) || wanted.some((c) => !d.category_ids.includes(c));
+  });
 }
 
 /**
@@ -32,11 +36,11 @@ export async function prepareTestWeek(
       if (fleet === undefined) {
         const made = await seedTestAccounts(trx, accounts, now);
         log.info({ fleetId: made.fleetId, drivers: made.drivers.length, riders: made.riders.length }, "test accounts made (sign in with code 1234)");
-      } else if (await testDriversMissOpenZones(trx, accounts)) {
-        // Accounts seeded by an earlier server worked one zone only: give them every open zone (names, cars and
-        // documents are set again to the same values).
+      } else if (await testDriversMissSomething(trx, accounts)) {
+        // Accounts seeded by an earlier server worked one zone or a few categories only: give them every open zone
+        // and every category (names, cars and documents are set again to the same values).
         const made = await seedTestAccounts(trx, accounts, now);
-        log.info({ drivers: made.drivers.length }, "test drivers registered in every open zone");
+        log.info({ drivers: made.drivers.length }, "test drivers registered in every open zone and category");
       }
       const settings = await seedSampleConfig(trx, now);
       if (settings.length > 0) log.info({ published: settings.map((s) => `${s.doc}@${s.zoneId}`) }, "sample settings published");

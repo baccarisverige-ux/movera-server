@@ -17,12 +17,19 @@ export type TestAccounts = {
   riders: { phone: string; firstName: string; email: string }[];
 };
 
+/**
+ * Every category the sample pricing document prices (the contract's seed ids plus child_seat): a test driver takes
+ * whatever a tester books, so no category goes unanswered in the test week (owner, 2026-10-26: "only Movera
+ * categories can the driver receive"). The admin panel can narrow a driver's categories afterwards.
+ */
+export const TEST_DRIVER_CATEGORIES = ["economy", "comfort", "premium", "priority", "xl", "electric", "pet", "child_seat"];
+
 export const DEFAULT_TEST_ACCOUNTS: TestAccounts = {
   fleet: { name: "Movera Test AB", orgNumber: "559999-0001", address: "Testgatan 1, 151 72 Södertälje", country: "SE", cityId: "stockholm_lan", zoneId: "Z001", code: TEST_FLEET_CODE },
   drivers: [
-    { phone: "+46701740605", firstName: "Test", lastName: "Åkare", email: "akare@movera.test", owner: true, car: { make: "Volvo", model: "V60", year: 2021, color: "Black", plate: "TST 001", categoryIds: ["economy", "comfort"] } },
-    { phone: "+46701740606", firstName: "Test", lastName: "Förare 2", email: "forare2@movera.test", car: { make: "Toyota", model: "Corolla", year: 2022, color: "White", plate: "TST 002", categoryIds: ["economy"] } },
-    { phone: "+46701740607", firstName: "Test", lastName: "Förare 3", email: "forare3@movera.test", car: { make: "Tesla", model: "Model 3", year: 2023, color: "Grey", plate: "TST 003", categoryIds: ["economy", "comfort", "electric"] } },
+    { phone: "+46701740605", firstName: "Test", lastName: "Åkare", email: "akare@movera.test", owner: true, car: { make: "Volvo", model: "V60", year: 2021, color: "Black", plate: "TST 001", categoryIds: TEST_DRIVER_CATEGORIES } },
+    { phone: "+46701740606", firstName: "Test", lastName: "Förare 2", email: "forare2@movera.test", car: { make: "Toyota", model: "Corolla", year: 2022, color: "White", plate: "TST 002", categoryIds: TEST_DRIVER_CATEGORIES } },
+    { phone: "+46701740607", firstName: "Test", lastName: "Förare 3", email: "forare3@movera.test", car: { make: "Tesla", model: "Model 3", year: 2023, color: "Grey", plate: "TST 003", categoryIds: TEST_DRIVER_CATEGORIES } },
   ],
   riders: [
     { phone: "+46701740608", firstName: "Test Resenär 1", email: "resenar1@movera.test" },
