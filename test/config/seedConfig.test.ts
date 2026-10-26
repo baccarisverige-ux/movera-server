@@ -53,7 +53,7 @@ describe("sample settings", () => {
     const nacka = await call(app, "POST", "/quotes", rider, { pickup: { address: "Nacka Forum", lat: 59.3072, lng: 18.164 }, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] });
     expect(nacka.json()).toMatchObject({ zoneId: "Z001" });
     // Inside a closed district box (Södertälje, Södermalm): still the open county zone, never "no service".
-    for (const pickup of [{ address: "Genetaleden 9, Södertälje", lat: 59.1954, lng: 17.6252 }, SODERMALM]) {
+    for (const pickup of [{ address: "Genetaleden 9, Södertälje", lat: 59.1954, lng: 17.6252 }, SODERMALM, { address: "Nynäshamn", lat: 58.9034, lng: 17.9479 }, { address: "Norrtälje", lat: 59.758, lng: 18.705 }]) {
       const res = await call(app, "POST", "/quotes", rider, { pickup, dropoff: NORRMALM, stops: [], categoryIds: ["economy"] });
       expect(res.statusCode).toBe(201);
       expect(res.json()).toMatchObject({ zoneId: "Z001" });
