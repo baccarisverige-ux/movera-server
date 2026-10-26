@@ -86,7 +86,24 @@ async function accepted() {
   return { tripId, quote, version: res.json().version as number };
 }
 
-const step = async (tripId: string, path: string, version: number, body: Record<string, unknown> = {}, who = drivers.A.headers) => call(app, "POST", `/trips/${tripId}/${path}`, who, { expectedVersion: version, ...body });
+const step = async (tripId: string, path: string, version: number, body: Record<string, unknown> = {}, who = drivers.A.headers) => {
+  // A finished trip was driven to the drop-off; what is paid when a driver completes before it is its own test.
+  // A fix carries the test clock and only a newer fix counts, so the clock ticks a second each way, and the
+  // driver is back where they were afterwards.
+  if (path === "complete" && body["location"] === undefined) {
+    const key = who === drivers.B.headers ? "B" : "A";
+    const before = await database.db.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", drivers[key].id).executeTakeFirst();
+    clock.now = new Date(clock.now.getTime() + 1000);
+    await moveTo(key, SODERMALM);
+    const res = await call(app, "POST", `/trips/${tripId}/${path}`, who, { expectedVersion: version, ...body });
+    if (before) {
+      clock.now = new Date(clock.now.getTime() + 1000);
+      await moveTo(key, { lat: Number(before.lat), lng: Number(before.lng) });
+    }
+    return res;
+  }
+  return call(app, "POST", `/trips/${tripId}/${path}`, who, { expectedVersion: version, ...body });
+};
 const riderView = async (tripId: string) => (await call(app, "GET", `/trips/${tripId}`, rider)).json();
 const lastEvent = async (tripId: string, kind: string) =>
   database.db.selectFrom("trip_events").selectAll().where("trip_id", "=", tripId).where("kind", "=", kind).orderBy("sequence", "desc").executeTakeFirstOrThrow();

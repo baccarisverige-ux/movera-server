@@ -46,6 +46,8 @@ export const NORMAL_PICKUP_METERS_PER_MIN = 400;
 export const CAME_CLOSER_SHARE = 0.5;
 /** "Arrived" is accepted within this distance of the pickup (the driver's latest fix). */
 export const ARRIVE_MAX_METERS = 300;
+/** A trip completed farther than this from the drop-off (the driver's latest fix) ended early: the rider pays what was driven. */
+export const COMPLETE_NEAR_DROPOFF_METERS = 300;
 
 const ONBOARD = ["rider_onboard", "in_trip", "approaching_dropoff"];
 
@@ -150,6 +152,14 @@ async function drivenFare(ex: Executor, trip: TripRow, now: Date): Promise<Fare>
     surgeMultiplier: Number(trip.surge_multiplier),
     endEarly: { kmDriven: km, minutesOnBoard: minutes, bookedFare: { amountMinor: booked, currency: trip.currency } },
   });
+}
+
+/** The driver's latest fix is farther than COMPLETE_NEAR_DROPOFF_METERS from the drop-off (no fix: not early). */
+async function endedBeforeDropoff(ex: Executor, trip: TripRow): Promise<boolean> {
+  if (!trip.driver_id) return false;
+  const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", trip.driver_id).executeTakeFirst();
+  if (!fix) return false;
+  return haversineKm(fix, trip.dropoff as Place) * 1000 > COMPLETE_NEAR_DROPOFF_METERS;
 }
 
 /** An admin sets the fare by hand: the driver's part keeps its share of the fare. */
@@ -534,8 +544,14 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   if (body.fare && body.fare.currency !== trip.currency) throw badRequest(`The fare is in ${trip.currency}.`, "currency_mismatch");
   expectVersion(trip, body.expectedVersion, who.actor);
   if (body.cashCollected && body.cashCollected.currency !== trip.currency) throw badRequest(`Cash is counted in ${trip.currency}.`, "currency_mismatch");
-  const fare = body.fare?.amountMinor ?? Number(trip.fare_minor);
-  const money = body.fare ? scaledFare(trip, fare) : {};
+  // Finished before the destination (owner decision 28, like the rider's early end): the rider pays for what was
+  // driven, never more than booked. An admin's fare is taken as given; at the drop-off the booked fare stands.
+  const early = body.fare === undefined && who.actor === "driver" && (await endedBeforeDropoff(trx, trip));
+  const measured = early ? await drivenFare(trx, trip, now) : null;
+  // Only when it is less than booked: at the cap the booked fare and its lines stand as they are.
+  const driven = measured !== null && measured.total.amountMinor < Number(trip.fare_minor) ? measured : null;
+  const fare = body.fare?.amountMinor ?? driven?.total.amountMinor ?? Number(trip.fare_minor);
+  const money = body.fare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : {};
   const wallet = await spendWallet(trx, trip, fare, now);
   const cash = body.cashCollected?.amountMinor ?? fare - wallet;
   const done = await applyCommand(trx, trip, {
