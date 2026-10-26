@@ -157,8 +157,8 @@ server (`POST /trips/{id}/rating` 201, `ratingStatus submitted`).
 
 ## PRs
 
-- movera-server: this document, `test/crossapp/` (`serve.mjs`, `run.mjs`, `README.md`) and an ESLint block for
+- movera-server (#19): this document, `test/crossapp/` (`serve.mjs`, `run.mjs`, `README.md`) and an ESLint block for
   those scripts. No server code changed: no server defect was found in this run.
-- Movera-driver-app: D-1, D-2.
-- movera-rider-app: R-1.
+- Movera-driver-app: D-1, D-2 — baccarisverige-ux/Movera-driver-app#387.
+- movera-rider-app: R-1 — baccarisverige-ux/movera-rider-app#423.
 - Admin-panel-movera-dispatch: no change (M1 is the known S1 feature gap).
