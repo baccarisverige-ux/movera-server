@@ -6,11 +6,11 @@ Base: `origin/main` @ 5e6edc7. Documentation only; no source, test or workflow c
 - [x] 1. Structure and architecture
 - [x] 2. Dependencies
 - [x] 3. CI
-- [ ] 4. Baseline run
+- [x] 4. Baseline run
 - [ ] 5. Coverage of critical logic
 - [x] 6. Route inventory
 - [x] 7. Code quality findings
-- [ ] 8. Known open issues and stale branches
+- [x] 8. Known open issues and stale branches
 - [ ] 9. Untested features and risks
 - [ ] 10. Summary table
 
@@ -240,3 +240,31 @@ Built by reading every `app.get/post/put/patch/delete` call (112 registrations, 
 - `admin/cli.ts:48-96` prints phones, fleet code and setup link to the operator's terminal (CLI, by design).
 
 **TODO/FIXME**: none (`grep -rnE "TODO|FIXME|XXX|HACK" src test` → 0).
+
+## 4. Baseline run
+
+Machine: cloud container, 4 CPUs, Node from the image, local Postgres 16 (`pg_ctlcluster 16 main start`), default `TEST_DATABASE_URL`. Commit 5e6edc7. Wall times measured with `date +%s` around each command.
+
+| Command | Result | Wall time |
+|---|---|---|
+| `npm ci` | pass | 9 s |
+| `npm run contract:verify` | pass ("contract ok") | 1 s |
+| `npm run typecheck` | pass, 0 errors | 13 s |
+| `npm test` run 1 | **fail**: 568/568 tests passed, 1 of 40 files failed (`test/drivers/onboarding.test.ts`: `afterAll` hook timed out in 10000 ms, line 66) | 131 s |
+| `npm test` run 2 | **fail**: 567/568 passed; 3 of 40 files failed — `test/db/tripLog.test.ts` "a rolled-back command leaves no event, no cursor bump and no notification" (expected 1 notification, got `[]`, line 128), and `afterAll` hook timeouts in `test/dispatch/runtime.test.ts:41` and `test/drivers/seedTest.test.ts:21` | 232 s |
+| `npm test` run 3 | pass: 568/568, 40/40 files | 292 s |
+| `npm run build` | pass | 36 s |
+
+CI on GitHub runs the same suite in about 2 minutes and was green on the last 10 runs (§3); the handoff's "568 tests" matches.
+
+**Flaky (seen failing, then passing, with no code change):**
+1. `afterAll` teardown hooks (`app.close()` + `database.drop()`) exceed vitest's default **`hookTimeout` of 10 s** — `vitest.config.ts` raises `testTimeout` to 20 s but not `hookTimeout`. Seen in onboarding.test.ts:66, dispatch/runtime.test.ts:41, seedTest.test.ts:21. Load-dependent (all files run in parallel against one Postgres; wall time varied 131–292 s).
+2. `test/db/tripLog.test.ts:128` waits a fixed `sleep(100)` for a LISTEN/NOTIFY delivery (lines 123-139); under load the notification arrives later. Timing-based assertion.
+
+Neither is a product defect as far as observed; both make CI results unreliable on a slow runner. S3.
+
+## 8. Known open issues and stale branches
+
+- Open issues: **0** (`gh api repos/…/issues?state=open`). Open PRs: **0**. PRs #1–#13 all merged.
+- Remote branches besides `main` and `audit/phase-1`: 13, each the head of a merged PR — `rider-nearby-vehicles` (#1), `driver-round-4` (#2), `empty-env` (#3), `driver-zones` (#4), `rider-on-the-way` (#5), `complete-early` (#6), `trip-driver-location` (#7), `trip-raise-price` (#8), `trip-chat` (#9), `test-week-categories-osrm` (#10), `zones-stockholm-paris` (#11), `zone-lookup-open-first` (#12), `zones-stockholm-south` (#13). `git cherry` shows no unmerged patches except on `driver-round-4` (7) and `rider-nearby-vehicles` (2), which were squash-merged (PR merged=true), so their content is in `main`. All 13 are stale and safe to delete (owner's call). Relevance: none open.
+- Known open items from the handoff that touch the server: N4 (raise after expiry — owner decision D4), rider first name on the waybill (Phase 0), `OSRM_URL` / `GOOGLE_MAPS_API_KEY` / Apple-Google client ids / SMS provider not configured on Render (owner). Render's actual environment NOT VERIFIED (no access).
