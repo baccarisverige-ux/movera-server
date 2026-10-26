@@ -2,7 +2,7 @@
 
 The Movera backend: one server for the **rider** and **driver** apps (Flutter) and the **admin** panel (React).
 It implements the shared contract in [`movera-contracts`](https://github.com/baccarisverige-ux/movera-contracts);
-`contracts/` here is a byte-for-byte copy of a tagged version (now **v0.5.2**).
+`contracts/` here is a byte-for-byte copy of a tagged version (now **v0.5.6**).
 
 Long-term server, built first for the real test week: Stockholm zones, 2–3 drivers and riders, cash only, push
 off, and test phone numbers that sign in with a fixed code instead of SMS (outside production only).

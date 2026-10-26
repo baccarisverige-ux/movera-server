@@ -60,6 +60,15 @@ describe("sample settings", () => {
     }
   });
 
+  it("takes a driver offline after 10 missed Exclusive offers in a row (owner decision 36, contract v0.5.6)", async () => {
+    const live = await database.db.selectFrom("config_live").select(["zone_id", "document"]).where("doc", "=", "driver_app_config").execute();
+    expect(live.length).toBeGreaterThan(0);
+    for (const row of live) {
+      const doc = row.document as { offers: { autoOffline: { missedExclusive: number } } };
+      expect(doc.offers.autoOffline.missedExclusive, row.zone_id).toBe(10);
+    }
+  });
+
   it("lets a rider get a price right away", async () => {
     const rider = (await signIn(app, "+46701740608", "rider")).headers;
     const quotes = await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] });
