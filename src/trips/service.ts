@@ -11,7 +11,7 @@ import { fixView } from "../drivers/service.js";
 import { haversineKm } from "../maps/routing.js";
 import { DISPATCH } from "../dispatch/engine.js";
 import { afterRiderCancel, riderCancelFee, riderFeeColumns } from "./ride.js";
-import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
+import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { tripProjection, type Viewer } from "./projection.js";
 
@@ -128,9 +128,7 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
 }
 
 export async function getTrip(ex: Executor, tripId: string, who: { actor: "rider" | "driver" | "admin"; subjectId: string }): Promise<Record<string, unknown>> {
-  const trip = await ex.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirst();
-  const own = trip !== undefined && (who.actor === "admin" || (who.actor === "rider" && trip.rider_id === who.subjectId) || (who.actor === "driver" && trip.driver_id === who.subjectId));
-  if (!own) throw new ApiError("not_found", "No such trip.", { reason: "trip_not_found" });
+  const trip = await readOwnTrip(ex, tripId, who);
   return withDriverPosition(ex, trip, tripProjection(trip, who.actor));
 }
 

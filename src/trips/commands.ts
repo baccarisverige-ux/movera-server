@@ -1,4 +1,4 @@
-import type { Trx } from "../db/db.js";
+import type { Executor, Trx } from "../db/db.js";
 import type { TripsTable } from "../db/schema.js";
 import { appendTripEvent, lockTrip, type TripRow } from "../db/tripLog.js";
 import { ApiError } from "../http/errors.js";
@@ -39,14 +39,26 @@ export async function applyCommand(
   return { ...updated, sequence: String(sequence) };
 }
 
+/** Is this trip the caller's own? The rider who booked it, the driver on it now; admins and the server see every trip. */
+export function ownsTrip(trip: Pick<TripRow, "rider_id" | "driver_id">, who: { actor: Actor; subjectId: string }): boolean {
+  return (
+    who.actor === "admin" || who.actor === "system" ||
+    (who.actor === "rider" && trip.rider_id === who.subjectId) ||
+    (who.actor === "driver" && trip.driver_id === who.subjectId)
+  );
+}
+
 /** Lock a trip the caller may act on. Another rider's or driver's trip is 404, as if it did not exist (§3). */
 export async function lockOwnTrip(trx: Trx, tripId: string, who: { actor: Actor; subjectId: string }): Promise<TripRow> {
   const trip = await lockTrip(trx, tripId);
-  const own =
-    who.actor === "admin" || who.actor === "system" ||
-    (who.actor === "rider" && trip.rider_id === who.subjectId) ||
-    (who.actor === "driver" && trip.driver_id === who.subjectId);
-  if (!own) throw new ApiError("not_found", "No such trip.", { reason: "trip_not_found" });
+  if (!ownsTrip(trip, who)) throw new ApiError("not_found", "No such trip.", { reason: "trip_not_found" });
+  return trip;
+}
+
+/** The same for a read, without the lock. */
+export async function readOwnTrip(ex: Executor, tripId: string, who: { actor: Actor; subjectId: string }): Promise<TripRow> {
+  const trip = await ex.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirst();
+  if (trip === undefined || !ownsTrip(trip, who)) throw new ApiError("not_found", "No such trip.", { reason: "trip_not_found" });
   return trip;
 }
 

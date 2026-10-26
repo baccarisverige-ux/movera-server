@@ -114,6 +114,11 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
 - `GET /trips/{tripId}/events` with `Accept: text/event-stream` is a live stream (`id:` = sequence, a heartbeat
   comment every 15 s); without it, the same path answers a JSON page. `?after=` or `Last-Event-ID` resumes.
 - `GET /rider/config/stream` and `/driver/config/stream` send `config_published`.
+- Trip chat: `POST /trips/{tripId}/messages { text }` (rider, driver; an admin writes as `support`) answers the
+  `Message` and sends it on the trip's stream as a `message` event, with the trip's `version` unchanged;
+  `GET /trips/{tripId}/messages?cursor&limit` pages the chat oldest first. Open from the moment a driver is on the
+  trip until an hour after it ended (`409 invalid_transition`, reason `chat_closed`, otherwise). The other side also
+  gets an in-app notice (`GET /notifications`, kind `trip_message`).
 - One LISTEN connection per instance wakes the streams; each stream reads the events itself, so nothing is
   skipped or repeated, and it reconnects on its own. Who may see a trip is checked again on every event.
 
