@@ -41,7 +41,7 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
   const now = () => deps.clock?.() ?? new Date();
   const idem = (request: FastifyRequest, who: Principal) => ({ actor: "admin" as const, subjectId: who.subjectId, key: keyOf(request), method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null });
-  const param = <K extends string>(request: FastifyRequest, name: K) => parseBody(z.object({ [name]: ID } as Record<K, typeof ID>), request.params)[name] as string;
+  const param = <K extends string>(request: FastifyRequest, name: K) => (parseBody(z.object({ [name]: ID } as Record<K, typeof ID>), request.params) as Record<string, string>)[name]!;
 
   /* ---- fleets */
   app.get(`${API_PREFIX}/admin/fleets`, async (request) => {

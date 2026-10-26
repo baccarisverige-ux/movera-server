@@ -20,7 +20,6 @@ let bo: Record<string, string>;
 let admin: { headers: Record<string, string>; adminId: string };
 let fleetId: string;
 let fleetCode: string;
-let ownerId: string;
 let annaId: string;
 let boId: string;
 
@@ -51,7 +50,7 @@ beforeAll(async () => {
   anna = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
   bo = (await signIn(app, TEST_PHONES[2]!, "driver")).headers;
   admin = await adminSession(app, database.db, "super", { now: clock.now });
-  ownerId = (await call(app, "POST", "/driver/onboarding", owner, details())).json().driverId;
+  await call(app, "POST", "/driver/onboarding", owner, details());
   annaId = (await call(app, "POST", "/driver/onboarding", anna, details({ firstName: "Anna", lastName: "Lind", email: "anna@example.se", accountType: "driver", company: undefined }))).json().driverId;
   boId = (await call(app, "POST", "/driver/onboarding", bo, details({ firstName: "Bo", lastName: "Ek", email: "bo@example.se", accountType: "driver", company: undefined, language: "en" }))).json().driverId;
   const fleet = (await call(app, "GET", "/driver/fleet", owner)).json().fleet;
