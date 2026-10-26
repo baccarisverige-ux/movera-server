@@ -10,6 +10,7 @@ import { parseBody } from "../http/validate.js";
 import { nearbyVehicles } from "../riders/nearby.js";
 import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
 import { tripProjection } from "./projection.js";
+import { listMessages, sendMessage } from "./messages.js";
 import { eventEnvelope } from "../realtime/events.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
@@ -35,6 +36,7 @@ const ListQuery = z.object({
   to: z.string().datetime().optional(),
 });
 const EventsQuery = z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(500).default(200) });
+const MessagesQuery = z.object({ cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
 const DefaultMethodBody = z.object({ method: z.string(), paymentMethodId: z.string().optional() });
 
 const keyOf = (request: FastifyRequest) => {
@@ -118,6 +120,22 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const items = rows.slice(0, query.limit).map((row) => eventEnvelope(row, viewer, serverTime));
     const last = items[items.length - 1];
     return { items, nextCursor: rows.length > query.limit && last ? String(last["sequence"]) : null };
+  });
+
+  // The trip chat (contract Message): both sides of the trip and admins (as support). Not a trip change: no
+  // expectedVersion, no version bump; the message goes out as a `message` event on the trip's stream.
+  app.get(`${API_PREFIX}/trips/:tripId/messages`, async (request) => {
+    const who = await authenticate(request, guard, ["rider", "driver", "admin"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    const query = parseBody(MessagesQuery, request.query);
+    return listMessages(deps.db, { actor: who.actor, subjectId: who.subjectId }, tripId, { limit: query.limit, ...(query.cursor ? { cursor: query.cursor } : {}) });
+  });
+
+  app.post(`${API_PREFIX}/trips/:tripId/messages`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider", "driver", "admin"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await sendMessage(trx, { actor: who.actor, subjectId: who.subjectId }, tripId, request.body ?? {}, now()) }));
+    return reply.status(result.status).send(result.body);
   });
 
   app.get(`${API_PREFIX}/rider/trips/active`, async (request, reply) => {

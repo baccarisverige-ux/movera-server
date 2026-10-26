@@ -587,6 +587,17 @@ export interface FleetInvitationsTable {
 }
 
 // contract Notification: in-app notices for riders and drivers (GET /notifications).
+export interface TripMessagesTable {
+  message_id: string;
+  trip_id: string;
+  /** The trip event (trip_events.sequence) that carried the message: the chat's order. bigint; pg returns a string. */
+  sequence: ColumnType<string, number | string, number | string>;
+  sender: "rider" | "driver" | "support";
+  sender_id: string;
+  text: string;
+  created_at: Timestamp;
+}
+
 export interface NotificationsTable {
   notification_id: string;
   audience: "rider" | "driver";
@@ -644,6 +655,7 @@ export interface Database {
   driver_locations: DriverLocationsTable;
   trips: TripsTable;
   trip_events: TripEventsTable;
+  trip_messages: TripMessagesTable;
   idempotency_keys: IdempotencyKeysTable;
   timers: TimersTable;
   test_phones: TestPhonesTable;
