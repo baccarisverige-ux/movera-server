@@ -35,6 +35,9 @@ Branch `audit/phase-2` (PR #17), based on `origin/main` 5e6edc7. Local machine: 
 - `checks`
 - `secret-scan`
 
+## CI evidence
+- Run 40355517193 on b88eef7: `checks` success (16:04:17–16:06:28 UTC, 2 m 11 s), `secret-scan` success; artifacts `coverage` and `gitleaks-results.sarif`. The first run (e53d103) failed secret-scan with a 403 when listing PR commits; fixed by giving that job `pull-requests: read`.
+
 ## Not done
 - Branch protection / required checks: not changed (D1, owner).
 - `keyOf`/`ID` dedup (see 4).
