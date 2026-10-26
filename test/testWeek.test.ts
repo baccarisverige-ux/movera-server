@@ -58,9 +58,21 @@ describe("test week at start", () => {
     await database.db.updateTable("drivers").set({ zone_ids: ["Z001"] }).where("phone", "=", "+46701740606").execute();
     const log = logger();
     await prepareTestWeek(database.db, env, log, { now });
-    expect(log.lines.map((l) => l.message)).toEqual(["test drivers registered in every open zone"]);
+    expect(log.lines.map((l) => l.message)).toEqual(["test drivers registered in every open zone and category"]);
     const zones = (await database.db.selectFrom("drivers").select("zone_ids").where("phone", "=", "+46701740606").executeTakeFirstOrThrow()).zone_ids;
     expect(zones).toContain("Z009");
+    const again = logger();
+    await prepareTestWeek(database.db, env, again, { now });
+    expect(again.lines).toEqual([]);
+  });
+
+  it("gives drivers seeded by an earlier server every category, once", async () => {
+    await database.db.updateTable("drivers").set({ category_ids: ["economy"] }).where("phone", "=", "+46701740606").execute();
+    const log = logger();
+    await prepareTestWeek(database.db, env, log, { now });
+    expect(log.lines.map((l) => l.message)).toEqual(["test drivers registered in every open zone and category"]);
+    const categories = (await database.db.selectFrom("drivers").select("category_ids").where("phone", "=", "+46701740606").executeTakeFirstOrThrow()).category_ids;
+    expect(categories).toEqual(expect.arrayContaining(["economy", "comfort", "premium", "priority", "xl", "electric", "pet", "child_seat"]));
     const again = logger();
     await prepareTestWeek(database.db, env, again, { now });
     expect(again.lines).toEqual([]);

@@ -44,3 +44,9 @@ appear next to the demos:
 
 `CORS_ORIGINS` (in `render.yaml`) lets these pages call the server. `ADMIN_PANEL_URL` makes the password link open
 the live admin.
+
+## 4. If the server was created from an older `render.yaml`
+
+Render applies new entries of `render.yaml` on a Blueprint sync (Dashboard → Blueprints → movera-server → **Manual
+Sync**), or add them by hand under the service's **Environment**: `OSRM_URL` = `https://router.project-osrm.org`
+(road routes on the maps; without it distances are estimated and the rider's map draws a straight line).
