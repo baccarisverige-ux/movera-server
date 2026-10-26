@@ -428,3 +428,31 @@ export async function fakeOsrm(route: { distance: number; duration: number }): P
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
+
+/** The rider books; the timers send the offers; the (first of the) `drivers` that got an offer accepts it. */
+export async function bookAndAccept(sim: Sim, rider: Rider, drivers: Driver | Driver[], options: Parameters<Rider["book"]>[0] = {}): Promise<{ tripId: string; quote: Json; accepted: Json; driver: Driver }> {
+  const { tripId, quote } = await rider.book(options);
+  await sim.tick();
+  for (const driver of Array.isArray(drivers) ? drivers : [drivers]) {
+    const offer = await driver.offerFor(tripId);
+    if (!offer) continue;
+    const res = await driver.accept(offer);
+    if (res.status !== 200) throw new Error(`accept ${res.status} ${JSON.stringify(res.body)}`);
+    return { tripId, quote, accepted: res.body, driver };
+  }
+  throw new Error(`none of the drivers got an offer for ${tripId}`);
+}
+
+/** Drives an accepted trip through the given steps (the driver app's buttons), moving the car where it must be. */
+export async function drive(driver: Driver, tripId: string, until: "driver_to_pickup" | "arrived" | "rider_onboard" | "in_trip", pickup: { lat: number; lng: number } = PLACES.sergels): Promise<Json> {
+  const steps = [["head-to-pickup", "driver_to_pickup"], ["arrive", "arrived"], ["board", "rider_onboard"], ["start", "in_trip"]] as const;
+  let last: Json = {};
+  for (const [path, status] of steps) {
+    if (path === "arrive") await driver.moveTo(pickup);
+    const res = await driver.command(tripId, path);
+    if (res.status !== 200) throw new Error(`${path} ${res.status} ${JSON.stringify(res.body)}`);
+    last = res.body;
+    if (status === until) break;
+  }
+  return last;
+}
