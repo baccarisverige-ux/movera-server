@@ -446,8 +446,10 @@ export async function bookAndAccept(sim: Sim, rider: Rider, drivers: Driver | Dr
 /** Drives an accepted trip through the given steps (the driver app's buttons), moving the car where it must be. */
 export async function drive(driver: Driver, tripId: string, until: "driver_to_pickup" | "arrived" | "rider_onboard" | "in_trip", pickup: { lat: number; lng: number } = PLACES.sergels): Promise<Json> {
   const steps = [["head-to-pickup", "driver_to_pickup"], ["arrive", "arrived"], ["board", "rider_onboard"], ["start", "in_trip"]] as const;
-  let last: Json = {};
-  for (const [path, status] of steps) {
+  let last: Json = await driver.trip(tripId);
+  // Steps already taken are skipped, so a test can drive on from where the trip is.
+  const done = steps.findIndex(([, status]) => status === last["status"]);
+  for (const [path, status] of steps.slice(done + 1)) {
     if (path === "arrive") await driver.moveTo(pickup);
     const res = await driver.command(tripId, path);
     if (res.status !== 200) throw new Error(`${path} ${res.status} ${JSON.stringify(res.body)}`);
