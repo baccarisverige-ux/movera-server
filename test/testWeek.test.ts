@@ -7,7 +7,7 @@ import { freshDatabase, type TestDatabase } from "./support/db.js";
 
 let database: TestDatabase;
 const now = new Date("2026-10-26T08:00:00Z");
-const env = readEnv({
+const envInput = {
   MOVERA_ENV: "staging",
   DATABASE_URL: "postgres://unused@localhost/x",
   JWT_SECRET: "test-week-secret".padEnd(48, "t"),
@@ -15,7 +15,8 @@ const env = readEnv({
   ADMIN_BOOTSTRAP_EMAIL: "Owner@Movera.test",
   ADMIN_BOOTSTRAP_NAME: "Owner",
   ADMIN_PANEL_URL: "https://owner.github.io/Admin-panel/live/",
-});
+};
+const env = readEnv(envInput);
 
 function logger() {
   const lines: { data: Record<string, unknown>; message: string }[] = [];
@@ -82,6 +83,28 @@ describe("test week at start", () => {
     const log = logger();
     await prepareTestWeek(database.db, env, log, { now: new Date(now.getTime() + 73 * 3600_000) });
     expect(log.lines.map((l) => l.message)).toEqual(["admin password link (open it to choose the password)"]);
+  });
+
+  it("forgot password (audit Phase 4, P4-4): ADMIN_PASSWORD_RESET writes one new link even though a password exists, once per value", async () => {
+    await database.db.updateTable("admins").set({ password_hash: "$argon2id$v=19$m=19456,t=2,p=1$placeholder$placeholder" }).execute();
+    const later = new Date(now.getTime() + 100 * 3600_000);
+    const quiet = logger();
+    await prepareTestWeek(database.db, env, quiet, { now: later });
+    expect(quiet.lines).toEqual([]);
+    const reset = readEnv({ ...envInput, ADMIN_PASSWORD_RESET: "2026-10-26 forgot" });
+    const log = logger();
+    await prepareTestWeek(database.db, reset, log, { now: later });
+    expect(log.lines.map((l) => l.message)).toEqual(["admin password reset link (open it to choose a new password)"]);
+    expect(String(log.lines[0]!.data["setupLink"])).toMatch(/^https:\/\/owner\.github\.io\/Admin-panel\/live\/setup-password#token=/);
+    // The server sleeps and wakes, or the link is used: the same value never makes another link.
+    await database.db.updateTable("admin_setup_links").set({ used_at: later }).execute();
+    const again = logger();
+    await prepareTestWeek(database.db, reset, again, { now: new Date(later.getTime() + 80 * 3600_000) });
+    expect(again.lines).toEqual([]);
+    // A new value is a new request.
+    const next = logger();
+    await prepareTestWeek(database.db, readEnv({ ...envInput, ADMIN_PASSWORD_RESET: "second" }), next, { now: later });
+    expect(next.lines.map((l) => l.message)).toEqual(["admin password reset link (open it to choose a new password)"]);
   });
 
   it("is refused in production", () => {

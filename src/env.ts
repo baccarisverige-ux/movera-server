@@ -77,6 +77,12 @@ const schema = z.object({
   /** Also for a host without a shell: this Super admin is made at start and its password link written to the log. */
   ADMIN_BOOTSTRAP_EMAIL: z.string().email().optional(),
   ADMIN_BOOTSTRAP_NAME: z.string().min(1).max(120).optional(),
+  /**
+   * Forgot password (audit Phase 4): any new text here makes one new password link for ADMIN_BOOTSTRAP_EMAIL at the
+   * next start, written to the log like the first one, even though a password exists. One link per value; remove it
+   * (or change it for another reset) afterwards. Staging and development only, like ADMIN_BOOTSTRAP_EMAIL.
+   */
+  ADMIN_PASSWORD_RESET: z.string().min(1).max(200).optional(),
   CORS_ORIGINS: z
     .string()
     .optional()

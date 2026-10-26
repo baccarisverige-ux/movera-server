@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createAdmin, createSetupLink } from "./admin/auth.js";
 import { seedSampleConfig } from "./config/seedConfig.js";
 import type { Db } from "./db/db.js";
@@ -25,7 +26,7 @@ async function testDriversMissSomething(db: Db | Parameters<typeof seedTestAccou
  */
 export async function prepareTestWeek(
   db: Db,
-  env: Pick<Env, "MOVERA_ENV" | "SEED_TEST_ON_START" | "ADMIN_BOOTSTRAP_EMAIL" | "ADMIN_BOOTSTRAP_NAME" | "ADMIN_PANEL_URL">,
+  env: Pick<Env, "MOVERA_ENV" | "SEED_TEST_ON_START" | "ADMIN_BOOTSTRAP_EMAIL" | "ADMIN_BOOTSTRAP_NAME" | "ADMIN_PANEL_URL"> & Partial<Pick<Env, "ADMIN_PASSWORD_RESET">>,
   log: Log,
   { accounts = DEFAULT_TEST_ACCOUNTS, now = new Date() }: { accounts?: TestAccounts; now?: Date } = {},
 ): Promise<void> {
@@ -59,6 +60,14 @@ export async function prepareTestWeek(
     if (admin.password_hash === null && openLink === undefined) {
       const link = await createSetupLink({ db, jwtSecret: "unused-by-links", panelUrl: env.ADMIN_PANEL_URL, clock: () => now }, adminId, "bootstrap");
       log.info({ adminId, created, expiresAt: link.expiresAt, setupLink: link.url }, "admin password link (open it to choose the password)");
+    } else if (env.ADMIN_PASSWORD_RESET !== undefined && admin.password_hash !== null) {
+      // Forgot password: one link per ADMIN_PASSWORD_RESET value (the value's hash marks the link that answered it).
+      const by = `reset:${createHash("sha256").update(env.ADMIN_PASSWORD_RESET).digest("hex").slice(0, 32)}`;
+      const answered = await db.selectFrom("admin_setup_links").select("admin_id").where("admin_id", "=", adminId).where("created_by", "=", by).executeTakeFirst();
+      if (answered === undefined) {
+        const link = await createSetupLink({ db, jwtSecret: "unused-by-links", panelUrl: env.ADMIN_PANEL_URL, clock: () => now }, adminId, by);
+        log.info({ adminId, expiresAt: link.expiresAt, setupLink: link.url }, "admin password reset link (open it to choose a new password)");
+      }
     }
   }
 }

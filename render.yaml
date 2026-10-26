@@ -34,6 +34,9 @@ services:
       # Your e-mail: the admin's password link appears in the service's Logs.
       - key: ADMIN_BOOTSTRAP_EMAIL
         sync: false
+      # Forgot password: set to any new text to get one new password link in Logs (docs/DEPLOY_RENDER.md).
+      - key: ADMIN_PASSWORD_RESET
+        sync: false
       # Address search; filled in Render's dashboard (never committed).
       - key: GOOGLE_MAPS_API_KEY
         sync: false
