@@ -1,4 +1,6 @@
-# Movera shared contract v0.5.3
+# Movera shared contract v0.5.4
+
+v0.5.4 (additive; X-Api-Version stays `0.5`): **the rider's "I'm on the way"** (§4): `POST /trips/{tripId}/on-the-way` (rider, while the trip is `accepted`, `driver_to_pickup` or `arrived`) raises the `rider_on_the_way` realtime event for the driver, with the current projection; no status or version change. The refund and payout additions the server already does move to v0.5.5.
 
 v0.5.3 (additive; X-Api-Version stays `0.5`): **driver sign-up and fleets** (§14, `contract.json#driverOnboarding`), owner decisions of 2026-10-25: after the phone sign-in (§8) the driver app sends its details once (`POST /driver/onboarding`: name, date of birth, e-mail, country, city, language, account type `driver` | `fleet`, the company for a fleet, an optional fleet join) and the account waits `on_hold` until an admin activates it; fleets (`Fleet`, `FleetView`, `FleetInvitation`, `GET /driver/fleet`, `POST /driver/fleet/join|leave|invite`, `GET /driver/fleet/invitations`, `POST /driver/fleet/invitations/{invitationId}/accept|decline|cancel`, `POST /driver/fleet/drivers/{driverId}/remove`, `GET /driver/fleet/earnings`; admin `GET /admin/fleets`, `GET /admin/fleets/{fleetId}`, `POST /admin/fleets/{fleetId}/review|code`, `POST /admin/fleets/{fleetId}/invitations/{invitationId}/accept|cancel`, `POST /admin/fleets/{fleetId}/drivers/{driverId}/remove`) joined by a two-sided invitation (the driver asks with a server-made code plus the owner's name and e-mail, or the owner invites a phone number; the other side accepts; 7 days; in-app notice and one SMS); fleet-owned cars picked by one driver at a time (`Vehicle.fleetId`, `driverId`, `inUse`); the documents each country and account type needs (`contract.json#driverOnboarding.documents`, `Driver.requiredDocuments`, `requiredFleetDocuments`, `Vehicle.requiredDocuments`), uploaded to the server and read back only through `GET /driver/documents/{documentId}/file` and `GET /admin/documents/{documentId}/file`; `GET /admin/drivers/{driverId}`; `Driver` gains `accountType`, `pendingFleetInvitations`, `lastName`, `dateOfBirth`, `email`, `country`, `cityId`, `language`, `termsAcceptedAt`, `fleet`, `payoutTo`; `Document` gains `fileName`, `mediaType`, `uploadedAt`, `reviewedAt`. Tunisia is listed but not open. The refund and payout additions the server already does move to v0.5.4.
 
@@ -268,6 +270,7 @@ Envelope (`contract.json#realtime`): `eventId, tripId, sequence, version, kind, 
 - `sequence` is **server-assigned**, contiguous per trip. Clients never number events.
 - Gate (same in all apps; cases in `fixtures/events.json`): invalid if `sequence < 1` or blank `tripId`; duplicate if `eventId` seen or `sequence ≤ last`; gap → accept and resync; after a terminal status only `payment_updated`, `rating_updated`, `message` pass; `location` never replaces the projection.
 - Kinds: `trip_projection, rider_cancelled, driver_cancelled, location, driver_arrived, rider_on_the_way, payment_updated, rating_updated, message`.
+- `rider_on_the_way` is raised by the rider's `POST /trips/{tripId}/on-the-way` (v0.5.4); the other kinds come from the server's own commands and changes.
 - Transport: `GET /trips/{tripId}/events` (SSE or WebSocket), replay with `?after={sequence}`. Fallback: poll `GET /trips/{tripId}` (projection carries `sequence`).
 - Driver offer feed: `GET /driver/offers/stream` with `offer_created`, `offer_updated`, `offer_withdrawn` (status `claimed_elsewhere | expired | withdrawn`), each with a per-driver `sequence` for replay (`?after=`). A driver decline (`POST /offers/{id}/decline`) makes the system run `offer_lapsed`.
 - Config: `config_published` on `/rider/config/stream` and `/driver/config/stream`; apps then re-fetch the config document.
@@ -494,6 +497,8 @@ v0.5.1: maps `POST /locations/autocomplete`, `/locations/geocode`, `/locations/r
 v0.5.2: rider `GET /rider/nearby-vehicles?lat&lng` (§13).
 
 v0.5.3: driver `POST /driver/onboarding`, `GET /driver/fleet`, `POST /driver/fleet/join|leave|invite`, `GET /driver/fleet/invitations`, `POST /driver/fleet/invitations/{invitationId}/accept|decline|cancel`, `POST /driver/fleet/drivers/{id}/remove`, `GET /driver/fleet/earnings`, `GET /driver/documents/{id}/file`; admin `GET /admin/fleets`, `GET /admin/fleets/{id}`, `POST /admin/fleets/{id}/review|code`, `POST /admin/fleets/{id}/invitations/{invitationId}/accept|cancel`, `POST /admin/fleets/{id}/drivers/{driverId}/remove`, `GET /admin/drivers/{id}`, `GET /admin/documents/{id}/file` (§14).
+
+v0.5.4: rider `POST /trips/{tripId}/on-the-way`.
 
 Auth (all apps): bearer token; actor and scope come from the token, never from the body.
 
