@@ -36,6 +36,10 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
   const owner = accounts.drivers.find((d) => d.owner);
   if (owner === undefined) throw new Error("The test fleet needs one driver marked owner");
   const driverIds = new Map<string, string>();
+  // The testers drive in every open zone (a trip is offered only to drivers of its pickup zone), the fleet's
+  // own zone first.
+  const openZones = (await trx.selectFrom("zones").select("zone_id").where("open", "=", true).orderBy("zone_id").execute()).map((z) => z.zone_id);
+  const zoneIds = [accounts.fleet.zoneId, ...openZones.filter((z) => z !== accounts.fleet.zoneId)];
   // Drivers first (the fleet references its owner).
   for (const d of accounts.drivers) {
     const existing = await trx.selectFrom("drivers").select(["driver_id", "version"]).where("phone", "=", d.phone).executeTakeFirst();
@@ -54,7 +58,7 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
         account_type: d.owner ? "fleet" : "driver",
         terms_accepted_at: now,
         account_status: "active",
-        zone_ids: [accounts.fleet.zoneId],
+        zone_ids: zoneIds,
         category_ids: d.car.categoryIds,
         version: (existing?.version ?? 1) + 1,
         updated_at: now,

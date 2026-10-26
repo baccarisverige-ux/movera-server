@@ -54,6 +54,18 @@ describe("test week at start", () => {
     expect((await database.db.selectFrom("admin_setup_links").selectAll().execute()).length).toBe(1);
   });
 
+  it("gives drivers seeded by an earlier server every open zone, once", async () => {
+    await database.db.updateTable("drivers").set({ zone_ids: ["Z001"] }).where("phone", "=", "+46701740606").execute();
+    const log = logger();
+    await prepareTestWeek(database.db, env, log, { now });
+    expect(log.lines.map((l) => l.message)).toEqual(["test drivers registered in every open zone"]);
+    const zones = (await database.db.selectFrom("drivers").select("zone_ids").where("phone", "=", "+46701740606").executeTakeFirstOrThrow()).zone_ids;
+    expect(zones).toContain("Z009");
+    const again = logger();
+    await prepareTestWeek(database.db, env, again, { now });
+    expect(again.lines).toEqual([]);
+  });
+
   it("writes a new link once the old one has expired and no password was chosen", async () => {
     const log = logger();
     await prepareTestWeek(database.db, env, log, { now: new Date(now.getTime() + 73 * 3600_000) });
