@@ -73,5 +73,7 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   }
   // The rider's latest waiting step, while searching or offered, and the busy message on an expired trip (§3.6).
   if (viewer !== "driver" && row.search_step && ["searching", "offered", "expired"].includes(row.status)) projection["searchStep"] = row.search_step;
+  // Admins only: the driver sent no position for 30 minutes with the rider on board (owner decision 2026-10-26).
+  if (viewer === "admin" && row.driver_silent_alert) projection["driverSilentAlert"] = row.driver_silent_alert;
   return projection;
 }

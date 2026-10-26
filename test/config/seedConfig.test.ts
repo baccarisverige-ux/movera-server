@@ -60,7 +60,7 @@ describe("sample settings", () => {
     }
   });
 
-  it("takes a driver offline after 10 missed Exclusive offers in a row (owner decision 35, contract v0.5.6)", async () => {
+  it("takes a driver offline after 10 missed Exclusive offers in a row (owner decision 36, contract v0.5.6)", async () => {
     const live = await database.db.selectFrom("config_live").select(["zone_id", "document"]).where("doc", "=", "driver_app_config").execute();
     expect(live.length).toBeGreaterThan(0);
     for (const row of live) {

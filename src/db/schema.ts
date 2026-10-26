@@ -168,6 +168,8 @@ export interface TripsTable {
   quote_expires_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   notes: ColumnType<string | null, string | null | undefined, string | null>;
   search_step: ColumnType<unknown, string | null | undefined, string | null>;
+  /** The admin alert for a driver silent on board (owner decision 2026-10-26); see trips/ride.ts. */
+  driver_silent_alert: ColumnType<unknown, string | null | undefined, string | null>;
   driver_summary: ColumnType<unknown, string | null | undefined, string | null>;
   arrived_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   boarded_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
