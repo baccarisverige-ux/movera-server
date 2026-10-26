@@ -13,7 +13,7 @@ import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
 import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
-import { nextStatus } from "../rules/transitions.js";
+import { nextStatus, RIDER_ONBOARD, type TripStatus } from "../rules/transitions.js";
 import { tripProjection } from "./projection.js";
 
 /**
@@ -326,7 +326,10 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     if (charged > 0 && trip.status === "arrived") Object.assign(set, fareColumns(trip, await fareWithWaiting(trx, trip, charged)));
     // The wallet pays first: the driver sees the cash to collect from boarding on.
     set.wallet_applied_minor = await walletCovers(trx, trip.rider_id, Number(set.fare_minor ?? trip.fare_minor));
-    return applyCommand(trx, trip, { command, actor: "driver", now, set });
+    const boarded = await applyCommand(trx, trip, { command, actor: "driver", now, set });
+    // From now on the server watches for the driver going silent (owner decision 2026-10-26).
+    await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: tripId, dueAt: new Date(now.getTime() + SILENT_ALERT_MS), payload: {} });
+    return boarded;
   }
   if (command === "start_trip") return applyCommand(trx, trip, { command, actor: "driver", now, set: { started_at: now } });
   return applyCommand(trx, trip, { command, actor: "driver", now });
@@ -345,6 +348,104 @@ export const nearDropoffHandler: TimerHandler = async (trx, timer) => {
   if (!trip || trip.status !== "in_trip") return;
   await applyCommand(trx, trip, { command: "near_dropoff", actor: "system", now: timer.firedAt });
 };
+
+/* ---------------------------------------------------------------- the driver goes silent on board */
+
+/**
+ * Owner decision 2026-10-26: a driver's phone dies or the app breaks with the rider on board, and nobody presses
+ * Finish. Without this the trip stays open for good: the rider cannot book (trips_one_live_per_rider) and the
+ * driver gets no offers (trips_one_active_per_driver, on_trip).
+ *   no driver position for 30 min → an alert for admins (TripProjection.driverSilentAlert, admin view only);
+ *   still none after 3 h            → the server fails the trip (system `fail`), no charge, both are free again.
+ * Silence counts from the driver's latest position as the server received it (driver_locations.received_at), or
+ * from boarding when that is later. Before pickup nothing happens: the rider cancels and books again.
+ * One durable timer per trip, booked at `board`; each check books the next one.
+ */
+export const DRIVER_SILENCE = "driver_silence";
+export const SILENT_ALERT_MS = 30 * 60_000;
+export const SILENT_FAIL_MS = 3 * 3600_000;
+/** While the alert is up the server looks again this often: it goes when positions come back. */
+export const SILENT_RECHECK_MS = 5 * 60_000;
+
+type SilentAlert = { kind: "driver_silent"; silentSince: string; lastFixAt: string | null; at: string; autoFailAt: string };
+
+/** Puts the alert on the trip (or takes it off) without a version change, like a search step (§3.6). */
+async function showSilentAlert(trx: Trx, trip: TripRow, alert: SilentAlert | null, now: Date) {
+  await trx.updateTable("trips").set({ driver_silent_alert: alert === null ? null : JSON.stringify(alert) }).where("trip_id", "=", trip.trip_id).execute();
+  const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+  await appendTripEvent(trx, { tripId: trip.trip_id, kind: "trip_projection", version: updated.version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence: Number(updated.sequence) + 1 }) });
+}
+
+/**
+ * The trip fails with no charge: no fare, no driver earnings, nothing captured (payment_status stays empty), the
+ * wallet untouched. An owed fee the trip carried stays owed (§3.7). The booked price stays on the quote.
+ */
+async function failSilentTrip(trx: Trx, trip: TripRow, alert: SilentAlert, now: Date): Promise<TripRow> {
+  const cancellation = { actor: "system", reasonCode: "system_error", at: now.toISOString(), fee: null };
+  const failed = await applyCommand(trx, trip, {
+    command: "fail",
+    actor: "system",
+    now,
+    set: {
+      fare_minor: 0,
+      fare_lines: JSON.stringify([]),
+      driver_earnings_minor: 0,
+      pickup_pay_minor: 0,
+      commission_minor: 0,
+      wallet_applied_minor: 0,
+      cash_collected_minor: 0,
+      payment_status: null,
+      cancellation: JSON.stringify(cancellation),
+      ended_by_command: "fail",
+      ended_at: now,
+      driver_silent_alert: JSON.stringify(alert),
+    },
+  });
+  await releaseDriver(trx, trip.driver_id, now);
+  return failed;
+}
+
+export const driverSilenceHandler: TimerHandler = async (trx, timer) => {
+  const now = timer.firedAt;
+  const trip = await lockTripNow(trx, timer.refId);
+  if (!trip || !RIDER_ONBOARD.has(trip.status as TripStatus)) return;
+  const fix = trip.driver_id ? await trx.selectFrom("driver_locations").select("received_at").where("driver_id", "=", trip.driver_id).executeTakeFirst() : undefined;
+  const lastFixAt = fix?.received_at ?? null;
+  const since = new Date(Math.max(lastFixAt?.getTime() ?? 0, (trip.boarded_at ?? trip.updated_at).getTime()));
+  const silentMs = now.getTime() - since.getTime();
+  const shown = trip.driver_silent_alert as SilentAlert | null;
+  const next = (at: number) => scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: trip.trip_id, dueAt: new Date(at), payload: {} });
+  if (silentMs < SILENT_ALERT_MS) {
+    // The driver is there (again): no alert, look again 30 minutes after the latest position.
+    if (shown) await showSilentAlert(trx, trip, null, now);
+    await next(since.getTime() + SILENT_ALERT_MS);
+    return;
+  }
+  const alert: SilentAlert = {
+    kind: "driver_silent",
+    silentSince: since.toISOString(),
+    lastFixAt: lastFixAt?.toISOString() ?? null,
+    at: shown && shown.silentSince === since.toISOString() ? shown.at : now.toISOString(),
+    autoFailAt: new Date(since.getTime() + SILENT_FAIL_MS).toISOString(),
+  };
+  if (silentMs >= SILENT_FAIL_MS) {
+    await failSilentTrip(trx, trip, alert, now);
+    return;
+  }
+  if (!shown || shown.silentSince !== alert.silentSince) await showSilentAlert(trx, trip, alert, now);
+  await next(Math.min(since.getTime() + SILENT_FAIL_MS, now.getTime() + SILENT_RECHECK_MS));
+};
+
+/** Books a silence check for every trip with the rider on board that has none (trips boarded before the check existed). */
+export async function bookSilenceChecks(ex: Executor, now: Date): Promise<void> {
+  const onboard = await ex.selectFrom("trips").select("trip_id").where("status", "in", [...RIDER_ONBOARD]).execute();
+  if (onboard.length === 0) return;
+  await ex
+    .insertInto("timers")
+    .values(onboard.map((t) => ({ kind: DRIVER_SILENCE, ref_id: t.trip_id, due_at: now })))
+    .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
+    .execute();
+}
 
 /* ---------------------------------------------------------------- no-show */
 
@@ -655,5 +756,5 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
   return { driverId, period: input.period, timeZone: tz, periods };
 }
 
-export const rideHandlers: Record<string, TimerHandler> = { [NEAR_DROPOFF]: nearDropoffHandler };
+export const rideHandlers: Record<string, TimerHandler> = { [NEAR_DROPOFF]: nearDropoffHandler, [DRIVER_SILENCE]: driverSilenceHandler };
 export type { Who };
