@@ -60,8 +60,10 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
     const session = sessions.get(who.subjectId) ?? randomUUID();
     sessions.set(who.subjectId, session);
     const bias = body.latitude !== undefined && body.longitude !== undefined ? { lat: body.latitude, lng: body.longitude } : undefined;
+    // Suggestions come from the countries with an open zone (Sweden, and France since the Paris zone).
+    const regions = (await deps.db.selectFrom("zones").select("country").distinct().where("open", "=", true).execute()).map((z) => z.country.toLowerCase());
     const suggestions = await guarded(() =>
-      deps.places.autocomplete({ query: body.query.trim(), ...(bias ? { bias } : {}), limit: Math.min(body.limit ?? 8, 8), language: "sv", session }),
+      deps.places.autocomplete({ query: body.query.trim(), ...(bias ? { bias } : {}), limit: Math.min(body.limit ?? 8, 8), language: "sv", session, regions }),
     );
     return { suggestions };
   });

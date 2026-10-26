@@ -17,7 +17,8 @@ const fixedRouter: Router = { route: async (_points: LatLng[]) => ({ distanceMet
 
 const NORRMALM = { address: "Sergels torg", lat: 59.3326, lng: 18.0649 };
 const SODERMALM = { address: "Medborgarplatsen", lat: 59.3143, lng: 18.0735 };
-const BROMMA = { lat: 59.32, lng: 17.95 };
+const MALMO = { lat: 55.605, lng: 13.0 };
+const PARIS = { address: "Place de la Concorde", lat: 48.8656, lng: 2.3212 };
 const GOTHENBURG = { lat: 57.7089, lng: 11.9746 };
 
 let keys = 0;
@@ -76,7 +77,7 @@ describe("POST /quotes", () => {
   });
 
   it("a pickup outside the open zones is 403 service_not_available", async () => {
-    for (const pickup of [BROMMA, GOTHENBURG]) {
+    for (const pickup of [GOTHENBURG, MALMO]) {
       const res = await quote({ pickup, dropoff: SODERMALM, stops: [] });
       expect(res.statusCode).toBe(403);
       expect(res.json()).toMatchObject({ code: "forbidden", reason: "service_not_available" });
@@ -84,7 +85,8 @@ describe("POST /quotes", () => {
   });
 
   it("an open zone without published prices is 503 pricing_not_published", async () => {
-    const res = await quote({ pickup: SODERMALM, dropoff: NORRMALM, stops: [] });
+    // Paris is open (migration 0014) and this test publishes prices for Stockholm only.
+    const res = await quote({ pickup: PARIS, dropoff: { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 }, stops: [] });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ code: "unavailable", reason: "pricing_not_published", retryable: true });
   });

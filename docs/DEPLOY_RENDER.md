@@ -45,6 +45,13 @@ appear next to the demos:
 `CORS_ORIGINS` (in `render.yaml`) lets these pages call the server. `ADMIN_PANEL_URL` makes the password link open
 the live admin.
 
+## Zones in the test week
+
+Two open zones (migration 0014): **Z001 Stockholm län**, the whole county as one dispatch area, in kronor, and
+**FR-PC Paris** with the inner suburbs, in euro. The sample prices of Paris are the Swedish ones converted
+(1 kr ≈ 0,09 €) until the admin sets real ones in the panel. The old district zones (Norrmalm, Södermalm, …) are
+closed. Address search suggests places in Sweden and France.
+
 ## 4. If the server was created from an older `render.yaml`
 
 Render applies new entries of `render.yaml` on a Blueprint sync (Dashboard → Blueprints → movera-server → **Manual

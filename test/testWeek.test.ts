@@ -60,7 +60,7 @@ describe("test week at start", () => {
     await prepareTestWeek(database.db, env, log, { now });
     expect(log.lines.map((l) => l.message)).toEqual(["test drivers registered in every open zone and category"]);
     const zones = (await database.db.selectFrom("drivers").select("zone_ids").where("phone", "=", "+46701740606").executeTakeFirstOrThrow()).zone_ids;
-    expect(zones).toContain("Z009");
+    expect(zones).toContain("FR-PC");
     const again = logger();
     await prepareTestWeek(database.db, env, again, { now });
     expect(again.lines).toEqual([]);
