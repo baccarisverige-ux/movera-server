@@ -103,7 +103,24 @@ async function accepted() {
   return { tripId, quote, version: res.json().version as number };
 }
 
-const step = async (tripId: string, path: string, version: number, body: Record<string, unknown> = {}, who = drivers.A.headers) => call(app, "POST", `/trips/${tripId}/${path}`, who, { expectedVersion: version, ...body });
+const step = async (tripId: string, path: string, version: number, body: Record<string, unknown> = {}, who = drivers.A.headers) => {
+  // A finished trip was driven to the drop-off; what is paid when a driver completes before it is its own test.
+  // A fix carries the test clock and only a newer fix counts, so the clock ticks a second each way, and the
+  // driver is back where they were afterwards.
+  if (path === "complete" && body["location"] === undefined) {
+    const key = who === drivers.B.headers ? "B" : "A";
+    const before = await database.db.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", drivers[key].id).executeTakeFirst();
+    clock.now = new Date(clock.now.getTime() + 1000);
+    await moveTo(key, SODERMALM);
+    const res = await call(app, "POST", `/trips/${tripId}/${path}`, who, { expectedVersion: version, ...body });
+    if (before) {
+      clock.now = new Date(clock.now.getTime() + 1000);
+      await moveTo(key, { lat: Number(before.lat), lng: Number(before.lng) });
+    }
+    return res;
+  }
+  return call(app, "POST", `/trips/${tripId}/${path}`, who, { expectedVersion: version, ...body });
+};
 const riderView = async (tripId: string) => (await call(app, "GET", `/trips/${tripId}`, rider)).json();
 const driverRow = (key: "A" | "B") => database.db.selectFrom("drivers").selectAll().where("driver_id", "=", drivers[key].id).executeTakeFirstOrThrow();
 const entries = (tripId: string) => database.db.selectFrom("earnings_entries").select(["kind", "amount_minor", "gross_minor", "commission_minor", "cash_minor"]).where("trip_id", "=", tripId).orderBy("kind").execute();
@@ -150,6 +167,37 @@ describe("the rider's \"I'm on the way\" (contract v0.5.4)", () => {
     expect(events[events.length - 1]).toMatchObject({ kind: "rider_on_the_way", version: arrived.json().version, projection: { status: "arrived" } });
     // The driver's commands still send the same expectedVersion.
     expect((await step(a.tripId, "board", arrived.json().version)).json().status).toBe("rider_onboard");
+  });
+});
+
+describe("completed before the destination (owner decision 28)", () => {
+  it("the rider pays for what was driven, never more than booked; at the drop-off the booked fare stands", async () => {
+    // Ended 2 km short of the drop-off, a few minutes after boarding.
+    const total = (p: Record<string, any>) => Number((p.fare?.total ?? p.fare)?.amountMinor);
+    const lines = (p: Record<string, any>) => ((p.fareLines ?? p.fare?.fareLines ?? []) as { code: string }[]).map((l) => l.code);
+    const a = await accepted();
+    const booked = total(await riderView(a.tripId));
+    const { version } = await toBoard(a.tripId, a.version, 0);
+    await step(a.tripId, "start", version);
+    await advance(180);
+    await moveTo("A", { lat: 59.3300, lng: 18.0660 });
+    const early = await call(app, "POST", `/trips/${a.tripId}/complete`, drivers.A.headers, { expectedVersion: version + 1 });
+    expect(early.statusCode).toBe(200);
+    const paid = early.json();
+    expect(paid.status).toBe("completed");
+    expect(total(paid)).toBeLessThan(booked);
+    expect(lines(paid)).toContain("minimum_adjust");
+    expect((await database.db.selectFrom("trips").select("cash_collected_minor").where("trip_id", "=", a.tripId).executeTakeFirstOrThrow()).cash_collected_minor).toBe(String(total(paid)));
+    expect(total(await riderView(a.tripId))).toBe(total(paid));
+
+    // At the drop-off: the booked fare and its lines, untouched.
+    const b = await accepted();
+    const bookedB = total(await riderView(b.tripId));
+    const boardedB = await toBoard(b.tripId, b.version, 0);
+    await step(b.tripId, "start", boardedB.version);
+    const done = await step(b.tripId, "complete", boardedB.version + 1);
+    expect(total(done.json())).toBe(bookedB);
+    expect(lines(done.json())).not.toContain("minimum_adjust");
   });
 });
 
