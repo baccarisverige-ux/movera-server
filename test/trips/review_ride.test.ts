@@ -255,3 +255,78 @@ describe("the driver's position for the rider (TripProjection.driverLocation, et
     expect(await riderView(tripId)).not.toHaveProperty("driverLocation");
   });
 });
+
+describe("raise the offer while searching (contract v0.5.5, owner decision 25)", () => {
+  async function declinedByA() {
+    await database.db.deleteFrom("offers").where("status", "!=", "open").execute();
+    await database.db.updateTable("drivers").set({ last_free_at: clock.now, rating_sum: 0, rating_count: 0 }).execute();
+    for (const key of ["A", "B"] as const) await moveTo(key, SPOTS[key]);
+    const { tripId } = await book();
+    const [offer] = (await call(app, "GET", "/driver/offers", drivers.A.headers)).json().items;
+    expect(offer?.tripId).toBe(tripId);
+    expect((await call(app, "POST", `/offers/${offer.offerId}/decline`, drivers.A.headers, { expectedVersion: offer.version, reasonCode: "too_far" })).statusCode).toBe(200);
+    return { tripId, offer };
+  }
+  const openOffers = (tripId: string) => database.db.selectFrom("offers").select(["offer_id", "driver_id", "fare_minor", "driver_earnings_minor", "version"]).where("trip_id", "=", tripId).where("status", "=", "open").execute();
+
+  it("B1 the fare grows by the raise, the whole raise goes to the driver, and the driver who declined is asked again at the new price", async () => {
+    const { tripId, offer } = await declinedByA();
+    const before = await riderView(tripId);
+    const raised = await call(app, "POST", `/trips/${tripId}/raise-price`, rider, { expectedVersion: before.version, increase: { amountMinor: 20000, currency: "SEK" } });
+    expect(raised.statusCode).toBe(200);
+    expect(raised.json()).toMatchObject({ status: "searching", version: before.version + 1, fare: { amountMinor: before.fare.amountMinor + 20000, currency: "SEK" } });
+    expect(raised.json().fareLines.at(-1)).toEqual({ code: "rider_raise", amount: { amountMinor: 20000, currency: "SEK" } });
+    expect(raised.json()).not.toHaveProperty("driverEarnings");
+    // The quote stays what was quoted; the rider's fare says what they offer now.
+    expect(raised.json().quote.total.amountMinor).toBe(before.fare.amountMinor);
+    // The new search offers the new price; a driver who said no to the old one is asked again (A's refusal
+    // lowers A's score, so B may be first now).
+    await worker.runDue();
+    let open = await openOffers(tripId);
+    expect(open).toHaveLength(1);
+    if (open[0]!.driver_id !== drivers.A.id) {
+      const [b] = (await call(app, "GET", "/driver/offers", drivers.B.headers)).json().items;
+      expect(b.fare.amountMinor).toBe(offer.fare.amountMinor + 20000);
+      await call(app, "POST", `/offers/${b.offerId}/decline`, drivers.B.headers, { expectedVersion: b.version, reasonCode: "too_far" });
+      await worker.runDue();
+      open = await openOffers(tripId);
+    }
+    expect(open).toHaveLength(1);
+    expect(open[0]!.driver_id).toBe(drivers.A.id);
+    expect(open[0]!.offer_id).not.toBe(offer.offerId);
+    const [again] = (await call(app, "GET", "/driver/offers", drivers.A.headers)).json().items;
+    expect(again.tripId).toBe(tripId);
+    expect(again.fare.amountMinor).toBe(offer.fare.amountMinor + 20000);
+    expect(again.driverEarnings.amountMinor).toBe(offer.driverEarnings.amountMinor + 20000);
+    // The same key raises once.
+    const key = "raise-once-key-000001";
+    // The trip is `offered` now (a later version): a raise is allowed there too.
+    const current = await riderView(tripId);
+    expect(current.status).toBe("offered");
+    const first = await call(app, "POST", `/trips/${tripId}/raise-price`, rider, { expectedVersion: current.version, increase: { amountMinor: 1000, currency: "SEK" } }, key);
+    const twice = await call(app, "POST", `/trips/${tripId}/raise-price`, rider, { expectedVersion: current.version, increase: { amountMinor: 1000, currency: "SEK" } }, key);
+    expect(first.statusCode).toBe(200);
+    expect(twice.json()).toEqual(first.json());
+    expect((await riderView(tripId)).fare.amountMinor).toBe(before.fare.amountMinor + 21000);
+    // The offer at the first raise is gone; the next round carries the second.
+    expect(await openOffers(tripId)).toHaveLength(0);
+  });
+
+  it("B2 a stale version, another currency, nothing, too much, another rider, or a trip with a driver are refused", async () => {
+    const { tripId } = await declinedByA();
+    const { version, fare } = await riderView(tripId);
+    expect((await call(app, "POST", `/trips/${tripId}/raise-price`, rider, { expectedVersion: version - 1, increase: { amountMinor: 1000, currency: "SEK" } })).json().code).toBe("version_mismatch");
+    expect((await call(app, "POST", `/trips/${tripId}/raise-price`, rider, { expectedVersion: version, increase: { amountMinor: 1000, currency: "EUR" } })).json()).toMatchObject({ code: "invalid_request", reason: "currency_mismatch" });
+    expect((await call(app, "POST", `/trips/${tripId}/raise-price`, rider, { expectedVersion: version, increase: { amountMinor: 0, currency: "SEK" } })).json()).toMatchObject({ code: "invalid_request" });
+    expect((await call(app, "POST", `/trips/${tripId}/raise-price`, rider, { expectedVersion: version, increase: { amountMinor: fare.amountMinor + 100, currency: "SEK" } })).json()).toMatchObject({ code: "invalid_request", reason: "raise_too_high" });
+    const other = (await signIn(app, TEST_PHONES[3]!, "rider")).headers;
+    expect((await call(app, "POST", `/trips/${tripId}/raise-price`, other, { expectedVersion: version, increase: { amountMinor: 1000, currency: "SEK" } })).statusCode).toBe(404);
+    expect((await riderView(tripId)).version).toBe(version);
+    // Once a driver has it, the price is settled.
+    expect((await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: version, reasonCode: "plans_changed" })).statusCode).toBe(200);
+    const { tripId: taken, version: v } = await accepted();
+    const late = await call(app, "POST", `/trips/${taken}/raise-price`, rider, { expectedVersion: v, increase: { amountMinor: 1000, currency: "SEK" } });
+    expect(late.statusCode).toBe(409);
+    expect(late.json()).toMatchObject({ code: "invalid_transition", projection: { status: "accepted" } });
+  });
+});
