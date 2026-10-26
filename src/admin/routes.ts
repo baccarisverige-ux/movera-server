@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { authenticate, authenticateAdmin } from "../auth/guard.js";
+import { adminCoversZone, authenticate, authenticateAdmin } from "../auth/guard.js";
+import { ApiError } from "../http/errors.js";
 import { signOut } from "../auth/service.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { readIdempotencyKey } from "../http/idempotency.js";
@@ -48,6 +49,12 @@ export async function adminAuthRoutes(app: FastifyInstance, deps: AdminDeps): Pr
     // password link, and only its hash may be kept. A repeat makes a new link, which replaces the first.
     const key = request.headers["idempotency-key"];
     readIdempotencyKey(Array.isArray(key) ? key[0] : key);
+    // A link lets its holder set the password, so only an admin whose zones cover the target's may make one
+    // (audit Phase 4, P4-1: a Super admin limited to one zone could take over an all-zones Super admin).
+    const target = await deps.db.selectFrom("admins").select("zone_ids").where("admin_id", "=", adminId).executeTakeFirst();
+    if (target !== undefined && !who.zones.includes("*") && (target.zone_ids === null || !target.zone_ids.every((z) => adminCoversZone(who, z)))) {
+      throw new ApiError("forbidden", "This admin's zones are outside your scope.", { reason: "zone_out_of_scope" });
+    }
     return reply.status(201).send(await createSetupLink(deps, adminId, who.subjectId));
   });
 }
