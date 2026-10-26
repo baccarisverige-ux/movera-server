@@ -71,6 +71,11 @@ async function bonusSoFar(ex: Executor, trip: TripRow): Promise<number> {
   return (trip.status === "completed" ? 0 : Number(trip.driver_bonus_minor ?? 0)) + Number(paid.n);
 }
 
+/** A trip's fare is never below 0 (audit Phase 4, P4-3: a negative fare made negative driver earnings). */
+function notBelowZero(fare: Money | undefined) {
+  if (fare !== undefined && fare.amountMinor < 0) throw badRequest("The fare cannot be below 0.", "invalid_amount");
+}
+
 async function checkBonus(ex: Executor, trip: TripRow, amount: Money) {
   sameCurrency(trip, amount, "The bonus");
   if (amount.amountMinor <= 0) throw badRequest("The bonus must be more than 0.", "invalid_amount");
@@ -175,6 +180,7 @@ export async function adminNoShow(trx: Trx, who: Principal, tripId: string, body
 export async function adminComplete(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; note: string; fare?: Money }, now: Date): Promise<TripRow> {
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   sameCurrency(trip, body.fare, "The fare");
+  notBelowZero(body.fare);
   const done = await completeTrip(trx, { actor: "admin", subjectId: who.subjectId }, tripId, { expectedVersion: body.expectedVersion, ...(body.fare ? { fare: body.fare } : {}) }, now);
   await audit(trx, { adminId: who.subjectId, action: "trip.complete", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { note: body.note, from: trip.status, fare: body.fare ?? null }, at: now });
   return done;
@@ -232,6 +238,7 @@ registerApprovalHandler(ADJUST_ACTION, async (trx, payload, _approvedBy, _reques
 
 export async function adminAdjust(trx: Trx, who: Principal, tripId: string, body: Omit<AdjustPayload, "tripId">, now: Date): Promise<{ status: number; body: unknown }> {
   const trip = await adminTrip(trx, who, tripId);
+  notBelowZero(body.fare);
   const ran = await runOrRequest<Record<string, unknown>>(trx, who, { action: ADJUST_ACTION, targetType: "trip", targetId: tripId, zoneId: trip.zone_id, payload: { ...body, tripId }, approvePermission: "approval.decide" }, now);
   return ran.ran ? { status: 200, body: ran.result } : { status: 202, body: ran.pending as PendingApproval };
 }

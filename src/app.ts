@@ -20,6 +20,7 @@ import { driverRoutes } from "./drivers/routes.js";
 import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
 import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
+import { telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
 import multipart from "@fastify/multipart";
@@ -32,14 +33,24 @@ export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>> };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>> };
 
 const READY_TIMEOUT_MS = 2000;
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
 export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: logger ? { level: env.LOG_LEVEL } : false,
+    logger: logger
+      ? {
+          level: env.LOG_LEVEL,
+          ...(typeof logger === "object" ? { stream: logger.stream } : {}),
+          // Audit Phase 4 (P4-7): the request line is logged without its query string, which can hold a phone
+          // number or an e-mail (admin searches `?q=`) or a place; the path alone is enough to trace a request.
+          serializers: {
+            req: (request: { method: string; url: string; id: string }) => ({ method: request.method, url: request.url.split("?")[0], reqId: request.id }),
+          },
+        }
+      : false,
     // X-Request-Id: the client's id when it sends a sane one, else ours. Echoed on every response (§1 Headers).
     genReqId: (request) => {
       const sent = request.headers["x-request-id"];
@@ -149,6 +160,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const signInProviders = providers ?? providersFrom(env);
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", providers: signInProviders, ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    await telemetryRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.
     const invites = { sms: { provider: sms, warn: (data: Record<string, unknown>, message: string) => app.log.warn(data, message) }, appLink: env.DRIVER_APP_LINK };
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });

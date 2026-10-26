@@ -82,6 +82,24 @@ export interface FleetJoinAttemptsTable {
   at: Timestamp;
 }
 
+/** contract §11: app logs, analytics and crash reports, scrubbed, kept 30 days (audit Phase 4, P4-5). */
+export interface TelemetryTable {
+  telemetry_id: Generated<string>;
+  kind: "log" | "analytics" | "crash";
+  level: string | null;
+  event: string | null;
+  actor: string | null;
+  subject_id: string | null;
+  body: JsonDefault;
+  at: Timestamp;
+}
+
+/** Audit Phase 4 (P4-2): document uploads started, for the per-driver hourly limit. */
+export interface DocumentUploadAttemptsTable {
+  driver_id: string;
+  at: Timestamp;
+}
+
 export interface DocumentsTable {
   document_id: string;
   driver_id: string;
@@ -678,6 +696,8 @@ export interface Database {
   vehicles: VehiclesTable;
   fleets: FleetsTable;
   fleet_join_attempts: FleetJoinAttemptsTable;
+  document_upload_attempts: DocumentUploadAttemptsTable;
+  telemetry: TelemetryTable;
   documents: DocumentsTable;
   document_files: DocumentFilesTable;
   fleet_invitations: FleetInvitationsTable;

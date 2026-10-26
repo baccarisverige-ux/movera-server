@@ -29,6 +29,21 @@ Your admin password link is in **movera-server → Logs**: search for `admin pas
 `setupLink` (valid 72 h; a new one appears after a restart once it has expired and no password was chosen).
 Later starts change nothing: testers' changes stay.
 
+### Forgot the admin password
+
+- **Another Super admin** (same or wider zones) can make a new link with `POST /admin/agents/{adminId}/setup-link`
+  and send it to them. The live admin panel has no button for it yet (its Team page is not live; Phase 5).
+- **The only Super admin (the owner), free plan:** Render → movera-server → Environment → add
+  `ADMIN_PASSWORD_RESET` with any new text (for example today's date) → Save (the service restarts). In **Logs**
+  search for `admin password reset link` and open the `setupLink` (72 h, one use; the old password keeps working
+  until the new one is chosen, then every open admin session ends). Each value gives one link only, so a sleeping
+  server that wakes does not make more; for another reset later, type a different value. Remove the variable when
+  done. Only people with access to the Render dashboard can do this, the same people who can read the first link.
+- **With a shell or the database's external URL:** `DATABASE_URL=<external URL> npm run admin -- link --email <you>`
+  prints a new link (from a checkout of this repository).
+- A self-service "e-mail me a link" needs an e-mail provider, which Movera does not have yet; see
+  `docs/audit/phase-4.md` (P4-4).
+
 On a paid plan with a shell the same is `node dist/admin/cli.js seed-test` and
 `node dist/admin/cli.js create --email you@example.com --name "Your Name" --role super`.
 
