@@ -7,7 +7,7 @@ Base: `origin/main` @ 5e6edc7. Documentation only; no source, test or workflow c
 - [x] 2. Dependencies
 - [x] 3. CI
 - [x] 4. Baseline run
-- [ ] 5. Coverage of critical logic
+- [x] 5. Coverage of critical logic
 - [x] 6. Route inventory
 - [x] 7. Code quality findings
 - [x] 8. Known open issues and stale branches
@@ -268,3 +268,24 @@ Neither is a product defect as far as observed; both make CI results unreliable 
 - Open issues: **0** (`gh api repos/…/issues?state=open`). Open PRs: **0**. PRs #1–#13 all merged.
 - Remote branches besides `main` and `audit/phase-1`: 13, each the head of a merged PR — `rider-nearby-vehicles` (#1), `driver-round-4` (#2), `empty-env` (#3), `driver-zones` (#4), `rider-on-the-way` (#5), `complete-early` (#6), `trip-driver-location` (#7), `trip-raise-price` (#8), `trip-chat` (#9), `test-week-categories-osrm` (#10), `zones-stockholm-paris` (#11), `zone-lookup-open-first` (#12), `zones-stockholm-south` (#13). `git cherry` shows no unmerged patches except on `driver-round-4` (7) and `rider-nearby-vehicles` (2), which were squash-merged (PR merged=true), so their content is in `main`. All 13 are stale and safe to delete (owner's call). Relevance: none open.
 - Known open items from the handoff that touch the server: N4 (raise after expiry — owner decision D4), rider first name on the waybill (Phase 0), `OSRM_URL` / `GOOGLE_MAPS_API_KEY` / Apple-Google client ids / SMS provider not configured on Render (owner). Render's actual environment NOT VERIFIED (no access).
+
+## 5. Coverage of critical logic
+
+No coverage provider is in the project. Measured by installing `@vitest/coverage-v8@3.2.7` with `npm i --no-save` (package.json and lockfile unchanged) and running
+`npx vitest run --coverage --coverage.include='src/**' --hookTimeout=60000 --testTimeout=60000 --maxWorkers=2` → 568/568 passed, 319 s.
+(A first attempt with default workers failed one more load-sensitive test, `test/dispatch/review.test.ts:192` "M2: the rider keeps seeing the keep_waiting question while the trip is offered", timed out at 20 s, so no report was written: a fourth flaky test, see §4.)
+
+**All of `src/`: statements/lines 94.2 %, branches 80.3 %, functions 94.0 %.**
+
+| Area | Stmts % | Branch % | Funcs % | Notable uncovered lines |
+|---|---|---|---|---|
+| `src/rules` (fare, transitions, cancel fees, money, surge, pickupPay, realtimeGate) | 97.0 | 91.9 | 100 | `cancelFees.ts` 89.3 % stmts (57-58, 120-121); `fare.ts` 100 / 93.1; `transitions.ts` 98.3 / 87.8 (118-119 = contract mismatch throw) |
+| `src/dispatch` | 96.4 | 77.4 | 98.1 | `runtime.ts` branches 74.3 %; `routes.ts` 92.7 / 69.6 (offer SSE pump error/again paths, 151-155) |
+| `src/trips` | 98.7 | 80.7 | 98.7 | `ride.ts` branches 75.4 % |
+| `src/auth` | 95.9 | 83.1 | 97.7 | `provider.ts` 91.8 / 77.2 (82-83, 92, 128-132) |
+| `src/drivers` | 98.1 | 80.0 | 83.7 | `invitations.ts` functions 70.6 %; `onboarding.ts` branches 67.4 % |
+| `src/documents` | 100 | 77.9 | 100 | `files.ts` branches 66.7 % (key from env vs derived) |
+| `src/admin` | 85.9 | 70.4 | 96.4 | **`lists.ts` 70.9 / 47.5** (admin list filters, cursors: 98-131, 144-147); `trips.ts` branches 64 %; `peopleRoutes.ts` 90 / 67.2; `cli.ts` 0 % |
+| Others | | | | **`maps/routing.ts` 40.9 % — `OsrmRouter` (lines 40-67) never runs in tests**; `sms/sms.ts` 50 % (provider send/fail paths 29-37: no provider exists yet); `main.ts`, `db/migrateCli.ts`, `admin/cli.ts` 0 % (entry points); `realtime/hub.ts` 87 % (reconnect paths 61-63, 75-78) |
+
+Reading: core money/lifecycle logic is well covered by line; branch coverage is the weaker signal (dispatch runtime 74 %, ride.ts 75 %, admin lists 48 %). Coverage is a single run on this machine; not measured in CI.
