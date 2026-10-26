@@ -2,11 +2,13 @@ import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
-import { CONTRACTS_DIR } from "../../src/contract/contract.js";
+import { CONTRACTS_DIR, contractJson } from "../../src/contract/contract.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { rideHandlers } from "../../src/trips/ride.js";
+import { sampleForZone } from "../../src/config/seedConfig.js";
+import { publishDraft, putDraft } from "../../src/config/service.js";
 import { haversineKm } from "../../src/maps/routing.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
@@ -207,6 +209,19 @@ describe("no-show and unpaid fees", () => {
     expect((await driverRow("A")).online_status).toBe("online");
     expect(await entries(tripId)).toEqual([{ kind: "fee_share", amount_minor: "5200", gross_minor: null, commission_minor: null, cash_minor: null }]);
     expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toEqual({ amountMinor: 6500, currency: "SEK" });
+
+    // The 65 kr is owed in kronor: a Paris price, in euro, never carries it (live test 2026-10-26: a 210 kr
+    // Stockholm fee showed on a Paris price as 210 €).
+    await database.db.transaction().execute(async (trx) => {
+      const document = sampleForZone(contractJson<Record<string, unknown>>("fixtures/config/pricing_document.json"), { zoneId: "FR-PC", currency: "EUR", country: "FR", timeZone: "Europe/Paris" });
+      const saved = await putDraft(trx, { doc: "pricing", zoneId: "FR-PC", expectedVersion: 1, document, adminId: "test" }, new Date());
+      await publishDraft(trx, { doc: "pricing", zoneId: "FR-PC", expectedVersion: saved.version, note: "Paris prices", publishedBy: "test", approvedBy: null }, new Date());
+    });
+    const paris = await call(app, "POST", "/quotes", rider, { pickup: { address: "Place de la Concorde", lat: 48.8656, lng: 2.3212 }, dropoff: { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 }, stops: [], categoryIds: ["economy"] });
+    expect(paris.statusCode).toBe(201);
+    expect(paris.json()).toMatchObject({ zoneId: "FR-PC" });
+    expect(paris.json().quotes[0].total.currency).toBe("EUR");
+    expect(paris.json().quotes[0].fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
 
     // The next ride carries the 65 kr; the driver collects it but it is not their money.
     const next = await accepted();

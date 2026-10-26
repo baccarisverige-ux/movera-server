@@ -178,11 +178,16 @@ describe("rider account", () => {
 
   it("an unpaid fee shows on the profile and rides along on the next price", async () => {
     const riderId = (await call(app, "GET", "/rider/profile", other)).json().riderId;
-    await database.db.updateTable("riders").set({ outstanding_minor: 6500, outstanding_source_trip_id: "trp_previous" }).where("rider_id", "=", riderId).execute();
+    // A real owed fee (rider_fees, in the currency it was charged in) on the rider's earlier trip: the price reads
+    // the fees, not only the profile's total.
+    const previous = (await call(app, "GET", "/rider/trips?limit=1", other)).json().items[0].tripId as string;
+    await database.db.insertInto("rider_fees").values({ trip_id: previous, rider_id: riderId, kind: "cancel", currency: "SEK", amount_minor: 6500, status: "owed", created_at: new Date() }).execute();
+    await database.db.updateTable("riders").set({ outstanding_minor: 6500, outstanding_source_trip_id: previous }).where("rider_id", "=", riderId).execute();
     expect((await call(app, "GET", "/rider/profile", other)).json().outstanding).toEqual({ amountMinor: 6500, currency: "SEK" });
     const quote = await economyQuote(other);
     expect(quote.total).toEqual({ amountMinor: 28200, currency: "SEK" });
-    expect(quote.fareLines.at(-1)).toEqual({ code: "outstanding_fee", amount: { amountMinor: 6500, currency: "SEK" }, sourceTripId: "trp_previous" });
+    expect(quote.fareLines.at(-1)).toEqual({ code: "outstanding_fee", amount: { amountMinor: 6500, currency: "SEK" }, sourceTripId: previous });
+    await database.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", previous).execute();
     await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).where("rider_id", "=", riderId).execute();
   });
 

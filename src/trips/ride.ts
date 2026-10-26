@@ -230,6 +230,16 @@ export async function credit(trx: Trx, entry: { driverId: string; tripId: string
     .execute();
 }
 
+/**
+ * The fees [riderId] owes in [currency], oldest first: what a trip in that currency carries (§3.7). A fee is kept in
+ * the currency it was charged in and only a trip in the same currency carries it (live test 2026-10-26: a 210 kr
+ * Stockholm fee was added to a Paris price as 210 €).
+ */
+export async function owedFeesIn(ex: Executor, riderId: string, currency: string): Promise<{ total: number; sourceTripId: string | null }> {
+  const owed = await ex.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").where("currency", "=", currency).orderBy("created_at").orderBy("trip_id").execute();
+  return { total: owed.reduce((sum, f) => sum + Number(f.amount_minor), 0), sourceTripId: owed[0]?.trip_id ?? null };
+}
+
 /** Rider.outstanding = the sum of owed fees; the oldest one names the source trip (§3.7). */
 export async function refreshOutstanding(trx: Trx, riderId: string, now: Date) {
   const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
@@ -272,7 +282,8 @@ async function settleCarriedFees(trx: Trx, trip: TripRow, cash: number, now: Dat
   if (!line) return;
   // The ride is paid first; only cash beyond it pays old fees (a short count leaves them owed).
   const towardFees = Math.max(0, Math.min(line.amount.amountMinor, cash - (Number(trip.fare_minor) - line.amount.amountMinor)));
-  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", trip.rider_id).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").forUpdate().execute();
+  // Only fees in the trip's own currency were carried (owedFeesIn).
+  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", trip.rider_id).where("status", "=", "owed").where("currency", "=", line.amount.currency).orderBy("created_at").orderBy("trip_id").forUpdate().execute();
   let left = towardFees;
   for (const fee of owed) {
     const amount = Number(fee.amount_minor);

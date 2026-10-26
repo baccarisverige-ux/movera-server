@@ -7,6 +7,7 @@ import { liveDocument } from "../config/service.js";
 import { zoneAt } from "../config/zoneLookup.js";
 import type { LatLng, Router } from "../maps/routing.js";
 import { FareError, priceFare, type FareLine, type PricingDocument } from "../rules/fare.js";
+import { owedFeesIn } from "../trips/ride.js";
 
 /**
  * POST /quotes (contract §3.5, §7): a price per category for one route, from the pickup zone's published pricing
@@ -61,9 +62,10 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   const minutes = leg.durationSeconds / 60;
 
   // An unpaid cash fee from an earlier trip rides along on the next price (§3.7, owner decision 7).
-  const rider = await trx.selectFrom("riders").select(["outstanding_minor", "outstanding_source_trip_id"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
-  const owed = Number(rider.outstanding_minor);
-  const outstanding = owed > 0 ? { outstandingFee: { amountMinor: owed, currency: pricing.document.currency }, ...(rider.outstanding_source_trip_id ? { outstandingSourceTripId: rider.outstanding_source_trip_id } : {}) } : {};
+  // Only fees owed in this zone's currency: a kronor fee is never added to a euro price (owedFeesIn).
+  const owedFees = await owedFeesIn(trx, riderId, pricing.document.currency);
+  const owed = owedFees.total;
+  const outstanding = owed > 0 ? { outstandingFee: { amountMinor: owed, currency: pricing.document.currency }, ...(owedFees.sourceTripId ? { outstandingSourceTripId: owedFees.sourceTripId } : {}) } : {};
 
   const wanted = body.categoryIds ?? Object.keys(pricing.document.categories).sort(byCatalogOrder);
   const quotes: QuoteView[] = [];
