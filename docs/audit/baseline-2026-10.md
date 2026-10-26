@@ -4,7 +4,7 @@ Base: `origin/main` @ 5e6edc7. Documentation only; no source, test or workflow c
 
 ## Done / Not done yet
 - [x] 1. Structure and architecture
-- [ ] 2. Dependencies
+- [x] 2. Dependencies
 - [ ] 3. CI
 - [ ] 4. Baseline run
 - [ ] 5. Coverage of critical logic
@@ -39,3 +39,30 @@ Largest files: `src/db/schema.ts` 697, `src/trips/ride.ts` 659, `src/dispatch/ru
 Layering: routes call `authenticate*` then `runIdempotent` (mutations) and a service/command function inside the transaction; services use Kysely directly (no repository layer). Pure rules (`rules/`, `dispatch/engine.ts`) have no DB access.
 
 Migrations: `0001_foundation` … `0015_stockholm_south` (15 files). Deploy: `render.yaml`, `Dockerfile`, `compose.yaml` (local Postgres).
+
+## 2. Dependencies
+
+Installed (`npm ls --depth=0`, lockfile from `npm ci`):
+
+| Package | Version | Kind | Import sites in `src/` (grep `from "<pkg>`) |
+|---|---|---|---|
+| fastify | 5.12.7 | prod | 16 files |
+| @fastify/multipart | 10.1.6 | prod | 1 (app.ts) |
+| fastify-plugin | 5.1.0 | prod | **0 — not imported anywhere in src/, test/ or tools/ → unused** |
+| kysely | 0.28.18 | prod | 24 |
+| pg | 8.23.1 | prod | 3 |
+| zod | 3.25.76 | prod | 13 (request bodies + env) |
+| ajv / ajv-formats | 8.20.0 / 3.0.1 | prod | 1 (`contract/schemas.ts`) |
+| yaml | 2.9.1 | prod | 1 (`contract/schemas.ts`) |
+| @node-rs/argon2 | 2.2.2 | prod | 1 (admin passwords) |
+| typescript, tsx, vitest, @types/node, @types/pg | 5.9.3, 4.23.15, 3.2.7, 22.20.5, 8.23.1 | dev | — |
+
+No coverage provider installed (`@vitest/coverage-v8` / `-istanbul` absent from `node_modules/@vitest/`).
+
+`npm outdated` (major behind): zod 3→4.6.7, vitest 3→5.0.5, kysely 0.28→0.29.7, typescript 5.9→7.0.2, fastify-plugin 5→6, @types/node 22→26 (Node 22 is the runtime, so 22 types are correct).
+
+### npm audit (2026-10-26)
+| Command | Critical | High | Moderate | Low | Packages |
+|---|---|---|---|---|---|
+| `npm audit --omit=dev` | 0 | **1** | 0 | 0 | `zod <4.6.6` — GHSA-mrhx-c7xc-m3w5, memory exhaustion validating oversized constrained collections. Fix only in zod 4 (breaking). Runtime-relevant: zod validates request bodies. Mitigated in part by Fastify `bodyLimit` 1 MB (app.ts:46); not measured. |
+| `npm audit` (all) | **2** | 1 | 1 | 0 | `tinypool <=2.1.1` (critical, GHSA-5gmw-xhrv-c9v3, GHSA-85c8-ppgw-ccpr) and `vitest` (counted critical via tinypool), `@vitest/mocker <=4.1.11` (moderate, GHSA-82fw-gwwq-j7x9, GHSA-qxg6-89mg-rqv8), zod (high). Dev-only except zod; fix = vitest 5 (breaking). |
