@@ -48,8 +48,15 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery) 
   return { items: page.map((r) => tripProjection(r, "admin")), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.trip_id) : null };
 }
 
-export async function listRiders(ex: Executor, input: { cursor?: string; limit: number; status?: string; q?: string }, currency: string) {
+/** Riders have no zone: a zone-limited admin sees only riders with a trip in their zones (P4-6). */
+function riderInZones(zones: string[]) {
+  return sql<boolean>`exists (select 1 from trips t where t.rider_id = riders.rider_id and t.zone_id = any(${sql.val(zones.length ? zones : ["-"])}::text[]))`;
+}
+
+export async function listRiders(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string; q?: string }, currency: string) {
   let q = ex.selectFrom("riders").selectAll();
+  const zones = zonesOf(who);
+  if (zones) q = q.where(riderInZones(zones));
   if (input.status) q = q.where("status", "=", input.status as "active" | "suspended");
   if (input.q) {
     const text = `%${input.q.trim().replace(/[%_\\]/g, "")}%`;
@@ -188,6 +195,11 @@ export async function setDriverStatus(trx: Trx, who: Principal, driverId: string
 export async function setRiderStatus(trx: Trx, who: Principal, riderId: string, body: { expectedVersion: number; status: "active" | "suspended"; note: string }, currency: string, now: Date) {
   const row = await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).forUpdate().executeTakeFirst();
   if (!row) throw new ApiError("not_found", "No such rider.", { reason: "rider_not_found" });
+  const zones = zonesOf(who);
+  if (zones) {
+    const seen = await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).where(riderInZones(zones)).executeTakeFirst();
+    if (!seen) throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
+  }
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The rider changed since you last saw them.", { projection: adminRiderView(row, currency) });
   // A suspended rider cannot book; a ride already going runs to its end.
   await trx.updateTable("riders").set({ status: body.status, version: row.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
