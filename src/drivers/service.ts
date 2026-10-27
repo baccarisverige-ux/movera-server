@@ -2,7 +2,7 @@ import { sql } from "kysely";
 import { schemaProblem } from "../contract/schemas.js";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent } from "../db/tripLog.js";
-import { maybeNearDropoff } from "../trips/ride.js";
+import { DRIVER_SILENCE, maybeNearDropoff } from "../trips/ride.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { zoneAt } from "../config/zoneLookup.js";
@@ -61,7 +61,7 @@ export async function loadDriver(ex: Executor, driverId: string, lock = false): 
 }
 
 async function activeTripOf(ex: Executor, driverId: string) {
-  return ex.selectFrom("trips").select(["trip_id", "status", "version"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+  return ex.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
 }
 
 export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin"): Promise<Record<string, unknown>> {
@@ -277,6 +277,8 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     // One location event per batch, with the newest fix; it never changes the projection version (§4).
     await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
     await maybeNearDropoff(trx, active, latest.fix, now);
+    // Car lost (contract v0.7.0 §15): the position is back, so the silence check runs now and takes the alarm down.
+    if (active.driver_silent_alert) await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: active.trip_id, dueAt: now });
   }
   return fresh.length;
 }

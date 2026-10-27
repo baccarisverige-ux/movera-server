@@ -25,6 +25,7 @@ import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
 import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
+import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
 import { CachedPlaces, GooglePlaces, NoPlaces, type Places } from "./maps/places.js";
@@ -177,6 +178,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await driverRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     await dispatchRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await safetyRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
 

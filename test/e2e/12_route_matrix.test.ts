@@ -88,6 +88,7 @@ beforeAll(async () => {
   const car = await sim.db.selectFrom("vehicles").select("vehicle_id").where("fleet_id", "=", fleet.fleet_id).executeTakeFirstOrThrow();
   const doc = await sim.db.selectFrom("documents").select("document_id").where("driver_id", "=", fleetOwner.id).executeTakeFirstOrThrow();
   const invite = await fleetOwner.post("/driver/fleet/invite", { phone: "+46701740698" });
+  const sos = await rider.post(`/rider/trips/${tripId}/sos`, { at: sim.clock.now.toISOString() });
   ids = {
     tripId,
     rideId: tripId,
@@ -99,6 +100,7 @@ beforeAll(async () => {
     riderId: rider.id,
     adminId: owner.id,
     invitationId: invite.body["invitationId"] ?? newId("inv"),
+    incidentId: sos.body["incidentId"] ?? newId("inc"),
     zoneId: "Z001",
     doc: "pricing",
     coordinates: "18.0649,59.3326;18.0735,59.3143",
@@ -140,6 +142,8 @@ function bodyFor(route: string): Json | undefined {
     "POST /trips/:tripId/messages": { ...v, text: "hello" },
     "POST /trips/:tripId/keep-waiting": { ...v, answer: "stop" },
     "POST /trips/:tripId/end-early": { ...v, reasonCode: "plans_changed" },
+    "POST /rider/trips/:tripId/sos": { at: "2026-10-27T10:00:00Z" },
+    "POST /driver/trips/:tripId/sos": { at: "2026-10-27T10:00:00Z" },
   };
   return bodies[route] ?? v;
 }
@@ -157,8 +161,10 @@ async function pendingApproval(): Promise<{ approvalId: string }> {
 
 const fill = (path: string) => path.replace(/:(\w+)/g, (_, name: string) => ids[name] ?? `missing_${name}`);
 
-async function adminWithout(permission: string): Promise<Admin> {
-  const role = ADMIN_ROLES.find((r) => r !== "super" && !permissionsOf(r).includes(permission)) as AdminRole;
+/** An admin whose role lacks `permission`; undefined when every role has it (overview.read: any signed-in admin). */
+async function adminWithout(permission: string): Promise<Admin | undefined> {
+  const role = ADMIN_ROLES.find((r) => r !== "super" && !permissionsOf(r).includes(permission)) as AdminRole | undefined;
+  if (role === undefined) return undefined;
   const key = `without:${role}`;
   if (!admins.has(key)) admins.set(key, await sim.admin(role));
   return admins.get(key)!;
@@ -198,11 +204,11 @@ describe("Phase 4: route-by-route authorization matrix", () => {
       }
       if (op.actors.includes("admin") && op.permission !== undefined) {
         const lacking = await adminWithout(op.permission);
-        const res = await sim.request(method, url, lacking.token, body);
+        const res = lacking ? await sim.request(method, url, lacking.token, body) : { status: 403, body: { reason: "missing_permission" } as Json };
         if (res.status !== 403 || res.body["reason"] !== "missing_permission") failures.push(`${route} without ${op.permission} → ${res.status} ${JSON.stringify(res.body)}`);
       }
       // Riders have no home zone: :riderId is in scope when the rider has a trip in the admin's zones (P4-6).
-      if (op.actors.includes("admin") && path.startsWith("/admin/") && /:(tripId|driverId|fleetId|vehicleId|documentId|zoneId|adminId|approvalId|riderId)/.test(path)) {
+      if (op.actors.includes("admin") && path.startsWith("/admin/") && /:(tripId|driverId|fleetId|vehicleId|documentId|zoneId|adminId|approvalId|riderId|incidentId)/.test(path)) {
         const res = await sim.request(method, url, (await outOfZoneSuper()).token, body);
         if (res.status !== 403 && res.status !== 404) failures.push(`${route} by a Z002 admin on Z001 → ${res.status} ${JSON.stringify(res.body)}`);
       }

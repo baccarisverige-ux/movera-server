@@ -55,6 +55,8 @@ tags:
 - name: Admin · Lists
 - name: Admin · Trips
 - name: Admin · Dispatch
+- name: Safety
+- name: Admin · Safety
 - name: Admin · People
 - name: Admin · Config
 - name: Admin · Governance
@@ -4841,6 +4843,336 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /rider/trips/{tripId}/sos:
+    post:
+      operationId: riderSos
+      summary: 'The rider presses SOS: alert Movera'
+      description: v0.7.0. Only the trip's own rider, while the trip is live (contract.json#safety.sos.riderStatuses); otherwise
+        409 invalid_transition with the trip. Creates the trip's one open SOS incident, or returns it when one is open (a
+        second SOS from either side). The app opens the emergency call (112) itself; it retries with the same Idempotency-Key
+        and then shows only "SOS sent".
+      tags:
+      - Safety
+      x-actor:
+      - rider
+      parameters:
+      - $ref: '#/components/parameters/TripId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SosRequest'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SosReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/trips/{tripId}/sos:
+    post:
+      operationId: driverSos
+      summary: 'The driver presses SOS: alert Movera'
+      description: v0.7.0. Only the trip's own driver, while the trip is live (contract.json#safety.sos.driverStatuses); otherwise
+        409 invalid_transition with the trip. Creates the trip's one open SOS incident, or returns it when one is open (a
+        second SOS from either side). The app opens the emergency call (112) itself; it retries with the same Idempotency-Key
+        and then shows only "SOS sent".
+      tags:
+      - Safety
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/TripId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SosRequest'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SosReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/incidents/stream:
+    get:
+      operationId: adminStreamIncidents
+      summary: Admin incident feed (opened, updated, escalated, closed)
+      description: 'v0.7.0. Any signed-in admin may listen. Events of an incident go to admins with incidents.read whose zones
+        cover its zone; once it is escalated (not taken in contract.json#safety.escalateAfterSeconds) to every signed-in admin.
+        Without Accept: text/event-stream: a JSON page of the same events (polling fallback).'
+      tags:
+      - Admin · Safety
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - $ref: '#/components/parameters/After'
+      - $ref: '#/components/parameters/LastEventId'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-sent events. Each SSE `data:` line is one JSON AdminIncidentEvent; `id:` is the sequence;
+                  heartbeat comments every 15 s.
+              x-sse-data: '#/components/schemas/AdminIncidentEvent'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminIncidentEventPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/incidents/{incidentId}:
+    get:
+      operationId: adminGetIncident
+      summary: Incident detail with the car's latest position
+      description: v0.7.0. In the admin's zones only (else 403 zone_out_of_scope).
+      tags:
+      - Admin · Safety
+      x-actor:
+      - admin
+      x-permission: incidents.read
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/incidents/{incidentId}/take:
+    post:
+      operationId: adminTakeIncident
+      summary: Take the incident (New → Taken)
+      description: v0.7.0 (contract.json#safety.transitions). In the admin's zones only. A status the command cannot leave
+        → 409 invalid_transition with the incident; a stale expectedVersion → 409 version_mismatch with the incident. Written
+        in the audit.
+      tags:
+      - Admin · Safety
+      x-actor:
+      - admin
+      x-permission: safety.edit
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminIncidentCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/incidents/{incidentId}/resolve:
+    post:
+      operationId: adminResolveIncident
+      summary: Solve the incident (→ Solved)
+      description: v0.7.0 (contract.json#safety.transitions). In the admin's zones only. A status the command cannot leave
+        → 409 invalid_transition with the incident; a stale expectedVersion → 409 version_mismatch with the incident. Written
+        in the audit.
+      tags:
+      - Admin · Safety
+      x-actor:
+      - admin
+      x-permission: safety.edit
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminIncidentCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/incidents/{incidentId}/dismiss:
+    post:
+      operationId: adminDismissIncident
+      summary: Call it a false alarm (→ False alarm)
+      description: v0.7.0 (contract.json#safety.transitions). In the admin's zones only. A status the command cannot leave
+        → 409 invalid_transition with the incident; a stale expectedVersion → 409 version_mismatch with the incident. Written
+        in the audit.
+      tags:
+      - Admin · Safety
+      x-actor:
+      - admin
+      x-permission: safety.edit
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminIncidentCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /admin/drivers/{driverId}/status:
     post:
       operationId: adminSetDriverStatus
@@ -7065,6 +7397,12 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/Id'
+    IncidentId:
+      name: incidentId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
     RideId:
       name: rideId
       in: path
@@ -8103,6 +8441,36 @@ components:
           - $ref: '#/components/schemas/SearchStep'
           description: 'v0.5.1 (CONTRACT.md §3.6): the latest rider-waiting step while searching (rider view). Changing it
             does not change version.'
+        driverSilentAlert:
+          allOf:
+          - $ref: '#/components/schemas/DriverSilentAlert'
+          description: 'v0.7.0 (CONTRACT.md §15), admin view only: the rider is on board and the server has had no driver
+            position for 30 min ("car lost"). Gone when positions come back. Changing it does not change version.'
+    DriverSilentAlert:
+      type: object
+      description: 'v0.7.0: documents the server''s alert of 2026-10-26: no position for 30 min with the rider on board; the
+        trip fails with no charge at autoFailAt (3 h). It also opens a driver_silent incident.'
+      required:
+      - kind
+      - silentSince
+      - at
+      - autoFailAt
+      properties:
+        kind:
+          type: string
+          enum:
+          - driver_silent
+        silentSince:
+          $ref: '#/components/schemas/Timestamp'
+        lastFixAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        autoFailAt:
+          $ref: '#/components/schemas/Timestamp'
     Offer:
       type: object
       description: One driver's offer for a trip. One trip has many offers; offerId is never a tripId.
@@ -9146,6 +9514,28 @@ components:
           $ref: '#/components/schemas/Timestamp'
         updatedAt:
           $ref: '#/components/schemas/Timestamp'
+    IncidentPosition:
+      type: object
+      description: 'v0.7.0: a phone''s GPS position, measured once (CONTRACT.md §15).'
+      required:
+      - lat
+      - lng
+      - at
+      properties:
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        lng:
+          type: number
+          minimum: -180
+          maximum: 180
+        accuracyM:
+          type: number
+          minimum: 0
+          description: Horizontal accuracy, metres.
+        at:
+          $ref: '#/components/schemas/Timestamp'
     Incident:
       type: object
       required:
@@ -9162,6 +9552,12 @@ components:
         kind:
           type: string
           pattern: ^[a-z][a-z0-9_]{0,63}$
+          examples:
+          - sos
+          - driver_silent
+          - ride_check
+          description: 'v0.7.0: contract.json#safety.incidentKinds (sos, driver_silent; ride_check is safety part 2). Older
+            rows may hold other snake_case kinds.'
         severity:
           type: string
           enum:
@@ -9176,11 +9572,126 @@ components:
           - investigating
           - resolved
           - dismissed
+          description: open = New, investigating = Taken, resolved = Solved, dismissed = False alarm (contract.json#safety.statusLabels).
+        version:
+          type: integer
+          minimum: 1
+          description: 'v0.7.0: + 1 on take / resolve / dismiss; commands send it as expectedVersion.'
         reportedBy:
           $ref: '#/components/schemas/Actor'
+        raisedBy:
+          type: string
+          enum:
+          - rider
+          - driver
+          - system
+          description: 'v0.7.0: who raised it; system for driver_silent.'
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        riderId:
+          $ref: '#/components/schemas/Id'
+        driverId:
+          $ref: '#/components/schemas/Id'
+        position:
+          allOf:
+          - $ref: '#/components/schemas/IncidentPosition'
+          description: 'v0.7.0: the GPS the SOS phone sent (once).'
+        driverPosition:
+          allOf:
+          - $ref: '#/components/schemas/GeoFix'
+          description: 'v0.7.0: the car''s latest position the server has (admin view; read live, also after the SOS).'
         openedAt:
           $ref: '#/components/schemas/Timestamp'
         updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+        escalatedAt:
+          allOf:
+          - $ref: '#/components/schemas/Timestamp'
+          description: 'v0.7.0: set when the incident was not taken within contract.json#safety.escalateAfterSeconds (120
+            s); every signed-in admin is alerted from then on.'
+        takenBy:
+          $ref: '#/components/schemas/Id'
+        takenAt:
+          $ref: '#/components/schemas/Timestamp'
+        resolvedBy:
+          allOf:
+          - $ref: '#/components/schemas/Id'
+          description: 'v0.7.0: the admin who solved it or called it a false alarm; absent when the system closed it.'
+        resolvedAt:
+          $ref: '#/components/schemas/Timestamp'
+        resolution:
+          type: string
+          maxLength: 1000
+          description: 'v0.7.0: the closing note; ''position back'' when the system closes a driver_silent incident.'
+    SosRequest:
+      type: object
+      description: v0.7.0 (CONTRACT.md §15).
+      required:
+      - at
+      properties:
+        at:
+          allOf:
+          - $ref: '#/components/schemas/Timestamp'
+          description: When the person pressed SOS on the phone.
+        position:
+          allOf:
+          - $ref: '#/components/schemas/IncidentPosition'
+          description: The phone's last GPS, sent once; absent when the phone has none.
+    SosReceipt:
+      type: object
+      description: 'v0.7.0: the SOS reached Movera. The app shows only "SOS sent"; it gets no later update.'
+      required:
+      - incidentId
+      - tripId
+      - receivedAt
+      properties:
+        incidentId:
+          $ref: '#/components/schemas/Id'
+        tripId:
+          $ref: '#/components/schemas/Id'
+        receivedAt:
+          $ref: '#/components/schemas/Timestamp'
+    AdminIncidentCommand:
+      type: object
+      description: 'v0.7.0: take, resolve (Solved) or dismiss (False alarm). The note becomes the resolution.'
+      required:
+      - expectedVersion
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 1
+          description: The incident version the admin last saw; stale → 409 version_mismatch with the incident.
+        note:
+          type: string
+          maxLength: 1000
+    AdminIncidentEvent:
+      type: object
+      description: 'v0.7.0: the admin incident feed (GET /admin/incidents/stream).'
+      required:
+      - eventId
+      - sequence
+      - kind
+      - incident
+      - occurredAt
+      - serverTime
+      properties:
+        eventId:
+          $ref: '#/components/schemas/Id'
+        sequence:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          enum:
+          - incident_opened
+          - incident_updated
+          - incident_escalated
+          - incident_closed
+        incident:
+          $ref: '#/components/schemas/Incident'
+        occurredAt:
+          $ref: '#/components/schemas/Timestamp'
+        serverTime:
           $ref: '#/components/schemas/Timestamp'
     Payout:
       type: object
@@ -12426,6 +12937,7 @@ components:
           - $ref: '#/components/schemas/Rider'
           - $ref: '#/components/schemas/Vehicle'
           - $ref: '#/components/schemas/ConfigDraft'
+          - $ref: '#/components/schemas/Incident'
     ConflictError:
       allOf:
       - $ref: '#/components/schemas/Error'
@@ -12677,6 +13189,16 @@ components:
             items:
               $ref: '#/components/schemas/Fleet'
       description: Page<Fleet>
+    AdminIncidentEventPage:
+      allOf:
+      - $ref: '#/components/schemas/Page'
+      - type: object
+        properties:
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/AdminIncidentEvent'
+      description: Page<AdminIncidentEvent>
     TripCommand:
       type: object
       description: Body of driver trip commands.

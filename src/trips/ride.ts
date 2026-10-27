@@ -1,3 +1,4 @@
+import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
 import { sql, type Updateable } from "kysely";
 import type { TripsTable } from "../db/schema.js";
 import { contract } from "../contract/contract.js";
@@ -421,6 +422,9 @@ type SilentAlert = { kind: "driver_silent"; silentSince: string; lastFixAt: stri
 
 /** Puts the alert on the trip (or takes it off) without a version change, like a search step (§3.6). */
 async function showSilentAlert(trx: Trx, trip: TripRow, alert: SilentAlert | null, now: Date) {
+  // Car lost (contract v0.7.0 §15): the alert also opens a driver_silent incident, which closes itself when it goes.
+  if (alert === null) await closeDriverSilent(trx, trip.trip_id, now);
+  else if (!trip.driver_silent_alert) await openDriverSilent(trx, trip, now);
   await trx.updateTable("trips").set({ driver_silent_alert: alert === null ? null : JSON.stringify(alert) }).where("trip_id", "=", trip.trip_id).execute();
   const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   await appendTripEvent(trx, { tripId: trip.trip_id, kind: "trip_projection", version: updated.version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence: Number(updated.sequence) + 1 }) });
@@ -458,7 +462,17 @@ async function failSilentTrip(trx: Trx, trip: TripRow, alert: SilentAlert, now: 
 export const driverSilenceHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
   const trip = await lockTripNow(trx, timer.refId);
-  if (!trip || !RIDER_ONBOARD.has(trip.status as TripStatus)) return;
+  if (!trip) return;
+  if (!RIDER_ONBOARD.has(trip.status as TripStatus)) {
+    // The trip ended (the driver finished it, or an admin did) while the car was lost: the car is back if its
+    // position came after the silence began.
+    const shownAlert = trip.driver_silent_alert as SilentAlert | null;
+    if (shownAlert && trip.status !== "failed" && trip.driver_id) {
+      const back = await trx.selectFrom("driver_locations").select("received_at").where("driver_id", "=", trip.driver_id).executeTakeFirst();
+      if (back && back.received_at.getTime() > Date.parse(shownAlert.silentSince)) await closeDriverSilent(trx, trip.trip_id, now);
+    }
+    return;
+  }
   const fix = trip.driver_id ? await trx.selectFrom("driver_locations").select("received_at").where("driver_id", "=", trip.driver_id).executeTakeFirst() : undefined;
   const lastFixAt = fix?.received_at ?? null;
   const since = new Date(Math.max(lastFixAt?.getTime() ?? 0, (trip.boarded_at ?? trip.updated_at).getTime()));
@@ -811,5 +825,5 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
   return { driverId, period: input.period, timeZone: tz, periods };
 }
 
-export const rideHandlers: Record<string, TimerHandler> = { [NEAR_DROPOFF]: nearDropoffHandler, [DRIVER_SILENCE]: driverSilenceHandler };
+export const rideHandlers: Record<string, TimerHandler> = { [NEAR_DROPOFF]: nearDropoffHandler, [DRIVER_SILENCE]: driverSilenceHandler, ...incidentHandlers };
 export type { Who };
