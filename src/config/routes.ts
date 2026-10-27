@@ -10,7 +10,7 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
-import { CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey } from "./service.js";
+import { CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey, useStandard } from "./service.js";
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
@@ -25,6 +25,7 @@ const ScopeQuery = z.object(Scope);
 const OptionalZoneQuery = z.object({ zoneId: ZONE_ID.optional() });
 const PutBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, document: z.unknown() });
 const PublishBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, note: z.string().max(1000).optional() });
+const UseStandardBody = z.object({ expectedVersion: z.number().int().min(1), zoneId: ZONE_ID });
 const ApprovalParam = z.object({ approvalId: ZONE_ID });
 const DecisionBody = z.object({ note: z.string().max(1000).optional() });
 const ApprovalQuery = z.object({
@@ -38,7 +39,7 @@ function checkZone(who: Principal, zoneId: string): void {
   if (!adminCoversZone(who, zoneId)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
 }
 
-/** The scope key of a request: the zone id, or standard-<CC> for a country; a country needs every zone of it. */
+/** The scope key of a request: the zone id, or standard-<CC> for a country; a country needs one zone of it (owner 2026-10-27). */
 async function scopeKey(db: Db, who: Principal, scope: { zoneId?: string | undefined; country?: string | undefined }): Promise<string> {
   if ((scope.zoneId === undefined) === (scope.country === undefined)) throw new ApiError("invalid_request", "Name exactly one of zoneId or country.", { reason: "scope_required" });
   if (scope.zoneId !== undefined) {
@@ -46,7 +47,7 @@ async function scopeKey(db: Db, who: Principal, scope: { zoneId?: string | undef
     return scope.zoneId;
   }
   const zones = await db.selectFrom("zones").select("zone_id").where("country", "=", scope.country!).execute();
-  for (const zone of zones) checkZone(who, zone.zone_id);
+  if (zones.length > 0 && !zones.some((zone) => adminCoversZone(who, zone.zone_id))) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
   return standardKey(scope.country!);
 }
 
@@ -116,6 +117,17 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
       status: 200,
       body: await publishDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, ...(body.note ? { note: body.note } : {}), publishedBy: who.subjectId, approvedBy: null }, now()),
     }));
+    return outcome.body;
+  });
+
+  // v0.8.0 (contract.json#configDocs.useStandard): Go back to Standard, after the admin confirmed.
+  app.post(`${API_PREFIX}/admin/config/:doc/use-standard`, async (request) => {
+    const { doc } = parseBody(DocParam, request.params);
+    const who = await authenticateAdmin(request, guard, PUBLISH_PERMISSION[doc]);
+    const body = parseBody(UseStandardBody, request.body);
+    checkZone(who, body.zoneId);
+    const idem = { actor: "admin" as const, subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "POST", route: request.url.split("?")[0]!, body };
+    const outcome = await runIdempotent(deps.db, idem, async (trx) => ({ status: 200, body: await useStandard(trx, { doc, zoneId: body.zoneId, expectedVersion: body.expectedVersion, adminId: who.subjectId }, now()) }));
     return outcome.body;
   });
 

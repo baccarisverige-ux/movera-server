@@ -65,8 +65,31 @@ describe("country standard (§6.4)", () => {
     expect((await owner.get("/admin/config/pricing?zoneId=Z001&country=SE")).body).toMatchObject({ reason: "scope_required" });
     expect((await owner.get("/admin/config/country_rules?zoneId=Z001")).body).toMatchObject({ reason: "country_only" });
     expect((await owner.get("/admin/config/pricing?country=DE")).body).toMatchObject({ reason: "country_not_found" });
+    // Owner 2026-10-27: any admin of the country with the right edits its standard; an admin of another country does not.
     const local = await sim.admin("config", ["Z001"]);
-    expect((await local.get("/admin/config/pricing?country=SE")).body).toMatchObject({ code: "forbidden", reason: "zone_out_of_scope" });
+    expect((await local.get("/admin/config/pricing?country=SE")).status).toBe(200);
+    const paris = await sim.admin("config", ["FR-PC"]);
+    expect((await paris.get("/admin/config/pricing?country=SE")).body).toMatchObject({ code: "forbidden", reason: "zone_out_of_scope" });
+  });
+
+  it("Go back to Standard: the zone uses the standard again, above its last own version; its own versions stay in the history", async () => {
+    const zone = "Z004";
+    const ownPub = await sim.publish(owner, "dispatch", zone, (doc) => ({ ...doc, radar: { ...doc["radar"], seconds: 40 } }));
+    await sim.publish(owner, "dispatch", zone, (doc) => doc);
+    const draft = (await owner.get(`/admin/config/dispatch?zoneId=${zone}`)).body;
+    expect(draft["usesStandard"]).toBe(false);
+    const viewer = await sim.admin("viewer");
+    expect((await viewer.post("/admin/config/dispatch/use-standard", { zoneId: zone, expectedVersion: draft["version"] })).body).toMatchObject({ reason: "missing_permission" });
+    expect((await owner.post("/admin/config/dispatch/use-standard", { zoneId: zone, expectedVersion: draft["version"] + 5 })).body).toMatchObject({ code: "version_mismatch" });
+    const back = await owner.post("/admin/config/dispatch/use-standard", { zoneId: zone, expectedVersion: draft["version"] });
+    expect(back.status, JSON.stringify(back.body)).toBe(200);
+    expect(back.body["version"]).toBe(ownPub["version"] + 2);
+    const after = (await owner.get(`/admin/config/dispatch?zoneId=${zone}`)).body;
+    expect(after).toMatchObject({ usesStandard: true, liveVersion: 0, document: { radar: { seconds: 15 } } });
+    const history = await sim.db.selectFrom("config_history").select("version").where("doc", "=", "dispatch").where("zone_id", "=", zone).execute();
+    expect(history.map((h) => h.version).sort()).toEqual([ownPub["version"], ownPub["version"] + 1]);
+    expect((await owner.post("/admin/config/dispatch/use-standard", { zoneId: zone, expectedVersion: 1 })).body).toMatchObject({ reason: "already_standard" });
+    expect((await owner.post("/admin/config/country_rules/use-standard", { zoneId: zone, expectedVersion: 1 })).body).toMatchObject({ reason: "country_only" });
   });
 });
 
@@ -128,7 +151,7 @@ describe("auto-offline (§6.7)", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
   };
 
-  it("10 declined Exclusive offers in a row take the driver offline; Radar in between neither counts nor breaks the run", async () => {
+  it("10 declined Exclusive offers in a row take the driver offline; a declined Radar offer in between does not count", async () => {
     await a.moveTo(PLACES.nearSergels);
     if ((await a.get("/driver/profile")).body["onlineStatus"] !== "online") await a.goOnline(PLACES.nearSergels);
     const feed = await a.offerFeed();
@@ -147,6 +170,23 @@ describe("auto-offline (§6.7)", () => {
     expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("offline");
     const last = await feed.waitFor((e) => e.data["driverOffline"] === true);
     expect(last.data).toMatchObject({ kind: "offer_updated", offer: { kind: "exclusive", status: "declined" } });
+  });
+
+  it("any accepted offer, also Radar, sets the count back to 0", async () => {
+    await sim.advance(1);
+    await a.goOnline(PLACES.nearSergels);
+    await force("exclusive");
+    for (let i = 0; i < 9; i++) await missExclusive();
+    await force("radar");
+    const radar = await rider.book();
+    await sim.tick();
+    const offer = await a.offerFor(radar.tripId);
+    expect((await a.accept(offer!)).status).toBe(200);
+    await rider.command(radar.tripId, "cancel", { reasonCode: "plans_changed" });
+    await sim.advance(1);
+    await force("exclusive");
+    await missExclusive();
+    expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("online");
   });
 
   it("going online starts the run again", async () => {

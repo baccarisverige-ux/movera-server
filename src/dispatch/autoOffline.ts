@@ -5,9 +5,9 @@ import { scheduleTimer } from "../jobs/timers.js";
 
 /**
  * contract.json#autoOffline (v0.8.0, owner 2026-10-27): after offers.autoOffline.missedExclusive (default 10)
- * Exclusive offers of live trips in a row that the driver declined or let expire, the driver goes offline. Radar,
- * assigned and reservation offers never count and never break the run; an accepted Exclusive offer (claimed) or
- * going online (online_since) starts it again. The driver app counts the same way.
+ * Exclusive offers of live trips in a row that the driver declined or let expire, the driver goes offline. Misses of
+ * Radar, assigned and reservation offers, and of Exclusive offers sent while the driver was on a trip, never count.
+ * ANY accepted offer (claimed) or going online (online_since) sets the count back to 0. The driver app counts the same way.
  */
 const DEFAULT_LIMIT = (contract as unknown as { configDefaults: { missedExclusiveBeforeOffline: number } }).configDefaults.missedExclusiveBeforeOffline;
 
@@ -28,17 +28,20 @@ export async function autoOfflineIfDue(trx: Trx, driverId: string, tripId: strin
   let query = trx
     .selectFrom("offers")
     .innerJoin("trips", "trips.trip_id", "offers.trip_id")
-    .select(["offers.status"])
+    .select(["offers.status", "offers.kind", "offers.driver_on_trip", "trips.kind as tripKind"])
     .where("offers.driver_id", "=", driverId)
-    .where("offers.kind", "=", "exclusive")
-    .where("trips.kind", "=", "live")
     .where("offers.status", "in", ["claimed", "declined", "expired"])
     .orderBy("offers.answered_at", "desc")
     .orderBy("offers.offer_id", "desc")
-    .limit(limit);
+    .limit(500);
   if (driver.online_since !== null) query = query.where("offers.answered_at", ">=", driver.online_since);
-  const run = await query.execute();
-  if (run.length < limit || run.some((o) => o.status === "claimed")) return false;
+  let run = 0;
+  for (const offer of await query.execute()) {
+    if (offer.status === "claimed") break;
+    if (offer.kind === "exclusive" && offer.tripKind === "live" && !offer.driver_on_trip) run += 1;
+    if (run >= limit) break;
+  }
+  if (run < limit) return false;
   await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
   // As going offline by hand: the driver's other open offers are withdrawn by a job that locks each trip in turn.
   await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });

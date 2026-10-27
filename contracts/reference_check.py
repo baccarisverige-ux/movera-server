@@ -325,11 +325,12 @@ def auto_offline(limit, offers):
     for idx, o in enumerate(offers):
         if o == 'on': run = 0; continue
         kind, outcome = o[0], o[1]
-        if kind != 'x': continue                      # radar, assigned and scheduled never count nor break the run
-        run = 0 if outcome == 'a' else run + 1
+        if outcome == 'a': run = 0; continue          # any accepted offer starts the run again
+        if kind != 'x': continue                      # radar, assigned, scheduled and on-trip ('t') misses never count
+        run += 1
         if run >= limit: return idx
     return None
-if c['autoOffline']['counts'] != ['exclusive'] or c['configDefaults']['missedExclusiveBeforeOffline'] != 10: bad += 1; print('AUTO OFFLINE rule')
+if c['autoOffline']['counts'] != ['exclusive'] or c['autoOffline']['resets'][0] != 'any offer accepted' or c['configDefaults']['missedExclusiveBeforeOffline'] != 10: bad += 1; print('AUTO OFFLINE rule')
 for case in sf['autoOffline']:
     got = auto_offline(case['limit'], case['offers'])
     if got != case['expectOfflineAt']: bad += 1; print('AUTO OFFLINE', case['id'], 'expected', case['expectOfflineAt'], 'got', got)
@@ -340,4 +341,8 @@ for case in sf['snapshot']:
            'noShowFee': kept['noShowFee'], 'noShowDriverPart': kept['noShowFee'] * kept['noShowDriverSharePct'] // 100}
     if got != case['expect']: bad += 1; print('SNAPSHOT', case['id'], 'got', got)
 if not (c['configDefaults']['cancelDriverSharePct'] == c['cancelFees']['driverSharePctDefault'] == 100): bad += 1; print('CANCEL SHARE default')
+for case in sf['useStandard']:
+    std = max(case['standard'], case['own']) + 1
+    got = {'standard': std, 'servedVersion': std, 'usesStandard': True}
+    if got != case['expect']: bad += 1; print('USE STANDARD', case['id'], 'got', got)
 print('OK' if not bad else f'{bad} mismatches'); sys.exit(1 if bad else 0)

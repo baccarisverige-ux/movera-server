@@ -980,10 +980,11 @@
     "countryOnly": [
       "country_rules"
     ],
-    "scope": "v0.8.0: GET, PUT and POST …/publish on /admin/config/{doc} name exactly one of zoneId (the zone's own document) or country (ISO alpha-2; the country's standard, or country_rules). Both or neither → 400 invalid_request (reason scope_required). country_rules with zoneId → 400 (reason country_only).",
+    "scope": "v0.8.0: GET, PUT and POST …/publish on /admin/config/{doc} name exactly one of zoneId (the zone's own document) or country (ISO alpha-2; the country's standard, or country_rules). Both or neither → 400 invalid_request (reason scope_required). country_rules with zoneId → 400 (reason country_only). A country scope is open to any admin who covers at least one zone of that country and holds the document's permission (owner 2026-10-27).",
     "standard": "v0.8.0 (owner 2026-10-27): every country has one standard rider_app_config, driver_app_config, pricing and dispatch, set in the admin, in the country's currency. A zone with no own published document of a kind uses its country's standard of that kind: the server serves it (GET /rider/config, /driver/config) and prices and dispatches with it, with zoneId set to the zone's id and usesStandard: true; its version is the standard's version. A zone with its own published document never uses the standard. Publishing a standard sends config_published (app documents) for every zone of the country that uses it. A zone's first own publish gets version max(own live, standard live) + 1. A standard document carries zoneId \"standard-<CC>\" (e.g. standard-SE) and its country's currency, country and timeZone. GET /admin/config/{doc}?zoneId returns usesStandard: true and the standard as the draft's starting point while the zone has nothing of its own.",
     "countryRules": "v0.8.0 (owner 2026-10-27): tips, raiseSteps and driverBonus are set once per country in the country_rules document { version, publishedAt, country, currency, tips: [AmountOption], raiseSteps: [AmountOption], driverBonus: { defaultLimit, hardMax } } and apply to all its zones. Publishing it rewrites, in the same transaction, RiderAppConfig.tips / raiseSteps and DriverAppConfig.driverBonus of every live and draft app document of the country (own and standard) like publishPricing (next version, history row, config_published; equal ones untouched). While a country_rules document is live, PUT and publish of an app document of that country take those three fields from it, whatever the admin sent.",
-    "publishApproval": "v0.8.0 (owner 2026-10-27, as refunds): no second admin. Any admin with the publish permission (settings.publish; dispatch.edit for dispatch; settings.publish for country_rules) publishes at once: 200 ConfigPublication, never 202. dispatch.approve and approval.decide no longer apply to config."
+    "publishApproval": "v0.8.0 (owner 2026-10-27, as refunds): no second admin. Any admin with the publish permission (settings.publish; dispatch.edit for dispatch; settings.publish for country_rules) publishes at once: 200 ConfigPublication, never 202. dispatch.approve and approval.decide no longer apply to config.",
+    "useStandard": "v0.8.0 (owner 2026-10-27): POST /admin/config/{doc}/use-standard { zoneId, expectedVersion } (the zone's draft version; same permission as publish; the admin confirms first) makes a zone with its own document use its country's standard again. The zone's own live document and draft are removed (every version stays in the history); the server re-stamps the standard as version max(standard live, the zone's own live) + 1 (a history row, the same content) so the zone's apps never see a lower version, and sends config_published to every zone using the standard. No standard published for the country → 409 conflict (reason standard_not_published); a zone already using the standard → 409 (reason already_standard). Not for country_rules."
   },
   "pricing": {
     "note": "v0.5.1 (CONTRACT.md §3.5). The server prices every quote and fare from the zone's pricing document (admin Pricing, the order of quoteRide), with owner decisions 16-21 applied. Amounts are exact until they become a fare line. Cases: fixtures/fares.json.",
@@ -2239,7 +2240,7 @@
     ]
   },
   "autoOffline": {
-    "note": "v0.8.0 (owner 2026-10-27): a driver goes offline after offers.autoOffline.missedExclusive (default 10) Exclusive offers in a row that were declined or expired. Only kind=exclusive offers of live trips count; Radar, assigned and reservation (scheduled) offers neither count nor break the run. An accepted Exclusive offer, or going online, starts the run again. Both the server (it sets onlineStatus offline and marks the offer event driverOffline: true) and the driver app enforce it; fixtures/settings_flow.json#autoOffline.",
+    "note": "v0.8.0 (owner 2026-10-27): a driver goes offline after offers.autoOffline.missedExclusive (default 10) Exclusive offers of live trips in a row that were declined or expired. Only kind=exclusive offers of live trips sent while the driver was free count; an Exclusive offer sent while the driver is on a trip never counts; Radar, assigned and reservation (scheduled) offers declined or expired never count. ANY accepted offer (Exclusive or Radar, any kind) and going online set the count back to 0. Both the server (it sets onlineStatus offline and marks the offer event driverOffline: true) and the driver app enforce it; fixtures/settings_flow.json#autoOffline.",
     "counts": [
       "exclusive"
     ],
@@ -2248,8 +2249,14 @@
       "expired"
     ],
     "resets": [
-      "exclusive accepted",
+      "any offer accepted",
       "driver goes online"
+    ],
+    "neverCounts": [
+      "radar",
+      "assigned",
+      "reservation",
+      "exclusive sent while on a trip"
     ]
   },
   "safety": {

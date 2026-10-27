@@ -5860,6 +5860,64 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /admin/config/{doc}/use-standard:
+    post:
+      operationId: adminUseStandardConfig
+      summary: Go back to the country standard (v0.8.0)
+      description: 'v0.8.0 (owner 2026-10-27): POST /admin/config/{doc}/use-standard { zoneId, expectedVersion } (the zone''s
+        draft version; same permission as publish; the admin confirms first) makes a zone with its own document use its country''s
+        standard again. The zone''s own live document and draft are removed (every version stays in the history); the server
+        re-stamps the standard as version max(standard live, the zone''s own live) + 1 (a history row, the same content) so
+        the zone''s apps never see a lower version, and sends config_published to every zone using the standard. No standard
+        published for the country → 409 conflict (reason standard_not_published); a zone already using the standard → 409
+        (reason already_standard). Not for country_rules. The answer names the zone and the standard''s new version.'
+      tags:
+      - Admin · Config
+      x-actor:
+      - admin
+      x-permission: settings.publish
+      x-permission-by-doc:
+        rider_app_config: settings.publish
+        driver_app_config: settings.publish
+        pricing: settings.publish
+        dispatch: dispatch.edit
+      parameters:
+      - $ref: '#/components/parameters/ConfigDoc'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UseStandardCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigPublication'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /admin/zones/{zoneId}/surge:
     get:
       operationId: adminGetSurge
@@ -9975,7 +10033,8 @@ components:
       description: 'v0.8.0: zoneId for a zone''s document, country for a country''s standard or country_rules (v0.8.0: GET,
         PUT and POST …/publish on /admin/config/{doc} name exactly one of zoneId (the zone''s own document) or country (ISO
         alpha-2; the country''s standard, or country_rules). Both or neither → 400 invalid_request (reason scope_required).
-        country_rules with zoneId → 400 (reason country_only).)'
+        country_rules with zoneId → 400 (reason country_only). A country scope is open to any admin who covers at least one
+        zone of that country and holds the document''s permission (owner 2026-10-27).)'
       required:
       - doc
       - version
@@ -11231,10 +11290,12 @@ components:
                   minimum: 0
                   description: 'Missed or declined exclusive offers in a row before the driver is set offline (default 10,
                     owner decision 35; 3 before v0.5.6). v0.8.0 (owner 2026-10-27): a driver goes offline after offers.autoOffline.missedExclusive
-                    (default 10) Exclusive offers in a row that were declined or expired. Only kind=exclusive offers of live
-                    trips count; Radar, assigned and reservation (scheduled) offers neither count nor break the run. An accepted
-                    Exclusive offer, or going online, starts the run again. Both the server (it sets onlineStatus offline
-                    and marks the offer event driverOffline: true) and the driver app enforce it; fixtures/settings_flow.json#autoOffline.'
+                    (default 10) Exclusive offers of live trips in a row that were declined or expired. Only kind=exclusive
+                    offers of live trips sent while the driver was free count; an Exclusive offer sent while the driver is
+                    on a trip never counts; Radar, assigned and reservation (scheduled) offers declined or expired never count.
+                    ANY accepted offer (Exclusive or Radar, any kind) and going online set the count back to 0. Both the server
+                    (it sets onlineStatus offline and marks the offer event driverOffline: true) and the driver app enforce
+                    it; fixtures/settings_flow.json#autoOffline.'
                 hiddenComesBackMin:
                   type: number
                   minimum: 0
@@ -14222,7 +14283,9 @@ components:
       type: object
       description: 'Exactly one of zoneId or country (v0.8.0). v0.8.0: GET, PUT and POST …/publish on /admin/config/{doc}
         name exactly one of zoneId (the zone''s own document) or country (ISO alpha-2; the country''s standard, or country_rules).
-        Both or neither → 400 invalid_request (reason scope_required). country_rules with zoneId → 400 (reason country_only).'
+        Both or neither → 400 invalid_request (reason scope_required). country_rules with zoneId → 400 (reason country_only).
+        A country scope is open to any admin who covers at least one zone of that country and holds the document''s permission
+        (owner 2026-10-27).'
       required:
       - expectedVersion
       - document
@@ -14265,3 +14328,22 @@ components:
         note:
           type: string
           maxLength: 1000
+    UseStandardCommand:
+      type: object
+      description: 'v0.8.0 (owner 2026-10-27): POST /admin/config/{doc}/use-standard { zoneId, expectedVersion } (the zone''s
+        draft version; same permission as publish; the admin confirms first) makes a zone with its own document use its country''s
+        standard again. The zone''s own live document and draft are removed (every version stays in the history); the server
+        re-stamps the standard as version max(standard live, the zone''s own live) + 1 (a history row, the same content) so
+        the zone''s apps never see a lower version, and sends config_published to every zone using the standard. No standard
+        published for the country → 409 conflict (reason standard_not_published); a zone already using the standard → 409
+        (reason already_standard). Not for country_rules.'
+      required:
+      - expectedVersion
+      - zoneId
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 1
+          description: Version the caller last saw; stale → 409 version_mismatch.
+        zoneId:
+          $ref: '#/components/schemas/Id'

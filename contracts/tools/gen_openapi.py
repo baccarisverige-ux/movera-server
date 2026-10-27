@@ -1461,6 +1461,11 @@ op("post", "/admin/config/{doc}/publish", "adminPublishConfig", "Publish the dra
    ext={"x-permission-by-doc": {"rider_app_config": "settings.publish", "driver_app_config": "settings.publish", "pricing": "settings.publish", "dispatch": "dispatch.edit", "country_rules": "settings.publish"}},
    desc=C["configDocs"]["publishApproval"] + " The server stamps version and publishedAt (contract.json#configVersion). "
         "Emits config_published on the app streams for rider_app_config and driver_app_config only; pricing and dispatch (server-only) are published with the same version rule but never reach the apps.")
+S["UseStandardCommand"] = obj(dict(EV, zoneId=ref("Id")), ["expectedVersion", "zoneId"], C["configDocs"]["useStandard"])
+op("post", "/admin/config/{doc}/use-standard", "adminUseStandardConfig", "Go back to the country standard (v0.8.0)", ["admin"], "Admin · Config",
+   params=[pref("ConfigDoc")], body="UseStandardCommand", ok=(200, "ConfigPublication"), mutation=True, permission="settings.publish",
+   ext={"x-permission-by-doc": {"rider_app_config": "settings.publish", "driver_app_config": "settings.publish", "pricing": "settings.publish", "dispatch": "dispatch.edit"}},
+   desc=C["configDocs"]["useStandard"] + " The answer names the zone and the standard's new version.")
 op("get", "/admin/zones/{zoneId}/surge", "adminGetSurge", "The zone's current surge schedule", ["admin"], "Admin · Config",
    params=[pref("ZoneId")], ok=(200, "SurgeSchedule"), permission="settings.read", permission_v050="pricing.read", desc="204 when the zone has none (flat ×1.0).")
 PATHS["/admin/zones/{zoneId}/surge"]["get"]["responses"]["204"] = {"description": "No surge schedule", "headers": HDR_REQ}

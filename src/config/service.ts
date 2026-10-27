@@ -251,6 +251,35 @@ export function appDocWithPricing(doc: ConfigDoc, appDocument: Doc, pricing: Pri
   return next;
 }
 
+/**
+ * contract.json#configDocs.useStandard (v0.8.0, owner 2026-10-27): the zone's own document and draft go (the
+ * history keeps every version); the standard is re-stamped above the zone's last own version so the zone's apps
+ * never see a lower number, and every zone using it is told.
+ */
+export async function useStandard(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; adminId: string }, now: Date): Promise<Publication> {
+  if (COUNTRY_ONLY_DOCS.includes(input.doc)) throw badRequest(`${input.doc} has no standard.`, "country_only");
+  const zone = await getZone(trx, input.zoneId);
+  const key = standardKey(zone.country);
+  const current = await lockDraftVersion(trx, input.doc, input.zoneId);
+  await lockDraftVersion(trx, input.doc, key);
+  const own = await trx.selectFrom("config_live").select("version").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).executeTakeFirst();
+  if (own === undefined) throw new ApiError("conflict", "This zone already uses the standard.", { reason: "already_standard" });
+  if (current.version !== input.expectedVersion) throw new ApiError("version_mismatch", "The settings changed since you last saw them.", { reason: "draft_changed" });
+  const standard = await trx.selectFrom("config_live").select(["version", "document"]).where("doc", "=", input.doc).where("zone_id", "=", key).executeTakeFirst();
+  if (standard === undefined) throw new ApiError("conflict", "No standard is published for this country.", { reason: "standard_not_published" });
+  await trx.deleteFrom("config_live").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).execute();
+  await trx.deleteFrom("config_drafts").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).execute();
+  const version = Math.max(standard.version, own.version) + 1;
+  const publishedAt = now.toISOString();
+  const json = JSON.stringify({ ...(standard.document as Doc), version, publishedAt });
+  const row = { doc: input.doc, zone_id: key, version, document: json, published_at: now, published_by: input.adminId };
+  await trx.updateTable("config_live").set(row).where("doc", "=", input.doc).where("zone_id", "=", key).execute();
+  await trx.insertInto("config_history").values({ ...row, approved_by: null, note: `re-stamped: ${input.zoneId} went back to the standard` }).execute();
+  await notifyPublished(trx, input.doc, key, version, publishedAt);
+  await audit(trx, { adminId: input.adminId, action: "config.use_standard", targetType: "config", targetId: input.doc, zoneId: input.zoneId, detail: { version, from: own.version }, at: now });
+  return { doc: input.doc, zoneId: input.zoneId, version, publishedAt };
+}
+
 export type CountryRules = { tips?: unknown; raiseSteps?: unknown; driverBonus?: unknown };
 
 /** v0.8.0 §6.5: an app document with the country's tips and raise steps (rider) or driver bonus limits (driver). */

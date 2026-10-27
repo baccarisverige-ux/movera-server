@@ -14,3 +14,13 @@ ALTER TABLE config_live ADD CONSTRAINT config_live_scope_check CHECK (zone_id !~
 ALTER TABLE quotes ADD COLUMN pricing_scope text;
 ALTER TABLE trips ADD COLUMN pricing_scope text;
 ALTER TABLE trips ADD COLUMN booking_rules jsonb;
+
+-- §6.7 (owner 2026-10-27): an Exclusive offer sent while the driver is on a trip never counts toward auto-offline.
+-- Every offer remembers whether its driver was on a trip when it was sent.
+ALTER TABLE offers ADD COLUMN driver_on_trip boolean NOT NULL DEFAULT false;
+CREATE FUNCTION offers_driver_on_trip() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.driver_on_trip := COALESCE((SELECT online_status = 'on_trip' FROM drivers WHERE driver_id = NEW.driver_id), false);
+  RETURN NEW;
+END $$;
+CREATE TRIGGER offers_driver_on_trip BEFORE INSERT ON offers FOR EACH ROW EXECUTE FUNCTION offers_driver_on_trip();

@@ -508,6 +508,8 @@ export interface OffersTable {
   expires_at: Timestamp;
   answered_at: Timestamp | null;
   decline_reason: string | null;
+  /** v0.8.0: the driver was on a trip when the offer was sent (a trigger sets it); such a miss never counts for auto-offline. */
+  driver_on_trip: Generated<boolean>;
 }
 
 export interface OfferEventsTable {
