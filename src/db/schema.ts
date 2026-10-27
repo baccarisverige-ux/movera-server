@@ -185,6 +185,10 @@ export interface TripsTable {
   /** v0.6.0: the quote's babySeats, childSeats, airportPickup, airportDropoff, fixedRouteId (priced again at the end). */
   price_extras: JsonDefault<Record<string, unknown>>;
   pricing_version: ColumnType<number | null, number | null | undefined, number | null>;
+  /** v0.8.0: config scope of that pricing document (the zone id, or standard-<CC>); null before v0.8.0 = the zone. */
+  pricing_scope: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.8.0 (contract.json#bookingSnapshot): the rules of booking time; null before v0.8.0 = the live settings. */
+  booking_rules: ColumnType<unknown, string | null | undefined, string | null>;
   quote_expires_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   notes: ColumnType<string | null, string | null | undefined, string | null>;
   search_step: ColumnType<unknown, string | null | undefined, string | null>;
@@ -347,7 +351,7 @@ export interface ZonesTable {
   east: number;
 }
 
-export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch";
+export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch" | "country_rules";
 
 export interface ConfigDraftsTable {
   doc: ConfigDoc;
@@ -428,6 +432,8 @@ export interface QuotesTable {
   fare_lines: Json;
   driver_earnings_minor: ColumnType<string, number | string, number | string>;
   pricing_version: number;
+  /** v0.8.0: the zone id, or standard-<CC> when the country standard priced the quote. */
+  pricing_scope: ColumnType<string | null, string | null | undefined, string | null>;
   payment_method: string | null;
   expires_at: Timestamp;
   used_at: Timestamp | null;

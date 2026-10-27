@@ -1,11 +1,11 @@
-# Movera API v0.6.0 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.8.0 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.6.0
+  version: 0.8.0
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.6.0 in this folder; this file must agree with them.
+    v0.8.0 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -68,7 +68,7 @@ tags:
   description: Legacy /rides aliases kept for one release
 x-contract:
   name: movera
-  version: 0.6.0
+  version: 0.8.0
   source: contract.json
 paths:
   /auth/otp/request:
@@ -5388,7 +5388,8 @@ paths:
       x-permission-v050: config.read
       parameters:
       - $ref: '#/components/parameters/ConfigDoc'
-      - $ref: '#/components/parameters/ZoneIdRequired'
+      - $ref: '#/components/parameters/ConfigZoneId'
+      - $ref: '#/components/parameters/ConfigCountry'
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
       responses:
@@ -5431,6 +5432,7 @@ paths:
         driver_app_config: settings.edit
         pricing: settings.edit
         dispatch: dispatch.edit
+        country_rules: settings.edit
       parameters:
       - $ref: '#/components/parameters/ConfigDoc'
       - $ref: '#/components/parameters/IdempotencyKey'
@@ -5471,10 +5473,12 @@ paths:
   /admin/config/{doc}/publish:
     post:
       operationId: adminPublishConfig
-      summary: Publish the draft (two-person approval)
-      description: Normally 202 pending_approval; 200 when the approver publishes directly, and always 200 for a Super admin
-        (approvalExempt, owner decision 14, v0.5.1). Emits config_published on the app streams for rider_app_config and driver_app_config
-        only; pricing and dispatch (server-only) are published with the same version rule but never reach the apps.
+      summary: Publish the draft at once (no second admin, v0.8.0)
+      description: 'v0.8.0 (owner 2026-10-27, as refunds): no second admin. Any admin with the publish permission (settings.publish;
+        dispatch.edit for dispatch; settings.publish for country_rules) publishes at once: 200 ConfigPublication, never 202.
+        dispatch.approve and approval.decide no longer apply to config. The server stamps version and publishedAt (contract.json#configVersion).
+        Emits config_published on the app streams for rider_app_config and driver_app_config only; pricing and dispatch (server-only)
+        are published with the same version rule but never reach the apps.'
       tags:
       - Admin · Config
       x-actor:
@@ -5486,11 +5490,7 @@ paths:
         driver_app_config: settings.publish
         pricing: settings.publish
         dispatch: dispatch.edit
-      x-approver-permission-by-doc:
-        rider_app_config: settings.publish
-        driver_app_config: settings.publish
-        pricing: settings.publish
-        dispatch: dispatch.approve
+        country_rules: settings.publish
       parameters:
       - $ref: '#/components/parameters/ConfigDoc'
       - $ref: '#/components/parameters/IdempotencyKey'
@@ -5514,8 +5514,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConfigPublication'
-        '202':
-          $ref: '#/components/responses/PendingApproval'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -7162,6 +7160,20 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/Id'
+    ConfigZoneId:
+      name: zoneId
+      in: query
+      required: false
+      description: 'v0.8.0: the zone''s own document; exactly one of zoneId or country.'
+      schema:
+        $ref: '#/components/schemas/Id'
+    ConfigCountry:
+      name: country
+      in: query
+      required: false
+      description: 'v0.8.0: the country''s standard, or country_rules; exactly one of zoneId or country.'
+      schema:
+        $ref: '#/components/schemas/CountryCode'
     From:
       name: from
       in: query
@@ -9439,15 +9451,22 @@ components:
       - driver_app_config
       - pricing
       - dispatch
+      - country_rules
       x-server-only:
       - pricing
       - dispatch
+      - country_rules
+      x-country-only:
+      - country_rules
       description: app documents are served to the apps; pricing and dispatch (v0.5.1) are server-only (x-server-only, contract.json#configDocs).
     ConfigDraft:
       type: object
+      description: 'v0.8.0: zoneId for a zone''s document, country for a country''s standard or country_rules (v0.8.0: GET,
+        PUT and POST …/publish on /admin/config/{doc} name exactly one of zoneId (the zone''s own document) or country (ISO
+        alpha-2; the country''s standard, or country_rules). Both or neither → 400 invalid_request (reason scope_required).
+        country_rules with zoneId → 400 (reason country_only).)'
       required:
       - doc
-      - zoneId
       - version
       - liveVersion
       - document
@@ -9457,6 +9476,12 @@ components:
           $ref: '#/components/schemas/ConfigDocName'
         zoneId:
           $ref: '#/components/schemas/Id'
+        country:
+          $ref: '#/components/schemas/CountryCode'
+        usesStandard:
+          type: boolean
+          description: 'v0.8.0: the zone has no own published document of this kind and uses its country''s standard (configDocs.standard);
+            the draft starts from the standard.'
         version:
           type: integer
           minimum: 1
@@ -9471,6 +9496,7 @@ components:
           - $ref: '#/components/schemas/DriverAppConfig'
           - $ref: '#/components/schemas/PricingDocument'
           - $ref: '#/components/schemas/DispatchDocument'
+          - $ref: '#/components/schemas/CountryRules'
         updatedAt:
           $ref: '#/components/schemas/Timestamp'
         updatedBy:
@@ -9479,7 +9505,6 @@ components:
       type: object
       required:
       - doc
-      - zoneId
       - version
       - publishedAt
       properties:
@@ -9487,11 +9512,53 @@ components:
           $ref: '#/components/schemas/ConfigDocName'
         zoneId:
           $ref: '#/components/schemas/Id'
+        country:
+          $ref: '#/components/schemas/CountryCode'
         version:
           type: integer
           minimum: 1
+          description: Stamped by the server (contract.json#configVersion).
         publishedAt:
           $ref: '#/components/schemas/Timestamp'
+    CountryRules:
+      type: object
+      description: 'v0.8.0, server-only, per country: v0.8.0 (owner 2026-10-27): tips, raiseSteps and driverBonus are set
+        once per country in the country_rules document { version, publishedAt, country, currency, tips: [AmountOption], raiseSteps:
+        [AmountOption], driverBonus: { defaultLimit, hardMax } } and apply to all its zones. Publishing it rewrites, in the
+        same transaction, RiderAppConfig.tips / raiseSteps and DriverAppConfig.driverBonus of every live and draft app document
+        of the country (own and standard) like publishPricing (next version, history row, config_published; equal ones untouched).
+        While a country_rules document is live, PUT and publish of an app document of that country take those three fields
+        from it, whatever the admin sent.'
+      required:
+      - version
+      - publishedAt
+      - country
+      - currency
+      - tips
+      - raiseSteps
+      - driverBonus
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: Stamped by the server.
+        publishedAt:
+          $ref: '#/components/schemas/Timestamp'
+        country:
+          $ref: '#/components/schemas/CountryCode'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        tips:
+          type: array
+          items:
+            $ref: '#/components/schemas/AmountOption'
+        raiseSteps:
+          type: array
+          items:
+            $ref: '#/components/schemas/AmountOption'
+        driverBonus:
+          $ref: '#/components/schemas/DriverBonusLimits'
+      x-server-only: true
     FeeRule:
       type: object
       required:
@@ -9558,6 +9625,14 @@ components:
           $ref: '#/components/schemas/CancelFeeTable'
         reservation:
           $ref: '#/components/schemas/CancelFeeTable'
+        driverSharePct:
+          type: number
+          minimum: 0
+          maximum: 100
+          default: 100
+          description: 'DriverAppConfig only. v0.8.0 (owner 2026-10-27): DriverAppConfig.cancelFees.driverSharePct, set in
+            Admin › Dispatch per zone: the driver''s share of a rider''s cancel fee, 0–100, default 100. Movera keeps the
+            rest.'
     CategoryCatalog:
       type: object
       required:
@@ -10419,7 +10494,7 @@ components:
         version:
           type: integer
           minimum: 1
-          description: Only increases; apps keep the last good document.
+          description: Stamped by the server (contract.json#configVersion); only increases; apps keep the last good document.
         publishedAt:
           $ref: '#/components/schemas/Timestamp'
         zoneId:
@@ -10438,6 +10513,9 @@ components:
           $ref: '#/components/schemas/CountryCode'
         languages:
           $ref: '#/components/schemas/Languages'
+        usesStandard:
+          type: boolean
+          description: 'v0.8.0: set by the server when it serves or uses the country standard for this zone (contract.json#configDocs.standard).'
         catalog:
           $ref: '#/components/schemas/CategoryCatalog'
         features:
@@ -10531,7 +10609,7 @@ components:
         version:
           type: integer
           minimum: 1
-          description: Only increases; apps keep the last good document.
+          description: Stamped by the server (contract.json#configVersion); only increases; apps keep the last good document.
         publishedAt:
           $ref: '#/components/schemas/Timestamp'
         zoneId:
@@ -10550,6 +10628,9 @@ components:
           $ref: '#/components/schemas/CountryCode'
         languages:
           $ref: '#/components/schemas/Languages'
+        usesStandard:
+          type: boolean
+          description: 'v0.8.0: set by the server when it serves or uses the country standard for this zone (contract.json#configDocs.standard).'
         catalog:
           $ref: '#/components/schemas/CategoryCatalog'
         features:
@@ -10637,8 +10718,12 @@ components:
                 missedExclusive:
                   type: integer
                   minimum: 0
-                  description: Missed or declined exclusive offers in a row before the driver is set offline (default 10,
-                    owner decision 35; 3 before v0.5.6).
+                  description: 'Missed or declined exclusive offers in a row before the driver is set offline (default 10,
+                    owner decision 35; 3 before v0.5.6). v0.8.0 (owner 2026-10-27): a driver goes offline after offers.autoOffline.missedExclusive
+                    (default 10) Exclusive offers in a row that were declined or expired. Only kind=exclusive offers of live
+                    trips count; Radar, assigned and reservation (scheduled) offers neither count nor break the run. An accepted
+                    Exclusive offer, or going online, starts the run again. Both the server (it sets onlineStatus offline
+                    and marks the offer event driverOffline: true) and the driver app enforce it; fixtures/settings_flow.json#autoOffline.'
                 hiddenComesBackMin:
                   type: number
                   minimum: 0
@@ -11016,7 +11101,7 @@ components:
         version:
           type: integer
           minimum: 1
-          description: Admin revision of the zone's live pricing document (contract.json#configVersion).
+          description: Server-stamped revision of the zone's live pricing document (contract.json#configVersion).
         publishedAt:
           $ref: '#/components/schemas/Timestamp'
         zoneId:
@@ -11057,6 +11142,9 @@ components:
           minimum: 0
           maximum: 30
           description: Fleet owner's share (admin Pricing); not in the rider's fare.
+        usesStandard:
+          type: boolean
+          description: 'v0.8.0: set by the server when it serves or uses the country standard for this zone (contract.json#configDocs.standard).'
       x-server-only: true
     DispatchModeRules:
       type: object
@@ -11231,7 +11319,7 @@ components:
         version:
           type: integer
           minimum: 1
-          description: Admin revision of the zone's live dispatch document (contract.json#configVersion).
+          description: Server-stamped revision of the zone's live dispatch document (contract.json#configVersion).
         publishedAt:
           $ref: '#/components/schemas/Timestamp'
         zoneId:
@@ -11309,6 +11397,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DispatchWaitingStep'
+        usesStandard:
+          type: boolean
+          description: 'v0.8.0: set by the server when it serves or uses the country standard for this zone (contract.json#configDocs.standard).'
       x-server-only: true
       x-ranges:
         radar.drivers:
@@ -12269,6 +12360,10 @@ components:
           allOf:
           - $ref: '#/components/schemas/Offer'
           description: For offer_withdrawn, offer.status is claimed_elsewhere | expired | withdrawn.
+        driverOffline:
+          type: boolean
+          description: 'v0.8.0: this declined or expired Exclusive offer was the last of the run that set the driver offline
+            (contract.json#autoOffline).'
     ConfigEvent:
       type: object
       description: Apps re-fetch the config document on this event.
@@ -13603,9 +13698,11 @@ components:
           maxLength: 1000
     ConfigDraftUpdate:
       type: object
+      description: 'Exactly one of zoneId or country (v0.8.0). v0.8.0: GET, PUT and POST …/publish on /admin/config/{doc}
+        name exactly one of zoneId (the zone''s own document) or country (ISO alpha-2; the country''s standard, or country_rules).
+        Both or neither → 400 invalid_request (reason scope_required). country_rules with zoneId → 400 (reason country_only).'
       required:
       - expectedVersion
-      - zoneId
       - document
       properties:
         expectedVersion:
@@ -13614,17 +13711,20 @@ components:
           description: Version the caller last saw; stale → 409 version_mismatch.
         zoneId:
           $ref: '#/components/schemas/Id'
+        country:
+          $ref: '#/components/schemas/CountryCode'
         document:
           oneOf:
           - $ref: '#/components/schemas/RiderAppConfig'
           - $ref: '#/components/schemas/DriverAppConfig'
           - $ref: '#/components/schemas/PricingDocument'
           - $ref: '#/components/schemas/DispatchDocument'
+          - $ref: '#/components/schemas/CountryRules'
     ConfigPublishCommand:
       type: object
+      description: Exactly one of zoneId or country (v0.8.0).
       required:
       - expectedVersion
-      - zoneId
       properties:
         expectedVersion:
           type: integer
@@ -13632,6 +13732,8 @@ components:
           description: Version the caller last saw; stale → 409 version_mismatch.
         zoneId:
           $ref: '#/components/schemas/Id'
+        country:
+          $ref: '#/components/schemas/CountryCode'
         note:
           type: string
           maxLength: 1000

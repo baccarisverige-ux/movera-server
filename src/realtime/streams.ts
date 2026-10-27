@@ -2,7 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Db } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
 import { TRIP_EVENTS_CHANNEL, tripEventsAfter } from "../db/tripLog.js";
-import { CONFIG_CHANNEL } from "../config/service.js";
+import { CONFIG_CHANNEL, liveDocument } from "../config/service.js";
 import type { Principal } from "../auth/guard.js";
 import { newId } from "../ids.js";
 import { eventEnvelope } from "./events.js";
@@ -87,18 +87,20 @@ export async function streamConfig(
   const stream = openEventStream(request, reply);
   let sent = lastSeenVersion;
   const check = async () => {
-    const live = await deps.db.selectFrom("config_live").select(["version", "published_at"]).where("doc", "=", doc).where("zone_id", "=", zoneId).executeTakeFirst();
-    if (live === undefined || live.version <= sent || stream.closed()) return;
+    // v0.8.0 §6.4: the zone's own document, else its country standard (liveDocument).
+    const live = await liveDocument<{ publishedAt?: string }>(deps.db, doc, zoneId);
+    if (live === null || live.version <= sent || stream.closed()) return;
     sent = live.version;
     const now = deps.clock?.() ?? new Date();
+    const publishedAt = live.document.publishedAt ?? now.toISOString();
     stream.send(live.version, {
       eventId: newId("evt", now.getTime()),
       kind: "config_published",
       doc,
       zoneId,
       version: live.version,
-      publishedAt: live.published_at.toISOString(),
-      occurredAt: live.published_at.toISOString(),
+      publishedAt,
+      occurredAt: publishedAt,
       serverTime: now.toISOString(),
     });
   };

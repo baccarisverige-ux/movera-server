@@ -1,14 +1,15 @@
 import type { Trx } from "../db/db.js";
 import { contractJson } from "../contract/contract.js";
 import type { ConfigDoc } from "../db/schema.js";
-import { CONFIG_DOCS, liveDocument, publishDraft, putDraft } from "./service.js";
+import { liveDocument, publishDraft, putDraft, standardKey } from "./service.js";
 
 /**
- * The test week's starting settings: in every open zone that has no live document yet, the contract's sample
- * document (contracts/fixtures/config) is published for that zone, so quotes and dispatch work before anyone opens
- * the settings in the admin panel. A zone that already has a live document keeps it. Not for production.
+ * The test week's starting settings: the contract's sample documents (contracts/fixtures/config), published as the
+ * country standard (§6.4), so quotes and dispatch work before anyone opens the settings in the admin panel. Not for
+ * production.
  */
-const FIXTURES: Record<ConfigDoc, string> = {
+const SAMPLE_DOCS = ["rider_app_config", "driver_app_config", "pricing", "dispatch"] as const;
+const FIXTURES: Record<(typeof SAMPLE_DOCS)[number], string> = {
   rider_app_config: "fixtures/config/rider_app_config.json",
   driver_app_config: "fixtures/config/driver_app_config.json",
   pricing: "fixtures/config/pricing_document.json",
@@ -52,19 +53,27 @@ export function sampleForZone(sample: Record<string, unknown>, zone: SampleZone)
   };
 }
 
+/**
+ * v0.8.0 (§6.4): the samples are published as each country's STANDARD (standard-<CC>) for every country with an
+ * open zone that has no standard yet, so every zone without its own settings uses them. Zones' own documents are
+ * never touched. Development and staging only: production has no seeds.
+ */
 export async function seedSampleConfig(trx: Trx, now: Date = new Date()): Promise<{ doc: ConfigDoc; zoneId: string; version: number }[]> {
   const zones = await trx.selectFrom("zones").select(["zone_id", "currency", "country", "time_zone"]).where("open", "=", true).orderBy("zone_id").execute();
   const published: { doc: ConfigDoc; zoneId: string; version: number }[] = [];
-  for (const zone of zones) {
-    for (const doc of CONFIG_DOCS) {
-      if ((await liveDocument(trx, doc, zone.zone_id)) !== null) continue;
+  const countries = new Map<string, (typeof zones)[number]>();
+  for (const zone of zones) if (!countries.has(zone.country)) countries.set(zone.country, zone);
+  for (const [country, zone] of countries) {
+    const key = standardKey(country);
+    for (const doc of SAMPLE_DOCS) {
+      if ((await liveDocument(trx, doc, key)) !== null) continue;
       const sample = contractJson<Record<string, unknown>>(FIXTURES[doc]);
-      const document = sampleForZone(sample, { zoneId: zone.zone_id, currency: zone.currency, country: zone.country, timeZone: zone.time_zone });
+      const document = sampleForZone(sample, { zoneId: key, currency: zone.currency, country, timeZone: zone.time_zone });
       // A first document has no draft yet: the server then counts it as version 1 (as the panel's first save).
-      const draft = await trx.selectFrom("config_drafts").select("version").where("doc", "=", doc).where("zone_id", "=", zone.zone_id).executeTakeFirst();
-      const saved = await putDraft(trx, { doc, zoneId: zone.zone_id, expectedVersion: draft?.version ?? 1, document, adminId: SEED_BY }, now);
-      const made = await publishDraft(trx, { doc, zoneId: zone.zone_id, expectedVersion: saved.version, note: "sample settings (seed-test)", publishedBy: SEED_BY, approvedBy: null }, now);
-      published.push({ doc, zoneId: zone.zone_id, version: made.version });
+      const draft = await trx.selectFrom("config_drafts").select("version").where("doc", "=", doc).where("zone_id", "=", key).executeTakeFirst();
+      const saved = await putDraft(trx, { doc, zoneId: key, expectedVersion: draft?.version ?? 1, document, adminId: SEED_BY }, now);
+      const made = await publishDraft(trx, { doc, zoneId: key, expectedVersion: saved.version, note: "sample settings (seed-test)", publishedBy: SEED_BY, approvedBy: null }, now);
+      published.push({ doc, zoneId: key, version: made.version });
     }
   }
   return published;

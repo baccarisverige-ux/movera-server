@@ -1,4 +1,6 @@
-# Movera shared contract v0.6.0
+# Movera shared contract v0.8.0
+
+v0.8.0 (settings flow, owner decisions of 2026-10-27 "settings-flow part 2"; X-Api-Version stays `0.5`, every wire change is optional or additive; builds on v0.6.0 pricing, and v0.7.0 safety is separate): **the server's version counts** (§6, `contract.json#configVersion`): the server stamps `version` and `publishedAt` on every publish and ignores what the admin sends. **Country standard** (§6.4, `configDocs.standard`): each country has a standard rider, driver, pricing and dispatch document set in the admin (`?country=SE` instead of `?zoneId` on `/admin/config/{doc}`); a zone without its own published document uses its country's standard, served with `usesStandard: true`; a zone with its own document never uses it. **Country rules** (§6.5, new document `country_rules`, per country only): tips, raise steps and driver bonus limits are set once per country and written into every app document of the country. **No second admin for config** (`configDocs.publishApproval`): any admin with the publish right publishes at once (200, never 202). **`DriverAppConfig.cancelFees.driverSharePct`** (Admin › Dispatch, per zone, default 100 %). **A booked trip keeps all its rules** (§6.6, `contract.json#bookingSnapshot`): price, cancel fee, no-show fee and every share come from booking time. **Auto-offline** (§6.7, `contract.json#autoOffline`): 10 declined or expired Exclusive offers in a row, Exclusive only (never Radar, never scheduled); server and driver app both enforce it, the offer event carries `driverOffline: true`. Cases: `fixtures/settings_flow.json`.
 
 v0.6.0 (pricing rework, owner decisions of 2026-10-27: follow the admin demo Pricing section; X-Api-Version stays `0.5`, every wire change is an optional field): **`child_seat` joins the category seed** with the display labels Movera, Comfort, Premium, Priority, Movera XL, Electric, Movera Pet, Child Seat (`contract.json#categories.labels`; the rider app's former id `kids` is read as `child_seat` for one release and the driver app's "Booster Seat" is that category). **Seat fees only on Child Seat**: `CategoryPricing.babySeatFee` / `childSeatFee` become optional and the Stockholm defaults carry them on `child_seat` only (15 kr each). **What the rider asks for is priced** (§3.5): `QuoteRequest` and `CreateTripRequest` gain `babySeats`, `childSeats` (0–3), `airportPickup`, `airportDropoff` and `fixedRouteId` (`contract.json#pricing.requestExtras`); as in the admin calculator, a seat on a category without the fee adds nothing and a fixed route of another category is ignored. **The admin sets the surge maximum** (§3.4, §3.5): `pricing.surge.maxMultiplier` may be ×1 to ×6 (the demo's slider; was at most ×3) and binds the manual schedule, the scheduled windows and smart surge alike; `SurgeSchedule.cap`, smart profile caps and steps and scheduled windows are at most ×6. The Stockholm default stays ×3. **Publishing pricing keeps the app documents in step** (§6.2, `contract.json#configDocs.publishPricing`): the server rewrites the zone's rider and driver documents' waiting, no-show and rider pickup fee from the new pricing document. The sample app documents are aligned with the pricing document (12.26 kr/min, Premium 16.90 kr/min, **no-show fee 65 kr**) and `reference_check.py` checks the must-match rule against them. Fixtures: `fixtures/fares.json` gains Child Seat seats with an airport pickup and the ×6 maximum. The refund and payout additions the server already does move to v0.6.1.
 
@@ -173,7 +175,7 @@ Both tools are the admin `assign` transition (`contract.json#adminDispatch`); th
 - **Lock**: once a driver accepts (`status` in `driverAssigned` or terminal), `assign` and `radar-group` are `409 invalid_transition`.
 - **Driver bonus** ("add money to trip"): `driverBonus: Money` on assign / radar-group, or `POST /admin/trips/{id}/driver-bonus`. Paid by Movera (from its commission, possibly beyond it); the rider never pays it. The driver's `Offer.fare` and `driverEarnings` already include it, and `priority: true` shows the "Priority" badge. Above the country's `driverBonus.defaultLimit` the server answers `400 invalid_request` ("adjust the limit in Pricing"); the limit can never exceed `driverBonus.hardMax`.
 - **Events**: `GET /admin/dispatch/stream` (SSE, `AdminDispatchEvent`): `offer_sent, offer_declined, offer_expired, offer_withdrawn, offer_accepted, assignment_locked, driver_bonus_added`. The rider only sees "searching" then "driver assigned".
-- **Second-admin approval (v0.5.1, owner decision 14 (2026-10-24))**: a Super admin (role `super`, `AdminMe.approvalExempt: true`) never needs a second admin: refunds, adjusts, config publishes, surge and dispatch control run at once (`200`/`201`, never `202 pending_approval`) and are written in the audit. Big changes by other admins still answer `202 pending_approval` and wait for another admin (`POST /admin/approvals/{id}/approve`, `approval.decide`; for dispatch rules the panel's `dispatch.approve`).
+- **Second-admin approval (v0.5.1, owner decision 14 (2026-10-24))**: a Super admin (role `super`, `AdminMe.approvalExempt: true`) never needs a second admin: refunds, adjusts, config publishes, surge and dispatch control run at once (`200`/`201`, never `202 pending_approval`) and are written in the audit. Since v0.8.0 config publishes never wait for a second admin, whoever publishes (`contract.json#configDocs.publishApproval`). Other big changes by other admins still answer `202 pending_approval` and wait for another admin (`POST /admin/approvals/{id}/approve`, `approval.decide`; for dispatch rules the panel's `dispatch.approve`).
 
 ### 3.2 Pickup pay (v0.5.0, owner decision 7)
 
@@ -305,12 +307,14 @@ Every admin control below has one owner page, one config path and one defined ef
 | Waiting & no-show (Dispatch › Waiting at pickup; money in Pricing) | `rider.waiting`, `driver.waiting` (+ `byCategory`) | Waiting clock, price/min per category | Waiting clock, no-show button at the category free wait | Waiting charge (100% driver), no-show fee, driver share per country |
 | Stops (Dispatch › Stops) | `rider.booking.maxStops`, `driver.booking.maxStops` | Max stops | Stop marks | Stop pricing |
 | Pickup move after accept (Dispatch) | `rider.booking.maxPickupMoveMeters`, `driver.booking.maxPickupMoveMeters` | Move pickup up to N m, further = cancel/rebook | Notified of the move | Rejects a bigger move |
-| Tips (Pricing, per country) | `rider.tips` | Tip options | — | Tip limits |
-| Raise-offer steps (Pricing, per country) | `rider.raiseSteps` | Quick "+" steps while searching | — | Fare raise |
+| Tips (Pricing, per country; v0.8.0 `country_rules`) | `rider.tips` | Tip options | — | Tip limits |
+| Raise-offer steps (Pricing, per country; v0.8.0 `country_rules`) | `rider.raiseSteps` | Quick "+" steps while searching | — | Fare raise |
 | Promo cap (Riders › Promotions, per country) | `rider.promoCap` | Shown in local money | — | Caps the discount |
-| Driver bonus limits (Pricing, per country) | `driver.driverBonus` | — | — | Admin "add money to trip" limits |
+| Driver bonus limits (Pricing, per country; v0.8.0 `country_rules`) | `driver.driverBonus` | — | — | Admin "add money to trip" limits |
 | Default languages (Settings, per country) | `rider.languages`, `driver.languages` | Default app language | Default app language | — |
-| Offer modes, timers, offer card (Dispatch › Modes) | `driver.offers` | — | Radar/Exclusive timers, card fields, auto-offline | Dispatch |
+| Offer modes, timers, offer card (Dispatch › Modes) | `driver.offers` | — | Radar/Exclusive timers, card fields, auto-offline (Exclusive only, §6.7) | Dispatch, auto-offline (§6.7) |
+| Cancel fee driver share (Dispatch, per zone; v0.8.0) | `driver.cancelFees.driverSharePct` | — | Island fee share | Driver part of a cancel fee, kept on the trip at booking (§6.6) |
+| Country standard (Settings › Standard per country; v0.8.0) | the four documents with `?country=` (§6.4) | Used where the zone has none | Used where the zone has none | Prices and dispatch where the zone has none |
 | Exclusive reasons (Dispatch) | `driver.offers.exclusiveReasons` | — | Reason line on Exclusive | — |
 | Reservations: steps, smart gap, Leave now, running late, cancels (Dispatch › Reservations) | `driver.reservations` (§6.1) | — | Home popup / Exclusive / Radar times, Leave now (always opens the trip), late warning, ETA watch, offline backup, late-cancel pause | Reassigns a late or offline driver's ride |
 | Scheduled rides for one driver (Drivers › driver page; Dispatch › Reservations desk) | `Driver.scheduledRides` (§6.1) | — | Off: no new reservations; accepted ones still run. On: the late-cancel pause is skipped while it lasts | Offers and assigns no reservation to a driver who is off |
@@ -359,7 +363,7 @@ DriverAppConfig { version, publishedAt, zoneId, currency, timeZone, country, lan
   PickupPayRate { enabled, maxPerRide: Money | null, ranges: [PickupRange], riderFee: { live: Money | null, reservation: Money | null } }
   PickupRange   { fromKm, toKm: number | null, perKm: Money, perMin: Money }
   driverBonus: { defaultLimit: Money, hardMax: Money },
-  cancelFees: { live: {...}, reservation: {...} },
+  cancelFees: { live: {...}, reservation: {...}, driverSharePct },   // v0.8.0: driver's share of a cancel fee, default 100
   waiting: { freeWaitMin, perMin, noShowAfterMin, noShowFee, driverSharePct, driverShareWaitPct, byCategory: { [categoryId]: CategoryWaiting } },
   destinationMode: {...}, nextTrips: {...},
   reservations: DriverReservations,             // §6.1
@@ -430,7 +434,7 @@ DriverReservations {
 
 Cancel reasons: the rider document lists `{code, title}` in the rider's language; the driver document lists codes per group and the titles come from `texts`. Unknown keys are ignored; missing keys fall back to the app's seed.
 
-**Document version** (v0.5.0, `contract.json#configVersion`): `version` is the admin's revision number of the zone's live document, strictly increasing per zone and document, and `publishedAt` is when it was published. The server stores the published document as the admin built it and serves it unchanged from `GET /rider/config` and `GET /driver/config`; `config_published` carries the same `version`. Apps keep the last good document and ignore an older version. The same rule holds for the server-only `pricing` and `dispatch` documents (v0.5.1), which the apps never get.
+**Document version** (v0.8.0, `contract.json#configVersion`): the **server stamps** `version` and `publishedAt` when it publishes (whatever the admin sends there is ignored); `version` is strictly increasing per zone and document as the apps see it, also when a zone goes from its country's standard to its own document (§6.4). The server stores the published document as the admin built it (with the stamps, the zone id and, for a standard, `usesStandard`) and serves it from `GET /rider/config` and `GET /driver/config`; `config_published` carries the same `version`. Apps keep the last good document and ignore an older version. The same rule holds for the server-only `pricing` and `dispatch` documents (v0.5.1), which the apps never get.
 
 ### 6.2 `PricingDocument` (v0.5.1, server-only)
 
@@ -473,7 +477,7 @@ Every category: no-show fee 65 kr, rider pickup fee off; baby and child seat 15 
 
 ### 6.3 `DispatchDocument` and `DispatchControl` (v0.5.1, server-only)
 
-Built by Admin from Dispatch (the zone's `ZoneDispatch`, a subset of the `movera.dispatch.rules` export, admin field names), published with `PUT /admin/config/dispatch` + `POST /admin/config/dispatch/publish` (the panel's `dispatch.edit`, approved with `dispatch.approve`), the same version rule, never served to the apps. The algorithm is §3.6. Defaults: `contract.json#configDefaults.dispatch`; the Z001 document: `fixtures/config/dispatch_document.json`.
+Built by Admin from Dispatch (the zone's `ZoneDispatch`, a subset of the `movera.dispatch.rules` export, admin field names), published with `PUT /admin/config/dispatch` + `POST /admin/config/dispatch/publish` (the panel's `dispatch.edit`; since v0.8.0 published at once, no second admin), the same version rule, never served to the apps. The algorithm is §3.6. Defaults: `contract.json#configDefaults.dispatch`; the Z001 document: `fixtures/config/dispatch_document.json`.
 
 ```
 DispatchDocument { version, publishedAt, zoneId, country, timeZone,               // timeZone: the time rules' clock (SE Europe/Stockholm)
@@ -492,6 +496,27 @@ DispatchControl { zoneId, paused, mode: radar | exclusive | null, by, at, versio
 ```
 
 Allowed values (the admin's checks, `contract.json#dispatch.ranges`): Radar drivers 1–30 and 5–120 s; Exclusive drivers 1–10 and 5–60 s; `radarAbove` above 0 and at most 10; radius steps above 0, at most 50 km, each larger than the one before; `maxWaitMin` 1–30; `afterMin` 0–30; at least one factor on with a weight above 0; Auto needs both modes on; a manual main mode and the mode of every time rule that is on must be on. Z001–Z009 have the same defaults; the airport zones ARN and BMA show Radar to 8 drivers with steps [3, 6, 10].
+
+### 6.4 Country standard (v0.8.0)
+
+`contract.json#configDocs.standard` and `#configDocs.scope`. Every country (SE in kr, FR in €, TN in DT) has one standard of each of the four documents, set in the admin with `GET|PUT /admin/config/{doc}?country=SE` and `POST /admin/config/{doc}/publish { country }` (exactly one of `zoneId` or `country`). A standard carries `zoneId: "standard-SE"` and the country's currency, country and time zone.
+
+- A zone with **no own published document** of a kind uses its country's standard of that kind: the apps get it from `GET /rider/config` / `GET /driver/config` with the zone's id and `usesStandard: true`, and the server prices (pricing) and dispatches (dispatch) with it. The admin shows such a zone as **"Uses standard"**; `GET /admin/config/{doc}?zoneId` answers `usesStandard: true` with the standard as the starting draft.
+- A zone **with its own published document never uses the standard** again.
+- Publishing a standard sends `config_published` for every zone of the country that uses it. A zone's first own publish gets `version` = max(its own live, the standard's live) + 1, so the apps never see a lower number.
+- Seeds (`fixtures/config`) are only for development and staging; production has no seeds: a country with no standard and a zone with no document has no prices (`pricing_not_published`) and no automatic dispatch until the admin publishes.
+
+### 6.5 Country rules (v0.8.0)
+
+`contract.json#configDocs.countryRules`. `CountryRules { version, publishedAt, country, currency, tips, raiseSteps, driverBonus }` is published per country (`?country=SE`, never per zone). Publishing it writes `RiderAppConfig.tips` / `raiseSteps` and `DriverAppConfig.driverBonus` into every live and draft app document of the country (own and standard), each changed one as its next version with `config_published`, as for pricing (§6.2). While it is live, a PUT or publish of an app document of that country keeps these three fields from it.
+
+### 6.6 Booked trips keep their rules (v0.8.0)
+
+`contract.json#bookingSnapshot`. At `POST /trips` the server keeps on the trip everything that decides money later: the pricing document (version and whether it was the zone's or the standard), the category's cancel fee rule (`cancelFees.live` or `.reservation` by `Trip.kind`), `DriverAppConfig.cancelFees.driverSharePct` (default 100 %), the category's waiting terms and no-show fee, and the no-show and waiting driver shares. A later publish never changes a booked trip's cancel fee, no-show fee, waiting charge or shares.
+
+### 6.7 Auto-offline (v0.8.0)
+
+`contract.json#autoOffline`. After `offers.autoOffline.missedExclusive` (default 10) **Exclusive** offers of live trips in a row that the driver declined or let expire, the driver goes offline. Radar, assigned and reservation (scheduled) offers never count and never break the run; an accepted Exclusive offer or going online starts it again. The server sets `onlineStatus` offline and the offer event of the last one carries `driverOffline: true`; the driver app counts the same way and goes offline itself too.
 
 ## 7. API surface (summary; full detail in `openapi.yaml`)
 

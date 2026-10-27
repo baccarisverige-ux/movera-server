@@ -9,19 +9,8 @@ import { ApiError } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
-import { decideApproval, listApprovals, runOrRequest, type PendingApproval } from "../admin/approvals.js";
-import {
-  APPROVE_PERMISSION,
-  CONFIG_DOCS,
-  EDIT_PERMISSION,
-  PUBLISH_ACTION,
-  PUBLISH_PERMISSION,
-  getDraft,
-  getZone,
-  liveDocument,
-  putDraft,
-  type Publication,
-} from "./service.js";
+import { decideApproval, listApprovals } from "../admin/approvals.js";
+import { CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey } from "./service.js";
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
@@ -29,10 +18,13 @@ export type ConfigDeps = { db: Db; jwtSecret: string; defaultZoneId: string; hub
 
 const ZONE_ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const DocParam = z.object({ doc: z.enum(CONFIG_DOCS as [ConfigDoc, ...ConfigDoc[]]) });
-const ZoneQuery = z.object({ zoneId: ZONE_ID });
+const COUNTRY = z.string().regex(/^[A-Z]{2}$/);
+/** v0.8.0 (contract.json#configDocs.scope): exactly one of zoneId (the zone's own) or country (its standard). */
+const Scope = { zoneId: ZONE_ID.optional(), country: COUNTRY.optional() };
+const ScopeQuery = z.object(Scope);
 const OptionalZoneQuery = z.object({ zoneId: ZONE_ID.optional() });
-const PutBody = z.object({ expectedVersion: z.number().int().min(1), zoneId: ZONE_ID, document: z.unknown() });
-const PublishBody = z.object({ expectedVersion: z.number().int().min(1), zoneId: ZONE_ID, note: z.string().max(1000).optional() });
+const PutBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, document: z.unknown() });
+const PublishBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, note: z.string().max(1000).optional() });
 const ApprovalParam = z.object({ approvalId: ZONE_ID });
 const DecisionBody = z.object({ note: z.string().max(1000).optional() });
 const ApprovalQuery = z.object({
@@ -44,6 +36,18 @@ const ApprovalQuery = z.object({
 
 function checkZone(who: Principal, zoneId: string): void {
   if (!adminCoversZone(who, zoneId)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
+}
+
+/** The scope key of a request: the zone id, or standard-<CC> for a country; a country needs every zone of it. */
+async function scopeKey(db: Db, who: Principal, scope: { zoneId?: string | undefined; country?: string | undefined }): Promise<string> {
+  if ((scope.zoneId === undefined) === (scope.country === undefined)) throw new ApiError("invalid_request", "Name exactly one of zoneId or country.", { reason: "scope_required" });
+  if (scope.zoneId !== undefined) {
+    checkZone(who, scope.zoneId);
+    return scope.zoneId;
+  }
+  const zones = await db.selectFrom("zones").select("zone_id").where("country", "=", scope.country!).execute();
+  for (const zone of zones) checkZone(who, zone.zone_id);
+  return standardKey(scope.country!);
 }
 
 const keyOf = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
@@ -84,8 +88,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
   app.get(`${API_PREFIX}/admin/config/:doc`, async (request) => {
     const who = await authenticateAdmin(request, guard, "settings.read");
     const { doc } = parseBody(DocParam, request.params);
-    const { zoneId } = parseBody(ZoneQuery, request.query);
-    checkZone(who, zoneId);
+    const zoneId = await scopeKey(deps.db, who, parseBody(ScopeQuery, request.query));
     return getDraft(deps.db, doc, zoneId);
   });
 
@@ -93,39 +96,27 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const { doc } = parseBody(DocParam, request.params);
     const who = await authenticateAdmin(request, guard, EDIT_PERMISSION[doc]);
     const body = parseBody(PutBody, request.body);
-    checkZone(who, body.zoneId);
+    const zoneId = await scopeKey(deps.db, who, body);
     const result = await runIdempotent(
       deps.db,
       { actor: "admin", subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "PUT", route: request.url.split("?")[0]!, body },
-      async (trx) => ({ status: 200, body: await putDraft(trx, { doc, zoneId: body.zoneId, expectedVersion: body.expectedVersion, document: body.document, adminId: who.subjectId }, now()) }),
+      async (trx) => ({ status: 200, body: await putDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, document: body.document, adminId: who.subjectId }, now()) }),
     );
     return result.body;
   });
 
-  app.post(`${API_PREFIX}/admin/config/:doc/publish`, async (request, reply) => {
+  // v0.8.0 (contract.json#configDocs.publishApproval, owner 2026-10-27): no second admin; 200 at once.
+  app.post(`${API_PREFIX}/admin/config/:doc/publish`, async (request) => {
     const { doc } = parseBody(DocParam, request.params);
     const who = await authenticateAdmin(request, guard, PUBLISH_PERMISSION[doc]);
     const body = parseBody(PublishBody, request.body);
-    checkZone(who, body.zoneId);
-    await getZone(deps.db, body.zoneId);
+    const zoneId = await scopeKey(deps.db, who, body);
     const idem = { actor: "admin" as const, subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "POST", route: request.url.split("?")[0]!, body };
-    const outcome = await runIdempotent<Publication | PendingApproval>(deps.db, idem, async (trx) => {
-      const ran = await runOrRequest<Publication>(
-        trx,
-        who,
-        {
-          action: PUBLISH_ACTION,
-          targetType: "config",
-          targetId: doc,
-          zoneId: body.zoneId,
-          payload: { doc, zoneId: body.zoneId, expectedVersion: body.expectedVersion, ...(body.note ? { note: body.note } : {}) },
-          approvePermission: APPROVE_PERMISSION[doc],
-        },
-        now(),
-      );
-      return ran.ran ? { status: 200, body: ran.result } : { status: 202, body: ran.pending };
-    });
-    return reply.status(outcome.status).send(outcome.body);
+    const outcome = await runIdempotent(deps.db, idem, async (trx) => ({
+      status: 200,
+      body: await publishDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, ...(body.note ? { note: body.note } : {}), publishedBy: who.subjectId, approvedBy: null }, now()),
+    }));
+    return outcome.body;
   });
 
   app.get(`${API_PREFIX}/admin/approvals`, async (request) => {

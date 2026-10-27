@@ -54,10 +54,14 @@ const ONBOARD = ["rider_onboard", "in_trip", "approaching_dropoff"];
 
 /* ---------------------------------------------------------------- prices and settings */
 
-/** The pricing document the trip was quoted with (its version), else the live one. */
+/**
+ * The pricing document the trip was quoted with (its version, in the zone's or v0.8.0 the country standard's
+ * history), else the live one.
+ */
 export async function pricingOf(ex: Executor, trip: TripRow): Promise<PricingDocument> {
   if (trip.pricing_version !== null) {
-    const kept = await ex.selectFrom("config_history").select("document").where("doc", "=", "pricing").where("zone_id", "=", trip.zone_id).where("version", "=", trip.pricing_version).executeTakeFirst();
+    const scope = trip.pricing_scope ?? trip.zone_id;
+    const kept = await ex.selectFrom("config_history").select("document").where("doc", "=", "pricing").where("zone_id", "=", scope).where("version", "=", trip.pricing_version).executeTakeFirst();
     if (kept) return kept.document as PricingDocument;
   }
   const live = await liveDocument<PricingDocument>(ex, "pricing", trip.zone_id);
@@ -71,31 +75,63 @@ function waitingRules(doc: PricingDocument, categoryId: string) {
   return category.waiting;
 }
 
-/** The driver's share of a no-show fee: DriverAppConfig.waiting.driverSharePct (80 % by default, per country). */
-export async function noShowSharePct(ex: Executor, zoneId: string): Promise<number> {
-  const live = await liveDocument<{ waiting?: { driverSharePct?: unknown } }>(ex, "driver_app_config", zoneId);
-  return sharePct(live?.document.waiting?.driverSharePct, DEFAULT_NO_SHOW_SHARE);
-}
-
 /**
- * The driver's share of a rider's late cancel fee (owner decision 26): all of it by default; an admin can set
- * another share as DriverAppConfig.cancelFees.driverSharePct (to be added to the contract and the admin panel).
+ * The driver's share of a rider's late cancel fee (owner decision 26): all of it by default; an admin sets another
+ * share as DriverAppConfig.cancelFees.driverSharePct (v0.8.0, Admin › Dispatch, per zone).
  */
-export const DEFAULT_CANCEL_SHARE = 100;
+export const DEFAULT_CANCEL_SHARE = (contract as unknown as { configDefaults: { cancelDriverSharePct: number } }).configDefaults.cancelDriverSharePct;
 export const DEFAULT_LIVE_CANCEL_RULE: FeeRule = { freeMin: 2, type: "fixed", value: 6500, min: null, max: null };
-async function cancelSharePct(ex: Executor, zoneId: string): Promise<number> {
-  const live = await liveDocument<{ cancelFees?: { driverSharePct?: unknown } }>(ex, "driver_app_config", zoneId);
-  return sharePct(live?.document.cancelFees?.driverSharePct, DEFAULT_CANCEL_SHARE);
-}
 
 const sharePct = (pct: unknown, fallback: number) => (typeof pct === "number" && pct >= 0 && pct <= 100 ? pct : fallback);
 
-/** RiderAppConfig.cancelFees.live|reservation[categoryId], or null when the zone has none published. */
-async function cancelRule(ex: Executor, trip: TripRow): Promise<FeeRule | null> {
-  const live = await liveDocument<{ cancelFees?: { live?: Record<string, FeeRule>; reservation?: Record<string, FeeRule> } }>(ex, "rider_app_config", trip.zone_id);
-  const table = trip.kind === "scheduled" ? live?.document.cancelFees?.reservation : live?.document.cancelFees?.live;
-  // Until the admin publishes rider settings: the owner's 65 kr after 2 free minutes for every car type (decision 26).
-  return table?.[trip.category_id] ?? (trip.kind === "live" ? DEFAULT_LIVE_CANCEL_RULE : null);
+type CategoryWaitingRules = ReturnType<typeof waitingRules>;
+/** contract.json#bookingSnapshot (v0.8.0): every rule a booked trip keeps from booking time. */
+export type BookingRules = {
+  cancelRule: FeeRule | null;
+  cancelDriverSharePct: number;
+  waiting: CategoryWaitingRules | null;
+  noShowDriverSharePct: number;
+  waitDriverSharePct: number;
+};
+type AppDocs = {
+  rider: { cancelFees?: { live?: Record<string, FeeRule>; reservation?: Record<string, FeeRule> } } | undefined;
+  driver: { cancelFees?: { driverSharePct?: unknown }; waiting?: { driverSharePct?: unknown; driverShareWaitPct?: unknown } } | undefined;
+};
+
+async function appDocs(ex: Executor, zoneId: string): Promise<AppDocs> {
+  const rider = await liveDocument<NonNullable<AppDocs["rider"]>>(ex, "rider_app_config", zoneId);
+  const driver = await liveDocument<NonNullable<AppDocs["driver"]>>(ex, "driver_app_config", zoneId);
+  return { rider: rider?.document, driver: driver?.document };
+}
+
+/** RiderAppConfig.cancelFees.live|reservation[categoryId]; the owner's 65 kr after 2 free minutes for a live trip without one. */
+function cancelRuleOf(docs: AppDocs, kind: string, categoryId: string): FeeRule | null {
+  const table = kind === "scheduled" ? docs.rider?.cancelFees?.reservation : docs.rider?.cancelFees?.live;
+  return table?.[categoryId] ?? (kind === "live" ? DEFAULT_LIVE_CANCEL_RULE : null);
+}
+
+/** At POST /trips (contract.json#bookingSnapshot): the rules of this moment, kept on the trip. */
+export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string, categoryId: string, pricing: PricingDocument | null): Promise<BookingRules> {
+  const docs = await appDocs(ex, zoneId);
+  return {
+    cancelRule: cancelRuleOf(docs, kind, categoryId),
+    cancelDriverSharePct: sharePct(docs.driver?.cancelFees?.driverSharePct, DEFAULT_CANCEL_SHARE),
+    waiting: pricing?.categories[categoryId]?.waiting ?? null,
+    noShowDriverSharePct: sharePct(docs.driver?.waiting?.driverSharePct, DEFAULT_NO_SHOW_SHARE),
+    waitDriverSharePct: sharePct(docs.driver?.waiting?.driverShareWaitPct, 100),
+  };
+}
+
+/** The trip's kept rules; a trip booked before v0.8.0 has none and reads today's settings. */
+async function rulesOf(ex: Executor, trip: TripRow): Promise<BookingRules> {
+  const kept = trip.booking_rules as BookingRules | null;
+  if (kept !== null && typeof kept === "object") return kept;
+  return bookingRulesFor(ex, trip.zone_id, trip.kind, trip.category_id, null);
+}
+
+async function waitingOf(ex: Executor, trip: TripRow): Promise<CategoryWaitingRules> {
+  const kept = (trip.booking_rules as BookingRules | null)?.waiting;
+  return kept ?? waitingRules(await pricingOf(ex, trip), trip.category_id);
 }
 
 const outstandingLine = (trip: TripRow) => ((trip.fare_lines as FareLine[]) ?? []).find((l) => l.code === "outstanding_fee");
@@ -324,7 +360,7 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
         throw new ApiError("invalid_transition", "You are not at the pickup yet.", { reason: "not_at_pickup", projection: tripProjection(trip, "driver") });
       }
     }
-    const rules = waitingRules(await pricingOf(trx, trip), trip.category_id);
+    const rules = await waitingOf(trx, trip);
     // A reservation's clock starts at the booked time, not when an early driver arrives.
     const start = trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
     const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
@@ -477,9 +513,9 @@ export async function noShow(trx: Trx, driverId: string, tripId: string, body: {
 
 /** The no-show itself (driver after the wait, or an admin who may waive the fee). */
 export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "admin", waive: boolean, now: Date): Promise<TripRow> {
-  const rules = waitingRules(await pricingOf(trx, trip), trip.category_id);
+  const rules = await waitingOf(trx, trip);
   const fee: Money | null = !waive && rules.noShowFee.amountMinor > 0 ? { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency } : null;
-  const share = await noShowSharePct(trx, trip.zone_id);
+  const share = (await rulesOf(trx, trip)).noShowDriverSharePct;
   const cancellation = { actor, reasonCode: "rider_no_show", at: now.toISOString(), fee, ...(fee ? { feeStatus: "owed" } : {}) };
   const ended = await applyCommand(trx, trip, {
     command: "no_show",
@@ -507,7 +543,7 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
  */
 export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<Money | null> {
   if (trip.accepted_at === null || trip.driver_id === null) return null;
-  const rule = await cancelRule(ex, trip);
+  const rule = (await rulesOf(ex, trip)).cancelRule;
   if (rule === null) return null;
   const owed = outstandingLine(trip);
   const fare = { amountMinor: Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0), currency: trip.currency };
@@ -529,12 +565,12 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
 
 /** After the rider's cancel: the driver is free again and gets their share of a fee (owed by the rider). */
 export async function riderFeeColumns(ex: Executor, trip: TripRow, fee: Money) {
-  return feeColumns(fee, await cancelSharePct(ex, trip.zone_id));
+  return feeColumns(fee, (await rulesOf(ex, trip)).cancelDriverSharePct);
 }
 
 export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: TripRow, fee: Money | null, now: Date) {
   if (fee && before.driver_id) {
-    const share = await cancelSharePct(trx, before.zone_id);
+    const share = (await rulesOf(trx, before)).cancelDriverSharePct;
     await chargeRiderFee(trx, cancelled, "cancel", fee, now);
     await credit(trx, { driverId: before.driver_id, tripId: before.trip_id, kind: "fee_share", currency: fee.currency, amount: feeSplit(fee, share).driver }, now);
   }
