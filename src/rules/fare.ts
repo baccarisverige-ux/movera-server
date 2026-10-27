@@ -20,8 +20,7 @@ export type CategoryPricing = {
   commissionPct: number;
   extraStopFee: MoneyJson;
   stopWaitPerMin: MoneyJson;
-  /** v0.6.0: only on child_seat (owner 2026-10-27); a category without it adds nothing for a seat (as quoteRide). */
-  babySeatFee?: MoneyJson;
+  /** v0.7.1: the ONE seat fee, only on child_seat (owner 2026-10-27): every child_seat trip adds it once. */
   childSeatFee?: MoneyJson;
   waiting: { freeWaitMin: number; perMin: MoneyJson; noShowAfterMin: number; noShowFee: MoneyJson };
   riderPickupFee: { live: MoneyJson | null; reservation: MoneyJson | null };
@@ -31,7 +30,6 @@ export type PricingDocument = {
   zoneId: string;
   currency: string;
   priceStep: MoneyJson;
-  stopFreeWaitMin: number;
   categories: Record<string, CategoryPricing>;
   fees: { airportPickup: MoneyJson; airportDropoff: MoneyJson; reservationFee: MoneyJson };
   fixedRoutes: Array<{ id: string; categoryId: string; price: MoneyJson }>;
@@ -48,12 +46,14 @@ export type FareInput = {
   surgeMultiplier?: number;
   /** Waiting.chargedSeconds: pickup waiting after the free minutes. */
   waitingChargedSeconds?: number;
-  /** Seconds waited at each extra stop, one entry per stop. */
+  /** v0.7.1: seconds from the driver's arrived-at-stop to leaving-stop at each extra stop, one entry per stop (no free minutes). */
   stopWaitSeconds?: number[];
+  /** v0.6.0 fields, deprecated in v0.7.1: above 0 on any category but child_seat is seat_not_offered; otherwise ignored. */
   babySeats?: number;
   childSeats?: number;
-  airportPickup?: boolean;
-  airportDropoff?: boolean;
+  /** v0.7.1: the server found the pickup / drop-off inside a zone of kind airport (contract.json#pricing.requestExtras.airport). */
+  pickupInAirportZone?: boolean;
+  dropoffInAirportZone?: boolean;
   outstandingFee?: MoneyJson | null;
   /** The trip whose unpaid fee this is (FareLine.sourceTripId, §3.7). */
   outstandingSourceTripId?: string;
@@ -65,7 +65,13 @@ export type Fare = { total: MoneyJson; fareLines: FareLine[]; driverEarnings: Mo
 
 const CONTRACT_MAX_SURGE = Frac.dec((contract as unknown as { pricing: { maxMultiplier: number } }).pricing.maxMultiplier);
 
-export class FareError extends Error {}
+export class FareError extends Error {
+  constructor(message: string, readonly reason?: string) {
+    super(message);
+  }
+}
+
+export const SEAT_CATEGORY = "child_seat";
 
 export function priceFare(doc: PricingDocument, input: FareInput): Fare {
   const cat = doc.categories[input.categoryId];
@@ -76,7 +82,11 @@ export function priceFare(doc: PricingDocument, input: FareInput): Fare {
     if (m.currency !== currency) throw new FareError(`Money in ${m.currency} in a ${currency} zone`);
     return Frac.of(m.amountMinor);
   };
-  const seatPart = (count: number | undefined, fee: MoneyJson | undefined) => (count && fee ? Frac.of(count).mul(amt(fee)) : Frac.ZERO);
+  // v0.7.1 (owner 2026-10-27): one seat fee, only on Child Seat; every Child Seat trip includes its one seat.
+  if (input.categoryId !== SEAT_CATEGORY && ((input.babySeats ?? 0) > 0 || (input.childSeats ?? 0) > 0)) {
+    throw new FareError(`${input.categoryId} has no seat to add`, "seat_not_offered");
+  }
+  const seat = input.categoryId === SEAT_CATEGORY && cat.childSeatFee ? amt(cat.childSeatFee) : Frac.ZERO;
   const lines: Array<[string, Frac]> = [];
   const add = (code: string, value: Frac, keep = false) => {
     if (!value.isZero() || keep) lines.push([code, value]);
@@ -132,16 +142,15 @@ export function priceFare(doc: PricingDocument, input: FareInput): Fare {
       ride = cap;
     }
   } else {
-    const free = doc.stopFreeWaitMin * 60;
     const stops = input.stopWaitSeconds ?? [];
     const w = Frac.of(input.waitingChargedSeconds ?? 0).div(Frac.of(60)).mul(amt(cat.waiting.perMin));
-    const sw = Frac.of(stops.reduce((sum, s) => sum + Math.max(0, s - free), 0)).div(Frac.of(60)).mul(amt(cat.stopWaitPerMin));
+    const sw = Frac.of(stops.reduce((sum, s) => sum + Math.max(0, s), 0)).div(Frac.of(60)).mul(amt(cat.stopWaitPerMin));
     const extraLines: Array<[string, Frac]> = [
       ["waiting", w],
       ["stops", Frac.of(stops.length).mul(amt(cat.extraStopFee))],
       ["stop_waiting", sw],
-      ["extras", seatPart(input.babySeats, cat.babySeatFee).add(seatPart(input.childSeats, cat.childSeatFee))],
-      ["airport", (input.airportPickup ? amt(doc.fees.airportPickup) : Frac.ZERO).add(input.airportDropoff ? amt(doc.fees.airportDropoff) : Frac.ZERO)],
+      ["extras", seat],
+      ["airport", (input.pickupInAirportZone ? amt(doc.fees.airportPickup) : Frac.ZERO).add(input.dropoffInAirportZone ? amt(doc.fees.airportDropoff) : Frac.ZERO)],
       ["reservation_fee", input.kind === "scheduled" ? amt(doc.fees.reservationFee) : Frac.ZERO],
     ];
     for (const [code, value] of extraLines) {

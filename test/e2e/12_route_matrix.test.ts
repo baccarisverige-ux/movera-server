@@ -102,6 +102,9 @@ beforeAll(async () => {
     invitationId: invite.body["invitationId"] ?? newId("inv"),
     incidentId: sos.body["incidentId"] ?? newId("inc"),
     zoneId: "Z001",
+    // v0.7.1: the first middle stop; a car type of the catalog.
+    stopIndex: "0",
+    categoryId: "economy",
     doc: "pricing",
     coordinates: "18.0649,59.3326;18.0735,59.3143",
     ...(await pendingApproval()),

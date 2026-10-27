@@ -16,7 +16,8 @@ type Doc = {
 };
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-const MONEY_FIELDS = ["base", "perKm", "perMin", "minimum", "maximum", "extraStopFee", "stopWaitPerMin", "babySeatFee", "childSeatFee"] as const;
+const MONEY_FIELDS = ["base", "perKm", "perMin", "minimum", "maximum", "extraStopFee", "stopWaitPerMin", "childSeatFee"] as const;
+const SEAT_CATEGORY = "child_seat";
 
 const isMoney = (value: unknown): value is Money => value !== null && typeof value === "object" && typeof (value as Money).amountMinor === "number";
 
@@ -35,6 +36,9 @@ export function pricingProblems(document: unknown): string[] {
       const value = waiting?.[field];
       if (isMoney(value) && value.amountMinor < 0) add(`categories.${id}.waiting.${field}`, "must be 0 or more");
     }
+    // v0.7.1 (owner 2026-10-27): ONE seat fee, only on Child Seat.
+    if ("babySeatFee" in category) add(`categories.${id}.babySeatFee`, "there is one seat fee (childSeatFee); the baby seat fee is gone");
+    if (id !== SEAT_CATEGORY && "childSeatFee" in category) add(`categories.${id}.childSeatFee`, "a seat fee exists only on Child Seat");
     // A-O2 (owner decision): every ride starts at a real price.
     if (category.base.amountMinor === 0) add(`categories.${id}.base`, "the base fare must be above 0");
     if (category.maximum !== null && category.maximum.amountMinor > 0 && category.minimum.amountMinor > category.maximum.amountMinor) add(`categories.${id}.minimum`, "the minimum fare is higher than the maximum fare");

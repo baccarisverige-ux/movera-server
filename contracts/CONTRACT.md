@@ -1,4 +1,6 @@
-# Movera shared contract v0.7.0
+# Movera shared contract v0.7.1
+
+v0.7.1 (pricing rework part 2, owner Pricing decisions of 2026-10-27; builds on v0.6.0 pricing and v0.7.0 safety; X-Api-Version stays `0.5`): **one seat fee** — `CategoryPricing.babySeatFee` is gone and `childSeatFee` exists only on `child_seat` (else `400 seat_fee_not_child_seat`); every Child Seat trip includes one seat and adds the fee once; the rider never sends a number (`babySeats` / `childSeats` deprecated: above 0 on another category `400 seat_not_offered`). **Airport fees are decided by the server** from the zones of kind `airport` (the rider's `airportPickup` / `airportDropoff` are ignored). **Waiting at a middle stop has no free minutes** (`stopFreeWaitMin` is gone): the driver app reports `POST /driver/trips/{tripId}/stops/{stopIndex}/arrive|leave` and `stop_waiting` runs from arrival to leaving (`TripProjection.stopVisits`, §3.8, `contract.json#stopWaits`). **Surge**: the manual Start/Stop is the zone's surge schedule (`PUT /admin/zones/{zoneId}/surge`, `…/end`) within the admin's maximum; overlapping planned surges — the higher counts; smart surge is normative and run by the server, off by default (`contract.json#smartSurge`, `fixtures/smart_surge.json`); drivers get a `surge_started` notice (`pricing.surge.notifyDrivers`, `POST /admin/zones/{zoneId}/surge/notify`, `contract.json#surgeNotice`). **A reservation keeps the price shown at booking.** **Pricing history**: `GET /admin/config/{doc}/history`, `POST /admin/config/{doc}/restore` (Restore, Undo last publish) and one audit row per publish (`contract.json#pricingHistory`). **Car type catalog** (§16, `contract.json#categoryCatalog`): `GET|POST /admin/categories`, `PUT /admin/categories/{categoryId}`, `…/archive` (30 days, refused while trips are booked), `…/restore` (old prices, off); `CategoryCatalog.categories[].line { sv, fr, en }` is the sub-line the rider app shows. Fixtures: `fixtures/fares.json` (one seat, airport zones, stops from arrival), `fixtures/surge.json` (`scheduledOverlap`), `fixtures/smart_surge.json`.
 
 v0.7.0 (additive; X-Api-Version stays `0.5`): **SOS and incidents, safety part 1** (§15, owner safety part 1 decisions of 2026-10-27): `POST /rider/trips/{tripId}/sos` and `POST /driver/trips/{tripId}/sos` (`SosRequest { at, position? }` → `SosReceipt`) alert Movera while the phone also opens the emergency call (112); `Incident` gains `version`, `raisedBy`, `zoneId`, `riderId`, `driverId`, `position`, `driverPosition`, `escalatedAt`, `takenBy`/`takenAt`, `resolvedBy`/`resolvedAt`/`resolution`; admin `GET /admin/incidents/{incidentId}`, `POST /admin/incidents/{incidentId}/take|resolve|dismiss` and the feed `GET /admin/incidents/stream` (`AdminIncidentEvent`); the server's "car lost" alert is now documented (`TripProjection.driverSilentAlert`, admin view) and also opens a `driver_silent` incident that closes itself when positions come back (`contract.json#safety`). The number goes to 0.7.0 because the open pricing change takes 0.6.0.
 
@@ -232,7 +234,7 @@ The server prices every quote and every fare from the zone's **pricing document*
 1. **Ride part.** A fixed route of the category (`fixedRoutes`) replaces it all: `fixed_route` = the route price, with no surge, minimum or maximum. Otherwise `base` + `distance` (perKm × km) + `time` (perMin × minutes).
 2. **Surge** multiplies the ride part only: the `surge` line is ride part × (multiplier − 1). The multiplier is clamped to [1, `surge.maxMultiplier`]: the zone's maximum, set by the admin from ×1 to ×6 (v0.6.0, owner 2026-10-27, as in the admin demo; the Stockholm default is ×3). The maximum binds every source, smart surge included (smart surge also stays within its profile's `cap`). Where it comes from: the zone's surge schedule (§3.4), else a `surge.scheduled` window in force, else smart surge when `smart.enabled` (off in the test week); else 1.0. A quote keeps its multiplier.
 3. **Minimum, then maximum** of the category, on the ride part after surge: `minimum_adjust` raises it to `minimum`; `maximum_adjust` (negative) lowers it to `maximum` when that is not `null`.
-4. **Extras**, never surged: `waiting` (pickup waiting: `Waiting.chargedSeconds` / 60 × `waiting.perMin`, per second after the free wait), `stops` (`extraStopFee` per extra stop), `stop_waiting` (at each stop the first `stopFreeWaitMin` = 3 minutes are free, owner decision 20; then per second at `stopWaitPerMin`), `extras` (`babySeats` × `babySeatFee` + `childSeats` × `childSeatFee`; a fee the category does not have is 0), `airport` (`fees.airportPickup` when `airportPickup`, `fees.airportDropoff` when `airportDropoff`), `reservation_fee` (`kind = scheduled`).
+4. **Extras**, never surged: `waiting` (pickup waiting: `Waiting.chargedSeconds` / 60 × `waiting.perMin`, per second after the free wait), `stops` (`extraStopFee` per extra stop), `stop_waiting` (v0.7.1: no free minutes; per second at `stopWaitPerMin` from the driver's arrived-at-stop to leaving-stop, §3.8), `extras` (v0.7.1: a `child_seat` trip's one seat, `childSeatFee` once), `airport` (v0.7.1: `fees.airportPickup` when the pickup lies in a zone of kind `airport`, `fees.airportDropoff` when the drop-off does; the server decides), `reservation_fee` (`kind = scheduled`).
 
    **What the rider asks for** (v0.6.0, `contract.json#pricing.requestExtras`): `QuoteRequest` carries `babySeats`, `childSeats` (whole numbers 0–3, the admin calculator's limit), `airportPickup`, `airportDropoff` (booleans) and `fixedRouteId` (step 1); `CreateTripRequest` repeats them unchanged (else `400 invalid_request`, `quote_mismatch`), the trip keeps them and the fare at completion prices them again. Seat fees exist only on `child_seat` (owner 2026-10-27); as in the admin calculator (`quoteRide`), seats on a category without the fee add nothing. A `fixedRouteId` prices only the category the route belongs to; every other category is priced normally (the calculator's rule).
 5. **App fee** = (ride part + extras) × `appFeePct` / 100: the `app_fee` line.
@@ -336,7 +338,7 @@ Two versioned documents per zone, built by the Admin exporters, read by the apps
 
 ```
 RiderAppConfig  { version, publishedAt, zoneId, currency, timeZone, country, languages,
-  catalog: { categories: [{ id, label, seats, sort }] },
+  catalog: { categories: [{ id, label, seats, sort, line?: { sv, fr, en } }] },   // line: v0.7.1 sub-line
   features: { scheduledRides, wallet, pin, shareTrip, … },
   paymentMethods: [ZonePaymentMethod],          // cash | card | apple_pay | google_pay
   wallet: { usedFirst: bool },                  // one balance per currency; on/off is features.wallet
@@ -443,12 +445,11 @@ PricingDocument { version, publishedAt, zoneId, currency, country, timeZone,
   priceStep: Money,                                   // the total is rounded once to this (1 kr)
   categories: { [categoryId]: CategoryPricing },
   fees: { airportPickup, airportDropoff, reservationFee, cleaningFee: Money, tollsPassThrough: bool },
-  stopFreeWaitMin: 3,                                 // owner decision 20
   fixedRoutes: [{ id, from, to, categoryId, price: Money }],
   surge: { maxMultiplier, smart: SmartSurge, scheduled: [{ id, name, multiplier, startsAt, endsAt }] },   // maxMultiplier: the admin's, 1–6 (v0.6.0), default 3
   fleetCommissionPct }
 CategoryPricing { enabled, base, perKm, perMin, minimum: Money, maximum: Money | null, appFeePct, commissionPct,
-  extraStopFee, stopWaitPerMin: Money, babySeatFee?, childSeatFee?: Money,   // v0.6.0: seat fees only on child_seat
+  extraStopFee, stopWaitPerMin: Money, childSeatFee?: Money,   // v0.7.1: ONE seat fee, only on child_seat
   waiting: { freeWaitMin, perMin: Money, noShowAfterMin, noShowFee: Money },
   riderPickupFee: { live: Money | null, reservation: Money | null } }
 SmartSurge { enabled, activeFrom, activeTo, checkEveryMin, holdMin, stopAfterMin, cooldownMin, profiles: [{ id, name, days, windows, steps: [{ ratio, multiplier }], cap, isDefault }] }
@@ -467,7 +468,7 @@ Stockholm defaults (SEK; the admin converts other countries):
 | pet | 33 | 14 | 5 | 56 | 1 725 | 10 % | 20 % | 17 | 6 | 5 min | 12.26 |
 | child_seat | 35 | 14 | 5 | 59 | 1 800 | 10 % | 20 % | 18 | 6 | 5 min | 12.26 |
 
-Every category: no-show fee 65 kr, rider pickup fee off; baby and child seat 15 kr on `child_seat` only (v0.6.0; no seat fees on the other categories). Zone: price step 1 kr, reservation fee 25 kr, cleaning fee 300 kr, tolls passed through, no airport fees (ARN and BMA: 65 kr pickup, 30 kr drop-off, base and minimum × 1.3), no fixed routes, surge maximum ×3 (the admin may set up to ×6), smart surge off (owner decision 21), fleet owner share 5 %. `child_seat` is in the seed since v0.6.0.
+Every category: no-show fee 65 kr, rider pickup fee off; one seat fee of 15 kr on `child_seat` only (v0.7.1; no seat fee on the other categories). Zone: price step 1 kr, reservation fee 25 kr, cleaning fee 300 kr, tolls passed through, no airport fees (ARN and BMA: 65 kr pickup, 30 kr drop-off, base and minimum × 1.3), no fixed routes, surge maximum ×3 (the admin may set up to ×6), smart surge off (owner decision 21), fleet owner share 5 %. `child_seat` is in the seed since v0.6.0.
 
 **Keep these equal.** `RiderAppConfig.waiting` / `DriverAppConfig.waiting` (the headline category's terms) and their `waiting.byCategory` carry the categories' `waiting`, and `RiderAppConfig.pickupFee` / `DriverAppConfig.pickupPay.byCategory[].riderFee` the `riderPickupFee`; all come from the same admin Pricing page (`contract.json#configDocs.mustMatch`). The rule binds the documents published for one zone. Since v0.6.0 the samples `fixtures/config/rider_app_config.json` and `driver_app_config.json` are aligned with `pricing_document.json` (12.26 kr/min, Premium 16.90, no-show fee 65 kr) and `reference_check.py` checks the rule against them.
 
@@ -587,3 +588,18 @@ Owner safety part 1 decisions (2026-10-27); values in `contract.json#safety`.
 - **Admin reads.** `GET /admin/incidents` (`incidents.read`, zone-scoped, as before) and `GET /admin/incidents/{incidentId}` with `driverPosition`, the car's latest position, read live.
 - **Alarm feed.** `GET /admin/incidents/stream` (SSE; without `Accept: text/event-stream` a JSON page, for polling): `incident_opened`, `incident_updated`, `incident_escalated`, `incident_closed`, each with the whole `Incident`, replay with `after` / `Last-Event-ID`. First only admins with `incidents.read` whose zones cover the incident's zone get its events; an `sos` or `driver_silent` incident not taken within `safety.escalateAfterSeconds` (120 s) is escalated (`escalatedAt`) and from then on goes to every signed-in admin. No SMS when nobody is online. The admin panel rings a repeating alarm for open `sos` and `driver_silent` incidents until one is taken.
 - **Ride check** answers are safety part 2 (`ride_check` is reserved).
+
+## 16. Pricing rework part 2 (v0.7.1)
+
+Owner Pricing decisions of 2026-10-27; the machine-readable rules are in `contract.json#pricing.requestExtras`, `#stopWaits`, `#smartSurge`, `#surgeNotice`, `#pricingHistory` and `#categoryCatalog`.
+
+- **One seat fee.** Only `child_seat` has `childSeatFee`; every Child Seat trip includes one seat and the fee is added once (`extras` line). The rider app shows no seat options and no number on any car type. A pricing document with a seat fee on another category, or a `babySeatFee`, is `400 invalid_request` (`seat_fee_not_child_seat`); a quote or trip with `babySeats` / `childSeats` above 0 on another category is `400 invalid_request` (`seat_not_offered`).
+- **Airport fees** come from the airport zones (`Zone.kind = airport`, e.g. ARN, BMA): pickup inside one → `fees.airportPickup`, drop-off inside one → `fees.airportDropoff` of the priced zone. Flags an older app sends are ignored.
+- **Reservations** keep the price shown at booking: the fare at completion uses the quote's surge multiplier, never a surge in force later.
+- **Surge.** Manual Start = `PUT /admin/zones/{zoneId}/surge` (a flat curve with its end time, within `surge.maxMultiplier`, the admin's slider); Stop = `POST …/surge/end`. Planned windows (`surge.scheduled`) that overlap: the higher multiplier counts, and the admin is warned when saving. Smart surge: `contract.json#smartSurge`, off until `smart.enabled`. Drivers: `contract.json#surgeNotice`.
+- **History.** `GET /admin/config/{doc}/history`, `POST /admin/config/{doc}/restore`; one audit row per pricing publish with the app documents it rewrote.
+- **Catalog.** `GET|POST /admin/categories`, `PUT /admin/categories/{categoryId}`, `POST …/archive { reason }`, `POST …/restore`; archived for 30 days, refused while trips of the category are booked; a restored type keeps its prices and is off in every zone. The served app documents carry each category's `line`.
+
+### 3.8 Waiting at a middle stop (v0.7.1)
+
+No free minutes. The driver app taps **Framme vid stoppet** (`POST /driver/trips/{tripId}/stops/{stopIndex}/arrive`) and, when the trip goes on, `…/leave`; both take `expectedVersion`, bump `version` and send `trip_projection` with `stopVisits`. `stop_waiting` = Σ (leftAt − arrivedAt) / 60 × `stopWaitPerMin`, 100 % the driver's. Errors: `409 invalid_transition` with reason `stop_already_arrived`, `stop_out_of_order`, `stop_not_arrived` or `stop_already_left`; a trip not `in_trip` / `approaching_dropoff`: `409` (`not_on_trip`); a stop the trip does not have: `404` (`stop_not_found`).

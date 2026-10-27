@@ -34,22 +34,26 @@ afterEach(async () => {
 const sek = (amountMinor: number) => ({ amountMinor, currency: "SEK" });
 const line = (fare: Json, code: string) => (fare["fareLines"] as Array<{ code: string; amount: unknown }>).find((l) => l.code === code);
 const route = { pickup: PLACES.sergels, dropoff: PLACES.medborgar, stops: [] };
+// Inside the ARN airport zone (migration 0005).
+const ARLANDA = { address: "Arlanda", lat: 59.649, lng: 17.929 };
 
 describe("pricing v0.6.0", () => {
-  it("an airport drop-off is in the quote, must be booked as quoted, and is charged again on the completed fare", async () => {
+  it("v0.7.1: an airport drop-off is decided by the server from the airport zones and charged again on the completed fare", async () => {
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, fees: { ...doc["fees"], airportDropoff: sek(3000) } }));
-    const quoted = await rider.quote({ categoryIds: ["economy"], airportDropoff: true });
+    // The rider's own flag no longer adds anything: Medborgarplatsen is not an airport.
+    const flagged = (await rider.quote({ categoryIds: ["economy"], airportDropoff: true })).body["quotes"][0];
+    expect(line(flagged, "airport")).toBeUndefined();
+    expect(flagged.total).toEqual(sek(21700));
+
+    const toArlanda = { pickup: PLACES.sergels, dropoff: ARLANDA, stops: [] };
+    const quoted = await rider.quote({ ...toArlanda, categoryIds: ["economy"] });
     expect(quoted.status, JSON.stringify(quoted.body)).toBe(201);
     const quote = quoted.body["quotes"][0];
     // economy_plain (217 kr) + the 30 kr airport line + its 10 % app fee: 250 kr.
     expect(line(quote, "airport")).toEqual({ code: "airport", amount: sek(3000) });
     expect(quote.total).toEqual(sek(25000));
 
-    const mismatch = await rider.post("/trips", { quoteId: quote.quoteId, categoryId: "economy", ...route, kind: "live", paymentMethod: "cash" });
-    expect(mismatch.status).toBe(400);
-    expect(mismatch.body.reason).toBe("quote_mismatch");
-
-    const booked = await rider.post("/trips", { quoteId: quote.quoteId, categoryId: "economy", ...route, kind: "live", paymentMethod: "cash", airportDropoff: true });
+    const booked = await rider.post("/trips", { quoteId: quote.quoteId, categoryId: "economy", ...toArlanda, kind: "live", paymentMethod: "cash" });
     expect(booked.status, JSON.stringify(booked.body)).toBe(201);
     const tripId = booked.body["tripId"];
     await sim.tick();
@@ -58,7 +62,7 @@ describe("pricing v0.6.0", () => {
     expect((await a.accept(offer!)).status).toBe(200);
     await drive(a, tripId, "in_trip");
     await sim.advance(18 * 60);
-    await a.moveTo(PLACES.medborgar);
+    await a.moveTo(ARLANDA);
     const done = await a.command(tripId, "complete");
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(done.body.fare).toEqual(sek(25000));
@@ -66,12 +70,19 @@ describe("pricing v0.6.0", () => {
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, fees: { ...doc["fees"], airportDropoff: sek(0) } }));
   });
 
-  it("Child Seat prices its seats; seats on a category without the fee add nothing; a fixed route prices only its category", async () => {
+  it("v0.7.1: a Child Seat trip always includes its one seat; a seat on another car type is refused; a fixed route prices only its category", async () => {
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, fixedRoutes: [{ id: "R1", from: "Sergels torg", to: "Medborgarplatsen", categoryId: "economy", price: sek(39900) }] }));
-    const seats = await rider.quote({ categoryIds: ["child_seat", "economy"], babySeats: 1, childSeats: 2 });
-    expect(seats.status, JSON.stringify(seats.body)).toBe(201);
-    const [child, economy] = seats.body["quotes"];
-    expect(line(child, "extras")).toEqual({ code: "extras", amount: sek(4500) });
+    const child = (await rider.quote({ categoryIds: ["child_seat"] })).body["quotes"][0];
+    expect(line(child, "extras")).toEqual({ code: "extras", amount: sek(1500) });
+    // The old seat counts change nothing on Child Seat (read for one release).
+    const counted = (await rider.quote({ categoryIds: ["child_seat"], babySeats: 1, childSeats: 2 })).body["quotes"][0];
+    expect(line(counted, "extras")).toEqual({ code: "extras", amount: sek(1500) });
+    expect(counted.total).toEqual(child.total);
+    const refused = await rider.quote({ categoryIds: ["economy"], childSeats: 1 });
+    expect(refused.status).toBe(400);
+    expect(refused.body.reason).toBe("seat_not_offered");
+    expect((await rider.quote({ babySeats: 1 })).body.reason).toBe("seat_not_offered");
+    const economy = (await rider.quote({ categoryIds: ["economy"] })).body["quotes"][0];
     expect(line(economy, "extras")).toBeUndefined();
     expect(economy.total).toEqual(sek(21700));
 
@@ -81,7 +92,9 @@ describe("pricing v0.6.0", () => {
     expect(line(fe, "base")).toBeUndefined();
     expect(line(fc, "fixed_route")).toBeUndefined();
     expect(line(fc, "base")).toBeDefined();
-    expect((await rider.quote({ categoryIds: ["child_seat"], childSeats: 4 })).status).toBe(400);
+    const mismatch = await rider.post("/trips", { quoteId: fe.quoteId, categoryId: "economy", ...route, kind: "live", paymentMethod: "cash" });
+    expect(mismatch.status).toBe(400);
+    expect(mismatch.body.reason).toBe("quote_mismatch");
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, fixedRoutes: [] }));
   });
 

@@ -37,6 +37,13 @@ export function registerApprovalHandler(action: string, handler: ApprovalHandler
   handlers.set(action, handler);
 }
 
+/** What a change reports for its audit line: the app documents a pricing publish rewrote, a restored version. */
+function resultDetail(result: unknown): Record<string, unknown> {
+  if (result === null || typeof result !== "object") return {};
+  const r = result as { appDocuments?: unknown; restoredFrom?: unknown; version?: unknown };
+  return { ...(r.appDocuments !== undefined ? { appDocuments: r.appDocuments, version: r.version } : {}), ...(r.restoredFrom !== undefined ? { restoredFrom: r.restoredFrom } : {}) };
+}
+
 export const isApprovalExempt = (who: Principal) => who.role === "super";
 
 /** Runs the change now for an approval-exempt admin, otherwise files it for a second admin. */
@@ -46,7 +53,8 @@ export async function runOrRequest<T>(trx: Trx, who: Principal, request: Approva
   {
     if (isApprovalExempt(who)) {
       const result = (await handler(trx, request.payload, null, who.subjectId, now)) as T;
-      await audit(trx, { adminId: who.subjectId, action: request.action, targetType: request.targetType, targetId: request.targetId, zoneId: request.zoneId, detail: { direct: true, ...request.payload }, at: now });
+      // v0.7.1 (contract.json#pricingHistory): one line per publish, with what the publish did (the app documents it rewrote).
+      await audit(trx, { adminId: who.subjectId, action: request.action, targetType: request.targetType, targetId: request.targetId, zoneId: request.zoneId, detail: { direct: true, ...request.payload, ...resultDetail(result) }, at: now });
       return { ran: true as const, result };
     }
     const approvalId = newId("apr", now.getTime());
@@ -114,10 +122,11 @@ export async function decideApproval(trx: Trx, who: Principal, approvalId: strin
       throw new ApiError("forbidden", "You do not have permission to decide this.", { reason: "missing_permission" });
     }
     if (row.zone_id !== null && !adminCoversZone(who, row.zone_id)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
+    let approvedResult: unknown;
     if (decision === "approve") {
       const handler = handlers.get(row.action);
       if (handler === undefined) throw new Error(`No approval handler for ${row.action}`);
-      await handler(trx, row.payload as Record<string, unknown>, who.subjectId, row.requested_by, now);
+      approvedResult = await handler(trx, row.payload as Record<string, unknown>, who.subjectId, row.requested_by, now);
     }
     const status = decision === "approve" ? "approved" : "rejected";
     await trx
@@ -125,7 +134,7 @@ export async function decideApproval(trx: Trx, who: Principal, approvalId: strin
       .set({ status, decided_by: who.subjectId, decided_at: now, decision_note: note ?? null })
       .where("approval_id", "=", approvalId)
       .execute();
-    await audit(trx, { adminId: who.subjectId, action: `${row.action}.${status}`, targetType: row.target_type, targetId: row.target_id, zoneId: row.zone_id, detail: { approvalId, note }, at: now });
+    await audit(trx, { adminId: who.subjectId, action: `${row.action}.${status}`, targetType: row.target_type, targetId: row.target_id, zoneId: row.zone_id, detail: { approvalId, note, ...resultDetail(approvedResult) }, at: now });
     return view({ ...row, status, decided_by: who.subjectId, decided_at: now, decision_note: note ?? null }, now);
   }
 }

@@ -202,6 +202,7 @@ export interface TripsTable {
   cancelled_driver_ids: ColumnType<string[], string[] | undefined, string[] | RawBuilder<string[]>>;
   created_at: Timestamp;
   updated_at: Timestamp;
+  stop_visits: JsonDefault<unknown[]>;
 }
 
 export interface TripEventsTable {
@@ -376,6 +377,8 @@ export interface ConfigHistoryTable {
   published_by: string | null;
   approved_by: string | null;
   note: string | null;
+  action: Generated<"publish" | "restore">;
+  restored_from: number | null;
 }
 
 export interface ApprovalsTable {
@@ -707,7 +710,50 @@ export interface IncidentEventsTable {
   occurred_at: Timestamp;
 }
 
+export interface SurgeSchedulesTable {
+  schedule_id: string;
+  zone_id: string;
+  category_ids: string[];
+  start_at: Date;
+  end_at: Date;
+  step_minutes: number;
+  cap: ColumnType<string, number | string, number | string>;
+  points: ColumnType<unknown, string, string>;
+  status: "scheduled" | "active" | "ended" | "cancelled";
+  version: number;
+  created_by: string;
+  created_at: Date;
+  ended_at: Date | null;
+}
+
+export interface SmartSurgeStateTable {
+  zone_id: string;
+  multiplier: ColumnType<string, number | string | undefined, number | string>;
+  up_since: Date | null;
+  low_since: Date | null;
+  last_change: Date | null;
+  checked_at: Date | null;
+  ratio: ColumnType<string, number | string | undefined, number | string>;
+  profile_id: string | null;
+}
+
+export interface CategoriesTable {
+  category_id: string;
+  label: string;
+  line: ColumnType<Record<string, string>, string | undefined, string>;
+  seats: number;
+  built_in: Generated<boolean>;
+  sort: Generated<number>;
+  archived_at: Date | null;
+  archived_by: string | null;
+  archive_reason: string | null;
+  updated_at: Generated<Date>;
+}
+
 export interface Database {
+  surge_schedules: SurgeSchedulesTable;
+  smart_surge_state: SmartSurgeStateTable;
+  categories: CategoriesTable;
   riders: RidersTable;
   drivers: DriversTable;
   driver_locations: DriverLocationsTable;

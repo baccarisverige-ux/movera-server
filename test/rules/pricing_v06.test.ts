@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { appDocWithPricing } from "../../src/config/service.js";
 import { pricingProblems } from "../../src/config/pricingRules.js";
 import { contractJson } from "../../src/contract/contract.js";
-import { documentSurgeAt, extrasOf, sameExtras } from "../../src/rules/priceExtras.js";
+import { extrasOf, riderExtras, sameExtras } from "../../src/rules/priceExtras.js";
+import { scheduledSurgeAt } from "../../src/pricing/surge.js";
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const doc = () => structuredClone(contractJson<Json>("fixtures/config/pricing_document.json"));
@@ -56,22 +57,24 @@ describe("pricing document checks (admin demo validateZoneBook)", () => {
 });
 
 describe("request extras", () => {
-  it("keeps only what was asked; 0 and false are nothing", () => {
-    expect(extrasOf({ babySeats: 0, childSeats: 2, airportPickup: false, airportDropoff: true, fixedRouteId: "R1", other: 1 })).toEqual({ childSeats: 2, airportDropoff: true, fixedRouteId: "R1" });
+  it("keeps only what prices the ride (v0.7.1: the rider sends only a fixed route; seats and airport flags are not extras)", () => {
+    expect(extrasOf({ babySeats: 0, childSeats: 2, airportPickup: false, airportDropoff: true, fixedRouteId: "R1", pickupInAirportZone: true, other: 1 })).toEqual({ fixedRouteId: "R1", pickupInAirportZone: true });
+    expect(riderExtras({ fixedRouteId: "R1", pickupInAirportZone: true, airportPickup: true })).toEqual({ fixedRouteId: "R1" });
     expect(extrasOf(null)).toEqual({});
-    expect(sameExtras({ childSeats: 0 }, {})).toBe(true);
-    expect(sameExtras({ childSeats: 1 }, { childSeats: 2 })).toBe(false);
+    expect(sameExtras({ fixedRouteId: "R1", pickupInAirportZone: true }, { fixedRouteId: "R1" })).toBe(true);
+    expect(sameExtras({ fixedRouteId: "R1" }, { fixedRouteId: "R2" })).toBe(false);
   });
 
-  it("the first scheduled window in force, else 1", () => {
+  it("v0.7.1: overlapping scheduled windows, the higher counts; else 1", () => {
     const scheduled = [
       { id: "a", multiplier: 1.4, startsAt: "2026-10-27T10:00:00Z", endsAt: "2026-10-27T11:00:00Z" },
       { id: "b", multiplier: 2, startsAt: "2026-10-27T10:30:00Z", endsAt: "2026-10-27T12:00:00Z" },
     ];
-    expect(documentSurgeAt({ scheduled }, new Date("2026-10-27T10:45:00Z"))).toEqual({ multiplier: 1.4, until: "2026-10-27T11:00:00Z" });
-    expect(documentSurgeAt({ scheduled }, new Date("2026-10-27T11:00:00Z"))).toEqual({ multiplier: 2, until: "2026-10-27T12:00:00Z" });
-    expect(documentSurgeAt({ scheduled }, new Date("2026-10-27T12:00:00Z"))).toEqual({ multiplier: 1 });
-    expect(documentSurgeAt(undefined, new Date())).toEqual({ multiplier: 1 });
+    expect(scheduledSurgeAt(scheduled, new Date("2026-10-27T10:15:00Z"))).toEqual({ multiplier: 1.4, until: "2026-10-27T11:00:00Z" });
+    expect(scheduledSurgeAt(scheduled, new Date("2026-10-27T10:45:00Z"))).toEqual({ multiplier: 2, until: "2026-10-27T12:00:00Z" });
+    expect(scheduledSurgeAt(scheduled, new Date("2026-10-27T11:00:00Z"))).toEqual({ multiplier: 2, until: "2026-10-27T12:00:00Z" });
+    expect(scheduledSurgeAt(scheduled, new Date("2026-10-27T12:00:00Z"))).toEqual({ multiplier: 1 });
+    expect(scheduledSurgeAt(undefined, new Date())).toEqual({ multiplier: 1 });
   });
 });
 
