@@ -11,6 +11,7 @@ import { dispatchHandlers } from "./dispatch/runtime.js";
 import { rideHandlers } from "./trips/ride.js";
 import { CONFIG_CHANNEL } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
+import { DISPATCH_EVENTS_CHANNEL } from "./dispatch/feed.js";
 import { prepareTestWeek } from "./testWeek.js";
 
 const env = readEnv();
@@ -25,7 +26,7 @@ if (env.DATABASE_URL !== undefined) {
   const pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX, (error) => warn(error));
   if (env.MIGRATE_ON_START) await migrate(pool);
   db = createDb(pool);
-  hub = new NotificationHub(env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  hub = new NotificationHub(env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();
 }
 

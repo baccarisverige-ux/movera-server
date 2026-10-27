@@ -550,6 +550,8 @@ export interface EarningsEntriesTable {
   commission_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   cash_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   at: Timestamp;
+  /** contract v0.9.0 §16: the payout that paid this entry (never two). */
+  payout_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface RatingsTable {
@@ -559,6 +561,88 @@ export interface RatingsTable {
   tags: ColumnType<string[], string[] | undefined, string[]>;
   comment: string | null;
   at: Timestamp;
+  /** contract v0.9.0 §16: hidden by an admin (not in the average nor the low-rating signal). */
+  hidden: Generated<boolean>;
+  hidden_by: ColumnType<string | null, string | null | undefined, string | null>;
+  hidden_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  hide_reason: ColumnType<string | null, string | null | undefined, string | null>;
+}
+
+/** contract v0.9.0 §16 (migration 0022). */
+export interface PayoutsTable {
+  payout_id: string;
+  driver_id: string;
+  zone_id: string | null;
+  currency: string;
+  amount_minor: ColumnType<string, number | string, number | string>;
+  lines: ColumnType<unknown, string, string>;
+  trip_count: number;
+  source: "weekly" | "manual";
+  status: ColumnType<"pending" | "paid", "pending" | "paid" | undefined, "pending" | "paid">;
+  period_start: Timestamp;
+  period_end: Timestamp;
+  note: string | null;
+  created_by: string | null;
+  created_at: Timestamp;
+  paid_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  paid_by: ColumnType<string | null, string | null | undefined, string | null>;
+}
+
+export interface SupportTicketsTable {
+  ticket_id: string;
+  opened_by: "rider" | "driver";
+  rider_id: string | null;
+  driver_id: string | null;
+  trip_id: string | null;
+  zone_id: string | null;
+  category: string;
+  subject: string;
+  status: ColumnType<"open" | "pending" | "resolved" | "closed", "open" | "pending" | "resolved" | "closed" | undefined, "open" | "pending" | "resolved" | "closed">;
+  priority: ColumnType<"low" | "normal" | "high" | "urgent", "low" | "normal" | "high" | "urgent" | undefined, "low" | "normal" | "high" | "urgent">;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+  last_message_at: Timestamp;
+}
+
+export interface TicketMessagesTable {
+  /** Write order (two messages can share a timestamp). */
+  n: Generated<string>;
+  message_id: string;
+  ticket_id: string;
+  sender: "rider" | "driver" | "support";
+  admin_id: string | null;
+  text: string;
+  at: Timestamp;
+}
+
+export interface DispatchEventsTable {
+  sequence: Generated<string>;
+  event_id: Generated<string>;
+  kind: "offer_sent" | "offer_declined" | "offer_expired" | "offer_withdrawn" | "offer_accepted" | "assignment_locked" | "driver_bonus_added";
+  trip_id: string;
+  zone_id: string | null;
+  offer_id: string | null;
+  group_id: string | null;
+  occurred_at: Timestamp;
+}
+
+export interface KpiDaysTable {
+  zone_id: string;
+  day: ColumnType<string, string, string>;
+  currency: string;
+  completed_trips: number;
+  cancelled_trips: number;
+  no_shows: number;
+  gross_minor: ColumnType<string, number | string, number | string>;
+  commission_minor: ColumnType<string, number | string, number | string>;
+  driver_earnings_minor: ColumnType<string, number | string, number | string>;
+  pickup_pay_minor: ColumnType<string, number | string, number | string>;
+  driver_bonus_minor: ColumnType<string, number | string, number | string>;
+  cash_collected_minor: ColumnType<string, number | string, number | string>;
+  wallet_applied_minor: ColumnType<string, number | string, number | string>;
+  new_riders: number;
+  new_drivers: number;
+  computed_at: Timestamp;
 }
 
 export interface WalletEntriesTable {
@@ -752,4 +836,9 @@ export interface Database {
   refunds: RefundsTable;
   incidents: IncidentsTable;
   incident_events: IncidentEventsTable;
+  payouts: PayoutsTable;
+  support_tickets: SupportTicketsTable;
+  ticket_messages: TicketMessagesTable;
+  dispatch_events: DispatchEventsTable;
+  kpi_days: KpiDaysTable;
 }

@@ -1,5 +1,7 @@
 import type { Executor } from "../db/db.js";
 import { bookSilenceChecks } from "../trips/ride.js";
+import { closeWeeks } from "../admin/payouts.js";
+import { summarize } from "../admin/kpis.js";
 import type { TimerHandler } from "./timers.js";
 
 /** Housekeeping that runs on the timer worker, so only one instance does it at a time. */
@@ -8,6 +10,28 @@ const HOUR_MS = 60 * 60 * 1000;
 export const IDEMPOTENCY_KEY_TTL_MS = 24 * HOUR_MS;
 
 export const SWEEP_IDEMPOTENCY_KEYS = "sweep_idempotency_keys";
+/** contract v0.9.0 §16: the nightly summary (KPIs of the days that ended) and the weekly payouts. */
+export const NIGHTLY = "nightly_summary";
+/** The nightly run starts at 01:00 UTC (02:00 or 03:00 in Stockholm and Paris), after every zone's day has ended. */
+export const NIGHTLY_HOUR_UTC = 1;
+
+export function nextNightly(now: Date): Date {
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), NIGHTLY_HOUR_UTC));
+  if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1);
+  return next;
+}
+
+/** Each night: summarize every zone-day that ended (a re-run rewrites the same rows) and pay every week that ended. */
+export const nightlyHandler: TimerHandler = async (trx, timer) => {
+  const now = timer.firedAt;
+  await summarize(trx, now);
+  await closeWeeks(trx, now);
+  await trx
+    .insertInto("timers")
+    .values({ kind: NIGHTLY, ref_id: "all", due_at: nextNightly(now) })
+    .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
+    .execute();
+};
 
 /** Every hour: forget Idempotency-Keys older than a day and unused quotes, then book the next sweep. */
 export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
@@ -34,11 +58,15 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
 export async function ensureMaintenanceTimers(ex: Executor, now: Date = new Date()): Promise<void> {
   await ex
     .insertInto("timers")
-    .values({ kind: SWEEP_IDEMPOTENCY_KEYS, ref_id: "all", due_at: now })
+    .values([
+      { kind: SWEEP_IDEMPOTENCY_KEYS, ref_id: "all", due_at: now },
+      { kind: NIGHTLY, ref_id: "all", due_at: nextNightly(now) },
+    ])
     .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
     .execute();
 }
 
 export const maintenanceHandlers: Record<string, TimerHandler> = {
   [SWEEP_IDEMPOTENCY_KEYS]: sweepIdempotencyKeysHandler,
+  [NIGHTLY]: nightlyHandler,
 };
