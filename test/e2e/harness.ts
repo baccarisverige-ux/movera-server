@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { FastifyInstance } from "fastify";
@@ -58,6 +59,8 @@ export class Sim {
   /** What the server logged at start (prepareTestWeek). */
   readonly startLog: Array<{ data: Record<string, unknown>; message: string }> = [];
   readonly timerErrors: Array<{ data: object; message: string }> = [];
+  /** One row per HTTP response (see Sim.start). */
+  readonly timings: Array<{ route: string; status: number; ms: number }> = [];
   private readonly streams = new Set<Stream>();
   /** Signed-in driver apps: like the real app they send their position every 30 s while time passes. */
   readonly driverApps = new Set<Driver>();
@@ -86,6 +89,14 @@ export class Sim {
     sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL]);
     await sim.hub.start();
     sim.app = await buildApp({ env, logger: false, db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : {}) });
+    // Phase 7: every HTTP response's route, status and server time (Fastify's elapsedTime), for the timing budgets
+    // (15_timing.test.ts). E2E_TIMING_OUT=<file> also appends them as JSON lines for the timing report.
+    const timingOut = process.env.E2E_TIMING_OUT;
+    sim.app.addHook("onResponse", async (request, reply) => {
+      const row = { route: `${request.method} ${request.routeOptions.url ?? request.url.split("?")[0]}`, status: reply.statusCode, ms: reply.elapsedTime };
+      sim.timings.push(row);
+      if (timingOut) appendFileSync(timingOut, `${JSON.stringify(row)}\n`);
+    });
     sim.worker = new TimerWorker(db, {
       handlers: { ...dispatchHandlers, ...rideHandlers },
       logger: { warn: () => undefined, error: (data, message) => sim.timerErrors.push({ data, message }) },
