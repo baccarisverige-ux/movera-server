@@ -74,8 +74,8 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     return nearbyDrivers(deps.db, trip, clean(parseBody(NearbyQuery, request.query)), now());
   });
   app.get(`${API_PREFIX}/admin/riders`, async (request) => {
-    await authenticateAdmin(request, guard, "riders.read");
-    return listRiders(deps.db, clean(parseBody(RidersQuery, request.query)), deps.currency);
+    const who = await authenticateAdmin(request, guard, "riders.read");
+    return listRiders(deps.db, who, clean(parseBody(RidersQuery, request.query)), deps.currency);
   });
   app.get(`${API_PREFIX}/admin/drivers`, async (request) => {
     const who = await authenticateAdmin(request, guard, "drivers.read");

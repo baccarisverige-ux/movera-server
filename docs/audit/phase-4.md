@@ -24,7 +24,7 @@ Branch `audit/phase-4` (movera-server, movera-rider-app, Admin-panel-movera-disp
 | P4-3 | S3 | server | An admin could set a trip's fare below 0 (`adjust`, `complete`), giving negative driver earnings and commission | **fixed** (`400 invalid_amount`) |
 | P4-4 | S2 | server, admin | Forgot admin password: once a password exists, no new link ever appears; Render's free plan has no shell | **fixed** (`ADMIN_PASSWORD_RESET`, help on the sign-in page); e-mail self-service proposed |
 | P4-5 | S4 | server | `POST /telemetry/logs` (and `/analytics`, `/crashes`) in the contract but not served: app logs were lost | **fixed** |
-| P4-6 | S4 | server | Riders have no home zone, so an admin limited to a zone lists and blocks every rider | open, owner decision |
+| P4-6 | S4 | server | Riders have no home zone, so an admin limited to a zone lists and blocks every rider | **fixed** (owner: scope by trips in the admin's zones) |
 | P4-7 | S3 | server | The request log kept the query string: admin searches `?q=+46…` or an e-mail landed in the log | **fixed** |
 | P4-8 | S2 | rider, driver | Two Google Maps API keys in git history, one still at the tip of four branches | **owner must rotate** |
 | P4-9 | S4 | rider | Live rider app called `GET /ride-types` and `GET /rider/promotions/active` (not in the contract, 404) | **fixed** (not called on the contract wire) |
@@ -101,12 +101,20 @@ Branch `audit/phase-4` (movera-server, movera-rider-app, Admin-panel-movera-disp
   `telemetry` (migration 0019) and deleted after 30 days by the hourly sweep.
 - **Test.** `test/e2e/14_telemetry.test.ts` (5 tests) failed before (404), pass after.
 
-### P4-6 — Riders are not zone-scoped (S4, open)
+### P4-6 — Riders are not zone-scoped (S4, fixed)
 
 `riders` has no zone column and the contract gives riders no home zone; `GET /admin/riders` and `POST
 /admin/riders/{id}/status` therefore act on every rider for any admin with `riders.read` / `riders.block`. The matrix
 skips `:riderId` for the zone check and says why. **Owner question:** should a zone-limited admin see only riders
 who rode in their zones?
+
+- **Owner decision (2026-10-27).** Yes.
+- **Fix.** `src/admin/lists.ts`: for a zone-limited admin `GET /admin/riders` lists only riders with a trip whose
+  `zone_id` is in the admin's zones; `POST /admin/riders/{id}/status` on any other rider → `403 forbidden`, reason
+  `zone_out_of_scope` (as for drivers; 403 is in the operation's responses, so no contract change). All-zones admins
+  are unchanged.
+- **Test.** `12_route_matrix` now zone-checks `:riderId` (failed before: `POST /admin/riders/:riderId/status by a Z002
+  admin on Z001 → 200`) and a new "P4-6 …" list test (failed before: the Z002 admin's list held the Z001 rider).
 
 ### P4-7 — Phone numbers in the request log (S3, fixed)
 

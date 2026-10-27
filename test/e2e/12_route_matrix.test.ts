@@ -201,9 +201,8 @@ describe("Phase 4: route-by-route authorization matrix", () => {
         const res = await sim.request(method, url, lacking.token, body);
         if (res.status !== 403 || res.body["reason"] !== "missing_permission") failures.push(`${route} without ${op.permission} → ${res.status} ${JSON.stringify(res.body)}`);
       }
-      // Riders have no home zone in the contract (any admin with riders.block acts on any rider), so :riderId is
-      // not zone-checked here; see docs/audit/phase-4.md P4-6 (owner decision).
-      if (op.actors.includes("admin") && path.startsWith("/admin/") && /:(tripId|driverId|fleetId|vehicleId|documentId|zoneId|adminId|approvalId)/.test(path)) {
+      // Riders have no home zone: :riderId is in scope when the rider has a trip in the admin's zones (P4-6).
+      if (op.actors.includes("admin") && path.startsWith("/admin/") && /:(tripId|driverId|fleetId|vehicleId|documentId|zoneId|adminId|approvalId|riderId)/.test(path)) {
         const res = await sim.request(method, url, (await outOfZoneSuper()).token, body);
         if (res.status !== 403 && res.status !== 404) failures.push(`${route} by a Z002 admin on Z001 → ${res.status} ${JSON.stringify(res.body)}`);
       }
@@ -211,6 +210,18 @@ describe("Phase 4: route-by-route authorization matrix", () => {
     expect(failures).toEqual([]);
     const after = await owner.trip(tripId);
     expect({ status: after.status, version: after.version }).toEqual({ status: before.status, version: before.version });
+  });
+
+  it("P4-6: a zone-limited admin lists only riders who rode in their zones", async () => {
+    const z002 = await outOfZoneSuper();
+    const all = await sim.request("GET", "/admin/riders?limit=100", owner.token);
+    expect(all.status).toBe(200);
+    expect(JSON.stringify(all.body)).toContain(rider.id);
+    const limited = await sim.request("GET", "/admin/riders?limit=100", z002.token);
+    expect(limited.status).toBe(200);
+    expect(JSON.stringify(limited.body)).not.toContain(rider.id);
+    const byId = await sim.request("GET", `/admin/riders?q=${rider.id}`, z002.token);
+    expect(byId.body["items"]).toEqual([]);
   });
 
   it("owner-scoped routes: another rider, another driver, a fleet member who is not the owner", async () => {
