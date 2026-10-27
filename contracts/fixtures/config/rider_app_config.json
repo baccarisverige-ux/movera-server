@@ -39,7 +39,7 @@
       },
       {
         "id": "xl",
-        "label": "XL",
+        "label": "Movera XL",
         "seats": 6,
         "sort": 4
       },
@@ -252,72 +252,72 @@
   "waiting": {
     "freeWaitMin": 5,
     "perMin": {
-      "amountMinor": 500,
+      "amountMinor": 1226,
       "currency": "SEK"
     },
     "noShowAfterMin": 5,
     "noShowFee": {
-      "amountMinor": 5000,
+      "amountMinor": 6500,
       "currency": "SEK"
     },
     "byCategory": {
       "economy": {
         "freeWaitMin": 5,
         "perMin": {
-          "amountMinor": 500,
+          "amountMinor": 1226,
           "currency": "SEK"
         },
         "noShowAfterMin": 5,
         "noShowFee": {
-          "amountMinor": 5000,
+          "amountMinor": 6500,
           "currency": "SEK"
         }
       },
       "comfort": {
         "freeWaitMin": 5,
         "perMin": {
-          "amountMinor": 500,
+          "amountMinor": 1226,
           "currency": "SEK"
         },
         "noShowAfterMin": 5,
         "noShowFee": {
-          "amountMinor": 5000,
+          "amountMinor": 6500,
           "currency": "SEK"
         }
       },
       "premium": {
         "freeWaitMin": 5,
         "perMin": {
-          "amountMinor": 500,
+          "amountMinor": 1690,
           "currency": "SEK"
         },
         "noShowAfterMin": 5,
         "noShowFee": {
-          "amountMinor": 5000,
+          "amountMinor": 6500,
           "currency": "SEK"
         }
       },
       "xl": {
         "freeWaitMin": 3,
         "perMin": {
-          "amountMinor": 500,
+          "amountMinor": 1226,
           "currency": "SEK"
         },
         "noShowAfterMin": 3,
         "noShowFee": {
-          "amountMinor": 5000,
+          "amountMinor": 6500,
           "currency": "SEK"
         }
       },
       "electric": {
         "freeWaitMin": 5,
         "perMin": {
-          "amountMinor": 500,
+          "amountMinor": 1226,
           "currency": "SEK"
         },
         "noShowAfterMin": 5,
         "noShowFee": {
-          "amountMinor": 5000,
+          "amountMinor": 6500,
           "currency": "SEK"
         }
       }

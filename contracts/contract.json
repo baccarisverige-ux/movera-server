@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.5.6",
+  "version": "0.6.0",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -35,7 +35,7 @@
   },
   "categories": {
     "pattern": "^[a-z][a-z0-9_]{1,31}$",
-    "note": "Category ids come from the admin Pricing catalog; admins can add more. These are the seed ids every app must know.",
+    "note": "Category ids come from the admin Pricing catalog; admins can add, delete and deactivate categories and the apps follow the admin catalog. These are the seed ids every app must know. labels are display only (the catalog's label wins). v0.6.0: child_seat (Child Seat) joins the seed; the rider app's former id kids is read as child_seat for one release, and the driver app's \"Booster Seat\" is the child_seat category.",
     "seed": [
       "economy",
       "comfort",
@@ -43,10 +43,22 @@
       "priority",
       "xl",
       "electric",
-      "pet"
+      "pet",
+      "child_seat"
     ],
+    "labels": {
+      "economy": "Movera",
+      "comfort": "Comfort",
+      "premium": "Premium",
+      "priority": "Priority",
+      "xl": "Movera XL",
+      "electric": "Electric",
+      "pet": "Movera Pet",
+      "child_seat": "Child Seat"
+    },
     "aliases": {
-      "movera": "economy"
+      "movera": "economy",
+      "kids": "child_seat"
     }
   },
   "paymentMethods": [
@@ -757,14 +769,15 @@
     ]
   },
   "surge": {
-    "note": "v0.5.0 (CONTRACT.md §3.4). An admin surge may change over its time as a curve: points (atMin, multiplier) from 0 to the end, straight lines between them, applied in stepMinutes steps so the price never wobbles. The server prices new quotes from it; a quote keeps its multiplier (Quote.surgeMultiplier). Replaces nothing: a flat manual surge is a two-point curve.",
+    "note": "v0.5.0 (CONTRACT.md §3.4). An admin surge may change over its time as a curve: points (atMin, multiplier) from 0 to the end, straight lines between them, applied in stepMinutes steps so the price never wobbles. The server prices new quotes from it; a quote keeps its multiplier (Quote.surgeMultiplier). Replaces nothing: a flat manual surge is a two-point curve. v0.6.0: the cap is set by the admin, at most capMax (6, the admin slider's top, owner 2026-10-27); every multiplier is also kept within the zone's pricing surge.maxMultiplier (CONTRACT.md §3.5).",
     "stepMinutes": 5,
     "minMultiplier": 1.0,
     "roundTo": 0.1,
     "minPoints": 2,
     "capDefault": 3.0,
     "valueAt": "value at minute m = curve value at floor(m / stepMinutes) × stepMinutes, rounded half-up to roundTo, clamped to [minMultiplier, cap]; null before startAt and from endAt on",
-    "scope": "zoneId plus categoryIds (empty = every category); one active schedule per zone and category; a new one replaces it"
+    "scope": "zoneId plus categoryIds (empty = every category); one active schedule per zone and category; a new one replaces it",
+    "capMax": 6.0
   },
   "auth": {
     "note": "v0.5.0 (CONTRACT.md §8). Token issuance for the rider and driver apps; the admin signs in with e-mail and password plus a second factor (out of this contract). Actor and ids come from the token.",
@@ -958,18 +971,20 @@
     "mustMatch": [
       "RiderAppConfig.waiting.byCategory and DriverAppConfig.waiting.byCategory = pricing.categories[].waiting",
       "RiderAppConfig.pickupFee.byCategory and DriverAppConfig.pickupPay.byCategory[].riderFee = pricing.categories[].riderPickupFee",
+      "RiderAppConfig.waiting and DriverAppConfig.waiting (the top-level terms) = pricing.categories[headline].waiting (economy, else the first category)",
       "DriverAppConfig.offers.radarSeconds / exclusiveSeconds / radarOn / exclusiveOn = dispatch.radar.seconds / exclusive.seconds / radar.on / exclusive.on",
       "DriverAppConfig.offers.exclusiveWhileDriving = dispatch.exclusiveWhileDriving"
     ],
-    "mustMatchNote": "mustMatch binds the documents the admin publishes for one zone (the same admin pages build them). fixtures/config/rider_app_config.json and driver_app_config.json are older illustrative samples whose waiting amounts predate the pricing defaults; they are left unchanged in v0.5.1 to stay additive and are aligned in v0.6. reference_check.py does not check mustMatch against them."
+    "mustMatchNote": "mustMatch binds the documents published for one zone. v0.6.0: the sample documents fixtures/config/rider_app_config.json and driver_app_config.json are aligned with fixtures/config/pricing_document.json (12.26 kr/min, Premium 16.90, no-show fee 65 kr) and reference_check.py checks the rule against them.",
+    "publishPricing": "v0.6.0 (owner 2026-10-27): publishing the pricing document keeps the app documents in step. In the same transaction the server writes the zone's live rider_app_config and driver_app_config again with waiting.byCategory (freeWaitMin, perMin, noShowAfterMin, noShowFee), the top-level waiting terms of the headline category, RiderAppConfig.pickupFee.byCategory and DriverAppConfig.pickupPay.byCategory[].riderFee taken from the new pricing document; every other field stays as published. Each app document whose values change gets the next version and publishedAt and sends config_published; one whose values are already equal is left as it is. A zone with no app document published yet gets none (the admin publishes the first one). An app document's draft, when there is one, takes the same values and its draft version goes up by 1 (an admin holding the old draft version gets 409 version_mismatch and reloads), so a later app publish does not undo them."
   },
   "pricing": {
     "note": "v0.5.1 (CONTRACT.md §3.5). The server prices every quote and fare from the zone's pricing document (admin Pricing, the order of quoteRide), with owner decisions 16-21 applied. Amounts are exact until they become a fare line. Cases: fixtures/fares.json.",
     "order": [
       "ride part: a matching fixed route (fixed_route, no surge / minimum / maximum), else base + perKm × km + perMin × minutes",
-      "surge: ride part × multiplier, multiplier clamped to [1, surge.maxMultiplier]; the extra is the surge line",
+      "surge: ride part × multiplier, multiplier clamped to [1, surge.maxMultiplier] (the admin's maximum, at most 6); the extra is the surge line",
       "minimum: ride part raised to minimum (minimum_adjust); maximum: ride part lowered to maximum when not null (maximum_adjust)",
-      "extras, unsurged: waiting, stops, stop_waiting, extras (seats), airport, reservation_fee (kind=scheduled)",
+      "extras, unsurged: waiting, stops, stop_waiting, extras (babySeats × babySeatFee + childSeats × childSeatFee; a missing fee is 0), airport (airportPickup / airportDropoff fees), reservation_fee (kind=scheduled)",
       "app fee = (ride part + extras) × appFeePct / 100",
       "pickup fee = riderPickupFee.live, or .reservation for kind=scheduled (null = none)",
       "total = half_up((ride part + extras + app fee + pickup fee) / priceStep) × priceStep, rounded once",
@@ -985,8 +1000,19 @@
     },
     "quoteAndFare": "The quote prices the server's own route (OSRM km and minutes; a client distance is a hint) with no waiting. The fare at completion is the same calculation with the quote's km and minutes, the stops made and the waiting the trip had (Waiting.chargedSeconds, stop waits), rounded once.",
     "endEarly": "owner decisions 8 and 19: ride part = base + km driven × perKm + minutes on board × perMin, × the booked surge multiplier, then minimum and maximum; no extras; + app fee + pickup fee. If that exceeds the booked fare (Quote.total plus route changes, without outstanding_fee) the ride part is lowered (maximum_adjust) to (booked − pickup fee) / (1 + appFeePct / 100), so the exact sum is the booked fare; then rounded once to priceStep. driverEarnings from that ride part.",
-    "surgeSource": "first match: the zone's active surge schedule (§3.4, PUT /admin/zones/{zoneId}/surge), then a pricing.surge.scheduled window in force, then smart surge when smart.enabled; else 1.0. The quote keeps its multiplier.",
-    "maxMultiplier": 3.0,
+    "surgeSource": "first match: the zone's active surge schedule (§3.4, PUT /admin/zones/{zoneId}/surge), then a pricing.surge.scheduled window in force, then smart surge when smart.enabled; else 1.0. Every source is clamped to [1, surge.maxMultiplier]: the admin sets that maximum (1 to 6) and it binds the manual surge, the scheduled windows and smart surge alike (smart surge also stays within its profile's cap). The quote keeps its multiplier.",
+    "requestExtras": {
+      "note": "v0.6.0: what the rider asks for that the price depends on, sent on QuoteRequest and repeated unchanged on CreateTripRequest (else 400 invalid_request, quote_mismatch). The trip keeps them and the fare at completion prices them again (§3.5).",
+      "babySeats": "integer 0..3 (the admin calculator's limit): babySeats × babySeatFee in the extras line",
+      "childSeats": "integer 0..3: childSeats × childSeatFee in the extras line",
+      "seatFees": "babySeatFee / childSeatFee exist only on the child_seat category (owner 2026-10-27). As in the admin calculator (quoteRide), a seat is priced at its category's fee, so on a category without the fee it adds nothing",
+      "airportPickup": "boolean: adds fees.airportPickup to the airport line",
+      "airportDropoff": "boolean: adds fees.airportDropoff to the airport line",
+      "fixedRouteId": "the id of one of the zone's fixedRoutes: when it is a route of the quoted category the fixed_route line replaces the ride part (no surge, minimum or maximum); otherwise the category is priced normally, as in the admin calculator",
+      "maxSeats": 3
+    },
+    "maxMultiplier": 6.0,
+    "maxMultiplierNote": "v0.6.0 (owner 2026-10-27, follow the admin demo): the highest maximum an admin may set is 6 (the demo's surge slider, SLIDER_MAX); the zone's own maximum is pricing.surge.maxMultiplier, set by the admin. The Stockholm default stays 3 (configDefaults.pricing).",
     "notInFormula": "cleaningFee (charged afterwards with an admin adjust), tollsPassThrough (no tolls priced in v0.5.1), smart surge profiles (smart.enabled is false in the test week, owner decision 21; its algorithm is not normative in v0.5.1)"
   },
   "dispatch": {
@@ -1850,7 +1876,7 @@
     },
     "promoCap": "null until Admin sets a cap for the country (no default decided)",
     "pricing": {
-      "note": "PricingDocument defaults (v0.5.1, CONTRACT.md §6.2): the admin panel's Stockholm prices (zonePricing.ts defaultZoneBook), SEK minor units (öre); a full Z001 document is fixtures/config/pricing_document.json. Smart surge off (owner decision 21), the surge cap 3, stops 3 free minutes (decision 20). Other countries: the admin converts (FR × 0.095, TN × 0.3).",
+      "note": "PricingDocument defaults (v0.5.1, CONTRACT.md §6.2): the admin panel's Stockholm prices (zonePricing.ts defaultZoneBook), SEK minor units (öre); a full Z001 document is fixtures/config/pricing_document.json. Smart surge off (owner decision 21), the surge maximum 3 (the admin may set up to 6), stops 3 free minutes (decision 20). Other countries: the admin converts (FR × 0.095, TN × 0.3). v0.6.0: babySeatFee and childSeatFee only on child_seat.",
       "countries": {
         "SE": {
           "currency": "SEK",
@@ -1866,8 +1892,6 @@
               "commissionPct": 20,
               "extraStopFee": 1500,
               "stopWaitPerMin": 500,
-              "babySeatFee": 3000,
-              "childSeatFee": 3000,
               "freeWaitMin": 5,
               "waitPerMin": 1226,
               "noShowFee": 6500
@@ -1882,8 +1906,6 @@
               "commissionPct": 20,
               "extraStopFee": 1900,
               "stopWaitPerMin": 600,
-              "babySeatFee": 3000,
-              "childSeatFee": 3000,
               "freeWaitMin": 5,
               "waitPerMin": 1226,
               "noShowFee": 6500
@@ -1898,8 +1920,6 @@
               "commissionPct": 22,
               "extraStopFee": 2700,
               "stopWaitPerMin": 900,
-              "babySeatFee": 3000,
-              "childSeatFee": 3000,
               "freeWaitMin": 5,
               "waitPerMin": 1690,
               "noShowFee": 6500
@@ -1914,8 +1934,6 @@
               "commissionPct": 20,
               "extraStopFee": 2000,
               "stopWaitPerMin": 700,
-              "babySeatFee": 3000,
-              "childSeatFee": 3000,
               "freeWaitMin": 5,
               "waitPerMin": 1226,
               "noShowFee": 6500
@@ -1930,8 +1948,6 @@
               "commissionPct": 20,
               "extraStopFee": 2300,
               "stopWaitPerMin": 800,
-              "babySeatFee": 3000,
-              "childSeatFee": 3000,
               "freeWaitMin": 3,
               "waitPerMin": 1226,
               "noShowFee": 6500
@@ -1946,8 +1962,6 @@
               "commissionPct": 20,
               "extraStopFee": 1700,
               "stopWaitPerMin": 600,
-              "babySeatFee": 3000,
-              "childSeatFee": 3000,
               "freeWaitMin": 5,
               "waitPerMin": 1226,
               "noShowFee": 6500
@@ -1962,8 +1976,6 @@
               "commissionPct": 20,
               "extraStopFee": 1700,
               "stopWaitPerMin": 600,
-              "babySeatFee": 3000,
-              "childSeatFee": 3000,
               "freeWaitMin": 5,
               "waitPerMin": 1226,
               "noShowFee": 6500

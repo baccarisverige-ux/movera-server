@@ -198,12 +198,12 @@
   "waiting": {
     "freeWaitMin": 5,
     "perMin": {
-      "amountMinor": 500,
+      "amountMinor": 1226,
       "currency": "SEK"
     },
     "noShowAfterMin": 5,
     "noShowFee": {
-      "amountMinor": 5000,
+      "amountMinor": 6500,
       "currency": "SEK"
     },
     "driverSharePct": 80,
@@ -212,24 +212,24 @@
       "economy": {
         "freeWaitMin": 5,
         "perMin": {
-          "amountMinor": 500,
+          "amountMinor": 1226,
           "currency": "SEK"
         },
         "noShowAfterMin": 5,
         "noShowFee": {
-          "amountMinor": 5000,
+          "amountMinor": 6500,
           "currency": "SEK"
         }
       },
       "comfort": {
         "freeWaitMin": 5,
         "perMin": {
-          "amountMinor": 500,
+          "amountMinor": 1226,
           "currency": "SEK"
         },
         "noShowAfterMin": 5,
         "noShowFee": {
-          "amountMinor": 5000,
+          "amountMinor": 6500,
           "currency": "SEK"
         }
       }

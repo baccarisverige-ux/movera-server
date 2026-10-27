@@ -113,17 +113,13 @@ describe("scenario 6: the rider raises the price (N4)", () => {
     }
   });
 
-  it("a quote of 0: the 2 × cap still holds, so no raise can pass 0 (finding P3-1)", async () => {
-    // A zone may price a category at nothing (an admin's free-ride promotion): every part 0.
-    await sim.publish(owner, "pricing", "Z001", (doc) => {
-      const free = { ...doc["categories"]["economy"], base: sek(0), perKm: sek(0), perMin: sek(0), minimum: sek(0), appFeePct: 0 };
-      return { ...doc, categories: { ...doc["categories"], economy: free } };
-    });
-    const { tripId, quote } = await rider.book();
-    expect(quote.total).toEqual(sek(0));
-    const res = await raise(tripId, 1_000_000);
-    expect(res.status).toBe(400);
-    expect(res.body.reason).toBe("raise_too_high");
-    expect((await rider.trip(tripId)).fare).toEqual(sek(0));
+  it("a quote of 0 cannot be published: every ride starts at a real price (admin demo A-O2, contract v0.6.0; was finding P3-1)", async () => {
+    // The admin demo's publish check (validateZoneBook) refuses a 0 base fare, so the 0-quote case of P3-1 cannot happen.
+    await expect(
+      sim.publish(owner, "pricing", "Z001", (doc) => {
+        const free = { ...doc["categories"]["economy"], base: sek(0), perKm: sek(0), perMin: sek(0), minimum: sek(0), appFeePct: 0 };
+        return { ...doc, categories: { ...doc["categories"], economy: free } };
+      }),
+    ).rejects.toThrow(/base fare must be above 0/);
   });
 });

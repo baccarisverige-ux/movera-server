@@ -54,7 +54,7 @@ S["Money"] = obj({"amountMinor": i("Amount in the currency's minor unit (öre, c
                   "currency": ref("CurrencyCode")},
                  ["amountMinor", "currency"], "Money on the wire. No floats, no display strings.", addl=False,
                  examples=[{"amountMinor": 12675, "currency": "SEK"}, {"amountMinor": 12500, "currency": "TND"}])
-S["CategoryId"] = s("Category id from the admin Pricing catalog. Seed ids are listed in x-seed; alias `movera` → `economy` is accepted on read for one release.",
+S["CategoryId"] = s("Category id from the admin Pricing catalog. Seed ids are listed in x-seed; aliases `movera` → `economy` and (v0.6.0) `kids` → `child_seat` are accepted on read for one release.",
                     pattern=C["categories"]["pattern"], examples=C["categories"]["seed"],
                     **{"x-seed": C["categories"]["seed"], "x-aliases": C["categories"]["aliases"]})
 S["PaymentMethod"] = s("Payment method kind. A saved card is `card` + `paymentMethodId`. `wallet` is the rider's balance in one currency (used first); "
@@ -514,7 +514,7 @@ S["SurgeSchedule"] = obj(OrderedDict([
     ("scheduleId", ref("Id")), ("zoneId", ref("Id")),
     ("categoryIds", arr(ref("CategoryId"), uniqueItems=True, description="Empty = every category of the zone.")),
     ("startAt", ref("Timestamp")), ("endAt", ref("Timestamp")),
-    ("stepMinutes", {**i(minimum=1), "default": SG["stepMinutes"]}), ("cap", {**n(minimum=1), "description": "No point and no step is above this (Admin surge cap)."}),
+    ("stepMinutes", {**i(minimum=1), "default": SG["stepMinutes"]}), ("cap", {**n(minimum=1, maximum=SG["capMax"]), "description": "No point and no step is above this: the admin's maximum, at most capMax (6, v0.6.0). The quote is also kept within the zone's pricing surge.maxMultiplier."}),
     ("points", arr(ref("SurgePoint"), minItems=SG["minPoints"], description="Sorted by atMin; the first at 0, the last at the end; straight lines between.")),
     ("status", s(enum=["scheduled", "active", "ended", "cancelled"])), ("version", i(minimum=1)),
     ("createdBy", ref("Id")), ("createdAt", ref("Timestamp")),
@@ -628,28 +628,29 @@ S["CategoryPricing"] = obj(OrderedDict([
     ("appFeePct", n("Added to the rider's price: % of ride part + extras. Movera keeps it.", minimum=0, maximum=50)),
     ("commissionPct", n("Movera's commission on the ride part and the extras except waiting (owner decisions 17, 18).", minimum=0, maximum=60)),
     ("extraStopFee", ref("Money")), ("stopWaitPerMin", money("Waiting at a stop after stopFreeWaitMin, per minute, charged per second.")),
-    ("babySeatFee", ref("Money")), ("childSeatFee", ref("Money")),
+    ("babySeatFee", money("v0.6.0: only on the child_seat category (owner 2026-10-27); a category without it adds nothing for baby seats.")),
+    ("childSeatFee", money("v0.6.0: only on the child_seat category (owner 2026-10-27); a category without it adds nothing for child seats.")),
     ("waiting", ref("CategoryPricingWaiting")),
     ("riderPickupFee", ref("RiderPickupFee")),
-]), ["enabled", "base", "perKm", "perMin", "minimum", "maximum", "appFeePct", "commissionPct", "extraStopFee", "stopWaitPerMin", "babySeatFee", "childSeatFee", "waiting", "riderPickupFee"],
+]), ["enabled", "base", "perKm", "perMin", "minimum", "maximum", "appFeePct", "commissionPct", "extraStopFee", "stopWaitPerMin", "waiting", "riderPickupFee"],
     "One category's prices in a zone (admin Pricing; zonePricing.ts CategoryPrice + commission + rider pickup fee).")
 S["PricingFees"] = obj({"airportPickup": ref("Money"), "airportDropoff": ref("Money"), "reservationFee": money("Added to kind=scheduled trips (reservation_fee line)."),
                         "cleaningFee": money("Charged afterwards by an admin adjust; not in the fare formula."), "tollsPassThrough": b("Tolls added to the fare; no tolls are priced in v0.5.1.")},
                        ["airportPickup", "airportDropoff", "reservationFee", "cleaningFee", "tollsPassThrough"])
 S["FixedRoute"] = obj({"id": ref("Id"), "from": s(minLength=1), "to": s(minLength=1), "categoryId": ref("CategoryId"), "price": ref("Money")},
                       ["id", "from", "to", "categoryId", "price"], "A fixed price between two admin-named places: replaces base + distance + time; no surge, minimum or maximum.")
-S["SurgeStep"] = obj({"ratio": n("Requests per free driver at which this step starts.", exclusiveMinimum=0), "multiplier": n(minimum=1)}, ["ratio", "multiplier"])
+S["SurgeStep"] = obj({"ratio": n("Requests per free driver at which this step starts.", exclusiveMinimum=0), "multiplier": n(minimum=1, maximum=PR["maxMultiplier"])}, ["ratio", "multiplier"])
 S["SurgeProfile"] = obj({"id": s(minLength=1), "name": s(), "days": arr(i(minimum=0, maximum=6), description="0 = Monday … 6 = Sunday."),
                          "windows": arr(obj({"from": s(pattern=r"^\d\d:\d\d$"), "to": s(pattern=r"^\d\d:\d\d$")}, ["from", "to"])),
-                         "steps": arr(ref("SurgeStep")), "cap": n(minimum=1), "isDefault": b()},
+                         "steps": arr(ref("SurgeStep")), "cap": n("The profile's own maximum (admin, ×1 to ×6); the zone's surge.maxMultiplier binds it too.", minimum=1, maximum=PR["maxMultiplier"]), "isDefault": b()},
                         ["id", "name", "days", "windows", "steps", "cap", "isDefault"])
 S["SmartSurge"] = obj({"enabled": b("Automatic surge; false in the test week (owner decision 21)."), "activeFrom": s(pattern=r"^\d\d:\d\d$"), "activeTo": s(pattern=r"^\d\d:\d\d$"),
                        "checkEveryMin": i(minimum=1, maximum=15), "holdMin": i(minimum=1, maximum=30), "stopAfterMin": i(minimum=1, maximum=60), "cooldownMin": i(minimum=1, maximum=30),
                        "profiles": arr(ref("SurgeProfile"))},
                       ["enabled", "profiles"], "The admin's smart surge settings, kept in the document; the algorithm is not normative in v0.5.1.")
-S["ScheduledSurge"] = obj({"id": s(minLength=1), "name": s(), "multiplier": n(minimum=1), "startsAt": ref("Timestamp"), "endsAt": ref("Timestamp")},
+S["ScheduledSurge"] = obj({"id": s(minLength=1), "name": s(), "multiplier": n(minimum=1, maximum=PR["maxMultiplier"]), "startsAt": ref("Timestamp"), "endsAt": ref("Timestamp")},
                           ["id", "multiplier", "startsAt", "endsAt"], "A flat surge for a time window, from the pricing document.")
-S["PricingSurge"] = obj({"maxMultiplier": {**n(minimum=1, maximum=PR["maxMultiplier"]), "default": PR["maxMultiplier"], "description": "Owner decision 21: at most ×3 (the admin slider allows 6)."},
+S["PricingSurge"] = obj({"maxMultiplier": {**n(minimum=1, maximum=PR["maxMultiplier"]), "default": C["configDefaults"]["pricing"]["countries"]["SE"]["surgeMaxMultiplier"], "description": "The zone's surge maximum, set by the admin (×1 to ×6, v0.6.0, owner 2026-10-27): every source (manual schedule, scheduled windows, smart surge) is kept within it."},
                          "smart": ref("SmartSurge"), "scheduled": arr(ref("ScheduledSurge"))}, ["maxMultiplier", "smart", "scheduled"],
                         "Surge sources after the zone's surge schedule (§3.4): " + PR["surgeSource"])
 S["PricingDocument"] = obj(OrderedDict([
@@ -847,18 +848,23 @@ S["EndEarlyCommand"] = obj(dict(EV, reasonCode=ref("RiderCancelReasonCode"), not
 S["CancelReasonCommand"] = obj({"reasonCode": ref("RiderCancelReasonCode"), "note": s(maxLength=1000)}, ["reasonCode"],
                                "The reason a rider tells after a cancel-first (owner decision 6, v0.4.4). No expectedVersion: "
                                "the trip's version does not change.")
+PRICE_EXTRAS = {"babySeats": i("v0.6.0: baby seats asked for, 0-3; priced at babySeatFee, which only child_seat has.", minimum=0, maximum=PR["requestExtras"]["maxSeats"]),
+       "childSeats": i("v0.6.0: child seats asked for, 0-3; priced at childSeatFee, which only child_seat has.", minimum=0, maximum=PR["requestExtras"]["maxSeats"]),
+       "airportPickup": b("v0.6.0: the pickup is at an airport: fees.airportPickup in the airport line."),
+       "airportDropoff": b("v0.6.0: the drop-off is at an airport: fees.airportDropoff in the airport line."),
+       "fixedRouteId": {"allOf": [ref("Id")], "description": "v0.6.0: one of the zone's fixed routes; for a route of the quoted category the fixed_route line replaces the ride part, otherwise the category is priced normally."}}
 S["QuoteRequest"] = obj({"pickup": ref("Place"), "dropoff": ref("Place"), "stops": arr(ref("Place"), description="MUST be sent (may be empty)."),
                          "categoryIds": arr(ref("CategoryId"), description="Omit for every category in the zone."),
-                         "kind": ref("TripKind"), "scheduledAt": ref("Timestamp"), "paymentMethod": ref("PaymentMethod")},
+                         "kind": ref("TripKind"), "scheduledAt": ref("Timestamp"), "paymentMethod": ref("PaymentMethod"), **PRICE_EXTRAS},
                         ["pickup", "dropoff", "stops"])
 S["QuoteList"] = obj({"quotes": arr(ref("Quote")), "zoneId": ref("Id"), "serverTime": ref("Timestamp")}, ["quotes", "zoneId"])
 S["CreateTripRequest"] = obj({"quoteId": ref("Id"), "categoryId": ref("CategoryId"), "pickup": ref("Place"),
                               "dropoff": ref("Place"), "stops": arr(ref("Place")), "kind": ref("TripKind"),
                               "scheduledAt": ref("Timestamp"), "paymentMethod": ref("PaymentMethod"),
                               "paymentMethodId": ref("Id"), "walletFirst": b("Use wallet balance before the method."),
-                              "notes": s(maxLength=500)},
+                              "notes": s(maxLength=500), **PRICE_EXTRAS},
                              ["quoteId", "categoryId", "pickup", "dropoff", "stops", "kind", "paymentMethod"],
-                             "Request a quoted trip. No expectedVersion: the trip does not exist yet; Idempotency-Key dedupes.")
+                             "Request a quoted trip. No expectedVersion: the trip does not exist yet; Idempotency-Key dedupes. v0.6.0: babySeats, childSeats, airportPickup, airportDropoff and fixedRouteId repeat the quote's (else 400 quote_mismatch).")
 S["UpdateTripRequest"] = obj(dict(EV, routeQuoteId=ref("Id"), dropoff=ref("Place"), stops=arr(ref("Place")),
                                   paymentMethod=ref("PaymentMethod"), paymentMethodId=ref("Id"),
                                   pickup={"allOf": [ref("Place")], "description": "v0.5.1, optional: move the pickup, at most booking.maxPickupMoveMeters after accept."}),

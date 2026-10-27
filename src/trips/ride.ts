@@ -11,6 +11,7 @@ import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
 import { haversineKm } from "../maps/routing.js";
 import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
+import { extrasOf } from "../rules/priceExtras.js";
 import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
 import { nextStatus, RIDER_ONBOARD, type TripStatus } from "../rules/transitions.js";
@@ -111,6 +112,8 @@ export async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSecond
     surgeMultiplier: Number(trip.surge_multiplier),
     waitingChargedSeconds: chargedSeconds,
     stopWaitSeconds: ((trip.stops as unknown[]) ?? []).map(() => 0),
+    // v0.6.0 (§3.5): the seats, airport and fixed route the rider booked are priced again at the end.
+    ...extrasOf(trip.price_extras),
     ...(owed ? { outstandingFee: owed.amount, ...(owed.sourceTripId ? { outstandingSourceTripId: owed.sourceTripId } : {}) } : {}),
   });
 }

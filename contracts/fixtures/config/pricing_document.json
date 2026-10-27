@@ -42,14 +42,6 @@
         "amountMinor": 500,
         "currency": "SEK"
       },
-      "babySeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
-      "childSeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
       "waiting": {
         "freeWaitMin": 5,
         "perMin": {
@@ -97,14 +89,6 @@
       },
       "stopWaitPerMin": {
         "amountMinor": 600,
-        "currency": "SEK"
-      },
-      "babySeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
-      "childSeatFee": {
-        "amountMinor": 3000,
         "currency": "SEK"
       },
       "waiting": {
@@ -156,14 +140,6 @@
         "amountMinor": 900,
         "currency": "SEK"
       },
-      "babySeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
-      "childSeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
       "waiting": {
         "freeWaitMin": 5,
         "perMin": {
@@ -211,14 +187,6 @@
       },
       "stopWaitPerMin": {
         "amountMinor": 700,
-        "currency": "SEK"
-      },
-      "babySeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
-      "childSeatFee": {
-        "amountMinor": 3000,
         "currency": "SEK"
       },
       "waiting": {
@@ -270,14 +238,6 @@
         "amountMinor": 800,
         "currency": "SEK"
       },
-      "babySeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
-      "childSeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
       "waiting": {
         "freeWaitMin": 3,
         "perMin": {
@@ -327,14 +287,6 @@
         "amountMinor": 600,
         "currency": "SEK"
       },
-      "babySeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
-      "childSeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
       "waiting": {
         "freeWaitMin": 5,
         "perMin": {
@@ -382,14 +334,6 @@
       },
       "stopWaitPerMin": {
         "amountMinor": 600,
-        "currency": "SEK"
-      },
-      "babySeatFee": {
-        "amountMinor": 3000,
-        "currency": "SEK"
-      },
-      "childSeatFee": {
-        "amountMinor": 3000,
         "currency": "SEK"
       },
       "waiting": {

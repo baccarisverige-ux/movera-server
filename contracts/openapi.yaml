@@ -1,11 +1,11 @@
-# Movera API v0.5.6 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.6.0 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.5.6
+  version: 0.6.0
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.5.6 in this folder; this file must agree with them.
+    v0.6.0 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -68,7 +68,7 @@ tags:
   description: Legacy /rides aliases kept for one release
 x-contract:
   name: movera
-  version: 0.5.6
+  version: 0.6.0
   source: contract.json
 paths:
   /auth/otp/request:
@@ -7338,6 +7338,7 @@ components:
       - xl
       - electric
       - pet
+      - child_seat
       x-seed:
       - economy
       - comfort
@@ -7346,10 +7347,12 @@ components:
       - xl
       - electric
       - pet
+      - child_seat
       x-aliases:
         movera: economy
-      description: Category id from the admin Pricing catalog. Seed ids are listed in x-seed; alias `movera` → `economy` is
-        accepted on read for one release.
+        kids: child_seat
+      description: Category id from the admin Pricing catalog. Seed ids are listed in x-seed; aliases `movera` → `economy`
+        and (v0.6.0) `kids` → `child_seat` are accepted on read for one release.
     PaymentMethod:
       type: string
       enum:
@@ -10121,7 +10124,9 @@ components:
         cap:
           type: number
           minimum: 1
-          description: No point and no step is above this (Admin surge cap).
+          maximum: 6.0
+          description: 'No point and no step is above this: the admin''s maximum, at most capMax (6, v0.6.0). The quote is
+            also kept within the zone''s pricing surge.maxMultiplier.'
         points:
           type: array
           items:
@@ -10744,8 +10749,6 @@ components:
       - commissionPct
       - extraStopFee
       - stopWaitPerMin
-      - babySeatFee
-      - childSeatFee
       - waiting
       - riderPickupFee
       properties:
@@ -10786,9 +10789,15 @@ components:
           - $ref: '#/components/schemas/Money'
           description: Waiting at a stop after stopFreeWaitMin, per minute, charged per second.
         babySeatFee:
-          $ref: '#/components/schemas/Money'
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'v0.6.0: only on the child_seat category (owner 2026-10-27); a category without it adds nothing for
+            baby seats.'
         childSeatFee:
-          $ref: '#/components/schemas/Money'
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'v0.6.0: only on the child_seat category (owner 2026-10-27); a category without it adds nothing for
+            child seats.'
         waiting:
           $ref: '#/components/schemas/CategoryPricingWaiting'
         riderPickupFee:
@@ -10852,6 +10861,7 @@ components:
         multiplier:
           type: number
           minimum: 1
+          maximum: 6.0
     SurgeProfile:
       type: object
       required:
@@ -10896,6 +10906,8 @@ components:
         cap:
           type: number
           minimum: 1
+          maximum: 6.0
+          description: The profile's own maximum (admin, ×1 to ×6); the zone's surge.maxMultiplier binds it too.
         isDefault:
           type: boolean
     SmartSurge:
@@ -10951,6 +10963,7 @@ components:
         multiplier:
           type: number
           minimum: 1
+          maximum: 6.0
         startsAt:
           $ref: '#/components/schemas/Timestamp'
         endsAt:
@@ -10959,7 +10972,9 @@ components:
       type: object
       description: 'Surge sources after the zone''s surge schedule (§3.4): first match: the zone''s active surge schedule
         (§3.4, PUT /admin/zones/{zoneId}/surge), then a pricing.surge.scheduled window in force, then smart surge when smart.enabled;
-        else 1.0. The quote keeps its multiplier.'
+        else 1.0. Every source is clamped to [1, surge.maxMultiplier]: the admin sets that maximum (1 to 6) and it binds the
+        manual surge, the scheduled windows and smart surge alike (smart surge also stays within its profile''s cap). The
+        quote keeps its multiplier.'
       required:
       - maxMultiplier
       - smart
@@ -10968,9 +10983,10 @@ components:
         maxMultiplier:
           type: number
           minimum: 1
-          maximum: 3.0
+          maximum: 6.0
           default: 3.0
-          description: 'Owner decision 21: at most ×3 (the admin slider allows 6).'
+          description: 'The zone''s surge maximum, set by the admin (×1 to ×6, v0.6.0, owner 2026-10-27): every source (manual
+            schedule, scheduled windows, smart surge) is kept within it.'
         smart:
           $ref: '#/components/schemas/SmartSurge'
         scheduled:
@@ -12671,6 +12687,27 @@ components:
           $ref: '#/components/schemas/Timestamp'
         paymentMethod:
           $ref: '#/components/schemas/PaymentMethod'
+        babySeats:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: 'v0.6.0: baby seats asked for, 0-3; priced at babySeatFee, which only child_seat has.'
+        childSeats:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: 'v0.6.0: child seats asked for, 0-3; priced at childSeatFee, which only child_seat has.'
+        airportPickup:
+          type: boolean
+          description: 'v0.6.0: the pickup is at an airport: fees.airportPickup in the airport line.'
+        airportDropoff:
+          type: boolean
+          description: 'v0.6.0: the drop-off is at an airport: fees.airportDropoff in the airport line.'
+        fixedRouteId:
+          allOf:
+          - $ref: '#/components/schemas/Id'
+          description: 'v0.6.0: one of the zone''s fixed routes; for a route of the quoted category the fixed_route line replaces
+            the ride part, otherwise the category is priced normally.'
     QuoteList:
       type: object
       required:
@@ -12687,7 +12724,8 @@ components:
           $ref: '#/components/schemas/Timestamp'
     CreateTripRequest:
       type: object
-      description: 'Request a quoted trip. No expectedVersion: the trip does not exist yet; Idempotency-Key dedupes.'
+      description: 'Request a quoted trip. No expectedVersion: the trip does not exist yet; Idempotency-Key dedupes. v0.6.0:
+        babySeats, childSeats, airportPickup, airportDropoff and fixedRouteId repeat the quote''s (else 400 quote_mismatch).'
       required:
       - quoteId
       - categoryId
@@ -12723,6 +12761,27 @@ components:
         notes:
           type: string
           maxLength: 500
+        babySeats:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: 'v0.6.0: baby seats asked for, 0-3; priced at babySeatFee, which only child_seat has.'
+        childSeats:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: 'v0.6.0: child seats asked for, 0-3; priced at childSeatFee, which only child_seat has.'
+        airportPickup:
+          type: boolean
+          description: 'v0.6.0: the pickup is at an airport: fees.airportPickup in the airport line.'
+        airportDropoff:
+          type: boolean
+          description: 'v0.6.0: the drop-off is at an airport: fees.airportDropoff in the airport line.'
+        fixedRouteId:
+          allOf:
+          - $ref: '#/components/schemas/Id'
+          description: 'v0.6.0: one of the zone''s fixed routes; for a route of the quoted category the fixed_route line replaces
+            the ride part, otherwise the category is priced normally.'
     UpdateTripRequest:
       type: object
       description: Route change (needs routeQuoteId from /route-quote) and/or payment method change.

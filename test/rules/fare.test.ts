@@ -17,9 +17,9 @@ function merge(a: unknown, b: unknown): unknown {
 }
 
 describe("fares (contract fixtures/fares.json)", () => {
-  it("has the 17 cases of contract v0.5.1", () => {
-    expect(fixture.version).toBe("0.5.1");
-    expect(fixture.cases).toHaveLength(17);
+  it("has the 20 cases of contract v0.6.0", () => {
+    expect(fixture.version).toBe("0.6.0");
+    expect(fixture.cases).toHaveLength(20);
   });
 
   it.each(fixture.cases.map((c) => [c.id, c] as const))("%s", (_id, c) => {

@@ -20,8 +20,9 @@ export type CategoryPricing = {
   commissionPct: number;
   extraStopFee: MoneyJson;
   stopWaitPerMin: MoneyJson;
-  babySeatFee: MoneyJson;
-  childSeatFee: MoneyJson;
+  /** v0.6.0: only on child_seat (owner 2026-10-27); a category without it adds nothing for a seat (as quoteRide). */
+  babySeatFee?: MoneyJson;
+  childSeatFee?: MoneyJson;
   waiting: { freeWaitMin: number; perMin: MoneyJson; noShowAfterMin: number; noShowFee: MoneyJson };
   riderPickupFee: { live: MoneyJson | null; reservation: MoneyJson | null };
 };
@@ -75,6 +76,7 @@ export function priceFare(doc: PricingDocument, input: FareInput): Fare {
     if (m.currency !== currency) throw new FareError(`Money in ${m.currency} in a ${currency} zone`);
     return Frac.of(m.amountMinor);
   };
+  const seatPart = (count: number | undefined, fee: MoneyJson | undefined) => (count && fee ? Frac.of(count).mul(amt(fee)) : Frac.ZERO);
   const lines: Array<[string, Frac]> = [];
   const add = (code: string, value: Frac, keep = false) => {
     if (!value.isZero() || keep) lines.push([code, value]);
@@ -138,7 +140,7 @@ export function priceFare(doc: PricingDocument, input: FareInput): Fare {
       ["waiting", w],
       ["stops", Frac.of(stops.length).mul(amt(cat.extraStopFee))],
       ["stop_waiting", sw],
-      ["extras", Frac.of(input.babySeats ?? 0).mul(amt(cat.babySeatFee)).add(Frac.of(input.childSeats ?? 0).mul(amt(cat.childSeatFee)))],
+      ["extras", seatPart(input.babySeats, cat.babySeatFee).add(seatPart(input.childSeats, cat.childSeatFee))],
       ["airport", (input.airportPickup ? amt(doc.fees.airportPickup) : Frac.ZERO).add(input.airportDropoff ? amt(doc.fees.airportDropoff) : Frac.ZERO)],
       ["reservation_fee", input.kind === "scheduled" ? amt(doc.fees.reservationFee) : Frac.ZERO],
     ];

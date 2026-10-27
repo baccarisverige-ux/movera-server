@@ -182,6 +182,8 @@ export interface TripsTable {
   distance_meters: ColumnType<number | null, number | null | undefined, number | null>;
   duration_seconds: ColumnType<number | null, number | null | undefined, number | null>;
   surge_multiplier: ColumnType<string, number | string | undefined, number | string>;
+  /** v0.6.0: the quote's babySeats, childSeats, airportPickup, airportDropoff, fixedRouteId (priced again at the end). */
+  price_extras: JsonDefault<Record<string, unknown>>;
   pricing_version: ColumnType<number | null, number | null | undefined, number | null>;
   quote_expires_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   notes: ColumnType<string | null, string | null | undefined, string | null>;
@@ -419,6 +421,8 @@ export interface QuotesTable {
   route_source: "osrm" | "estimate";
   /** numeric comes back as a string. */
   surge_multiplier: ColumnType<string, number | string | undefined, number | string>;
+  /** v0.6.0: babySeats, childSeats, airportPickup, airportDropoff, fixedRouteId as the rider sent them. */
+  price_extras: JsonDefault<Record<string, unknown>>;
   currency: string;
   total_minor: ColumnType<string, number | string, number | string>;
   fare_lines: Json;

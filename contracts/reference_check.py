@@ -94,6 +94,13 @@ def _hu(x): return math.floor(x + Fr(1, 2))
 def _merge(a, b):
     if isinstance(a, dict) and isinstance(b, dict): return {**a, **{k: _merge(a[k], v) if k in a else v for k, v in b.items()}}
     return b
+def seats(cat, inp, amt):
+    """v0.6.0: seat fees only on child_seat (owner 2026-10-27); seats are 0..maxSeats."""
+    total = Fr(0)
+    for n, fee in ((inp.get('babySeats', 0), 'babySeatFee'), (inp.get('childSeats', 0), 'childSeatFee')):
+        if not (isinstance(n, int) and 0 <= n <= c['pricing']['requestExtras']['maxSeats']): raise ValueError('invalid_request')
+        if n and fee in cat: total += n * amt(cat[fee])   # as quoteRide: a category without the fee adds nothing
+    return total
 def price(doc, inp):
     """Every line exact until rounded half-up to a minor unit; the total rounded once to priceStep; outstanding_fee after that."""
     cat, amt, lines = doc['categories'][inp['categoryId']], (lambda m: Fr(m['amountMinor'])), []
@@ -123,7 +130,7 @@ def price(doc, inp):
         sw = Fr(sum(max(0, x - free) for x in stops)) / 60 * amt(cat['stopWaitPerMin'])
         f = doc['fees']
         for code, v in [('waiting', w), ('stops', len(stops) * amt(cat['extraStopFee'])), ('stop_waiting', sw),
-                        ('extras', inp.get('babySeats', 0) * amt(cat['babySeatFee']) + inp.get('childSeats', 0) * amt(cat['childSeatFee'])),
+                        ('extras', seats(cat, inp, amt)),
                         ('airport', (amt(f['airportPickup']) if inp.get('airportPickup') else 0) + (amt(f['airportDropoff']) if inp.get('airportDropoff') else 0)),
                         ('reservation_fee', amt(f['reservationFee']) if inp['kind'] == 'scheduled' else 0)]:
             if v > 0: add(code, v); extras += v
@@ -141,8 +148,12 @@ def price(doc, inp):
 riders = set(c['fareLines']['rider'])
 fj = json.load(open('fixtures/fares.json')); pdoc = json.load(open(fj['document']))
 for f in fj['cases']:
-    total, lines, driver = price(_merge(pdoc, f.get('overrides', {})), f['input'])
     e = f['expect']
+    try: total, lines, driver = price(_merge(pdoc, f.get('overrides', {})), f['input'])
+    except ValueError as err:
+        if e.get('error') != str(err): bad += 1; print('FARE', f['id'], 'expected', e, 'got error', err)
+        continue
+    if 'error' in e: bad += 1; print('FARE', f['id'], 'expected error', e['error'], 'got', total); continue
     want = [{'code': l['code'], 'amount': l['amount']['amountMinor']} for l in e['fareLines']]
     if (total, lines, driver, total - driver) != (e['total']['amountMinor'], want, e['driverEarnings']['amountMinor'], e['moveraShare']['amountMinor']) \
             or not all(l['code'] in riders for l in want) or sum(l['amount'] for l in want) != total:
@@ -151,8 +162,8 @@ se = c['configDefaults']['pricing']['countries']['SE']
 for cid, row in se['categories'].items():
     x = pdoc['categories'][cid]
     got = {'base': x['base'], 'perKm': x['perKm'], 'perMin': x['perMin'], 'minimum': x['minimum'], 'maximum': x['maximum'], 'extraStopFee': x['extraStopFee'],
-           'stopWaitPerMin': x['stopWaitPerMin'], 'babySeatFee': x['babySeatFee'], 'childSeatFee': x['childSeatFee'], 'waitPerMin': x['waiting']['perMin'], 'noShowFee': x['waiting']['noShowFee']}
-    got = {k: (v['amountMinor'] if v else None) for k, v in got.items()}
+           'stopWaitPerMin': x['stopWaitPerMin'], 'babySeatFee': x.get('babySeatFee'), 'childSeatFee': x.get('childSeatFee'), 'waitPerMin': x['waiting']['perMin'], 'noShowFee': x['waiting']['noShowFee']}
+    got = {k: (v['amountMinor'] if v else None) for k, v in got.items() if v is not None or k not in ('babySeatFee', 'childSeatFee')}
     got.update(appFeePct=x['appFeePct'], commissionPct=x['commissionPct'], freeWaitMin=x['waiting']['freeWaitMin'])
     if got != dict(row) or x['waiting']['noShowAfterMin'] != x['waiting']['freeWaitMin']: bad += 1; print('PRICING DEFAULTS', cid, got, row)
 if (pdoc['priceStep']['amountMinor'], pdoc['stopFreeWaitMin'], pdoc['surge']['maxMultiplier'], pdoc['surge']['smart']['enabled'], pdoc['fleetCommissionPct']) != \
@@ -274,6 +285,20 @@ for case in dj['cases']:
     if got != case['expect']: bad += 1; print('DISPATCH', case['id'], 'expected', case['expect'], 'got', got)
 dz = c['configDefaults']['dispatch']['zone']
 if any(ddoc[k] != v for k, v in dz.items()): bad += 1; print('DISPATCH DEFAULTS differ from fixtures/config/dispatch_document.json')
-# configDocs.mustMatch binds the documents the admin publishes for one zone; it is not checked against the older
-# illustrative samples fixtures/config/rider_app_config.json and driver_app_config.json (aligned in v0.6).
+# v0.6.0: seat fees only on child_seat (owner 2026-10-27); child_seat in the seed with its label.
+if any(('babySeatFee' in x or 'childSeatFee' in x) != (cid == 'child_seat') for cid, x in pdoc['categories'].items()): bad += 1; print('SEAT FEES not only on child_seat')
+if 'child_seat' not in c['categories']['seed'] or set(c['categories']['labels']) != set(c['categories']['seed']): bad += 1; print('CATEGORY seed / labels')
+if not (1 <= pdoc['surge']['maxMultiplier'] <= c['pricing']['maxMultiplier'] == c['surge']['capMax']): bad += 1; print('SURGE maximum')
+# configDocs.mustMatch against the sample app documents (aligned with the pricing document in v0.6.0).
+rcfg = json.load(open('fixtures/config/rider_app_config.json')); dcfg = json.load(open('fixtures/config/driver_app_config.json'))
+WK = ('freeWaitMin', 'perMin', 'noShowAfterMin', 'noShowFee')
+head = pdoc['categories']['economy' if 'economy' in pdoc['categories'] else next(iter(pdoc['categories']))]
+for name, cfg in (('rider', rcfg), ('driver', dcfg)):
+    if any(cfg['waiting'][k] != head['waiting'][k] for k in WK): bad += 1; print('MUSTMATCH', name, 'top-level waiting')
+    for cid, w in cfg['waiting']['byCategory'].items():
+        if any(w[k] != pdoc['categories'][cid]['waiting'][k] for k in WK): bad += 1; print('MUSTMATCH', name, 'waiting', cid)
+for cid, fee in rcfg['pickupFee']['byCategory'].items():
+    if fee != pdoc['categories'][cid]['riderPickupFee']: bad += 1; print('MUSTMATCH rider pickupFee', cid)
+for cid, rate in dcfg['pickupPay']['byCategory'].items():
+    if rate['riderFee'] != pdoc['categories'][cid]['riderPickupFee']: bad += 1; print('MUSTMATCH driver riderFee', cid)
 print('OK' if not bad else f'{bad} mismatches'); sys.exit(1 if bad else 0)
