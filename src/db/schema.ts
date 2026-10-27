@@ -669,6 +669,40 @@ export interface AuthLinkTokensTable {
   created_at: Timestamp;
 }
 
+/** contract v0.7.0 §15: SOS and "car lost" incidents (migration 0021). */
+export interface IncidentsTable {
+  incident_id: string;
+  trip_id: string | null;
+  kind: string;
+  severity: "low" | "medium" | "high" | "critical";
+  status: Generated<"open" | "investigating" | "resolved" | "dismissed">;
+  version: Generated<number>;
+  raised_by: "rider" | "driver" | "system";
+  zone_id: string | null;
+  rider_id: string | null;
+  driver_id: string | null;
+  position: ColumnType<unknown, string | null | undefined, string | null>;
+  driver_fix: ColumnType<unknown, string | null | undefined, string | null>;
+  opened_at: Timestamp;
+  updated_at: Timestamp;
+  escalated_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  taken_by: ColumnType<string | null, string | null | undefined, string | null>;
+  taken_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  resolved_by: ColumnType<string | null, string | null | undefined, string | null>;
+  resolved_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  resolution: ColumnType<string | null, string | null | undefined, string | null>;
+}
+
+export interface IncidentEventsTable {
+  sequence: ColumnType<string, number | string, number | string>;
+  event_id: string;
+  incident_id: string;
+  kind: "incident_opened" | "incident_updated" | "incident_escalated" | "incident_closed";
+  zone_id: string | null;
+  incident: ColumnType<unknown, string, string>;
+  occurred_at: Timestamp;
+}
+
 export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
@@ -716,4 +750,6 @@ export interface Database {
   ratings: RatingsTable;
   wallet_entries: WalletEntriesTable;
   refunds: RefundsTable;
+  incidents: IncidentsTable;
+  incident_events: IncidentEventsTable;
 }

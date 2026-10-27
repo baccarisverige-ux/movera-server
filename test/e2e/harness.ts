@@ -16,6 +16,7 @@ import type { Router } from "../../src/maps/routing.js";
 import { NotificationHub } from "../../src/realtime/hub.js";
 import { prepareTestWeek } from "../../src/testWeek.js";
 import { rideHandlers } from "../../src/trips/ride.js";
+import { INCIDENT_EVENTS_CHANNEL } from "../../src/safety/incidents.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /**
@@ -86,7 +87,7 @@ export class Sim {
       ...(options.osrmUrl ? { OSRM_URL: options.osrmUrl } : {}),
     });
     await prepareTestWeek(db, env, { info: (data, message) => sim.startLog.push({ data, message }) }, { now: sim.clock.now });
-    sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL]);
+    sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL]);
     await sim.hub.start();
     sim.app = await buildApp({ env, logger: false, db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : {}) });
     // Phase 7: every HTTP response's route, status and server time (Fastify's elapsedTime), for the timing budgets

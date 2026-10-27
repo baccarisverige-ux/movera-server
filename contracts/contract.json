@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.5.6",
+  "version": "0.7.0",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -2202,5 +2202,98 @@
     "Idempotency-Key": "required on every mutation, 16–128 chars",
     "X-Request-Id": "sent by clients, echoed by the server",
     "X-Api-Version": "0.5"
+  },
+  "safety": {
+    "note": "v0.7.0 (CONTRACT.md §15, owner safety part 1 decisions 2026-10-27). SOS from the rider or the driver and the server's 'car lost' alarm become incidents the admin takes, solves or calls a false alarm. The apps open the phone's emergency call (112) themselves AND send the SOS to Movera; afterwards they show only 'SOS sent' (no later update).",
+    "incidentKinds": [
+      "sos",
+      "driver_silent",
+      "ride_check"
+    ],
+    "kindSeverity": {
+      "sos": "critical",
+      "driver_silent": "critical",
+      "ride_check": "critical"
+    },
+    "raisedBy": [
+      "rider",
+      "driver",
+      "system"
+    ],
+    "statuses": [
+      "open",
+      "investigating",
+      "resolved",
+      "dismissed"
+    ],
+    "statusLabels": {
+      "open": "New",
+      "investigating": "Taken",
+      "resolved": "Solved",
+      "dismissed": "False alarm"
+    },
+    "transitions": [
+      {
+        "command": "take",
+        "from": [
+          "open"
+        ],
+        "to": "investigating"
+      },
+      {
+        "command": "resolve",
+        "from": [
+          "open",
+          "investigating"
+        ],
+        "to": "resolved"
+      },
+      {
+        "command": "dismiss",
+        "from": [
+          "open",
+          "investigating"
+        ],
+        "to": "dismissed"
+      }
+    ],
+    "sos": {
+      "riderStatuses": [
+        "searching",
+        "offered",
+        "accepted",
+        "driver_to_pickup",
+        "arrived",
+        "rider_onboard",
+        "in_trip",
+        "approaching_dropoff"
+      ],
+      "driverStatuses": [
+        "accepted",
+        "driver_to_pickup",
+        "arrived",
+        "rider_onboard",
+        "in_trip",
+        "approaching_dropoff"
+      ],
+      "note": "One open SOS incident per trip: a second SOS on the same trip (any key, either side) returns that incident. The body carries the phone's GPS once; the admin also sees the car's latest position (driverPosition, from POST /driver/location)."
+    },
+    "escalateAfterSeconds": 120,
+    "escalationNote": "An sos or driver_silent incident not taken within escalateAfterSeconds raises incident_escalated: from then on every signed-in admin gets its events (before: only admins with incidents.read whose zones cover the incident's zone). No SMS when nobody is online.",
+    "streamEventKinds": [
+      "incident_opened",
+      "incident_updated",
+      "incident_escalated",
+      "incident_closed"
+    ],
+    "alarmKinds": [
+      "sos",
+      "driver_silent"
+    ],
+    "driverSilent": {
+      "opensWith": "TripProjection.driverSilentAlert",
+      "closesWhen": "driver positions come back (resolved by the system, resolution 'position back')",
+      "systemResolution": "position back"
+    }
   }
 }
