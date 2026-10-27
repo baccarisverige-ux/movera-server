@@ -169,7 +169,7 @@ def price(doc, inp):
         parts = [('base', amt(cat['base'])), ('distance', amt(cat['perKm']) * km), ('time', amt(cat['perMin']) * mins)]
         for code, v in parts: add(code, v, True)
         ride = sum(v for _, v in parts)
-        mult = min(max(Fr(str(inp.get('surgeMultiplier', 1))), Fr(1)), Fr(str(min(doc['surge']['maxMultiplier'], c['pricing']['maxMultiplier']))))
+        mult = min(max(Fr(str(inp.get('surgeMultiplier', 1))), Fr(1)), Fr(str(c['pricing']['maxMultiplier'])))   # v0.7.1: the slider's top; no zone maximum
         if mult > 1: add('surge', ride * (mult - 1)); ride *= mult
         if ride < amt(cat['minimum']): add('minimum_adjust', amt(cat['minimum']) - ride); ride = amt(cat['minimum'])
         if cat['maximum'] is not None and ride > amt(cat['maximum']): add('maximum_adjust', amt(cat['maximum']) - ride); ride = amt(cat['maximum'])

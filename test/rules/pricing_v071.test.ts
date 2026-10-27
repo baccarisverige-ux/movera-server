@@ -13,7 +13,7 @@ describe("smart surge (contract fixtures/smart_surge.json)", () => {
 
   it("is the v0.7.1 fixture", () => {
     expect(fixture.version).toBe("0.7.1");
-    expect(fixture.cases.length).toBeGreaterThanOrEqual(3);
+    expect(fixture.cases.length).toBeGreaterThanOrEqual(2);
   });
 
   it.each(fixture.cases.map((c) => [c.id, c] as const))("%s", (_id, c) => {

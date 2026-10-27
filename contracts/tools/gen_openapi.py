@@ -554,7 +554,7 @@ S["SurgeSchedule"] = obj(OrderedDict([
     ("scheduleId", ref("Id")), ("zoneId", ref("Id")),
     ("categoryIds", arr(ref("CategoryId"), uniqueItems=True, description="Empty = every category of the zone.")),
     ("startAt", ref("Timestamp")), ("endAt", ref("Timestamp")),
-    ("stepMinutes", {**i(minimum=1), "default": SG["stepMinutes"]}), ("cap", {**n(minimum=1, maximum=SG["capMax"]), "description": "No point and no step is above this: the admin's maximum, at most capMax (6, v0.6.0). The quote is also kept within the zone's pricing surge.maxMultiplier."}),
+    ("stepMinutes", {**i(minimum=1), "default": SG["stepMinutes"]}), ("cap", {**n(minimum=1, maximum=SG["capMax"]), "description": "No point and no step is above this: the admin's maximum, at most capMax (6, v0.6.0; v0.7.1: the server sets it to the highest point, the slider value). The quote is also kept within the zone's pricing surge.maxMultiplier."}),
     ("points", arr(ref("SurgePoint"), minItems=SG["minPoints"], description="Sorted by atMin; the first at 0, the last at the end; straight lines between.")),
     ("status", s(enum=["scheduled", "active", "ended", "cancelled"])), ("version", i(minimum=1)),
     ("createdBy", ref("Id")), ("createdAt", ref("Timestamp")),
@@ -681,7 +681,7 @@ S["FixedRoute"] = obj({"id": ref("Id"), "from": s(minLength=1), "to": s(minLengt
 S["SurgeStep"] = obj({"ratio": n("Requests per free driver at which this step starts.", exclusiveMinimum=0), "multiplier": n(minimum=1, maximum=PR["maxMultiplier"])}, ["ratio", "multiplier"])
 S["SurgeProfile"] = obj({"id": s(minLength=1), "name": s(), "days": arr(i(minimum=0, maximum=6), description="0 = Monday … 6 = Sunday."),
                          "windows": arr(obj({"from": s(pattern=r"^\d\d:\d\d$"), "to": s(pattern=r"^\d\d:\d\d$")}, ["from", "to"])),
-                         "steps": arr(ref("SurgeStep")), "cap": n("The profile's own maximum (admin, ×1 to ×6); the zone's surge.maxMultiplier binds it too.", minimum=1, maximum=PR["maxMultiplier"]), "isDefault": b()},
+                         "steps": arr(ref("SurgeStep")), "cap": n("The profile's own maximum (admin, ×1 to ×6; v0.7.1: the only limit of smart surge).", minimum=1, maximum=PR["maxMultiplier"]), "isDefault": b()},
                         ["id", "name", "days", "windows", "steps", "cap", "isDefault"])
 S["SmartSurge"] = obj({"enabled": b("Automatic surge; false in the test week (owner decision 21)."), "activeFrom": s(pattern=r"^\d\d:\d\d$"), "activeTo": s(pattern=r"^\d\d:\d\d$"),
                        "checkEveryMin": i(minimum=1, maximum=15), "holdMin": i(minimum=1, maximum=30), "stopAfterMin": i(minimum=1, maximum=60), "cooldownMin": i(minimum=1, maximum=30),
@@ -689,9 +689,9 @@ S["SmartSurge"] = obj({"enabled": b("Automatic surge; false in the test week (ow
                       ["enabled", "profiles"], "The admin's smart surge settings. v0.7.1: the server runs it (contract.json#smartSurge, fixtures/smart_surge.json); off until enabled.")
 S["ScheduledSurge"] = obj({"id": s(minLength=1), "name": s(), "multiplier": n(minimum=1, maximum=PR["maxMultiplier"]), "startsAt": ref("Timestamp"), "endsAt": ref("Timestamp")},
                           ["id", "multiplier", "startsAt", "endsAt"], "A flat surge for a time window, from the pricing document.")
-S["PricingSurge"] = obj({"maxMultiplier": {**n(minimum=1, maximum=PR["maxMultiplier"]), "default": C["configDefaults"]["pricing"]["countries"]["SE"]["surgeMaxMultiplier"], "description": "The zone's surge maximum, set by the admin (×1 to ×6, v0.6.0, owner 2026-10-27): every source (manual schedule, scheduled windows, smart surge) is kept within it."},
+S["PricingSurge"] = obj({"maxMultiplier": {**n(minimum=1, maximum=PR["maxMultiplier"]), "deprecated": True, "description": "Deprecated in v0.7.1 and ignored: the maximum of each surge is the value the admin chose on its slider (owner 2026-10-27, no extra box). Kept readable for one release."},
                          "smart": ref("SmartSurge"), "scheduled": arr(ref("ScheduledSurge"), description="v0.7.1: overlapping windows, the higher multiplier counts."),
-                         "notifyDrivers": {**b("v0.7.1 (Tell drivers when a surge starts): the server sends drivers a surge_started notice when a manual or smart surge starts (contract.json#surgeNotice)."), "default": False}}, ["maxMultiplier", "smart", "scheduled"],
+                         "notifyDrivers": {**b("v0.7.1 (Tell drivers when a surge starts): the server sends drivers a surge_started notice when a manual or smart surge starts (contract.json#surgeNotice)."), "default": False}}, ["smart", "scheduled"],
                         "Surge sources after the zone's surge schedule (§3.4): " + PR["surgeSource"])
 S["PricingDocument"] = obj(OrderedDict([
     ("version", i("Admin revision of the zone's live pricing document (contract.json#configVersion).", minimum=1)), ("publishedAt", ref("Timestamp")),

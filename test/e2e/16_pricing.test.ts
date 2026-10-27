@@ -98,7 +98,7 @@ describe("pricing v0.6.0", () => {
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, fixedRoutes: [] }));
   });
 
-  it("a scheduled surge window in force prices the quote, within the admin's maximum", async () => {
+  it("a scheduled surge window in force prices the quote; v0.7.1: its own value is the maximum (maxMultiplier is ignored)", async () => {
     const now = sim.clock.now.getTime();
     const window = { id: "s1", name: "Concert", multiplier: 1.5, startsAt: new Date(now - 3_600_000).toISOString(), endsAt: new Date(now + 3_600_000).toISOString() };
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, surge: { ...doc["surge"], scheduled: [window] } }));
@@ -108,7 +108,7 @@ describe("pricing v0.6.0", () => {
     expect(line(surged, "surge")).toEqual({ code: "surge", amount: sek(9850) });
 
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, surge: { ...doc["surge"], maxMultiplier: 1.2, scheduled: [window] } }));
-    expect((await rider.quote({ categoryIds: ["economy"] })).body["quotes"][0].surgeMultiplier).toBe(1.2);
+    expect((await rider.quote({ categoryIds: ["economy"] })).body["quotes"][0].surgeMultiplier).toBe(1.5);
 
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, surge: { ...doc["surge"], maxMultiplier: 3, scheduled: [{ ...window, endsAt: new Date(now - 60_000).toISOString() }] } }));
     const after = (await rider.quote({ categoryIds: ["economy"] })).body["quotes"][0];

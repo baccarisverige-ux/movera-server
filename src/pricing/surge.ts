@@ -23,7 +23,7 @@ export type SmartSettings = {
   cooldownMin?: number;
   profiles: SurgeProfile[];
 };
-export type DocSurge = { maxMultiplier: number; smart?: SmartSettings; scheduled?: ScheduledWindow[]; notifyDrivers?: boolean };
+export type DocSurge = { maxMultiplier?: number; smart?: SmartSettings; scheduled?: ScheduledWindow[]; notifyDrivers?: boolean };
 
 export type SurgeNow = { multiplier: number; until?: string; source: "manual" | "scheduled" | "smart" | "off"; scheduleId?: string };
 
@@ -73,7 +73,7 @@ export function scheduleView(row: ScheduleRow, now: Date) {
 
 /** The zone's newest schedule that is not stopped, or undefined. */
 export async function currentSchedule(ex: Executor, zoneId: string): Promise<ScheduleRow | undefined> {
-  return (await ex.selectFrom("surge_schedules").selectAll().where("zone_id", "=", zoneId).orderBy("created_at", "desc").orderBy("schedule_id", "desc").limit(1).executeTakeFirst()) as ScheduleRow | undefined;
+  return (await ex.selectFrom("surge_schedules").selectAll().where("zone_id", "=", zoneId).orderBy("created_at", "desc").orderBy("version", "desc").orderBy("schedule_id", "desc").limit(1).executeTakeFirst()) as ScheduleRow | undefined;
 }
 
 function manualAt(row: ScheduleRow | undefined, categoryId: string | undefined, at: Date): { multiplier: number; until: string; scheduleId: string } | null {
@@ -136,7 +136,10 @@ export function inActiveHours(smart: SmartSettings, minute: number): boolean {
   return from === to || (from < to ? minute >= from && minute < to : minute >= from || minute < to);
 }
 
-export function targetFor(profile: SurgeProfile, ratio: number, maxMultiplier: number): number {
+/** The slider's top (contract.json#surge.capMax): no surge goes above it. */
+export const SLIDER_TOP = 6;
+
+export function targetFor(profile: SurgeProfile, ratio: number, maxMultiplier: number = SLIDER_TOP): number {
   let multiplier = 1;
   for (const step of profile.steps) if (ratio >= step.ratio) multiplier = step.multiplier;
   return Math.min(multiplier, profile.cap, maxMultiplier);
@@ -215,7 +218,7 @@ export async function runSmartSurge(trx: Trx, now: Date): Promise<Array<{ zoneId
     const ratio = await demandRatio(trx, zone.zone_id, every, now);
     const before: SmartState = { multiplier: row ? Number(row.multiplier) : 1, upSince: toMin(row?.up_since ?? null), lowSince: toMin(row?.low_since ?? null), lastChange: toMin(row?.last_change ?? null) };
     const atMin = Math.floor(now.getTime() / 60_000);
-    const next = profile ? smartStep(smart, profile, surge!.maxMultiplier, before, atMin, ratio) : { multiplier: 1, upSince: null, lowSince: null, lastChange: before.multiplier !== 1 ? atMin : before.lastChange };
+    const next = profile ? smartStep(smart, profile, SLIDER_TOP, before, atMin, ratio) : { multiplier: 1, upSince: null, lowSince: null, lastChange: before.multiplier !== 1 ? atMin : before.lastChange };
     const values = {
       zone_id: zone.zone_id,
       multiplier: next.multiplier,

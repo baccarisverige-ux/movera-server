@@ -86,7 +86,8 @@ describe("waiting at a middle stop (§3.8)", () => {
 });
 
 describe("manual surge Start / Stop, the booked price and Tell drivers", () => {
-  it("starts within the admin's maximum, prices new quotes, keeps a booked trip's price, tells drivers, and stops", async () => {
+  it("starts at the slider's value (its maximum, up to ×6), prices new quotes, keeps a booked trip's price, tells drivers, and stops", async () => {
+    // The old zone maximum (×3) no longer binds: the slider's value is the maximum (owner 2026-10-27).
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, surge: { ...doc["surge"], maxMultiplier: 3, notifyDrivers: true } }));
     const tripId = await bookAccepted(riders[1]!);
     const bookedFare = (await riders[1]!.trip(tripId))["fare"];
@@ -94,12 +95,17 @@ describe("manual surge Start / Stop, the booked price and Tell drivers", () => {
     const start = sim.clock.now.toISOString();
     const end = new Date(sim.clock.now.getTime() + 60 * 60_000).toISOString();
     const flat = (m: number) => ({ expectedVersion: 0, startAt: start, endAt: end, points: [{ atMin: 0, multiplier: m }, { atMin: 60, multiplier: m }] });
-    const tooHigh = await owner.put("/admin/zones/Z001/surge", flat(4));
+    const tooHigh = await owner.put("/admin/zones/Z001/surge", flat(6.5));
     expect(tooHigh.status).toBe(400);
     expect(tooHigh.body.reason).toBe("invalid_surge");
-    const started = await owner.put("/admin/zones/Z001/surge", flat(2));
+    const four = await owner.put("/admin/zones/Z001/surge", flat(4));
+    expect(four.status, JSON.stringify(four.body)).toBe(200);
+    expect(four.body).toMatchObject({ status: "active", cap: 4, version: 1 });
+    expect((await riders[0]!.quote({ categoryIds: ["economy"] })).body["quotes"][0].surgeMultiplier).toBe(4);
+    // A new Start replaces the running one.
+    const started = await owner.put("/admin/zones/Z001/surge", { ...flat(2), expectedVersion: 1 });
     expect(started.status, JSON.stringify(started.body)).toBe(200);
-    expect(started.body).toMatchObject({ status: "active", cap: 3, version: 1 });
+    expect(started.body).toMatchObject({ status: "active", cap: 2, version: 2 });
     expect((await owner.get("/admin/zones/Z001/surge")).body.scheduleId).toBe(started.body.scheduleId);
 
     const surged = (await riders[0]!.quote({ categoryIds: ["economy"] })).body["quotes"][0];
@@ -107,10 +113,13 @@ describe("manual surge Start / Stop, the booked price and Tell drivers", () => {
 
     // "Tell drivers when a surge starts" and "Tell drivers now": an in-app notice to the zone's online drivers.
     const notices = (await a.get("/notifications")).body["items"] as Json[];
-    expect(notices.find((n) => n["kind"] === "surge_started")).toMatchObject({ data: { zoneId: "Z001", multiplier: 2, until: end } });
+    expect(notices.filter((n) => n["kind"] === "surge_started").map((n) => n["data"])).toEqual(
+      expect.arrayContaining([{ zoneId: "Z001", multiplier: 4, until: end }, { zoneId: "Z001", multiplier: 2, until: end }]),
+    );
     const told = await owner.post("/admin/zones/Z001/surge/notify", {});
     expect(told.status, JSON.stringify(told.body)).toBe(200);
     expect(told.body).toEqual({ notified: 1, multiplier: 2 });
+    expect(((await a.get("/notifications")).body["items"] as Json[]).filter((n) => n["kind"] === "surge_started").length).toBeGreaterThanOrEqual(3);
 
     // The trip booked before the surge keeps its price to the end.
     await drive(a, tripId, "in_trip");
@@ -120,7 +129,7 @@ describe("manual surge Start / Stop, the booked price and Tell drivers", () => {
     expect(done.body.fare).toEqual(bookedFare);
     expect(line(done.body, "surge")).toBeUndefined();
 
-    const stopped = await owner.post("/admin/zones/Z001/surge/end", { expectedVersion: 1 });
+    const stopped = await owner.post("/admin/zones/Z001/surge/end", { expectedVersion: 2 });
     expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
     expect(stopped.body.status).toBe("ended");
     expect((await owner.get("/admin/zones/Z001/surge")).status).toBe(204);

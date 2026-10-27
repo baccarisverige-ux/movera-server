@@ -1,11 +1,11 @@
 {
   "version": "0.7.1",
-  "note": "Smart surge (contract.json#smartSurge, v0.7.1). Settings: fixtures/config/pricing_document.json surge.smart (checkEveryMin 1, holdMin 3, cooldownMin 2, stopAfterMin 5). cases: the measured ratio at each check (minutes from the first) and the multiplier applied after it, for one profile and the zone maximum. profilePicks: weekday (0 = Monday) and zone-local minute \u2192 the profile that wins.",
+  "note": "Smart surge (contract.json#smartSurge, v0.7.1). Settings: fixtures/config/pricing_document.json surge.smart (checkEveryMin 1, holdMin 3, cooldownMin 2, stopAfterMin 5). cases: the measured ratio at each check (minutes from the first) and the multiplier applied after it, for one profile; maxMultiplier is the slider top (6): a profile is limited only by its own cap (v0.7.1). profilePicks: weekday (0 = Monday) and zone-local minute \u2192 the profile that wins.",
   "cases": [
     {
       "id": "normal_up_after_hold_down_one_step",
       "profileId": "normal",
-      "maxMultiplier": 3.0,
+      "maxMultiplier": 6,
       "checks": [
         {
           "atMin": 0,
@@ -72,48 +72,9 @@
       ]
     },
     {
-      "id": "zone_maximum_binds",
-      "profileId": "normal",
-      "maxMultiplier": 1.4,
-      "checks": [
-        {
-          "atMin": 0,
-          "ratio": 1.0
-        },
-        {
-          "atMin": 1,
-          "ratio": 2.1
-        },
-        {
-          "atMin": 2,
-          "ratio": 2.2
-        },
-        {
-          "atMin": 3,
-          "ratio": 3.5
-        },
-        {
-          "atMin": 4,
-          "ratio": 3.5
-        },
-        {
-          "atMin": 5,
-          "ratio": 1.6
-        }
-      ],
-      "expect": [
-        1.0,
-        1.0,
-        1.0,
-        1.0,
-        1.4,
-        1.4
-      ]
-    },
-    {
       "id": "short_peak_never_applied",
       "profileId": "normal",
-      "maxMultiplier": 3.0,
+      "maxMultiplier": 6,
       "checks": [
         {
           "atMin": 0,

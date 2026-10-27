@@ -324,8 +324,8 @@
       }
     },
     {
-      "id": "surge_above_cap",
-      "note": "A multiplier above the zone's surge.maxMultiplier (the admin's maximum, 3 in the Stockholm document) is priced at that maximum.",
+      "id": "surge_4_is_the_admins_slider",
+      "note": "v0.7.1: a ×4 surge the admin chose on the slider is charged in full (no separate zone maximum; the slider tops out at ×6).",
       "input": {
         "categoryId": "economy",
         "km": 2.5,
@@ -335,7 +335,7 @@
       },
       "expect": {
         "total": {
-          "amountMinor": 28700,
+          "amountMinor": 38300,
           "currency": "SEK"
         },
         "fareLines": [
@@ -363,31 +363,31 @@
           {
             "code": "surge",
             "amount": {
-              "amountMinor": 17400,
+              "amountMinor": 26100,
               "currency": "SEK"
             }
           },
           {
             "code": "app_fee",
             "amount": {
-              "amountMinor": 2610,
+              "amountMinor": 3480,
               "currency": "SEK"
             }
           },
           {
             "code": "rounding",
             "amount": {
-              "amountMinor": -10,
+              "amountMinor": 20,
               "currency": "SEK"
             }
           }
         ],
         "driverEarnings": {
-          "amountMinor": 20880,
+          "amountMinor": 27840,
           "currency": "SEK"
         },
         "moveraShare": {
-          "amountMinor": 7820,
+          "amountMinor": 10460,
           "currency": "SEK"
         }
       }

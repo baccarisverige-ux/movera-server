@@ -33,7 +33,8 @@ export type PricingDocument = {
   categories: Record<string, CategoryPricing>;
   fees: { airportPickup: MoneyJson; airportDropoff: MoneyJson; reservationFee: MoneyJson };
   fixedRoutes: Array<{ id: string; categoryId: string; price: MoneyJson }>;
-  surge: { maxMultiplier: number };
+  /** v0.7.1: maxMultiplier is deprecated and ignored (each surge's slider value is its maximum). */
+  surge: { maxMultiplier?: number };
 };
 
 export type FareInput = {
@@ -110,7 +111,8 @@ export function priceFare(doc: PricingDocument, input: FareInput): Fare {
     ];
     for (const [code, value] of parts) add(code, value, true);
     ride = parts.reduce((sum, [, v]) => sum.add(v), Frac.ZERO);
-    const cap = Frac.min(Frac.dec(doc.surge.maxMultiplier), CONTRACT_MAX_SURGE);
+    // v0.7.1 (owner 2026-10-27): the slider's top; each surge source already carries its own maximum.
+    const cap = CONTRACT_MAX_SURGE;
     multiplier = Frac.min(Frac.max(Frac.dec(input.surgeMultiplier ?? 1), Frac.ONE), cap);
     if (multiplier.cmp(Frac.ONE) > 0) {
       add("surge", ride.mul(multiplier.sub(Frac.ONE)));

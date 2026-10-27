@@ -769,7 +769,7 @@
     ]
   },
   "surge": {
-    "note": "v0.5.0 (CONTRACT.md §3.4). An admin surge may change over its time as a curve: points (atMin, multiplier) from 0 to the end, straight lines between them, applied in stepMinutes steps so the price never wobbles. The server prices new quotes from it; a quote keeps its multiplier (Quote.surgeMultiplier). Replaces nothing: a flat manual surge is a two-point curve. v0.6.0: the cap is set by the admin, at most capMax (6, the admin slider's top, owner 2026-10-27); every multiplier is also kept within the zone's pricing surge.maxMultiplier (CONTRACT.md §3.5).",
+    "note": "v0.5.0 (CONTRACT.md §3.4). An admin surge may change over its time as a curve: points (atMin, multiplier) from 0 to the end, straight lines between them, applied in stepMinutes steps so the price never wobbles. The server prices new quotes from it; a quote keeps its multiplier (Quote.surgeMultiplier). Replaces nothing: a flat manual surge is a two-point curve. v0.6.0: the cap is set by the admin, at most capMax (6, the admin slider's top, owner 2026-10-27); every multiplier is also kept within the zone's pricing surge.maxMultiplier (CONTRACT.md §3.5). v0.7.1: the manual surge's maximum is its own slider value (cap = its highest point), at most capMax; pricing.surge.maxMultiplier no longer binds it.",
     "stepMinutes": 5,
     "minMultiplier": 1.0,
     "roundTo": 0.1,
@@ -982,7 +982,7 @@
     "note": "v0.5.1 (CONTRACT.md §3.5). The server prices every quote and fare from the zone's pricing document (admin Pricing, the order of quoteRide), with owner decisions 16-21 applied. Amounts are exact until they become a fare line. Cases: fixtures/fares.json.",
     "order": [
       "ride part: a matching fixed route (fixed_route, no surge / minimum / maximum), else base + perKm × km + perMin × minutes",
-      "surge: ride part × multiplier, multiplier clamped to [1, surge.maxMultiplier] (the admin's maximum, at most 6); the extra is the surge line",
+      "surge: ride part × multiplier, multiplier clamped to [1, 6] (the surge slider's top); the extra is the surge line. v0.7.1 (owner 2026-10-27, 'surge maximum = the value the admin chooses on the slider, no extra box'): each source carries its own maximum: the manual surge its slider value, a planned window its multiplier, smart surge its profile's cap; pricing.surge.maxMultiplier is deprecated and ignored",
       "minimum: ride part raised to minimum (minimum_adjust); maximum: ride part lowered to maximum when not null (maximum_adjust)",
       "extras, unsurged: waiting, stops, stop_waiting, extras (v0.7.1: a child_seat trip always includes one seat, its childSeatFee once; no other category has a seat fee), airport (fees.airportPickup when the pickup lies in a zone of kind airport, fees.airportDropoff when the drop-off does; the server decides, v0.7.1), reservation_fee (kind=scheduled)",
       "app fee = (ride part + extras) × appFeePct / 100",
@@ -1000,7 +1000,7 @@
     },
     "quoteAndFare": "The quote prices the server's own route (OSRM km and minutes; a client distance is a hint) with no waiting. The fare at completion is the same calculation with the quote's km and minutes, the quote's surge multiplier, the stops made and the waiting the trip had (Waiting.chargedSeconds, stop waits from the driver's arrive / leave taps), rounded once. A reservation (kind=scheduled) keeps the price of its booking: no surge in force later is added (owner 2026-10-27).",
     "endEarly": "owner decisions 8 and 19: ride part = base + km driven × perKm + minutes on board × perMin, × the booked surge multiplier, then minimum and maximum; no extras; + app fee + pickup fee. If that exceeds the booked fare (Quote.total plus route changes, without outstanding_fee) the ride part is lowered (maximum_adjust) to (booked − pickup fee) / (1 + appFeePct / 100), so the exact sum is the booked fare; then rounded once to priceStep. driverEarnings from that ride part.",
-    "surgeSource": "first match: the zone's active surge schedule (§3.4, PUT /admin/zones/{zoneId}/surge: the manual Start/Stop), then the highest pricing.surge.scheduled window in force (v0.7.1: overlapping planned surges, the higher counts; the admin is warned on save), then smart surge when smart.enabled (v0.7.1: contract.json#smartSurge, off by default); else 1.0. Every source is clamped to [1, surge.maxMultiplier]: the admin sets that maximum (1 to 6, the slider) and it binds the manual surge, the scheduled windows and smart surge alike (smart surge also stays within its profile's cap). The quote keeps its multiplier; a reservation keeps the price shown at booking (no surge added later).",
+    "surgeSource": "first match: the zone's active surge schedule (§3.4, PUT /admin/zones/{zoneId}/surge: the manual Start/Stop), then the highest pricing.surge.scheduled window in force (v0.7.1: overlapping planned surges, the higher counts; the admin is warned on save), then smart surge when smart.enabled (v0.7.1: contract.json#smartSurge, off by default); else 1.0. Every source is clamped to [1, 6]; the maximum of each is the value the admin chose on its slider (manual surge, planned window, smart profile cap; v0.7.1, no separate maximum). The quote keeps its multiplier; a reservation keeps the price shown at booking (no surge added later).",
     "requestExtras": {
       "note": "v0.7.1 (owner 2026-10-27): the only priced thing the rider sends is fixedRouteId (QuoteRequest, repeated unchanged on CreateTripRequest, else 400 invalid_request quote_mismatch). Seats and airport are no longer sent: a child_seat trip always includes one seat, and the airport fees come from the airport zones (server).",
       "fixedRouteId": "the id of one of the zone's fixedRoutes: when it is a route of the quoted category the fixed_route line replaces the ride part (no surge, minimum or maximum); otherwise the category is priced normally, as in the admin calculator",
@@ -1008,7 +1008,7 @@
       "airport": "the server looks up the pickup and the drop-off in the zones of kind airport (Zone.kind): the pickup inside one adds the priced zone's fees.airportPickup, the drop-off inside one its fees.airportDropoff (the airport line). airportPickup / airportDropoff sent by an older app are ignored."
     },
     "maxMultiplier": 6.0,
-    "maxMultiplierNote": "v0.6.0 (owner 2026-10-27, follow the admin demo): the highest maximum an admin may set is 6 (the demo's surge slider, SLIDER_MAX); the zone's own maximum is pricing.surge.maxMultiplier, set by the admin. The Stockholm default stays 3 (configDefaults.pricing).",
+    "maxMultiplierNote": "v0.6.0: the highest surge an admin may choose is 6 (the demo's surge slider, SLIDER_MAX). v0.7.1 (owner 2026-10-27): there is no separate zone maximum: the slider's value is the maximum; pricing.surge.maxMultiplier is deprecated, may be absent and is ignored.",
     "notInFormula": "cleaningFee (charged afterwards with an admin adjust), tollsPassThrough (no tolls priced in v0.5.1)"
   },
   "dispatch": {
@@ -2313,7 +2313,7 @@
     "note": "v0.7.1 (owner 2026-10-27): smart surge as the admin demo's Surge tab describes it, run by the server per zone; OFF until the admin switches pricing.surge.smart.enabled on. Applies to every category of the zone.",
     "ratio": "every checkEveryMin minutes: ride requests created in the zone in the last checkEveryMin minutes ÷ free online drivers in the zone (online, not on a trip; a zone with none counts as 1)",
     "profile": "the first non-default profile from the top whose days and windows match the zone's local time wins; else the isDefault profile. Outside activeFrom–activeTo (equal = all day) smart surge is 1.0.",
-    "target": "the multiplier of the last step whose ratio ≤ the measured ratio (1.0 below the first step), kept within min(profile.cap, surge.maxMultiplier)",
+    "target": "the multiplier of the last step whose ratio ≤ the measured ratio (1.0 below the first step), kept within the profile's cap (at most 6)",
     "rules": "up: the target must hold for holdMin minutes before it is applied; down: one step at a time; between two changes at least cooldownMin minutes; stops (1.0) when the target stays 1.0 for stopAfterMin minutes. Paused while a manual or scheduled surge runs.",
     "fixtures": "fixtures/smart_surge.json"
   },

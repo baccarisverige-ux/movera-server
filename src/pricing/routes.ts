@@ -13,7 +13,7 @@ import { newId } from "../ids.js";
 import { contract } from "../contract/contract.js";
 import { CONFIG_DOCS, PUBLISH_ACTION, PUBLISH_PERMISSION, APPROVE_PERMISSION, configHistory, getZone, liveDocument, rewriteLive, type Publication } from "../config/service.js";
 import { validateSchedule } from "../rules/surge.js";
-import { currentSchedule, notifyDriversOfSurge, scheduleView, surgeFor, type DocSurge } from "./surge.js";
+import { SLIDER_TOP, currentSchedule, notifyDriversOfSurge, scheduleView, surgeFor, type DocSurge } from "./surge.js";
 
 /**
  * Contract v0.7.1 (owner Pricing decisions 2026-10-27): the manual surge Start / Stop and "Tell drivers now"
@@ -72,8 +72,9 @@ async function putSchedule(trx: Trx, payload: SchedulePayload, by: string, now: 
   const current = await currentSchedule(trx, zone.zoneId);
   const live = current && scheduleView(current, now).status !== "ended" && scheduleView(current, now).status !== "cancelled" ? current : undefined;
   if ((live?.version ?? 0) !== payload.expectedVersion) throw new ApiError("version_mismatch", "The surge changed since you last saw it.", { ...(live ? { projection: scheduleView(live, now) } : {}) });
-  // The admin's maximum (the slider) is the cap of every manual surge (owner 2026-10-27).
-  const cap = surge.maxMultiplier;
+  // The value the admin chose on the slider is the surge's maximum (owner 2026-10-27, no extra box), at most ×6.
+  const cap = Math.max(1, ...payload.points.map((p) => p.multiplier));
+  if (cap > SLIDER_TOP) throw badRequest(`The surge is not valid: at most ×${SLIDER_TOP}.`, "invalid_surge");
   const schedule = { startAt: payload.startAt, endAt: payload.endAt, stepMinutes: payload.stepMinutes ?? 5, cap, points: payload.points };
   const problems = validateSchedule(schedule);
   if (problems.length > 0) throw badRequest(`The surge is not valid: ${problems.join("; ")}.`, "invalid_surge");
@@ -96,12 +97,12 @@ async function putSchedule(trx: Trx, payload: SchedulePayload, by: string, now: 
       created_at: now,
     })
     .execute();
-  const row = (await currentSchedule(trx, zone.zoneId))!;
+  const row = (await trx.selectFrom("surge_schedules").selectAll().where("schedule_id", "=", scheduleId).executeTakeFirstOrThrow()) as Parameters<typeof scheduleView>[0];
   const view = scheduleView(row, now);
   // "Tell drivers when a surge starts" (pricing.surge.notifyDrivers): a surge that starts now.
   if (surge.notifyDrivers && view.status === "active") {
     const at = await surgeFor(trx, zone.zoneId, surge, undefined, now);
-    if (at.multiplier > 1) await notifyDriversOfSurge(trx, zone.zoneId, Math.min(at.multiplier, cap), view.endAt, now);
+    if (at.multiplier > 1) await notifyDriversOfSurge(trx, zone.zoneId, Math.min(at.multiplier, SLIDER_TOP), view.endAt, now);
   }
   return view;
 }
@@ -251,7 +252,7 @@ export async function pricingRoutes(app: FastifyInstance, deps: PricingDeps): Pr
       await getZone(trx, zoneId);
       const surge = await zoneSurge(trx, zoneId);
       const at = await surgeFor(trx, zoneId, surge, undefined, now());
-      const multiplier = Math.min(at.multiplier, surge?.maxMultiplier ?? 1);
+      const multiplier = Math.min(at.multiplier, SLIDER_TOP);
       if (!(multiplier > 1)) throw new ApiError("invalid_transition", "There is no surge to tell drivers about.", { reason: "no_surge" });
       const notified = await notifyDriversOfSurge(trx, zoneId, multiplier, at.until, now());
       await audit(trx, { adminId: who.subjectId, action: "surge.notify", targetType: "config", targetId: `surge:${zoneId}`, zoneId, detail: { multiplier, notified }, at: now() });
