@@ -155,11 +155,16 @@ S["TripProjection"] = obj(OrderedDict([
     ("waiting", ref("Waiting")), ("cancellation", ref("Cancellation")),
     ("pinRequired", b("Driver must verify the rider PIN before `board`.")),
     ("searchStep", {"allOf": [ref("SearchStep")], "description": "v0.5.1 (CONTRACT.md §3.6): the latest rider-waiting step while searching (rider view). Changing it does not change version."}),
+    ("driverSilentAlert", {"allOf": [ref("DriverSilentAlert")], "description": "v0.7.0 (CONTRACT.md §15), admin view only: the rider is on board and the server has had no driver position for 30 min (\"car lost\"). Gone when positions come back. Changing it does not change version."}),
 ]), ["tripId", "status", "version", "sequence", "kind", "createdAt", "updatedAt", "riderId", "zoneId", "categoryId",
      "pickup", "dropoff", "stops", "fare", "paymentMethod", "ratingStatus", "pinRequired"],
     "Authoritative trip state. Field visibility depends on the actor (e.g. driverEarnings/commission are not shown to riders). "
     "v0.5.1: fare and fareLines follow contract.json#pricing (CONTRACT.md §3.5); commission is Movera's share of the fare (fare − driverEarnings).")
 
+S["DriverSilentAlert"] = obj({"kind": s(enum=["driver_silent"]), "silentSince": ref("Timestamp"), "lastFixAt": {"type": ["string", "null"], "format": "date-time"},
+                              "at": ref("Timestamp"), "autoFailAt": ref("Timestamp")},
+                             ["kind", "silentSince", "at", "autoFailAt"],
+                             "v0.7.0: documents the server's alert of 2026-10-26: no position for 30 min with the rider on board; the trip fails with no charge at autoFailAt (3 h). It also opens a driver_silent incident.")
 S["Offer"] = obj(OrderedDict([
     ("offerId", ref("Id")), ("tripId", ref("Id")), ("kind", ref("OfferKind")), ("status", ref("OfferStatus")),
     ("version", i(minimum=1)), ("expiresAt", ref("Timestamp")),
@@ -340,11 +345,43 @@ S["SupportTicket"] = obj({"ticketId": ref("Id"), "tripId": ref("Id"), "openedBy"
                           "priority": s(enum=["low", "normal", "high", "urgent"]),
                           "createdAt": ref("Timestamp"), "updatedAt": ref("Timestamp")},
                          ["ticketId", "openedBy", "category", "subject", "status", "createdAt", "updatedAt"])
-S["Incident"] = obj({"incidentId": ref("Id"), "tripId": ref("Id"), "kind": s(pattern="^[a-z][a-z0-9_]{0,63}$"),
-                     "severity": s(enum=["low", "medium", "high", "critical"]),
-                     "status": s(enum=["open", "investigating", "resolved", "dismissed"]),
-                     "reportedBy": ref("Actor"), "openedAt": ref("Timestamp"), "updatedAt": ref("Timestamp")},
-                    ["incidentId", "kind", "severity", "status", "openedAt"])
+SF = C["safety"]
+S["IncidentPosition"] = obj({"lat": n(minimum=-90, maximum=90), "lng": n(minimum=-180, maximum=180),
+                             "accuracyM": n("Horizontal accuracy, metres.", minimum=0), "at": ref("Timestamp")},
+                            ["lat", "lng", "at"], "v0.7.0: a phone's GPS position, measured once (CONTRACT.md §15).")
+S["Incident"] = obj(OrderedDict([
+    ("incidentId", ref("Id")), ("tripId", ref("Id")),
+    ("kind", s("v0.7.0: contract.json#safety.incidentKinds (sos, driver_silent; ride_check is safety part 2). Older rows may hold other snake_case kinds.",
+               pattern="^[a-z][a-z0-9_]{0,63}$", examples=SF["incidentKinds"])),
+    ("severity", s(enum=["low", "medium", "high", "critical"])),
+    ("status", s("open = New, investigating = Taken, resolved = Solved, dismissed = False alarm (contract.json#safety.statusLabels).",
+                 enum=SF["statuses"])),
+    ("version", i("v0.7.0: + 1 on take / resolve / dismiss; commands send it as expectedVersion.", minimum=1)),
+    ("reportedBy", ref("Actor")),
+    ("raisedBy", s("v0.7.0: who raised it; system for driver_silent.", enum=SF["raisedBy"])),
+    ("zoneId", ref("Id")), ("riderId", ref("Id")), ("driverId", ref("Id")),
+    ("position", {"allOf": [ref("IncidentPosition")], "description": "v0.7.0: the GPS the SOS phone sent (once)."}),
+    ("driverPosition", {"allOf": [ref("GeoFix")], "description": "v0.7.0: the car's latest position the server has (admin view; read live, also after the SOS)."}),
+    ("openedAt", ref("Timestamp")), ("updatedAt", ref("Timestamp")),
+    ("escalatedAt", {"allOf": [ref("Timestamp")], "description": f"v0.7.0: set when the incident was not taken within contract.json#safety.escalateAfterSeconds ({SF['escalateAfterSeconds']} s); every signed-in admin is alerted from then on."}),
+    ("takenBy", ref("Id")), ("takenAt", ref("Timestamp")),
+    ("resolvedBy", {"allOf": [ref("Id")], "description": "v0.7.0: the admin who solved it or called it a false alarm; absent when the system closed it."}),
+    ("resolvedAt", ref("Timestamp")),
+    ("resolution", s("v0.7.0: the closing note; 'position back' when the system closes a driver_silent incident.", maxLength=1000)),
+]), ["incidentId", "kind", "severity", "status", "openedAt"])
+S["SosRequest"] = obj({"at": {"allOf": [ref("Timestamp")], "description": "When the person pressed SOS on the phone."},
+                       "position": {"allOf": [ref("IncidentPosition")], "description": "The phone's last GPS, sent once; absent when the phone has none."}},
+                      ["at"], "v0.7.0 (CONTRACT.md §15).")
+S["SosReceipt"] = obj({"incidentId": ref("Id"), "tripId": ref("Id"), "receivedAt": ref("Timestamp")},
+                      ["incidentId", "tripId", "receivedAt"],
+                      "v0.7.0: the SOS reached Movera. The app shows only \"SOS sent\"; it gets no later update.")
+S["AdminIncidentCommand"] = obj(dict(expectedVersion=i("The incident version the admin last saw; stale → 409 version_mismatch with the incident.", minimum=1),
+                                     note=s(maxLength=1000)), ["expectedVersion"],
+                                "v0.7.0: take, resolve (Solved) or dismiss (False alarm). The note becomes the resolution.")
+S["AdminIncidentEvent"] = obj({"eventId": ref("Id"), "sequence": i(minimum=1), "kind": s(enum=SF["streamEventKinds"]),
+                               "incident": ref("Incident"), "occurredAt": ref("Timestamp"), "serverTime": ref("Timestamp")},
+                              ["eventId", "sequence", "kind", "incident", "occurredAt", "serverTime"],
+                              "v0.7.0: the admin incident feed (GET /admin/incidents/stream).")
 S["Payout"] = obj({"payoutId": ref("Id"), "driverId": ref("Id"), "amount": ref("Money"),
                    "status": s(enum=["pending", "pending_approval", "paid", "failed", "held"]),
                    "periodStart": ref("Timestamp"), "periodEnd": ref("Timestamp"), "createdAt": ref("Timestamp"),
@@ -818,7 +855,7 @@ S["Error"] = obj({"code": ref("ErrorCode"), "message": s(), "requestId": s(), "r
                   "reason": s(C["errors"]["reason"], pattern="^[a-z][a-z0-9_]{0,63}$"),
                   "projection": {"description": "Current authoritative resource. Always present for version_mismatch and invalid_transition "
                                                  "(TripProjection for trip commands; Offer / Driver / Rider / Vehicle / ConfigDraft for their commands).",
-                                 "anyOf": [ref("TripProjection"), ref("Offer"), ref("Driver"), ref("Rider"), ref("Vehicle"), ref("ConfigDraft")]}},
+                                 "anyOf": [ref("TripProjection"), ref("Offer"), ref("Driver"), ref("Rider"), ref("Vehicle"), ref("ConfigDraft"), ref("Incident")]}},
                  ["code", "message", "requestId", "retryable"])
 S["ConflictError"] = {"allOf": [ref("Error")],
                       "if": {"properties": {"code": {"enum": ["version_mismatch", "invalid_transition"]}}, "required": ["code"]},
@@ -830,7 +867,7 @@ S["Page"] = obj({"items": arr({}), "nextCursor": {"type": ["string", "null"], "d
                 ["items", "nextCursor"], "Generic cursor page Page<T>. Concrete pages below narrow `items`.")
 PAGES = ["TripProjection", "Offer", "Rider", "Driver", "Vehicle", "Document", "PaymentIntent", "Refund", "Payout",
          "WalletEntry", "Notification", "Message", "SupportTicket", "Incident", "AuditEntry", "Approval",
-         "SavedPlace", "SavedPaymentMethod", "RealtimeEvent", "Quote", "AdminDispatchEvent", "Fleet"]
+         "SavedPlace", "SavedPaymentMethod", "RealtimeEvent", "Quote", "AdminDispatchEvent", "Fleet", "AdminIncidentEvent"]
 for p in PAGES:
     S[f"{p}Page"] = {"allOf": [ref("Page"), {"type": "object", "properties": {"items": arr(ref(p))}}],
                      "description": f"Page<{p}>"}
@@ -979,7 +1016,7 @@ def path_id(name, desc=None):
     if desc: p["description"] = desc
     return p
 for nm in ["tripId", "offerId", "paymentId", "paymentMethodId", "placeId", "notificationId", "driverId", "riderId",
-           "vehicleId", "documentId", "approvalId", "fleetId", "invitationId"]:
+           "vehicleId", "documentId", "approvalId", "fleetId", "invitationId", "incidentId"]:
     PARAMS[nm[0].upper() + nm[1:]] = path_id(nm)
 PARAMS["RideId"] = path_id("rideId", "Deprecated alias of tripId.")
 PARAMS["ZoneId"] = path_id("zoneId")
@@ -1350,6 +1387,25 @@ op("get", "/admin/trips/{tripId}/nearby-drivers", "adminNearbyDrivers", "Active 
 op("get", "/admin/dispatch/stream", "adminStreamDispatch", "Admin dispatch feed (offers, lock, driver bonus)", ["admin"], "Realtime",
    params=[pref("ZoneIdQuery"), pref("After"), pref("LastEventId")], content=sse("Server-sent events.", "AdminDispatchEvent", "AdminDispatchEventPage"),
    permission="trips.read")
+# ---- v0.7.0 (CONTRACT.md §15): SOS and incidents
+for who, path, opid in [("rider", "/rider/trips/{tripId}/sos", "riderSos"), ("driver", "/driver/trips/{tripId}/sos", "driverSos")]:
+    op("post", path, opid, f"The {who} presses SOS: alert Movera", [who], "Safety", params=TID, body="SosRequest", ok=(200, "SosReceipt"), mutation=True,
+       desc=f"v0.7.0. Only the trip's own {who}, while the trip is live (contract.json#safety.sos.{who}Statuses); otherwise 409 invalid_transition with the trip. "
+            "Creates the trip's one open SOS incident, or returns it when one is open (a second SOS from either side). The app opens the emergency call (112) itself; "
+            "it retries with the same Idempotency-Key and then shows only \"SOS sent\".")
+op("get", "/admin/incidents/stream", "adminStreamIncidents", "Admin incident feed (opened, updated, escalated, closed)", ["admin"], "Admin · Safety",
+   params=[pref("After"), pref("LastEventId")], content=sse("Server-sent events.", "AdminIncidentEvent", "AdminIncidentEventPage"), permission="overview.read",
+   desc="v0.7.0. Any signed-in admin may listen. Events of an incident go to admins with incidents.read whose zones cover its zone; once it is escalated "
+        "(not taken in contract.json#safety.escalateAfterSeconds) to every signed-in admin. Without Accept: text/event-stream: a JSON page of the same events (polling fallback).")
+op("get", "/admin/incidents/{incidentId}", "adminGetIncident", "Incident detail with the car's latest position", ["admin"], "Admin · Safety",
+   params=[pref("IncidentId")], ok=(200, "Incident"), permission="incidents.read", desc="v0.7.0. In the admin's zones only (else 403 zone_out_of_scope).")
+for seg, opid, summ in [("take", "adminTakeIncident", "Take the incident (New → Taken)"),
+                        ("resolve", "adminResolveIncident", "Solve the incident (→ Solved)"),
+                        ("dismiss", "adminDismissIncident", "Call it a false alarm (→ False alarm)")]:
+    op("post", f"/admin/incidents/{{incidentId}}/{seg}", opid, summ, ["admin"], "Admin · Safety", params=[pref("IncidentId")], body="AdminIncidentCommand",
+       ok=(200, "Incident"), mutation=True, permission="safety.edit",
+       desc="v0.7.0 (contract.json#safety.transitions). In the admin's zones only. A status the command cannot leave → 409 invalid_transition with the incident; "
+            "a stale expectedVersion → 409 version_mismatch with the incident. Written in the audit.")
 op("post", "/admin/drivers/{driverId}/status", "adminSetDriverStatus", "Set driver account status", ["admin"], "Admin · People",
    params=[pref("DriverId")], body="DriverStatusCommand", ok=(200, "Driver"), mutation=True, permission="drivers.activate", permission_v050="drivers.edit")
 op("post", "/admin/riders/{riderId}/status", "adminSetRiderStatus", "Set rider status", ["admin"], "Admin · People",
