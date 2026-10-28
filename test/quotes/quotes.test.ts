@@ -85,10 +85,15 @@ describe("POST /quotes", () => {
   });
 
   it("an open zone without published prices is 503 pricing_not_published", async () => {
-    // Paris is open (migration 0014) and this test publishes prices for Stockholm only.
+    // Paris is closed since migration 0027 (v0.11.0 §20): "Movera isn't here yet" until an admin opens it.
+    const closed = await quote({ pickup: PARIS, dropoff: { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 }, stops: [] });
+    expect(closed.json()).toMatchObject({ code: "forbidden", reason: "service_not_available" });
+    // Opened, and this test publishes prices for Stockholm only.
+    await database.db.updateTable("zones").set({ open: true }).where("zone_id", "=", "FR-PC").execute();
     const res = await quote({ pickup: PARIS, dropoff: { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 }, stops: [] });
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ code: "unavailable", reason: "pricing_not_published", retryable: true });
+    await database.db.updateTable("zones").set({ open: false }).where("zone_id", "=", "FR-PC").execute();
   });
 
   it("the request must follow the contract: stops are required", async () => {
