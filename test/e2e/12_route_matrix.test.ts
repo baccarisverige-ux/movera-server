@@ -22,7 +22,6 @@ const EXTRA: Record<string, Op> = {
   "POST /admin/refunds/:refundId/paid": { actors: ["admin"], permission: "finance.edit" },
   "GET /rider/refunds": { actors: ["rider"] },
   "POST /rider/refunds/:refundId/destination": { actors: ["rider"] },
-  "GET /admin/content/legal/acceptances": { actors: ["admin"], permission: "settings.read" },
 };
 
 function contractOps(): Map<string, Op> {
