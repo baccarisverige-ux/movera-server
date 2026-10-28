@@ -1,10 +1,10 @@
 {
-  "note": "v0.11.0 (§20, contract.json#zones): outlines of the seed zones the server adds closed, their bounding rectangles, and points with the zone each lies in (by polygon, open before closed, airport before city, smallest bounds; null = no zone). zonesOpen lists which zones count as open for the case.",
+  "note": "v0.11.0 (§20, contract.json#zones): outlines of the seed zones (FR-PC, CDG, ORY open; TN-TC closed), their bounding rectangles, and points with the zone each lies in (by polygon, open before closed, city zone before airport, smallest bounds; null = no zone; airport = the airport zone that adds its fees).",
   "zones": [
     {
       "zoneId": "FR-PC",
       "kind": "operating",
-      "open": false,
+      "open": true,
       "polygon": [
         [
           49.24,
@@ -97,7 +97,7 @@
     {
       "zoneId": "CDG",
       "kind": "airport",
-      "open": false,
+      "open": true,
       "polygon": [
         [
           49.035,
@@ -126,7 +126,7 @@
     {
       "zoneId": "ORY",
       "kind": "airport",
-      "open": false,
+      "open": true,
       "polygon": [
         [
           48.745,
@@ -249,13 +249,15 @@
       "name": "CDG terminal 2",
       "lat": 49.004,
       "lng": 2.571,
-      "zoneId": "CDG"
+      "zoneId": "FR-PC",
+      "airport": "CDG"
     },
     {
       "name": "Orly",
       "lat": 48.728,
       "lng": 2.36,
-      "zoneId": "ORY"
+      "zoneId": "FR-PC",
+      "airport": "ORY"
     },
     {
       "name": "Rouen (outside, inside no polygon)",

@@ -57,12 +57,9 @@ describe("test week at start", () => {
 
   it("gives drivers seeded by an earlier server every open zone, once", async () => {
     await database.db.updateTable("drivers").set({ zone_ids: ["Z001"] }).where("phone", "=", "+46701740606").execute();
-    // Paris is closed since migration 0027 (v0.11.0 §20); opened, it is an open zone the drivers need.
-    await database.db.updateTable("zones").set({ open: true }).where("zone_id", "=", "FR-PC").execute();
     const log = logger();
     await prepareTestWeek(database.db, env, log, { now });
-    // ...and France gets its sample settings, its zone being open now.
-    expect(log.lines.map((l) => l.message)).toEqual(["test drivers registered in every open zone and category", "sample settings published"]);
+    expect(log.lines.map((l) => l.message)).toEqual(["test drivers registered in every open zone and category"]);
     const zones = (await database.db.selectFrom("drivers").select("zone_ids").where("phone", "=", "+46701740606").executeTakeFirstOrThrow()).zone_ids;
     expect(zones).toContain("FR-PC");
     const again = logger();

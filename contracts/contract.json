@@ -2598,7 +2598,7 @@
     "open": "POST /admin/zones/{zoneId}/open and /close (zones.edit) set open; an open zone takes new rides, a closed one does not (rides already booked go on). Both send expectedVersion and raise version.",
     "permissions": "GET /admin/zones: zones.read, the zones in the admin's scope (a Super admin: all). POST, PUT, open, close: zones.edit, one admin is enough (no second admin), written in the audit (zone.create, zone.update, zone.open, zone.close). An admin may change a zone in its scope; creating one needs the whole scope (*) or a zone of the same country in scope (403 forbidden zone_out_of_scope otherwise).",
     "version": "Zone.version starts at 1 and goes up by one with every change; PUT, open and close send expectedVersion (409 version_mismatch with the current zone otherwise). country, currency and timeZone cannot change after creation (400 invalid_request zone_field_fixed).",
-    "lookup": "The zone of a point: among zones whose bounds hold it, those whose polygon holds it; an open zone before a closed one, then an airport before a city zone, then the smallest bounds.",
+    "lookup": "The zone of a point: among zones whose bounds hold it, those whose polygon holds it; an open zone before a closed one, then a city (operating) zone before an airport, then the smallest bounds. An airport zone inside a city zone (ARN in Z001, CDG and ORY in FR-PC) does not take the ride; it adds the airport fees (contract.json#pricing.requestExtras.airport), whether open or not.",
     "notHere": "A quote or booking whose pickup lies in no OPEN zone is 403 forbidden, reason service_not_available (the server's existing code). The rider app then shows 'Movera isn't here yet' (sv 'Movera finns inte här än', fr 'Movera n’est pas encore ici') and cannot book; it may check GET /rider/zones first.",
     "notHereText": {
       "sv": "Movera finns inte här än",
@@ -2606,7 +2606,7 @@
       "en": "Movera isn't here yet"
     },
     "apps": "GET /rider/zones and GET /driver/zones (?country=FR optional) → { zones: Zone[] }: the OPEN zones (of that country, else all), with polygon and names; closed zones are never listed. The apps read them on start and on config_published with doc zones.",
-    "notify": "Every create, update, open and close sends config_published { doc: 'zones', zoneId, version, publishedAt }.",
+    "notify": "Every create, update, open and close sends config_published { doc: 'zones', zoneId, version, publishedAt }. It arrives on the rider and driver config streams (GET /rider/config/stream, /driver/config/stream) whatever zone they follow; a content publish (doc 'content') arrives on the streams of its zone. Their SSE id stays the app document's version.",
     "seed": [
       {
         "zoneId": "Z001",
@@ -2632,7 +2632,7 @@
         "currency": "EUR",
         "timeZone": "Europe/Paris",
         "kind": "operating",
-        "open": false
+        "open": true
       },
       {
         "zoneId": "CDG",
@@ -2645,7 +2645,7 @@
         "currency": "EUR",
         "timeZone": "Europe/Paris",
         "kind": "airport",
-        "open": false
+        "open": true
       },
       {
         "zoneId": "ORY",
@@ -2658,7 +2658,7 @@
         "currency": "EUR",
         "timeZone": "Europe/Paris",
         "kind": "airport",
-        "open": false
+        "open": true
       },
       {
         "zoneId": "TN-TC",

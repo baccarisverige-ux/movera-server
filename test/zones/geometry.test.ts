@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { contractJson } from "../../src/contract/contract.js";
 import { boundsOf, inPolygon, polygonProblem, type Polygon } from "../../src/zones/geometry.js";
 
-type Fixture = { zones: Array<{ zoneId: string; kind: string; open: boolean; polygon: Polygon; bounds: Record<string, number> }>; points: Array<{ name: string; lat: number; lng: number; zoneId: string | null }> };
+type Fixture = { zones: Array<{ zoneId: string; kind: string; open: boolean; polygon: Polygon; bounds: Record<string, number> }>; points: Array<{ name: string; lat: number; lng: number; zoneId: string | null; airport?: string }> };
 const fixture = contractJson<Fixture>("fixtures/zones.json");
 
 describe("zone geometry (contract v0.11.0 §20, fixtures/zones.json)", () => {
@@ -15,8 +15,10 @@ describe("zone geometry (contract v0.11.0 §20, fixtures/zones.json)", () => {
     for (const point of fixture.points) {
       const hits = fixture.zones
         .filter((z) => inPolygon(point.lat, point.lng, z.polygon))
-        .sort((a, b) => Number(b.open) - Number(a.open) || Number(b.kind === "airport") - Number(a.kind === "airport") || area(a.bounds) - area(b.bounds));
+        .sort((a, b) => Number(b.open) - Number(a.open) || Number(a.kind === "airport") - Number(b.kind === "airport") || area(a.bounds) - area(b.bounds));
       expect(hits[0]?.zoneId ?? null, point.name).toBe(point.zoneId);
+      // An airport inside the city zone adds its fees, it does not take the ride.
+      expect(fixture.zones.find((z) => z.kind === "airport" && inPolygon(point.lat, point.lng, z.polygon))?.zoneId, point.name).toBe(point.airport);
     }
   });
 

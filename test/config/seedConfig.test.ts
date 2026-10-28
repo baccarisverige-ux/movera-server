@@ -41,9 +41,6 @@ describe("sample settings", () => {
   });
 
   it("prices Paris in euro, converted from the Swedish sample", async () => {
-    // Paris is closed since migration 0027 (v0.11.0 §20); opened, the sample settings fill France's standard.
-    await database.db.updateTable("zones").set({ open: true }).where("zone_id", "=", "FR-PC").execute();
-    await database.db.transaction().execute((trx) => seedSampleConfig(trx, now));
     const live = await database.db.selectFrom("config_live").select("document").where("doc", "=", "pricing").where("zone_id", "=", "standard-FR").executeTakeFirstOrThrow();
     const doc = live.document as { currency: string; country: string; timeZone: string; priceStep: { amountMinor: number; currency: string }; categories: Record<string, { base: { amountMinor: number; currency: string } }> };
     expect(doc).toMatchObject({ zoneId: "standard-FR", currency: "EUR", country: "FR", timeZone: "Europe/Paris" });

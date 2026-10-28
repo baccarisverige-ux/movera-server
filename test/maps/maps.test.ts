@@ -59,12 +59,7 @@ describe("address search (read-only: no Idempotency-Key)", () => {
 
   it("autocomplete asks for the countries with an open zone", async () => {
     await post(app, "/locations/autocomplete", rider, { query: "rue de", latitude: 48.86, longitude: 2.35 });
-    expect((calls.filter((c) => c.kind === "a").at(-1)!.input as { regions: string[] }).regions.sort()).toEqual(["se"]);
-    // Paris is closed since migration 0027 (contract v0.11.0 §20); once an admin opens it, France is asked for too.
-    await database.db.updateTable("zones").set({ open: true }).where("zone_id", "=", "FR-PC").execute();
-    await post(app, "/locations/autocomplete", rider, { query: "rue du", latitude: 48.86, longitude: 2.35 });
     expect((calls.filter((c) => c.kind === "a").at(-1)!.input as { regions: string[] }).regions.sort()).toEqual(["fr", "se"]);
-    await database.db.updateTable("zones").set({ open: false }).where("zone_id", "=", "FR-PC").execute();
   });
 
   it("geocode: a match has coordinates; no match is 200 with none", async () => {

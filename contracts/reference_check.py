@@ -447,10 +447,12 @@ for z in zf['zones']:
 def zone_at(lat, lng):
     hits = [z for z in zf['zones'] if z['bounds']['south'] <= lat <= z['bounds']['north'] and z['bounds']['west'] <= lng <= z['bounds']['east'] and in_polygon(lat, lng, z['polygon'])]
     area = lambda z: (z['bounds']['north'] - z['bounds']['south']) * (z['bounds']['east'] - z['bounds']['west'])
-    hits.sort(key=lambda z: (not z['open'], z['kind'] != 'airport', area(z)))
+    hits.sort(key=lambda z: (not z['open'], z['kind'] == 'airport', area(z)))
     return hits[0]['zoneId'] if hits else None
 for pt in zf['points']:
     if zone_at(pt['lat'], pt['lng']) != pt['zoneId']: bad += 1; print('ZONE AT', pt['name'], zone_at(pt['lat'], pt['lng']))
+    airport = next((z['zoneId'] for z in zf['zones'] if z['kind'] == 'airport' and in_polygon(pt['lat'], pt['lng'], z['polygon'])), None)
+    if airport != pt.get('airport'): bad += 1; print('AIRPORT', pt['name'], airport)
 for z in c['zones']['seed']:
     if set(z['names']) != {'sv', 'fr', 'en'}: bad += 1; print('ZONE NAMES', z['zoneId'])
 print('OK' if not bad else f'{bad} mismatches'); sys.exit(1 if bad else 0)

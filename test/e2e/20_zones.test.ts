@@ -22,17 +22,16 @@ const names = { sv: "Lyon centrum", fr: "Lyon centre", en: "Lyon centre" };
 const lyon = [[45.79, 4.78], [45.79, 4.92], [45.71, 4.92], [45.71, 4.78]];
 const zoneOf = async (admin: Admin, zoneId: string): Promise<Json> => ((await admin.get("/admin/zones")).body["zones"] as Json[]).find((z) => z["zoneId"] === zoneId)!;
 const GARE_DE_LYON = { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 };
-const CONCORDE = { address: "Place de la Concorde", lat: 48.8656, lng: 2.3212 };
 
 describe("seed (migration 0027)", () => {
-  it("Paris & Île-de-France, CDG, ORY and Grand Tunis exist, closed, with names and outlines", async () => {
+  it("Paris & Île-de-France, CDG and ORY are open, Grand Tunis closed, with names and outlines", async () => {
     const res = await owner.get("/admin/zones");
     expect(res.status).toBe(200);
     const byId = new Map((res.body["zones"] as Json[]).map((z) => [z["zoneId"], z]));
-    expect(byId.get("FR-PC")).toMatchObject({ names: { sv: "Paris & Île-de-France", fr: "Paris & Île-de-France", en: "Paris & Île-de-France" }, country: "FR", currency: "EUR", timeZone: "Europe/Paris", kind: "operating", open: false, version: 1, bounds: { south: 48.12, west: 1.45, north: 49.24, east: 3.56 } });
+    expect(byId.get("FR-PC")).toMatchObject({ names: { sv: "Paris & Île-de-France", fr: "Paris & Île-de-France", en: "Paris & Île-de-France" }, country: "FR", currency: "EUR", timeZone: "Europe/Paris", kind: "operating", open: true, version: 1, bounds: { south: 48.12, west: 1.45, north: 49.24, east: 3.56 } });
     expect(byId.get("FR-PC")!["polygon"].length).toBeGreaterThan(10);
-    expect(byId.get("CDG")).toMatchObject({ kind: "airport", open: false, country: "FR" });
-    expect(byId.get("ORY")).toMatchObject({ kind: "airport", open: false, country: "FR" });
+    expect(byId.get("CDG")).toMatchObject({ kind: "airport", open: true, country: "FR" });
+    expect(byId.get("ORY")).toMatchObject({ kind: "airport", open: true, country: "FR" });
     expect(byId.get("TN-TC")).toMatchObject({ names: { fr: "Grand Tunis" }, country: "TN", currency: "TND", timeZone: "Africa/Tunis", open: false });
     // Existing zones keep their rectangle as their outline and get names.
     expect(byId.get("Z001")).toMatchObject({ names: { sv: "Stockholm län", en: "Stockholm County" }, open: true });
@@ -43,17 +42,22 @@ describe("seed (migration 0027)", () => {
     const all = (await rider.get("/rider/zones")).body["zones"] as Json[];
     expect(all.every((z) => z["open"] === true)).toBe(true);
     expect(all.map((z) => z["zoneId"])).toContain("Z001");
-    expect(all.map((z) => z["zoneId"])).not.toContain("FR-PC");
-    expect((await driver.get("/driver/zones?country=FR")).body).toEqual({ zones: [] });
+    expect(all.map((z) => z["zoneId"])).toContain("FR-PC");
+    expect(all.map((z) => z["zoneId"])).not.toContain("TN-TC");
+    expect(((await driver.get("/driver/zones?country=FR")).body["zones"] as Json[]).map((z) => z["zoneId"])).toEqual(["CDG", "FR-PC", "ORY"]);
+    expect((await driver.get("/driver/zones?country=TN")).body).toEqual({ zones: [] });
     expect((await rider.get("/rider/zones?country=fr")).status).toBe(400);
   });
 });
 
 describe("not here yet", () => {
-  it("a pickup in a closed zone or no zone gets no price; opened, Paris prices; booking a quote of a zone closed since is refused", async () => {
-    const closed = await rider.quote({ pickup: CONCORDE, dropoff: GARE_DE_LYON });
+  it("a pickup in a closed zone or no zone gets no price; booking a quote of a zone closed since is refused", async () => {
+    const closed = await rider.quote({ pickup: { address: "Tunis", lat: 36.799, lng: 10.17 }, dropoff: { address: "La Marsa", lat: 36.878, lng: 10.325 } });
     expect(closed.status).toBe(403);
     expect(closed.body).toMatchObject({ code: "forbidden", reason: "service_not_available" });
+    // CDG is an open airport inside FR-PC: the ride is Paris's.
+    const cdg = await rider.quote({ pickup: { address: "CDG T2", lat: 49.004, lng: 2.571 }, dropoff: GARE_DE_LYON });
+    expect(cdg.body).toMatchObject({ zoneId: "FR-PC" });
     // Inside the FR-PC rectangle, outside the region's outline (near Chartres).
     const corner = await rider.quote({ pickup: { address: "Near Chartres", lat: 48.45, lng: 1.5 }, dropoff: GARE_DE_LYON });
     expect(corner.body).toMatchObject({ reason: "service_not_available" });
@@ -118,12 +122,12 @@ describe("admin", () => {
     let zone = await zoneOf(owner, "FR-LY");
     const opened = await owner.post("/admin/zones/FR-LY/open", { expectedVersion: zone["version"], note: "test" });
     expect(opened.body).toMatchObject({ open: true });
-    expect(((await rider.get("/rider/zones?country=FR")).body["zones"] as Json[]).map((z) => z["zoneId"])).toEqual(["FR-LY"]);
+    expect(((await rider.get("/rider/zones?country=FR")).body["zones"] as Json[]).map((z) => z["zoneId"])).toContain("FR-LY");
     zone = opened.body;
     const closed = await owner.post("/admin/zones/FR-LY/close", { expectedVersion: zone["version"] });
     expect(closed.body).toMatchObject({ open: false, version: zone["version"] + 1 });
     expect((await owner.post("/admin/zones/FR-LY/close", { expectedVersion: zone["version"] })).status).toBe(409);
-    expect((await rider.get("/rider/zones?country=FR")).body["zones"]).toEqual([]);
+    expect(((await rider.get("/rider/zones?country=FR")).body["zones"] as Json[]).map((z) => z["zoneId"])).not.toContain("FR-LY");
     expect(await zoneOf(owner, "FR-LY")).toBeDefined();
     const actions = (await sim.db.selectFrom("admin_audit").select("action").where("target_id", "=", "FR-LY").execute()).map((r) => r.action);
     expect(actions).toEqual(expect.arrayContaining(["zone.create", "zone.update", "zone.open", "zone.close"]));

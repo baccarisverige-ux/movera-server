@@ -20,21 +20,23 @@ UPDATE zones SET names = '{"sv": "Arlanda flygplats", "fr": "Aéroport d''Arland
 UPDATE zones SET names = '{"sv": "Bromma flygplats", "fr": "Aéroport de Bromma", "en": "Bromma Airport"}' WHERE zone_id = 'BMA';
 
 -- Paris & Île-de-France: the whole region (Paris, 77, 78, 91, 92, 93, 94, 95), drawn along the region's border
--- (owner 2026-10-28). Closed until an admin opens it (it was open since 0014).
-UPDATE zones SET name = 'Paris & Île-de-France', open = false,
+-- (owner 2026-10-28). It stays open (open since 0014); only its outline and names change.
+UPDATE zones SET name = 'Paris & Île-de-France',
   names = '{"sv": "Paris & Île-de-France", "fr": "Paris & Île-de-France", "en": "Paris & Île-de-France"}',
   polygon = '[[49.24,1.79],[49.23,2.17],[49.17,2.53],[49.12,2.70],[49.08,3.07],[49.04,3.18],[48.93,3.34],[48.82,3.49],[48.53,3.56],[48.37,3.41],[48.27,3.05],[48.13,2.94],[48.12,2.52],[48.29,2.18],[48.36,1.97],[48.44,1.92],[48.65,1.58],[48.76,1.45],[48.94,1.47],[49.08,1.61]]',
   south = 48.12, west = 1.45, north = 49.24, east = 3.56
   WHERE zone_id = 'FR-PC';
 
+-- CDG and ORY: open airport zones inside FR-PC (owner 2026-10-28), so the airport fees apply as at ARN. Grand Tunis
+-- stays closed.
 INSERT INTO zones (zone_id, name, names, country, currency, time_zone, kind, center_lat, center_lng, open, south, west, north, east, polygon) VALUES
   ('CDG', 'Paris-Charles de Gaulle Airport',
    '{"sv": "Paris-Charles de Gaulle flygplats", "fr": "Aéroport Paris-Charles de Gaulle", "en": "Paris-Charles de Gaulle Airport"}',
-   'FR', 'EUR', 'Europe/Paris', 'airport', 49.01, 2.55, false, 48.985, 2.49, 49.035, 2.61,
+   'FR', 'EUR', 'Europe/Paris', 'airport', 49.01, 2.55, true, 48.985, 2.49, 49.035, 2.61,
    '[[49.035,2.49],[49.035,2.61],[48.985,2.61],[48.985,2.49]]'),
   ('ORY', 'Paris-Orly Airport',
    '{"sv": "Paris-Orly flygplats", "fr": "Aéroport Paris-Orly", "en": "Paris-Orly Airport"}',
-   'FR', 'EUR', 'Europe/Paris', 'airport', 48.7275, 2.365, false, 48.71, 2.32, 48.745, 2.41,
+   'FR', 'EUR', 'Europe/Paris', 'airport', 48.7275, 2.365, true, 48.71, 2.32, 48.745, 2.41,
    '[[48.745,2.32],[48.745,2.41],[48.71,2.41],[48.71,2.32]]'),
   -- Grand Tunis: the governorates of Tunis, Ariana, Ben Arous and Manouba.
   ('TN-TC', 'Greater Tunis',
