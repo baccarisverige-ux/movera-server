@@ -71,3 +71,23 @@ export async function approveDriverDocuments(db: Db, driverId: string, only?: st
       .execute();
   }
 }
+
+/** Contract v0.10.1: a car is picked only with every required car document approved. */
+export async function approveVehicleDocuments(db: Db, vehicleId: string, driverId: string, country: string, only?: string[]): Promise<void> {
+  const { requiredDocuments } = await import("../../src/drivers/onboardingRules.js");
+  const now = new Date();
+  for (const type of only ?? requiredDocuments(country, "vehicle")) {
+    await db
+      .insertInto("documents")
+      .values({ document_id: newId("doc"), driver_id: driverId, owner_kind: "vehicle", owner_id: vehicleId, type, status: "approved", reviewed_at: now, reviewed_by: "seed", created_at: now, updated_at: now })
+      .onConflict((c) => c.columns(["owner_kind", "owner_id", "type"]).doUpdateSet({ status: "approved", reviewed_at: now, updated_at: now }))
+      .execute();
+  }
+}
+
+/** Approves every required fleet (company) document on the owner's account. */
+export async function approveFleetDocuments(db: Db, ownerId: string, only?: string[]): Promise<void> {
+  const { requiredDocuments } = await import("../../src/drivers/onboardingRules.js");
+  const row = await db.selectFrom("drivers").select("country").where("driver_id", "=", ownerId).executeTakeFirstOrThrow();
+  await approveDriverDocuments(db, ownerId, only ?? requiredDocuments(row.country, "fleet"));
+}

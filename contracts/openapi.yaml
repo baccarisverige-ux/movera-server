@@ -2012,7 +2012,9 @@ paths:
     post:
       operationId: setDriverAvailability
       summary: Go online / offline
-      description: 409 when on a trip, account not active, documents expired or driving limit reached (projection = Driver).
+      description: '409 when on a trip, account not active, documents expired or driving limit reached (projection = Driver).
+        v0.10.1: a car whose Vehicle.requiredDocuments are not all approved → 409 documents_not_approved (reason vehicle_documents_not_approved,
+        details).'
       tags:
       - Driver · Session
       x-actor:
@@ -2861,6 +2863,8 @@ paths:
     patch:
       operationId: updateDriverProfile
       summary: Update own profile / active vehicle
+      description: 'v0.10.1: picking a car (vehicleId) whose Vehicle.requiredDocuments are not all approved → 409 documents_not_approved
+        (reason vehicle_documents_not_approved, details vehicle:<type>).'
       tags:
       - Driver · Account
       x-actor:
@@ -5665,10 +5669,14 @@ paths:
     post:
       operationId: adminSetDriverStatus
       summary: Set driver account status
-      description: 'v0.10.1: v0.10.1 (owner decision, PROGRESS.md #6): POST /admin/drivers/{driverId}/status with status active
-        is refused with 409 documents_not_approved unless every type in Driver.requiredDocuments has a document with status
-        approved (kinds acceptance and admin_check included). The error''s details lists the missing or unapproved required
-        types. A car check is an open owner question and not part of this rule yet.'
+      description: 'v0.10.1: v0.10.1 (owner decisions, PROGRESS.md #6 and 2026-10-28): account activation and car approval
+        are separate. POST /admin/drivers/{driverId}/status with status active is refused with 409 documents_not_approved
+        unless every required document has a document with status approved (kinds acceptance and admin_check included): a
+        driver attached to a fleet needs every type in Driver.requiredDocuments; a fleet owner (also a driver who drives his
+        own car; a fleet may have one car) needs every type in Driver.requiredDocuments AND Driver.requiredFleetDocuments.
+        No car is needed for activation, and a missing car never puts an account on hold. Cars: only a car with status approved
+        whose Vehicle.requiredDocuments are all approved can be picked (PATCH /driver/profile { vehicleId }) or driven online
+        (POST /driver/availability); otherwise 409 documents_not_approved, reason vehicle_documents_not_approved, with details.'
       tags:
       - Admin · People
       x-actor:

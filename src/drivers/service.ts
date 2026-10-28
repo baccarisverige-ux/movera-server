@@ -11,6 +11,7 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { documentSummaries } from "../documents/service.js";
 import { requiredDocuments } from "./onboardingRules.js";
+import { vehicleDocumentBlockers } from "./readiness.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -160,6 +161,9 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
     const mine = vehicle !== undefined && (vehicle.fleet_id !== null ? vehicle.fleet_id === row.fleet_id : vehicle.driver_id === driverId);
     if (vehicle === undefined || !mine) throw badRequest("That vehicle is not yours.", "vehicle_not_found");
     if (vehicle.status !== "approved") throw badRequest("That vehicle is not approved yet.", "vehicle_not_approved");
+    // v0.10.1: only a car whose required documents are all approved can be picked.
+    const carMissing = await vehicleDocumentBlockers(trx, vehicle);
+    if (carMissing.length > 0) throw new ApiError("documents_not_approved", "That car's documents are not all approved.", { reason: "vehicle_documents_not_approved", details: carMissing });
     if (vehicle.fleet_id !== null && vehicle.driver_id !== null && vehicle.driver_id !== driverId) {
       // One car, one driver at a time: in use while the other driver is online or on a trip; an offline driver's pick moves.
       const other = await trx.selectFrom("drivers").select(["online_status", "vehicle_id"]).where("driver_id", "=", vehicle.driver_id).executeTakeFirst();
@@ -213,8 +217,10 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
       if (fleet?.status !== "approved") throw await refuse("Your fleet is not approved.", "fleet_not_approved");
     }
     if (row.vehicle_id === null) throw await refuse("Choose an approved car first.", "no_vehicle");
-    const vehicle = await trx.selectFrom("vehicles").select(["status", "driver_id", "fleet_id"]).where("vehicle_id", "=", row.vehicle_id).executeTakeFirst();
+    const vehicle = await trx.selectFrom("vehicles").select(["vehicle_id", "status", "driver_id", "fleet_id"]).where("vehicle_id", "=", row.vehicle_id).executeTakeFirst();
     if (vehicle?.status !== "approved") throw await refuse("Your car is not approved.", "vehicle_not_approved");
+    const carMissing = await vehicleDocumentBlockers(trx, vehicle);
+    if (carMissing.length > 0) throw new ApiError("documents_not_approved", "Your car's documents are not all approved.", { reason: "vehicle_documents_not_approved", details: carMissing, projection: await stale(row, trx)() });
     if (vehicle.fleet_id !== null && vehicle.driver_id !== driverId) throw await refuse("Another driver has this car now; pick a car again.", "vehicle_in_use");
     if (row.category_ids.length === 0) throw await refuse("No car type is chosen.", "no_category");
     // v0.10.0 §19 Legal: new terms published with reaccept must be accepted before going online.

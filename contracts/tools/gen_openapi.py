@@ -1306,7 +1306,7 @@ op("post", "/support/tickets", "createTicket", "Open a support ticket", ["rider"
 # ---- Driver
 op("post", "/driver/availability", "setDriverAvailability", "Go online / offline", ["driver"], "Driver · Session",
    body="AvailabilityRequest", ok=(200, "Driver"), mutation=True,
-   desc="409 when on a trip, account not active, documents expired or driving limit reached (projection = Driver).")
+   desc="409 when on a trip, account not active, documents expired or driving limit reached (projection = Driver). v0.10.1: a car whose Vehicle.requiredDocuments are not all approved → 409 documents_not_approved (reason vehicle_documents_not_approved, details).")
 op("post", "/driver/location", "postDriverLocation", "Upload a batch of GPS fixes", ["driver"], "Driver · Session",
    body="LocationBatch", ok=(200, "DriverLocationAck"), mutation=True,
    desc="Fixes are fanned out as kind=location on the active trip's stream; they never change the projection version.")
@@ -1349,7 +1349,8 @@ op("get", "/driver/payouts", "listDriverPayouts", "Payout history", ["driver"], 
    params=[pref("Cursor"), pref("Limit"), pref("From"), pref("To")], ok=(200, "PayoutPage"))
 op("get", "/driver/profile", "getDriverProfile", "Own driver profile and status", ["driver"], "Driver · Account", ok=(200, "Driver"))
 op("patch", "/driver/profile", "updateDriverProfile", "Update own profile / active vehicle", ["driver"], "Driver · Account",
-   body="DriverProfileUpdate", ok=(200, "Driver"), mutation=True)
+   body="DriverProfileUpdate", ok=(200, "Driver"), mutation=True,
+   desc="v0.10.1: picking a car (vehicleId) whose Vehicle.requiredDocuments are not all approved → 409 documents_not_approved (reason vehicle_documents_not_approved, details vehicle:<type>).")
 op("get", "/driver/vehicles", "listDriverVehicles", "Own vehicles", ["driver"], "Driver · Account",
    params=[pref("Cursor"), pref("Limit")], ok=(200, "VehiclePage"))
 op("post", "/driver/vehicles", "addDriverVehicle", "Register a vehicle (status pending)", ["driver"], "Driver · Account",

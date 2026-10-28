@@ -2,7 +2,9 @@ import { sql } from "kysely";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import type { Executor, Trx } from "../db/db.js";
 import { driverView, loadDriver } from "../drivers/service.js";
-import { requiredDocuments } from "../drivers/onboardingRules.js";
+import { activationBlockers } from "../drivers/readiness.js";
+
+export { activationBlockers };
 import { ApiError, badRequest } from "../http/errors.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { riderView } from "../riders/service.js";
@@ -179,21 +181,6 @@ export async function listAudit(ex: Executor, who: Principal, input: { cursor?: 
 }
 
 /* ---------------------------------------------------------------- account status */
-
-/**
- * What still stops an admin from activating this driver (contract v0.10.1, driverOnboarding.activation): every
- * required driver document type that has no approved document. The one place for activation rules; a car rule
- * (an open owner question) goes here too.
- */
-export async function activationBlockers(trx: Trx, driver: { driver_id: string; country: string | null }): Promise<string[]> {
-  const required = requiredDocuments(driver.country, "driver");
-  if (required.length === 0) return [];
-  const approved = await trx.selectFrom("documents").select("type")
-    .where("owner_kind", "=", "driver").where("owner_id", "=", driver.driver_id).where("status", "=", "approved")
-    .where("type", "in", required).execute();
-  const have = new Set(approved.map((r) => r.type));
-  return required.filter((t) => !have.has(t));
-}
 
 export async function setDriverStatus(trx: Trx, who: Principal, driverId: string, body: { expectedVersion: number; accountStatus: "pending" | "active" | "on_hold" | "suspended"; note: string }, now: Date) {
   const row = await loadDriver(trx, driverId, true);

@@ -1267,9 +1267,10 @@
       "joinAttemptsPerHour": 10
     },
     "activation": {
-      "note": "v0.10.1 (owner decision, PROGRESS.md #6): POST /admin/drivers/{driverId}/status with status active is refused with 409 documents_not_approved unless every type in Driver.requiredDocuments has a document with status approved (kinds acceptance and admin_check included). The error's details lists the missing or unapproved required types. A car check is an open owner question and not part of this rule yet.",
+      "note": "v0.10.1 (owner decisions, PROGRESS.md #6 and 2026-10-28): account activation and car approval are separate. POST /admin/drivers/{driverId}/status with status active is refused with 409 documents_not_approved unless every required document has a document with status approved (kinds acceptance and admin_check included): a driver attached to a fleet needs every type in Driver.requiredDocuments; a fleet owner (also a driver who drives his own car; a fleet may have one car) needs every type in Driver.requiredDocuments AND Driver.requiredFleetDocuments. No car is needed for activation, and a missing car never puts an account on hold. Cars: only a car with status approved whose Vehicle.requiredDocuments are all approved can be picked (PATCH /driver/profile { vehicleId }) or driven online (POST /driver/availability); otherwise 409 documents_not_approved, reason vehicle_documents_not_approved, with details.",
       "errorCode": "documents_not_approved",
-      "details": "string[]: the required document types that are missing or not approved"
+      "vehicleReason": "vehicle_documents_not_approved",
+      "details": "string[] of \"<scope>:<type>\" for each required type that is missing or not approved; scope driver (Driver.requiredDocuments), fleet (Driver.requiredFleetDocuments) or vehicle (Vehicle.requiredDocuments), e.g. driver:info_session, fleet:company_registration, vehicle:insurance"
     },
     "vehicles": {
       "note": "Fleet accounts own the cars (POST /driver/vehicles); an admin approves each (POST /admin/vehicles/{vehicleId}/review). A linked driver sees the fleet's approved cars (GET /driver/vehicles) and picks the one he drives (PATCH /driver/profile { vehicleId }). One car has one driver at a time: a car is in use while another driver has it picked and is online or on a trip (409 conflict, reason vehicle_in_use); picking a car another offline driver had moves it (that driver picks again before going online). A driver account that is not linked to a fleet has no cars (the app says the fleet's vehicle details are awaited)."
