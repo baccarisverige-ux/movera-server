@@ -147,6 +147,10 @@ describe("support tickets: the apps open them, Admin › Support answers, the ap
     expect((await other.get(`/support/tickets/${dispute.body["ticketId"]}`)).status).toBe(404);
     const z002 = await sim.admin("super", ["Z002"]);
     expect((await z002.get(`/admin/tickets/${dispute.body["ticketId"]}`)).status).toBe(403);
+    // contract v0.13.0 §22: the list is the admin's zones only, and support.reply is needed to read.
+    expect(JSON.stringify((await z002.get("/admin/tickets")).body)).not.toContain(dispute.body["ticketId"]);
+    const viewer = await sim.admin("viewer");
+    expect((await viewer.get(`/admin/tickets/${dispute.body["ticketId"]}`)).status).toBe(403);
     await owner.post(`/admin/tickets/${help.body["ticketId"]}/reply`, { text: "Closed.", status: "closed" });
     expect((await owner.post(`/admin/tickets/${help.body["ticketId"]}/reply`, { text: "more" })).body["reason"]).toBe("ticket_closed");
   });

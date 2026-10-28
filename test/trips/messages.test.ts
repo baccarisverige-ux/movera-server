@@ -7,6 +7,9 @@ import { schemaProblem } from "../../src/contract/schemas.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
+import { callTripPeer } from "../../src/trips/call.js";
+import { purgeOldMessages } from "../../src/trips/messages.js";
+import type { MaskedCallRequest, TelephonyProvider } from "../../src/telephony/provider.js";
 import { rideHandlers } from "../../src/trips/ride.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -101,19 +104,6 @@ const step = async (tripId: string, path: string, version: number, body: Record<
   }
   return call(app, "POST", `/trips/${tripId}/${path}`, drivers.A.headers, { expectedVersion: version, ...body });
 };
-
-async function completed() {
-  const { tripId, version } = await accepted();
-  let v = version;
-  await step(tripId, "head-to-pickup", v++);
-  await step(tripId, "arrive", v++);
-  await advance(60);
-  await step(tripId, "board", v++);
-  await step(tripId, "start", v++);
-  const done = await step(tripId, "complete", v);
-  expect(done.json().status).toBe("completed");
-  return tripId;
-}
 
 const send = (tripId: string, who: Record<string, string>, text: unknown, key?: string) => call(app, "POST", `/trips/${tripId}/messages`, who, { text }, key);
 const list = async (tripId: string, who: Record<string, string>, query = "") => (await call(app, "GET", `/trips/${tripId}/messages${query}`, who)).json();
@@ -234,25 +224,90 @@ describe("the trip chat", () => {
     expect(bad.json()).toMatchObject({ code: "invalid_request", reason: "invalid_cursor" });
   });
 
-  it("M8 the chat stays open for an hour after the trip ended, then closes", async () => {
-    const tripId = await completed();
-    // Access tokens live 15 minutes: an hour on, both sides have signed in again.
-    const signInAgain = async () => {
-      rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
-      drivers.A.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
-    };
-    await advance(59 * 60);
-    await signInAgain();
-    const soon = await send(tripId, rider, "I left my umbrella in the car");
-    expect(soon.statusCode).toBe(201);
-    const answer = await send(tripId, drivers.A.headers, "Got it, I'll bring it back");
-    expect(answer.statusCode).toBe(201);
-    await advance(61 * 60);
-    await signInAgain();
-    const late = await send(tripId, rider, "Still there?");
-    expect(late.statusCode).toBe(409);
-    expect(late.json()).toMatchObject({ code: "invalid_transition", reason: "chat_closed", projection: { tripId, status: "completed" } });
-    // Reading stays possible.
-    expect((await list(tripId, drivers.A.headers)).items.map((m: { text: string }) => m.text)).toEqual(["I left my umbrella in the car", "Got it, I'll bring it back"]);
+  it("M8 the chat closes at drop-off: the rider and the driver get 409 chat_closed at once, reading stays, support may still write", async () => {
+    const { tripId, version } = await accepted();
+    expect((await send(tripId, rider, "I'm at the main door")).statusCode).toBe(201);
+    let v = version;
+    await step(tripId, "head-to-pickup", v++);
+    await step(tripId, "arrive", v++);
+    await advance(60);
+    await step(tripId, "board", v++);
+    await step(tripId, "start", v++);
+    expect((await step(tripId, "complete", v)).json().status).toBe("completed");
+    for (const side of [rider, drivers.A.headers]) {
+      const late = await send(tripId, side, "I left my umbrella in the car");
+      expect(late.statusCode).toBe(409);
+      expect(late.json()).toMatchObject({ code: "invalid_transition", reason: "chat_closed", projection: { tripId, status: "completed" } });
+    }
+    expect((await list(tripId, drivers.A.headers)).items.map((m: { text: string }) => m.text)).toEqual(["I'm at the main door"]);
+    const admin = await adminSession(app, database.db, "support", { now: clock.now });
+    expect((await send(tripId, admin.headers, "Movera here: we found your umbrella.")).statusCode).toBe(201);
+    const callAfter = await call(app, "POST", `/trips/${tripId}/call`, rider, {});
+    expect(callAfter.statusCode).toBe(409);
+    expect(callAfter.json()).toMatchObject({ reason: "chat_closed" });
+  });
+
+  it("M9 admins: support.reply is needed to read and write; only trips of the admin's zones (zone_out_of_scope)", async () => {
+    const { tripId } = await accepted();
+    await send(tripId, rider, "hello");
+    const viewer = await adminSession(app, database.db, "viewer", { now: clock.now });
+    for (const res of [await call(app, "GET", `/trips/${tripId}/messages`, viewer.headers), await send(tripId, viewer.headers, "hi")]) {
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ code: "forbidden", reason: "missing_permission" });
+    }
+    const elsewhere = await adminSession(app, database.db, "support", { zoneIds: ["FR-PC"], now: clock.now });
+    for (const res of [await call(app, "GET", `/trips/${tripId}/messages`, elsewhere.headers), await send(tripId, elsewhere.headers, "hi")]) {
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ code: "forbidden", reason: "zone_out_of_scope" });
+    }
+    const local = await adminSession(app, database.db, "support", { zoneIds: ["Z001"], now: clock.now });
+    expect((await list(tripId, local.headers)).items).toHaveLength(1);
+    expect((await send(tripId, local.headers, "Movera here")).statusCode).toBe(201);
+  });
+
+  it("M10 a masked call: 503 call_unavailable while no telephony provider is set; never a phone number", async () => {
+    const { tripId } = await accepted();
+    for (const side of [rider, drivers.A.headers]) {
+      const res = await call(app, "POST", `/trips/${tripId}/call`, side, {});
+      expect(res.statusCode).toBe(503);
+      expect(res.json()).toMatchObject({ code: "unavailable", reason: "call_unavailable" });
+    }
+    expect((await call(app, "POST", `/trips/${tripId}/call`, stranger, {})).statusCode).toBe(404);
+    // No real number of the other side in either view of the trip or the chat.
+    await send(tripId, rider, "hello");
+    const bodies = JSON.stringify([await tripView(tripId, rider), await tripView(tripId, drivers.A.headers), await list(tripId, rider), await list(tripId, drivers.A.headers)]);
+    for (const phone of [TEST_PHONES[0]!, TEST_PHONES[1]!]) expect(bodies).not.toContain(phone.slice(1));
+  });
+
+  it("M10b with a telephony provider: the caller gets the proxy number, the provider gets both real numbers, null is 503", async () => {
+    const { tripId } = await accepted();
+    const trip = await database.db.selectFrom("trips").select(["rider_id", "driver_id"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    const asked: MaskedCallRequest[] = [];
+    const expiresAt = new Date(clock.now.getTime() + 600_000);
+    const provider: TelephonyProvider = { name: "fake", maskedCall: (request) => { asked.push(request); return Promise.resolve({ proxyNumber: "+46700000999", expiresAt }); } };
+    const got = await callTripPeer(database.db, { actor: "driver", subjectId: trip.driver_id! }, tripId, provider, clock.now);
+    expect(got).toEqual({ tripId, proxyNumber: "+46700000999", expiresAt: expiresAt.toISOString() });
+    expect(asked[0]).toMatchObject({ tripId, caller: { actor: "driver" }, callee: { actor: "rider" } });
+    expect(asked[0]!.caller.phone).toBeTruthy();
+    expect(asked[0]!.callee.phone).toBeTruthy();
+    const none: TelephonyProvider = { name: "fake", maskedCall: () => Promise.resolve(null) };
+    await expect(callTripPeer(database.db, { actor: "rider", subjectId: trip.rider_id }, tripId, none, clock.now)).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("M11 retention: messages older than 90 days go, also from the message events; a trip with a safety case keeps them", async () => {
+    const kept = await accepted();
+    await send(kept.tripId, rider, "kept with the case");
+    await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", kept.tripId).execute();
+    await database.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", drivers.A.id).execute();
+    const gone = await accepted();
+    await send(gone.tripId, rider, "goes after 90 days");
+    await database.db.insertInto("incidents").values({ incident_id: "inc_chat_1", trip_id: kept.tripId, kind: "sos", severity: "critical", raised_by: "rider", zone_id: "Z001", rider_id: null, driver_id: null, opened_at: clock.now, updated_at: clock.now } as never).execute();
+    const later = new Date(clock.now.getTime() + 91 * 24 * 3600_000);
+    await database.db.transaction().execute((trx) => purgeOldMessages(trx, later));
+    const left = await database.db.selectFrom("trip_messages").select(["trip_id", "text"]).where("trip_id", "in", [kept.tripId, gone.tripId]).execute();
+    expect(left).toEqual([{ trip_id: kept.tripId, text: "kept with the case" }]);
+    const events = await database.db.selectFrom("trip_events").select(["trip_id", "message"]).where("kind", "=", "message").where("trip_id", "in", [kept.tripId, gone.tripId]).execute();
+    expect(events.find((e) => e.trip_id === gone.tripId)?.message).toBeNull();
+    expect(events.find((e) => e.trip_id === kept.tripId)?.message).not.toBeNull();
   });
 });

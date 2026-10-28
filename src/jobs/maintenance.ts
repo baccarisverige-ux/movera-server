@@ -2,6 +2,7 @@ import type { Executor } from "../db/db.js";
 import { bookSilenceChecks } from "../trips/ride.js";
 import { closeWeeks } from "../admin/payouts.js";
 import { summarize } from "../admin/kpis.js";
+import { purgeOldMessages } from "../trips/messages.js";
 import type { TimerHandler } from "./timers.js";
 
 /** Housekeeping that runs on the timer worker, so only one instance does it at a time. */
@@ -26,6 +27,8 @@ export const nightlyHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
   await summarize(trx, now);
   await closeWeeks(trx, now);
+  // contract v0.13.0 §22: trip chat after 90 days, except trips with a safety case.
+  await purgeOldMessages(trx, now);
   await trx
     .insertInto("timers")
     .values({ kind: NIGHTLY, ref_id: "all", due_at: nextNightly(now) })
