@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -1295,6 +1295,12 @@
       "caseInsensitive": true,
       "joinAttemptsPerHour": 10
     },
+    "activation": {
+      "note": "v0.14.0 (owner decisions, PROGRESS.md #6 and 2026-10-28): account activation and car approval are separate. POST /admin/drivers/{driverId}/status with status active is refused with 409 documents_not_approved unless every required document has a document with status approved (kinds acceptance and admin_check included): a driver attached to a fleet needs every type in Driver.requiredDocuments; a fleet owner (also a driver who drives his own car; a fleet may have one car) needs every type in Driver.requiredDocuments AND Driver.requiredFleetDocuments. No car is needed for activation, and a missing car never puts an account on hold. Cars: only a car with status approved whose Vehicle.requiredDocuments are all approved can be picked (PATCH /driver/profile { vehicleId }) or driven online (POST /driver/availability); otherwise 409 documents_not_approved, reason vehicle_documents_not_approved, with details.",
+      "errorCode": "documents_not_approved",
+      "vehicleReason": "vehicle_documents_not_approved",
+      "details": "string[] of \"<scope>:<type>\" for each required type that is missing or not approved; scope driver (Driver.requiredDocuments), fleet (Driver.requiredFleetDocuments) or vehicle (Vehicle.requiredDocuments), e.g. driver:info_session, fleet:company_registration, vehicle:insurance"
+    },
     "vehicles": {
       "note": "Fleet accounts own the cars (POST /driver/vehicles); an admin approves each (POST /admin/vehicles/{vehicleId}/review). A linked driver sees the fleet's approved cars (GET /driver/vehicles) and picks the one he drives (PATCH /driver/profile { vehicleId }). One car has one driver at a time: a car is in use while another driver has it picked and is online or on a trip (409 conflict, reason vehicle_in_use); picking a car another offline driver had moves it (that driver picks again before going online). A driver account that is not linked to a fleet has no cars (the app says the fleet's vehicle details are awaited)."
     },
@@ -2249,7 +2255,8 @@
     ]
   },
   "errors": {
-    "shape": "{ code, message, requestId, retryable, reason?, projection? }",
+    "shape": "{ code, message, requestId, retryable, reason?, projection?, details? }",
+    "details": "v0.14.0: optional string[] detail list; documents_not_approved lists the missing or unapproved required document types",
     "codes": [
       "invalid_request",
       "unauthenticated",
@@ -2259,6 +2266,7 @@
       "conflict",
       "invalid_transition",
       "version_mismatch",
+      "documents_not_approved",
       "rate_limited",
       "unavailable",
       "internal"

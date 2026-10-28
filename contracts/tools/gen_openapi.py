@@ -945,6 +945,7 @@ S["ConfigEvent"] = obj({"eventId": ref("Id"), "kind": s(const="config_published"
 # --- error
 S["Error"] = obj({"code": ref("ErrorCode"), "message": s(), "requestId": s(), "retryable": b(),
                   "reason": s(C["errors"]["reason"], pattern="^[a-z][a-z0-9_]{0,63}$"),
+                  "details": {"type": "array", "items": s(), "description": C["errors"]["details"]},
                   "projection": {"description": "Current authoritative resource. Always present for version_mismatch and invalid_transition "
                                                  "(TripProjection for trip commands; Offer / Driver / Rider / Vehicle / ConfigDraft for their commands).",
                                  "anyOf": [ref("TripProjection"), ref("Offer"), ref("Driver"), ref("Rider"), ref("Vehicle"), ref("ConfigDraft"), ref("Incident")]}},
@@ -1341,7 +1342,7 @@ op("post", "/support/tickets", "createTicket", "Open a support ticket", ["rider"
 # ---- Driver
 op("post", "/driver/availability", "setDriverAvailability", "Go online / offline", ["driver"], "Driver · Session",
    body="AvailabilityRequest", ok=(200, "Driver"), mutation=True,
-   desc="409 when on a trip, account not active, documents expired or driving limit reached (projection = Driver).")
+   desc="409 when on a trip, account not active, documents expired or driving limit reached (projection = Driver). v0.14.0: a car whose Vehicle.requiredDocuments are not all approved → 409 documents_not_approved (reason vehicle_documents_not_approved, details).")
 op("post", "/driver/location", "postDriverLocation", "Upload a batch of GPS fixes", ["driver"], "Driver · Session",
    body="LocationBatch", ok=(200, "DriverLocationAck"), mutation=True,
    desc="Fixes are fanned out as kind=location on the active trip's stream; they never change the projection version.")
@@ -1384,7 +1385,8 @@ op("get", "/driver/payouts", "listDriverPayouts", "Payout history", ["driver"], 
    params=[pref("Cursor"), pref("Limit"), pref("From"), pref("To")], ok=(200, "PayoutPage"))
 op("get", "/driver/profile", "getDriverProfile", "Own driver profile and status", ["driver"], "Driver · Account", ok=(200, "Driver"))
 op("patch", "/driver/profile", "updateDriverProfile", "Update own profile / active vehicle", ["driver"], "Driver · Account",
-   body="DriverProfileUpdate", ok=(200, "Driver"), mutation=True)
+   body="DriverProfileUpdate", ok=(200, "Driver"), mutation=True,
+   desc="v0.14.0: picking a car (vehicleId) whose Vehicle.requiredDocuments are not all approved → 409 documents_not_approved (reason vehicle_documents_not_approved, details vehicle:<type>).")
 op("get", "/driver/vehicles", "listDriverVehicles", "Own vehicles", ["driver"], "Driver · Account",
    params=[pref("Cursor"), pref("Limit")], ok=(200, "VehiclePage"))
 op("post", "/driver/vehicles", "addDriverVehicle", "Register a vehicle (status pending)", ["driver"], "Driver · Account",
@@ -1542,7 +1544,8 @@ for seg, opid, summ in [("take", "adminTakeIncident", "Take the incident (New �
        desc="v0.7.0 (contract.json#safety.transitions). In the admin's zones only. A status the command cannot leave → 409 invalid_transition with the incident; "
             "a stale expectedVersion → 409 version_mismatch with the incident. Written in the audit.")
 op("post", "/admin/drivers/{driverId}/status", "adminSetDriverStatus", "Set driver account status", ["admin"], "Admin · People",
-   params=[pref("DriverId")], body="DriverStatusCommand", ok=(200, "Driver"), mutation=True, permission="drivers.activate", permission_v050="drivers.edit")
+   params=[pref("DriverId")], body="DriverStatusCommand", ok=(200, "Driver"), mutation=True, permission="drivers.activate", permission_v050="drivers.edit",
+   desc=C["driverOnboarding"]["activation"]["note"])
 op("post", "/admin/riders/{riderId}/status", "adminSetRiderStatus", "Set rider status", ["admin"], "Admin · People",
    params=[pref("RiderId")], body="RiderStatusCommand", ok=(200, "Rider"), mutation=True, permission="riders.block", permission_v050="riders.edit")
 op("post", "/admin/vehicles/{vehicleId}/review", "adminReviewVehicle", "Approve / reject / block a vehicle", ["admin"], "Admin · People",

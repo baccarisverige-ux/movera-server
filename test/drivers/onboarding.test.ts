@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
+import { approveDriverDocuments, approveVehicleDocuments } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /** contract v0.5.3 §14: the details screen, fleets with a join code (an invitation the owner accepts), fleet cars, documents, the admin side. */
@@ -228,6 +229,11 @@ describe("the fleet's cars", () => {
     const mine = (await call(app, "GET", "/driver/vehicles", member)).json();
     expect(mine.items).toEqual([expect.objectContaining({ vehicleId: carId, status: "approved" })]);
     const m = await me(member);
+    // v0.10.1: an approved car whose documents are not all approved cannot be picked.
+    const early = await call(app, "PATCH", "/driver/profile", member, { expectedVersion: m.version, vehicleId: carId });
+    expect(early.statusCode).toBe(409);
+    expect(early.json()).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_registration", "vehicle:insurance"] });
+    await approveVehicleDocuments(database.db, carId, ownerId, "SE");
     const pick = await call(app, "PATCH", "/driver/profile", member, { expectedVersion: m.version, vehicleId: carId });
     expect(pick.json()).toMatchObject({ vehicleId: carId, categoryIds: ["economy", "comfort"] });
     expect((await call(app, "GET", "/driver/vehicles", owner)).json().items[0]).toMatchObject({ driverId: memberId, inUse: false });
@@ -237,8 +243,16 @@ describe("the fleet's cars", () => {
     // The Paris driver joined a Swedish fleet; activate through a Super admin to keep the test about cars.
     const sup = await adminSession(app, database.db, "super", { now: clock.now });
     const d = (await call(app, "GET", `/admin/drivers/${memberId}`, sup.headers)).json().version;
+    // v0.10.1: activation is refused until every required document is approved, and says which are missing.
+    const refused = await call(app, "POST", `/admin/drivers/${memberId}/status`, sup.headers, { expectedVersion: d, accountStatus: "active", note: "Too early" });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().code).toBe("documents_not_approved");
+    expect(refused.json().details.length).toBeGreaterThan(0);
+    await approveDriverDocuments(database.db, memberId);
     const active = await call(app, "POST", `/admin/drivers/${memberId}/status`, sup.headers, { expectedVersion: d, accountStatus: "active", note: "Documents checked" });
     expect(active.json()).toMatchObject({ accountStatus: "active" });
+    // The documents tests below upload the member's own files; take the seeded approvals away again.
+    await database.db.deleteFrom("documents").where("owner_id", "=", memberId).where("reviewed_by", "=", "seed").execute();
     const m = await me(member);
     const online = await call(app, "POST", "/driver/availability", member, { expectedVersion: m.version, onlineStatus: "online" });
     expect(online.json()).toMatchObject({ onlineStatus: "online" });
@@ -253,11 +267,14 @@ describe("the fleet's cars", () => {
     expect(await me(member)).not.toHaveProperty("vehicleId");
     const m2 = await me(member);
     expect((await call(app, "POST", "/driver/availability", member, { expectedVersion: m2.version, onlineStatus: "online" })).json()).toMatchObject({ reason: "no_vehicle" });
+    // The documents tests below upload the car's own files; take the seeded car approvals away again.
+    await database.db.deleteFrom("documents").where("owner_id", "=", carId).where("reviewed_by", "=", "seed").execute();
   });
 
   it("a driver without a fleet cannot go online even when active", async () => {
     const sup = await adminSession(app, database.db, "super", { now: clock.now });
     const s = await me(second);
+    await approveDriverDocuments(database.db, s.driverId);
     await call(app, "POST", `/admin/drivers/${s.driverId}/status`, sup.headers, { expectedVersion: s.version, accountStatus: "active", note: "ok" });
     const s2 = await me(second);
     expect((await call(app, "POST", "/driver/availability", second, { expectedVersion: s2.version, onlineStatus: "online" })).json()).toMatchObject({ reason: "no_fleet" });
