@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -1266,6 +1266,11 @@
       "caseInsensitive": true,
       "joinAttemptsPerHour": 10
     },
+    "activation": {
+      "note": "v0.10.1 (owner decision, PROGRESS.md #6): POST /admin/drivers/{driverId}/status with status active is refused with 409 documents_not_approved unless every type in Driver.requiredDocuments has a document with status approved (kinds acceptance and admin_check included). The error's details lists the missing or unapproved required types. A car check is an open owner question and not part of this rule yet.",
+      "errorCode": "documents_not_approved",
+      "details": "string[]: the required document types that are missing or not approved"
+    },
     "vehicles": {
       "note": "Fleet accounts own the cars (POST /driver/vehicles); an admin approves each (POST /admin/vehicles/{vehicleId}/review). A linked driver sees the fleet's approved cars (GET /driver/vehicles) and picks the one he drives (PATCH /driver/profile { vehicleId }). One car has one driver at a time: a car is in use while another driver has it picked and is online or on a trip (409 conflict, reason vehicle_in_use); picking a car another offline driver had moves it (that driver picks again before going online). A driver account that is not linked to a fleet has no cars (the app says the fleet's vehicle details are awaited)."
     },
@@ -2220,7 +2225,8 @@
     ]
   },
   "errors": {
-    "shape": "{ code, message, requestId, retryable, reason?, projection? }",
+    "shape": "{ code, message, requestId, retryable, reason?, projection?, details? }",
+    "details": "v0.10.1: optional string[] detail list; documents_not_approved lists the missing or unapproved required document types",
     "codes": [
       "invalid_request",
       "unauthenticated",
@@ -2230,6 +2236,7 @@
       "conflict",
       "invalid_transition",
       "version_mismatch",
+      "documents_not_approved",
       "rate_limited",
       "unavailable",
       "internal"

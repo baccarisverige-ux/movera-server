@@ -10,6 +10,7 @@ export type ErrorCode =
   | "conflict"
   | "invalid_transition"
   | "version_mismatch"
+  | "documents_not_approved"
   | "rate_limited"
   | "unavailable"
   | "internal";
@@ -24,6 +25,7 @@ export const STATUS_OF: Record<ErrorCode, number> = {
   conflict: 409,
   invalid_transition: 409,
   version_mismatch: 409,
+  documents_not_approved: 409,
   rate_limited: 429,
   unavailable: 503,
   internal: 500,
@@ -32,7 +34,7 @@ export const STATUS_OF: Record<ErrorCode, number> = {
 /** Only these are worth retrying with the same Idempotency-Key. */
 const RETRYABLE: ReadonlySet<ErrorCode> = new Set<ErrorCode>(["rate_limited", "unavailable"]);
 
-/** contract `Error`: { code, message, requestId, retryable, reason?, projection? } */
+/** contract `Error`: { code, message, requestId, retryable, reason?, projection?, details? } */
 export type ErrorBody = {
   code: ErrorCode;
   message: string;
@@ -40,6 +42,7 @@ export type ErrorBody = {
   retryable: boolean;
   reason?: string;
   projection?: unknown;
+  details?: string[];
 };
 
 const REASON = /^[a-z][a-z0-9_]{0,63}$/;
@@ -51,7 +54,7 @@ export class ApiError extends Error {
   constructor(
     readonly code: ErrorCode,
     message: string,
-    readonly options: { reason?: string; projection?: unknown; retryAfterSeconds?: number } = {},
+    readonly options: { reason?: string; projection?: unknown; details?: string[]; retryAfterSeconds?: number } = {},
   ) {
     super(message);
     this.name = "ApiError";
@@ -69,6 +72,7 @@ export class ApiError extends Error {
       retryable: this.retryable,
       ...(this.options.reason !== undefined ? { reason: this.options.reason } : {}),
       ...(this.options.projection !== undefined ? { projection: this.options.projection } : {}),
+      ...(this.options.details !== undefined ? { details: this.options.details } : {}),
     };
   }
 }

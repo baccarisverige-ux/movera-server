@@ -57,3 +57,17 @@ export async function insertTrip(
     .execute();
   return tripId;
 }
+
+/** Contract v0.10.1: activation needs every required driver document approved; tests that activate seed them here. */
+export async function approveDriverDocuments(db: Db, driverId: string, only?: string[]): Promise<void> {
+  const { requiredDocuments } = await import("../../src/drivers/onboardingRules.js");
+  const row = await db.selectFrom("drivers").select("country").where("driver_id", "=", driverId).executeTakeFirstOrThrow();
+  const now = new Date();
+  for (const type of only ?? requiredDocuments(row.country, "driver")) {
+    await db
+      .insertInto("documents")
+      .values({ document_id: newId("doc"), driver_id: driverId, owner_kind: "driver", owner_id: driverId, type, status: "approved", reviewed_at: now, reviewed_by: "seed", created_at: now, updated_at: now })
+      .onConflict((c) => c.columns(["owner_kind", "owner_id", "type"]).doUpdateSet({ status: "approved", reviewed_at: now, updated_at: now }))
+      .execute();
+  }
+}

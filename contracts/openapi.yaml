@@ -1,11 +1,11 @@
-# Movera API v0.10.0 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.10.1 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.10.0
+  version: 0.10.1
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.10.0 in this folder; this file must agree with them.
+    v0.10.1 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -76,7 +76,7 @@ tags:
 - name: Account
 x-contract:
   name: movera
-  version: 0.10.0
+  version: 0.10.1
   source: contract.json
 paths:
   /auth/otp/request:
@@ -5665,6 +5665,10 @@ paths:
     post:
       operationId: adminSetDriverStatus
       summary: Set driver account status
+      description: 'v0.10.1: v0.10.1 (owner decision, PROGRESS.md #6): POST /admin/drivers/{driverId}/status with status active
+        is refused with 409 documents_not_approved unless every type in Driver.requiredDocuments has a document with status
+        approved (kinds acceptance and admin_check included). The error''s details lists the missing or unapproved required
+        types. A car check is an open owner question and not part of this rule yet.'
       tags:
       - Admin · People
       x-actor:
@@ -9647,6 +9651,7 @@ components:
       - conflict
       - invalid_transition
       - version_mismatch
+      - documents_not_approved
       - rate_limited
       - unavailable
       - internal
@@ -14842,6 +14847,12 @@ components:
           pattern: ^[a-z][a-z0-9_]{0,63}$
           description: optional machine-readable detail under a code (snake_case), e.g. invalid_request + invalid_phone, invalid_otp_code,
             invalid_otp_session; never shown to users as is
+        details:
+          type: array
+          items:
+            type: string
+          description: 'v0.10.1: optional string[] detail list; documents_not_approved lists the missing or unapproved required
+            document types'
         projection:
           description: Current authoritative resource. Always present for version_mismatch and invalid_transition (TripProjection
             for trip commands; Offer / Driver / Rider / Vehicle / ConfigDraft for their commands).

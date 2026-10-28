@@ -2,6 +2,7 @@ import { sql } from "kysely";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import type { Executor, Trx } from "../db/db.js";
 import { driverView, loadDriver } from "../drivers/service.js";
+import { requiredDocuments } from "../drivers/onboardingRules.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { riderView } from "../riders/service.js";
@@ -179,10 +180,29 @@ export async function listAudit(ex: Executor, who: Principal, input: { cursor?: 
 
 /* ---------------------------------------------------------------- account status */
 
+/**
+ * What still stops an admin from activating this driver (contract v0.10.1, driverOnboarding.activation): every
+ * required driver document type that has no approved document. The one place for activation rules; a car rule
+ * (an open owner question) goes here too.
+ */
+export async function activationBlockers(trx: Trx, driver: { driver_id: string; country: string | null }): Promise<string[]> {
+  const required = requiredDocuments(driver.country, "driver");
+  if (required.length === 0) return [];
+  const approved = await trx.selectFrom("documents").select("type")
+    .where("owner_kind", "=", "driver").where("owner_id", "=", driver.driver_id).where("status", "=", "approved")
+    .where("type", "in", required).execute();
+  const have = new Set(approved.map((r) => r.type));
+  return required.filter((t) => !have.has(t));
+}
+
 export async function setDriverStatus(trx: Trx, who: Principal, driverId: string, body: { expectedVersion: number; accountStatus: "pending" | "active" | "on_hold" | "suspended"; note: string }, now: Date) {
   const row = await loadDriver(trx, driverId, true);
   if (!row.zone_ids.some((z) => adminCoversZone(who, z)) && !who.zones.includes("*")) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin") });
+  if (body.accountStatus === "active" && row.account_status !== "active") {
+    const missing = await activationBlockers(trx, row);
+    if (missing.length > 0) throw new ApiError("documents_not_approved", "The driver's required documents are not all approved.", { details: missing });
+  }
   const blocked = body.accountStatus !== "active";
   // A blocked driver goes offline (one on a trip keeps it to the end) and loses their open offers.
   const online = blocked && ["online", "going_online"].includes(row.online_status) ? { online_status: "offline" as const, online_since: null } : {};

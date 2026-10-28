@@ -914,6 +914,7 @@ S["ConfigEvent"] = obj({"eventId": ref("Id"), "kind": s(const="config_published"
 # --- error
 S["Error"] = obj({"code": ref("ErrorCode"), "message": s(), "requestId": s(), "retryable": b(),
                   "reason": s(C["errors"]["reason"], pattern="^[a-z][a-z0-9_]{0,63}$"),
+                  "details": {"type": "array", "items": s(), "description": C["errors"]["details"]},
                   "projection": {"description": "Current authoritative resource. Always present for version_mismatch and invalid_transition "
                                                  "(TripProjection for trip commands; Offer / Driver / Rider / Vehicle / ConfigDraft for their commands).",
                                  "anyOf": [ref("TripProjection"), ref("Offer"), ref("Driver"), ref("Rider"), ref("Vehicle"), ref("ConfigDraft"), ref("Incident")]}},
@@ -1499,7 +1500,8 @@ for seg, opid, summ in [("take", "adminTakeIncident", "Take the incident (New �
        desc="v0.7.0 (contract.json#safety.transitions). In the admin's zones only. A status the command cannot leave → 409 invalid_transition with the incident; "
             "a stale expectedVersion → 409 version_mismatch with the incident. Written in the audit.")
 op("post", "/admin/drivers/{driverId}/status", "adminSetDriverStatus", "Set driver account status", ["admin"], "Admin · People",
-   params=[pref("DriverId")], body="DriverStatusCommand", ok=(200, "Driver"), mutation=True, permission="drivers.activate", permission_v050="drivers.edit")
+   params=[pref("DriverId")], body="DriverStatusCommand", ok=(200, "Driver"), mutation=True, permission="drivers.activate", permission_v050="drivers.edit",
+   desc="v0.10.1: " + C["driverOnboarding"]["activation"]["note"])
 op("post", "/admin/riders/{riderId}/status", "adminSetRiderStatus", "Set rider status", ["admin"], "Admin · People",
    params=[pref("RiderId")], body="RiderStatusCommand", ok=(200, "Rider"), mutation=True, permission="riders.block", permission_v050="riders.edit")
 op("post", "/admin/vehicles/{vehicleId}/review", "adminReviewVehicle", "Approve / reject / block a vehicle", ["admin"], "Admin · People",
