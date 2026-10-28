@@ -6,6 +6,7 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { tripProjection } from "./projection.js";
+import { stopCommand } from "./stops.js";
 import { completeTrip, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
 
 /** contract §3: the driver's trip commands, the rider's early end, ratings and the driver's earnings. */
@@ -47,6 +48,16 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
       const id = tripId(request);
       const body = parseBody(Command, request.body);
       return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, body.expectedVersion, now(), body.location), "driver") }))).body;
+    });
+  }
+
+  // v0.7.1 (§3.8): "Framme vid stoppet" and leaving the stop.
+  for (const verb of ["arrive", "leave"] as const) {
+    app.post(`${API_PREFIX}/driver/trips/:tripId/stops/:stopIndex/${verb}`, async (request) => {
+      const who = await authenticate(request, guard, ["driver"]);
+      const params = parseBody(z.object({ tripId: ID, stopIndex: z.coerce.number().int().min(0).max(9) }), request.params);
+      const body = parseBody(z.object({ expectedVersion: z.number().int().min(1) }), request.body);
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await stopCommand(trx, who.subjectId, params.tripId, params.stopIndex, verb, body.expectedVersion, now()), "driver") }))).body;
     });
   }
 

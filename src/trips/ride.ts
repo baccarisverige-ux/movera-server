@@ -6,12 +6,14 @@ import { schemaProblem } from "../contract/schemas.js";
 import { liveDocument } from "../config/service.js";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent, type TripRow } from "../db/tripLog.js";
+import { stopWaitSeconds } from "./stops.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
 import { haversineKm } from "../maps/routing.js";
 import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
+import { extrasOf } from "../rules/priceExtras.js";
 import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
 import { nextStatus, RIDER_ONBOARD, type TripStatus } from "../rules/transitions.js";
@@ -101,7 +103,7 @@ async function cancelRule(ex: Executor, trip: TripRow): Promise<FeeRule | null> 
 const outstandingLine = (trip: TripRow) => ((trip.fare_lines as FareLine[]) ?? []).find((l) => l.code === "outstanding_fee");
 
 /** The fare with the quote's route and the waiting so far (§3.5 "Quote and fare"). */
-export async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSeconds: number): Promise<Fare> {
+export async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSeconds: number, now?: Date): Promise<Fare> {
   const doc = await pricingOf(ex, trip);
   const owed = outstandingLine(trip);
   return priceFare(doc, {
@@ -111,7 +113,10 @@ export async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSecond
     kind: trip.kind,
     surgeMultiplier: Number(trip.surge_multiplier),
     waitingChargedSeconds: chargedSeconds,
-    stopWaitSeconds: ((trip.stops as unknown[]) ?? []).map(() => 0),
+    // v0.7.1 (§3.8): from the driver's arrived-at-stop to leaving-stop, no free minutes.
+    stopWaitSeconds: stopWaitSeconds(trip, now ?? new Date()),
+    // The fixed route and the airport zones of the booking are priced again at the end.
+    ...extrasOf(trip.price_extras),
     ...(owed ? { outstandingFee: owed.amount, ...(owed.sourceTripId ? { outstandingSourceTripId: owed.sourceTripId } : {}) } : {}),
   });
 }
@@ -178,6 +183,34 @@ export function scaledFare(trip: TripRow, fareMinor: number) {
 }
 
 /** The trip columns for a fare: Movera keeps fare − driverEarnings − pickupPay (§3.2). */
+/**
+ * v0.7.1 (§3.8): the trip's fare plus what the middle stops added (the stop_waiting line, its app fee and rounding):
+ * the difference between the fare with the stop waits and without them, so every other line (a raise, an
+ * outstanding fee) stays as it is. Null when no stop was waited at.
+ */
+async function withStopWaiting(ex: Executor, trip: TripRow, now: Date) {
+  const waits = stopWaitSeconds(trip, now);
+  if (!waits.some((s) => s > 0)) return null;
+  const charged = (trip.waiting as Waiting | null)?.chargedSeconds ?? 0;
+  const withStops = await fareWithWaiting(ex, trip, charged, now);
+  const without = await fareWithWaiting(ex, { ...trip, stop_visits: [] }, charged, now);
+  const delta = new Map<string, number>();
+  for (const l of withStops.fareLines) delta.set(l.code, (delta.get(l.code) ?? 0) + l.amount.amountMinor);
+  for (const l of without.fareLines) delta.set(l.code, (delta.get(l.code) ?? 0) - l.amount.amountMinor);
+  const lines = ((trip.fare_lines as FareLine[]) ?? []).map((l) => ({ ...l, amount: { ...l.amount } }));
+  for (const [code, amount] of delta) {
+    if (amount === 0) continue;
+    const line = lines.find((l) => l.code === code);
+    if (line) line.amount.amountMinor += amount;
+    else lines.splice(Math.max(0, lines.findIndex((l) => l.code === "app_fee")), 0, { code, amount: { amountMinor: amount, currency: trip.currency } });
+  }
+  const kept = lines.filter((l) => l.amount.amountMinor !== 0 || ["base", "distance", "time", "fixed_route"].includes(l.code));
+  const total = Number(trip.fare_minor) + withStops.total.amountMinor - without.total.amountMinor;
+  const driver = Number(trip.driver_earnings_minor) + withStops.driverEarnings.amountMinor - without.driverEarnings.amountMinor;
+  const pickupPay = Number(trip.pickup_pay_minor ?? 0);
+  return { fare_minor: total, fare_lines: JSON.stringify(kept), driver_earnings_minor: driver, commission_minor: total - driver - pickupPay - Number(trip.driver_bonus_minor ?? 0) };
+}
+
 function fareColumns(trip: TripRow, fare: Fare) {
   const pickupPay = Number(trip.pickup_pay_minor ?? 0);
   return {
@@ -676,8 +709,10 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   const measured = early ? await drivenFare(trx, trip, now) : null;
   // Only when it is less than booked: at the cap the booked fare and its lines stand as they are.
   const driven = measured !== null && measured.total.amountMinor < Number(trip.fare_minor) ? measured : null;
-  const fare = body.fare?.amountMinor ?? driven?.total.amountMinor ?? Number(trip.fare_minor);
-  const money = body.fare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : {};
+  // v0.7.1 (§3.8): at the drop-off the waiting at the middle stops is added, from each arrival to leaving.
+  const stopped = !early && body.fare === undefined ? await withStopWaiting(trx, trip, now) : null;
+  const fare = body.fare?.amountMinor ?? driven?.total.amountMinor ?? stopped?.fare_minor ?? Number(trip.fare_minor);
+  const money = body.fare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : (stopped ?? {});
   const wallet = await spendWallet(trx, trip, fare, now);
   // The rider owes the fare (outstanding fees included) less what the wallet paid; more cash than that is a miscount,
   // and it would raise the driver's cash balance and the trip's refund room above the fare.

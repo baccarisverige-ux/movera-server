@@ -160,7 +160,7 @@ describe("automatic dispatch at run time", () => {
     expect(await openOffers("A")).toEqual([]);
   });
 
-  it("a paused zone sends no offers until resumed (a Super admin pauses at once)", async () => {
+  it("a paused zone sends no offers until resumed; an ops admin forces a mode at once (v0.7.2, one admin is enough)", async () => {
     const owner = await adminSession(app, database.db, "super", { now: clock.now });
     const pause = await call(app, "PUT", "/admin/zones/Z001/dispatch-control", owner.headers, { expectedVersion: 0, paused: true, mode: null });
     expect(pause.statusCode).toBe(200);
@@ -174,7 +174,7 @@ describe("automatic dispatch at run time", () => {
     await advance(15);
     expect((await openOffers("A")).length).toBe(1);
     const force = await call(app, "PUT", "/admin/zones/Z001/dispatch-control", ops.headers, { expectedVersion: 2, paused: false, mode: "radar" });
-    expect(force.statusCode).toBe(202);
-    expect(force.json()).toMatchObject({ status: "pending_approval", action: "dispatch.control" });
+    expect(force.statusCode, force.body).toBe(200);
+    expect(force.json()).toMatchObject({ zoneId: "Z001", paused: false, mode: "radar", version: 3 });
   });
 });

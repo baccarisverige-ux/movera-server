@@ -5,6 +5,8 @@ import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
+import { contract } from "../contract/contract.js";
+import { pricingProblems } from "./pricingRules.js";
 
 /**
  * Config documents (contract v0.5.1 §6, contract.json#configDocs and #configVersion). The admin panel builds each
@@ -49,6 +51,10 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (own.zoneId !== zone.zoneId) throw badRequest(`The document is for zone ${own.zoneId}, not ${zone.zoneId}.`, "zone_mismatch");
   if (own.currency !== undefined && own.currency !== zone.currency) throw badRequest(`Zone ${zone.zoneId} uses ${zone.currency}.`, "currency_mismatch");
   if (own.country !== undefined && own.country !== zone.country) throw badRequest(`Zone ${zone.zoneId} is in ${zone.country}.`, "country_mismatch");
+  if (doc === "pricing") {
+    const problems = pricingProblems(document);
+    if (problems.length > 0) throw badRequest(`The pricing document is not valid: ${problems.join("; ")}.`, "invalid_document");
+  }
 }
 
 async function liveVersion(ex: Executor, doc: ConfigDoc, zoneId: string): Promise<number> {
@@ -98,13 +104,21 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
   return getDraft(trx, input.doc, input.zoneId);
 }
 
-export type Publication = { doc: ConfigDoc; zoneId: string; version: number; publishedAt: string };
+export type Publication = {
+  doc: ConfigDoc;
+  zoneId: string;
+  version: number;
+  publishedAt: string;
+  /** v0.7.1: the app documents a pricing publish rewrote (for the one audit line, contract.json#pricingHistory). */
+  appDocuments?: Array<{ doc: ConfigDoc; version: number }>;
+  restoredFrom?: number;
+};
 
 /**
  * Makes the draft live: next live version, publishedAt stamped into the document, history row, and a
  * config_published notification sent on commit. Runs directly for a Super admin or when a second admin approves.
  */
-export async function publishDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; note?: string | undefined; publishedBy: string; approvedBy: string | null }, now: Date): Promise<Publication> {
+export async function publishDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; note?: string | undefined; publishedBy: string; approvedBy: string | null; restoredFrom?: number }, now: Date): Promise<Publication> {
   const zone = await getZone(trx, input.zoneId);
   const current = await lockDraftVersion(trx, input.doc, input.zoneId);
   if (current.version !== input.expectedVersion) {
@@ -120,18 +134,177 @@ export async function publishDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: st
   await trx.insertInto("config_live").values(live).onConflict((c) => c.columns(["doc", "zone_id"]).doUpdateSet(live)).execute();
   await trx
     .insertInto("config_history")
-    .values({ ...live, approved_by: input.approvedBy, note: input.note ?? null })
+    .values({ ...live, approved_by: input.approvedBy, note: input.note ?? null, ...(input.restoredFrom ? { action: "restore" as const, restored_from: input.restoredFrom } : {}) })
     .execute();
   // The published document becomes the draft too, so the panel continues from what is live.
   await trx.updateTable("config_drafts").set({ document: json, version: current.version + 1, updated_at: now, updated_by: input.publishedBy }).where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).execute();
   await sql`SELECT pg_notify(${CONFIG_CHANNEL}, ${JSON.stringify({ doc: input.doc, zoneId: input.zoneId, version, publishedAt })})`.execute(trx);
-  return { doc: input.doc, zoneId: input.zoneId, version, publishedAt };
+  const appDocuments = input.doc === "pricing" ? await keepAppDocsInStep(trx, zone, document as unknown as PricingForApps, { publishedBy: input.publishedBy, approvedBy: input.approvedBy, pricingVersion: version }, now) : [];
+  return { doc: input.doc, zoneId: input.zoneId, version, publishedAt, ...(input.doc === "pricing" ? { appDocuments } : {}), ...(input.restoredFrom ? { restoredFrom: input.restoredFrom } : {}) };
+}
+
+type Waiting = { freeWaitMin: unknown; perMin: unknown; noShowAfterMin: unknown; noShowFee: unknown };
+type PricingForApps = { categories?: Record<string, { waiting?: Waiting; riderPickupFee?: unknown }> };
+type Doc = Record<string, unknown>;
+
+const SEED_ORDER: readonly string[] = (contract as unknown as { categories: { seed: string[] } }).categories.seed;
+const WAIT_KEYS = ["freeWaitMin", "perMin", "noShowAfterMin", "noShowFee"] as const;
+
+/** The headline category (CONTRACT.md §6): economy, else the first in the contract's seed order, else by id. */
+function headlineCategory(ids: string[]): string | undefined {
+  const rank = (id: string) => (SEED_ORDER.indexOf(id) === -1 ? Infinity : SEED_ORDER.indexOf(id));
+  return [...ids].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0))[0];
+}
+
+const isObject = (value: unknown): value is Doc => value !== null && typeof value === "object" && !Array.isArray(value);
+const waitingOf = (w: Waiting) => Object.fromEntries(WAIT_KEYS.map((k) => [k, w[k]]));
+
+/**
+ * contract.json#configDocs.mustMatch / publishPricing (v0.6.0): an app document with the waiting, no-show and rider
+ * pickup fee of the pricing document; every other field as it was.
+ */
+export function appDocWithPricing(doc: ConfigDoc, appDocument: Doc, pricing: PricingForApps): Doc {
+  const categories = pricing.categories ?? {};
+  const next: Doc = structuredClone(appDocument);
+  const waiting: Doc = isObject(next["waiting"]) ? next["waiting"] : {};
+  const byCategory: Doc = isObject(waiting["byCategory"]) ? waiting["byCategory"] : {};
+  for (const [id, category] of Object.entries(categories)) {
+    if (category.waiting) byCategory[id] = { ...(isObject(byCategory[id]) ? byCategory[id] : {}), ...waitingOf(category.waiting) };
+  }
+  const head = headlineCategory(Object.keys(categories).filter((id) => categories[id]?.waiting !== undefined));
+  next["waiting"] = { ...waiting, ...(head ? waitingOf(categories[head]!.waiting!) : {}), byCategory };
+  if (doc === "rider_app_config") {
+    const pickupFee: Doc = isObject(next["pickupFee"]) ? next["pickupFee"] : {};
+    const fees: Doc = isObject(pickupFee["byCategory"]) ? pickupFee["byCategory"] : {};
+    for (const [id, category] of Object.entries(categories)) if (category.riderPickupFee !== undefined) fees[id] = category.riderPickupFee;
+    next["pickupFee"] = { ...pickupFee, byCategory: fees };
+  } else if (isObject(next["pickupPay"]) && isObject(next["pickupPay"]["byCategory"])) {
+    // A category the driver document has no pickup pay rate for keeps none.
+    const rates = next["pickupPay"]["byCategory"];
+    for (const [id, rate] of Object.entries(rates)) {
+      const fee = categories[id]?.riderPickupFee;
+      if (isObject(rate) && fee !== undefined) rates[id] = { ...rate, riderFee: fee };
+    }
+  }
+  return next;
+}
+
+/**
+ * contract.json#configDocs.publishPricing (v0.6.0, owner 2026-10-27): publishing pricing rewrites the zone's live
+ * rider and driver documents with its waiting, no-show and rider pickup fee, as the next version with
+ * config_published; a document already equal stays as it is; a zone with no app document gets none. A draft takes
+ * the same values and its version goes up by 1, so a later app publish does not undo them.
+ */
+async function keepAppDocsInStep(trx: Trx, zone: Zone, pricing: PricingForApps, by: { publishedBy: string; approvedBy: string | null; pricingVersion: number }, now: Date): Promise<Array<{ doc: ConfigDoc; version: number }>> {
+  const rewritten: Array<{ doc: ConfigDoc; version: number }> = [];
+  for (const doc of APP_DOCS) {
+    const draftRow = await lockDraftVersion(trx, doc, zone.zoneId);
+    const live = await trx.selectFrom("config_live").select(["version", "document"]).where("doc", "=", doc).where("zone_id", "=", zone.zoneId).executeTakeFirst();
+    if (live === undefined) continue;
+    const current = live.document as Doc;
+    const synced = appDocWithPricing(doc, current, pricing);
+    if (JSON.stringify(synced) !== JSON.stringify(current)) {
+      const version = live.version + 1;
+      const document = { ...synced, version, publishedAt: now.toISOString() };
+      checkDocument(doc, zone, document);
+      const json = JSON.stringify(document);
+      const row = { doc, zone_id: zone.zoneId, version, document: json, published_at: now, published_by: by.publishedBy };
+      await trx.updateTable("config_live").set(row).where("doc", "=", doc).where("zone_id", "=", zone.zoneId).execute();
+      await trx.insertInto("config_history").values({ ...row, approved_by: by.approvedBy, note: `pricing v${by.pricingVersion}: waiting, no-show and pickup fee` }).execute();
+      await sql`SELECT pg_notify(${CONFIG_CHANNEL}, ${JSON.stringify({ doc, zoneId: zone.zoneId, version, publishedAt: document.publishedAt })})`.execute(trx);
+      rewritten.push({ doc, version });
+    }
+    const draft = await trx.selectFrom("config_drafts").select(["document"]).where("doc", "=", doc).where("zone_id", "=", zone.zoneId).executeTakeFirst();
+    if (draft !== undefined && isObject(draft.document)) {
+      const next = appDocWithPricing(doc, draft.document, pricing);
+      if (JSON.stringify(next) !== JSON.stringify(draft.document)) {
+        await trx.updateTable("config_drafts").set({ document: JSON.stringify(next), version: draftRow.version + 1, updated_at: now, updated_by: by.publishedBy }).where("doc", "=", doc).where("zone_id", "=", zone.zoneId).execute();
+      }
+    }
+  }
+  return rewritten;
+}
+
+/* ---------------------------------------------------------------- v0.7.1: history, restore (contract.json#pricingHistory) */
+
+export type HistoryEntry = { doc: ConfigDoc; zoneId: string; version: number; publishedAt: string; publishedBy?: string; note?: string; action: "publish" | "restore"; restoredFrom?: number; document: unknown };
+
+/** GET /admin/config/{doc}/history: newest first; cursor = the last row's version. */
+export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string, input: { cursor?: string | undefined; limit: number }): Promise<{ items: HistoryEntry[]; nextCursor: string | null }> {
+  await getZone(ex, zoneId);
+  let q = ex.selectFrom("config_history").selectAll().where("doc", "=", doc).where("zone_id", "=", zoneId);
+  if (input.cursor !== undefined) {
+    if (!/^\d{1,9}$/.test(input.cursor)) throw badRequest("The cursor is not valid.", "invalid_cursor");
+    q = q.where("version", "<", Number(input.cursor));
+  }
+  const rows = await q.orderBy("version", "desc").limit(input.limit + 1).execute();
+  const page = rows.slice(0, input.limit);
+  return {
+    items: page.map((row) => ({
+      doc,
+      zoneId,
+      version: row.version,
+      publishedAt: row.published_at.toISOString(),
+      ...(row.published_by ? { publishedBy: row.published_by } : {}),
+      ...(row.note ? { note: row.note } : {}),
+      action: row.action,
+      ...(row.restored_from ? { restoredFrom: row.restored_from } : {}),
+      document: row.document,
+    })),
+    nextCursor: rows.length > input.limit ? String(page[page.length - 1]!.version) : null,
+  };
+}
+
+/**
+ * POST /admin/config/{doc}/restore: an earlier published version becomes live again as the next version, with every
+ * effect of a publish. expectedVersion is the live version the admin saw. Undo last publish = the version before it.
+ */
+export async function restoreVersion(trx: Trx, input: { doc: ConfigDoc; zoneId: string; version: number; expectedVersion: number; note?: string | undefined; by: string }, now: Date): Promise<Publication> {
+  await lockDraftVersion(trx, input.doc, input.zoneId);
+  const live = await liveVersion(trx, input.doc, input.zoneId);
+  if (live !== input.expectedVersion) throw new ApiError("version_mismatch", "The settings changed since you last saw them.", { reason: "live_changed" });
+  if (input.version === live) throw new ApiError("invalid_transition", "That version is already live.", { reason: "already_live" });
+  const old = await trx.selectFrom("config_history").select("document").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).where("version", "=", input.version).executeTakeFirst();
+  if (old === undefined) throw new ApiError("not_found", "That version is not in the history.", { reason: "version_not_found" });
+  const document = old.document as Record<string, unknown>;
+  const draft = await trx.selectFrom("config_drafts").select("version").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).executeTakeFirst();
+  const saved = await putDraft(trx, { doc: input.doc, zoneId: input.zoneId, expectedVersion: draft?.version ?? 1, document, adminId: input.by }, now);
+  return publishDraft(trx, { doc: input.doc, zoneId: input.zoneId, expectedVersion: saved.version, note: input.note ?? `Restore version ${input.version}`, publishedBy: input.by, approvedBy: null, restoredFrom: input.version }, now);
+}
+
+/**
+ * Writes a new live version of a document that the server itself changes (v0.7.1: a car type archived in every
+ * zone), with history and config_published; the draft takes the same change and its version goes up by 1.
+ */
+export async function rewriteLive(trx: Trx, doc: ConfigDoc, zoneId: string, change: (document: Doc) => Doc | null, note: string, by: string, now: Date): Promise<number | null> {
+  const zone = await getZone(trx, zoneId);
+  const draftRow = await lockDraftVersion(trx, doc, zoneId);
+  const live = await trx.selectFrom("config_live").select(["version", "document"]).where("doc", "=", doc).where("zone_id", "=", zoneId).executeTakeFirst();
+  if (live === undefined) return null;
+  const changed = change(structuredClone(live.document as Doc));
+  if (changed === null) return null;
+  const version = live.version + 1;
+  const document = { ...changed, version, publishedAt: now.toISOString() };
+  checkDocument(doc, zone, document);
+  const json = JSON.stringify(document);
+  const row = { doc, zone_id: zoneId, version, document: json, published_at: now, published_by: by };
+  await trx.updateTable("config_live").set(row).where("doc", "=", doc).where("zone_id", "=", zoneId).execute();
+  await trx.insertInto("config_history").values({ ...row, approved_by: null, note }).execute();
+  await sql`SELECT pg_notify(${CONFIG_CHANNEL}, ${JSON.stringify({ doc, zoneId, version, publishedAt: document.publishedAt })})`.execute(trx);
+  const draft = await trx.selectFrom("config_drafts").select("document").where("doc", "=", doc).where("zone_id", "=", zoneId).executeTakeFirst();
+  if (draft !== undefined && isObject(draft.document)) {
+    const next = change(structuredClone(draft.document));
+    if (next !== null) await trx.updateTable("config_drafts").set({ document: JSON.stringify(next), version: draftRow.version + 1, updated_at: now, updated_by: by }).where("doc", "=", doc).where("zone_id", "=", zoneId).execute();
+  }
+  return version;
 }
 
 export const PUBLISH_ACTION = "config.publish";
 
 registerApprovalHandler(PUBLISH_ACTION, async (trx, payload, approvedBy, requestedBy, now) =>
-  publishDraft(
+  typeof payload["restoreVersion"] === "number"
+    ? restoreVersion(trx, { doc: payload["doc"] as ConfigDoc, zoneId: payload["zoneId"] as string, version: payload["restoreVersion"], expectedVersion: payload["expectedVersion"] as number, note: payload["note"] as string | undefined, by: requestedBy }, now)
+    : publishDraft(
     trx,
     {
       doc: payload["doc"] as ConfigDoc,

@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { seedTestPhones } from "../../src/auth/testPhones.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { bookAndAccept, drive, fakeOsrm, PLACES, Sim, type Admin, type Driver, type Rider } from "./harness.js";
+// After the harness: it loads the app, whose modules register the approval handlers.
+import { fileApproval } from "../../src/admin/approvals.js";
 
 const LONE_PHONE = "+46701740699";
 
@@ -120,9 +122,12 @@ describe("scenario 10: authorization", () => {
     expect((await a.command(tripId, "complete")).body.status).toBe("completed");
     const finance = await sim.admin("finance", ["Z001"]);
     const version = (await owner.trip(tripId)).version;
-    const pending = await finance.tripCommand(tripId, "refund", { expectedVersion: version, amount: { amountMinor: 1000, currency: "SEK" }, reason: "detour" });
-    expect(pending.status, JSON.stringify(pending.body)).toBe(202);
-    const approvalId = pending.body.approvalId as string;
+    // v0.7.2: no route files an approval any more (one admin is enough); one filed before still lists by zone.
+    const payload = { expectedVersion: version, amount: { amountMinor: 1000, currency: "SEK" }, reason: "detour", tripId };
+    const pending = await sim.db.transaction().execute((trx) =>
+      fileApproval(trx, { actor: "admin", subjectId: finance.id, sessionId: "test", zones: ["Z001"], role: "finance" }, { action: "trip.refund", targetType: "refund", targetId: tripId, zoneId: "Z001", payload, approvePermission: "approval.decide" }, sim.clock.now),
+    );
+    const approvalId = pending.approvalId;
 
     const z1 = await sim.admin("finance", ["Z001"]);
     const z2 = await sim.admin("finance", ["Z002"]);

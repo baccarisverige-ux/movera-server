@@ -75,7 +75,8 @@ export function adminMe(row: AdminRow): AdminMe {
     },
     ...(row.language ? { language: row.language } : {}),
     idleTimeoutSeconds: row.idle_timeout_seconds,
-    approvalExempt: role === "super",
+    // v0.7.2 (owner 2026-10-28): one admin is enough everywhere.
+    approvalExempt: true,
   };
 }
 
