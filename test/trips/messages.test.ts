@@ -7,7 +7,9 @@ import { schemaProblem } from "../../src/contract/schemas.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
+import { callTripPeer } from "../../src/trips/call.js";
 import { purgeOldMessages } from "../../src/trips/messages.js";
+import type { MaskedCallRequest, TelephonyProvider } from "../../src/telephony/provider.js";
 import { rideHandlers } from "../../src/trips/ride.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -275,6 +277,21 @@ describe("the trip chat", () => {
     await send(tripId, rider, "hello");
     const bodies = JSON.stringify([await tripView(tripId, rider), await tripView(tripId, drivers.A.headers), await list(tripId, rider), await list(tripId, drivers.A.headers)]);
     for (const phone of [TEST_PHONES[0]!, TEST_PHONES[1]!]) expect(bodies).not.toContain(phone.slice(1));
+  });
+
+  it("M10b with a telephony provider: the caller gets the proxy number, the provider gets both real numbers, null is 503", async () => {
+    const { tripId } = await accepted();
+    const trip = await database.db.selectFrom("trips").select(["rider_id", "driver_id"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    const asked: MaskedCallRequest[] = [];
+    const expiresAt = new Date(clock.now.getTime() + 600_000);
+    const provider: TelephonyProvider = { name: "fake", maskedCall: (request) => { asked.push(request); return Promise.resolve({ proxyNumber: "+46700000999", expiresAt }); } };
+    const got = await callTripPeer(database.db, { actor: "driver", subjectId: trip.driver_id! }, tripId, provider, clock.now);
+    expect(got).toEqual({ tripId, proxyNumber: "+46700000999", expiresAt: expiresAt.toISOString() });
+    expect(asked[0]).toMatchObject({ tripId, caller: { actor: "driver" }, callee: { actor: "rider" } });
+    expect(asked[0]!.caller.phone).toBeTruthy();
+    expect(asked[0]!.callee.phone).toBeTruthy();
+    const none: TelephonyProvider = { name: "fake", maskedCall: () => Promise.resolve(null) };
+    await expect(callTripPeer(database.db, { actor: "rider", subjectId: trip.rider_id }, tripId, none, clock.now)).rejects.toMatchObject({ code: "unavailable" });
   });
 
   it("M11 retention: messages older than 90 days go, also from the message events; a trip with a safety case keeps them", async () => {
