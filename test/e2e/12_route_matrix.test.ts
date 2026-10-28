@@ -116,6 +116,7 @@ beforeAll(async () => {
     payoutId: newId("pyt"),
     ticketId: newId("tkt"),
     from: "rider",
+    slot: "help",
   };
 });
 afterAll(async () => {

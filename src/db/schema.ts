@@ -912,4 +912,29 @@ export interface Database {
   ticket_messages: TicketMessagesTable;
   dispatch_events: DispatchEventsTable;
   kpi_days: KpiDaysTable;
+  content_items: ContentItemsTable;
+  terms_acceptances: TermsAcceptancesTable;
+}
+
+export interface ContentItemsTable {
+  slot: string;
+  zone_id: string;
+  version: number;
+  title: string;
+  text: ColumnType<Record<string, string>, string, string>;
+  image: string | null;
+  expires_at: Date | null;
+  reaccept: boolean | null;
+  versions: ColumnType<unknown, string | null, string | null>;
+  published_at: Date;
+  published_by: string;
+  restored_from: number | null;
+}
+
+export interface TermsAcceptancesTable {
+  actor: "rider" | "driver";
+  subject_id: string;
+  zone_id: string;
+  content_version: number;
+  accepted_at: Date;
 }

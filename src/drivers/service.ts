@@ -1,4 +1,5 @@
 import { sql } from "kysely";
+import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { schemaProblem } from "../contract/schemas.js";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent } from "../db/tripLog.js";
@@ -216,6 +217,10 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     if (vehicle?.status !== "approved") throw await refuse("Your car is not approved.", "vehicle_not_approved");
     if (vehicle.fleet_id !== null && vehicle.driver_id !== driverId) throw await refuse("Another driver has this car now; pick a car again.", "vehicle_in_use");
     if (row.category_ids.length === 0) throw await refuse("No car type is chosen.", "no_category");
+    // v0.10.0 §19 Legal: new terms published with reaccept must be accepted before going online.
+    const fix = await trx.selectFrom("driver_locations").select("zone_id").where("driver_id", "=", driverId).executeTakeFirst();
+    const zones = [...row.zone_ids, ...(fix?.zone_id ? [fix.zone_id] : [])];
+    if (!(await termsAccepted(trx, "driver", driverId, zones))) throw await refuse("Accept the new terms first.", TERMS_REASON);
   } else if (await activeTripOf(trx, driverId)) {
     throw await refuse("Finish or hand back your trip before going offline.", "on_trip");
   }
