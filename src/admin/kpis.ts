@@ -137,7 +137,7 @@ export async function summarizeDay(trx: Trx, zone: Zone, day: string, now: Date)
 
 /**
  * The nightly summary: for every zone, every day from `from` (default: the day after the last summarized one, else
- * the first trip's day) up to yesterday in the zone's time. Safe to run again. Returns the zone-days written.
+ * the first trip's day of any zone) up to yesterday in the zone's time. Safe to run again. Returns the zone-days written.
  */
 export async function summarize(trx: Trx, now: Date, from?: string): Promise<number> {
   if (from !== undefined && !DATE.test(from)) throw badRequest("from must be YYYY-MM-DD.", "invalid_range");
@@ -150,7 +150,9 @@ export async function summarize(trx: Trx, now: Date, from?: string): Promise<num
       const last = await trx.selectFrom("kpi_days").select(sql<string>`to_char(max(day), 'YYYY-MM-DD')`.as("d")).where("zone_id", "=", zone.zone_id).executeTakeFirst();
       if (last?.d) start = addDays(last.d, 1);
       else {
-        const first = await sql<{ d: string | null }>`SELECT to_char(min(created_at) AT TIME ZONE ${zone.time_zone}, 'YYYY-MM-DD') AS d FROM trips WHERE zone_id = ${zone.zone_id}`.execute(trx);
+        // From the first trip anywhere: a zone without trips gets real zero rows, so a period total is never
+        // "not connected" only because a quiet zone had nothing to sum.
+        const first = await sql<{ d: string | null }>`SELECT to_char(min(created_at) AT TIME ZONE ${zone.time_zone}, 'YYYY-MM-DD') AS d FROM trips`.execute(trx);
         if (!first.rows[0]?.d) continue;
         start = first.rows[0].d;
       }

@@ -2564,7 +2564,7 @@
       "tips": "Tips given on the day's trips, a line of their own, not in gross.",
       "refunds": "Refunds of the day's trips, counted on the TRIP's day: a later refund changes that older day (its summary is re-summed).",
       "moveraEarnings": "What Movera keeps: commission + Movera's share of fees - pickup pay - driver bonuses Movera paid. Can be negative.",
-      "netRevenue": "Shown by the admin as gross - refunds (not sent).",
+      "netRevenue": "Shown by the admin as moveraEarnings - refunds (not sent).",
       "fleets": "Fleet views get only the driver earnings; there is no owners' share.",
       "missing": "A value the server does not send reads \"Not connected yet\" (sv \"Inte kopplad än\"), never 0."
     }
