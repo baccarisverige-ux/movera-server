@@ -420,7 +420,7 @@ S["AuditEntry"] = obj({"auditId": ref("Id"), "at": ref("Timestamp"), "actor": re
                        "requestId": s(), "idempotencyKey": s()},
                       ["auditId", "at", "actor", "actorId", "action", "targetType", "targetId", "result", "requestId"])
 S["ConfigDocName"] = s("app documents are served to the apps; pricing and dispatch (v0.5.1) are server-only (x-server-only, contract.json#configDocs).",
-                        enum=C["configDocs"]["app"] + C["configDocs"]["serverOnly"] + C["configDocs"]["countryOnly"], **{"x-server-only": C["configDocs"]["serverOnly"] + C["configDocs"]["countryOnly"], "x-country-only": C["configDocs"]["countryOnly"]})
+                        enum=C["configDocs"]["app"] + C["configDocs"]["serverOnly"] + C["configDocs"]["rules"], **{"x-server-only": C["configDocs"]["serverOnly"] + C["configDocs"]["rules"]})
 CONFIG_DOC_ONE_OF = [ref("RiderAppConfig"), ref("DriverAppConfig"), ref("PricingDocument"), ref("DispatchDocument"), ref("CountryRules")]
 S["ConfigDraft"] = obj({"doc": ref("ConfigDocName"), "zoneId": ref("Id"), "country": ref("CountryCode"),
                         "usesStandard": b("v0.8.0: the zone has no own published document of this kind and uses its country's standard (configDocs.standard); the draft starts from the standard."),
@@ -436,7 +436,7 @@ S["CountryRules"] = obj(OrderedDict([
     ("country", ref("CountryCode")), ("currency", ref("CurrencyCode")),
     ("tips", arr(ref("AmountOption"))), ("raiseSteps", arr(ref("AmountOption"))), ("driverBonus", ref("DriverBonusLimits")),
 ]), ["version", "publishedAt", "country", "currency", "tips", "raiseSteps", "driverBonus"],
-    "v0.8.0, server-only, per country: " + C["configDocs"]["countryRules"], **{"x-server-only": True})
+    "v0.8.1, server-only, per zone or per country (its standard): " + C["configDocs"]["countryRules"], **{"x-server-only": True})
 
 # --- config documents (unknown keys ignored => additionalProperties allowed)
 S["FeeRule"] = {
@@ -1050,7 +1050,7 @@ PARAMS["LastEventId"] = {"name": "Last-Event-ID", "in": "header", "required": Fa
 PARAMS["ZoneIdQuery"] = {"name": "zoneId", "in": "query", "required": False, "description": "Defaults to the zone in the token / current location.", "schema": ref("Id")}
 PARAMS["ZoneIdRequired"] = {"name": "zoneId", "in": "query", "required": True, "schema": ref("Id")}
 PARAMS["ConfigZoneId"] = {"name": "zoneId", "in": "query", "required": False, "description": "v0.8.0: the zone's own document; exactly one of zoneId or country.", "schema": ref("Id")}
-PARAMS["ConfigCountry"] = {"name": "country", "in": "query", "required": False, "description": "v0.8.0: the country's standard, or country_rules; exactly one of zoneId or country.", "schema": ref("CountryCode")}
+PARAMS["ConfigCountry"] = {"name": "country", "in": "query", "required": False, "description": "v0.8.0: the country's standard (v0.8.1: also of country_rules); exactly one of zoneId or country.", "schema": ref("CountryCode")}
 PARAMS["From"] = {"name": "from", "in": "query", "required": False, "schema": ref("Timestamp")}
 PARAMS["To"] = {"name": "to", "in": "query", "required": False, "schema": ref("Timestamp")}
 PARAMS["Q"] = {"name": "q", "in": "query", "required": False, "description": "Free-text search.", "schema": {"type": "string", "maxLength": 200}}

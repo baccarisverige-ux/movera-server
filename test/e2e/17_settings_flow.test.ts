@@ -60,10 +60,9 @@ describe("country standard (§6.4)", () => {
     expect((await owner.get(`/admin/config/rider_app_config?zoneId=${zone}`)).body["usesStandard"]).toBe(false);
   });
 
-  it("names exactly one of zoneId or country; country_rules is per country only; a zone admin cannot set a country", async () => {
+  it("names exactly one of zoneId or country; a zone admin cannot set another country", async () => {
     expect((await owner.get("/admin/config/pricing")).body).toMatchObject({ code: "invalid_request", reason: "scope_required" });
     expect((await owner.get("/admin/config/pricing?zoneId=Z001&country=SE")).body).toMatchObject({ reason: "scope_required" });
-    expect((await owner.get("/admin/config/country_rules?zoneId=Z001")).body).toMatchObject({ reason: "country_only" });
     expect((await owner.get("/admin/config/pricing?country=DE")).body).toMatchObject({ reason: "country_not_found" });
     // Owner 2026-10-27: any admin of the country with the right edits its standard; an admin of another country does not.
     const local = await sim.admin("config", ["Z001"]);
@@ -89,7 +88,8 @@ describe("country standard (§6.4)", () => {
     const history = await sim.db.selectFrom("config_history").select("version").where("doc", "=", "dispatch").where("zone_id", "=", zone).execute();
     expect(history.map((h) => h.version).sort()).toEqual([ownPub["version"], ownPub["version"] + 1]);
     expect((await owner.post("/admin/config/dispatch/use-standard", { zoneId: zone, expectedVersion: 1 })).body).toMatchObject({ reason: "already_standard" });
-    expect((await owner.post("/admin/config/country_rules/use-standard", { zoneId: zone, expectedVersion: 1 })).body).toMatchObject({ reason: "country_only" });
+    // v0.8.1: tips and limits have a standard too; a zone without its own has nothing to go back from.
+    expect((await owner.post("/admin/config/country_rules/use-standard", { zoneId: zone, expectedVersion: 1 })).body).toMatchObject({ reason: "already_standard" });
   });
 });
 
@@ -108,6 +108,42 @@ describe("country rules (§6.5)", () => {
     // A zone document saved later keeps the country's values, whatever the admin sent.
     await sim.publish(owner, "rider_app_config", "Z003", (doc) => ({ ...doc, tips: [{ amount: sek(9900), enabled: true }] }));
     expect((await rider.get("/rider/config?zoneId=Z003")).body.tips).toEqual(tips);
+  });
+
+  it("v0.8.1 (owner 2026-10-28): a zone's own tips and limits reach only that zone; the standard's the zones without their own; Go back to Standard", async () => {
+    const own = { tips: [{ amount: sek(700), enabled: true }], raiseSteps: [{ amount: sek(3000), enabled: true }], driverBonus: { defaultLimit: sek(12000), hardMax: sek(70000) } };
+    const zBefore = (await rider.get("/rider/config?zoneId=Z006")).body;
+    expect(zBefore.usesStandard).toBe(true);
+    const draft = await owner.get("/admin/config/country_rules?zoneId=Z006");
+    expect(draft.body).toMatchObject({ zoneId: "Z006", usesStandard: true, document: { country: "SE" } });
+    expect(draft.body.document).not.toHaveProperty("zoneId");
+    await sim.publish(owner, "country_rules", "Z006", (doc) => ({ ...doc, ...own }));
+    // Z006 was on the standard app documents: it now has its own, with its own tips, at a higher version.
+    const z1 = (await rider.get("/rider/config?zoneId=Z006")).body;
+    expect(z1).toMatchObject({ tips: own.tips, raiseSteps: own.raiseSteps });
+    expect(z1).not.toHaveProperty("usesStandard");
+    expect(z1.version).toBeGreaterThan(zBefore.version);
+    expect((await a.get("/driver/config?zoneId=Z006")).body).toMatchObject({ driverBonus: own.driverBonus });
+    // Other zones keep the standard's.
+    const standardTips = (await owner.get("/admin/config/country_rules?country=SE")).body.document.tips;
+    expect((await rider.get("/rider/config?zoneId=Z003")).body.tips).toEqual(standardTips);
+    expect((await rider.get("/rider/config?zoneId=Z005")).body.tips).toEqual(standardTips);
+    // A new standard reaches the zones without their own rules, never Z006.
+    const newStandard = [{ amount: sek(1000), enabled: true }];
+    await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips: newStandard }));
+    expect((await rider.get("/rider/config?zoneId=Z003")).body.tips).toEqual(newStandard);
+    expect((await rider.get("/rider/config?zoneId=Z005")).body.tips).toEqual(newStandard);
+    expect((await rider.get("/rider/config?zoneId=Z006")).body.tips).toEqual(own.tips);
+    // Z006's app documents saved later keep Z006's rules.
+    await sim.publish(owner, "rider_app_config", "Z006", (doc) => ({ ...doc, tips: [{ amount: sek(9900), enabled: true }] }));
+    expect((await rider.get("/rider/config?zoneId=Z006")).body.tips).toEqual(own.tips);
+    // Go back to Standard: Z006 takes the standard's tips again.
+    const zoneDraft = (await owner.get("/admin/config/country_rules?zoneId=Z006")).body;
+    expect(zoneDraft.usesStandard).toBe(false);
+    const back = await owner.post("/admin/config/country_rules/use-standard", { zoneId: "Z006", expectedVersion: zoneDraft.version });
+    expect(back.status, JSON.stringify(back.body)).toBe(200);
+    expect((await rider.get("/rider/config?zoneId=Z006")).body.tips).toEqual(newStandard);
+    expect((await owner.get("/admin/config/country_rules?zoneId=Z006")).body.usesStandard).toBe(true);
   });
 });
 

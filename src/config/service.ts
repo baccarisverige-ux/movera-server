@@ -17,8 +17,11 @@ import { pricingProblems } from "./pricingRules.js";
 
 export const CONFIG_DOCS: readonly ConfigDoc[] = ["rider_app_config", "driver_app_config", "pricing", "dispatch", "country_rules"];
 export const APP_DOCS: readonly ConfigDoc[] = ["rider_app_config", "driver_app_config"];
-/** v0.8.0 (contract.json#configDocs.countryOnly): published per country only. */
-export const COUNTRY_ONLY_DOCS: readonly ConfigDoc[] = ["country_rules"];
+/**
+ * v0.8.1 (contract.json#configDocs.rules, owner 2026-10-28): tips and limits. Published per zone or as the country's
+ * standard like the others (no longer per country only); the document names its country, not a zone.
+ */
+export const RULES_DOCS: readonly ConfigDoc[] = ["country_rules"];
 
 const SCHEMA: Record<ConfigDoc, string> = {
   rider_app_config: "RiderAppConfig",
@@ -68,12 +71,10 @@ export type ConfigDraftView = { doc: ConfigDoc; zoneId?: string; country?: strin
 
 /** A document must pass the contract schema and belong to the scope it is saved for. */
 export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): void {
-  const country = countryOfKey(zone.zoneId);
-  if (COUNTRY_ONLY_DOCS.includes(doc) && country === null) throw badRequest(`${doc} is set per country (?country=), not per zone.`, "country_only");
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
   const own = document as { zoneId?: string; currency?: string; country?: string; timeZone?: string };
-  if (!COUNTRY_ONLY_DOCS.includes(doc) && own.zoneId !== zone.zoneId) throw badRequest(`The document is for zone ${own.zoneId}, not ${zone.zoneId}.`, "zone_mismatch");
+  if (!RULES_DOCS.includes(doc) && own.zoneId !== zone.zoneId) throw badRequest(`The document is for zone ${own.zoneId}, not ${zone.zoneId}.`, "zone_mismatch");
   if (own.currency !== undefined && own.currency !== zone.currency) throw badRequest(`Zone ${zone.zoneId} uses ${zone.currency}.`, "currency_mismatch");
   if (own.country !== undefined && own.country !== zone.country) throw badRequest(`Zone ${zone.zoneId} is in ${zone.country}.`, "country_mismatch");
   if (doc === "pricing") {
@@ -99,11 +100,10 @@ const scopeFields = (zoneId: string): { zoneId: string } | { country: string } =
  */
 export async function getDraft(db: Executor, doc: ConfigDoc, zoneId: string): Promise<ConfigDraftView> {
   const zone = await getScope(db, zoneId);
-  if (COUNTRY_ONLY_DOCS.includes(doc) && zone.kind !== "standard") throw badRequest(`${doc} is set per country (?country=), not per zone.`, "country_only");
   const draft = await db.selectFrom("config_drafts").selectAll().where("doc", "=", doc).where("zone_id", "=", zoneId).executeTakeFirst();
   const live = await db.selectFrom("config_live").selectAll().where("doc", "=", doc).where("zone_id", "=", zoneId).executeTakeFirst();
   const standard = live === undefined && zone.kind !== "standard" ? await db.selectFrom("config_live").selectAll().where("doc", "=", doc).where("zone_id", "=", standardKey(zone.country)).executeTakeFirst() : undefined;
-  const usesStandard = standard !== undefined ? { usesStandard: true } : zone.kind === "standard" || COUNTRY_ONLY_DOCS.includes(doc) ? {} : { usesStandard: false };
+  const usesStandard = standard !== undefined ? { usesStandard: true } : zone.kind === "standard" ? {} : { usesStandard: false };
   if (draft !== undefined) {
     return { doc, ...scopeFields(zoneId), ...usesStandard, version: draft.version, liveVersion: live?.version ?? 0, document: draft.document, updatedAt: draft.updated_at.toISOString(), ...(draft.updated_by ? { updatedBy: draft.updated_by } : {}) };
   }
@@ -111,7 +111,7 @@ export async function getDraft(db: Executor, doc: ConfigDoc, zoneId: string): Pr
     return { doc, ...scopeFields(zoneId), ...usesStandard, version: 1, liveVersion: live.version, document: live.document, updatedAt: live.published_at.toISOString(), ...(live.published_by ? { updatedBy: live.published_by } : {}) };
   }
   if (standard !== undefined) {
-    const document: Doc = { ...(standard.document as Doc), zoneId };
+    const document: Doc = RULES_DOCS.includes(doc) ? { ...(standard.document as Doc) } : { ...(standard.document as Doc), zoneId };
     delete document["usesStandard"];
     return { doc, zoneId, usesStandard: true, version: 1, liveVersion: 0, document, updatedAt: standard.published_at.toISOString(), ...(standard.published_by ? { updatedBy: standard.published_by } : {}) };
   }
@@ -136,8 +136,8 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
     const projection = await getDraft(trx, input.doc, input.zoneId).catch(() => undefined);
     throw new ApiError("version_mismatch", "The settings changed since you last saw them.", projection === undefined ? {} : { projection });
   }
-  // v0.8.0 §6.5: tips, raise steps and driver bonus limits come from the country's rules while they are live.
-  const rules = await liveCountryRules(trx, zone.country);
+  // v0.8.1 §6.5: tips, raise steps and driver bonus limits come from the scope's rules (its own, else the standard).
+  const rules = await liveRules(trx, input.zoneId);
   const document = rules === null ? input.document : withCountryRules(input.doc, input.document as Doc, rules);
   const version = current.version + 1;
   const values = { doc: input.doc, zone_id: input.zoneId, version, document: JSON.stringify(document), updated_at: now, updated_by: input.adminId };
@@ -199,8 +199,10 @@ export async function publishDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: st
     await rewriteAppDocs(trx, keys, (doc, d) => appDocWithPricing(doc, d, pricing), { ...by, note: `pricing v${version}: waiting, no-show and pickup fee`, adoptStandard: zone.kind !== "standard" }, now);
   }
   if (input.doc === "country_rules") {
-    const zones = (await trx.selectFrom("zones").select("zone_id").where("country", "=", zone.country).orderBy("zone_id").execute()).map((z) => z.zone_id);
-    await rewriteAppDocs(trx, [input.zoneId, ...zones], (doc, d) => withCountryRules(doc, d, document as unknown as CountryRules), { ...by, note: `country rules v${version}: tips, raise steps, driver bonus` }, now);
+    // v0.8.1 (owner 2026-10-28): a zone's own rules reach only that zone (on the standard app documents it takes
+    // them as its own); the standard's reach the standard and the zones with no own rules.
+    const keys = zone.kind === "standard" ? [input.zoneId, ...(await zonesUsingStandard(trx, "country_rules", zone.country))] : [input.zoneId];
+    await rewriteAppDocs(trx, keys, (doc, d) => withCountryRules(doc, d, document as unknown as CountryRules), { ...by, note: `tips and limits v${version}: tips, raise steps, driver bonus`, adoptStandard: zone.kind !== "standard" }, now);
   }
   return { doc: input.doc, ...scopeFields(input.zoneId), version, publishedAt };
 }
@@ -257,7 +259,6 @@ export function appDocWithPricing(doc: ConfigDoc, appDocument: Doc, pricing: Pri
  * never see a lower number, and every zone using it is told.
  */
 export async function useStandard(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; adminId: string }, now: Date): Promise<Publication> {
-  if (COUNTRY_ONLY_DOCS.includes(input.doc)) throw badRequest(`${input.doc} has no standard.`, "country_only");
   const zone = await getZone(trx, input.zoneId);
   const key = standardKey(zone.country);
   const current = await lockDraftVersion(trx, input.doc, input.zoneId);
@@ -277,6 +278,10 @@ export async function useStandard(trx: Trx, input: { doc: ConfigDoc; zoneId: str
   await trx.insertInto("config_history").values({ ...row, approved_by: null, note: `re-stamped: ${input.zoneId} went back to the standard` }).execute();
   await notifyPublished(trx, input.doc, key, version, publishedAt);
   await audit(trx, { adminId: input.adminId, action: "config.use_standard", targetType: "config", targetId: input.doc, zoneId: input.zoneId, detail: { version, from: own.version }, at: now });
+  // v0.8.1: back on the standard tips and limits, the zone's own app documents take the standard's rules.
+  if (RULES_DOCS.includes(input.doc)) {
+    await rewriteAppDocs(trx, [input.zoneId], (doc, d) => withCountryRules(doc, d, standard.document as CountryRules), { publishedBy: input.adminId, approvedBy: null, note: `tips and limits: back to the standard v${version}` }, now);
+  }
   return { doc: input.doc, zoneId: input.zoneId, version, publishedAt };
 }
 
@@ -289,9 +294,9 @@ export function withCountryRules(doc: ConfigDoc, appDocument: Doc, rules: Countr
   return appDocument;
 }
 
-async function liveCountryRules(ex: Executor, country: string): Promise<CountryRules | null> {
-  const row = await ex.selectFrom("config_live").select("document").where("doc", "=", "country_rules").where("zone_id", "=", standardKey(country)).executeTakeFirst();
-  return row === undefined ? null : (row.document as CountryRules);
+/** v0.8.1: the tips and limits of a scope: a zone's own, else its country's standard; a standard key its own. */
+async function liveRules(ex: Executor, key: string): Promise<CountryRules | null> {
+  return (await liveDocument<CountryRules>(ex, "country_rules", key))?.document ?? null;
 }
 
 /**
