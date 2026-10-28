@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -848,7 +848,8 @@
       },
       "lockout": "failed sign-ins are slowed and then locked per e-mail and per address: 429 rate_limited with Retry-After",
       "secondFactor": "none in v0.5.1. Reserved for later, additively: a sign-in answer { code: \"SECOND_FACTOR_REQUIRED\", challengeId } followed by a verify call; v0.5.1 servers never send it.",
-      "superAdmin": "role super: AdminMe.approvalExempt is true and every permission is granted; refunds, publishes, surge and dispatch control run directly (200, never 202 pending_approval) and are written in the audit (owner decision 14)."
+      "superAdmin": "role super: every permission is granted. v0.7.2 (owner 2026-10-28, one admin is enough everywhere): no action of any admin needs a second admin; AdminMe.approvalExempt is true for every admin.",
+      "oneAdmin": "v0.7.2 (owner 2026-10-28): ONE admin is enough for everything in the admin panel. Every admin with the operation's permission for that zone runs it at once (200 / 201, never 202 pending_approval): refunds, trip adjusts, config publishes and restores, surge Start/Stop, dispatch control and every other change; each is written in the audit. GET /admin/approvals stays to read approvals filed before v0.7.2; one still pending may be approved or rejected as before."
     },
     "providerKeys": {
       "apple": "APPLE_CLIENT_IDS (the app bundle ids / service id), tokens verified against Apple's public keys",
@@ -1114,7 +1115,7 @@
       "score inputs: acceptance and cancel rates over the last 30 days, rating as shown, fallbacks when there is no data; idleMin = minutes since the driver last became free or came online; favourites score 0 until the server has the data."
     ],
     "control": {
-      "note": "DispatchControl { zoneId, paused, mode: radar | exclusive | null, by, at, version } is live state, outside publishing. PUT /admin/zones/{zoneId}/dispatch-control (dispatch.edit). Pausing or forcing a mode by an admin who is not Super admin is 202 pending_approval (owner decision 14); resume and back to rules apply at once for everyone (the admin panel's rule).",
+      "note": "DispatchControl { zoneId, paused, mode: radar | exclusive | null, by, at, version } is live state, outside publishing. PUT /admin/zones/{zoneId}/dispatch-control (dispatch.edit). Pausing, forcing a mode, resume and back to rules apply at once for every admin with dispatch.edit (v0.7.2, one admin is enough).",
       "default": {
         "paused": false,
         "mode": null
@@ -2310,18 +2311,13 @@
     "projection": "TripProjection.stops[i] gains arrivedAt?, leftAt? (Timestamp)."
   },
   "smartSurge": {
-    "note": "v0.7.1 (owner 2026-10-27): smart surge as the admin demo's Surge tab describes it, run by the server per zone; OFF until the admin switches pricing.surge.smart.enabled on. Applies to every category of the zone.",
-    "ratio": "every checkEveryMin minutes: ride requests created in the zone in the last checkEveryMin minutes ÷ free online drivers in the zone (online, not on a trip; a zone with none counts as 1)",
+    "note": "v0.7.1 (owner 2026-10-27): smart surge as the admin demo's Surge tab describes it, run by the server per zone; OFF until the admin switches pricing.surge.smart.enabled on. Applies to every category of the zone. v0.7.2 (owner 2026-10-28): free drivers are only those in the zone now.",
+    "ratio": "every checkEveryMin minutes: ride requests created in the zone in the last checkEveryMin minutes ÷ free drivers in the zone. v0.7.2 (owner 2026-10-28): a free driver is online (not on a trip, online_status online) AND their latest GPS fix lies inside the zone AND it reached the server less than freshFixSeconds ago (the same drivers Dispatch counts as free); a zone with none counts as 1.",
     "profile": "the first non-default profile from the top whose days and windows match the zone's local time wins; else the isDefault profile. Outside activeFrom–activeTo (equal = all day) smart surge is 1.0.",
     "target": "the multiplier of the last step whose ratio ≤ the measured ratio (1.0 below the first step), kept within the profile's cap (at most 6)",
     "rules": "up: the target must hold for holdMin minutes before it is applied; down: one step at a time; between two changes at least cooldownMin minutes; stops (1.0) when the target stays 1.0 for stopAfterMin minutes. Paused while a manual or scheduled surge runs.",
-    "fixtures": "fixtures/smart_surge.json"
-  },
-  "surgeNotice": {
-    "note": "v0.7.1 (owner 2026-10-27): drivers are told about a surge with an in-app Notification (GET /notifications) kind surge_started, data { zoneId, multiplier, until? }.",
-    "auto": "when pricing.surge.notifyDrivers is true (Tell drivers when a surge starts), the server notifies when a manual surge starts or smart surge goes above 1.0 (not on each later step)",
-    "now": "POST /admin/zones/{zoneId}/surge/notify (Tell drivers now; settings.publish) → { notified: integer, multiplier }: 409 invalid_transition (no_surge) when the zone's multiplier is 1.0",
-    "who": "the online drivers whose zone is the surge zone"
+    "fixtures": "fixtures/smart_surge.json",
+    "freshFixSeconds": 120
   },
   "pricingHistory": {
     "note": "v0.7.1 (owner 2026-10-27): the admin's Pricing › History, Restore and Undo last publish.",
@@ -2380,5 +2376,24 @@
       }
     },
     "seedLinesNote": "The admin demo's sub-lines for the seed categories (Manage categories), in the panel's sv / fr / en words; the server seeds the catalog with them."
-  }
+  },
+  "surgeLive": {
+    "note": "v0.7.2 (owner 2026-10-28): the admin's Pricing › Surge tab shows only real numbers from the server: the surge now per zone (map, list, alerts), the demand chart, the rider price check and the surge timeline. No invented values: what the server cannot give is shown 'Not connected yet'.",
+    "samples": "Each minute the server's surge check stores one SurgeSample per open zone (whether smart surge is on or not): { zoneId, at, requests (ride requests created in the zone in the last minute), freeDrivers (as contract.json#smartSurge.ratio), ratio (requests in the last checkEveryMin ÷ freeDrivers, as smart surge measures it), multiplier, source }. Samples are kept 8 days.",
+    "now": "GET /admin/surge/now?zoneIds=Z1,Z2 (settings.read; zones outside the admin's scope are left out; no zoneIds = every zone in scope) → { at, zones: ZoneSurgeNow[] }. ZoneSurgeNow { zoneId, multiplier, source: manual | scheduled | smart | off, until?, scheduleId?, profileId?, requests, freeDrivers, ratio, checkedAt? }: multiplier and source exactly as a quote made now would get them (contract.json#pricing.surgeSource, before a category filter); requests, freeDrivers and ratio from the newest SurgeSample.",
+    "history": "GET /admin/zones/{zoneId}/surge/history?hours=1..24&bucketMin=5|10|15|30|60 (settings.read; defaults 6 and 10) → { zoneId, from, to, bucketMin, points: SurgePoint[], priceCheck: PriceCheck, timeline: SurgeTimelineItem[] }.",
+    "points": "SurgePoint { at (bucket start), requests (sum in the bucket), freeDrivers (average, rounded), ratio (average, 0.1), multiplier (highest in the bucket) }, oldest first; a bucket without samples is left out.",
+    "priceCheck": "PriceCheck { windowMin: 60, saw, left, leftPct }: saw = quotes of the zone made in the last 60 minutes with surgeMultiplier above 1.0; left = those of them no trip was created from; leftPct = round(100 × left ÷ saw), 0 when saw is 0.",
+    "timeline": "SurgeTimelineItem { at, kind: manual_start | manual_stop | scheduled_start | scheduled_end | smart_change | smart_end, multiplier, previous?, by? (the admin of a manual surge; 'smart' / 'scheduled' otherwise), profileId?, effect? }, newest first, the last `hours` hours (at most 50). Made from the samples (a change of multiplier or source) and the zone's surge schedules (who started or stopped it). effect, on a start or a rise, compares the 30 minutes after it with the 30 minutes before: { drivers (free drivers after − before, average), ridesPct (round(100 × (trips created after − before) ÷ max(1, before))), leftPct (the price check of the 30 minutes after) }; left out while the 30 minutes after are not over."
+  },
+  "driverSurgeMap": {
+    "note": "v0.7.2 (owner 2026-10-28): the driver app shows surges ONLY as coloured zones on the Home map. No text, no number and no money on the map; the driver never sees the multiplier.",
+    "route": "GET /driver/surge-map (driver) → { at, zones: DriverSurgeZone[] }: the open operating zones of the driver's country whose surge now (as GET /admin/surge/now, before a category filter) is above 1.0. DriverSurgeZone { zoneId, level: low | medium | high, bounds: { south, west, north, east } } (the zone's rectangle). Never the multiplier.",
+    "levels": "low: multiplier above 1.0 and below 1.5 (×1.1–×1.4); medium: 1.5 to 2.5 inclusive; high: above 2.5. A zone at 1.0 is not listed (no colour).",
+    "colours": "low #FFC79E (light orange), medium #FF8A3D (orange, the demo's 'Hög bonus' colour), high #E5482B (red); fill about 40 % opacity with a 2 px edge of the same colour.",
+    "refresh": "the app asks while online on Home: on going online, then every 60 s, and when the app comes back to the front; it keeps the last answer when a call fails; offline it shows no colours.",
+    "tip": "The top bar's waiting tip 'Hög bonus i närheten' / 'Forte majoration à proximité' / 'High boost nearby' (no money, no number, no zone name) shows while the driver's position is inside a listed zone or less than 3 km from its rectangle, any level. The old '+{kr} kr i {zone}' tip is removed.",
+    "tipDistanceKm": 3
+  },
+  "surgeNoticeRemoved": "v0.7.2 (owner 2026-10-28): drivers get NO surge notice. pricing.surge.notifyDrivers is deprecated and ignored, POST /admin/zones/{zoneId}/surge/notify is gone (404) and the server sends no surge_started notification. The driver sees surges only as coloured zones on the Home map (contract.json#driverSurgeMap)."
 }

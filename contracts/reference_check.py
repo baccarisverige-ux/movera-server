@@ -358,4 +358,9 @@ for cid, fee in rcfg['pickupFee']['byCategory'].items():
     if fee != pdoc['categories'][cid]['riderPickupFee']: bad += 1; print('MUSTMATCH rider pickupFee', cid)
 for cid, rate in dcfg['pickupPay']['byCategory'].items():
     if rate['riderFee'] != pdoc['categories'][cid]['riderPickupFee']: bad += 1; print('MUSTMATCH driver riderFee', cid)
+# v0.7.2: the driver map's colour levels (contract.json#driverSurgeMap.levels)
+def surge_level(m):
+    return None if m <= 1.0 else 'low' if m < 1.5 else 'medium' if m <= 2.5 else 'high'
+for case in json.load(open('fixtures/surge_levels.json'))['cases']:
+    if surge_level(case['multiplier']) != case['level']: bad += 1; print('SURGE LEVEL', case)
 print('OK' if not bad else f'{bad} mismatches'); sys.exit(1 if bad else 0)

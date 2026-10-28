@@ -409,6 +409,18 @@ export interface AdminAuditTable {
   at: Timestamp;
 }
 
+/** v0.7.2 (contract.json#surgeLive.samples): one row per open zone and minute. */
+export interface SurgeSamplesTable {
+  zone_id: string;
+  at: Timestamp;
+  requests: number;
+  free_drivers: number;
+  /** numeric comes back as a string. */
+  ratio: ColumnType<string, number | string, number | string>;
+  multiplier: ColumnType<string, number | string, number | string>;
+  source: "manual" | "scheduled" | "smart" | "off";
+}
+
 export interface QuotesTable {
   quote_id: string;
   rider_id: string;
@@ -777,6 +789,7 @@ export interface Database {
   approvals: ApprovalsTable;
   admin_audit: AdminAuditTable;
   quotes: QuotesTable;
+  surge_samples: SurgeSamplesTable;
   vehicles: VehiclesTable;
   fleets: FleetsTable;
   fleet_join_attempts: FleetJoinAttemptsTable;

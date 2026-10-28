@@ -406,7 +406,7 @@ S["AdminRole"] = s(enum=["viewer", "support", "dispatcher", "compliance", "finan
 S["PendingApproval"] = obj({"status": s(const="pending_approval"), "approvalId": ref("Id"),
                             "action": s(examples=["trip.refund", "config.publish"]), "targetId": ref("Id"),
                             "requestedAt": ref("Timestamp")}, ["status", "approvalId", "action", "targetId", "requestedAt"],
-                           "Returned with 202 when the action needs a second admin (two-person rule). Never for a Super admin (AdminMe.approvalExempt, owner decision 14, v0.5.1).")
+                           "An approval filed before v0.7.2. Since v0.7.2 (owner 2026-10-28, one admin is enough everywhere) no operation answers 202; GET /admin/approvals lists the old ones.")
 S["Approval"] = obj({"approvalId": ref("Id"), "action": s(), "targetType": s(enum=["trip", "payment", "refund", "payout", "config", "driver", "rider"]),
                      "targetId": ref("Id"), "amount": ref("Money"), "reason": s(),
                      "status": s(enum=["pending_approval", "approved", "rejected", "expired"]),
@@ -691,7 +691,7 @@ S["ScheduledSurge"] = obj({"id": s(minLength=1), "name": s(), "multiplier": n(mi
                           ["id", "multiplier", "startsAt", "endsAt"], "A flat surge for a time window, from the pricing document.")
 S["PricingSurge"] = obj({"maxMultiplier": {**n(minimum=1, maximum=PR["maxMultiplier"]), "deprecated": True, "description": "Deprecated in v0.7.1 and ignored: the maximum of each surge is the value the admin chose on its slider (owner 2026-10-27, no extra box). Kept readable for one release."},
                          "smart": ref("SmartSurge"), "scheduled": arr(ref("ScheduledSurge"), description="v0.7.1: overlapping windows, the higher multiplier counts."),
-                         "notifyDrivers": {**b("v0.7.1 (Tell drivers when a surge starts): the server sends drivers a surge_started notice when a manual or smart surge starts (contract.json#surgeNotice)."), "default": False}}, ["smart", "scheduled"],
+                         "notifyDrivers": {**b("Deprecated in v0.7.2 and ignored: drivers get no surge notice (owner 2026-10-28, contract.json#surgeNoticeRemoved)."), "deprecated": True, "default": False}}, ["smart", "scheduled"],
                         "Surge sources after the zone's surge schedule (§3.4): " + PR["surgeSource"])
 S["PricingDocument"] = obj(OrderedDict([
     ("version", i("Admin revision of the zone's live pricing document (contract.json#configVersion).", minimum=1)), ("publishedAt", ref("Timestamp")),
@@ -755,7 +755,7 @@ S["AdminMe"] = obj(OrderedDict([("adminId", ref("Id")), ("email", s(format="emai
                                 ("permissions", arr(ref("AdminPermission"), uniqueItems=True, description="Fully expanded; super has all of them.")),
                                 ("scope", ref("AdminScope")), ("language", ref("Language")),
                                 ("idleTimeoutSeconds", {**i(minimum=AA["idleTimeoutMinutesRange"][0] * 60, maximum=AA["idleTimeoutMinutesRange"][1] * 60), "default": AA["idleTimeoutSecondsDefault"]}),
-                                ("approvalExempt", b("True for Super admin: changes go live at once, never 202 pending_approval (owner decision 14)."))]),
+                                ("approvalExempt", b("v0.7.2: true for every admin (one admin is enough everywhere, owner 2026-10-28): changes go live at once, never 202 pending_approval."))]),
                    ["adminId", "email", "name", "role", "permissions", "scope", "idleTimeoutSeconds", "approvalExempt"], "The signed-in admin (maps 1:1 onto the panel's Agent; adminId = id).")
 S["AdminSession"] = obj({"accessToken": s(minLength=1), "refreshToken": s("Opaque, rotated on every refresh.", minLength=1),
                          "expiresIn": {**i(minimum=1), "default": AA["accessExpiresSeconds"]}, "actor": s(const="admin"), "admin": ref("AdminMe")},
@@ -971,10 +971,10 @@ S["AdminNoShowCommand"] = obj(dict(EV, note=s(minLength=1, maxLength=1000), waiv
 S["AdminCompleteCommand"] = obj(dict(EV, fare=ref("Money"), note=s(minLength=1, maxLength=1000)), ["expectedVersion", "note"])
 S["AdminRefundCommand"] = obj(dict(EV, amount=ref("Money"), paymentId=ref("Id"), reason=s(minLength=1, maxLength=1000)),
                               ["expectedVersion", "amount", "reason"],
-                              "Above refundLimit[role][country] → 202 pending_approval.")
+                              "v0.7.2: runs at once for every admin with the permission (one admin is enough, owner 2026-10-28).")
 S["AdminAdjustCommand"] = obj(dict(EV, fare=ref("Money"), waitingSeconds=i(minimum=0), waiveCancelFee=b(),
                                    reason=s(minLength=1, maxLength=1000)), ["expectedVersion", "reason"],
-                              "Fare / waiting / cancel-fee correction. Over the role limit → 202 pending_approval.")
+                              "Fare / waiting / cancel-fee correction; runs at once (v0.7.2, one admin is enough).")
 S["DriverStatusCommand"] = obj(dict(EV, accountStatus=ref("DriverAccountStatus"), note=s(minLength=1, maxLength=1000)),
                                ["expectedVersion", "accountStatus", "note"])
 S["RiderStatusCommand"] = obj(dict(EV, status=s(enum=["active", "suspended"]), note=s(minLength=1, maxLength=1000)),
@@ -1098,7 +1098,7 @@ def op(method, path, opId, summary, actors, tag, params=(), body=None, ok=(200, 
     else:
         sch = schema if isinstance(schema, dict) else ref(schema)
         rs[str(code)] = {"description": ok_desc or "OK", "headers": HDR_REQ, "content": {"application/json": {"schema": sch}}}
-    if approval: rs["202"] = rref("PendingApproval")
+    # v0.7.2 (owner 2026-10-28): one admin is enough everywhere, so no operation answers 202 pending_approval any more.
     rs["400"] = rref("BadRequest"); rs["401"] = rref("Unauthenticated"); rs["403"] = rref("Forbidden"); rs["404"] = rref("NotFound")
     if mutation: rs["409"] = rref("Conflict")
     rs["429"] = rref("RateLimited"); rs["503"] = rref("Unavailable")
@@ -1378,7 +1378,7 @@ for seg, cmd, opid, body, summ, perm, appr, okc in [
        mutation=True, transition=cmd, approval=appr, permission=perm, permission_v050="payments.edit" if seg == "refund" else "trips.edit",
        desc=(None if cmd else "Not a lifecycle transition (status unchanged; paymentStatus/fare change and emit payment_updated / trip_projection).")
             if not appr else ("Not a lifecycle transition (status unchanged; paymentStatus/fare change and emit payment_updated / trip_projection). " if not cmd else "")
-            + "Above the role limit → 202 pending_approval, except for a Super admin (approvalExempt): 200 / 201 at once, written in the audit (owner decision 14).")
+            + "v0.7.2 (owner 2026-10-28, one admin is enough): 200 / 201 at once for every admin with the permission, written in the audit.")
 op("get", "/admin/trips/{tripId}/offers", "adminListTripOffers", "Offers of a trip (who has it, countdown)", ["admin"], "Admin · Dispatch",
    params=TID + AL, ok=(200, "OfferPage"), permission="trips.read")
 op("get", "/admin/trips/{tripId}/nearby-drivers", "adminNearbyDrivers", "Active drivers near the trip's pickup", ["admin"], "Admin · Dispatch",
@@ -1448,14 +1448,14 @@ op("post", "/admin/config/{doc}/publish", "adminPublishConfig", "Publish the dra
    permission="settings.publish", permission_v050="config.edit",
    ext={"x-permission-by-doc": {"rider_app_config": "settings.publish", "driver_app_config": "settings.publish", "pricing": "settings.publish", "dispatch": "dispatch.edit"},
         "x-approver-permission-by-doc": {"rider_app_config": "settings.publish", "driver_app_config": "settings.publish", "pricing": "settings.publish", "dispatch": "dispatch.approve"}},
-   desc="Normally 202 pending_approval; 200 when the approver publishes directly, and always 200 for a Super admin (approvalExempt, owner decision 14, v0.5.1). "
+   desc="v0.7.2 (owner 2026-10-28, one admin is enough): 200 at once for every admin with the publish permission, written in the audit. "
         "Emits config_published on the app streams for rider_app_config and driver_app_config only; pricing and dispatch (server-only) are published with the same version rule but never reach the apps.")
 op("get", "/admin/zones/{zoneId}/surge", "adminGetSurge", "The zone's current surge schedule", ["admin"], "Admin · Config",
    params=[pref("ZoneId")], ok=(200, "SurgeSchedule"), permission="settings.read", permission_v050="pricing.read", desc="204 when the zone has none (flat ×1.0).")
 PATHS["/admin/zones/{zoneId}/surge"]["get"]["responses"]["204"] = {"description": "No surge schedule", "headers": HDR_REQ}
 op("put", "/admin/zones/{zoneId}/surge", "adminPutSurge", "Create or replace the zone's surge schedule (curve)", ["admin"], "Admin · Config",
    params=[pref("ZoneId")], body="SurgeScheduleCommand", ok=(200, "SurgeSchedule"), mutation=True, approval=True, permission="settings.publish", permission_v050="pricing.edit",
-   desc="contract.json#surge, CONTRACT.md §3.4. Points above the zone's cap → 400 invalid_request. Above the role limit → 202 pending_approval. New quotes price from it at once; quotes already given keep their multiplier.")
+   desc="contract.json#surge, CONTRACT.md §3.4. Points above the zone's cap → 400 invalid_request. v0.7.2: runs at once for every admin with settings.publish (one admin is enough). New quotes price from it at once; quotes already given keep their multiplier.")
 op("post", "/admin/zones/{zoneId}/surge/end", "adminEndSurge", "End the schedule now (back to ×1.0)", ["admin"], "Admin · Config",
    params=[pref("ZoneId")], body="ConfigPublishCommand", ok=(200, "SurgeSchedule"), mutation=True, permission="settings.publish", permission_v050="pricing.edit")
 op("get", "/admin/audit", "adminListAudit", "Server-written audit log", ["admin"], "Admin · Governance",
@@ -1539,7 +1539,7 @@ op("get", "/admin/zones/{zoneId}/dispatch-control", "adminGetDispatchControl", "
    params=[pref("ZoneId")], ok=(200, "DispatchControl"), permission="trips.read")
 op("put", "/admin/zones/{zoneId}/dispatch-control", "adminPutDispatchControl", "Pause dispatch or force a mode in a zone", ["admin"], "Admin · Dispatch",
    params=[pref("ZoneId")], body="DispatchControlCommand", ok=(200, "DispatchControl"), mutation=True, approval=True, permission="dispatch.edit",
-   desc="CONTRACT.md §3.6. Pause or force a mode: Super admin at once (200), others 202 pending_approval (owner decision 14). Resume / back to rules (paused false, mode null): 200 for everyone. "
+   desc="CONTRACT.md §3.6. v0.7.2 (one admin is enough): pause, force a mode, resume and back to rules run at once (200) for every admin with dispatch.edit. "
         "Forcing a mode that is off → 400 invalid_request (mode_off). Running searches stop new offers while paused; a forced mode applies to new searches.")
 op("get", "/admin/live/drivers", "adminLiveDrivers", "Driver positions for the admin live map", ["admin"], "Admin · Dispatch",
    params=[pref("ZoneIdQuery")], ok=(200, "LiveDriverList"), permission="trips.read",
@@ -1568,9 +1568,6 @@ S["StopCommand"] = obj(dict(EV), ["expectedVersion"], "v0.7.1: the driver's arri
 for verb, oid, summ in [("arrive", "driverArriveAtStop", "Driver arrived at an extra stop (stop waiting starts)"), ("leave", "driverLeaveStop", "Driver leaves an extra stop (stop waiting ends)")]:
     op("post", "/driver/trips/{tripId}/stops/{stopIndex}/" + verb, oid, summ, ["driver"], "Driver · Trip", params=TID + [pref("StopIndex")], body="StopCommand",
        ok=(200, "TripProjection"), mutation=True, desc="v0.7.1. " + C["stopWaits"][verb])
-S["SurgeNotifyResult"] = obj({"notified": i(minimum=0), "multiplier": n(minimum=1)}, ["notified", "multiplier"])
-op("post", "/admin/zones/{zoneId}/surge/notify", "adminNotifySurge", "Tell drivers now about the zone's surge", ["admin"], "Admin · Config",
-   params=[pref("ZoneId")], ok=(200, "SurgeNotifyResult"), mutation=True, permission="settings.publish", desc="v0.7.1. " + C["surgeNotice"]["now"] + "; " + C["surgeNotice"]["who"] + ".")
 S["ConfigHistoryEntry"] = obj({"doc": ref("ConfigDocName"), "zoneId": ref("Id"), "version": i(minimum=1), "publishedAt": ref("Timestamp"), "publishedBy": ref("Id"),
                                "note": s(), "action": s(enum=["publish", "restore"]), "restoredFrom": i(minimum=1), "document": {"type": "object"}},
                               ["doc", "zoneId", "version", "publishedAt", "action", "document"], "v0.7.1: one published version (contract.json#pricingHistory).")
@@ -1593,6 +1590,35 @@ op("post", "/admin/categories", "adminCreateCategory", "Add a car type (off in e
 op("put", "/admin/categories/{categoryId}", "adminUpdateCategory", "Rename a car type, its sub-line and seats", ["admin"], "Admin · Config", params=[pref("CategoryIdPath")], body="CategoryDefInput", ok=(200, "CategoryDef"), mutation=True, permission="settings.publish")
 op("post", "/admin/categories/{categoryId}/archive", "adminArchiveCategory", "Delete a car type (archived, restorable)", ["admin"], "Admin · Config", params=[pref("CategoryIdPath")], body="CategoryArchiveCommand", ok=(200, "CategoryDef"), mutation=True, permission="settings.publish", desc="v0.7.1. " + CC["archive"])
 op("post", "/admin/categories/{categoryId}/restore", "adminRestoreCategory", "Restore an archived car type (old prices, off)", ["admin"], "Admin · Config", params=[pref("CategoryIdPath")], ok=(200, "CategoryDef"), mutation=True, permission="settings.publish", desc="v0.7.1. " + CC["restore"])
+
+# ---- v0.7.2: real surge data for the admin, the driver's surge map, one admin everywhere (owner 2026-10-28)
+SL = C["surgeLive"]; DSM = C["driverSurgeMap"]
+S["SurgeSource"] = s(enum=["manual", "scheduled", "smart", "off"])
+S["ZoneSurgeNow"] = obj({"zoneId": ref("Id"), "multiplier": n(minimum=1, maximum=6), "source": ref("SurgeSource"), "until": ref("Timestamp"), "scheduleId": ref("Id"),
+                         "profileId": s(), "requests": i(minimum=0), "freeDrivers": i(minimum=0), "ratio": n(minimum=0), "checkedAt": ref("Timestamp")},
+                        ["zoneId", "multiplier", "source", "requests", "freeDrivers", "ratio"], "v0.7.2: " + SL["now"])
+S["SurgeNowList"] = obj({"at": ref("Timestamp"), "zones": arr(ref("ZoneSurgeNow"))}, ["at", "zones"])
+S["SurgePoint"] = obj({"at": ref("Timestamp"), "requests": i(minimum=0), "freeDrivers": i(minimum=0), "ratio": n(minimum=0), "multiplier": n(minimum=1, maximum=6)},
+                      ["at", "requests", "freeDrivers", "ratio", "multiplier"], "v0.7.2: " + SL["points"])
+S["PriceCheck"] = obj({"windowMin": i(minimum=1), "saw": i(minimum=0), "left": i(minimum=0), "leftPct": i(minimum=0, maximum=100)}, ["windowMin", "saw", "left", "leftPct"], "v0.7.2: " + SL["priceCheck"])
+S["SurgeEffect"] = obj({"drivers": i(), "ridesPct": i(), "leftPct": i(minimum=0, maximum=100)}, ["drivers", "ridesPct", "leftPct"])
+S["SurgeTimelineItem"] = obj({"at": ref("Timestamp"), "kind": s(enum=["manual_start", "manual_stop", "scheduled_start", "scheduled_end", "smart_change", "smart_end"]),
+                              "multiplier": n(minimum=1, maximum=6), "previous": n(minimum=1, maximum=6), "by": s(), "profileId": s(), "effect": ref("SurgeEffect")},
+                             ["at", "kind", "multiplier"], "v0.7.2: " + SL["timeline"])
+S["SurgeHistory"] = obj({"zoneId": ref("Id"), "from": ref("Timestamp"), "to": ref("Timestamp"), "bucketMin": i(enum=[5, 10, 15, 30, 60]),
+                         "points": arr(ref("SurgePoint")), "priceCheck": ref("PriceCheck"), "timeline": arr(ref("SurgeTimelineItem"))},
+                        ["zoneId", "from", "to", "bucketMin", "points", "priceCheck", "timeline"], "v0.7.2: " + SL["history"])
+op("get", "/admin/surge/now", "adminSurgeNow", "The surge now in each zone, with its demand", ["admin"], "Admin · Config",
+   params=[q("zoneIds", s("Comma-separated zone ids; none = every zone in the admin's scope."))], ok=(200, "SurgeNowList"), permission="settings.read", desc="v0.7.2. " + SL["note"] + " " + SL["now"])
+op("get", "/admin/zones/{zoneId}/surge/history", "adminSurgeHistory", "Demand chart, rider price check and surge timeline of a zone", ["admin"], "Admin · Config",
+   params=[pref("ZoneId"), q("hours", i(minimum=1, maximum=24, default=6)), q("bucketMin", i(enum=[5, 10, 15, 30, 60], default=10))], ok=(200, "SurgeHistory"), permission="settings.read",
+   desc="v0.7.2. " + SL["history"] + " " + SL["samples"])
+S["SurgeLevel"] = s(enum=["low", "medium", "high"], description="v0.7.2: " + DSM["levels"])
+S["ZoneBounds"] = obj({"south": n(minimum=-90, maximum=90), "west": n(minimum=-180, maximum=180), "north": n(minimum=-90, maximum=90), "east": n(minimum=-180, maximum=180)}, ["south", "west", "north", "east"])
+S["DriverSurgeZone"] = obj({"zoneId": ref("Id"), "level": ref("SurgeLevel"), "bounds": ref("ZoneBounds")}, ["zoneId", "level", "bounds"], "v0.7.2: never the multiplier.")
+S["DriverSurgeMap"] = obj({"at": ref("Timestamp"), "zones": arr(ref("DriverSurgeZone"))}, ["at", "zones"], "v0.7.2: " + DSM["note"])
+op("get", "/driver/surge-map", "driverSurgeMap", "Zones with a surge now, as colour levels for the Home map", ["driver"], "Driver · Session",
+   ok=(200, "DriverSurgeMap"), desc="v0.7.2. " + DSM["route"] + " " + DSM["refresh"] + " " + DSM["tip"])
 
 doc = OrderedDict()
 doc["openapi"] = "3.1.0"

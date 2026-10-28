@@ -405,15 +405,14 @@ describe("refunds and the wallet", () => {
     expect((await call(app, "GET", "/wallet", rider)).json().balance.amountMinor).toBe(0);
   });
 
-  it("a non-super admin's refund waits for a second admin; a dispatcher cannot refund", async () => {
+  it("v0.7.2: a finance admin's refund runs at once (one admin is enough); a dispatcher cannot refund", async () => {
     const { tripId, version } = await completedTrip();
     expect((await adminPost(`/trips/${tripId}/refund`, { expectedVersion: version, amount: { amountMinor: 1000, currency: "SEK" }, reason: "x" }, dispatcher)).statusCode).toBe(403);
-    const pending = await adminPost(`/trips/${tripId}/refund`, { expectedVersion: version, amount: { amountMinor: 1000, currency: "SEK" }, reason: "Late driver" }, finance);
-    expect(pending.statusCode).toBe(202);
-    expect(await database.db.selectFrom("refunds").selectAll().where("trip_id", "=", tripId).execute()).toEqual([]);
-    const approved = await adminPost(`/approvals/${pending.json().approvalId}/approve`, {});
-    expect(approved.statusCode).toBe(200);
+    const done = await adminPost(`/trips/${tripId}/refund`, { expectedVersion: version, amount: { amountMinor: 1000, currency: "SEK" }, reason: "Late driver" }, finance);
+    expect(done.statusCode, done.body).toBe(201);
+    expect(done.json().status).toBe("done");
     expect((await database.db.selectFrom("refunds").select("amount_minor").where("trip_id", "=", tripId).execute())).toEqual([{ amount_minor: "1000" }]);
+    expect(await database.db.selectFrom("approvals").selectAll().where("target_id", "=", tripId).execute()).toEqual([]);
   });
 });
 

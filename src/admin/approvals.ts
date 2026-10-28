@@ -44,7 +44,8 @@ function resultDetail(result: unknown): Record<string, unknown> {
   return { ...(r.appDocuments !== undefined ? { appDocuments: r.appDocuments, version: r.version } : {}), ...(r.restoredFrom !== undefined ? { restoredFrom: r.restoredFrom } : {}) };
 }
 
-export const isApprovalExempt = (who: Principal) => who.role === "super";
+/** v0.7.2 (owner 2026-10-28, one admin is enough everywhere): every admin runs the change at once, written in the audit. */
+export const isApprovalExempt = (_who: Principal) => true;
 
 /** Runs the change now for an approval-exempt admin, otherwise files it for a second admin. */
 export async function runOrRequest<T>(trx: Trx, who: Principal, request: ApprovalRequest, now: Date): Promise<RunOutcome<T>> {
@@ -57,6 +58,16 @@ export async function runOrRequest<T>(trx: Trx, who: Principal, request: Approva
       await audit(trx, { adminId: who.subjectId, action: request.action, targetType: request.targetType, targetId: request.targetId, zoneId: request.zoneId, detail: { direct: true, ...request.payload, ...resultDetail(result) }, at: now });
       return { ran: true as const, result };
     }
+    return { ran: false as const, pending: await fileApproval(trx, who, request, now) };
+  }
+}
+
+/**
+ * Files a change for a second admin. v0.7.2: no route does this any more (one admin is enough); it is kept so the
+ * approvals filed before v0.7.2 can still be listed and decided, and tests can make one.
+ */
+export async function fileApproval(trx: Trx, who: Principal, request: ApprovalRequest, now: Date): Promise<PendingApproval> {
+  {
     const approvalId = newId("apr", now.getTime());
     await trx
       .insertInto("approvals")
@@ -77,7 +88,7 @@ export async function runOrRequest<T>(trx: Trx, who: Principal, request: Approva
       })
       .execute();
     await audit(trx, { adminId: who.subjectId, action: `${request.action}.requested`, targetType: request.targetType, targetId: request.targetId, zoneId: request.zoneId, detail: { approvalId, ...request.payload }, at: now });
-    return { ran: false as const, pending: { status: "pending_approval" as const, approvalId, action: request.action, targetId: request.targetId, requestedAt: now.toISOString() } };
+    return { status: "pending_approval" as const, approvalId, action: request.action, targetId: request.targetId, requestedAt: now.toISOString() };
   }
 }
 
@@ -118,7 +129,8 @@ export async function decideApproval(trx: Trx, who: Principal, approvalId: strin
     const current = view(row, now);
     if (current.status !== "pending_approval") throw new ApiError("conflict", `This approval is already ${current.status}.`, { reason: `approval_${current.status}` });
     if (row.requested_by === who.subjectId) throw new ApiError("forbidden", "A second admin must decide your own request.", { reason: "own_request" });
-    if (!isApprovalExempt(who) && !(who.perms ?? []).includes(row.approve_permission)) {
+    // An approval filed before v0.7.2 is still decided by an admin with its permission (a Super admin has every one).
+    if (who.role !== "super" && !(who.perms ?? []).includes(row.approve_permission)) {
       throw new ApiError("forbidden", "You do not have permission to decide this.", { reason: "missing_permission" });
     }
     if (row.zone_id !== null && !adminCoversZone(who, row.zone_id)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });

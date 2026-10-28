@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { adminCoversZone, authenticateAdmin, type Principal } from "../auth/guard.js";
+import { adminCoversZone, authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
 import type { Db, Executor, Trx } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
 import { ApiError, badRequest } from "../http/errors.js";
@@ -13,12 +13,13 @@ import { newId } from "../ids.js";
 import { contract } from "../contract/contract.js";
 import { CONFIG_DOCS, PUBLISH_ACTION, PUBLISH_PERMISSION, APPROVE_PERMISSION, configHistory, getZone, liveDocument, rewriteLive, type Publication } from "../config/service.js";
 import { validateSchedule } from "../rules/surge.js";
-import { SLIDER_TOP, currentSchedule, notifyDriversOfSurge, scheduleView, surgeFor, type DocSurge } from "./surge.js";
+import { SLIDER_TOP, currentSchedule, scheduleView, type DocSurge } from "./surge.js";
+import { driverSurgeMap, surgeHistory, surgeNow } from "./surgeLive.js";
 
 /**
- * Contract v0.7.1 (owner Pricing decisions 2026-10-27): the manual surge Start / Stop and "Tell drivers now"
- * (§3.4, contract.json#surgeNotice), the pricing history and Restore (contract.json#pricingHistory), and the car
- * type catalog (contract.json#categoryCatalog).
+ * Contract v0.7.1 (owner Pricing decisions 2026-10-27): the manual surge Start / Stop (§3.4), the pricing history and Restore (contract.json#pricingHistory), and the car
+ * type catalog (contract.json#categoryCatalog). v0.7.2 (owner 2026-10-28): the real surge data of the Surge tab
+ * (contract.json#surgeLive) and the driver's surge map (contract.json#driverSurgeMap); no surge notice to drivers.
  */
 
 export type PricingDeps = { db: Db; jwtSecret: string; clock?: () => Date };
@@ -98,13 +99,7 @@ async function putSchedule(trx: Trx, payload: SchedulePayload, by: string, now: 
     })
     .execute();
   const row = (await trx.selectFrom("surge_schedules").selectAll().where("schedule_id", "=", scheduleId).executeTakeFirstOrThrow()) as Parameters<typeof scheduleView>[0];
-  const view = scheduleView(row, now);
-  // "Tell drivers when a surge starts" (pricing.surge.notifyDrivers): a surge that starts now.
-  if (surge.notifyDrivers && view.status === "active") {
-    const at = await surgeFor(trx, zone.zoneId, surge, undefined, now);
-    if (at.multiplier > 1) await notifyDriversOfSurge(trx, zone.zoneId, Math.min(at.multiplier, SLIDER_TOP), view.endAt, now);
-  }
-  return view;
+  return scheduleView(row, now);
 }
 
 registerApprovalHandler(SURGE_ACTION, async (trx, payload, _approvedBy, requestedBy, now) => putSchedule(trx, payload as SchedulePayload, requestedBy, now));
@@ -243,22 +238,31 @@ export async function pricingRoutes(app: FastifyInstance, deps: PricingDeps): Pr
     return outcome.body;
   });
 
-  // "Tell drivers now" (contract.json#surgeNotice).
-  app.post(`${API_PREFIX}/admin/zones/:zoneId/surge/notify`, async (request) => {
-    const who = await authenticateAdmin(request, guard, "settings.publish");
+  // v0.7.2 (contract.json#surgeLive.now): the surge now in each zone of the admin's scope, with its demand.
+  app.get(`${API_PREFIX}/admin/surge/now`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "settings.read");
+    const query = parseBody(z.object({ zoneIds: z.string().max(2000).optional() }), request.query);
+    const asked = query.zoneIds ? query.zoneIds.split(",").map((id) => id.trim()).filter(Boolean) : undefined;
+    if (asked?.some((id) => !ZONE.safeParse(id).success)) throw badRequest("zoneIds: not valid zone ids.", "invalid_zone_ids");
+    const open = await deps.db.selectFrom("zones").select("zone_id").where("open", "=", true).orderBy("zone_id").execute();
+    const zoneIds = open.map((zone) => zone.zone_id).filter((id) => (asked ? asked.includes(id) : true) && adminCoversZone(who, id));
+    return surgeNow(deps.db, zoneIds, now());
+  });
+
+  // v0.7.2 (contract.json#surgeLive.history): the demand chart, the rider price check and the surge timeline.
+  app.get(`${API_PREFIX}/admin/zones/:zoneId/surge/history`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "settings.read");
     const zoneId = zoneParam(request);
     checkZone(who, zoneId);
-    const outcome = await runIdempotent(deps.db, idem(request, who, request.body ?? null), async (trx) => {
-      await getZone(trx, zoneId);
-      const surge = await zoneSurge(trx, zoneId);
-      const at = await surgeFor(trx, zoneId, surge, undefined, now());
-      const multiplier = Math.min(at.multiplier, SLIDER_TOP);
-      if (!(multiplier > 1)) throw new ApiError("invalid_transition", "There is no surge to tell drivers about.", { reason: "no_surge" });
-      const notified = await notifyDriversOfSurge(trx, zoneId, multiplier, at.until, now());
-      await audit(trx, { adminId: who.subjectId, action: "surge.notify", targetType: "config", targetId: `surge:${zoneId}`, zoneId, detail: { multiplier, notified }, at: now() });
-      return { status: 200, body: { notified, multiplier } };
-    });
-    return outcome.body;
+    await getZone(deps.db, zoneId);
+    const query = parseBody(z.object({ hours: z.coerce.number().int().min(1).max(24).default(6), bucketMin: z.coerce.number().int().refine((v) => [5, 10, 15, 30, 60].includes(v)).default(10) }), request.query);
+    return surgeHistory(deps.db, zoneId, query.hours, query.bucketMin, now());
+  });
+
+  // v0.7.2 (contract.json#driverSurgeMap): coloured zones for the driver's Home map; never the multiplier.
+  app.get(`${API_PREFIX}/driver/surge-map`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    return driverSurgeMap(deps.db, who.subjectId, now());
   });
 
   // Pricing › History (and every other config document).

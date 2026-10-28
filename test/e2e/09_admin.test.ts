@@ -94,16 +94,14 @@ describe("scenario 9: admin actions (what the server exposes)", () => {
     expect((await a.get("/driver/profile")).body.onlineStatus).toBe("online");
   });
 
-  it("refund: a finance admin's refund waits for a second admin; the Super admin's runs at once; never more than was paid", async () => {
+  it("refund: a finance admin's refund runs at once (v0.7.2, one admin is enough), so does the Super admin's; never more than was paid", async () => {
     const { tripId } = await bookAndAccept(sim, rider, a);
     const done = await completeAtDropoff(a, tripId);
     expect(done.body.status).toBe("completed");
     let version = (await owner.trip(tripId)).version;
-    const pending = await finance.tripCommand(tripId, "refund", { expectedVersion: version, amount: { amountMinor: 5000, currency: "SEK" }, reason: "detour" });
-    expect(pending.status, JSON.stringify(pending.body)).toBe(202);
-    expect(pending.body.status).toBe("pending_approval");
-    const approved = await owner.post(`/admin/approvals/${pending.body.approvalId}/approve`, { note: "ok" });
-    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    const byFinance = await finance.tripCommand(tripId, "refund", { expectedVersion: version, amount: { amountMinor: 5000, currency: "SEK" }, reason: "detour" });
+    expect(byFinance.status, JSON.stringify(byFinance.body)).toBe(201);
+    expect(byFinance.body.status).toBe("done");
     version = (await owner.trip(tripId)).version;
     const direct = await owner.tripCommand(tripId, "refund", { expectedVersion: version, amount: { amountMinor: 5000, currency: "SEK" }, reason: "sorry" });
     expect(direct.status, JSON.stringify(direct.body)).toBe(201);

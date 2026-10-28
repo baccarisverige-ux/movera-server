@@ -85,8 +85,8 @@ describe("waiting at a middle stop (§3.8)", () => {
   });
 });
 
-describe("manual surge Start / Stop, the booked price and Tell drivers", () => {
-  it("starts at the slider's value (its maximum, up to ×6), prices new quotes, keeps a booked trip's price, tells drivers, and stops", async () => {
+describe("manual surge Start / Stop, the booked price, no driver notice", () => {
+  it("starts at the slider's value (its maximum, up to ×6), prices new quotes, keeps a booked trip's price, sends no notice, and stops", async () => {
     // The old zone maximum (×3) no longer binds: the slider's value is the maximum (owner 2026-10-27).
     await sim.publish(owner, "pricing", "Z001", (doc) => ({ ...doc, surge: { ...doc["surge"], maxMultiplier: 3, notifyDrivers: true } }));
     const tripId = await bookAccepted(riders[1]!);
@@ -111,15 +111,19 @@ describe("manual surge Start / Stop, the booked price and Tell drivers", () => {
     const surged = (await riders[0]!.quote({ categoryIds: ["economy"] })).body["quotes"][0];
     expect(surged).toMatchObject({ surgeMultiplier: 2, surge: { multiplier: 2, until: end } });
 
-    // "Tell drivers when a surge starts" and "Tell drivers now": an in-app notice to the zone's online drivers.
+    // v0.7.2 (owner 2026-10-28): no surge notice, even with the old notifyDrivers on; "Tell drivers now" is gone.
     const notices = (await a.get("/notifications")).body["items"] as Json[];
-    expect(notices.filter((n) => n["kind"] === "surge_started").map((n) => n["data"])).toEqual(
-      expect.arrayContaining([{ zoneId: "Z001", multiplier: 4, until: end }, { zoneId: "Z001", multiplier: 2, until: end }]),
-    );
-    const told = await owner.post("/admin/zones/Z001/surge/notify", {});
-    expect(told.status, JSON.stringify(told.body)).toBe(200);
-    expect(told.body).toEqual({ notified: 1, multiplier: 2 });
-    expect(((await a.get("/notifications")).body["items"] as Json[]).filter((n) => n["kind"] === "surge_started").length).toBeGreaterThanOrEqual(3);
+    expect(notices.filter((n) => n["kind"] === "surge_started")).toEqual([]);
+    expect((await owner.post("/admin/zones/Z001/surge/notify", {})).status).toBe(404);
+    // The surge now, as the admin's Surge tab and the driver's map see it (contract.json#surgeLive, #driverSurgeMap).
+    const nowList = await owner.get("/admin/surge/now?zoneIds=Z001");
+    expect(nowList.status, JSON.stringify(nowList.body)).toBe(200);
+    expect(nowList.body.zones).toEqual([expect.objectContaining({ zoneId: "Z001", multiplier: 2, source: "manual", until: end, scheduleId: started.body.scheduleId })]);
+    const map = await a.get("/driver/surge-map");
+    expect(map.status, JSON.stringify(map.body)).toBe(200);
+    const mine = (map.body.zones as Json[]).find((z) => z["zoneId"] === "Z001");
+    expect(mine).toEqual({ zoneId: "Z001", level: "medium", bounds: expect.objectContaining({ south: expect.any(Number), north: expect.any(Number) }) });
+    expect(JSON.stringify(map.body)).not.toContain("multiplier");
 
     // The trip booked before the surge keeps its price to the end.
     await drive(a, tripId, "in_trip");
@@ -134,9 +138,7 @@ describe("manual surge Start / Stop, the booked price and Tell drivers", () => {
     expect(stopped.body.status).toBe("ended");
     expect((await owner.get("/admin/zones/Z001/surge")).status).toBe(204);
     expect((await riders[0]!.quote({ categoryIds: ["economy"] })).body["quotes"][0].surgeMultiplier).toBe(1);
-    const nothing = await owner.post("/admin/zones/Z001/surge/notify", {});
-    expect(nothing.status).toBe(409);
-    expect(nothing.body.reason).toBe("no_surge");
+    expect(((await a.get("/driver/surge-map")).body.zones as Json[]).some((z) => z["zoneId"] === "Z001")).toBe(false);
   });
 });
 

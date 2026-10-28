@@ -1,7 +1,5 @@
-import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import { liveDocument } from "../config/service.js";
-import { notify } from "../notifications/service.js";
 import { surgeAt, type SurgeSchedule } from "../rules/surge.js";
 import type { PricingDocument } from "../rules/fare.js";
 
@@ -139,6 +137,11 @@ export function inActiveHours(smart: SmartSettings, minute: number): boolean {
 /** The slider's top (contract.json#surge.capMax): no surge goes above it. */
 export const SLIDER_TOP = 6;
 
+/** contract.json#smartSurge.freshFixSeconds: a fix older than this does not count (Dispatch's rule). */
+export const FRESH_FIX_SECONDS = 120;
+/** contract.json#surgeLive.samples: samples are kept 8 days. */
+const SAMPLE_DAYS = 8;
+
 export function targetFor(profile: SurgeProfile, ratio: number, maxMultiplier: number = SLIDER_TOP): number {
   let multiplier = 1;
   for (const step of profile.steps) if (ratio >= step.ratio) multiplier = step.multiplier;
@@ -179,25 +182,40 @@ export function smartStep(smart: SmartSettings, profile: SurgeProfile, maxMultip
   return { multiplier, upSince, lowSince, lastChange };
 }
 
-/** Ride requests in the zone in the last `minutes` ÷ free online drivers in the zone (none counts as 1). */
-export async function demandRatio(ex: Executor, zoneId: string, minutes: number, now: Date): Promise<number> {
-  const since = new Date(now.getTime() - minutes * 60_000);
-  const requests = await ex.selectFrom("trips").select((eb) => eb.fn.countAll<string>().as("n")).where("zone_id", "=", zoneId).where("created_at", ">", since).where("created_at", "<=", now).executeTakeFirstOrThrow();
-  const free = await ex
+/**
+ * v0.7.2 (owner 2026-10-28, contract.json#smartSurge.ratio): free drivers are online (not on a trip) with a GPS fix
+ * inside the zone that reached the server less than freshFixSeconds ago — the drivers Dispatch counts as free.
+ */
+export async function freeDriversIn(ex: Executor, zoneId: string, now: Date): Promise<number> {
+  const row = await ex
     .selectFrom("drivers")
+    .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
     .select((eb) => eb.fn.countAll<string>().as("n"))
-    .where("online_status", "=", "online")
-    .where(sql<boolean>`${zoneId} = ANY(zone_ids)`)
+    .where("drivers.online_status", "=", "online")
+    .where("driver_locations.zone_id", "=", zoneId)
+    .where("driver_locations.received_at", ">", new Date(now.getTime() - FRESH_FIX_SECONDS * 1000))
     .executeTakeFirstOrThrow();
-  return Number(requests.n) / Math.max(1, Number(free.n));
+  return Number(row.n);
+}
+
+/** Ride requests created in the zone in the last `minutes`. */
+export async function requestsIn(ex: Executor, zoneId: string, minutes: number, now: Date): Promise<number> {
+  const since = new Date(now.getTime() - minutes * 60_000);
+  const row = await ex.selectFrom("trips").select((eb) => eb.fn.countAll<string>().as("n")).where("zone_id", "=", zoneId).where("created_at", ">", since).where("created_at", "<=", now).executeTakeFirstOrThrow();
+  return Number(row.n);
+}
+
+/** Ride requests in the zone in the last `minutes` ÷ free drivers in the zone now (none counts as 1). */
+export async function demandRatio(ex: Executor, zoneId: string, minutes: number, now: Date): Promise<number> {
+  return (await requestsIn(ex, zoneId, minutes, now)) / Math.max(1, await freeDriversIn(ex, zoneId, now));
 }
 
 const toMin = (d: Date | null) => (d === null ? null : Math.floor(d.getTime() / 60_000));
 const fromMin = (m: number | null) => (m === null ? null : new Date(m * 60_000));
 
 /**
- * The smart surge check of every zone whose live pricing has it on, at most once per checkEveryMin. A zone whose
- * smart surge rises above 1.0 tells its drivers when the admin asked for it (pricing.surge.notifyDrivers).
+ * The smart surge check of every zone whose live pricing has it on, at most once per checkEveryMin. v0.7.2: then one
+ * SurgeSample per open zone and minute (contract.json#surgeLive.samples), smart surge on or off; no driver notice.
  */
 export async function runSmartSurge(trx: Trx, now: Date): Promise<Array<{ zoneId: string; multiplier: number }>> {
   const zones = await trx.selectFrom("zones").select(["zone_id", "time_zone"]).where("open", "=", true).orderBy("zone_id").execute();
@@ -209,10 +227,14 @@ export async function runSmartSurge(trx: Trx, now: Date): Promise<Array<{ zoneId
     const row = await trx.selectFrom("smart_surge_state").selectAll().where("zone_id", "=", zone.zone_id).forUpdate().executeTakeFirst();
     if (!smart?.enabled) {
       if (row && Number(row.multiplier) !== 1) await trx.updateTable("smart_surge_state").set({ multiplier: 1, up_since: null, low_since: null, last_change: now, checked_at: now }).where("zone_id", "=", zone.zone_id).execute();
+      await recordSample(trx, zone.zone_id, surge, smart?.checkEveryMin ?? 1, now);
       continue;
     }
     const every = smart.checkEveryMin ?? 1;
-    if (row?.checked_at && now.getTime() - row.checked_at.getTime() < every * 60_000) continue;
+    if (row?.checked_at && now.getTime() - row.checked_at.getTime() < every * 60_000) {
+      await recordSample(trx, zone.zone_id, surge, every, now);
+      continue;
+    }
     const local = localTime(now, zone.time_zone);
     const profile = inActiveHours(smart, local.minute) ? profileAt(smart, local.weekday, local.minute) : undefined;
     const ratio = await demandRatio(trx, zone.zone_id, every, now);
@@ -230,37 +252,22 @@ export async function runSmartSurge(trx: Trx, now: Date): Promise<Array<{ zoneId
       profile_id: profile?.id ?? null,
     };
     await trx.insertInto("smart_surge_state").values(values).onConflict((c) => c.column("zone_id").doUpdateSet(values)).execute();
-    if (next.multiplier !== before.multiplier) {
-      changed.push({ zoneId: zone.zone_id, multiplier: next.multiplier });
-      if (before.multiplier === 1 && next.multiplier > 1 && surge?.notifyDrivers) await notifyDriversOfSurge(trx, zone.zone_id, next.multiplier, undefined, now);
-    }
+    if (next.multiplier !== before.multiplier) changed.push({ zoneId: zone.zone_id, multiplier: next.multiplier });
+    await recordSample(trx, zone.zone_id, surge, every, now);
   }
+  await trx.deleteFrom("surge_samples").where("at", "<", new Date(now.getTime() - SAMPLE_DAYS * 86_400_000)).execute();
   return changed;
 }
 
-// ---- surge notice to drivers (contract.json#surgeNotice)
-
-const NOTICE: Record<string, { title: string; body: (m: string) => string }> = {
-  sv: { title: "Högre priser nu", body: (m) => `Prishöjning ×${m} i ditt område. Fler resor väntar.` },
-  fr: { title: "Prix majorés maintenant", body: (m) => `Majoration ×${m} dans votre zone. Plus de courses vous attendent.` },
-  en: { title: "Higher prices now", body: (m) => `Surge ×${m} in your area. More rides are waiting.` },
-};
-
-/** In-app notice kind surge_started to every online driver of the zone; returns how many were told. */
-export async function notifyDriversOfSurge(trx: Trx, zoneId: string, multiplier: number, until: string | undefined, now: Date): Promise<number> {
-  const drivers = await trx
-    .selectFrom("drivers")
-    .select(["driver_id", "language"])
-    .where("online_status", "in", ["online", "on_trip"])
-    .where(sql<boolean>`${zoneId} = ANY(zone_ids)`)
-    .orderBy("driver_id")
-    .execute();
-  const shown = multiplier.toFixed(1);
-  for (const driver of drivers) {
-    const words = NOTICE[driver.language ?? "sv"] ?? NOTICE["sv"]!;
-    await notify(trx, { audience: "driver", subjectId: driver.driver_id, kind: "surge_started", title: words.title, body: words.body(shown), data: { zoneId, multiplier, ...(until ? { until } : {}) } }, now);
-  }
-  return drivers.length;
+/** One SurgeSample for the zone at this minute (a second check in the same minute replaces it). */
+async function recordSample(trx: Trx, zoneId: string, surge: DocSurge | undefined, windowMin: number, now: Date): Promise<void> {
+  const at = new Date(Math.floor(now.getTime() / 60_000) * 60_000);
+  const free = await freeDriversIn(trx, zoneId, now);
+  const requests = await requestsIn(trx, zoneId, 1, now);
+  const ratio = Math.round(((await requestsIn(trx, zoneId, windowMin, now)) / Math.max(1, free)) * 1000) / 1000;
+  const current = await surgeFor(trx, zoneId, surge, undefined, now);
+  const values = { zone_id: zoneId, at, requests, free_drivers: free, ratio, multiplier: Math.min(SLIDER_TOP, current.multiplier), source: current.source };
+  await trx.insertInto("surge_samples").values(values).onConflict((c) => c.columns(["zone_id", "at"]).doUpdateSet(values)).execute();
 }
 
 // ---- the smart surge check on the timer worker, every minute

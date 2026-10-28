@@ -1,11 +1,11 @@
-# Movera API v0.7.1 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.7.2 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.7.1
+  version: 0.7.2
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.7.1 in this folder; this file must agree with them.
+    v0.7.2 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -70,7 +70,7 @@ tags:
   description: Legacy /rides aliases kept for one release
 x-contract:
   name: movera
-  version: 0.7.1
+  version: 0.7.2
   source: contract.json
 paths:
   /auth/otp/request:
@@ -4553,8 +4553,8 @@ paths:
       operationId: adminRefundTrip
       summary: Refund (full or partial)
       description: 'Not a lifecycle transition (status unchanged; paymentStatus/fare change and emit payment_updated / trip_projection).
-        Above the role limit → 202 pending_approval, except for a Super admin (approvalExempt): 200 / 201 at once, written
-        in the audit (owner decision 14).'
+        v0.7.2 (owner 2026-10-28, one admin is enough): 200 / 201 at once for every admin with the permission, written in
+        the audit.'
       tags:
       - Admin · Trips
       x-actor:
@@ -4584,8 +4584,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Refund'
-        '202':
-          $ref: '#/components/responses/PendingApproval'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -4605,8 +4603,8 @@ paths:
       operationId: adminAdjustTrip
       summary: Adjust fare / waiting / waive cancel fee
       description: 'Not a lifecycle transition (status unchanged; paymentStatus/fare change and emit payment_updated / trip_projection).
-        Above the role limit → 202 pending_approval, except for a Super admin (approvalExempt): 200 / 201 at once, written
-        in the audit (owner decision 14).'
+        v0.7.2 (owner 2026-10-28, one admin is enough): 200 / 201 at once for every admin with the permission, written in
+        the audit.'
       tags:
       - Admin · Trips
       x-actor:
@@ -4636,8 +4634,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TripProjection'
-        '202':
-          $ref: '#/components/responses/PendingApproval'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -5804,9 +5800,9 @@ paths:
     post:
       operationId: adminPublishConfig
       summary: Publish the draft (two-person approval)
-      description: Normally 202 pending_approval; 200 when the approver publishes directly, and always 200 for a Super admin
-        (approvalExempt, owner decision 14, v0.5.1). Emits config_published on the app streams for rider_app_config and driver_app_config
-        only; pricing and dispatch (server-only) are published with the same version rule but never reach the apps.
+      description: 'v0.7.2 (owner 2026-10-28, one admin is enough): 200 at once for every admin with the publish permission,
+        written in the audit. Emits config_published on the app streams for rider_app_config and driver_app_config only; pricing
+        and dispatch (server-only) are published with the same version rule but never reach the apps.'
       tags:
       - Admin · Config
       x-actor:
@@ -5846,8 +5842,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ConfigPublication'
-        '202':
-          $ref: '#/components/responses/PendingApproval'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -5911,8 +5905,9 @@ paths:
     put:
       operationId: adminPutSurge
       summary: Create or replace the zone's surge schedule (curve)
-      description: contract.json#surge, CONTRACT.md §3.4. Points above the zone's cap → 400 invalid_request. Above the role
-        limit → 202 pending_approval. New quotes price from it at once; quotes already given keep their multiplier.
+      description: 'contract.json#surge, CONTRACT.md §3.4. Points above the zone''s cap → 400 invalid_request. v0.7.2: runs
+        at once for every admin with settings.publish (one admin is enough). New quotes price from it at once; quotes already
+        given keep their multiplier.'
       tags:
       - Admin · Config
       x-actor:
@@ -5942,8 +5937,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SurgeSchedule'
-        '202':
-          $ref: '#/components/responses/PendingApproval'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -7105,9 +7098,9 @@ paths:
     put:
       operationId: adminPutDispatchControl
       summary: Pause dispatch or force a mode in a zone
-      description: 'CONTRACT.md §3.6. Pause or force a mode: Super admin at once (200), others 202 pending_approval (owner
-        decision 14). Resume / back to rules (paused false, mode null): 200 for everyone. Forcing a mode that is off → 400
-        invalid_request (mode_off). Running searches stop new offers while paused; a forced mode applies to new searches.'
+      description: 'CONTRACT.md §3.6. v0.7.2 (one admin is enough): pause, force a mode, resume and back to rules run at once
+        (200) for every admin with dispatch.edit. Forcing a mode that is off → 400 invalid_request (mode_off). Running searches
+        stop new offers while paused; a forced mode applies to new searches.'
       tags:
       - Admin · Dispatch
       x-actor:
@@ -7136,8 +7129,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DispatchControl'
-        '202':
-          $ref: '#/components/responses/PendingApproval'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -7397,49 +7388,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TripProjection'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthenticated'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '429':
-          $ref: '#/components/responses/RateLimited'
-        '503':
-          $ref: '#/components/responses/Unavailable'
-  /admin/zones/{zoneId}/surge/notify:
-    post:
-      operationId: adminNotifySurge
-      summary: Tell drivers now about the zone's surge
-      description: 'v0.7.1. POST /admin/zones/{zoneId}/surge/notify (Tell drivers now; settings.publish) → { notified: integer,
-        multiplier }: 409 invalid_transition (no_surge) when the zone''s multiplier is 1.0; the online drivers whose zone
-        is the surge zone.'
-      tags:
-      - Admin · Config
-      x-actor:
-      - admin
-      x-permission: settings.publish
-      parameters:
-      - $ref: '#/components/parameters/ZoneId'
-      - $ref: '#/components/parameters/IdempotencyKey'
-      - $ref: '#/components/parameters/RequestId'
-      - $ref: '#/components/parameters/ApiVersion'
-      responses:
-        '200':
-          description: OK
-          headers:
-            X-Request-Id:
-              description: Echo of the request id (server-generated if absent).
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SurgeNotifyResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -7767,6 +7715,161 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/surge/now:
+    get:
+      operationId: adminSurgeNow
+      summary: The surge now in each zone, with its demand
+      description: 'v0.7.2. v0.7.2 (owner 2026-10-28): the admin''s Pricing › Surge tab shows only real numbers from the server:
+        the surge now per zone (map, list, alerts), the demand chart, the rider price check and the surge timeline. No invented
+        values: what the server cannot give is shown ''Not connected yet''. GET /admin/surge/now?zoneIds=Z1,Z2 (settings.read;
+        zones outside the admin''s scope are left out; no zoneIds = every zone in scope) → { at, zones: ZoneSurgeNow[] }.
+        ZoneSurgeNow { zoneId, multiplier, source: manual | scheduled | smart | off, until?, scheduleId?, profileId?, requests,
+        freeDrivers, ratio, checkedAt? }: multiplier and source exactly as a quote made now would get them (contract.json#pricing.surgeSource,
+        before a category filter); requests, freeDrivers and ratio from the newest SurgeSample.'
+      tags:
+      - Admin · Config
+      x-actor:
+      - admin
+      x-permission: settings.read
+      parameters:
+      - name: zoneIds
+        in: query
+        required: false
+        schema:
+          type: string
+          description: Comma-separated zone ids; none = every zone in the admin's scope.
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurgeNowList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/zones/{zoneId}/surge/history:
+    get:
+      operationId: adminSurgeHistory
+      summary: Demand chart, rider price check and surge timeline of a zone
+      description: 'v0.7.2. GET /admin/zones/{zoneId}/surge/history?hours=1..24&bucketMin=5|10|15|30|60 (settings.read; defaults
+        6 and 10) → { zoneId, from, to, bucketMin, points: SurgePoint[], priceCheck: PriceCheck, timeline: SurgeTimelineItem[]
+        }. Each minute the server''s surge check stores one SurgeSample per open zone (whether smart surge is on or not):
+        { zoneId, at, requests (ride requests created in the zone in the last minute), freeDrivers (as contract.json#smartSurge.ratio),
+        ratio (requests in the last checkEveryMin ÷ freeDrivers, as smart surge measures it), multiplier, source }. Samples
+        are kept 8 days.'
+      tags:
+      - Admin · Config
+      x-actor:
+      - admin
+      x-permission: settings.read
+      parameters:
+      - $ref: '#/components/parameters/ZoneId'
+      - name: hours
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 24
+          default: 6
+      - name: bucketMin
+        in: query
+        required: false
+        schema:
+          type: integer
+          enum:
+          - 5
+          - 10
+          - 15
+          - 30
+          - 60
+          default: 10
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SurgeHistory'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/surge-map:
+    get:
+      operationId: driverSurgeMap
+      summary: Zones with a surge now, as colour levels for the Home map
+      description: 'v0.7.2. GET /driver/surge-map (driver) → { at, zones: DriverSurgeZone[] }: the open operating zones of
+        the driver''s country whose surge now (as GET /admin/surge/now, before a category filter) is above 1.0. DriverSurgeZone
+        { zoneId, level: low | medium | high, bounds: { south, west, north, east } } (the zone''s rectangle). Never the multiplier.
+        the app asks while online on Home: on going online, then every 60 s, and when the app comes back to the front; it
+        keeps the last answer when a call fails; offline it shows no colours. The top bar''s waiting tip ''Hög bonus i närheten''
+        / ''Forte majoration à proximité'' / ''High boost nearby'' (no money, no number, no zone name) shows while the driver''s
+        position is inside a listed zone or less than 3 km from its rectangle, any level. The old ''+{kr} kr i {zone}'' tip
+        is removed.'
+      tags:
+      - Driver · Session
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverSurgeMap'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -10304,8 +10407,8 @@ components:
       - super
     PendingApproval:
       type: object
-      description: Returned with 202 when the action needs a second admin (two-person rule). Never for a Super admin (AdminMe.approvalExempt,
-        owner decision 14, v0.5.1).
+      description: An approval filed before v0.7.2. Since v0.7.2 (owner 2026-10-28, one admin is enough everywhere) no operation
+        answers 202; GET /admin/approvals lists the old ones.
       required:
       - status
       - approvalId
@@ -11083,17 +11186,30 @@ components:
           maximum: 5
     SurgePoint:
       type: object
+      description: 'v0.7.2: SurgePoint { at (bucket start), requests (sum in the bucket), freeDrivers (average, rounded),
+        ratio (average, 0.1), multiplier (highest in the bucket) }, oldest first; a bucket without samples is left out.'
       required:
-      - atMin
+      - at
+      - requests
+      - freeDrivers
+      - ratio
       - multiplier
       properties:
-        atMin:
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        requests:
           type: integer
           minimum: 0
-          description: Minutes from startAt.
+        freeDrivers:
+          type: integer
+          minimum: 0
+        ratio:
+          type: number
+          minimum: 0
         multiplier:
           type: number
-          minimum: 1.0
+          minimum: 1
+          maximum: 6
     SurgeSchedule:
       type: object
       description: 'A surge curve over time (v0.5.0, CONTRACT.md §3.4, contract.json#surge). value at minute m = curve value
@@ -12002,8 +12118,8 @@ components:
           description: 'v0.7.1: overlapping windows, the higher multiplier counts.'
         notifyDrivers:
           type: boolean
-          description: 'v0.7.1 (Tell drivers when a surge starts): the server sends drivers a surge_started notice when a
-            manual or smart surge starts (contract.json#surgeNotice).'
+          description: 'Deprecated in v0.7.2 and ignored: drivers get no surge notice (owner 2026-10-28, contract.json#surgeNoticeRemoved).'
+          deprecated: true
           default: false
     PricingDocument:
       type: object
@@ -12346,8 +12462,8 @@ components:
       type: object
       description: 'Live dispatch switch of a zone (outside publishing). DispatchControl { zoneId, paused, mode: radar | exclusive
         | null, by, at, version } is live state, outside publishing. PUT /admin/zones/{zoneId}/dispatch-control (dispatch.edit).
-        Pausing or forcing a mode by an admin who is not Super admin is 202 pending_approval (owner decision 14); resume and
-        back to rules apply at once for everyone (the admin panel''s rule).'
+        Pausing, forcing a mode, resume and back to rules apply at once for every admin with dispatch.edit (v0.7.2, one admin
+        is enough).'
       required:
       - zoneId
       - paused
@@ -12606,7 +12722,8 @@ components:
           default: 900
         approvalExempt:
           type: boolean
-          description: 'True for Super admin: changes go live at once, never 202 pending_approval (owner decision 14).'
+          description: 'v0.7.2: true for every admin (one admin is enough everywhere, owner 2026-10-28): changes go live at
+            once, never 202 pending_approval.'
     AdminSession:
       type: object
       description: 'v0.5.1 (CONTRACT.md §9), owner decisions 9 and 14 (2026-10-24): the admin panel signs in with e-mail and
@@ -14388,7 +14505,7 @@ components:
           maxLength: 1000
     AdminRefundCommand:
       type: object
-      description: Above refundLimit[role][country] → 202 pending_approval.
+      description: 'v0.7.2: runs at once for every admin with the permission (one admin is enough, owner 2026-10-28).'
       required:
       - expectedVersion
       - amount
@@ -14408,7 +14525,7 @@ components:
           maxLength: 1000
     AdminAdjustCommand:
       type: object
-      description: Fare / waiting / cancel-fee correction. Over the role limit → 202 pending_approval.
+      description: Fare / waiting / cancel-fee correction; runs at once (v0.7.2, one admin is enough).
       required:
       - expectedVersion
       - reason
@@ -14692,18 +14809,6 @@ components:
           type: integer
           minimum: 1
           description: Version the caller last saw; stale → 409 version_mismatch.
-    SurgeNotifyResult:
-      type: object
-      required:
-      - notified
-      - multiplier
-      properties:
-        notified:
-          type: integer
-          minimum: 0
-        multiplier:
-          type: number
-          minimum: 1
     ConfigHistoryEntry:
       type: object
       description: 'v0.7.1: one published version (contract.json#pricingHistory).'
@@ -14851,3 +14956,238 @@ components:
           type: string
           minLength: 1
           maxLength: 500
+    SurgeSource:
+      type: string
+      enum:
+      - manual
+      - scheduled
+      - smart
+      - 'off'
+    ZoneSurgeNow:
+      type: object
+      description: 'v0.7.2: GET /admin/surge/now?zoneIds=Z1,Z2 (settings.read; zones outside the admin''s scope are left out;
+        no zoneIds = every zone in scope) → { at, zones: ZoneSurgeNow[] }. ZoneSurgeNow { zoneId, multiplier, source: manual
+        | scheduled | smart | off, until?, scheduleId?, profileId?, requests, freeDrivers, ratio, checkedAt? }: multiplier
+        and source exactly as a quote made now would get them (contract.json#pricing.surgeSource, before a category filter);
+        requests, freeDrivers and ratio from the newest SurgeSample.'
+      required:
+      - zoneId
+      - multiplier
+      - source
+      - requests
+      - freeDrivers
+      - ratio
+      properties:
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        multiplier:
+          type: number
+          minimum: 1
+          maximum: 6
+        source:
+          $ref: '#/components/schemas/SurgeSource'
+        until:
+          $ref: '#/components/schemas/Timestamp'
+        scheduleId:
+          $ref: '#/components/schemas/Id'
+        profileId:
+          type: string
+        requests:
+          type: integer
+          minimum: 0
+        freeDrivers:
+          type: integer
+          minimum: 0
+        ratio:
+          type: number
+          minimum: 0
+        checkedAt:
+          $ref: '#/components/schemas/Timestamp'
+    SurgeNowList:
+      type: object
+      required:
+      - at
+      - zones
+      properties:
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        zones:
+          type: array
+          items:
+            $ref: '#/components/schemas/ZoneSurgeNow'
+    PriceCheck:
+      type: object
+      description: 'v0.7.2: PriceCheck { windowMin: 60, saw, left, leftPct }: saw = quotes of the zone made in the last 60
+        minutes with surgeMultiplier above 1.0; left = those of them no trip was created from; leftPct = round(100 × left
+        ÷ saw), 0 when saw is 0.'
+      required:
+      - windowMin
+      - saw
+      - left
+      - leftPct
+      properties:
+        windowMin:
+          type: integer
+          minimum: 1
+        saw:
+          type: integer
+          minimum: 0
+        left:
+          type: integer
+          minimum: 0
+        leftPct:
+          type: integer
+          minimum: 0
+          maximum: 100
+    SurgeEffect:
+      type: object
+      required:
+      - drivers
+      - ridesPct
+      - leftPct
+      properties:
+        drivers:
+          type: integer
+        ridesPct:
+          type: integer
+        leftPct:
+          type: integer
+          minimum: 0
+          maximum: 100
+    SurgeTimelineItem:
+      type: object
+      description: 'v0.7.2: SurgeTimelineItem { at, kind: manual_start | manual_stop | scheduled_start | scheduled_end | smart_change
+        | smart_end, multiplier, previous?, by? (the admin of a manual surge; ''smart'' / ''scheduled'' otherwise), profileId?,
+        effect? }, newest first, the last `hours` hours (at most 50). Made from the samples (a change of multiplier or source)
+        and the zone''s surge schedules (who started or stopped it). effect, on a start or a rise, compares the 30 minutes
+        after it with the 30 minutes before: { drivers (free drivers after − before, average), ridesPct (round(100 × (trips
+        created after − before) ÷ max(1, before))), leftPct (the price check of the 30 minutes after) }; left out while the
+        30 minutes after are not over.'
+      required:
+      - at
+      - kind
+      - multiplier
+      properties:
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        kind:
+          type: string
+          enum:
+          - manual_start
+          - manual_stop
+          - scheduled_start
+          - scheduled_end
+          - smart_change
+          - smart_end
+        multiplier:
+          type: number
+          minimum: 1
+          maximum: 6
+        previous:
+          type: number
+          minimum: 1
+          maximum: 6
+        by:
+          type: string
+        profileId:
+          type: string
+        effect:
+          $ref: '#/components/schemas/SurgeEffect'
+    SurgeHistory:
+      type: object
+      description: 'v0.7.2: GET /admin/zones/{zoneId}/surge/history?hours=1..24&bucketMin=5|10|15|30|60 (settings.read; defaults
+        6 and 10) → { zoneId, from, to, bucketMin, points: SurgePoint[], priceCheck: PriceCheck, timeline: SurgeTimelineItem[]
+        }.'
+      required:
+      - zoneId
+      - from
+      - to
+      - bucketMin
+      - points
+      - priceCheck
+      - timeline
+      properties:
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        from:
+          $ref: '#/components/schemas/Timestamp'
+        to:
+          $ref: '#/components/schemas/Timestamp'
+        bucketMin:
+          type: integer
+          enum:
+          - 5
+          - 10
+          - 15
+          - 30
+          - 60
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/SurgePoint'
+        priceCheck:
+          $ref: '#/components/schemas/PriceCheck'
+        timeline:
+          type: array
+          items:
+            $ref: '#/components/schemas/SurgeTimelineItem'
+    SurgeLevel:
+      type: string
+      enum:
+      - low
+      - medium
+      - high
+      description: 'v0.7.2: low: multiplier above 1.0 and below 1.5 (×1.1–×1.4); medium: 1.5 to 2.5 inclusive; high: above
+        2.5. A zone at 1.0 is not listed (no colour).'
+    ZoneBounds:
+      type: object
+      required:
+      - south
+      - west
+      - north
+      - east
+      properties:
+        south:
+          type: number
+          minimum: -90
+          maximum: 90
+        west:
+          type: number
+          minimum: -180
+          maximum: 180
+        north:
+          type: number
+          minimum: -90
+          maximum: 90
+        east:
+          type: number
+          minimum: -180
+          maximum: 180
+    DriverSurgeZone:
+      type: object
+      description: 'v0.7.2: never the multiplier.'
+      required:
+      - zoneId
+      - level
+      - bounds
+      properties:
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        level:
+          $ref: '#/components/schemas/SurgeLevel'
+        bounds:
+          $ref: '#/components/schemas/ZoneBounds'
+    DriverSurgeMap:
+      type: object
+      description: 'v0.7.2: v0.7.2 (owner 2026-10-28): the driver app shows surges ONLY as coloured zones on the Home map.
+        No text, no number and no money on the map; the driver never sees the multiplier.'
+      required:
+      - at
+      - zones
+      properties:
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        zones:
+          type: array
+          items:
+            $ref: '#/components/schemas/DriverSurgeZone'
