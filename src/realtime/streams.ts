@@ -106,6 +106,14 @@ export async function streamConfig(
   };
   const unsubscribe = deps.hub.subscribe(CONFIG_CHANNEL, (payload) => {
     if (payload === null || (payload["doc"] === doc && payload["zoneId"] === zoneId)) void check().catch((error) => request.log.warn({ err: error }, "config stream read failed"));
+    // v0.10.0 content of this zone and v0.11.0 zones (any zone: the apps keep every open zone) ride along on the
+    // app document's stream. Their id is the app document version already sent, so Last-Event-ID stays that.
+    else if (payload["doc"] === "zones" || (payload["doc"] === "content" && payload["zoneId"] === zoneId)) {
+      if (stream.closed()) return;
+      const now = deps.clock?.() ?? new Date();
+      const publishedAt = typeof payload["publishedAt"] === "string" ? payload["publishedAt"] : now.toISOString();
+      stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "config_published", doc: payload["doc"], zoneId: payload["zoneId"], version: payload["version"], publishedAt, occurredAt: publishedAt, serverTime: now.toISOString() });
+    }
   });
   stream.onClose(unsubscribe);
   // A reconnect with Last-Event-ID older than the live version gets the newest at once.

@@ -350,6 +350,13 @@ export interface ZonesTable {
   west: number;
   north: number;
   east: number;
+  /** v0.11.0 §20: { sv, fr, en }. */
+  names: Json;
+  /** v0.11.0 §20: the outline, [[lat, lng], ...]; south..east are its bounding box. */
+  polygon: Json;
+  version: Generated<number>;
+  updated_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  updated_by: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch" | "country_rules";
