@@ -669,6 +669,10 @@ export interface KpiDaysTable {
   wallet_applied_minor: ColumnType<string, number | string, number | string>;
   new_riders: number;
   new_drivers: number;
+  tips_minor: ColumnType<string, number | string, number | string>;
+  refunds_minor: ColumnType<string, number | string, number | string>;
+  fees_minor: ColumnType<string, number | string, number | string>;
+  movera_earnings_minor: ColumnType<string, number | string, number | string>;
   computed_at: Timestamp;
 }
 
