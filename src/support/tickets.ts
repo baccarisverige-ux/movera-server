@@ -127,14 +127,14 @@ export async function ownTicket(ex: Executor, who: Who, ticketId: string) {
   return ticketView(row as TicketRow, await messagesOf(ex, ticketId));
 }
 
-/** An admin sees tickets of their zones, and tickets without a zone (a rider who never rode). */
+/** contract v0.13.0 §22: an admin sees tickets of their zones; a ticket without a zone only a Super admin ("*"). */
 function inScope(who: Principal, zoneId: string | null): boolean {
-  return zoneId === null || adminCoversZone(who, zoneId);
+  return zoneId === null ? who.zones.includes("*") : adminCoversZone(who, zoneId);
 }
 
 export async function adminTickets(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; priority?: string; tripId?: string; riderId?: string; driverId?: string; q?: string }) {
   let q = ex.selectFrom("support_tickets").selectAll();
-  if (!who.zones.includes("*")) q = q.where((eb) => eb.or([eb("zone_id", "is", null), eb("zone_id", "in", who.zones.length ? who.zones : ["-"])]));
+  if (!who.zones.includes("*")) q = q.where("zone_id", "in", who.zones.length ? who.zones : ["-"]);
   if (input.status?.length) q = q.where("status", "in", input.status as TicketRow["status"][]);
   if (input.priority) q = q.where("priority", "=", input.priority as TicketRow["priority"]);
   if (input.tripId) q = q.where("trip_id", "=", input.tripId);
