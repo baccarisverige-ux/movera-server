@@ -1,4 +1,5 @@
 import { pricingRoutes } from "./pricing/routes.js";
+import { contentRoutes } from "./content/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
@@ -168,6 +169,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const invites = { sms: { provider: sms, warn: (data: Record<string, unknown>, message: string) => app.log.warn(data, message) }, appLink: env.DRIVER_APP_LINK };
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });
     await pricingRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    await contentRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??

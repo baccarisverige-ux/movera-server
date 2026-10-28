@@ -1,4 +1,5 @@
 import { appendTripEvent } from "../db/tripLog.js";
+import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
 import { schemaProblem } from "../contract/schemas.js";
@@ -77,6 +78,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   }
   const rider = await trx.selectFrom("riders").select(["status"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
   if (rider.status !== "active") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
+  // v0.10.0 §19 Legal: new terms published with reaccept must be accepted before booking.
+  if (!(await termsAccepted(trx, "rider", riderId, [quote.zone_id]))) throw new ApiError("conflict", "Accept the new terms first.", { reason: TERMS_REASON });
 
   const tripId = newId("trp", now.getTime());
   const driverEarnings = Number(quote.driver_earnings_minor);
