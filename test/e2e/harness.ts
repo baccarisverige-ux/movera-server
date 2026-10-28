@@ -1,3 +1,4 @@
+import { pricingHandlers } from "../../src/pricing/surge.js";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import http from "node:http";
@@ -99,7 +100,7 @@ export class Sim {
       if (timingOut) appendFileSync(timingOut, `${JSON.stringify(row)}\n`);
     });
     sim.worker = new TimerWorker(db, {
-      handlers: { ...dispatchHandlers, ...rideHandlers },
+      handlers: { ...dispatchHandlers, ...rideHandlers, ...pricingHandlers },
       logger: { warn: () => undefined, error: (data, message) => sim.timerErrors.push({ data, message }) },
       clock: () => sim.clock.now,
     });

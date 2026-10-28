@@ -155,6 +155,7 @@ S["TripProjection"] = obj(OrderedDict([
     ("waiting", ref("Waiting")), ("cancellation", ref("Cancellation")),
     ("pinRequired", b("Driver must verify the rider PIN before `board`.")),
     ("searchStep", {"allOf": [ref("SearchStep")], "description": "v0.5.1 (CONTRACT.md §3.6): the latest rider-waiting step while searching (rider view). Changing it does not change version."}),
+    ("stopVisits", arr(ref("StopVisit"), description="v0.7.1 (contract.json#stopWaits): the driver's arrived-at-stop / leaving-stop per extra stop, in stop order.")),
     ("driverSilentAlert", {"allOf": [ref("DriverSilentAlert")], "description": "v0.7.0 (CONTRACT.md §15), admin view only: the rider is on board and the server has had no driver position for 30 min (\"car lost\"). Gone when positions come back. Changing it does not change version."}),
 ]), ["tripId", "status", "version", "sequence", "kind", "createdAt", "updatedAt", "riderId", "zoneId", "categoryId",
      "pickup", "dropoff", "stops", "fare", "paymentMethod", "ratingStatus", "pinRequired"],
@@ -405,7 +406,7 @@ S["AdminRole"] = s(enum=["viewer", "support", "dispatcher", "compliance", "finan
 S["PendingApproval"] = obj({"status": s(const="pending_approval"), "approvalId": ref("Id"),
                             "action": s(examples=["trip.refund", "config.publish"]), "targetId": ref("Id"),
                             "requestedAt": ref("Timestamp")}, ["status", "approvalId", "action", "targetId", "requestedAt"],
-                           "Returned with 202 when the action needs a second admin (two-person rule). Never for a Super admin (AdminMe.approvalExempt, owner decision 14, v0.5.1).")
+                           "An approval filed before v0.7.2. Since v0.7.2 (owner 2026-10-28, one admin is enough everywhere) no operation answers 202; GET /admin/approvals lists the old ones.")
 S["Approval"] = obj({"approvalId": ref("Id"), "action": s(), "targetType": s(enum=["trip", "payment", "refund", "payout", "config", "driver", "rider"]),
                      "targetId": ref("Id"), "amount": ref("Money"), "reason": s(),
                      "status": s(enum=["pending_approval", "approved", "rejected", "expired"]),
@@ -453,7 +454,9 @@ S["CancelFeeTable"] = {"type": "object", "description": "FeeRule per categoryId.
                        "additionalProperties": ref("FeeRule")}
 S["CancelFees"] = obj({"live": ref("CancelFeeTable"), "reservation": ref("CancelFeeTable"),
                       "driverSharePct": {**n(minimum=0, maximum=100), "default": C["cancelFees"]["driverSharePctDefault"], "description": "DriverAppConfig only. " + C["cancelFees"]["note"]}})
-S["CategoryCatalog"] = obj({"categories": arr(obj({"id": ref("CategoryId"), "label": s(), "seats": i(minimum=1), "sort": i()},
+S["LocalizedLine"] = obj({"sv": s(maxLength=80), "fr": s(maxLength=80), "en": s(maxLength=80)}, desc="v0.7.1: a short text in each app language.")
+S["CategoryCatalog"] = obj({"categories": arr(obj({"id": ref("CategoryId"), "label": s(), "seats": i(minimum=1), "sort": i(),
+                                                   "line": {"allOf": [ref("LocalizedLine")], "description": "v0.7.1: the sub-line under the name (admin Manage categories), e.g. Movera XL — up to 6 people; the rider app shows it."}},
                                                   ["id", "label", "seats", "sort"]))}, ["categories"])
 S["AppUpdate"] = obj({"minimumVersion": s(pattern=r"^\d+\.\d+\.\d+$"), "latestVersion": s(pattern=r"^\d+\.\d+\.\d+$"),
                       "storeUrl": s(format="uri")}, desc="Below minimumVersion = forced update; below latestVersion = soft update.")
@@ -560,7 +563,7 @@ S["SurgeSchedule"] = obj(OrderedDict([
     ("scheduleId", ref("Id")), ("zoneId", ref("Id")),
     ("categoryIds", arr(ref("CategoryId"), uniqueItems=True, description="Empty = every category of the zone.")),
     ("startAt", ref("Timestamp")), ("endAt", ref("Timestamp")),
-    ("stepMinutes", {**i(minimum=1), "default": SG["stepMinutes"]}), ("cap", {**n(minimum=1, maximum=SG["capMax"]), "description": "No point and no step is above this: the admin's maximum, at most capMax (6, v0.6.0). The quote is also kept within the zone's pricing surge.maxMultiplier."}),
+    ("stepMinutes", {**i(minimum=1), "default": SG["stepMinutes"]}), ("cap", {**n(minimum=1, maximum=SG["capMax"]), "description": "No point and no step is above this: the admin's maximum, at most capMax (6, v0.6.0; v0.7.1: the server sets it to the highest point, the slider value). The quote is also kept within the zone's pricing surge.maxMultiplier."}),
     ("points", arr(ref("SurgePoint"), minItems=SG["minPoints"], description="Sorted by atMin; the first at 0, the last at the end; straight lines between.")),
     ("status", s(enum=["scheduled", "active", "ended", "cancelled"])), ("version", i(minimum=1)),
     ("createdBy", ref("Id")), ("createdAt", ref("Timestamp")),
@@ -673,9 +676,8 @@ S["CategoryPricing"] = obj(OrderedDict([
     ("maximum", {"oneOf": [ref("Money"), {"type": "null"}], "description": "The ride part is lowered to this (maximum_adjust line); null = no maximum (the admin's 0)."}),
     ("appFeePct", n("Added to the rider's price: % of ride part + extras. Movera keeps it.", minimum=0, maximum=50)),
     ("commissionPct", n("Movera's commission on the ride part and the extras except waiting (owner decisions 17, 18).", minimum=0, maximum=60)),
-    ("extraStopFee", ref("Money")), ("stopWaitPerMin", money("Waiting at a stop after stopFreeWaitMin, per minute, charged per second.")),
-    ("babySeatFee", money("v0.6.0: only on the child_seat category (owner 2026-10-27); a category without it adds nothing for baby seats.")),
-    ("childSeatFee", money("v0.6.0: only on the child_seat category (owner 2026-10-27); a category without it adds nothing for child seats.")),
+    ("extraStopFee", ref("Money")), ("stopWaitPerMin", money("Waiting at a stop, per minute, charged per second from the driver's arrived-at-stop to leaving-stop; no free minutes (v0.7.1).")),
+    ("childSeatFee", money("v0.7.1: the ONE seat fee, only on the child_seat category (owner 2026-10-27): every child_seat trip includes one seat and adds it once. On another category: 400 seat_fee_not_child_seat. babySeatFee is gone.")),
     ("waiting", ref("CategoryPricingWaiting")),
     ("riderPickupFee", ref("RiderPickupFee")),
 ]), ["enabled", "base", "perKm", "perMin", "minimum", "maximum", "appFeePct", "commissionPct", "extraStopFee", "stopWaitPerMin", "waiting", "riderPickupFee"],
@@ -688,16 +690,17 @@ S["FixedRoute"] = obj({"id": ref("Id"), "from": s(minLength=1), "to": s(minLengt
 S["SurgeStep"] = obj({"ratio": n("Requests per free driver at which this step starts.", exclusiveMinimum=0), "multiplier": n(minimum=1, maximum=PR["maxMultiplier"])}, ["ratio", "multiplier"])
 S["SurgeProfile"] = obj({"id": s(minLength=1), "name": s(), "days": arr(i(minimum=0, maximum=6), description="0 = Monday … 6 = Sunday."),
                          "windows": arr(obj({"from": s(pattern=r"^\d\d:\d\d$"), "to": s(pattern=r"^\d\d:\d\d$")}, ["from", "to"])),
-                         "steps": arr(ref("SurgeStep")), "cap": n("The profile's own maximum (admin, ×1 to ×6); the zone's surge.maxMultiplier binds it too.", minimum=1, maximum=PR["maxMultiplier"]), "isDefault": b()},
+                         "steps": arr(ref("SurgeStep")), "cap": n("The profile's own maximum (admin, ×1 to ×6; v0.7.1: the only limit of smart surge).", minimum=1, maximum=PR["maxMultiplier"]), "isDefault": b()},
                         ["id", "name", "days", "windows", "steps", "cap", "isDefault"])
 S["SmartSurge"] = obj({"enabled": b("Automatic surge; false in the test week (owner decision 21)."), "activeFrom": s(pattern=r"^\d\d:\d\d$"), "activeTo": s(pattern=r"^\d\d:\d\d$"),
                        "checkEveryMin": i(minimum=1, maximum=15), "holdMin": i(minimum=1, maximum=30), "stopAfterMin": i(minimum=1, maximum=60), "cooldownMin": i(minimum=1, maximum=30),
                        "profiles": arr(ref("SurgeProfile"))},
-                      ["enabled", "profiles"], "The admin's smart surge settings, kept in the document; the algorithm is not normative in v0.5.1.")
+                      ["enabled", "profiles"], "The admin's smart surge settings. v0.7.1: the server runs it (contract.json#smartSurge, fixtures/smart_surge.json); off until enabled.")
 S["ScheduledSurge"] = obj({"id": s(minLength=1), "name": s(), "multiplier": n(minimum=1, maximum=PR["maxMultiplier"]), "startsAt": ref("Timestamp"), "endsAt": ref("Timestamp")},
                           ["id", "multiplier", "startsAt", "endsAt"], "A flat surge for a time window, from the pricing document.")
-S["PricingSurge"] = obj({"maxMultiplier": {**n(minimum=1, maximum=PR["maxMultiplier"]), "default": C["configDefaults"]["pricing"]["countries"]["SE"]["surgeMaxMultiplier"], "description": "The zone's surge maximum, set by the admin (×1 to ×6, v0.6.0, owner 2026-10-27): every source (manual schedule, scheduled windows, smart surge) is kept within it."},
-                         "smart": ref("SmartSurge"), "scheduled": arr(ref("ScheduledSurge"))}, ["maxMultiplier", "smart", "scheduled"],
+S["PricingSurge"] = obj({"maxMultiplier": {**n(minimum=1, maximum=PR["maxMultiplier"]), "deprecated": True, "description": "Deprecated in v0.7.1 and ignored: the maximum of each surge is the value the admin chose on its slider (owner 2026-10-27, no extra box). Kept readable for one release."},
+                         "smart": ref("SmartSurge"), "scheduled": arr(ref("ScheduledSurge"), description="v0.7.1: overlapping windows, the higher multiplier counts."),
+                         "notifyDrivers": {**b("Deprecated in v0.7.2 and ignored: drivers get no surge notice (owner 2026-10-28, contract.json#surgeNoticeRemoved)."), "deprecated": True, "default": False}}, ["smart", "scheduled"],
                         "Surge sources after the zone's surge schedule (§3.4): " + PR["surgeSource"])
 S["PricingDocument"] = obj(OrderedDict([
     ("version", i("Server-stamped revision of the zone's live pricing document (contract.json#configVersion).", minimum=1)), ("publishedAt", ref("Timestamp")),
@@ -705,12 +708,11 @@ S["PricingDocument"] = obj(OrderedDict([
     ("priceStep", money("The total is rounded once, half-up, to a multiple of this (admin fees.rounding).")),
     ("categories", {"type": "object", "propertyNames": ref("CategoryId"), "additionalProperties": ref("CategoryPricing")}),
     ("fees", ref("PricingFees")),
-    ("stopFreeWaitMin", {**n(minimum=0, maximum=30), "default": 3, "description": "Free minutes at each stop (owner decision 20)."}),
     ("fixedRoutes", arr(ref("FixedRoute"))),
     ("surge", ref("PricingSurge")),
     ("fleetCommissionPct", n("Fleet owner's share (admin Pricing); not in the rider's fare.", minimum=0, maximum=30)),
     ("usesStandard", b("v0.8.0: set by the server when it serves or uses the country standard for this zone (contract.json#configDocs.standard).")),
-]), ["version", "publishedAt", "zoneId", "currency", "country", "priceStep", "categories", "fees", "stopFreeWaitMin", "fixedRoutes", "surge", "fleetCommissionPct"],
+]), ["version", "publishedAt", "zoneId", "currency", "country", "priceStep", "categories", "fees", "fixedRoutes", "surge", "fleetCommissionPct"],
     "Server-only (contract.json#configDocs): the zone's prices, read by the server's quote engine. Never served to the apps. " + PR["note"] + " Sample: fixtures/config/pricing_document.json.",
     **{"x-server-only": True})
 S["DispatchModeRules"] = obj({"on": b(), "drivers": i(minimum=1, maximum=30, description="radar: shown at once (1-30); exclusive: tried one after the other per radius step (1-10)."),
@@ -764,7 +766,7 @@ S["AdminMe"] = obj(OrderedDict([("adminId", ref("Id")), ("email", s(format="emai
                                 ("permissions", arr(ref("AdminPermission"), uniqueItems=True, description="Fully expanded; super has all of them.")),
                                 ("scope", ref("AdminScope")), ("language", ref("Language")),
                                 ("idleTimeoutSeconds", {**i(minimum=AA["idleTimeoutMinutesRange"][0] * 60, maximum=AA["idleTimeoutMinutesRange"][1] * 60), "default": AA["idleTimeoutSecondsDefault"]}),
-                                ("approvalExempt", b("True for Super admin: changes go live at once, never 202 pending_approval (owner decision 14)."))]),
+                                ("approvalExempt", b("v0.7.2: true for every admin (one admin is enough everywhere, owner 2026-10-28): changes go live at once, never 202 pending_approval."))]),
                    ["adminId", "email", "name", "role", "permissions", "scope", "idleTimeoutSeconds", "approvalExempt"], "The signed-in admin (maps 1:1 onto the panel's Agent; adminId = id).")
 S["AdminSession"] = obj({"accessToken": s(minLength=1), "refreshToken": s("Opaque, rotated on every refresh.", minLength=1),
                          "expiresIn": {**i(minimum=1), "default": AA["accessExpiresSeconds"]}, "actor": s(const="admin"), "admin": ref("AdminMe")},
@@ -897,10 +899,10 @@ S["EndEarlyCommand"] = obj(dict(EV, reasonCode=ref("RiderCancelReasonCode"), not
 S["CancelReasonCommand"] = obj({"reasonCode": ref("RiderCancelReasonCode"), "note": s(maxLength=1000)}, ["reasonCode"],
                                "The reason a rider tells after a cancel-first (owner decision 6, v0.4.4). No expectedVersion: "
                                "the trip's version does not change.")
-PRICE_EXTRAS = {"babySeats": i("v0.6.0: baby seats asked for, 0-3; priced at babySeatFee, which only child_seat has.", minimum=0, maximum=PR["requestExtras"]["maxSeats"]),
-       "childSeats": i("v0.6.0: child seats asked for, 0-3; priced at childSeatFee, which only child_seat has.", minimum=0, maximum=PR["requestExtras"]["maxSeats"]),
-       "airportPickup": b("v0.6.0: the pickup is at an airport: fees.airportPickup in the airport line."),
-       "airportDropoff": b("v0.6.0: the drop-off is at an airport: fees.airportDropoff in the airport line."),
+PRICE_EXTRAS = {"babySeats": {**i("v0.6.0, deprecated in v0.7.1 (read for one release): above 0 on any category but child_seat is 400 seat_not_offered; on child_seat it changes nothing (the trip always includes one seat).", minimum=0, maximum=3), "deprecated": True},
+       "childSeats": {**i("v0.6.0, deprecated in v0.7.1: as babySeats.", minimum=0, maximum=3), "deprecated": True},
+       "airportPickup": {**b("v0.6.0, deprecated in v0.7.1: ignored; the server decides the airport fees from the airport zones."), "deprecated": True},
+       "airportDropoff": {**b("v0.6.0, deprecated in v0.7.1: ignored."), "deprecated": True},
        "fixedRouteId": {"allOf": [ref("Id")], "description": "v0.6.0: one of the zone's fixed routes; for a route of the quoted category the fixed_route line replaces the ride part, otherwise the category is priced normally."}}
 S["QuoteRequest"] = obj({"pickup": ref("Place"), "dropoff": ref("Place"), "stops": arr(ref("Place"), description="MUST be sent (may be empty)."),
                          "categoryIds": arr(ref("CategoryId"), description="Omit for every category in the zone."),
@@ -981,10 +983,10 @@ S["AdminNoShowCommand"] = obj(dict(EV, note=s(minLength=1, maxLength=1000), waiv
 S["AdminCompleteCommand"] = obj(dict(EV, fare=ref("Money"), note=s(minLength=1, maxLength=1000)), ["expectedVersion", "note"])
 S["AdminRefundCommand"] = obj(dict(EV, amount=ref("Money"), paymentId=ref("Id"), reason=s(minLength=1, maxLength=1000)),
                               ["expectedVersion", "amount", "reason"],
-                              "Above refundLimit[role][country] → 202 pending_approval.")
+                              "v0.7.2: runs at once for every admin with the permission (one admin is enough, owner 2026-10-28).")
 S["AdminAdjustCommand"] = obj(dict(EV, fare=ref("Money"), waitingSeconds=i(minimum=0), waiveCancelFee=b(),
                                    reason=s(minLength=1, maxLength=1000)), ["expectedVersion", "reason"],
-                              "Fare / waiting / cancel-fee correction. Over the role limit → 202 pending_approval.")
+                              "Fare / waiting / cancel-fee correction; runs at once (v0.7.2, one admin is enough).")
 S["DriverStatusCommand"] = obj(dict(EV, accountStatus=ref("DriverAccountStatus"), note=s(minLength=1, maxLength=1000)),
                                ["expectedVersion", "accountStatus", "note"])
 S["RiderStatusCommand"] = obj(dict(EV, status=s(enum=["active", "suspended"]), note=s(minLength=1, maxLength=1000)),
@@ -1110,7 +1112,7 @@ def op(method, path, opId, summary, actors, tag, params=(), body=None, ok=(200, 
     else:
         sch = schema if isinstance(schema, dict) else ref(schema)
         rs[str(code)] = {"description": ok_desc or "OK", "headers": HDR_REQ, "content": {"application/json": {"schema": sch}}}
-    if approval: rs["202"] = rref("PendingApproval")
+    # v0.7.2 (owner 2026-10-28): one admin is enough everywhere, so no operation answers 202 pending_approval any more.
     rs["400"] = rref("BadRequest"); rs["401"] = rref("Unauthenticated"); rs["403"] = rref("Forbidden"); rs["404"] = rref("NotFound")
     if mutation: rs["409"] = rref("Conflict")
     rs["429"] = rref("RateLimited"); rs["503"] = rref("Unavailable")
@@ -1390,7 +1392,7 @@ for seg, cmd, opid, body, summ, perm, appr, okc in [
        mutation=True, transition=cmd, approval=appr, permission=perm, permission_v050="payments.edit" if seg == "refund" else "trips.edit",
        desc=(None if cmd else "Not a lifecycle transition (status unchanged; paymentStatus/fare change and emit payment_updated / trip_projection).")
             if not appr else ("Not a lifecycle transition (status unchanged; paymentStatus/fare change and emit payment_updated / trip_projection). " if not cmd else "")
-            + "Above the role limit → 202 pending_approval, except for a Super admin (approvalExempt): 200 / 201 at once, written in the audit (owner decision 14).")
+            + "v0.7.2 (owner 2026-10-28, one admin is enough): 200 / 201 at once for every admin with the permission, written in the audit.")
 op("get", "/admin/trips/{tripId}/offers", "adminListTripOffers", "Offers of a trip (who has it, countdown)", ["admin"], "Admin · Dispatch",
    params=TID + AL, ok=(200, "OfferPage"), permission="trips.read")
 op("get", "/admin/trips/{tripId}/nearby-drivers", "adminNearbyDrivers", "Active drivers near the trip's pickup", ["admin"], "Admin · Dispatch",
@@ -1471,7 +1473,7 @@ op("get", "/admin/zones/{zoneId}/surge", "adminGetSurge", "The zone's current su
 PATHS["/admin/zones/{zoneId}/surge"]["get"]["responses"]["204"] = {"description": "No surge schedule", "headers": HDR_REQ}
 op("put", "/admin/zones/{zoneId}/surge", "adminPutSurge", "Create or replace the zone's surge schedule (curve)", ["admin"], "Admin · Config",
    params=[pref("ZoneId")], body="SurgeScheduleCommand", ok=(200, "SurgeSchedule"), mutation=True, approval=True, permission="settings.publish", permission_v050="pricing.edit",
-   desc="contract.json#surge, CONTRACT.md §3.4. Points above the zone's cap → 400 invalid_request. Above the role limit → 202 pending_approval. New quotes price from it at once; quotes already given keep their multiplier.")
+   desc="contract.json#surge, CONTRACT.md §3.4. Points above the zone's cap → 400 invalid_request. v0.7.2: runs at once for every admin with settings.publish (one admin is enough). New quotes price from it at once; quotes already given keep their multiplier.")
 op("post", "/admin/zones/{zoneId}/surge/end", "adminEndSurge", "End the schedule now (back to ×1.0)", ["admin"], "Admin · Config",
    params=[pref("ZoneId")], body="ConfigPublishCommand", ok=(200, "SurgeSchedule"), mutation=True, permission="settings.publish", permission_v050="pricing.edit")
 op("get", "/admin/audit", "adminListAudit", "Server-written audit log", ["admin"], "Admin · Governance",
@@ -1555,7 +1557,7 @@ op("get", "/admin/zones/{zoneId}/dispatch-control", "adminGetDispatchControl", "
    params=[pref("ZoneId")], ok=(200, "DispatchControl"), permission="trips.read")
 op("put", "/admin/zones/{zoneId}/dispatch-control", "adminPutDispatchControl", "Pause dispatch or force a mode in a zone", ["admin"], "Admin · Dispatch",
    params=[pref("ZoneId")], body="DispatchControlCommand", ok=(200, "DispatchControl"), mutation=True, approval=True, permission="dispatch.edit",
-   desc="CONTRACT.md §3.6. Pause or force a mode: Super admin at once (200), others 202 pending_approval (owner decision 14). Resume / back to rules (paused false, mode null): 200 for everyone. "
+   desc="CONTRACT.md §3.6. v0.7.2 (one admin is enough): pause, force a mode, resume and back to rules run at once (200) for every admin with dispatch.edit. "
         "Forcing a mode that is off → 400 invalid_request (mode_off). Running searches stop new offers while paused; a forced mode applies to new searches.")
 op("get", "/admin/live/drivers", "adminLiveDrivers", "Driver positions for the admin live map", ["admin"], "Admin · Dispatch",
    params=[pref("ZoneIdQuery")], ok=(200, "LiveDriverList"), permission="trips.read",
@@ -1574,6 +1576,68 @@ TAG_DESC = {"Auth": "Sign-in, tokens and push devices for the rider and driver a
             "Maps": "Address search, geocoding and road routes through the server (v0.5.1); read-only, no Idempotency-Key",
             "Telemetry": "Fire-and-forget app logs, analytics and crashes (v0.5.1); no auth required", "Trips": "Shared trip resource (rider, driver, admin)", "Realtime": "Streams: SSE (or WebSocket) + JSON replay",
             "Deprecated": "Legacy /rides aliases kept for one release"}
+# ---- v0.7.1: pricing rework part 2 (owner Pricing decisions 2026-10-27)
+CC = C["categoryCatalog"]
+PARAMS["CategoryIdPath"] = {"name": "categoryId", "in": "path", "required": True, "schema": ref("CategoryId")}
+PARAMS["StopIndex"] = {"name": "stopIndex", "in": "path", "required": True, "schema": {"type": "integer", "minimum": 0, "maximum": 9}, "description": "0-based index into TripProjection.stops."}
+S["StopVisit"] = obj({"stopIndex": i(minimum=0), "arrivedAt": ref("Timestamp"), "leftAt": ref("Timestamp")}, ["stopIndex", "arrivedAt"],
+                     "v0.7.1: one extra stop the driver arrived at (contract.json#stopWaits); stop_waiting runs from arrivedAt to leftAt (or to complete).")
+S["StopCommand"] = obj(dict(EV), ["expectedVersion"], "v0.7.1: the driver's arrived-at-stop or leaving-stop tap.")
+for verb, oid, summ in [("arrive", "driverArriveAtStop", "Driver arrived at an extra stop (stop waiting starts)"), ("leave", "driverLeaveStop", "Driver leaves an extra stop (stop waiting ends)")]:
+    op("post", "/driver/trips/{tripId}/stops/{stopIndex}/" + verb, oid, summ, ["driver"], "Driver · Trip", params=TID + [pref("StopIndex")], body="StopCommand",
+       ok=(200, "TripProjection"), mutation=True, desc="v0.7.1. " + C["stopWaits"][verb])
+S["ConfigHistoryEntry"] = obj({"doc": ref("ConfigDocName"), "zoneId": ref("Id"), "version": i(minimum=1), "publishedAt": ref("Timestamp"), "publishedBy": ref("Id"),
+                               "note": s(), "action": s(enum=["publish", "restore"]), "restoredFrom": i(minimum=1), "document": {"type": "object"}},
+                              ["doc", "zoneId", "version", "publishedAt", "action", "document"], "v0.7.1: one published version (contract.json#pricingHistory).")
+S["ConfigHistoryEntryPage"] = {"allOf": [ref("Page"), {"type": "object", "properties": {"items": arr(ref("ConfigHistoryEntry"))}}]}
+S["ConfigRestoreCommand"] = obj(dict(EV, zoneId=ref("Id"), version=i("The version to publish again.", minimum=1), note=s(maxLength=1000)), ["expectedVersion", "zoneId", "version"])
+op("get", "/admin/config/{doc}/history", "adminConfigHistory", "Published versions of a config document, newest first", ["admin"], "Admin · Config",
+   params=[pref("ConfigDoc"), q("zoneId", ref("Id")), pref("Cursor"), pref("Limit")], ok=(200, "ConfigHistoryEntryPage"), permission="settings.read", desc="v0.7.1. " + C["pricingHistory"]["list"])
+op("post", "/admin/config/{doc}/restore", "adminRestoreConfig", "Publish an earlier version again (Restore, Undo last publish)", ["admin"], "Admin · Config",
+   params=[pref("ConfigDoc")], body="ConfigRestoreCommand", ok=(200, "ConfigPublication"), mutation=True, permission="settings.publish",
+   desc="v0.7.1. " + C["pricingHistory"]["restore"] + " " + C["pricingHistory"]["audit"])
+S["CategoryDef"] = obj({"id": ref("CategoryId"), "label": s(minLength=1, maxLength=40), "line": ref("LocalizedLine"), "seats": i(minimum=1, maximum=8),
+                        "builtIn": b("A seed category."), "sort": i(minimum=0), "archivedAt": ref("Timestamp"), "archivedBy": ref("Id"), "archiveReason": s(),
+                        "restoreUntil": ref("Timestamp")}, ["id", "label", "line", "seats", "builtIn", "sort"], "v0.7.1: " + CC["entity"])
+S["CategoryDefList"] = obj({"categories": arr(ref("CategoryDef")), "restoreDays": i(minimum=1)}, ["categories", "restoreDays"], "Active first, then the archived ones still restorable.")
+S["CategoryDefInput"] = obj({"id": ref("CategoryId"), "label": s(minLength=1, maxLength=40), "line": ref("LocalizedLine"), "seats": i(minimum=1, maximum=8), "sort": i(minimum=0)},
+                            ["label", "line", "seats"], "id only on create (else made from the label).")
+S["CategoryArchiveCommand"] = obj({"reason": s(minLength=1, maxLength=500)}, ["reason"])
+op("get", "/admin/categories", "adminListCategories", "The car type catalog (every zone)", ["admin"], "Admin · Config", ok=(200, "CategoryDefList"), permission="settings.read", desc="v0.7.1. " + CC["note"])
+op("post", "/admin/categories", "adminCreateCategory", "Add a car type (off in every zone)", ["admin"], "Admin · Config", body="CategoryDefInput", ok=(201, "CategoryDef"), mutation=True, permission="settings.publish")
+op("put", "/admin/categories/{categoryId}", "adminUpdateCategory", "Rename a car type, its sub-line and seats", ["admin"], "Admin · Config", params=[pref("CategoryIdPath")], body="CategoryDefInput", ok=(200, "CategoryDef"), mutation=True, permission="settings.publish")
+op("post", "/admin/categories/{categoryId}/archive", "adminArchiveCategory", "Delete a car type (archived, restorable)", ["admin"], "Admin · Config", params=[pref("CategoryIdPath")], body="CategoryArchiveCommand", ok=(200, "CategoryDef"), mutation=True, permission="settings.publish", desc="v0.7.1. " + CC["archive"])
+op("post", "/admin/categories/{categoryId}/restore", "adminRestoreCategory", "Restore an archived car type (old prices, off)", ["admin"], "Admin · Config", params=[pref("CategoryIdPath")], ok=(200, "CategoryDef"), mutation=True, permission="settings.publish", desc="v0.7.1. " + CC["restore"])
+
+# ---- v0.7.2: real surge data for the admin, the driver's surge map, one admin everywhere (owner 2026-10-28)
+SL = C["surgeLive"]; DSM = C["driverSurgeMap"]
+S["SurgeSource"] = s(enum=["manual", "scheduled", "smart", "off"])
+S["ZoneSurgeNow"] = obj({"zoneId": ref("Id"), "multiplier": n(minimum=1, maximum=6), "source": ref("SurgeSource"), "until": ref("Timestamp"), "scheduleId": ref("Id"),
+                         "profileId": s(), "requests": i(minimum=0), "freeDrivers": i(minimum=0), "ratio": n(minimum=0), "checkedAt": ref("Timestamp")},
+                        ["zoneId", "multiplier", "source", "requests", "freeDrivers", "ratio"], "v0.7.2: " + SL["now"])
+S["SurgeNowList"] = obj({"at": ref("Timestamp"), "zones": arr(ref("ZoneSurgeNow"))}, ["at", "zones"])
+S["SurgePoint"] = obj({"at": ref("Timestamp"), "requests": i(minimum=0), "freeDrivers": i(minimum=0), "ratio": n(minimum=0), "multiplier": n(minimum=1, maximum=6)},
+                      ["at", "requests", "freeDrivers", "ratio", "multiplier"], "v0.7.2: " + SL["points"])
+S["PriceCheck"] = obj({"windowMin": i(minimum=1), "saw": i(minimum=0), "left": i(minimum=0), "leftPct": i(minimum=0, maximum=100)}, ["windowMin", "saw", "left", "leftPct"], "v0.7.2: " + SL["priceCheck"])
+S["SurgeEffect"] = obj({"drivers": i(), "ridesPct": i(), "leftPct": i(minimum=0, maximum=100)}, ["drivers", "ridesPct", "leftPct"])
+S["SurgeTimelineItem"] = obj({"at": ref("Timestamp"), "kind": s(enum=["manual_start", "manual_stop", "scheduled_start", "scheduled_end", "smart_change", "smart_end"]),
+                              "multiplier": n(minimum=1, maximum=6), "previous": n(minimum=1, maximum=6), "by": s(), "profileId": s(), "effect": ref("SurgeEffect")},
+                             ["at", "kind", "multiplier"], "v0.7.2: " + SL["timeline"])
+S["SurgeHistory"] = obj({"zoneId": ref("Id"), "from": ref("Timestamp"), "to": ref("Timestamp"), "bucketMin": i(enum=[5, 10, 15, 30, 60]),
+                         "points": arr(ref("SurgePoint")), "priceCheck": ref("PriceCheck"), "timeline": arr(ref("SurgeTimelineItem"))},
+                        ["zoneId", "from", "to", "bucketMin", "points", "priceCheck", "timeline"], "v0.7.2: " + SL["history"])
+op("get", "/admin/surge/now", "adminSurgeNow", "The surge now in each zone, with its demand", ["admin"], "Admin · Config",
+   params=[q("zoneIds", s("Comma-separated zone ids; none = every zone in the admin's scope."))], ok=(200, "SurgeNowList"), permission="settings.read", desc="v0.7.2. " + SL["note"] + " " + SL["now"])
+op("get", "/admin/zones/{zoneId}/surge/history", "adminSurgeHistory", "Demand chart, rider price check and surge timeline of a zone", ["admin"], "Admin · Config",
+   params=[pref("ZoneId"), q("hours", i(minimum=1, maximum=24, default=6)), q("bucketMin", i(enum=[5, 10, 15, 30, 60], default=10))], ok=(200, "SurgeHistory"), permission="settings.read",
+   desc="v0.7.2. " + SL["history"] + " " + SL["samples"])
+S["SurgeLevel"] = s(enum=["low", "medium", "high"], description="v0.7.2: " + DSM["levels"])
+S["ZoneBounds"] = obj({"south": n(minimum=-90, maximum=90), "west": n(minimum=-180, maximum=180), "north": n(minimum=-90, maximum=90), "east": n(minimum=-180, maximum=180)}, ["south", "west", "north", "east"])
+S["DriverSurgeZone"] = obj({"zoneId": ref("Id"), "level": ref("SurgeLevel"), "bounds": ref("ZoneBounds")}, ["zoneId", "level", "bounds"], "v0.7.2: never the multiplier.")
+S["DriverSurgeMap"] = obj({"at": ref("Timestamp"), "zones": arr(ref("DriverSurgeZone"))}, ["at", "zones"], "v0.7.2: " + DSM["note"])
+op("get", "/driver/surge-map", "driverSurgeMap", "Zones with a surge now, as colour levels for the Home map", ["driver"], "Driver · Session",
+   ok=(200, "DriverSurgeMap"), desc="v0.7.2. " + DSM["route"] + " " + DSM["refresh"] + " " + DSM["tip"])
+
 doc = OrderedDict()
 doc["openapi"] = "3.1.0"
 doc["info"] = {

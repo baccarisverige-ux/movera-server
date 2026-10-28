@@ -37,6 +37,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     pickup: row.pickup,
     dropoff: row.dropoff,
     stops: row.stops ?? [],
+    // v0.7.1 (§3.8): the driver's arrived-at-stop / leaving-stop taps.
+    ...(((row.stop_visits as unknown[] | null) ?? []).length ? { stopVisits: row.stop_visits } : {}),
     fare: money(row.fare_minor, currency),
     fareLines: viewer === "rider" ? lines.filter((l) => !DRIVER_ONLY_LINES.has(l.code)) : lines,
     paymentMethod: row.payment_method,

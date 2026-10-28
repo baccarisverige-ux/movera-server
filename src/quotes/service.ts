@@ -7,7 +7,9 @@ import { liveDocument } from "../config/service.js";
 import { zoneAt } from "../config/zoneLookup.js";
 import type { LatLng, Router } from "../maps/routing.js";
 import { FareError, priceFare, type FareLine, type PricingDocument } from "../rules/fare.js";
-import { documentSurgeAt, extrasOf, type PriceExtras } from "../rules/priceExtras.js";
+import { asksSeatOutsideChildSeat, riderExtras, type PriceExtras } from "../rules/priceExtras.js";
+import { airportExtras } from "../pricing/airport.js";
+import { surgeFor, type DocSurge } from "../pricing/surge.js";
 
 /**
  * POST /quotes (contract §3.5, §7): a price per category for one route, from the pickup zone's published pricing
@@ -67,9 +69,9 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   const owed = Number(rider.outstanding_minor);
   const outstanding = owed > 0 ? { outstandingFee: { amountMinor: owed, currency: pricing.document.currency }, ...(rider.outstanding_source_trip_id ? { outstandingSourceTripId: rider.outstanding_source_trip_id } : {}) } : {};
 
-  // v0.6.0 (§3.5): seats, airport and fixed route as the rider asked; the surge in force now (pricing surge.scheduled).
-  const extras = extrasOf(body as unknown as Record<string, unknown>);
-  const surge = documentSurgeAt((pricing.document as unknown as { surge?: Parameters<typeof documentSurgeAt>[0] }).surge, now);
+  // v0.7.1 (§3.5, §16): the rider's fixed route; the airport fees from the airport zones (the server decides).
+  const extras: PriceExtras = { ...riderExtras(body as unknown as Record<string, unknown>), ...(await airportExtras(trx, body.pickup, body.dropoff)) };
+  const docSurge = (pricing.document as unknown as { surge?: DocSurge }).surge;
 
   const wanted = body.categoryIds ?? Object.keys(pricing.document.categories).sort(byCatalogOrder);
   const quotes: QuoteView[] = [];
@@ -80,6 +82,10 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
       if (body.categoryIds !== undefined) throw badRequest(`${categoryId} is not offered here.`, "category_not_offered");
       continue;
     }
+    // v0.7.1: one seat fee, only on Child Seat; a seat asked for on another car type is refused.
+    if (asksSeatOutsideChildSeat(body as unknown as Record<string, unknown>, categoryId)) throw badRequest(`${categoryId} has no child seat; book Child Seat.`, "seat_not_offered");
+    // The surge in force now: the manual surge, else the highest planned window, else smart surge.
+    const surge = await surgeFor(trx, zone.zoneId, docSurge, categoryId, now);
     let fare;
     try {
       // Stops are quoted with no waiting; the fare at the end adds what really happened.

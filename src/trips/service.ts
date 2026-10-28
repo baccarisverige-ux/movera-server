@@ -7,7 +7,7 @@ import type { TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { nextStatus, TERMINAL, type TripStatus } from "../rules/transitions.js";
-import { sameExtras } from "../rules/priceExtras.js";
+import { sameExtras, asksSeatOutsideChildSeat } from "../rules/priceExtras.js";
 import { fixView } from "../drivers/service.js";
 import { haversineKm } from "../maps/routing.js";
 import { DISPATCH } from "../dispatch/engine.js";
@@ -68,8 +68,9 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
     samePlace(quote.dropoff as Place, body.dropoff) &&
     quotedStops.length === body.stops.length &&
     quotedStops.every((stop, i) => samePlace(stop, body.stops[i]!)) &&
-    // v0.6.0 (§3.5): seats, airport and fixed route repeat the quote's.
+    // §3.5: the fixed route repeats the quote's (v0.7.1: the airport zones are the server's, seats are never sent).
     sameExtras(quote.price_extras, request as Record<string, unknown>);
+  if (asksSeatOutsideChildSeat(request as Record<string, unknown>, body.categoryId)) throw badRequest(`${body.categoryId} has no child seat; book Child Seat.`, "seat_not_offered");
   if (!matches) throw badRequest("The ride does not match its price. Ask for a new one.", "quote_mismatch");
   if (!options.paymentMethods.includes(body.paymentMethod)) {
     throw badRequest(`${body.paymentMethod} is not available; pay with ${options.paymentMethods.join(" or ")}.`, "payment_method_not_available");

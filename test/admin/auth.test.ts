@@ -115,7 +115,7 @@ describe("sign-in", () => {
     const { email, adminId } = await newAdmin("ops");
     const res = await post("/admin/auth/sign-in", { email: email.toUpperCase(), password: PASSWORD });
     expect(res.statusCode).toBe(200);
-    expect(res.json().admin).toMatchObject({ adminId, role: "ops", approvalExempt: false });
+    expect(res.json().admin).toMatchObject({ adminId, role: "ops", approvalExempt: true });
   });
 
   it("unknown e-mail, wrong password and deactivated account get the same 401 invalid_credentials", async () => {

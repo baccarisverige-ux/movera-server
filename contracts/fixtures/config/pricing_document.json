@@ -385,10 +385,6 @@
         "amountMinor": 600,
         "currency": "SEK"
       },
-      "babySeatFee": {
-        "amountMinor": 1500,
-        "currency": "SEK"
-      },
       "childSeatFee": {
         "amountMinor": 1500,
         "currency": "SEK"
@@ -430,7 +426,6 @@
     },
     "tollsPassThrough": true
   },
-  "stopFreeWaitMin": 3,
   "fixedRoutes": [],
   "surge": {
     "maxMultiplier": 3.0,
