@@ -1,4 +1,6 @@
-# Movera shared contract v0.12.0
+# Movera shared contract v0.13.0
+
+v0.13.0 (owner 2026-10-28 and "chat only support roles in their zones"; X-Api-Version stays `0.5`, additive except the chat window): **Trip chat, masked calls and support scope** (§23, `contract.json#chat`, `contract.json#support.adminScope`): admins read and write trip chat and tickets only with `support.reply` and only in their zones (403 `zone_out_of_scope`); the trip chat closes at drop-off (409 `invalid_transition`, reason `chat_closed`; the earlier 1 hour after the trip is gone); chat messages are kept 90 days, those of a trip with a safety case stay with the case; `POST /trips/{tripId}/call` → `TripCall { tripId, proxyNumber, expiresAt }` or 503 `unavailable`, reason `call_unavailable`; no real phone number of the other side in any rider or driver payload; no fleet owner ↔ driver chat. Builds on v0.12.0 (safety part 2, §22).
 
 v0.12.0 (owner safety part 2, 2026-10-28; X-Api-Version stays `0.5`, additive): **Ride check answers** (§22, `contract.json#safety.rideCheck`): `POST /rider/trips/{tripId}/ride-check` and `POST /driver/trips/{tripId}/ride-check` with `RideCheckReport { checkId, trigger, at, answer?: ok | need_help, position? }` → `RideCheckReceipt`. "I'm OK" is only saved on the trip; "I need help" opens the trip's `ride_check` incident with the red alarm and the 2-minute escalation; no answer within 120 s opens it without sound. `Incident` gains `alarm` and `rideCheck`; `ride_check` joins `safety.alarmKinds` (alarm only with `alarm: true`). Builds on v0.11.0; the version is reconciled with the other open contract changes at merge.
 
@@ -140,7 +142,7 @@ Refund { refundId, paymentId, amount: Money, reason, status: pending_approval | 
 WalletEntry { entryId, ownerId, amount: Money, kind: topup | charge | refund | payout | adjustment, tripId?, at }
 Rating { tripId, from: rider | driver, stars: 1..5 (whole stars, integer), tags[], comment? }
 Notification { notificationId, audience: rider | driver, kind, title, body, at, read }
-Message { messageId, tripId, from: rider | driver | support, text, at }
+Message { messageId, tripId, from: rider | driver | support, text, at }   (v0.13.0: §23)
 ```
 
 Status enums (exact values in `contract.json`): `TripStatus` (19), `PaymentStatus`, `RatingStatus`, `DriverAccountStatus`, `DriverOnlineStatus`, `OfferKind`, `OfferStatus`.
@@ -725,3 +727,14 @@ Owner safety part 2 decisions (2026-10-28); values in `contract.json#safety.ride
 - **When.** Only the trip's own rider or driver, while the trip is live (the SOS statuses) or up to `completedWithinMinutes` (30) after it completed (`dropped_far` comes at the end); otherwise `409 invalid_transition` with the trip.
 - **Idempotent.** The app keeps the Idempotency-Key per report and retries until it gets an answer. The same `checkId` is the same check: a shown report for a known check changes nothing; `ok` then `need_help` moves to `need_help`; `need_help` then `ok` keeps `need_help`. The answer is `RideCheckReceipt { checkId, tripId, answer?, receivedAt, incidentId? }`; after answering the app shows only "Sent" (no later update).
 - **Incident.** `kind: ride_check`, `severity: critical`, `alarm`, `rideCheck { checkId, trigger, by: rider | driver, answer: need_help | no_answer, shownAt?, answeredAt?, lateAnswer? }`, `position` (the phone's GPS from the report, when sent), with the usual trip, zone, rider, driver, car position and statuses (§15). `GET /admin/incidents?kind=ride_check` lists them; the stream carries them with the same zone rules. Every `Incident` now has `alarm` (`true` for `sos` and `driver_silent`): the panel rings for open incidents with `alarm: true` until taken.
+
+## 23. Trip chat, masked calls and support scope (v0.13.0)
+
+Owner decisions "chat only support roles in their zones" and of 2026-10-28; the machine-readable rules are in `contract.json#chat` and `contract.json#support`.
+
+- **Who.** The trip chat (`GET|POST /trips/{tripId}/messages`) is between the trip's own rider and driver; anyone else is `404 not_found`. An admin reads and writes it only with `support.reply` (reading too) and only for a trip in one of the admin's zones; a Super admin sees all. Without the permission `403 forbidden`; outside the zones `403 forbidden`, reason `zone_out_of_scope`. There is no fleet owner ↔ driver chat.
+- **Window.** Open while a driver is on the trip (`contract.json#tripStatus.driverAssigned`: `accepted` … `approaching_dropoff`) until drop-off. When the trip ends, the rider and the driver can no longer write (`409 invalid_transition`, reason `chat_closed`); the earlier hour after the trip is removed. The history stays readable while it is kept. Support may still write on an ended trip.
+- **Retention.** A daily job deletes chat messages older than 90 days. Messages of a trip with a safety case (any incident on the trip: SOS, `driver_silent`, …) are kept with the case.
+- **No phone numbers.** No rider or driver payload (trip views, `Message`, realtime envelopes, tickets in the apps) carries the other side's real phone number. The person's own profile keeps their own.
+- **Calls.** `POST /trips/{tripId}/call` (the trip's rider or driver, while the chat is open) → `200 TripCall { tripId, proxyNumber, expiresAt }`: the app dials `proxyNumber` and the telephony provider bridges the call without showing either number. While no provider is set up (the server default) the answer is `503 unavailable`, reason `call_unavailable`, and the app hides the call button (the chat stays). After drop-off `409 invalid_transition`, reason `chat_closed`. **The owner must pick a telephony provider** (number masking); its keys live in the server environment, never in git.
+- **Support tickets.** `POST /support/tickets`, `GET /support/tickets`, `GET /support/tickets/{ticketId}`: a rider or driver sees only their own tickets (another's is `404`); a `tripId` must be the caller's own trip. `GET /admin/tickets`, `GET /admin/tickets/{ticketId}`, `POST /admin/tickets/{ticketId}/reply` need `support.reply` and the ticket's zone in the admin's zones (a ticket without zone: Super admin only); every reply is audited.

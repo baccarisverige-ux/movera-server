@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { authenticate } from "../auth/guard.js";
+import { authenticate, type Principal } from "../auth/guard.js";
 import type { Db } from "../db/db.js";
 import { tripEventsAfter } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
@@ -11,6 +11,8 @@ import { nearbyVehicles } from "../riders/nearby.js";
 import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
 import { tripProjection } from "./projection.js";
 import { listMessages, sendMessage } from "./messages.js";
+import { callTripPeer } from "./call.js";
+import { disabledTelephony, type TelephonyProvider } from "../telephony/provider.js";
 import { eventEnvelope } from "../realtime/events.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
@@ -22,7 +24,7 @@ import { activeTrip, createTrip, getTrip, raisePrice, riderCancel, riderTrips, s
 
 const NearbyQuery = z.object({ lat: z.coerce.number().min(-90).max(90), lng: z.coerce.number().min(-180).max(180) });
 
-export type TripDeps = { db: Db; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date };
+export type TripDeps = { db: Db; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date; telephony?: TelephonyProvider };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional() });
@@ -43,6 +45,9 @@ const keyOf = (request: FastifyRequest) => {
   const value = request.headers["idempotency-key"];
   return Array.isArray(value) ? value[0] : value;
 };
+
+/** The chat's caller: an admin brings their zones and permissions (support.reply, contract v0.13.0 §22). */
+const chatWho = (who: Principal) => ({ actor: who.actor as "rider" | "driver" | "admin", subjectId: who.subjectId, zones: who.zones, ...(who.perms ? { perms: who.perms } : {}) });
 
 export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<void> {
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
@@ -134,14 +139,23 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const who = await authenticate(request, guard, ["rider", "driver", "admin"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
     const query = parseBody(MessagesQuery, request.query);
-    return listMessages(deps.db, { actor: who.actor, subjectId: who.subjectId }, tripId, { limit: query.limit, ...(query.cursor ? { cursor: query.cursor } : {}) });
+    return listMessages(deps.db, chatWho(who), tripId, { limit: query.limit, ...(query.cursor ? { cursor: query.cursor } : {}) });
   });
 
   app.post(`${API_PREFIX}/trips/:tripId/messages`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider", "driver", "admin"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await sendMessage(trx, { actor: who.actor, subjectId: who.subjectId }, tripId, request.body ?? {}, now()) }));
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await sendMessage(trx, chatWho(who), tripId, request.body ?? {}, now()) }));
     return reply.status(result.status).send(result.body);
+  });
+
+  // contract v0.13.0 §22: a masked call between the trip's rider and driver (503 call_unavailable without a provider).
+  app.post(`${API_PREFIX}/trips/:tripId/call`, async (request) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    const telephony = deps.telephony ?? disabledTelephony;
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await callTripPeer(trx, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, tripId, telephony, now()) }));
+    return result.body;
   });
 
   app.get(`${API_PREFIX}/rider/trips/active`, async (request, reply) => {
