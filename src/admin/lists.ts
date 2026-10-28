@@ -10,13 +10,13 @@ import { audit } from "./audit.js";
 
 /** Admin lists (contract §7: cursor pages, newest first) and account status changes. */
 
-const cursorOf = (at: Date, id: string) => Buffer.from(`${at.toISOString()}|${id}`).toString("base64url");
-function readCursor(cursor: string): { at: Date; id: string } {
+export const cursorOf = (at: Date, id: string) => Buffer.from(`${at.toISOString()}|${id}`).toString("base64url");
+export function readCursor(cursor: string): { at: Date; id: string } {
   const [at, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");
   if (!at || !id || Number.isNaN(Date.parse(at))) throw badRequest("The cursor is not valid.", "invalid_cursor");
   return { at: new Date(at), id };
 }
-const zonesOf = (who: Principal) => (who.zones.includes("*") ? null : who.zones);
+export const zonesOf = (who: Principal) => (who.zones.includes("*") ? null : who.zones);
 
 export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string };
 

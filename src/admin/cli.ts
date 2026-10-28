@@ -7,6 +7,7 @@ import { isAdminRole } from "./permissions.js";
 import { seedDriver } from "../drivers/service.js";
 import { seedTestAccounts } from "../drivers/seedTest.js";
 import { seedSampleConfig } from "../config/seedConfig.js";
+import { summarize } from "./kpis.js";
 
 /**
  * npm run admin -- create --email you@example.com --name "Your Name" [--role super]
@@ -27,6 +28,7 @@ const { positionals, values } = parseArgs({
     plate: { type: "string" },
     categories: { type: "string", default: "economy" },
     zones: { type: "string" },
+    from: { type: "string" },
   },
 });
 const command = positionals[0];
@@ -36,10 +38,25 @@ const usage = [
   'npm run admin -- create --email <e-mail> --name "<name>" [--role super]',
   "npm run admin -- link --email <e-mail>",
   'npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123 [--year 2020] [--categories economy,comfort] [--zones Z001,Z002]',
+  "npm run admin -- kpi-backfill --from YYYY-MM-DD   (rewrites the nightly KPI summary from that day to yesterday; safe to run again)",
   "npm run admin -- seed-test   (the test week's activated drivers, fleet and riders on the test numbers, and sample settings in open zones that have none; not for production)",
 ].join("\n  ");
 const pool = createPool(env.DATABASE_URL, 2);
 const db = createDb(pool);
+if (command === "kpi-backfill") {
+  if (!values.from) {
+    console.error(`usage:\n  ${usage}`);
+    process.exit(1);
+  }
+  try {
+    await migrate(pool);
+    const written = await db.transaction().execute((trx) => summarize(trx, new Date(), values.from));
+    console.log(`kpi summary: ${written} zone-days written from ${values.from}`);
+  } finally {
+    await db.destroy();
+  }
+  process.exit(0);
+}
 if (command === "seed-test") {
   if (env.MOVERA_ENV === "production") throw new Error("seed-test is for staging and development only.");
   try {

@@ -113,6 +113,9 @@ beforeAll(async () => {
     placeId: "plc_none",
     paymentMethodId: "pm_none",
     paymentId: newId("pay"),
+    payoutId: newId("pyt"),
+    ticketId: newId("tkt"),
+    from: "rider",
   };
 });
 afterAll(async () => {
@@ -147,6 +150,11 @@ function bodyFor(route: string): Json | undefined {
     "POST /trips/:tripId/end-early": { ...v, reasonCode: "plans_changed" },
     "POST /rider/trips/:tripId/sos": { at: "2026-10-27T10:00:00Z" },
     "POST /driver/trips/:tripId/sos": { at: "2026-10-27T10:00:00Z" },
+    "POST /admin/payouts": { driverId: ids["driverId"], from: "2026-10-01T00:00:00Z", to: "2026-10-08T00:00:00Z" },
+    "POST /admin/tickets/:ticketId/reply": { text: "audit matrix" },
+    "POST /admin/ratings/:tripId/:from/hide": { reason: "audit matrix" },
+    "POST /admin/ratings/:tripId/:from/restore": { reason: "audit matrix" },
+    "POST /support/tickets": { category: "help", subject: "audit matrix", text: "audit matrix" },
   };
   return bodies[route] ?? v;
 }

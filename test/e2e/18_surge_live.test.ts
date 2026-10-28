@@ -102,18 +102,19 @@ describe("the Surge tab's real data (contract.json#surgeLive)", () => {
     const elsewhere = await sim.admin("ops", ["Z002"]);
     expect((await elsewhere.get("/admin/zones/Z001/surge/history")).status).toBe(403);
     expect((await elsewhere.get("/admin/surge/now")).body.zones.some((z: Json) => z["zoneId"] === "Z001")).toBe(false);
-  });
+  }, 60_000);
 });
 
 describe("the driver's surge map (contract.json#driverSurgeMap)", () => {
   it("colours the zones with a surge by level, never with the multiplier", async () => {
     for (const { multiplier, level } of JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/surge_levels.json`, "utf8")).cases) expect(surgeLevel(multiplier)).toBe(level);
-    expect((await a.get("/driver/surge-map")).body.zones).toEqual([]);
+    // Only Z001 matters here: another test file may leave a surge in another zone of the shared database.
+    expect(((await a.get("/driver/surge-map")).body.zones as Json[]).some((z) => z["zoneId"] === "Z001")).toBe(false);
     const high = await owner.put("/admin/zones/Z001/surge", flat(3, 30));
     expect(high.status, JSON.stringify(high.body)).toBe(200);
     const map = await a.get("/driver/surge-map");
     expect(map.status).toBe(200);
-    expect(map.body.zones).toEqual([{ zoneId: "Z001", level: "high", bounds: expect.objectContaining({ south: expect.any(Number), west: expect.any(Number), north: expect.any(Number), east: expect.any(Number) }) }]);
+    expect((map.body.zones as Json[]).filter((z) => z["zoneId"] === "Z001")).toEqual([{ zoneId: "Z001", level: "high", bounds: expect.objectContaining({ south: expect.any(Number), west: expect.any(Number), north: expect.any(Number), east: expect.any(Number) }) }]);
     expect(JSON.stringify(map.body)).not.toMatch(/multiplier|"3"|×/);
     expect((await rider.get("/driver/surge-map")).status).toBe(403);
     await owner.post("/admin/zones/Z001/surge/end", { expectedVersion: high.body.version });

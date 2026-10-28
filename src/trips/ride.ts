@@ -1,3 +1,4 @@
+import { checkTags } from "../admin/ratings.js";
 import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
 import { sql, type Updateable } from "kysely";
 import type { TripsTable } from "../db/schema.js";
@@ -778,6 +779,8 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
   const rating = body as RatingBody;
   if (!rating.skip && rating.stars === undefined) throw badRequest("Give 1 to 5 stars, or skip.", "stars_missing");
   if (rating.tip) throw badRequest("Tips are not available yet.", "tips_not_available");
+  // contract v0.9.0: tags from the fixed list for this rater (contract.json#ratings.tags).
+  if (!rating.skip) checkTags(who.actor, rating.tags ?? []);
   const trip = await lockOwnTrip(trx, tripId, who);
   const allowed =
     trip.status === "completed" ||
