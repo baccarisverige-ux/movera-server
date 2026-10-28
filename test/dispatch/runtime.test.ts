@@ -176,5 +176,9 @@ describe("automatic dispatch at run time", () => {
     const force = await call(app, "PUT", "/admin/zones/Z001/dispatch-control", ops.headers, { expectedVersion: 2, paused: false, mode: "radar" });
     expect(force.statusCode, force.body).toBe(200);
     expect(force.json()).toMatchObject({ zoneId: "Z001", paused: false, mode: "radar", version: 3 });
+    // Contract v0.7.2: one admin is enough, a non-Super admin pauses at once too (no 202 second-admin wait).
+    const opsPause = await call(app, "PUT", "/admin/zones/Z001/dispatch-control", ops.headers, { expectedVersion: 3, paused: true, mode: null });
+    expect(opsPause.statusCode, opsPause.body).toBe(200);
+    expect(opsPause.json()).toMatchObject({ paused: true, version: 4 });
   });
 });
