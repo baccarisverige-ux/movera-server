@@ -15,6 +15,7 @@ import { tripProjection } from "../trips/projection.js";
 import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver, scaledFare } from "../trips/ride.js";
 import { audit } from "./audit.js";
 import { registerApprovalHandler, runOrRequest, type PendingApproval } from "./approvals.js";
+import { resumTripDay } from "./kpis.js";
 
 /**
  * The admin's trip tools (contract §3, §3.1; owner decisions 30–34): cancel, reassign, direct assign, radar
@@ -291,6 +292,8 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
     const share = fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0;
     if (share > 0) await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
   }
+  // v0.10.3: refunds count on the trip's day; an earlier day's summary is re-summed now.
+  await resumTripDay(trx, trip.trip_id, now);
   const all = p.amount.amountMinor === left;
   await touchTrip(trx, trip, { payment_status: all ? "refunded" : "partially_refunded" }, now);
   const row = await trx.selectFrom("refunds").selectAll().where("refund_id", "=", refundId).executeTakeFirstOrThrow();

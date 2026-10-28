@@ -23,7 +23,7 @@ const lyon = [[45.79, 4.78], [45.79, 4.92], [45.71, 4.92], [45.71, 4.78]];
 const zoneOf = async (admin: Admin, zoneId: string): Promise<Json> => ((await admin.get("/admin/zones")).body["zones"] as Json[]).find((z) => z["zoneId"] === zoneId)!;
 const GARE_DE_LYON = { address: "Gare de Lyon", lat: 48.8443, lng: 2.3744 };
 
-describe("seed (migration 0027)", () => {
+describe("seed (migration 0028)", () => {
   it("Paris & Île-de-France, CDG and ORY are open, Grand Tunis closed, with names and outlines", async () => {
     const res = await owner.get("/admin/zones");
     expect(res.status).toBe(200);

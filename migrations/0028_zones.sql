@@ -1,4 +1,4 @@
--- movera-server migration 0027: zones from the server (contract v0.11.0 §20, owner 2026-10-28 and decision #9 "the
+-- movera-server migration 0028: zones from the server (contract v0.11.0 §21, owner 2026-10-28 and decision #9 "the
 -- server's list is the truth; the admin reads it and creates zones on the server").
 --
 -- A zone gets its names in sv, fr and en, the outline the admin draws on the map (polygon, [[lat, lng], ...]) and a
