@@ -1,5 +1,6 @@
 import { checkTags } from "../admin/ratings.js";
 import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
+import { rideCheckHandlers } from "../safety/rideCheck.js";
 import { sql, type Updateable } from "kysely";
 import type { TripsTable } from "../db/schema.js";
 import { contract } from "../contract/contract.js";
@@ -860,5 +861,5 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
   return { driverId, period: input.period, timeZone: tz, periods };
 }
 
-export const rideHandlers: Record<string, TimerHandler> = { [NEAR_DROPOFF]: nearDropoffHandler, [DRIVER_SILENCE]: driverSilenceHandler, ...incidentHandlers };
+export const rideHandlers: Record<string, TimerHandler> = { [NEAR_DROPOFF]: nearDropoffHandler, [DRIVER_SILENCE]: driverSilenceHandler, ...incidentHandlers, ...rideCheckHandlers };
 export type { Who };

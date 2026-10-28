@@ -151,6 +151,8 @@ function bodyFor(route: string): Json | undefined {
     "POST /trips/:tripId/end-early": { ...v, reasonCode: "plans_changed" },
     "POST /rider/trips/:tripId/sos": { at: "2026-10-27T10:00:00Z" },
     "POST /driver/trips/:tripId/sos": { at: "2026-10-27T10:00:00Z" },
+    "POST /rider/trips/:tripId/ride-check": { checkId: "rc-matrix", trigger: "long_stop", at: "2026-10-27T10:00:00Z" },
+    "POST /driver/trips/:tripId/ride-check": { checkId: "rc-matrix", trigger: "long_stop", at: "2026-10-27T10:00:00Z" },
     "POST /admin/payouts": { driverId: ids["driverId"], from: "2026-10-01T00:00:00Z", to: "2026-10-08T00:00:00Z" },
     "POST /admin/tickets/:ticketId/reply": { text: "audit matrix" },
     "POST /admin/ratings/:tripId/:from/hide": { reason: "audit matrix" },
