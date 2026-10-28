@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import type { Trx } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { liveDocument } from "../config/service.js";
@@ -32,6 +33,8 @@ export async function autoOfflineIfDue(trx: Trx, driverId: string, tripId: strin
     .where("offers.driver_id", "=", driverId)
     .where("offers.status", "in", ["claimed", "declined", "expired"])
     .orderBy("offers.answered_at", "desc")
+    // An accept and a miss answered at the same instant: the accept counts as the newer one (the run starts again).
+    .orderBy(sql`offers.status = 'claimed'`, "desc")
     .orderBy("offers.offer_id", "desc")
     .limit(500);
   if (driver.online_since !== null) query = query.where("offers.answered_at", ">=", driver.online_since);
