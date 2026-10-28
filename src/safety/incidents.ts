@@ -74,6 +74,7 @@ export function incidentView(row: IncidentRow, driverPosition?: unknown): Record
     raisedBy: row.raised_by,
     openedAt: row.opened_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
+    alarm: row.alarm,
   };
   const optional: Record<string, unknown> = {
     tripId: row.trip_id ?? undefined,
@@ -88,12 +89,13 @@ export function incidentView(row: IncidentRow, driverPosition?: unknown): Record
     resolvedBy: row.resolved_by ?? undefined,
     resolvedAt: iso(row.resolved_at),
     resolution: row.resolution ?? undefined,
+    rideCheck: row.ride_check ?? undefined,
   };
   for (const [k, v] of Object.entries(optional)) if (v !== undefined) out[k] = v;
   return out;
 }
 
-async function appendIncidentEvent(trx: Trx, row: IncidentRow, kind: EventKind, now: Date): Promise<void> {
+export async function appendIncidentEvent(trx: Trx, row: IncidentRow, kind: EventKind, now: Date): Promise<void> {
   await sql`SELECT pg_advisory_xact_lock(${EVENT_LOCK})`.execute(trx);
   const next = await trx.selectFrom("incident_events").select(sql<string>`coalesce(max(sequence), 0) + 1`.as("n")).executeTakeFirstOrThrow();
   const sequence = Number(next.n);
@@ -104,7 +106,12 @@ async function appendIncidentEvent(trx: Trx, row: IncidentRow, kind: EventKind, 
   await sql`SELECT pg_notify(${INCIDENT_EVENTS_CHANNEL}, ${JSON.stringify({ sequence })})`.execute(trx);
 }
 
-async function openIncident(trx: Trx, trip: TripRow, input: { kind: string; raisedBy: "rider" | "driver" | "system"; position?: Position | undefined }, now: Date): Promise<IncidentRow> {
+export async function openIncident(
+  trx: Trx,
+  trip: TripRow,
+  input: { kind: string; raisedBy: "rider" | "driver" | "system"; position?: Position | undefined; alarm?: boolean; rideCheck?: Record<string, unknown> },
+  now: Date,
+): Promise<IncidentRow> {
   const driverFix = await latestFix(trx, trip.driver_id);
   const row = await trx
     .insertInto("incidents")
@@ -119,18 +126,20 @@ async function openIncident(trx: Trx, trip: TripRow, input: { kind: string; rais
       driver_id: trip.driver_id,
       position: input.position ? JSON.stringify(input.position) : null,
       driver_fix: driverFix ? JSON.stringify(driverFix) : null,
+      alarm: input.alarm ?? true,
+      ride_check: input.rideCheck ? JSON.stringify(input.rideCheck) : null,
       opened_at: now,
       updated_at: now,
     })
     .returningAll()
     .executeTakeFirstOrThrow();
   await appendIncidentEvent(trx, row, "incident_opened", now);
-  if (SAFETY.alarmKinds.includes(input.kind)) await scheduleTimer(trx, { kind: INCIDENT_ESCALATE, refId: row.incident_id, dueAt: new Date(now.getTime() + ESCALATE_MS) });
+  if (row.alarm && SAFETY.alarmKinds.includes(input.kind)) await scheduleTimer(trx, { kind: INCIDENT_ESCALATE, refId: row.incident_id, dueAt: new Date(now.getTime() + ESCALATE_MS) });
   await audit(trx, { adminId: null, action: "incident.open", targetType: "incident", targetId: row.incident_id, zoneId: row.zone_id, detail: { kind: row.kind, raisedBy: row.raised_by, tripId: row.trip_id }, at: now });
   return row;
 }
 
-async function openOf(ex: Executor, tripId: string, kind: string): Promise<IncidentRow | undefined> {
+export async function openOf(ex: Executor, tripId: string, kind: string): Promise<IncidentRow | undefined> {
   return ex.selectFrom("incidents").selectAll().where("trip_id", "=", tripId).where("kind", "=", kind).where("status", "in", [...OPEN]).executeTakeFirst();
 }
 
@@ -173,7 +182,7 @@ export async function closeDriverSilent(trx: Trx, tripId: string, now: Date): Pr
 /** Two minutes untaken: every signed-in admin is alerted from now on. */
 export const escalateHandler: TimerHandler = async (trx, timer) => {
   const row = await trx.selectFrom("incidents").selectAll().where("incident_id", "=", timer.refId).forUpdate().executeTakeFirst();
-  if (!row || row.status !== "open" || row.escalated_at) return;
+  if (!row || row.status !== "open" || row.escalated_at || !row.alarm) return;
   const updated = await trx.updateTable("incidents").set({ escalated_at: timer.firedAt, updated_at: timer.firedAt }).where("incident_id", "=", row.incident_id).returningAll().executeTakeFirstOrThrow();
   await appendIncidentEvent(trx, updated, "incident_escalated", timer.firedAt);
 };

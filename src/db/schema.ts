@@ -813,6 +813,26 @@ export interface IncidentsTable {
   resolved_by: ColumnType<string | null, string | null | undefined, string | null>;
   resolved_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   resolution: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.12.0 §22 (migration 0029): rings the admin alarm and escalates. */
+  alarm: Generated<boolean>;
+  /** v0.12.0 §22: Incident.rideCheck, kind ride_check only. */
+  ride_check: ColumnType<unknown, string | null | undefined, string | null>;
+}
+
+/** contract v0.12.0 §22: one ride check an app reported (migration 0029). */
+export interface RideChecksTable {
+  trip_id: string;
+  side: "rider" | "driver";
+  check_id: string;
+  trigger: string;
+  subject_id: string;
+  shown_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  answer: ColumnType<"ok" | "need_help" | null, "ok" | "need_help" | null | undefined, "ok" | "need_help" | null>;
+  answered_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  no_answer_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  position: ColumnType<unknown, string | null | undefined, string | null>;
+  incident_id: ColumnType<string | null, string | null | undefined, string | null>;
+  created_at: Timestamp;
 }
 
 export interface IncidentEventsTable {
@@ -918,6 +938,7 @@ export interface Database {
   refunds: RefundsTable;
   incidents: IncidentsTable;
   incident_events: IncidentEventsTable;
+  ride_checks: RideChecksTable;
   payouts: PayoutsTable;
   support_tickets: SupportTicketsTable;
   ticket_messages: TicketMessagesTable;
