@@ -12,7 +12,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { tripProjection } from "../trips/projection.js";
 import { riderCancel } from "../trips/service.js";
-import { runOrRequest, registerApprovalHandler, type PendingApproval } from "../admin/approvals.js";
+import { registerApprovalHandler } from "../admin/approvals.js";
 import type { DispatchDoc } from "./engine.js";
 import { acceptOffer, declineOffer, keepWaiting, offerView } from "./runtime.js";
 import type { Trx } from "../db/db.js";
@@ -170,13 +170,9 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
       if (doc && !doc.document[body.mode].on) throw badRequest(`${body.mode} is switched off in this zone's rules.`, "mode_off");
     }
     const payload = { zoneId, expectedVersion: body.expectedVersion, paused: body.paused, mode: body.mode };
-    const result = await runIdempotent<Record<string, unknown> | PendingApproval>(deps.db, idem(request, who), async (trx) => {
-      // Resume and back to the rules apply at once for everyone; pausing or forcing waits for a second admin
-      // unless a Super admin does it (owner decision 14).
-      if (!body.paused && body.mode === null) return { status: 200, body: await setControl(trx, payload, who.subjectId, now()) };
-      const ran = await runOrRequest<Record<string, unknown>>(trx, who, { action: CONTROL_ACTION, targetType: "config", targetId: `dispatch-control:${zoneId}`, zoneId, payload, approvePermission: "dispatch.approve" }, now());
-      return ran.ran ? { status: 200, body: ran.result } : { status: 202, body: ran.pending };
-    });
+    const result = await runIdempotent<Record<string, unknown>>(deps.db, idem(request, who), async (trx) =>
+      // Contract v0.7.2 (one admin is enough): pause, force a mode, resume and back to the rules apply at once.
+      ({ status: 200, body: await setControl(trx, payload, who.subjectId, now()) }));
     return reply.status(result.status).send(result.body);
   });
 }

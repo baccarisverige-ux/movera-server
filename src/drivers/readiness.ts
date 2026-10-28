@@ -2,7 +2,7 @@ import type { Executor } from "../db/db.js";
 import { requiredDocuments } from "./onboardingRules.js";
 
 /**
- * Contract v0.10.1 (driverOnboarding.activation, owner decision 2026-10-28): which required documents still lack an
+ * Contract v0.14.0 (driverOnboarding.activation, owner decision 2026-10-28): which required documents still lack an
  * approved one. Items read "<scope>:<type>" (driver:terms, fleet:company_registration, vehicle:insurance).
  * Account activation and car approval are separate: a missing car never holds an account back.
  */

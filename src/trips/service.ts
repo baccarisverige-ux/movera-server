@@ -76,6 +76,9 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   if (!options.paymentMethods.includes(body.paymentMethod)) {
     throw badRequest(`${body.paymentMethod} is not available; pay with ${options.paymentMethods.join(" or ")}.`, "payment_method_not_available");
   }
+  // v0.11.0 §20: a zone closed since the quote takes no new rides ("Movera isn't here yet").
+  const zoneRow = await trx.selectFrom("zones").select("open").where("zone_id", "=", quote.zone_id).executeTakeFirst();
+  if (zoneRow?.open !== true) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
   const rider = await trx.selectFrom("riders").select(["status"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
   if (rider.status !== "active") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
   // v0.10.0 §19 Legal: new terms published with reaccept must be accepted before booking.

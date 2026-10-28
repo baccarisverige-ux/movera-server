@@ -11,7 +11,7 @@ import { approveDriverDocuments, approveFleetDocuments, approveVehicleDocuments,
 import { call, testWorld } from "../support/world.js";
 
 /**
- * Contract v0.10.1 (driverOnboarding.activation, owner decision 2026-10-28): activation needs the person's driver
+ * Contract v0.14.0 (driverOnboarding.activation, owner decision 2026-10-28): activation needs the person's driver
  * documents, and for a fleet owner the company's too; no car. A car is picked or driven only with its documents approved.
  */
 

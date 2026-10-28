@@ -58,7 +58,7 @@ export async function insertTrip(
   return tripId;
 }
 
-/** Contract v0.10.1: activation needs every required driver document approved; tests that activate seed them here. */
+/** Contract v0.14.0: activation needs every required driver document approved; tests that activate seed them here. */
 export async function approveDriverDocuments(db: Db, driverId: string, only?: string[]): Promise<void> {
   const { requiredDocuments } = await import("../../src/drivers/onboardingRules.js");
   const row = await db.selectFrom("drivers").select("country").where("driver_id", "=", driverId).executeTakeFirstOrThrow();
@@ -72,7 +72,7 @@ export async function approveDriverDocuments(db: Db, driverId: string, only?: st
   }
 }
 
-/** Contract v0.10.1: a car is picked only with every required car document approved. */
+/** Contract v0.14.0: a car is picked only with every required car document approved. */
 export async function approveVehicleDocuments(db: Db, vehicleId: string, driverId: string, country: string, only?: string[]): Promise<void> {
   const { requiredDocuments } = await import("../../src/drivers/onboardingRules.js");
   const now = new Date();

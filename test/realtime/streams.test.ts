@@ -156,6 +156,22 @@ describe("config stream", () => {
     expect(await until(() => again.events.length === 1)).toBe(true);
     again.close();
   });
+
+  it("zones (any zone) and this zone's content arrive on the rider and driver streams (v0.11.0, v0.10.0)", async () => {
+    const owner = await adminSession(app, database.db, "super");
+    const sse = await listen("/rider/config/stream?zoneId=Z001", firstRider);
+    expect(sse.status).toBe(200);
+    const zones = (await call(app, "GET", "/admin/zones", owner.headers)).json().zones as Array<{ zoneId: string; version: number }>;
+    const tunis = zones.find((z) => z.zoneId === "TN-TC")!;
+    await call(app, "PUT", "/admin/zones/TN-TC", owner.headers, { expectedVersion: tunis.version, names: { sv: "Stor-Tunis", fr: "Grand Tunis", en: "Tunis area" } });
+    expect(await until(() => sse.events.length === 1)).toBe(true);
+    expect(sse.events[0]).toMatchObject({ id: "1", data: { kind: "config_published", doc: "zones", zoneId: "TN-TC", version: tunis.version + 1 } });
+    await call(app, "POST", "/admin/content/help/publish", owner.headers, { zoneIds: ["Z002"], title: "Other zone", text: { sv: "a", fr: "b", en: "c" } });
+    await call(app, "POST", "/admin/content/help/publish", owner.headers, { zoneIds: ["Z001"], title: "Help", text: { sv: "a", fr: "b", en: "c" } });
+    expect(await until(() => sse.events.length === 2)).toBe(true);
+    expect(sse.events[1]!.data).toMatchObject({ kind: "config_published", doc: "content", zoneId: "Z001", version: 1 });
+    sse.close();
+  });
 });
 
 describe("listen connection", () => {

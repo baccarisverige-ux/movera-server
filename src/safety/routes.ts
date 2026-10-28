@@ -8,7 +8,8 @@ import { API_PREFIX } from "../http/prefix.js";
 import { parseBody } from "../http/validate.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
-import { adminIncident, adminIncidentCommand, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, type IncidentCommand } from "./incidents.js";
+import { adminIncident, adminIncidentCommand, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
+import { reportRideCheck } from "./rideCheck.js";
 
 /** contract v0.7.0 §15: rider and driver SOS, admin incidents and the incident feed. */
 
@@ -17,6 +18,8 @@ export type SafetyDeps = { db: Db; jwtSecret: string; hub?: NotificationHub; clo
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Position = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracyM: z.number().min(0).optional(), at: z.string().datetime() });
 const SosBody = z.object({ at: z.string().datetime(), position: Position.optional() });
+const RC = (SAFETY as unknown as { rideCheck: { triggers: [string, ...string[]]; answers: [string, ...string[]] } }).rideCheck;
+const RideCheckBody = z.object({ checkId: ID, trigger: z.enum(RC.triggers), at: z.string().datetime(), answer: z.enum(["ok", "need_help"]).optional(), position: Position.optional() });
 const CommandBody = z.object({ expectedVersion: z.number().int().min(1), note: z.string().max(1000).optional() });
 const many = <T extends z.ZodTypeAny>(item: T) => z.union([item, z.array(item)]).optional().transform((v) => (v === undefined ? undefined : Array.isArray(v) ? v : [v]));
 const Status = z.enum(["open", "investigating", "resolved", "dismissed"]);
@@ -52,6 +55,14 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
       const tripId = tripParam(request);
       const body = parseBody(SosBody, request.body);
       const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await raiseSos(trx, { actor, subjectId: who.subjectId }, tripId, clean(body), now()) }));
+      return result.body;
+    });
+    // contract v0.12.0 §22: the card showed (no answer) or was answered (ok | need_help).
+    app.post(`${API_PREFIX}/${actor}/trips/:tripId/ride-check`, async (request) => {
+      const who = await authenticate(request, guard, [actor]);
+      const tripId = tripParam(request);
+      const body = parseBody(RideCheckBody, request.body);
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await reportRideCheck(trx, { actor, subjectId: who.subjectId }, tripId, clean(body), now()) }));
       return result.body;
     });
   }
