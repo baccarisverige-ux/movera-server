@@ -26,14 +26,19 @@ export type Figures = {
   walletApplied: number;
   newRiders: number;
   newDrivers: number;
+  /** v0.10.3 (contract.json#kpis.money): tips apart, refunds on the trip's day, cancel/no-show fees, what Movera keeps. */
+  tips: number;
+  refunds: number;
+  fees: number;
+  moveraEarnings: number;
 };
 
 type Zone = { zone_id: string; time_zone: string; currency: string };
 
 /** The figures of one zone for one zone-local day (YYYY-MM-DD), counted from the trips. */
 export async function countDay(ex: Executor, zone: Zone, day: string): Promise<Figures> {
-  const bounds = sql`(${day}::date AT TIME ZONE ${zone.time_zone})`;
-  const next = sql`((${day}::date + 1) AT TIME ZONE ${zone.time_zone})`;
+  const bounds = sql`(${day}::date::timestamp AT TIME ZONE ${zone.time_zone})`;
+  const next = sql`((${day}::date + 1)::timestamp AT TIME ZONE ${zone.time_zone})`;
   const trips = await sql<Record<string, string>>`
     SELECT count(*) FILTER (WHERE status = 'completed') AS completed,
            count(*) FILTER (WHERE status LIKE 'cancelled_by_%') AS cancelled,
@@ -55,12 +60,24 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
      WHERE zone_id = ${zone.zone_id} AND created_at >= ${bounds} AND created_at < ${next}`.execute(ex);
   const drivers = await sql<{ n: string }>`
     SELECT count(*) AS n FROM drivers WHERE zone_ids[1] = ${zone.zone_id} AND created_at >= ${bounds} AND created_at < ${next}`.execute(ex);
+  // v0.10.3 money of the same trips (the trip's day): fees charged (not waived), the driver's share of them, tips, refunds done.
+  const money = await sql<Record<string, string>>`
+    WITH day_trips AS (
+      SELECT trip_id FROM trips
+       WHERE zone_id = ${zone.zone_id} AND coalesce(ended_at, updated_at) >= ${bounds} AND coalesce(ended_at, updated_at) < ${next}
+         AND status IN ('completed', 'no_show', 'cancelled_by_rider', 'cancelled_by_driver', 'cancelled_by_admin', 'cancelled_by_system'))
+    SELECT (SELECT coalesce(sum(amount_minor), 0) FROM rider_fees WHERE status <> 'waived' AND trip_id IN (SELECT trip_id FROM day_trips)) AS fees,
+           (SELECT coalesce(sum(amount_minor), 0) FROM earnings_entries WHERE kind = 'fee_share' AND trip_id IN (SELECT trip_id FROM day_trips)) AS fee_share,
+           (SELECT coalesce(sum(amount_minor), 0) FROM earnings_entries WHERE kind = 'tip' AND trip_id IN (SELECT trip_id FROM day_trips)) AS tips,
+           (SELECT coalesce(sum(amount_minor), 0) FROM refunds WHERE status = 'done' AND trip_id IN (SELECT trip_id FROM day_trips)) AS refunds`.execute(ex);
   const t = trips.rows[0]!;
+  const m = money.rows[0]!;
+  const fees = Number(m["fees"]);
   return {
     completedTrips: Number(t["completed"]),
     cancelledTrips: Number(t["cancelled"]),
     noShows: Number(t["no_shows"]),
-    gross: Number(t["gross"]),
+    gross: Number(t["gross"]) + fees,
     commission: Number(t["commission"]),
     driverEarnings: Number(t["earnings"]),
     pickupPay: Number(t["pickup"]),
@@ -69,6 +86,10 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     walletApplied: Number(t["wallet"]),
     newRiders: Number(riders.rows[0]!.n),
     newDrivers: Number(drivers.rows[0]!.n),
+    tips: Number(m["tips"]),
+    refunds: Number(m["refunds"]),
+    fees,
+    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(t["pickup"]) - Number(t["bonus"]),
   };
 }
 
@@ -101,6 +122,10 @@ export async function summarizeDay(trx: Trx, zone: Zone, day: string, now: Date)
     wallet_applied_minor: f.walletApplied,
     new_riders: f.newRiders,
     new_drivers: f.newDrivers,
+    tips_minor: f.tips,
+    refunds_minor: f.refunds,
+    fees_minor: f.fees,
+    movera_earnings_minor: f.moveraEarnings,
     computed_at: now,
   };
   await trx
@@ -142,7 +167,22 @@ const FIELD_COLUMNS: [keyof Figures, string][] = [
   ["completedTrips", "completed_trips"], ["cancelledTrips", "cancelled_trips"], ["noShows", "no_shows"], ["gross", "gross_minor"], ["commission", "commission_minor"],
   ["driverEarnings", "driver_earnings_minor"], ["pickupPay", "pickup_pay_minor"], ["driverBonus", "driver_bonus_minor"], ["cashCollected", "cash_collected_minor"],
   ["walletApplied", "wallet_applied_minor"], ["newRiders", "new_riders"], ["newDrivers", "new_drivers"],
+  ["tips", "tips_minor"], ["refunds", "refunds_minor"], ["fees", "fees_minor"], ["moveraEarnings", "movera_earnings_minor"],
 ];
+
+/**
+ * v0.10.3: a refund counts on its trip's day, so a refund for a trip of an earlier day re-sums that day's summary row
+ * at once (today's row is live anyway).
+ */
+export async function resumTripDay(trx: Trx, tripId: string, now: Date): Promise<void> {
+  const row = await sql<{ zone_id: string; time_zone: string; currency: string; d: string }>`
+    SELECT z.zone_id, z.time_zone, z.currency, to_char(coalesce(t.ended_at, t.updated_at) AT TIME ZONE z.time_zone, 'YYYY-MM-DD') AS d
+      FROM trips t JOIN zones z ON z.zone_id = t.zone_id WHERE t.trip_id = ${tripId}`.execute(trx);
+  const r = row.rows[0];
+  if (!r) return;
+  if (r.d >= (await zoneToday(trx, r.time_zone, now))) return;
+  await summarizeDay(trx, r, r.d, now);
+}
 
 /** GET /admin/kpis: one KpiDay per zone and day in [fromDate, toDate]; today live, earlier days from the summary. */
 export async function kpis(ex: Executor, who: Principal, input: { zoneId?: string; fromDate?: string; toDate?: string }, now: Date) {
@@ -166,7 +206,7 @@ export async function kpis(ex: Executor, who: Principal, input: { zoneId?: strin
       const row = byDay.get(day);
       // A past day the summary has not reached yet is left out (never shown as zeros).
       if (!row) continue;
-      days.push({ date: day, zoneId: zone.zone_id, source: "summary" as const, currency: zone.currency, ...Object.fromEntries(FIELD_COLUMNS.map(([field, column]) => [field, Number(row[column])])) });
+      days.push({ date: day, zoneId: zone.zone_id, source: "summary" as const, currency: zone.currency, ...(Object.fromEntries(FIELD_COLUMNS.map(([field, column]) => [field, Number(row[column])])) as Figures) });
     }
   }
   return { days, generatedAt: now.toISOString() };
