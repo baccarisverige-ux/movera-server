@@ -11,7 +11,7 @@ import { registerApprovalHandler, runOrRequest, type PendingApproval } from "../
 import { audit } from "../admin/audit.js";
 import { newId } from "../ids.js";
 import { contract } from "../contract/contract.js";
-import { CONFIG_DOCS, PUBLISH_ACTION, PUBLISH_PERMISSION, APPROVE_PERMISSION, configHistory, getZone, liveDocument, rewriteLive, type Publication } from "../config/service.js";
+import { CONFIG_DOCS, PUBLISH_ACTION, PUBLISH_PERMISSION, configHistory, getZone, liveDocument, rewriteLive, type Publication } from "../config/service.js";
 import { validateSchedule } from "../rules/surge.js";
 import { SLIDER_TOP, currentSchedule, scheduleView, type DocSurge } from "./surge.js";
 import { driverSurgeMap, surgeHistory, surgeNow } from "./surgeLive.js";
@@ -285,7 +285,7 @@ export async function pricingRoutes(app: FastifyInstance, deps: PricingDeps): Pr
       const ran = await runOrRequest<Publication>(
         trx,
         who,
-        { action: PUBLISH_ACTION, targetType: "config", targetId: doc, zoneId: body.zoneId, payload: { doc, zoneId: body.zoneId, expectedVersion: body.expectedVersion, restoreVersion: body.version, ...(body.note ? { note: body.note } : {}) }, approvePermission: APPROVE_PERMISSION[doc] },
+        { action: PUBLISH_ACTION, targetType: "config", targetId: doc, zoneId: body.zoneId, payload: { doc, zoneId: body.zoneId, expectedVersion: body.expectedVersion, restoreVersion: body.version, ...(body.note ? { note: body.note } : {}) }, approvePermission: PUBLISH_PERMISSION[doc] },
         now(),
       );
       return ran.ran ? { status: 200, body: ran.result } : { status: 202, body: ran.pending };

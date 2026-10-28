@@ -7,7 +7,6 @@ import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { seedTestPhones, TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONFIG_CHANNEL } from "../../src/config/service.js";
 import { readEnv } from "../../src/env.js";
-import { fileApproval } from "../../src/admin/approvals.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
@@ -125,67 +124,32 @@ describe("publish", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("v0.7.2: a config admin's publish goes live at once (one admin is enough), written in the audit", async () => {
+  it("v0.8.0: any admin with the publish right publishes at once (200, no second admin); without it, 403", async () => {
     const editorA = await adminSession(app, database.db, "config", { now: clock.now });
+    const viewer = await adminSession(app, database.db, "viewer", { now: clock.now });
     const doc = forZone(sample("driver_app_config"), "Z005");
     await send("PUT", "/admin/config/driver_app_config", editorA.headers, { expectedVersion: 1, zoneId: "Z005", document: doc });
-    const published = await send("POST", "/admin/config/driver_app_config/publish", editorA.headers, { expectedVersion: 2, zoneId: "Z005" });
-    expect(published.statusCode, published.body).toBe(200);
+
+    const refused = await send("POST", "/admin/config/driver_app_config/publish", viewer.headers, { expectedVersion: 2, zoneId: "Z005" });
+    expect(refused.json()).toMatchObject({ code: "forbidden", reason: "missing_permission" });
+    const asked = await send("POST", "/admin/config/driver_app_config/publish", editorA.headers, { expectedVersion: 2, zoneId: "Z005" });
+    expect(asked.statusCode).toBe(200);
+    expect(asked.json()).toEqual({ doc: "driver_app_config", zoneId: "Z005", version: 1, publishedAt: clock.now.toISOString() });
     const live = await database.db.selectFrom("config_live").selectAll().where("zone_id", "=", "Z005").executeTakeFirstOrThrow();
     expect(live).toMatchObject({ doc: "driver_app_config", version: 1, published_by: editorA.adminId });
-    expect(await database.db.selectFrom("approvals").selectAll().where("target_id", "=", "driver_app_config").where("zone_id", "=", "Z005").execute()).toEqual([]);
-    const audit = await database.db.selectFrom("admin_audit").select("action").where("admin_id", "=", editorA.adminId).execute();
-    expect(audit.map((a) => a.action)).toContain("config.publish");
+    expect(await database.db.selectFrom("approvals").select("approval_id").where("target_id", "=", "driver_app_config").execute()).toEqual([]);
   });
 
-  // An approval filed before v0.7.2 is still decided as before: by a second admin with the permission, never its asker.
-  const fileOldPublish = (asker: { adminId: string }, doc: string, zoneId: string, expectedVersion: number) =>
-    database.db.transaction().execute((trx) =>
-      fileApproval(trx, { actor: "admin", subjectId: asker.adminId, sessionId: "test", zones: [zoneId], role: "config" }, { action: "config.publish", targetType: "config", targetId: doc, zoneId, payload: { doc, zoneId, expectedVersion }, approvePermission: "settings.publish" }, clock.now),
-    );
-
-  it("an approval filed before v0.7.2: a second admin approves it; nobody approves their own", async () => {
+  it("a publish of a draft that changed since fails with version_mismatch; the version the admin sends is ignored", async () => {
     const editorA = await adminSession(app, database.db, "config", { now: clock.now });
     const editorB = await adminSession(app, database.db, "config", { now: clock.now });
-    const viewer = await adminSession(app, database.db, "viewer", { now: clock.now });
-    const doc = forZone(sample("driver_app_config"), "Z006");
-    await send("PUT", "/admin/config/driver_app_config", editorA.headers, { expectedVersion: 1, zoneId: "Z006", document: doc });
-    const pending = await fileOldPublish(editorA, "driver_app_config", "Z006", 2);
-
-    const own = await send("POST", `/admin/approvals/${pending.approvalId}/approve`, editorA.headers, {});
-    expect(own.json()).toMatchObject({ code: "forbidden", reason: "own_request" });
-    const noRight = await send("POST", `/admin/approvals/${pending.approvalId}/approve`, viewer.headers, {});
-    expect(noRight.json()).toMatchObject({ code: "forbidden", reason: "missing_permission" });
-
-    const list = await send("GET", "/admin/approvals?status=pending_approval", editorB.headers);
-    expect(list.json().items.map((a: { approvalId: string }) => a.approvalId)).toContain(pending.approvalId);
-
-    const approved = await send("POST", `/admin/approvals/${pending.approvalId}/approve`, editorB.headers, { note: "checked" });
-    expect(approved.statusCode).toBe(200);
-    expect(approved.json()).toMatchObject({ approvalId: pending.approvalId, status: "approved", requestedBy: editorA.adminId, decidedBy: editorB.adminId, decisionNote: "checked" });
-    const live = await database.db.selectFrom("config_live").selectAll().where("zone_id", "=", "Z006").executeTakeFirstOrThrow();
-    expect(live).toMatchObject({ doc: "driver_app_config", version: 1, published_by: editorA.adminId });
-    const again = await send("POST", `/admin/approvals/${pending.approvalId}/reject`, editorB.headers, {});
-    expect(again.json()).toMatchObject({ code: "conflict", reason: "approval_approved" });
-  });
-
-  it("an approval for a draft that changed since fails with version_mismatch; one older than 24 h is expired", async () => {
-    const editorA = await adminSession(app, database.db, "config", { now: clock.now });
-    const editorB = await adminSession(app, database.db, "config", { now: clock.now });
-    const doc = forZone(sample("rider_app_config"), "Z009");
+    const doc = { ...forZone(sample("rider_app_config"), "Z009"), version: 41 };
     await send("PUT", "/admin/config/rider_app_config", editorA.headers, { expectedVersion: 1, zoneId: "Z009", document: doc });
-    const pending = await fileOldPublish(editorA, "rider_app_config", "Z009", 2);
     await send("PUT", "/admin/config/rider_app_config", editorB.headers, { expectedVersion: 2, zoneId: "Z009", document: doc });
-    const stale = await send("POST", `/admin/approvals/${pending.approvalId}/approve`, editorB.headers, {});
+    const stale = await send("POST", "/admin/config/rider_app_config/publish", editorA.headers, { expectedVersion: 2, zoneId: "Z009" });
     expect(stale.json()).toMatchObject({ code: "version_mismatch", reason: "draft_changed" });
-
-    const later = await fileOldPublish(editorA, "rider_app_config", "Z009", 3);
-    advance(24 * 3600 + 1);
-    const nextDay = await adminSession(app, database.db, "config", { now: clock.now });
-    const expired = await send("POST", `/admin/approvals/${later.approvalId}/approve`, nextDay.headers, {});
-    expect(expired.json()).toMatchObject({ code: "conflict", reason: "approval_expired" });
-    const list = await send("GET", "/admin/approvals?status=expired", nextDay.headers);
-    expect(list.json().items.map((a: { approvalId: string }) => a.approvalId)).toContain(later.approvalId);
+    const ok = await send("POST", "/admin/config/rider_app_config/publish", editorA.headers, { expectedVersion: 3, zoneId: "Z009" });
+    expect(ok.json()).toMatchObject({ version: 1 });
   });
 
   it("dispatch rules need dispatch.edit; the publish replays with the same key", async () => {

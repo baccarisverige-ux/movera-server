@@ -117,6 +117,7 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
         fare_lines: JSON.stringify(fare.fareLines),
         driver_earnings_minor: fare.driverEarnings.amountMinor,
         pricing_version: pricing.version,
+        pricing_scope: pricing.scope,
         payment_method: body.paymentMethod ?? null,
         expires_at: expiresAt,
         used_at: null,

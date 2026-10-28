@@ -7,7 +7,7 @@ import { readEnv } from "../../src/env.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { NORRMALM, SODERMALM, call, fixedRouter, signIn } from "../support/world.js";
 
-/** seed-test's starting settings: the contract's samples, published once in every open zone that has none. */
+/** seed-test's starting settings: the contract's samples, published once as each country's standard (v0.8.0). */
 
 let database: TestDatabase;
 let app: FastifyInstance;
@@ -25,23 +25,25 @@ afterAll(async () => {
 });
 
 describe("sample settings", () => {
-  it("publishes every document in every open zone once, and keeps what a zone already has", async () => {
-    const open = (await database.db.selectFrom("zones").select("zone_id").where("open", "=", true).execute()).map((z) => z.zone_id);
+  it("publishes every document once as the standard of each country with an open zone, and keeps what is there (v0.8.0)", async () => {
+    const open = await database.db.selectFrom("zones").select(["zone_id", "country"]).where("open", "=", true).execute();
+    const countries = [...new Set(open.map((z) => z.country))].sort();
     const first = await database.db.transaction().execute((trx) => seedSampleConfig(trx, now));
-    expect(first).toHaveLength(open.length * 4);
-    for (const zoneId of open) {
-      const docs = first.filter((p) => p.zoneId === zoneId).map((p) => p.doc).sort();
+    expect(first).toHaveLength(countries.length * 4);
+    for (const country of countries) {
+      const docs = first.filter((p) => p.zoneId === `standard-${country}`).map((p) => p.doc).sort();
       expect(docs).toEqual(["dispatch", "driver_app_config", "pricing", "rider_app_config"]);
     }
-    const live = await database.db.selectFrom("config_live").select(["zone_id", "document"]).where("doc", "=", "pricing").execute();
+    const live = await database.db.selectFrom("config_live").select(["zone_id", "document"]).execute();
+    expect(live.every((row) => row.zone_id.startsWith("standard-"))).toBe(true);
     for (const row of live) expect((row.document as { zoneId: string }).zoneId).toBe(row.zone_id);
     expect(await database.db.transaction().execute((trx) => seedSampleConfig(trx, now))).toEqual([]);
   });
 
   it("prices Paris in euro, converted from the Swedish sample", async () => {
-    const live = await database.db.selectFrom("config_live").select("document").where("doc", "=", "pricing").where("zone_id", "=", "FR-PC").executeTakeFirstOrThrow();
+    const live = await database.db.selectFrom("config_live").select("document").where("doc", "=", "pricing").where("zone_id", "=", "standard-FR").executeTakeFirstOrThrow();
     const doc = live.document as { currency: string; country: string; timeZone: string; priceStep: { amountMinor: number; currency: string }; categories: Record<string, { base: { amountMinor: number; currency: string } }> };
-    expect(doc).toMatchObject({ zoneId: "FR-PC", currency: "EUR", country: "FR", timeZone: "Europe/Paris" });
+    expect(doc).toMatchObject({ zoneId: "standard-FR", currency: "EUR", country: "FR", timeZone: "Europe/Paris" });
     // 29,00 kr × 0.09 = 2,61 € → whole 10 cents.
     expect(doc.categories["economy"]!.base).toEqual({ amountMinor: 260, currency: "EUR" });
     expect(doc.priceStep).toEqual({ amountMinor: 10, currency: "EUR" });
