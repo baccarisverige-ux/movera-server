@@ -7,6 +7,9 @@ import { liveDocument } from "../config/service.js";
 import { zoneAt } from "../config/zoneLookup.js";
 import type { LatLng, Router } from "../maps/routing.js";
 import { FareError, priceFare, type FareLine, type PricingDocument } from "../rules/fare.js";
+import { asksSeatOutsideChildSeat, riderExtras, type PriceExtras } from "../rules/priceExtras.js";
+import { airportExtras } from "../pricing/airport.js";
+import { surgeFor, type DocSurge } from "../pricing/surge.js";
 
 /**
  * POST /quotes (contract §3.5, §7): a price per category for one route, from the pickup zone's published pricing
@@ -26,7 +29,7 @@ function byCatalogOrder(a: string, b: string): number {
 }
 
 type Place = { address?: string; lat: number; lng: number };
-export type QuoteRequest = { pickup: Place; dropoff: Place; stops: Place[]; categoryIds?: string[]; kind?: "live" | "scheduled"; scheduledAt?: string; paymentMethod?: string };
+export type QuoteRequest = { pickup: Place; dropoff: Place; stops: Place[]; categoryIds?: string[]; kind?: "live" | "scheduled"; scheduledAt?: string; paymentMethod?: string } & PriceExtras;
 
 export type QuoteView = {
   quoteId: string;
@@ -38,6 +41,7 @@ export type QuoteView = {
   dropoff: Place;
   stops: Place[];
   surgeMultiplier: number;
+  surge?: { multiplier: number; until?: string };
 };
 
 export type QuoteList = { quotes: QuoteView[]; zoneId: string; serverTime: string };
@@ -65,6 +69,10 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   const owed = Number(rider.outstanding_minor);
   const outstanding = owed > 0 ? { outstandingFee: { amountMinor: owed, currency: pricing.document.currency }, ...(rider.outstanding_source_trip_id ? { outstandingSourceTripId: rider.outstanding_source_trip_id } : {}) } : {};
 
+  // v0.7.1 (§3.5, §16): the rider's fixed route; the airport fees from the airport zones (the server decides).
+  const extras: PriceExtras = { ...riderExtras(body as unknown as Record<string, unknown>), ...(await airportExtras(trx, body.pickup, body.dropoff)) };
+  const docSurge = (pricing.document as unknown as { surge?: DocSurge }).surge;
+
   const wanted = body.categoryIds ?? Object.keys(pricing.document.categories).sort(byCatalogOrder);
   const quotes: QuoteView[] = [];
   const expiresAt = new Date(now.getTime() + QUOTE_TTL_SECONDS * 1000);
@@ -74,10 +82,14 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
       if (body.categoryIds !== undefined) throw badRequest(`${categoryId} is not offered here.`, "category_not_offered");
       continue;
     }
+    // v0.7.1: one seat fee, only on Child Seat; a seat asked for on another car type is refused.
+    if (asksSeatOutsideChildSeat(body as unknown as Record<string, unknown>, categoryId)) throw badRequest(`${categoryId} has no child seat; book Child Seat.`, "seat_not_offered");
+    // The surge in force now: the manual surge, else the highest planned window, else smart surge.
+    const surge = await surgeFor(trx, zone.zoneId, docSurge, categoryId, now);
     let fare;
     try {
       // Stops are quoted with no waiting; the fare at the end adds what really happened.
-      fare = priceFare(pricing.document, { categoryId, km, minutes, kind, stopWaitSeconds: body.stops.map(() => 0), ...outstanding });
+      fare = priceFare(pricing.document, { categoryId, km, minutes, kind, stopWaitSeconds: body.stops.map(() => 0), surgeMultiplier: surge.multiplier, ...extras, ...outstanding });
     } catch (error) {
       if (error instanceof FareError) throw new ApiError("unavailable", "Prices for this area are not usable right now.", { reason: "pricing_invalid" });
       throw error;
@@ -99,11 +111,13 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
         duration_seconds: leg.durationSeconds,
         route_source: leg.source,
         surge_multiplier: fare.surgeMultiplier,
+        price_extras: JSON.stringify(extras),
         currency: fare.total.currency,
         total_minor: fare.total.amountMinor,
         fare_lines: JSON.stringify(fare.fareLines),
         driver_earnings_minor: fare.driverEarnings.amountMinor,
         pricing_version: pricing.version,
+        pricing_scope: pricing.scope,
         payment_method: body.paymentMethod ?? null,
         expires_at: expiresAt,
         used_at: null,
@@ -120,6 +134,7 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
       dropoff: body.dropoff,
       stops: body.stops,
       surgeMultiplier: fare.surgeMultiplier,
+      ...(fare.surgeMultiplier > 1 ? { surge: { multiplier: fare.surgeMultiplier, ...(surge.until ? { until: surge.until } : {}) } } : {}),
     });
   }
   return { quotes, zoneId: zone.zoneId, serverTime: now.toISOString() };

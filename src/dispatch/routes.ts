@@ -79,7 +79,11 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     const after = afterQuery ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : 0);
     const read = async (from: number) =>
       deps.db.selectFrom("offer_events").selectAll().where("driver_id", "=", who.subjectId).where("sequence", ">", String(from)).orderBy("sequence").limit(200).execute();
-    const envelope = (row: Awaited<ReturnType<typeof read>>[number]) => ({ eventId: row.event_id, sequence: Number(row.sequence), kind: row.kind, occurredAt: row.occurred_at.toISOString(), serverTime: now().toISOString(), offer: row.offer });
+    const envelope = (row: Awaited<ReturnType<typeof read>>[number]) => {
+      // v0.8.0 (contract.json#autoOffline): the run's last miss carries driverOffline beside the offer.
+      const { driverOffline, ...offer } = row.offer as Record<string, unknown>;
+      return { eventId: row.event_id, sequence: Number(row.sequence), kind: row.kind, occurredAt: row.occurred_at.toISOString(), serverTime: now().toISOString(), offer, ...(driverOffline === true ? { driverOffline: true } : {}) };
+    };
     if (!wantsEventStream(request)) {
       const rows = await read(after);
       return { items: rows.map(envelope), nextCursor: rows.length === 200 ? String(rows[rows.length - 1]!.sequence) : null };

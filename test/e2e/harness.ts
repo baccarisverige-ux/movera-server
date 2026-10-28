@@ -1,4 +1,5 @@
 import { DISPATCH_EVENTS_CHANNEL } from "../../src/dispatch/feed.js";
+import { pricingHandlers } from "../../src/pricing/surge.js";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import http from "node:http";
@@ -100,7 +101,7 @@ export class Sim {
       if (timingOut) appendFileSync(timingOut, `${JSON.stringify(row)}\n`);
     });
     sim.worker = new TimerWorker(db, {
-      handlers: { ...dispatchHandlers, ...rideHandlers },
+      handlers: { ...dispatchHandlers, ...rideHandlers, ...pricingHandlers },
       logger: { warn: () => undefined, error: (data, message) => sim.timerErrors.push({ data, message }) },
       clock: () => sim.clock.now,
     });
@@ -218,14 +219,21 @@ export class Sim {
     return stream;
   }
 
-  /** Publishes a changed copy of a zone's live settings document as a Super admin would (Admin › Config). */
-  async publish(admin: Admin, doc: "pricing" | "dispatch" | "rider_app_config" | "driver_app_config", zoneId: string, change: (document: Json) => Json): Promise<void> {
-    const draft = await admin.get(`/admin/config/${doc}?zoneId=${zoneId}`);
-    if (draft.status !== 200) throw new Error(`read ${doc}: ${draft.status} ${JSON.stringify(draft.body)}`);
-    const put = await admin.put(`/admin/config/${doc}`, { expectedVersion: draft.body["version"], zoneId, document: change(structuredClone(draft.body["document"])) });
+  /**
+   * Publishes a changed copy of a zone's live settings document as a Super admin would (Admin › Config). v0.8.0:
+   * `scope` "SE" style (two capitals) is a country's standard or country_rules (?country=).
+   */
+  async publish(admin: Admin, doc: "pricing" | "dispatch" | "rider_app_config" | "driver_app_config" | "country_rules", scope: string, change: (document: Json) => Json, first?: Json): Promise<Json> {
+    const at = /^[A-Z]{2}$/.test(scope) ? { country: scope } : { zoneId: scope };
+    const query = "country" in at ? `country=${at.country}` : `zoneId=${at.zoneId}`;
+    const draft = await admin.get(`/admin/config/${doc}?${query}`);
+    if (draft.status !== 200 && !(draft.status === 404 && first)) throw new Error(`read ${doc}: ${draft.status} ${JSON.stringify(draft.body)}`);
+    const start = draft.status === 200 ? { version: draft.body["version"], document: draft.body["document"] } : { version: 1, document: first };
+    const put = await admin.put(`/admin/config/${doc}`, { expectedVersion: start.version, ...at, document: change(structuredClone(start.document)) });
     if (put.status !== 200) throw new Error(`put ${doc}: ${put.status} ${JSON.stringify(put.body)}`);
-    const published = await admin.post(`/admin/config/${doc}/publish`, { expectedVersion: put.body["version"], zoneId });
+    const published = await admin.post(`/admin/config/${doc}/publish`, { expectedVersion: put.body["version"], ...at });
     if (published.status !== 200) throw new Error(`publish ${doc}: ${published.status} ${JSON.stringify(published.body)}`);
+    return published.body;
   }
 }
 

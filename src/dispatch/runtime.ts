@@ -5,6 +5,7 @@ import { ApiError } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { cancelTimer, scheduleTimer, TimerBusy, type TimerHandler } from "../jobs/timers.js";
 import { liveDocument } from "../config/service.js";
+import { autoOfflineIfDue } from "./autoOffline.js";
 import { STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { pickupPayMinor, type PickupPayRate } from "../rules/pickupPay.js";
 import { applyCommand } from "../trips/commands.js";
@@ -244,6 +245,11 @@ export class FeedQueue {
     const ids = [...new Set([...this.drivers(), ...alsoLock])].sort();
     if (ids.length === 0) return;
     await trx.selectFrom("drivers").select("driver_id").where("driver_id", "in", ids).orderBy("driver_id").forUpdate().execute();
+    // v0.8.0 (contract.json#autoOffline): a declined or expired Exclusive offer may end a run that sets the driver offline.
+    for (const e of this.events) {
+      const missed = e.offer["kind"] === "exclusive" && (e.offer["status"] === "declined" || e.offer["status"] === "expired");
+      if (missed && (await autoOfflineIfDue(trx, e.driverId, e.offer["tripId"] as string, now))) e.offer = { ...e.offer, driverOffline: true };
+    }
     for (const e of this.events) {
       const bumped = await trx.updateTable("drivers").set({ offer_seq: sql`offer_seq + 1` }).where("driver_id", "=", e.driverId).returning("offer_seq").executeTakeFirstOrThrow();
       const sequence = Number(bumped.offer_seq);

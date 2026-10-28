@@ -182,7 +182,13 @@ export interface TripsTable {
   distance_meters: ColumnType<number | null, number | null | undefined, number | null>;
   duration_seconds: ColumnType<number | null, number | null | undefined, number | null>;
   surge_multiplier: ColumnType<string, number | string | undefined, number | string>;
+  /** v0.6.0: the quote's babySeats, childSeats, airportPickup, airportDropoff, fixedRouteId (priced again at the end). */
+  price_extras: JsonDefault<Record<string, unknown>>;
   pricing_version: ColumnType<number | null, number | null | undefined, number | null>;
+  /** v0.8.0: config scope of that pricing document (the zone id, or standard-<CC>); null before v0.8.0 = the zone. */
+  pricing_scope: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.8.0 (contract.json#bookingSnapshot): the rules of booking time; null before v0.8.0 = the live settings. */
+  booking_rules: ColumnType<unknown, string | null | undefined, string | null>;
   quote_expires_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   notes: ColumnType<string | null, string | null | undefined, string | null>;
   search_step: ColumnType<unknown, string | null | undefined, string | null>;
@@ -200,6 +206,7 @@ export interface TripsTable {
   cancelled_driver_ids: ColumnType<string[], string[] | undefined, string[] | RawBuilder<string[]>>;
   created_at: Timestamp;
   updated_at: Timestamp;
+  stop_visits: JsonDefault<unknown[]>;
 }
 
 export interface TripEventsTable {
@@ -345,7 +352,7 @@ export interface ZonesTable {
   east: number;
 }
 
-export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch";
+export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch" | "country_rules";
 
 export interface ConfigDraftsTable {
   doc: ConfigDoc;
@@ -374,6 +381,8 @@ export interface ConfigHistoryTable {
   published_by: string | null;
   approved_by: string | null;
   note: string | null;
+  action: Generated<"publish" | "restore">;
+  restored_from: number | null;
 }
 
 export interface ApprovalsTable {
@@ -404,6 +413,18 @@ export interface AdminAuditTable {
   at: Timestamp;
 }
 
+/** v0.7.2 (contract.json#surgeLive.samples): one row per open zone and minute. */
+export interface SurgeSamplesTable {
+  zone_id: string;
+  at: Timestamp;
+  requests: number;
+  free_drivers: number;
+  /** numeric comes back as a string. */
+  ratio: ColumnType<string, number | string, number | string>;
+  multiplier: ColumnType<string, number | string, number | string>;
+  source: "manual" | "scheduled" | "smart" | "off";
+}
+
 export interface QuotesTable {
   quote_id: string;
   rider_id: string;
@@ -419,11 +440,15 @@ export interface QuotesTable {
   route_source: "osrm" | "estimate";
   /** numeric comes back as a string. */
   surge_multiplier: ColumnType<string, number | string | undefined, number | string>;
+  /** v0.6.0: babySeats, childSeats, airportPickup, airportDropoff, fixedRouteId as the rider sent them. */
+  price_extras: JsonDefault<Record<string, unknown>>;
   currency: string;
   total_minor: ColumnType<string, number | string, number | string>;
   fare_lines: Json;
   driver_earnings_minor: ColumnType<string, number | string, number | string>;
   pricing_version: number;
+  /** v0.8.0: the zone id, or standard-<CC> when the country standard priced the quote. */
+  pricing_scope: ColumnType<string | null, string | null | undefined, string | null>;
   payment_method: string | null;
   expires_at: Timestamp;
   used_at: Timestamp | null;
@@ -498,6 +523,8 @@ export interface OffersTable {
   expires_at: Timestamp;
   answered_at: Timestamp | null;
   decline_reason: string | null;
+  /** v0.8.0: the driver was on a trip when the offer was sent (a trigger sets it); such a miss never counts for auto-offline. */
+  driver_on_trip: Generated<boolean>;
 }
 
 export interface OfferEventsTable {
@@ -787,7 +814,50 @@ export interface IncidentEventsTable {
   occurred_at: Timestamp;
 }
 
+export interface SurgeSchedulesTable {
+  schedule_id: string;
+  zone_id: string;
+  category_ids: string[];
+  start_at: Date;
+  end_at: Date;
+  step_minutes: number;
+  cap: ColumnType<string, number | string, number | string>;
+  points: ColumnType<unknown, string, string>;
+  status: "scheduled" | "active" | "ended" | "cancelled";
+  version: number;
+  created_by: string;
+  created_at: Date;
+  ended_at: Date | null;
+}
+
+export interface SmartSurgeStateTable {
+  zone_id: string;
+  multiplier: ColumnType<string, number | string | undefined, number | string>;
+  up_since: Date | null;
+  low_since: Date | null;
+  last_change: Date | null;
+  checked_at: Date | null;
+  ratio: ColumnType<string, number | string | undefined, number | string>;
+  profile_id: string | null;
+}
+
+export interface CategoriesTable {
+  category_id: string;
+  label: string;
+  line: ColumnType<Record<string, string>, string | undefined, string>;
+  seats: number;
+  built_in: Generated<boolean>;
+  sort: Generated<number>;
+  archived_at: Date | null;
+  archived_by: string | null;
+  archive_reason: string | null;
+  updated_at: Generated<Date>;
+}
+
 export interface Database {
+  surge_schedules: SurgeSchedulesTable;
+  smart_surge_state: SmartSurgeStateTable;
+  categories: CategoriesTable;
   riders: RidersTable;
   drivers: DriversTable;
   driver_locations: DriverLocationsTable;
@@ -811,6 +881,7 @@ export interface Database {
   approvals: ApprovalsTable;
   admin_audit: AdminAuditTable;
   quotes: QuotesTable;
+  surge_samples: SurgeSamplesTable;
   vehicles: VehiclesTable;
   fleets: FleetsTable;
   fleet_join_attempts: FleetJoinAttemptsTable;

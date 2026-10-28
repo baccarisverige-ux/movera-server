@@ -1,3 +1,4 @@
+import { ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
 import { createDb, createPool, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
@@ -35,10 +36,11 @@ warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 
 if (db !== undefined) {
   await ensureMaintenanceTimers(db);
+  await ensurePricingTimers(db);
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db);
   await prepareTestWeek(db, env, app.log);
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, ...rideHandlers }, logger: app.log });
+  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, ...rideHandlers, ...pricingHandlers }, logger: app.log });
   worker.start();
 } else {
   app.log.warn("DATABASE_URL is not set: running without a database (development only)");

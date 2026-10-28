@@ -17,12 +17,22 @@ function merge(a: unknown, b: unknown): unknown {
 }
 
 describe("fares (contract fixtures/fares.json)", () => {
-  it("has the 17 cases of contract v0.5.1", () => {
-    expect(fixture.version).toBe("0.5.1");
-    expect(fixture.cases).toHaveLength(17);
+  it("has the 23 cases of contract v0.7.1", () => {
+    expect(fixture.version).toBe("0.7.1");
+    expect(fixture.cases).toHaveLength(23);
   });
 
   it.each(fixture.cases.map((c) => [c.id, c] as const))("%s", (_id, c) => {
+    if (typeof c.expect["error"] === "string") {
+      let reason: string | undefined;
+      try {
+        priceFare(merge(doc, c.overrides ?? {}) as PricingDocument, c.input);
+      } catch (error) {
+        reason = error instanceof FareError ? error.reason : String(error);
+      }
+      expect(reason).toBe(c.expect["error"]);
+      return;
+    }
     // The fixture names the earlier trip on its outstanding_fee line; the engine takes it as an input.
     const source = (c.expect["fareLines"] as Array<{ code: string; sourceTripId?: string }>).find((l) => l.code === "outstanding_fee")?.sourceTripId;
     const fare = priceFare(merge(doc, c.overrides ?? {}) as PricingDocument, { ...c.input, ...(source ? { outstandingSourceTripId: source } : {}) });

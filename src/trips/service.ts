@@ -7,10 +7,12 @@ import type { TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { nextStatus, TERMINAL, type TripStatus } from "../rules/transitions.js";
+import { sameExtras, asksSeatOutsideChildSeat } from "../rules/priceExtras.js";
 import { fixView } from "../drivers/service.js";
 import { haversineKm } from "../maps/routing.js";
 import { DISPATCH } from "../dispatch/engine.js";
-import { afterRiderCancel, riderCancelFee, riderFeeColumns } from "./ride.js";
+import { afterRiderCancel, bookingRulesFor, riderCancelFee, riderFeeColumns } from "./ride.js";
+import type { PricingDocument } from "../rules/fare.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { tripProjection, type Viewer } from "./projection.js";
@@ -37,6 +39,12 @@ type CreateTrip = {
 
 const samePlace = (a: Place, b: Place) => Math.abs(a.lat - b.lat) < 1e-7 && Math.abs(a.lng - b.lng) < 1e-7;
 
+/** The pricing document a quote was priced with (its version in its scope's history), or null. */
+async function quotedPricing(ex: Executor, quote: { zone_id: string; pricing_version: number; pricing_scope: string | null }): Promise<PricingDocument | null> {
+  const row = await ex.selectFrom("config_history").select("document").where("doc", "=", "pricing").where("zone_id", "=", quote.pricing_scope ?? quote.zone_id).where("version", "=", quote.pricing_version).executeTakeFirst();
+  return (row?.document as PricingDocument | undefined) ?? null;
+}
+
 /**
  * POST /trips: books the rider's quote. The trip starts `quoted` with the quote's price, takes `request`, and a
  * live trip takes `start_search` at once (a scheduled one stays `requested` until its time, §6.1). Dispatch starts
@@ -59,7 +67,10 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
     samePlace(quote.pickup as Place, body.pickup) &&
     samePlace(quote.dropoff as Place, body.dropoff) &&
     quotedStops.length === body.stops.length &&
-    quotedStops.every((stop, i) => samePlace(stop, body.stops[i]!));
+    quotedStops.every((stop, i) => samePlace(stop, body.stops[i]!)) &&
+    // §3.5: the fixed route repeats the quote's (v0.7.1: the airport zones are the server's, seats are never sent).
+    sameExtras(quote.price_extras, request as Record<string, unknown>);
+  if (asksSeatOutsideChildSeat(request as Record<string, unknown>, body.categoryId)) throw badRequest(`${body.categoryId} has no child seat; book Child Seat.`, "seat_not_offered");
   if (!matches) throw badRequest("The ride does not match its price. Ask for a new one.", "quote_mismatch");
   if (!options.paymentMethods.includes(body.paymentMethod)) {
     throw badRequest(`${body.paymentMethod} is not available; pay with ${options.paymentMethods.join(" or ")}.`, "payment_method_not_available");
@@ -104,7 +115,11 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
         distance_meters: quote.distance_meters,
         duration_seconds: quote.duration_seconds,
         surge_multiplier: quote.surge_multiplier,
+        price_extras: JSON.stringify(quote.price_extras ?? {}),
         pricing_version: quote.pricing_version,
+        pricing_scope: quote.pricing_scope,
+        // v0.8.0 (contract.json#bookingSnapshot): the trip keeps every rule of booking time.
+        booking_rules: JSON.stringify(await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote))),
         notes: body.notes ?? null,
         created_at: now,
         updated_at: now,
