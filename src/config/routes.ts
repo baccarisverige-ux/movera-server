@@ -11,7 +11,7 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
-import { CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey, useStandard } from "./service.js";
+import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey, useStandard } from "./service.js";
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
@@ -41,8 +41,10 @@ function checkZone(who: Principal, zoneId: string): void {
 }
 
 /** The scope key of a request: the zone id, or standard-<CC> for a country; a country needs one zone of it (owner 2026-10-27). */
-async function scopeKey(db: Db, who: Principal, scope: { zoneId?: string | undefined; country?: string | undefined }): Promise<string> {
+async function scopeKey(db: Db, who: Principal, scope: { zoneId?: string | undefined; country?: string | undefined }, doc?: ConfigDoc): Promise<string> {
   if ((scope.zoneId === undefined) === (scope.country === undefined)) throw new ApiError("invalid_request", "Name exactly one of zoneId or country.", { reason: "scope_required" });
+  // v0.17.0 (contract.json#configDocs.countryOnly): the onboarding settings exist per country only.
+  if (doc !== undefined && COUNTRY_ONLY_DOCS.includes(doc) && scope.zoneId !== undefined) throw new ApiError("invalid_request", "These settings are per country; name the country.", { reason: "scope_country_only" });
   if (scope.zoneId !== undefined) {
     checkZone(who, scope.zoneId);
     return scope.zoneId;
@@ -91,7 +93,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
   app.get(`${API_PREFIX}/admin/config/:doc`, async (request) => {
     const who = await authenticateAdmin(request, guard, "settings.read");
     const { doc } = parseBody(DocParam, request.params);
-    const zoneId = await scopeKey(deps.db, who, parseBody(ScopeQuery, request.query));
+    const zoneId = await scopeKey(deps.db, who, parseBody(ScopeQuery, request.query), doc);
     return getDraft(deps.db, doc, zoneId);
   });
 
@@ -99,7 +101,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const { doc } = parseBody(DocParam, request.params);
     const who = await authenticateAdmin(request, guard, EDIT_PERMISSION[doc]);
     const body = parseBody(PutBody, request.body);
-    const zoneId = await scopeKey(deps.db, who, body);
+    const zoneId = await scopeKey(deps.db, who, body, doc);
     const result = await runIdempotent(
       deps.db,
       { actor: "admin", subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "PUT", route: request.url.split("?")[0]!, body },
@@ -113,7 +115,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const { doc } = parseBody(DocParam, request.params);
     const who = await authenticateAdmin(request, guard, PUBLISH_PERMISSION[doc]);
     const body = parseBody(PublishBody, request.body);
-    const zoneId = await scopeKey(deps.db, who, body);
+    const zoneId = await scopeKey(deps.db, who, body, doc);
     const idem = { actor: "admin" as const, subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "POST", route: request.url.split("?")[0]!, body };
     const outcome = await runIdempotent(deps.db, idem, async (trx) => ({
       status: 200,
@@ -128,6 +130,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const who = await authenticateAdmin(request, guard, PUBLISH_PERMISSION[doc]);
     const body = parseBody(UseStandardBody, request.body);
     checkZone(who, body.zoneId);
+    if (COUNTRY_ONLY_DOCS.includes(doc)) throw new ApiError("invalid_request", "These settings are per country; name the country.", { reason: "scope_country_only" });
     const idem = { actor: "admin" as const, subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "POST", route: request.url.split("?")[0]!, body };
     const outcome = await runIdempotent(deps.db, idem, async (trx) => ({ status: 200, body: await useStandard(trx, { doc, zoneId: body.zoneId, expectedVersion: body.expectedVersion, adminId: who.subjectId }, now()) }));
     return outcome.body;

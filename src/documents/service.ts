@@ -3,6 +3,7 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { ONBOARDING, documentKind } from "../drivers/onboardingRules.js";
 import { audit } from "../admin/audit.js";
+import { onboardingSettings } from "../drivers/onboardingSettings.js";
 import { openFile, sealFile, type DocumentKey } from "./files.js";
 
 /**
@@ -165,11 +166,28 @@ async function loadForAdmin(ex: Executor, who: { zones: string[] }, documentId: 
   return row;
 }
 
+/** The country whose settings a document follows: a car's fleet's, else its account's. */
+async function countryOfDocument(ex: Executor, row: DocumentRow): Promise<string | null> {
+  if (row.owner_kind === "vehicle") {
+    const car = await ex.selectFrom("vehicles").select("fleet_id").where("vehicle_id", "=", row.owner_id).executeTakeFirst();
+    if (car?.fleet_id) return (await ex.selectFrom("fleets").select("country").where("fleet_id", "=", car.fleet_id).executeTakeFirst())?.country ?? null;
+  }
+  return (await ex.selectFrom("drivers").select("country").where("driver_id", "=", row.driver_id).executeTakeFirst())?.country ?? null;
+}
+
 /** POST /admin/documents/{id}/review (documents.approve): approved or rejected, with a note and an expiry. */
 export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: string[] }, documentId: string, body: { decision: "approved" | "rejected"; expiresAt?: string | undefined; note?: string | undefined }, now: Date) {
   const row = await loadForAdmin(trx, who, documentId, true);
-  const expiresAt = body.expiresAt ? new Date(body.expiresAt) : row.expires_at;
-  if (expiresAt !== null && Number.isNaN(expiresAt.getTime())) throw badRequest("expiresAt is not a date.", "invalid_expires_at");
+  // v0.17.0 (owner item 1, contract.json#driverOnboarding.documentExpiry): the admin types the expiry date when
+  // approving a type of the country's expiringTypes; the admin's date wins over the one the driver sent.
+  const typed = body.expiresAt ? new Date(body.expiresAt) : null;
+  if (typed !== null && Number.isNaN(typed.getTime())) throw badRequest("expiresAt is not a date.", "invalid_expires_at");
+  if (body.decision === "approved") {
+    const settings = await onboardingSettings(trx, await countryOfDocument(trx, row));
+    if (settings.expiringTypes.includes(row.type) && typed === null) throw badRequest("Type the expiry date to approve this document.", "expiry_required");
+    if (typed !== null && typed.getTime() <= now.getTime()) throw badRequest("The expiry date must be in the future.", "expiry_in_past");
+  }
+  const expiresAt = typed ?? row.expires_at;
   await trx
     .updateTable("documents")
     .set({ status: body.decision, expires_at: expiresAt, reviewed_at: now, reviewed_by: who.subjectId, review_note: body.note ?? null, version: row.version + 1, updated_at: now })

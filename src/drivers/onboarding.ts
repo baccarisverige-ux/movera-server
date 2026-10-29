@@ -179,6 +179,42 @@ export async function unlinkFromFleet(trx: Trx, row: DriverRow, now: Date, reaso
   if (online) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: row.driver_id, dueAt: now, payload: {} });
 }
 
+/**
+ * POST /driver/fleet/start-company (contract v0.17.0, driverOnboarding.startCompany, owner item 7): a driver account
+ * becomes a fleet account with a new pending company he owns, and waits on hold for Movera like a new fleet. He leaves
+ * his fleet first (car released, offline). Every document he has stays: only the company's documents
+ * (requiredFleetDocuments) he does not have yet and his new cars' are still needed.
+ */
+export async function startOwnCompany(trx: Trx, driverId: string, body: unknown, now: Date) {
+  const problem = schemaProblem("StartCompanyRequest", body);
+  if (problem !== null) throw badRequest(`The company is not valid: ${problem}.`, "invalid_body");
+  const { expectedVersion, company } = body as { expectedVersion: number; company: { name: string; orgNumber: string; address: string } };
+  let row = await loadDriver(trx, driverId, true);
+  if (row.version !== expectedVersion) throw new ApiError("version_mismatch", "Your account changed since you last saw it.", { projection: await driverView(trx, row, "driver") });
+  if (row.account_type !== "driver" || row.country === null || row.city_id === null) {
+    throw new ApiError("invalid_transition", row.account_type === "fleet" ? "Your account is already a company." : "Send your details first.", { reason: row.account_type === "fleet" ? "already_fleet" : "details_required", projection: await driverView(trx, row, "driver") });
+  }
+  if (row.fleet_id !== null) {
+    await unlinkFromFleet(trx, row, now, "left");
+    row = await loadDriver(trx, driverId, true);
+  } else {
+    const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+    if (active) throw new ApiError("invalid_transition", "Finish the trip first.", { reason: "on_trip", projection: await driverView(trx, row, "driver") });
+  }
+  const city = cityOf(row.country!, row.city_id!);
+  const fleetId = newId("flt", now.getTime());
+  await trx.insertInto("fleets").values({ fleet_id: fleetId, owner_driver_id: driverId, name: company.name.trim(), org_number: company.orgNumber.trim(), address: company.address.trim(), country: row.country!, city_id: row.city_id!, zone_id: city?.zoneId ?? row.zone_ids[0]!, created_at: now, updated_at: now }).execute();
+  const online = ["online", "going_online"].includes(row.online_status);
+  await trx
+    .updateTable("drivers")
+    .set({ account_type: "fleet", account_status: row.account_status === "suspended" ? "suspended" : "on_hold", fleet_id: fleetId, fleet_linked_at: now, vehicle_id: null, ...(online ? { online_status: "offline", online_since: null } : {}), version: row.version + 1, updated_at: now })
+    .where("driver_id", "=", driverId)
+    .execute();
+  // Requests to join other fleets are his no more.
+  await trx.updateTable("fleet_invitations").set((eb) => ({ status: "cancelled", decided_at: now, decided_by: "system", updated_at: now, version: eb("version", "+", 1) })).where("driver_id", "=", driverId).where("status", "=", "pending").execute();
+  return driverView(trx, await loadDriver(trx, driverId), "driver");
+}
+
 /** POST /driver/fleet/leave. */
 export async function leaveFleet(trx: Trx, driverId: string, now: Date) {
   const row = await loadDriver(trx, driverId, true);

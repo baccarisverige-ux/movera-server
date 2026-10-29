@@ -10,8 +10,9 @@ import { zoneAt } from "../config/zoneLookup.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { documentSummaries } from "../documents/service.js";
-import { requiredDocuments } from "./onboardingRules.js";
-import { vehicleDocumentBlockers } from "./readiness.js";
+import { categoryProblem, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
+import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
+import { signUpView } from "./reminders.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -96,11 +97,13 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
       : {}),
     ...(row.account_type === "fleet" ? { payoutTo: "self" } : row.account_type === "driver" && fleet ? { payoutTo: "fleet" } : {}),
     ...(row.account_type ? { pendingFleetInvitations: await pendingInvitations(ex, row) } : {}),
-    requiredDocuments: requiredDocuments(row.country, "driver"),
-    ...(row.account_type === "fleet" ? { requiredFleetDocuments: requiredDocuments(row.country, "fleet") } : {}),
+    // v0.17.0 (§25): the lists of the country's onboarding settings (the admin's), else the contract defaults.
+    requiredDocuments: await liveRequiredDocuments(ex, row.country, "driver"),
+    ...(row.account_type === "fleet" ? { requiredFleetDocuments: await liveRequiredDocuments(ex, row.country, "fleet") } : {}),
     ...(active ? { activeTripId: active.trip_id } : {}),
     ...(row.scheduled_rides ? { scheduledRides: row.scheduled_rides } : {}),
     version: row.version,
+    ...(viewer === "admin" ? await signUpView(ex, row) : {}),
     ...(viewer === "admin" && location
       ? {
           location: fixView(location),
@@ -162,7 +165,7 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
     if (vehicle === undefined || !mine) throw badRequest("That vehicle is not yours.", "vehicle_not_found");
     if (vehicle.status !== "approved") throw badRequest("That vehicle is not approved yet.", "vehicle_not_approved");
     // v0.10.1: only a car whose required documents are all approved can be picked.
-    const carMissing = await vehicleDocumentBlockers(trx, vehicle);
+    const carMissing = await vehicleDocumentBlockers(trx, vehicle, now);
     if (carMissing.length > 0) throw new ApiError("documents_not_approved", "That car's documents are not all approved.", { reason: "vehicle_documents_not_approved", details: carMissing });
     if (vehicle.fleet_id !== null && vehicle.driver_id !== null && vehicle.driver_id !== driverId) {
       // One car, one driver at a time: in use while the other driver is online or on a trip; an offline driver's pick moves.
@@ -216,10 +219,17 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
       const fleet = await trx.selectFrom("fleets").select("status").where("fleet_id", "=", row.fleet_id).executeTakeFirst();
       if (fleet?.status !== "approved") throw await refuse("Your fleet is not approved.", "fleet_not_approved");
     }
-    if (row.vehicle_id === null) throw await refuse("Choose an approved car first.", "no_vehicle");
+    // v0.17.0 (owner items 1 and 3): an expired required document keeps the driver offline while blockAtExpiry is on.
+    const expired = await expiredBlockers(trx, row, now);
+    if (expired.length > 0) throw new ApiError("documents_not_approved", "A document has expired; upload a new one.", { reason: "documents_expired", details: expired, projection: await stale(row, trx)() });
+    // v0.17.0 (owner item 9): no car picked; a fleet with no car that can be picked says so.
+    if (row.vehicle_id === null) {
+      if (row.fleet_id !== null && (await pickableCars(trx, row.fleet_id, now)).length === 0) throw await refuse("Your fleet has no approved car yet.", "fleet_no_approved_car");
+      throw await refuse("Choose an approved car first.", "no_vehicle");
+    }
     const vehicle = await trx.selectFrom("vehicles").select(["vehicle_id", "status", "driver_id", "fleet_id"]).where("vehicle_id", "=", row.vehicle_id).executeTakeFirst();
     if (vehicle?.status !== "approved") throw await refuse("Your car is not approved.", "vehicle_not_approved");
-    const carMissing = await vehicleDocumentBlockers(trx, vehicle);
+    const carMissing = await vehicleDocumentBlockers(trx, vehicle, now);
     if (carMissing.length > 0) throw new ApiError("documents_not_approved", "Your car's documents are not all approved.", { reason: "vehicle_documents_not_approved", details: carMissing, projection: await stale(row, trx)() });
     if (vehicle.fleet_id !== null && vehicle.driver_id !== driverId) throw await refuse("Another driver has this car now; pick a car again.", "vehicle_in_use");
     if (row.category_ids.length === 0) throw await refuse("No car type is chosen.", "no_category");
@@ -296,7 +306,7 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
 
 /* ---------------------------------------------------------------- vehicles */
 
-export type VehicleRow = { vehicle_id: string; driver_id: string | null; fleet_id: string | null; make: string; model: string; year: number; color: string; plate: string; seats: number; category_ids: string[]; status: string; version: number };
+export type VehicleRow = { vehicle_id: string; driver_id: string | null; fleet_id: string | null; make: string; model: string; year: number; color: string; plate: string; seats: number; category_ids: string[]; status: string; version: number; fuel?: Fuel | null };
 export const vehicleView = (v: VehicleRow) => ({
   vehicleId: v.vehicle_id,
   make: v.make,
@@ -308,6 +318,7 @@ export const vehicleView = (v: VehicleRow) => ({
   categoryIds: v.category_ids,
   status: v.status,
   version: v.version,
+  ...(v.fuel ? { fuel: v.fuel } : {}),
   ...(v.fleet_id ? { fleetId: v.fleet_id } : {}),
   ...(v.fleet_id && v.driver_id ? { driverId: v.driver_id } : {}),
 });
@@ -331,7 +342,7 @@ export async function vehicleFullView(ex: Executor, v: VehicleRow) {
     ...vehicleView(v),
     ...(v.fleet_id ? { inUse } : {}),
     documents: await documentSummaries(ex, "vehicle", v.vehicle_id),
-    requiredDocuments: requiredDocuments(country, "vehicle"),
+    requiredDocuments: await liveRequiredDocuments(ex, country, "vehicle"),
   };
 }
 
@@ -359,16 +370,27 @@ export async function listVehicles(ex: Executor, driverId: string) {
 export async function addVehicle(trx: Trx, driverId: string, body: unknown, now: Date) {
   const problem = schemaProblem("VehicleRequest", body);
   if (problem !== null) throw badRequest(`The vehicle is not valid: ${problem}.`, "invalid_body");
-  const v = body as { make: string; model: string; year: number; color: string; plate: string; seats?: number; categoryIds?: string[] };
+  const v = body as { make: string; model: string; year: number; color: string; plate: string; seats?: number; categoryIds?: string[]; fuel?: Fuel };
   const me = await loadDriver(trx, driverId);
   // v0.5.3: fleet accounts own the cars; a driver account picks one of its fleet's.
   if (me.account_type === "driver") throw new ApiError("forbidden", "Your fleet adds its cars; you pick one of them.", { reason: "fleet_vehicles_only" });
   const fleetId = me.account_type === "fleet" ? me.fleet_id : null;
+  // v0.17.0 (owner item 11): every category must fit the country's car rules.
+  const country = await vehicleCountry(trx, { fleet_id: fleetId, driver_id: driverId });
+  if (country) {
+    const settings = await onboardingSettings(trx, country);
+    const car = { year: v.year, seats: v.seats ?? 4, fuel: v.fuel ?? null };
+    const problems = (v.categoryIds ?? []).flatMap((c) => {
+      const problem = categoryProblem(car, settings, c);
+      return problem === null ? [] : [`${c}:${problem}`];
+    });
+    if (problems.length > 0) throw new ApiError("invalid_request", "The car does not fit every chosen category.", { reason: "category_not_allowed", details: problems });
+  }
   const vehicleId = newId("veh", now.getTime());
   try {
     await trx
       .insertInto("vehicles")
-      .values({ vehicle_id: vehicleId, driver_id: fleetId ? null : driverId, fleet_id: fleetId, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate.toUpperCase(), seats: v.seats ?? 4, category_ids: v.categoryIds ?? [], created_at: now, updated_at: now })
+      .values({ vehicle_id: vehicleId, driver_id: fleetId ? null : driverId, fleet_id: fleetId, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate.toUpperCase(), seats: v.seats ?? 4, category_ids: v.categoryIds ?? [], fuel: v.fuel ?? null, created_at: now, updated_at: now })
       .execute();
   } catch (error) {
     if ((error as { constraint?: string }).constraint === "vehicles_plate") throw new ApiError("conflict", "A car with this plate is already registered.", { reason: "plate_taken" });

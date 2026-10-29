@@ -27,10 +27,20 @@ export function cityOf(country: string, cityId: string): City | undefined {
   return ONBOARDING.countries[country]?.cities.find((c) => c.cityId === cityId);
 }
 
-/** The document types a person (`driver`), a company (`fleet`) or a car (`vehicle`) must have in `country`. */
+type DefaultSettings = { defaults: Record<string, { documents: Record<DocumentScope, string[]>; vehicles: { photosNeeded: boolean } }>; photoTypes: string[] };
+const SETTINGS_DEFAULTS = (contract as unknown as { driverOnboarding: { settings: DefaultSettings } }).driverOnboarding.settings;
+
+/**
+ * The document types a person (`driver`), a company (`fleet`) or a car (`vehicle`) must have in `country` with the
+ * contract defaults (v0.17.0: a car also needs the four photos). The live lists are the admin's onboarding document:
+ * liveRequiredDocuments in onboardingSettings.ts; this one serves seeds and tests.
+ */
 export function requiredDocuments(country: string | null | undefined, scope: DocumentScope): string[] {
   if (!country) return [];
-  return ONBOARDING.documents.required[country]?.[scope] ?? [];
+  const d = SETTINGS_DEFAULTS.defaults[country];
+  if (d === undefined) return [];
+  const list = d.documents[scope] ?? [];
+  return scope === "vehicle" && d.vehicles.photosNeeded ? [...list, ...SETTINGS_DEFAULTS.photoTypes] : [...list];
 }
 
 export function documentKind(type: string): "file" | "acceptance" | "admin_check" | undefined {

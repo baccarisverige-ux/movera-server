@@ -187,7 +187,7 @@ export async function setDriverStatus(trx: Trx, who: Principal, driverId: string
   if (!row.zone_ids.some((z) => adminCoversZone(who, z)) && !who.zones.includes("*")) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin") });
   if (body.accountStatus === "active" && row.account_status !== "active") {
-    const missing = await activationBlockers(trx, row);
+    const missing = await activationBlockers(trx, row, now);
     if (missing.length > 0) throw new ApiError("documents_not_approved", "The driver's required documents are not all approved.", { details: missing });
   }
   const blocked = body.accountStatus !== "active";

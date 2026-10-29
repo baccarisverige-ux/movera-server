@@ -7,6 +7,7 @@ import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
+import { defaultSettings, settingsProblems } from "../drivers/onboardingSettings.js";
 
 /**
  * Config documents (contract v0.5.1 §6, contract.json#configDocs and #configVersion). The admin panel builds each
@@ -15,13 +16,18 @@ import { pricingProblems } from "./pricingRules.js";
  * documents are served to the apps unchanged; pricing and dispatch are read by the server only.
  */
 
-export const CONFIG_DOCS: readonly ConfigDoc[] = ["rider_app_config", "driver_app_config", "pricing", "dispatch", "country_rules"];
+export const CONFIG_DOCS: readonly ConfigDoc[] = ["rider_app_config", "driver_app_config", "pricing", "dispatch", "country_rules", "onboarding"];
 export const APP_DOCS: readonly ConfigDoc[] = ["rider_app_config", "driver_app_config"];
 /**
  * v0.8.1 (contract.json#configDocs.rules, owner 2026-10-28): tips and limits. Published per zone or as the country's
  * standard like the others (no longer per country only); the document names its country, not a zone.
  */
 export const RULES_DOCS: readonly ConfigDoc[] = ["country_rules"];
+/**
+ * v0.17.0 (contract.json#configDocs.countryOnly, §25): the onboarding settings are published per country only; the
+ * document names its country, not a zone.
+ */
+export const COUNTRY_ONLY_DOCS: readonly ConfigDoc[] = ["onboarding"];
 
 const SCHEMA: Record<ConfigDoc, string> = {
   rider_app_config: "RiderAppConfig",
@@ -29,14 +35,15 @@ const SCHEMA: Record<ConfigDoc, string> = {
   pricing: "PricingDocument",
   dispatch: "DispatchDocument",
   country_rules: "CountryRules",
+  onboarding: "OnboardingSettings",
 };
 
 /**
  * x-permission-by-doc in openapi.yaml. v0.8.0 (contract.json#configDocs.publishApproval, owner 2026-10-27): config
  * publishes never wait for a second admin; whoever holds the publish permission publishes at once.
  */
-export const EDIT_PERMISSION: Record<ConfigDoc, string> = { rider_app_config: "settings.edit", driver_app_config: "settings.edit", pricing: "settings.edit", dispatch: "dispatch.edit", country_rules: "settings.edit" };
-export const PUBLISH_PERMISSION: Record<ConfigDoc, string> = { rider_app_config: "settings.publish", driver_app_config: "settings.publish", pricing: "settings.publish", dispatch: "dispatch.edit", country_rules: "settings.publish" };
+export const EDIT_PERMISSION: Record<ConfigDoc, string> = { rider_app_config: "settings.edit", driver_app_config: "settings.edit", pricing: "settings.edit", dispatch: "dispatch.edit", country_rules: "settings.edit", onboarding: "settings.edit" };
+export const PUBLISH_PERMISSION: Record<ConfigDoc, string> = { rider_app_config: "settings.publish", driver_app_config: "settings.publish", pricing: "settings.publish", dispatch: "dispatch.edit", country_rules: "settings.publish", onboarding: "settings.publish" };
 
 /** The channel apps' config streams LISTEN on (config_published). */
 export const CONFIG_CHANNEL = "movera_config_published";
@@ -74,9 +81,13 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
   const own = document as { zoneId?: string; currency?: string; country?: string; timeZone?: string };
-  if (!RULES_DOCS.includes(doc) && own.zoneId !== zone.zoneId) throw badRequest(`The document is for zone ${own.zoneId}, not ${zone.zoneId}.`, "zone_mismatch");
+  if (!RULES_DOCS.includes(doc) && !COUNTRY_ONLY_DOCS.includes(doc) && own.zoneId !== zone.zoneId) throw badRequest(`The document is for zone ${own.zoneId}, not ${zone.zoneId}.`, "zone_mismatch");
   if (own.currency !== undefined && own.currency !== zone.currency) throw badRequest(`Zone ${zone.zoneId} uses ${zone.currency}.`, "currency_mismatch");
   if (own.country !== undefined && own.country !== zone.country) throw badRequest(`Zone ${zone.zoneId} is in ${zone.country}.`, "country_mismatch");
+  if (doc === "onboarding") {
+    const problems = settingsProblems(document);
+    if (problems.length > 0) throw badRequest(`The onboarding settings are not valid: ${problems.join("; ")}.`, "invalid_document");
+  }
   if (doc === "pricing") {
     const problems = pricingProblems(document);
     if (problems.length > 0) throw badRequest(`The pricing document is not valid: ${problems.join("; ")}.`, "invalid_document");
@@ -114,6 +125,10 @@ export async function getDraft(db: Executor, doc: ConfigDoc, zoneId: string): Pr
     const document: Doc = RULES_DOCS.includes(doc) ? { ...(standard.document as Doc) } : { ...(standard.document as Doc), zoneId };
     delete document["usesStandard"];
     return { doc, zoneId, usesStandard: true, version: 1, liveVersion: 0, document, updatedAt: standard.published_at.toISOString(), ...(standard.published_by ? { updatedBy: standard.published_by } : {}) };
+  }
+  // v0.17.0 (§25): a country with no onboarding settings yet starts from the contract defaults (the admin's own).
+  if (COUNTRY_ONLY_DOCS.includes(doc) && zone.kind === "standard") {
+    return { doc, country: zone.country, version: 1, liveVersion: 0, document: defaultSettings(zone.country), updatedAt: new Date(0).toISOString() };
   }
   throw new ApiError("not_found", "This zone has no such document yet.", { reason: "config_not_found" });
 }

@@ -218,7 +218,7 @@ describe("the fleet's cars", () => {
   it("the owner adds a car; the admin lists and approves it; the member sees it and picks it", async () => {
     const car = await call(app, "POST", "/driver/vehicles", owner, { make: "Volvo", model: "V90", year: 2023, color: "Black", plate: "FLT 001", seats: 4, categoryIds: ["economy", "comfort"] });
     expect(car.statusCode).toBe(201);
-    expect(car.json()).toMatchObject({ fleetId, status: "pending", inUse: false, documents: [], requiredDocuments: ["vehicle_registration", "insurance"] });
+    expect(car.json()).toMatchObject({ fleetId, status: "pending", inUse: false, documents: [], requiredDocuments: ["vehicle_registration", "insurance", "vehicle_photo_front", "vehicle_photo_back", "vehicle_photo_side", "vehicle_photo_inside"] });
     carId = car.json().vehicleId;
     // Pending: not in the member's list yet.
     expect((await call(app, "GET", "/driver/vehicles", member)).json().items).toEqual([]);
@@ -232,7 +232,7 @@ describe("the fleet's cars", () => {
     // v0.10.1: an approved car whose documents are not all approved cannot be picked.
     const early = await call(app, "PATCH", "/driver/profile", member, { expectedVersion: m.version, vehicleId: carId });
     expect(early.statusCode).toBe(409);
-    expect(early.json()).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_registration", "vehicle:insurance"] });
+    expect(early.json()).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_registration", "vehicle:insurance", "vehicle:vehicle_photo_front", "vehicle:vehicle_photo_back", "vehicle:vehicle_photo_side", "vehicle:vehicle_photo_inside"] });
     await approveVehicleDocuments(database.db, carId, ownerId, "SE");
     const pick = await call(app, "PATCH", "/driver/profile", member, { expectedVersion: m.version, vehicleId: carId });
     expect(pick.json()).toMatchObject({ vehicleId: carId, categoryIds: ["economy", "comfort"] });

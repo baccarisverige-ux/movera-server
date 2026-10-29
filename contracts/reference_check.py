@@ -488,4 +488,31 @@ if set(_tc['apps']) != {'driver', 'rider'} or not set(_tc['apps']) < set(_te['ap
 if not set(_tc['platforms']) < set(_te['platforms']) or _tc['defaultKind'] not in _tc['kinds']: bad += 1; print('ERROR GROUP platforms/kind')
 if _te['statuses'] != ['open', 'fixed'] or _te['maxEventsPerGroup'] < 1 or 'every role' not in _te['permission']: bad += 1; print('ERROR GROUP statuses/permission')
 if 'system.read' not in c['adminPermissions']['values']: bad += 1; print('ERROR GROUP system.read missing')
+# v0.17.0 (CONTRACT.md §25): driver onboarding group 2, France and Sweden alike, Tunisia closed.
+_do = c['driverOnboarding']; _st = _do['settings']; _ty = _do['documents']['types']
+if set(_st['defaults']) != set(_do['countries']): bad += 1; print('ONBOARDING defaults countries')
+_base = {'SE': 2015, 'FR': 2016, 'TN': 2012}
+for _cc, _d in _st['defaults'].items():
+    _req = _do['documents']['required'].get(_cc, {'driver': [], 'fleet': [], 'vehicle': []})
+    if _d['documents'] != _req: bad += 1; print('ONBOARDING defaults documents differ from required', _cc)
+    for _scope, _owner in [('driver', 'driver'), ('fleet', 'driver'), ('vehicle', 'vehicle')]:
+        for _t in _d['documents'][_scope]:
+            if _ty.get(_t, {}).get('owner') != _owner: bad += 1; print('ONBOARDING type owner', _cc, _scope, _t)
+    if _do['countries'][_cc]['open'] and 'driving_license' not in _d['documents']['driver']: bad += 1; print('ONBOARDING driving_license', _cc)
+    if [s['id'] for s in _d['steps']] != _st['stepIds'] or [s['days'] for s in _d['steps']] != [3, 7, 3, 5, 2]: bad += 1; print('ONBOARDING steps', _cc)
+    if _d['signUpReminders'] != {'on': True, 'everyDays': 2, 'stuckAfterDays': 10}: bad += 1; print('ONBOARDING reminders', _cc)
+    _w = _d['expiry']['warnDays']
+    if _w != [30, 7, 1] or _d['expiry']['blockAtExpiry'] is not True: bad += 1; print('ONBOARDING expiry', _cc)
+    _v = _d['vehicles']; _cats = {r['category']: r for r in _v['categories']}
+    if _cats['economy']['minYear'] != _base[_cc] or _cats['comfort']['minYear'] != _base[_cc] + 4 or _cats['premium']['minYear'] != _base[_cc] + 6 or _cats['electric']['minYear'] != _base[_cc] + 2: bad += 1; print('VEHICLE RULES years', _cc)
+    if _cats['xl']['minSeats'] != 6 or _cats['electric']['fuels'] != ['electric'] or (_v['warnDays'], _v['autoHold'], _v['photosNeeded']) != (30, True, True): bad += 1; print('VEHICLE RULES', _cc)
+    if not set(_cats) <= set(c['categories']['seed']) or any(not set(r['fuels']) <= set(_st['fuels']) for r in _v['categories']): bad += 1; print('VEHICLE RULES ids', _cc)
+    if not set(_d['expiringTypes']) <= set(_ty) or {'terms', 'info_session', 'profile_photo'} & set(_d['expiringTypes']): bad += 1; print('ONBOARDING expiringTypes', _cc)
+if _do['countries']['TN']['open'] or any(_st['defaults']['TN']['documents'].values()): bad += 1; print('ONBOARDING TN must stay closed with no documents')
+if 'info_session' in _st['defaults']['FR']['documents']['driver'] or 'info_session' not in _st['defaults']['SE']['documents']['driver']: bad += 1; print('INFO SESSION SE only')
+if not all(_ty.get(p, {}).get('owner') == 'vehicle' and set(_ty[p]['name']) == {'en', 'sv', 'fr'} for p in _st['photoTypes']) or len(_st['photoTypes']) != 4: bad += 1; print('PHOTO types')
+if 'onboarding' not in c['configDocs']['rules'] or c['configDocs']['countryOnly'] != ['onboarding']: bad += 1; print('ONBOARDING config doc')
+if 'waiting_for_movera' not in c['documentStatus']['values'] or _do['infoSession']['contentSlot'] not in c['content']['slots'] or c['content']['apps'][_do['infoSession']['contentSlot']] != 'driver': bad += 1; print('INFO SESSION status/slot')
+if not set(_do['reminders']['levels']) == {'blocks_online', 'due_soon', 'waiting'} or 'fleet_no_approved_car' not in _do['reminders']['kinds']: bad += 1; print('REMINDERS')
+if set(_do['signUpReminders']['text']['title']) != {'sv', 'fr', 'en'} or _do['signUpReminders']['text']['title']['en'] != 'Finish your sign-up': bad += 1; print('SIGN-UP reminder text')
 print('OK' if not bad else f'{bad} mismatches'); sys.exit(1 if bad else 0)
