@@ -116,7 +116,8 @@ describe("a car's documents", () => {
     const refused = await goOnline();
     expect(refused).toBeInstanceOf(ApiError);
     expect((refused as ApiError).status).toBe(409);
-    expect((refused as ApiError).body("r")).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_registration"] });
+    // v0.18.0 (owner item 11): with photos needed (default), the four car photos are required documents too.
+    expect((refused as ApiError).body("r")).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_registration", "vehicle:vehicle_photo_front", "vehicle:vehicle_photo_back", "vehicle:vehicle_photo_side", "vehicle:vehicle_photo_inside"] });
     await approveVehicleDocuments(database.db, vehicleId, id, "SE");
     const after = await goOnline();
     expect(after instanceof ApiError ? after.options.reason : "passed").not.toBe("vehicle_documents_not_approved");

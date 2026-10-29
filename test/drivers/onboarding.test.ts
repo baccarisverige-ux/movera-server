@@ -125,11 +125,12 @@ describe("the details screen", () => {
     expect(res.json()).toMatchObject({ code: "invalid_transition", reason: "account_not_active" });
   });
 
+  // v0.18.0 owner item 13 ("Yes, same as Sweden"): France has the info session too.
   it("a driver account in France: its own documents; no fleet yet, no cars", async () => {
     const res = await call(app, "POST", "/driver/onboarding", member, details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", country: "FR", cityId: "paris", language: "fr", accountType: "driver", company: undefined }));
     expect(res.statusCode).toBe(200);
     memberId = res.json().driverId;
-    expect(res.json()).toMatchObject({ accountStatus: "on_hold", accountType: "driver", zoneIds: ["FR-PC"], requiredDocuments: ["terms", "vtc_card", "driving_license", "national_id", "profile_photo"] });
+    expect(res.json()).toMatchObject({ accountStatus: "on_hold", accountType: "driver", zoneIds: ["FR-PC"], requiredDocuments: ["terms", "info_session", "vtc_card", "driving_license", "national_id", "profile_photo"] });
     expect(res.json()).not.toHaveProperty("fleet");
     expect(res.json()).not.toHaveProperty("payoutTo");
     expect((await call(app, "GET", "/driver/fleet", member)).statusCode).toBe(404);
@@ -218,10 +219,10 @@ describe("the fleet's cars", () => {
   it("the owner adds a car; the admin lists and approves it; the member sees it and picks it", async () => {
     const car = await call(app, "POST", "/driver/vehicles", owner, { make: "Volvo", model: "V90", year: 2023, color: "Black", plate: "FLT 001", seats: 4, categoryIds: ["economy", "comfort"] });
     expect(car.statusCode).toBe(201);
-    expect(car.json()).toMatchObject({ fleetId, status: "pending", inUse: false, documents: [], requiredDocuments: ["vehicle_registration", "insurance"] });
+    expect(car.json()).toMatchObject({ fleetId, status: "pending", inUse: false, documents: [], requiredDocuments: ["vehicle_registration", "insurance", "vehicle_photo_front", "vehicle_photo_back", "vehicle_photo_side", "vehicle_photo_inside"] });
     carId = car.json().vehicleId;
-    // Pending: not in the member's list yet.
-    expect((await call(app, "GET", "/driver/vehicles", member)).json().items).toEqual([]);
+    // v0.18.0 owner decision 19: the member sees every fleet car; a pending one is not pickable.
+    expect((await call(app, "GET", "/driver/vehicles", member)).json().items).toEqual([expect.objectContaining({ vehicleId: carId, status: "pending", pickable: false, notPickableReason: "vehicle_not_approved" })]);
     const list = (await call(app, "GET", `/admin/vehicles?fleetId=${fleetId}`, admin.headers)).json();
     expect(list.items).toEqual([expect.objectContaining({ vehicleId: carId, status: "pending" })]);
     const review = await call(app, "POST", `/admin/vehicles/${carId}/review`, admin.headers, { expectedVersion: 1, decision: "approved" });
@@ -232,6 +233,7 @@ describe("the fleet's cars", () => {
     // v0.10.1: an approved car whose documents are not all approved cannot be picked.
     const early = await call(app, "PATCH", "/driver/profile", member, { expectedVersion: m.version, vehicleId: carId });
     expect(early.statusCode).toBe(409);
+    // v0.18.0 owner item 16: the member signs in with a test number, so he is not asked for the car photos.
     expect(early.json()).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_registration", "vehicle:insurance"] });
     await approveVehicleDocuments(database.db, carId, ownerId, "SE");
     const pick = await call(app, "PATCH", "/driver/profile", member, { expectedVersion: m.version, vehicleId: carId });
@@ -309,7 +311,8 @@ describe("documents", () => {
     const res = await upload(owner, { type: "vehicle_registration", ownerId: carId });
     expect(res.json()).toMatchObject({ ownerId: carId, type: "vehicle_registration", status: "in_review" });
     expect((await call(app, "GET", "/driver/vehicles", owner)).json().items[0].documents).toEqual([expect.objectContaining({ type: "vehicle_registration" })]);
-    expect((await upload(member, { type: "vehicle_registration", ownerId: carId })).json()).toMatchObject({ reason: "vehicle_not_found" });
+    // v0.18.0 owner decision 19: a member of the car's fleet is told it is the owner's (403).
+    expect((await upload(member, { type: "vehicle_registration", ownerId: carId })).json()).toMatchObject({ code: "forbidden", reason: "fleet_owner_only" });
   });
 
   it("only the owner of a file (or his fleet owner, or an admin) reads it; the admin's read is in the audit", async () => {

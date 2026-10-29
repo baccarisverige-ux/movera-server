@@ -7,8 +7,10 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, ZoneFilterQuery } from "../admin/zoneFilter.js";
-import { addVehicle, getDriverProfile, liveDrivers, listVehicles, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
-import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, submitOnboarding } from "./onboarding.js";
+import { addVehicle, getDriverProfile, liveDrivers, listVehicles, loadDriver, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
+import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, startOwnCompany, submitOnboarding } from "./onboarding.js";
+import { listReminders } from "./reminders.js";
+import { documentTypes, onboardingSettings } from "./onboardingSettings.js";
 import { acceptInvitation, cancelInvitation, declineInvitation, inviteByPhone, listInvitations, requestJoin, type InviteDeps } from "./invitations.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { driverDocumentFile, listDocuments, uploadDocument, type Upload } from "../documents/service.js";
@@ -46,6 +48,26 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   app.patch(`${API_PREFIX}/driver/profile`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await updateDriverProfile(trx, who.subjectId, request.body ?? {}, now()) }))).body;
+  });
+
+  // v0.18.0 (§27): the Home sheet's important reminders, the country's onboarding settings, Start my own company.
+  app.get(`${API_PREFIX}/driver/reminders`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    return listReminders(deps.db, await loadDriver(deps.db, who.subjectId), now());
+  });
+  app.get(`${API_PREFIX}/driver/onboarding/settings`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const { country } = parseBody(z.object({ country: z.string().regex(/^[A-Z]{2}$/).optional() }), request.query);
+    const row = await loadDriver(deps.db, who.subjectId);
+    const pick = row.country ?? country;
+    if (!pick) throw new ApiError("invalid_request", "Name the country.", { reason: "country_required" });
+    const settings = await onboardingSettings(deps.db, pick);
+    // v0.18.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
+    return { ...settings, country: pick, documentTypes: documentTypes(settings) };
+  });
+  app.post(`${API_PREFIX}/driver/fleet/start-company`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await startOwnCompany(trx, who.subjectId, request.body ?? {}, now()) }))).body;
   });
 
   app.post(`${API_PREFIX}/driver/availability`, async (request) => {
