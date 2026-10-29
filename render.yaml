@@ -37,6 +37,9 @@ services:
       # Forgot password: set to any new text to get one new password link in Logs (docs/DEPLOY_RENDER.md).
       - key: ADMIN_PASSWORD_RESET
         sync: false
+      # Optional second Super admin for automated staging checks; its password link appears in Logs too.
+      - key: ADMIN_TEST_EMAIL
+        sync: false
       # Address search; filled in Render's dashboard (never committed).
       - key: GOOGLE_MAPS_API_KEY
         sync: false

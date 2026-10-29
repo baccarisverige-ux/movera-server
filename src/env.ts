@@ -83,6 +83,14 @@ const schema = z.object({
    * (or change it for another reset) afterwards. Staging and development only, like ADMIN_BOOTSTRAP_EMAIL.
    */
   ADMIN_PASSWORD_RESET: z.string().min(1).max(200).optional(),
+  /**
+   * A second Super admin for automated checks on staging, made at start like ADMIN_BOOTSTRAP_EMAIL (kept if it exists;
+   * its password link is written to the log while it has no password). ADMIN_TEST_PASSWORD_RESET works for it like
+   * ADMIN_PASSWORD_RESET. Staging and development only.
+   */
+  ADMIN_TEST_EMAIL: z.string().email().optional(),
+  ADMIN_TEST_NAME: z.string().min(1).max(120).optional(),
+  ADMIN_TEST_PASSWORD_RESET: z.string().min(1).max(200).optional(),
   CORS_ORIGINS: z
     .string()
     .optional()
@@ -95,9 +103,15 @@ const schema = z.object({
   if (env.MOVERA_ENV === "production" && env.DOCUMENT_FILES_KEY === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DOCUMENT_FILES_KEY"], message: "required when MOVERA_ENV is production" });
   }
-  if (env.MOVERA_ENV === "production" && (env.SEED_TEST_ON_START || env.ADMIN_BOOTSTRAP_EMAIL !== undefined)) {
-    const path = env.SEED_TEST_ON_START ? "SEED_TEST_ON_START" : "ADMIN_BOOTSTRAP_EMAIL";
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message: "for staging and development only" });
+  if (env.MOVERA_ENV === "production") {
+    const stagingOnly = [
+      ["SEED_TEST_ON_START", env.SEED_TEST_ON_START],
+      ["ADMIN_BOOTSTRAP_EMAIL", env.ADMIN_BOOTSTRAP_EMAIL !== undefined],
+      ["ADMIN_TEST_EMAIL", env.ADMIN_TEST_EMAIL !== undefined],
+    ] as const;
+    for (const [path, set] of stagingOnly) {
+      if (set) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message: "for staging and development only" });
+    }
   }
   if (env.MOVERA_ENV !== "development" && env.JWT_SECRET === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["JWT_SECRET"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
