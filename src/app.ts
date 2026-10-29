@@ -24,6 +24,7 @@ import { driverRoutes } from "./drivers/routes.js";
 import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
 import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
+import { recordServerError } from "./telemetry/errors.js";
 import { telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
@@ -108,7 +109,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     }
   });
 
-  app.setErrorHandler((error: FastifyError | ApiError, request, reply) => {
+  app.setErrorHandler(async (error: FastifyError | ApiError, request, reply) => {
     if (error instanceof ApiError) {
       if (error.options.retryAfterSeconds !== undefined) reply.header("Retry-After", String(error.options.retryAfterSeconds));
       return reply.status(error.status).send(error.body(request.id));
@@ -126,6 +127,12 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
       return reply.status(400).send(badRequest("The body is too large.", "body_too_large").body(request.id));
     }
     request.log.error({ err: error }, "unhandled error");
+    // contract v0.16.0: the server's own unhandled 5xx errors show in the admin's Crashes & errors (app server, scrubbed).
+    if (db !== undefined) {
+      const at = clock?.() ?? new Date();
+      const route = request.routeOptions.url ?? request.url.split("?")[0] ?? "";
+      await recordServerError(db, error, { method: request.method, route, ip: request.ip, at }).catch((failure: unknown) => request.log.warn({ err: failure }, "server error not recorded"));
+    }
     return reply.status(500).send(new ApiError("internal", "Something went wrong on the server.").body(request.id));
   });
 
