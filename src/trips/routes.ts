@@ -10,6 +10,8 @@ import { parseBody } from "../http/validate.js";
 import { nearbyVehicles } from "../riders/nearby.js";
 import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
 import { tripProjection } from "./projection.js";
+import { tripPath } from "./path.js";
+import { EstimateRouter, type Router } from "../maps/routing.js";
 import { listMessages, sendMessage } from "./messages.js";
 import { callTripPeer } from "./call.js";
 import { disabledTelephony, type TelephonyProvider } from "../telephony/provider.js";
@@ -24,7 +26,7 @@ import { activeTrip, createTrip, getTrip, raisePrice, riderCancel, riderTrips, s
 
 const NearbyQuery = z.object({ lat: z.coerce.number().min(-90).max(90), lng: z.coerce.number().min(-180).max(180) });
 
-export type TripDeps = { db: Db; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date; telephony?: TelephonyProvider };
+export type TripDeps = { db: Db; router?: Router; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date; telephony?: TelephonyProvider };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional() });
@@ -91,6 +93,14 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
       return result.body;
     });
   }
+
+  // contract v0.17.0 §25: the route of an ended trip, for its rider or driver (read-only).
+  const roads = deps.router ?? new EstimateRouter();
+  app.get(`${API_PREFIX}/trips/:tripId/path`, async (request) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    return tripPath(deps.db, roads, tripId, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId });
+  });
 
   app.post(`${API_PREFIX}/trips/:tripId/cancel-reason`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
