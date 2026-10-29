@@ -45,6 +45,9 @@ async function bookWithStop(): Promise<string> {
 }
 
 const preview = (driver: Driver, tripId: string) => driver.get(`/driver/trips/${tripId}/complete-preview`);
+/** `km` due north of the drop-off (1° of latitude = 111.195 km on the contract's earth). */
+const nearDropoff = (km: number) => ({ lat: PLACES.medborgar.lat + km / 111.19508, lng: PLACES.medborgar.lng });
+const stored = (tripId: string) => sim.db.selectFrom("trips").select(["fare_minor", "cash_collected_minor", "wallet_applied_minor"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
 const sum = (lines: Json[]) => lines.reduce((total: number, l: Json) => total + l["amount"]["amountMinor"], 0);
 
 describe("complete-preview (contract v0.17.3 §26)", () => {
@@ -67,7 +70,7 @@ describe("complete-preview (contract v0.17.3 §26)", () => {
     expect((await a.trip(tripId))["version"]).toBe(before["version"]);
     expect((await a.trip(tripId))["fare"]).toEqual(booked);
 
-    const done = await a.command(tripId, "complete", { cashCollected: shown.body.cashDue });
+    const done = await a.command(tripId, "complete", { previewId: shown.body.previewId, cashCollected: shown.body.cashDue });
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(done.body.fare).toEqual(shown.body.total);
     expect(done.body.fareLines).toEqual(shown.body.fareLines);
@@ -95,7 +98,7 @@ describe("complete-preview (contract v0.17.3 §26)", () => {
     expect(shown.body.total.amountMinor).toBeGreaterThan(booked.amountMinor);
     expect(shown.body.fareLines.map((l: Json) => l["code"])).toEqual(expect.arrayContaining(["waiting", "stop_waiting"]));
 
-    const done = await a.command(tripId, "complete", { cashCollected: shown.body.cashDue });
+    const done = await a.command(tripId, "complete", { previewId: shown.body.previewId, cashCollected: shown.body.cashDue });
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect(done.body.fare).toEqual(shown.body.total);
     expect(done.body.fareLines).toEqual(shown.body.fareLines);
@@ -110,7 +113,7 @@ describe("complete-preview (contract v0.17.3 §26)", () => {
     await a.moveTo(PLACES.medborgar);
     const shown = await preview(a, tripId);
     expect(shown.body).toMatchObject({ tripId, earlyEnd: false, total: booked, cashDue: booked });
-    const done = await a.command(tripId, "complete", { cashCollected: shown.body.cashDue });
+    const done = await a.command(tripId, "complete", { previewId: shown.body.previewId, cashCollected: shown.body.cashDue });
     expect(done.body.fare).toEqual(booked);
   });
 
@@ -126,5 +129,103 @@ describe("complete-preview (contract v0.17.3 §26)", () => {
     await a.moveTo(PLACES.medborgar);
     expect((await a.command(tripId, "complete")).status).toBe(200);
     expect((await preview(a, tripId)).body.reason).toBe("trip_not_on_board");
+  });
+});
+
+describe("the frozen price (contract v0.17.3 §26, checker findings)", () => {
+  it("a newer preview replaces the older one and is the price complete uses; cash stored = fare less wallet", async () => {
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    await drive(a, tripId, "in_trip");
+    const booked = (await a.trip(tripId))["fare"];
+    await sim.advance(18 * 60);
+    await a.moveTo(nearDropoff(0.29));
+    const shown = await preview(a, tripId);
+    expect(shown.body).toMatchObject({ earlyEnd: false, total: booked, cashDue: booked });
+    expect(typeof shown.body.previewId).toBe("string");
+    expect(Date.parse(shown.body.expiresAt) - sim.clock.now.getTime()).toBe(120_000);
+    // The driver rolls on to 310 m and a minute passes: priced now, this would be an early end.
+    await a.moveTo(nearDropoff(0.31));
+    await sim.advance(60);
+    expect((await preview(a, tripId)).body.earlyEnd).toBe(true);
+    // The newest preview replaces the older one: the 290 m previewId is no longer the trip's.
+    const fresh = await preview(a, tripId);
+    const done = await a.command(tripId, "complete", { previewId: fresh.body.previewId, cashCollected: fresh.body.cashDue });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.fare).toEqual(fresh.body.total);
+    const row = await stored(tripId);
+    expect(Number(row.cash_collected_minor)).toBe(Number(row.fare_minor) - Number(row.wallet_applied_minor));
+  });
+
+  it("the frozen price is used exactly: preview at 290 m, complete at 310 m with that previewId keeps the booked fare", async () => {
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    await drive(a, tripId, "in_trip");
+    const booked = (await a.trip(tripId))["fare"];
+    await sim.advance(18 * 60);
+    await a.moveTo(nearDropoff(0.29));
+    const shown = await preview(a, tripId);
+    expect(shown.body.earlyEnd).toBe(false);
+    await a.moveTo(nearDropoff(0.31));
+    await sim.advance(60);
+    const done = await a.command(tripId, "complete", { previewId: shown.body.previewId, cashCollected: shown.body.cashDue });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.fare).toEqual(booked);
+    expect(done.body.fareLines).toEqual(shown.body.fareLines);
+    expect(done.body.driverEarnings).toEqual(shown.body.driverEarnings);
+    const row = await stored(tripId);
+    expect(Number(row.cash_collected_minor)).toBe(shown.body.cashDue.amountMinor);
+  });
+
+  it("an early-end preview does not grow with the minutes that pass before complete", async () => {
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    await drive(a, tripId, "in_trip");
+    await a.moveTo(PLACES.sergels);
+    await sim.advance(10 * 60);
+    const shown = await preview(a, tripId);
+    expect(shown.body.earlyEnd).toBe(true);
+    await sim.advance(90);
+    const done = await a.command(tripId, "complete", { previewId: shown.body.previewId, cashCollected: shown.body.cashDue });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.fare).toEqual(shown.body.total);
+    expect(done.body.fareLines).toEqual(shown.body.fareLines);
+  });
+
+  it("an expired preview whose price changed: 409 price_changed with a fresh preview, nothing completed; the fresh one completes", async () => {
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    await drive(a, tripId, "in_trip");
+    const booked = (await a.trip(tripId))["fare"];
+    await sim.advance(18 * 60);
+    await a.moveTo(PLACES.medborgar);
+    const shown = await preview(a, tripId);
+    expect(shown.body.total).toEqual(booked);
+    // 2 minutes pass and the driver is now far from the drop-off.
+    await sim.advance(121);
+    await a.moveTo(PLACES.sergels);
+    const before = await a.trip(tripId);
+    const stale = await a.command(tripId, "complete", { previewId: shown.body.previewId, cashCollected: shown.body.cashDue });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body).toMatchObject({ code: "conflict", reason: "price_changed" });
+    expect(stale.body.preview.earlyEnd).toBe(true);
+    expect(stale.body.preview.previewId).not.toBe(shown.body.previewId);
+    expect(stale.body.preview.total.amountMinor).toBeLessThan(booked.amountMinor);
+    expect((await a.trip(tripId))).toMatchObject({ status: before["status"], version: before["version"] });
+    const done = await a.command(tripId, "complete", { previewId: stale.body.preview.previewId, cashCollected: stale.body.preview.cashDue });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.fare).toEqual(stale.body.preview.total);
+    const row = await stored(tripId);
+    expect(Number(row.cash_collected_minor)).toBe(stale.body.preview.cashDue.amountMinor);
+    expect(Number(row.cash_collected_minor)).toBe(Number(row.fare_minor) - Number(row.wallet_applied_minor));
+  });
+
+  it("a wrong amount with a valid previewId is 409 price_changed, never 400", async () => {
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    await drive(a, tripId, "in_trip");
+    await a.moveTo(PLACES.medborgar);
+    const shown = await preview(a, tripId);
+    const wrong = await a.command(tripId, "complete", { previewId: shown.body.previewId, cashCollected: { ...shown.body.cashDue, amountMinor: shown.body.cashDue.amountMinor + 100 } });
+    expect(wrong.status).toBe(409);
+    expect(wrong.body.reason).toBe("price_changed");
+    expect(wrong.body.preview.cashDue).toEqual(shown.body.cashDue);
+    const done = await a.command(tripId, "complete", { previewId: wrong.body.preview.previewId, cashCollected: wrong.body.preview.cashDue });
+    expect(done.status).toBe(200);
   });
 });

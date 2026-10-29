@@ -5,9 +5,10 @@ import type { Db } from "../db/db.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
+import { ApiError } from "../http/errors.js";
 import { tripProjection } from "./projection.js";
 import { stopCommand } from "./stops.js";
-import { completePreview, completeTrip, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
+import { completePreview, completeTrip, PriceChanged, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
 
 /** contract §3: the driver's trip commands, the rider's early end, ratings and the driver's earnings. */
 
@@ -17,7 +18,7 @@ const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Fix = z.object({ lat: z.number(), lng: z.number(), accuracy: z.number().min(0) }).passthrough();
 const Command = z.object({ expectedVersion: z.number().int().min(1), location: Fix.optional() });
 const Money = z.object({ amountMinor: z.number().int().min(0), currency: z.string().regex(/^[A-Z]{3}$/) });
-const CompleteBody = Command.extend({ cashCollected: Money.optional() });
+const CompleteBody = Command.extend({ cashCollected: Money.optional(), previewId: ID.optional() });
 const NoShowBody = Command.extend({ reasonCode: z.string().optional() });
 const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional(), location: Fix.optional() });
 const EarningsQuery = z.object({ period: z.enum(["day", "week", "month"]).default("week"), from: z.string().datetime().optional(), to: z.string().datetime().optional() });
@@ -71,7 +72,14 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
     const who = await authenticate(request, guard, ["driver"]);
     const id = tripId(request);
     const body = parseBody(CompleteBody, request.body);
-    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await completeTrip(trx, { actor: "driver", subjectId: who.subjectId }, id, body, now()), "driver") }))).body;
+    try {
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await completeTrip(trx, { actor: "driver", subjectId: who.subjectId }, id, body, now()), "driver") }))).body;
+    } catch (error) {
+      if (!(error instanceof PriceChanged)) throw error;
+      // contract v0.17.3 §26: the complete rolled back; a fresh frozen price for the sheet.
+      const preview = await deps.db.transaction().execute((trx) => completePreview(trx, who.subjectId, id, now()));
+      throw new ApiError("conflict", "The price changed. Collect the new amount.", { reason: "price_changed", preview });
+    }
   });
 
   app.post(`${API_PREFIX}/trips/:tripId/no-show`, async (request) => {

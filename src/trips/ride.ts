@@ -758,9 +758,32 @@ async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin"
   return { early, fare, money };
 }
 
+/** contract v0.17.3 §26: how long a preview's price holds. */
+export const PREVIEW_FREEZE_SECONDS = (contract as unknown as { completePreview: { freezeSeconds: number } }).completePreview.freezeSeconds;
+
+type FrozenMoney = { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number };
+
+/** The CompletePreview body of a frozen price. */
+function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; early: boolean; fare: number; wallet: number; money: FrozenMoney }) {
+  const lines = row.money.fare_lines !== undefined ? (JSON.parse(row.money.fare_lines) as FareLine[]) : ((trip.fare_lines as FareLine[]) ?? []);
+  const sum = (amountMinor: number): Money => ({ amountMinor, currency: trip.currency });
+  const earnings = row.money.driver_earnings_minor ?? Number(trip.driver_earnings_minor ?? 0);
+  return {
+    previewId: row.previewId,
+    expiresAt: row.expiresAt.toISOString(),
+    tripId: trip.trip_id,
+    total: sum(row.fare),
+    cashDue: sum(row.fare - row.wallet),
+    driverEarnings: sum(earnings),
+    earlyEnd: row.early,
+    fareLines: lines,
+  };
+}
+
 /**
- * GET /driver/trips/{tripId}/complete-preview (contract v0.17.3 §26): what complete would set now, read-only: the
- * total, its lines, the cash due after the wallet and whether the trip ends early (decision 28).
+ * GET /driver/trips/{tripId}/complete-preview (contract v0.17.3 §26): what complete would set now (the same
+ * finalPrice), frozen for PREVIEW_FREEZE_SECONDS under a new previewId that replaces the trip's earlier one. The trip
+ * and the wallet are not changed.
  */
 export async function completePreview(ex: Executor, driverId: string, tripId: string, now: Date) {
   const trip = await readOwnTrip(ex, tripId, { actor: "driver", subjectId: driverId });
@@ -768,21 +791,40 @@ export async function completePreview(ex: Executor, driverId: string, tripId: st
     throw new ApiError("invalid_transition", "The rider is not on board.", { reason: "trip_not_on_board", projection: tripProjection(trip, "driver") });
   }
   const { early, fare, money } = await finalPrice(ex, trip, "driver", undefined, now);
-  const lines = money.fare_lines !== undefined ? (JSON.parse(money.fare_lines) as FareLine[]) : ((trip.fare_lines as FareLine[]) ?? []);
   const rider = await ex.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).executeTakeFirstOrThrow();
   const wallet = walletPart(Number(rider.wallet_minor), trip, fare);
-  const sum = (amountMinor: number): Money => ({ amountMinor, currency: trip.currency });
-  const earnings = money.driver_earnings_minor ?? Number(trip.driver_earnings_minor ?? 0);
-  return { tripId, total: sum(fare), cashDue: sum(fare - wallet), driverEarnings: sum(earnings), earlyEnd: early, fareLines: lines };
+  const previewId = newId("cpv", now.getTime());
+  const expiresAt = new Date(now.getTime() + PREVIEW_FREEZE_SECONDS * 1000);
+  const row = { preview_id: previewId, driver_id: driverId, expires_at: expiresAt, early_end: early, fare_minor: fare, wallet_minor: wallet, money: JSON.stringify(money), created_at: now };
+  await ex.insertInto("complete_previews").values({ trip_id: tripId, ...row }).onConflict((c) => c.column("trip_id").doUpdateSet(row)).execute();
+  return previewBody(trip, { previewId, expiresAt, early, fare, wallet, money });
 }
 
-export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; subjectId: string }, tripId: string, body: { expectedVersion: number; cashCollected?: Money; fare?: Money }, now: Date): Promise<TripRow> {
+/** Thrown inside complete's transaction; the route answers 409 price_changed with a fresh preview made after it. */
+export class PriceChanged extends Error {
+  constructor(readonly tripId: string) {
+    super("The price changed.");
+  }
+}
+
+export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; subjectId: string }, tripId: string, body: { expectedVersion: number; cashCollected?: Money; fare?: Money; previewId?: string }, now: Date): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, who);
   if (body.fare && body.fare.currency !== trip.currency) throw badRequest(`The fare is in ${trip.currency}.`, "currency_mismatch");
   expectVersion(trip, body.expectedVersion, who.actor);
   if (body.cashCollected && body.cashCollected.currency !== trip.currency) throw badRequest(`Cash is counted in ${trip.currency}.`, "currency_mismatch");
-  const { fare, money } = await finalPrice(trx, trip, who.actor, body.fare, now);
+  // contract v0.17.3 §26: the driver's latest unexpired preview is the price, exactly (no early-end flip, no extra
+  // minutes); otherwise the trip is priced as now.
+  const previewed = who.actor === "driver" && body.fare === undefined && body.previewId !== undefined;
+  const frozen = previewed
+    ? await trx.selectFrom("complete_previews").selectAll().where("trip_id", "=", trip.trip_id).where("preview_id", "=", body.previewId!).where("driver_id", "=", who.subjectId).where("expires_at", ">", now).executeTakeFirst()
+    : undefined;
+  const { fare, money } = frozen
+    ? { fare: Number(frozen.fare_minor), money: frozen.money as FrozenMoney }
+    : await finalPrice(trx, trip, who.actor, body.fare, now);
   const wallet = await spendWallet(trx, trip, fare, now);
+  // With a previewId the cash shown must be the cash part of this price; if not, nothing is completed and the app
+  // gets a fresh price to show (409 price_changed, never a 400 that leaves the driver stuck).
+  if (previewed && body.cashCollected && body.cashCollected.amountMinor !== fare - wallet) throw new PriceChanged(trip.trip_id);
   // The rider owes the fare (outstanding fees included) less what the wallet paid; more cash than that is a miscount,
   // and it would raise the driver's cash balance and the trip's refund room above the fare.
   if (body.cashCollected && body.cashCollected.amountMinor > fare - wallet) {
