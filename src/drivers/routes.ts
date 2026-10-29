@@ -6,6 +6,7 @@ import { ApiError } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
+import { narrowToZones, parseQuery, ZoneFilterQuery } from "../admin/zoneFilter.js";
 import { addVehicle, getDriverProfile, liveDrivers, listVehicles, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
 import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, submitOnboarding } from "./onboarding.js";
 import { acceptInvitation, cancelInvitation, declineInvitation, inviteByPhone, listInvitations, requestJoin, type InviteDeps } from "./invitations.js";
@@ -163,9 +164,8 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
 
   app.get(`${API_PREFIX}/admin/live/drivers`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
-    const { zoneId } = parseBody(z.object({ zoneId: ID.optional() }), request.query);
-    if (zoneId && !adminCoversZone(who, zoneId)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
-    return liveDrivers(deps.db, zoneId, who.zones, now());
+    const narrowed = await narrowToZones(deps.db, who, parseQuery(ZoneFilterQuery, request.query));
+    return liveDrivers(deps.db, undefined, narrowed.zones, now());
   });
 
   app.get(`${API_PREFIX}/admin/trips/:tripId/trace`, async (request) => {

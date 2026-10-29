@@ -5,6 +5,7 @@ import type { Db, Trx } from "../db/db.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
+import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
 import { chooseRefundDestination, getWallet, payoutsToMake, riderRefunds, walletEntries } from "../riders/wallet.js";
 import { tripProjection } from "../trips/projection.js";
 import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus } from "./lists.js";
@@ -33,10 +34,10 @@ const BonusBody = z.object({ ...Version, amount: Money, priority: z.boolean().op
 const DriverStatusBody = z.object({ ...Version, accountStatus: z.enum(["pending", "active", "on_hold", "suspended"]), note: Note });
 const RiderStatusBody = z.object({ ...Version, status: z.enum(["active", "suspended"]), note: Note });
 
-const TripsQuery = z.object({ ...Page, ...When, status: many(z.string()), kind: z.enum(["live", "scheduled"]).optional(), zoneId: ID.optional(), categoryId: z.string().optional(), riderId: ID.optional(), driverId: ID.optional(), paymentStatus: z.string().optional(), q: z.string().max(100).optional() });
-const RidersQuery = z.object({ ...Page, status: z.enum(["active", "suspended"]).optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
-const DriversQuery = z.object({ ...Page, accountStatus: many(z.string()), onlineStatus: many(z.string()), zoneId: ID.optional(), categoryId: z.string().optional(), q: z.string().max(100).optional() });
-const PaymentsQuery = z.object({ ...Page, ...When, status: z.string().optional(), method: z.string().optional(), tripId: ID.optional(), riderId: ID.optional(), zoneId: ID.optional() });
+const TripsQuery = { ...Page, ...When, status: many(z.string()), kind: z.enum(["live", "scheduled"]).optional(), categoryId: z.string().optional(), riderId: ID.optional(), driverId: ID.optional(), paymentStatus: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
+const RidersQuery = { ...Page, status: z.enum(["active", "suspended"]).optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
+const DriversQuery = { ...Page, accountStatus: many(z.string()), onlineStatus: many(z.string()), categoryId: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
+const PaymentsQuery = { ...Page, ...When, status: z.string().optional(), method: z.string().optional(), tripId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
 const AuditQuery = z.object({ ...Page, ...When, actorId: z.string().optional(), targetType: z.string().optional(), targetId: z.string().optional(), action: z.string().optional(), result: z.string().optional() });
 const NearbyQuery = z.object({ scope: z.enum(["radius", "zone", "zone_and_neighbours"]).default("radius"), radiusKm: z.coerce.number().min(0.1).max(100).optional() });
 const OffersQuery = z.object(Page);
@@ -57,7 +58,8 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   /* ---- reads */
   app.get(`${API_PREFIX}/admin/trips`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
-    return listTrips(deps.db, who, clean(parseBody(TripsQuery, request.query)) as never);
+    const query = parseQuery(TripsQuery, request.query);
+    return listTrips(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)) as never);
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
@@ -75,15 +77,18 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   });
   app.get(`${API_PREFIX}/admin/riders`, async (request) => {
     const who = await authenticateAdmin(request, guard, "riders.read");
-    return listRiders(deps.db, who, clean(parseBody(RidersQuery, request.query)), deps.currency);
+    const query = parseQuery(RidersQuery, request.query);
+    return listRiders(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)), deps.currency);
   });
   app.get(`${API_PREFIX}/admin/drivers`, async (request) => {
     const who = await authenticateAdmin(request, guard, "drivers.read");
-    return listDrivers(deps.db, who, clean(parseBody(DriversQuery, request.query)) as never);
+    const query = parseQuery(DriversQuery, request.query);
+    return listDrivers(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)) as never);
   });
   app.get(`${API_PREFIX}/admin/payments`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.read");
-    return listPayments(deps.db, who, clean(parseBody(PaymentsQuery, request.query)));
+    const query = parseQuery(PaymentsQuery, request.query);
+    return listPayments(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)));
   });
   app.get(`${API_PREFIX}/admin/audit`, async (request) => {
     const who = await authenticateAdmin(request, guard, "audit.read");
