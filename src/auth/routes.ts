@@ -3,8 +3,9 @@ import { z } from "zod";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
-import { authenticate } from "./guard.js";
+import { authenticate, authenticateAdmin } from "./guard.js";
 import { refreshTokens, requestOtp, signInWithProvider, signOut, verifyOtp, type AuthDeps } from "./service.js";
+import { joinWaitlist, listTestAccounts, listWaitlist } from "./waitlist.js";
 
 /** contract §8: /auth/otp/request, /auth/otp/verify, /auth/provider, /auth/refresh, /auth/sign-out, /push/devices(/unregister). */
 
@@ -22,6 +23,8 @@ const OtpVerifyBody = z.object({
   linkToken: z.string().min(1).optional(),
 });
 const ProviderBody = z.object({ provider: z.enum(["apple", "google"]), idToken: z.string().min(1).max(8192), app: z.enum(["rider", "driver"]), name: z.string().max(120).optional() });
+const WaitlistBody = z.object({ phone: z.string(), app: z.enum(["rider", "driver"]), locale: Language.optional() });
+const WaitlistQuery = z.object({ cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(50), app: z.enum(["rider", "driver"]).optional() });
 const RefreshBody = z.object({ refreshToken: z.string().min(1).max(512) });
 const PushDeviceBody = z.object({
   token: z.string().min(1).max(4096),
@@ -53,6 +56,22 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
   app.post(`${API_PREFIX}/auth/provider`, async (request) => {
     const body = parseBody(ProviderBody, request.body);
     return signInWithProvider(deps, { provider: body.provider, idToken: body.idToken, app: body.app, name: body.name }, client(request));
+  });
+
+  // v0.15.0 §24 (owner 2026-10-29, decision 5): a number answered sign_in_restricted joins the waiting list.
+  app.post(`${API_PREFIX}/auth/waitlist`, async (request) => {
+    const body = parseBody(WaitlistBody, request.body);
+    return joinWaitlist(deps.db, { phone: body.phone, app: body.app, locale: body.locale, requestId: request.id }, client(request), deps.clock?.() ?? new Date());
+  });
+
+  // v0.15.0 §24 (decision 6, "Only in test builds"): only outside production; production has no such route (404).
+  if (deps.testSignInEnabled) {
+    app.get(`${API_PREFIX}/auth/test-accounts`, async () => listTestAccounts(deps.db));
+  }
+
+  app.get(`${API_PREFIX}/admin/waitlist`, async (request) => {
+    await authenticateAdmin(request, guard, "overview.read");
+    return listWaitlist(deps.db, parseBody(WaitlistQuery, request.query));
   });
 
   app.post(`${API_PREFIX}/auth/refresh`, async (request) => {

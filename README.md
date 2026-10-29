@@ -87,6 +87,10 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
   and the owner's client ids. A linked identity signs in at once; a new one gets `PHONE_REQUIRED` with a link token
   (15 minutes) and the names / e-mail the provider gave; the phone is then verified once with that token and the
   account (found or made by the phone) is linked. Without client ids the provider is not configured (`503`).
+- Waiting list (v0.15.0, owner 2026-10-29): a restricted number can `POST /auth/waitlist { phone, app, locale? }`
+  (one row per phone and app in `sign_in_waitlist`, 30 asks per address an hour); admins read `GET /admin/waitlist`.
+- Test accounts (v0.15.0): `GET /auth/test-accounts` lists the test numbers with each account's status, for the
+  staging builds' sign-in screen. The route exists only outside production (production answers `404`).
 - SMS: there is no provider yet (the owner picks 46elks or Twilio). Every message the server wants sent (fleet
   invitations today) is written to `sms_outbox`, as `skipped` while no provider exists, so nothing is lost.
 
