@@ -7,7 +7,8 @@ import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
-import { defaultSettings, settingsProblems } from "../drivers/onboardingSettings.js";
+import { randomBytes } from "node:crypto";
+import { defaultSettings, prepareSettings, settingsProblems, type OnboardingSettings } from "../drivers/onboardingSettings.js";
 
 /**
  * Config documents (contract v0.5.1 §6, contract.json#configDocs and #configVersion). The admin panel builds each
@@ -145,6 +146,17 @@ async function lockDraftVersion(trx: Trx, doc: ConfigDoc, zoneId: string): Promi
 /** PUT /admin/config/{doc}: replace the draft, inside the caller's transaction. */
 export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string }, now: Date): Promise<ConfigDraftView> {
   const zone = await getScope(trx, input.zoneId);
+  if (input.doc === "onboarding" && schemaProblem(SCHEMA.onboarding, input.document) === null) {
+    // v0.17.0 (owner item 14): new document types get their server id; draft:<key> in the lists becomes it.
+    const before = await lockDraftVersion(trx, input.doc, input.zoneId);
+    const live = await trx.selectFrom("config_live").select("document").where("doc", "=", "onboarding").where("zone_id", "=", input.zoneId).executeTakeFirst();
+    const known = new Set([before.document, live?.document].flatMap((d) => ((d as OnboardingSettings | null)?.customTypes ?? []).map((c) => c.id!)));
+    try {
+      input = { ...input, document: prepareSettings(input.document as OnboardingSettings, known, () => randomBytes(5).toString("hex")) };
+    } catch (error) {
+      throw badRequest(`The onboarding settings are not valid: ${(error as Error).message}.`, "invalid_document");
+    }
+  }
   checkDocument(input.doc, zone, input.document);
   const current = await lockDraftVersion(trx, input.doc, input.zoneId);
   if (current.version !== input.expectedVersion) {

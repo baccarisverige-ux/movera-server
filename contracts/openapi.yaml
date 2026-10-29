@@ -8295,13 +8295,69 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /admin/drivers/{driverId}/documents/{type}/check:
+    post:
+      operationId: adminCheckDocument
+      summary: Mark an admin_check document (info session) held
+      description: 'v0.17.0: v0.17.0 (owner items 8 and 13): an admin marks a kind admin_check document (the info session,
+        or a custom one) with POST /admin/drivers/{driverId}/documents/{type}/check { decision: approved | rejected, note?
+        } (documents.approve); approved counts for activation like any approved document. Until then the driver sees waiting_for_movera.'
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: documents.approve
+      parameters:
+      - $ref: '#/components/parameters/DriverId'
+      - name: type
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/DocumentType'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCheckCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /driver/onboarding/settings:
     get:
       operationId: getDriverOnboardingSettings
       summary: The onboarding settings of the driver's country
       description: 'v0.17.0: GET /driver/onboarding/settings → OnboardingSettings of the driver''s country (published, else
         defaults; version 0 = defaults), so the app offers only the car categories a car fits, asks the photos and shows the
-        warnings the server uses. A driver with no country yet names it: ?country=SE.'
+        warnings the server uses. A driver with no country yet names it: ?country=SE. v0.17.0 (item 14): the answer also has
+        documentTypes: { [type]: { owner, kind, expires, name, help? } } for every type in the country''s lists, contract
+        types with the admin''s texts and the custom types, so the app renders a type it does not know from this data.'
       tags:
       - Driver · Account
       x-actor:
@@ -17590,15 +17646,27 @@ components:
         driver:
           type: array
           items:
-            $ref: '#/components/schemas/DocumentType'
+            anyOf:
+            - $ref: '#/components/schemas/DocumentType'
+            - type: string
+              pattern: ^draft:.{1,40}$
+              description: A new custom type of this draft, named by its draftKey; the server puts the id in its place.
         fleet:
           type: array
           items:
-            $ref: '#/components/schemas/DocumentType'
+            anyOf:
+            - $ref: '#/components/schemas/DocumentType'
+            - type: string
+              pattern: ^draft:.{1,40}$
+              description: A new custom type of this draft, named by its draftKey; the server puts the id in its place.
         vehicle:
           type: array
           items:
-            $ref: '#/components/schemas/DocumentType'
+            anyOf:
+            - $ref: '#/components/schemas/DocumentType'
+            - type: string
+              pattern: ^draft:.{1,40}$
+              description: A new custom type of this draft, named by its draftKey; the server puts the id in its place.
     OnboardingStep:
       type: object
       required:
@@ -17652,6 +17720,120 @@ components:
             - hybrid
             - electric
           uniqueItems: true
+    LocalText:
+      type: object
+      required:
+      - sv
+      - fr
+      - en
+      properties:
+        sv:
+          type: string
+          minLength: 1
+        fr:
+          type: string
+          minLength: 1
+        en:
+          type: string
+          minLength: 1
+    CustomDocumentType:
+      type: object
+      description: 'v0.17.0 (owner item 14): a document type the admin creates for one country. { id, owner: driver | fleet
+        | vehicle, kind: file | admin_check, expires: boolean, name: { sv, fr, en }, help: { sv, fr, en } } (all three languages,
+        non-empty). The server makes the id (custom_ + 10 lower-case letters or digits) the first time the draft is saved:
+        a new entry is sent without id and with draftKey (any short text the panel chooses), and the lists (documents.driver
+        / fleet / vehicle, expiringTypes) may name it by "draft:<draftKey>"; the server replaces each with the new id and
+        drops draftKey. An id once made never changes; an entry with an id the country does not have is 400 invalid_document.
+        expires true puts the type in expiringTypes, false takes it out (the server keeps the two in step). owner fleet is
+        a company document of a fleet account (owner_kind driver); owner vehicle a car document. Deleting an entry removes
+        the type from the country: it must not stay in a list. Documents already uploaded for it stay stored.'
+      required:
+      - owner
+      - kind
+      - expires
+      - name
+      - help
+      properties:
+        id:
+          type: string
+          pattern: ^custom_[a-z0-9]{10}$
+          description: Made by the server; leave out for a new type.
+        draftKey:
+          type: string
+          minLength: 1
+          maxLength: 40
+          description: 'A new type only: lists may name it draft:<draftKey> until the server gives the id.'
+        owner:
+          type: string
+          enum:
+          - driver
+          - fleet
+          - vehicle
+        kind:
+          type: string
+          enum:
+          - file
+          - admin_check
+        expires:
+          type: boolean
+        name:
+          $ref: '#/components/schemas/LocalText'
+        help:
+          $ref: '#/components/schemas/LocalText'
+    DocumentTypeTexts:
+      type: object
+      description: 'v0.17.0 (owner item 14): texts[type] = { name?: { sv, fr, en }, help?: { sv, fr, en } } replaces the contract
+        name, and adds a help / checklist text, of a contract type in this country. A key that is not a contract type of documents.types
+        is 400 invalid_document (a custom type carries its own texts).'
+      properties:
+        name:
+          $ref: '#/components/schemas/LocalText'
+        help:
+          $ref: '#/components/schemas/LocalText'
+    DocumentTypeInfo:
+      type: object
+      required:
+      - owner
+      - kind
+      - expires
+      - name
+      properties:
+        owner:
+          type: string
+          enum:
+          - driver
+          - fleet
+          - vehicle
+        kind:
+          type: string
+          enum:
+          - file
+          - acceptance
+          - admin_check
+        expires:
+          type: boolean
+        custom:
+          type: boolean
+        name:
+          $ref: '#/components/schemas/LocalText'
+        help:
+          $ref: '#/components/schemas/LocalText'
+    AdminCheckCommand:
+      type: object
+      description: 'v0.17.0 (owner items 8 and 13): an admin marks a kind admin_check document (the info session, or a custom
+        one) with POST /admin/drivers/{driverId}/documents/{type}/check { decision: approved | rejected, note? } (documents.approve);
+        approved counts for activation like any approved document. Until then the driver sees waiting_for_movera.'
+      required:
+      - decision
+      properties:
+        decision:
+          type: string
+          enum:
+          - approved
+          - rejected
+        note:
+          type: string
+          maxLength: 1000
     OnboardingSettings:
       type: object
       description: 'v0.17.0, per country only: v0.17.0 (owner decisions of 2026-10-29, driver group 2 "Onboarding", items
@@ -17661,16 +17843,21 @@ components:
         (settings.edit / settings.publish), the same draft / publish / version rule as the other documents. Until a country
         has one published, the server and the apps use defaults[country] (the admin''s own defaults). Publishing changes at
         once: the documents each new and existing account needs (Driver.requiredDocuments, requiredFleetDocuments, Vehicle.requiredDocuments),
-        the expiry warnings, the sign-up reminders and the car rules. Tunisia stays present but closed (no documents). Rules:
-        documents.driver, documents.fleet: types whose owner is driver; documents.vehicle: types whose owner is vehicle (documents.types).
-        An unknown type or one of the wrong owner is 400 invalid_document. A new type needs a contract change (it has names
-        in sv / fr / en and a kind). documents.driver always contains driving_license (admin rule "The driving licence is
-        always needed"). expiringTypes: the listed types need an expiry date when an admin approves them (documentExpiry).
-        steps: every id of stepIds once, at least one on, days within limits.stepDays. The server stores and serves them;
-        the admin panel shows the funnel with them. signUpReminders.everyDays within limits.remindEveryDays, stuckAfterDays
-        within limits.stuckAfterDays. expiry.warnDays: 1 to 3 numbers within limits.warnDays, largest first, each smaller
-        than the one before. vehicles.categories: each category of the catalog at most once; minYear, minSeats within limits;
-        a category that is on allows at least one fuel of fuels; vehicles.warnDays within limits.vehicleWarnDays.'
+        the expiry warnings, the sign-up reminders and the car rules. Tunisia stays present but closed (no documents). v0.17.0
+        (owner item 14: "First answer , and admin can change text and add or delete documents so must add on contract and
+        server and admin ! Also same for Sweden"): per country the admin also creates new document types (customTypes), changes
+        the name and help text of any type (texts), sets which expire (expiringTypes), and adds or removes types in each list.
+        Rules: documents.driver, documents.fleet: types whose owner is driver; documents.vehicle: types whose owner is vehicle
+        (documents.types). An unknown type or one of the wrong owner is 400 invalid_document. A new type needs a contract
+        change (it has names in sv / fr / en and a kind). documents.driver always contains driving_license (admin rule "The
+        driving licence is always needed"). expiringTypes: the listed types need an expiry date when an admin approves them
+        (documentExpiry). steps: every id of stepIds once, at least one on, days within limits.stepDays. The server stores
+        and serves them; the admin panel shows the funnel with them. signUpReminders.everyDays within limits.remindEveryDays,
+        stuckAfterDays within limits.stuckAfterDays. expiry.warnDays: 1 to 3 numbers within limits.warnDays, largest first,
+        each smaller than the one before. vehicles.categories: each category of the catalog at most once; minYear, minSeats
+        within limits; a category that is on allows at least one fuel of fuels; vehicles.warnDays within limits.vehicleWarnDays.
+        customTypes: ids unique and of idPattern; the scope list a custom type is in matches its owner (driver → documents.driver,
+        fleet → documents.fleet, vehicle → documents.vehicle); names and help in sv, fr and en.'
       required:
       - version
       - country
@@ -17694,7 +17881,11 @@ components:
         expiringTypes:
           type: array
           items:
-            $ref: '#/components/schemas/DocumentType'
+            anyOf:
+            - $ref: '#/components/schemas/DocumentType'
+            - type: string
+              pattern: ^draft:.{1,40}$
+              description: A new custom type of this draft, named by its draftKey; the server puts the id in its place.
           uniqueItems: true
           description: Types that need an expiry date when approved (contract.json#driverOnboarding.documentExpiry).
         steps:
@@ -17751,6 +17942,38 @@ components:
                 requiredFleetDocuments for a fleet owner) expired, POST /driver/availability online is 409 documents_not_approved,
                 reason documents_expired, details "<scope>:<type>". false: an expired document does not stop going online
                 (it still shows red). Car documents follow settings.vehicles.autoHold the same way (reason vehicle_documents_not_approved).'
+        customTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomDocumentType'
+          description: 'v0.17.0 (owner item 14): a document type the admin creates for one country. { id, owner: driver |
+            fleet | vehicle, kind: file | admin_check, expires: boolean, name: { sv, fr, en }, help: { sv, fr, en } } (all
+            three languages, non-empty). The server makes the id (custom_ + 10 lower-case letters or digits) the first time
+            the draft is saved: a new entry is sent without id and with draftKey (any short text the panel chooses), and the
+            lists (documents.driver / fleet / vehicle, expiringTypes) may name it by "draft:<draftKey>"; the server replaces
+            each with the new id and drops draftKey. An id once made never changes; an entry with an id the country does not
+            have is 400 invalid_document. expires true puts the type in expiringTypes, false takes it out (the server keeps
+            the two in step). owner fleet is a company document of a fleet account (owner_kind driver); owner vehicle a car
+            document. Deleting an entry removes the type from the country: it must not stay in a list. Documents already uploaded
+            for it stay stored.'
+        texts:
+          type: object
+          description: 'v0.17.0 (owner item 14): texts[type] = { name?: { sv, fr, en }, help?: { sv, fr, en } } replaces the
+            contract name, and adds a help / checklist text, of a contract type in this country. A key that is not a contract
+            type of documents.types is 400 invalid_document (a custom type carries its own texts).'
+          additionalProperties:
+            $ref: '#/components/schemas/DocumentTypeTexts'
+        documentTypes:
+          type: object
+          readOnly: true
+          description: 'Only in GET /driver/onboarding/settings. GET /driver/onboarding/settings → OnboardingSettings of the
+            driver''s country (published, else defaults; version 0 = defaults), so the app offers only the car categories
+            a car fits, asks the photos and shows the warnings the server uses. A driver with no country yet names it: ?country=SE.
+            v0.17.0 (item 14): the answer also has documentTypes: { [type]: { owner, kind, expires, name, help? } } for every
+            type in the country''s lists, contract types with the admin''s texts and the custom types, so the app renders
+            a type it does not know from this data.'
+          additionalProperties:
+            $ref: '#/components/schemas/DocumentTypeInfo'
         vehicles:
           type: object
           description: 'v0.17.0 (owner item 11: "Make them real (Recommended)"): POST /driver/vehicles is checked against
@@ -17802,7 +18025,6 @@ components:
           expiringTypes:
           - driving_license
           - taxi_driver_license
-          - company_registration
           - taxi_traffic_permit
           - vehicle_registration
           - insurance
@@ -17897,10 +18119,13 @@ components:
             warnDays: 30
             autoHold: true
             photosNeeded: true
+          customTypes: []
+          texts: {}
         FR:
           documents:
             driver:
             - terms
+            - info_session
             - vtc_card
             - driving_license
             - national_id
@@ -17917,16 +18142,15 @@ components:
             - insurance
             - vtc_sticker
           expiringTypes:
-          - vtc_card
           - driving_license
           - national_id
-          - company_registration
-          - vtc_register_certificate
-          - rc_pro_insurance
-          - urssaf_certificate
+          - vtc_card
           - vehicle_registration
           - insurance
+          - rc_pro_insurance
+          - urssaf_certificate
           - vtc_sticker
+          - vtc_register_certificate
           steps:
           - id: signup
             'on': true
@@ -18018,6 +18242,8 @@ components:
             warnDays: 30
             autoHold: true
             photosNeeded: true
+          customTypes: []
+          texts: {}
         TN:
           documents:
             driver: []
@@ -18115,6 +18341,8 @@ components:
             warnDays: 30
             autoHold: true
             photosNeeded: true
+          customTypes: []
+          texts: {}
     ReminderFix:
       type: object
       description: 'Where a tap on the line goes: document = the upload guide of documentType (vehicleId for a car); info_session
@@ -18155,7 +18383,8 @@ components:
         the fleet is pending / rejected / blocked (no fix). fleet_no_approved_car: blocks_online: the fleet has no car that
         can be picked (approved, every car document approved); owner fix: fleet_vehicles (add / finish a car); member: no
         fix ("Your fleet has no approved car yet…"). no_vehicle: blocks_online: the fleet has a car that can be picked but
-        this driver has none picked (fix: pick_vehicle).'
+        this driver has none picked (fix: pick_vehicle). admin_check_waiting: waiting: a custom admin_check document not marked
+        yet; status waiting_for_movera (no fix).'
       required:
       - kind
       - level
@@ -18173,6 +18402,7 @@ components:
           - fleet_not_approved
           - fleet_no_approved_car
           - no_vehicle
+          - admin_check_waiting
         level:
           type: string
           enum:

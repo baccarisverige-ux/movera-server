@@ -3,7 +3,7 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { ONBOARDING, documentKind } from "../drivers/onboardingRules.js";
 import { audit } from "../admin/audit.js";
-import { onboardingSettings } from "../drivers/onboardingSettings.js";
+import { onboardingSettings, ownerKindOf, typeInfo } from "../drivers/onboardingSettings.js";
 import { openFile, sealFile, type DocumentKey } from "./files.js";
 
 /**
@@ -86,13 +86,16 @@ export async function listDocuments(ex: Executor, driverId: string, statuses?: s
  * contract does not know, a type of another kind than file, a bad media type or a file over the limit is 400.
  */
 export async function uploadDocument(trx: Trx, key: DocumentKey, driverId: string, upload: Upload, now: Date) {
-  const kind = documentKind(upload.type);
+  // v0.17.0 (owner item 14): the types of the driver's country, the admin's own included.
+  const country = (await trx.selectFrom("drivers").select("country").where("driver_id", "=", driverId).executeTakeFirst())?.country ?? null;
+  const info = country ? typeInfo(await onboardingSettings(trx, country), upload.type) : undefined;
+  const kind = info?.kind ?? documentKind(upload.type);
   if (kind === undefined) throw badRequest(`Unknown document type ${upload.type}.`, "unknown_document_type");
   if (kind !== "file") throw badRequest(`${upload.type} is not uploaded as a file.`, "not_a_file_document");
   if (!ONBOARDING.documents.upload.mediaTypes.includes(upload.mediaType)) throw badRequest("Send a JPEG, PNG, HEIC or PDF.", "unsupported_file_type");
   if (upload.truncated || upload.bytes.length > ONBOARDING.documents.upload.maxBytes) throw badRequest("The file is larger than 10 MB.", "file_too_large");
   if (upload.bytes.length === 0) throw badRequest("The file is empty.", "empty_file");
-  const expected = ONBOARDING.documents.types[upload.type]!.owner;
+  const expected = info ? ownerKindOf(info) : ONBOARDING.documents.types[upload.type]!.owner;
   let ownerKind: "driver" | "vehicle" = "driver";
   let ownerId = driverId;
   if (upload.ownerId !== undefined && upload.ownerId !== driverId) {
@@ -196,6 +199,32 @@ export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: 
   await audit(trx, { adminId: who.subjectId, action: "document.review", targetType: "document", targetId: documentId, zoneId: await zoneOfDocument(trx, row), detail: { driverId: row.driver_id, type: row.type, from: row.status, to: body.decision, note: body.note ?? null }, at: now });
   const fresh = await trx.selectFrom("documents").selectAll().where("document_id", "=", documentId).executeTakeFirstOrThrow();
   return documentView(fresh as DocumentRow, "admin");
+}
+
+/** The driver, or 404; 403 when he is outside the admin's zones. */
+export async function driverInScope(ex: Executor, who: { zones: string[] }, driverId: string) {
+  const driver = await ex.selectFrom("drivers").select(["driver_id", "country", "zone_ids"]).where("driver_id", "=", driverId).executeTakeFirst();
+  if (driver === undefined) throw notFound("No such driver.", "driver_not_found");
+  if (!who.zones.includes("*") && !driver.zone_ids.some((z) => who.zones.includes(z))) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
+  return driver;
+}
+
+/**
+ * POST /admin/drivers/{driverId}/documents/{type}/check (documents.approve, contract v0.17.0 settings.adminCheck,
+ * owner items 8 and 13): an admin marks a kind admin_check document (the info session, or one of the admin's own).
+ */
+export async function checkDocument(trx: Trx, who: { subjectId: string; zones: string[] }, driverId: string, type: string, body: { decision: "approved" | "rejected"; note?: string | undefined }, now: Date) {
+  const driver = await driverInScope(trx, who, driverId);
+  const info = driver.country ? typeInfo(await onboardingSettings(trx, driver.country), type) : undefined;
+  if (info?.kind !== "admin_check") throw badRequest(`${type} is not marked by an admin.`, "not_an_admin_check");
+  const existing = await trx.selectFrom("documents").select(["document_id", "version", "status"]).where("owner_kind", "=", "driver").where("owner_id", "=", driverId).where("type", "=", type).executeTakeFirst();
+  const fields = { status: body.decision, reviewed_at: now, reviewed_by: who.subjectId, review_note: body.note ?? null, updated_at: now };
+  const documentId = existing?.document_id ?? newId("doc", now.getTime());
+  if (existing) await trx.updateTable("documents").set({ ...fields, version: existing.version + 1 }).where("document_id", "=", documentId).execute();
+  else await trx.insertInto("documents").values({ document_id: documentId, driver_id: driverId, owner_kind: "driver", owner_id: driverId, type, created_at: now, ...fields }).execute();
+  await audit(trx, { adminId: who.subjectId, action: "document.check", targetType: "document", targetId: documentId, zoneId: driver.zone_ids[0] ?? null, detail: { driverId, type, from: existing?.status ?? null, to: body.decision, note: body.note ?? null }, at: now });
+  const row = await trx.selectFrom("documents").selectAll().where("document_id", "=", documentId).executeTakeFirstOrThrow();
+  return documentView(row as DocumentRow, "admin");
 }
 
 /** GET /admin/documents/{id}/file (documents.approve): the file, and an audit line that it was read. */

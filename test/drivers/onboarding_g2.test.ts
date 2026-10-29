@@ -58,7 +58,7 @@ async function publishSettings(country: string, change: (doc: OnboardingSettings
   const document = structuredClone(draft.document);
   change(document);
   const put = await call(app, "PUT", "/admin/config/onboarding", sup.headers, { expectedVersion: draft.version, country, document });
-  expect(put.statusCode).toBe(200);
+  expect(put.statusCode, put.body).toBe(200);
   const pub = await call(app, "POST", "/admin/config/onboarding/publish", sup.headers, { expectedVersion: put.json().version, country });
   expect(pub.statusCode).toBe(200);
   return pub.json();
@@ -110,10 +110,13 @@ describe("item 10 + note check: the onboarding settings document, per country, w
     });
     expect(se.document.vehicles.categories.find((r: { category: string }) => r.category === "economy")).toMatchObject({ minYear: 2015, minSeats: 4 });
     const fr = await settingsOf("FR");
-    expect(fr.document.documents).toEqual({ driver: ["terms", "vtc_card", "driving_license", "national_id", "profile_photo"], fleet: ["company_registration", "vtc_register_certificate", "rc_pro_insurance", "urssaf_certificate", "national_id", "bank_statement"], vehicle: ["vehicle_registration", "insurance", "vtc_sticker"] });
+    expect(fr.document.documents).toEqual({ driver: ["terms", "info_session", "vtc_card", "driving_license", "national_id", "profile_photo"], fleet: ["company_registration", "vtc_register_certificate", "rc_pro_insurance", "urssaf_certificate", "national_id", "bank_statement"], vehicle: ["vehicle_registration", "insurance", "vtc_sticker"] });
     expect(fr.document.vehicles.categories.find((r: { category: string }) => r.category === "economy")).toMatchObject({ minYear: 2016 });
     expect(fr.document.vehicles.categories.find((r: { category: string }) => r.category === "premium")).toMatchObject({ minYear: 2022 });
     expect(fr.document.expiry).toEqual({ warnDays: [30, 7, 1], blockAtExpiry: true });
+    // Owner item 14: which documents expire, per country.
+    expect([...fr.document.expiringTypes].sort()).toEqual(["driving_license", "insurance", "national_id", "rc_pro_insurance", "urssaf_certificate", "vehicle_registration", "vtc_card", "vtc_register_certificate", "vtc_sticker"]);
+    expect([...se.document.expiringTypes].sort()).toEqual(["driving_license", "insurance", "taxi_driver_license", "taxi_traffic_permit", "vehicle_registration"]);
     const tn = await settingsOf("TN");
     expect(tn.document.documents).toEqual({ driver: [], fleet: [], vehicle: [] });
   });
@@ -228,7 +231,11 @@ describe("items 1 and 3: expiry typed by the admin, warnings at 30 / 7 / 1 days,
     expect((await review(taxi, { decision: "rejected", note: "Blurry" })).json()).toMatchObject({ status: "rejected" });
   });
 
-  it("France: the VTC card needs the date too", async () => {
+  it("France: the VTC card needs the date too; the Kbis does not expire (owner item 14)", async () => {
+    const kbis = await upload("frOwner", { type: "company_registration" });
+    expect((await review(kbis, { decision: "approved" })).json()).toMatchObject({ status: "approved" });
+    const rc = await upload("frOwner", { type: "rc_pro_insurance" });
+    expect((await review(rc, { decision: "approved" })).json()).toMatchObject({ reason: "expiry_required" });
     const card = await upload("frConvert", { type: "vtc_card" });
     expect((await review(card, { decision: "approved" })).json()).toMatchObject({ reason: "expiry_required" });
     expect((await review(card, { decision: "approved", expiresAt: inDays(40) })).json()).toMatchObject({ status: "approved" });
@@ -242,8 +249,19 @@ describe("items 1 and 3: expiry typed by the admin, warnings at 30 / 7 / 1 days,
     expect(se.items.map((i: { level: string }) => i.level)).toEqual([...se.items.map((i: { level: string }) => i.level)].sort((a, b) => ["blocks_online", "due_soon", "waiting"].indexOf(a) - ["blocks_online", "due_soon", "waiting"].indexOf(b)));
     expect(se.blocksOnline).toBe(se.items.filter((i: { level: string }) => i.level === "blocks_online").length);
     const fr = await reminders("frConvert");
-    expect(fr.items.some((i: { kind: string }) => i.kind === "info_session_waiting")).toBe(false);
+    // Owner item 13: "Yes, same as Sweden".
+    expect(fr.items).toContainEqual({ kind: "info_session_waiting", level: "waiting", scope: "driver", documentType: "info_session", status: "waiting_for_movera", fix: { target: "info_session", contentSlot: "driver-info-session" } });
     expect(fr.items).toContainEqual(expect.objectContaining({ kind: "document_needed", documentType: "national_id", level: "blocks_online" }));
+  });
+
+  it("items 8 and 13: an admin marks the info session held, in Sweden and in France; the line goes", async () => {
+    for (const who of ["seConvert", "frConvert"] as const) {
+      const res = await call(app, "POST", `/admin/drivers/${ID[who]}/documents/info_session/check`, sup.headers, { decision: "approved", note: "Held 2 Nov" });
+      expect(res.json()).toMatchObject({ type: "info_session", status: "approved" });
+      expect((await reminders(who)).items.some((i: { kind: string }) => i.kind === "info_session_waiting")).toBe(false);
+    }
+    const notCheck = await call(app, "POST", `/admin/drivers/${ID.seConvert}/documents/driving_license/check`, sup.headers, { decision: "approved" });
+    expect(notCheck.json()).toMatchObject({ reason: "not_an_admin_check" });
   });
 
   it("item 8: 'How to book your info session' is a driver content place the admin publishes", async () => {
@@ -385,5 +403,57 @@ describe("items 10, 11 and the note check: what the admin publishes is what the 
     expect(fleetCar.requiredDocuments).toEqual(["vehicle_registration", "insurance", "vtc_sticker"]);
     const old = await call(app, "POST", "/driver/vehicles", H.frOwner!, { make: "Renault", model: "Talisman", year: 2018, color: "Grey", plate: "AA-003-FR", seats: 4, categoryIds: ["economy"] });
     expect(old.json()).toMatchObject({ reason: "category_not_allowed", details: ["economy:year_too_old"] });
+  });
+});
+
+describe("item 14: document types the admin makes, renames, expires and removes, per country", () => {
+  const text = (s: string) => ({ sv: `${s} sv`, fr: `${s} fr`, en: s });
+  for (const [country, who, cityType] of [["SE", "seMember", "taxi_driver_license"], ["FR", "frMember", "vtc_card"]] as const) {
+    it(`${country}: a new file type and a new admin_check type get server ids, are required at once, and the app gets their texts`, async () => {
+      const pub = await publishSettings(country, (d) => {
+        d.customTypes = [
+          { draftKey: "a", owner: "driver", kind: "file", expires: true, name: text("Medical certificate"), help: text("Signed by a doctor") },
+          { draftKey: "b", owner: "driver", kind: "admin_check", expires: false, name: text("Road test"), help: text("Booked by Movera") },
+        ];
+        d.documents.driver.push("draft:a", "draft:b");
+        d.texts = { [cityType]: { name: text("Renamed licence"), help: text("Both sides") } };
+      });
+      expect(pub.doc).toBe("onboarding");
+      const live = (await settingsOf(country)).document as OnboardingSettings;
+      const [a, b] = live.customTypes!.map((c) => c.id!);
+      expect(a).toMatch(/^custom_[a-z0-9]{10}$/);
+      expect(live.customTypes![0]).not.toHaveProperty("draftKey");
+      expect(live.documents.driver.slice(-2)).toEqual([a, b]);
+      expect(live.expiringTypes).toContain(a);
+      expect(live.expiringTypes).not.toContain(b);
+      expect((await me(who)).requiredDocuments).toEqual(expect.arrayContaining([a, b]));
+      const forApp = (await call(app, "GET", "/driver/onboarding/settings", H[who]!)).json();
+      expect(forApp.documentTypes[a!]).toEqual({ owner: "driver", kind: "file", expires: true, custom: true, name: text("Medical certificate"), help: text("Signed by a doctor") });
+      expect(forApp.documentTypes[cityType]).toMatchObject({ custom: false, name: text("Renamed licence"), help: text("Both sides") });
+      // The driver uploads the new type; the admin approves it with a date (it expires).
+      const doc = await upload(who, { type: a! });
+      expect((await review(doc, { decision: "approved" })).json()).toMatchObject({ reason: "expiry_required" });
+      expect((await reminders(who)).items).toContainEqual(expect.objectContaining({ kind: "admin_check_waiting", documentType: b, status: "waiting_for_movera" }));
+      // Removed from the list: no longer required.
+      await publishSettings(country, (d) => {
+        d.documents.driver = d.documents.driver.filter((t) => t !== b);
+        d.customTypes = d.customTypes!.filter((c) => c.id !== b);
+      });
+      expect((await me(who)).requiredDocuments).not.toContain(b);
+    });
+  }
+
+  it("refuses an id the country never made, texts for an unknown type, a custom type in the wrong list", async () => {
+    const draft = await settingsOf("FR");
+    for (const change of [
+      (d: OnboardingSettings) => d.customTypes!.push({ id: "custom_aaaaaaaaaa", owner: "driver", kind: "file", expires: false, name: text("X"), help: text("X") }),
+      (d: OnboardingSettings) => (d.texts = { no_such_type: { name: text("X") } }),
+      (d: OnboardingSettings) => d.documents.vehicle.push(d.customTypes![0]!.id!),
+    ]) {
+      const document = structuredClone(draft.document);
+      change(document);
+      const res = await call(app, "PUT", "/admin/config/onboarding", sup.headers, { expectedVersion: draft.version, country: "FR", document });
+      expect(res.json()).toMatchObject({ code: "invalid_request", reason: "invalid_document" });
+    }
   });
 });

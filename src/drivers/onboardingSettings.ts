@@ -11,6 +11,9 @@ import { ONBOARDING, type DocumentScope } from "./onboardingRules.js";
 
 export type Fuel = "petrol" | "diesel" | "hybrid" | "electric";
 export type CategoryRule = { category: string; on: boolean; minYear: number; minSeats: number; fuels: Fuel[] };
+export type LocalText = { sv: string; fr: string; en: string };
+/** v0.17.0 (owner item 14): a document type the admin made for one country. */
+export type CustomType = { id?: string; draftKey?: string; owner: "driver" | "fleet" | "vehicle"; kind: "file" | "admin_check"; expires: boolean; name: LocalText; help: LocalText };
 export type OnboardingSettings = {
   version: number;
   publishedAt?: string;
@@ -21,6 +24,8 @@ export type OnboardingSettings = {
   signUpReminders: { on: boolean; everyDays: number; stuckAfterDays: number };
   expiry: { warnDays: number[]; blockAtExpiry: boolean };
   vehicles: { categories: CategoryRule[]; warnDays: number; autoHold: boolean; photosNeeded: boolean };
+  customTypes?: CustomType[];
+  texts?: Record<string, { name?: LocalText; help?: LocalText }>;
 };
 
 type SettingsContract = {
@@ -66,6 +71,61 @@ export function daysLeft(expiresAt: Date, now: Date): number {
   return Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / 86_400_000));
 }
 
+/* ---------------------------------------------------------------- document types (owner item 14) */
+
+export type TypeInfo = { owner: "driver" | "fleet" | "vehicle"; kind: "file" | "acceptance" | "admin_check"; expires: boolean; custom: boolean; name: LocalText; help?: LocalText };
+
+/** A type as the country shows it: a contract type with the admin's texts, or one of the admin's own; undefined = unknown here. */
+export function typeInfo(settings: OnboardingSettings, type: string): TypeInfo | undefined {
+  const custom = settings.customTypes?.find((c) => c.id === type);
+  if (custom) return { owner: custom.owner, kind: custom.kind, expires: custom.expires, custom: true, name: custom.name, help: custom.help };
+  const base = ONBOARDING.documents.types[type];
+  if (base === undefined) return undefined;
+  const text = settings.texts?.[type];
+  const owner = base.owner === "vehicle" ? "vehicle" : settings.documents.fleet.includes(type) && !settings.documents.driver.includes(type) ? "fleet" : "driver";
+  return { owner, kind: base.kind, expires: settings.expiringTypes.includes(type), custom: false, name: (text?.name ?? base.name) as LocalText, ...(text?.help ? { help: text.help } : {}) };
+}
+
+/** The owner kind a document of `type` is stored under (a fleet's company papers belong to the owner's account). */
+export const ownerKindOf = (info: TypeInfo): "driver" | "vehicle" => (info.owner === "vehicle" ? "vehicle" : "driver");
+
+/** Every type in the country's lists, for the driver app (documentTypes). */
+export function documentTypes(settings: OnboardingSettings): Record<string, TypeInfo> {
+  const out: Record<string, TypeInfo> = {};
+  for (const scope of ["driver", "fleet", "vehicle"] as const) for (const type of requiredOf(settings, scope)) {
+    const info = typeInfo(settings, type);
+    if (info) out[type] = info;
+  }
+  return out;
+}
+
+const DRAFT = "draft:";
+
+/**
+ * Before a draft is saved: new custom types get their id (custom_ + 10 letters or digits), "draft:<key>" in the lists
+ * become that id, and expiringTypes follows each custom type's expires. `known` = the ids the country already has.
+ */
+export function prepareSettings(document: OnboardingSettings, known: Set<string>, random: () => string): OnboardingSettings {
+  const d = structuredClone(document);
+  const keys = new Map<string, string>();
+  for (const custom of d.customTypes ?? []) {
+    if (custom.id === undefined) {
+      custom.id = `custom_${random()}`;
+      if (custom.draftKey !== undefined) keys.set(`${DRAFT}${custom.draftKey}`, custom.id);
+    } else if (!known.has(custom.id)) throw new Error(`customTypes: ${custom.id} is not a type of this country`);
+    delete custom.draftKey;
+  }
+  const swap = (list: string[]) => list.map((t) => keys.get(t) ?? t);
+  d.documents = { driver: swap(d.documents.driver), fleet: swap(d.documents.fleet), vehicle: swap(d.documents.vehicle) };
+  let expiring = swap(d.expiringTypes);
+  for (const custom of d.customTypes ?? []) {
+    expiring = expiring.filter((t) => t !== custom.id);
+    if (custom.expires) expiring.push(custom.id!);
+  }
+  d.expiringTypes = expiring;
+  return d;
+}
+
 /* ---------------------------------------------------------------- checks of a document the admin saves */
 
 const within = (value: unknown, [min, max]: [number, number]) => Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
@@ -75,17 +135,28 @@ export function settingsProblems(document: unknown): string[] {
   const d = document as OnboardingSettings;
   const problems: string[] = [];
   const types = ONBOARDING.documents.types;
+  const customs = d.customTypes ?? [];
+  const ids = new Set<string>();
+  for (const c of customs) {
+    if (c.id === undefined || !/^custom_[a-z0-9]{10}$/.test(c.id)) problems.push("customTypes: every type needs a server id");
+    else if (ids.has(c.id)) problems.push(`customTypes: ${c.id} twice`);
+    else ids.add(c.id);
+  }
+  for (const key of Object.keys(d.texts ?? {})) if (types[key] === undefined) problems.push(`texts: ${key} is not a contract type`);
   for (const [scope, owner] of [["driver", "driver"], ["fleet", "driver"], ["vehicle", "vehicle"]] as const) {
     for (const type of d.documents[scope]) {
-      if (types[type] === undefined) problems.push(`documents.${scope}: unknown type ${type}`);
+      const custom = customs.find((c) => c.id === type);
+      if (custom) {
+        if (custom.owner !== scope) problems.push(`documents.${scope}: ${type} is a ${custom.owner} document`);
+      } else if (types[type] === undefined) problems.push(`documents.${scope}: unknown type ${type}`);
       else if (types[type]!.owner !== owner) problems.push(`documents.${scope}: ${type} belongs to a ${types[type]!.owner === "vehicle" ? "car" : "person"}`);
     }
     if (new Set(d.documents[scope]).size !== d.documents[scope].length) problems.push(`documents.${scope}: a type is listed twice`);
   }
   if (ONBOARDING.countries[d.country]?.open && !d.documents.driver.includes("driving_license")) problems.push("documents.driver: the driving licence is always needed");
-  for (const type of d.expiringTypes) if (types[type] === undefined) problems.push(`expiringTypes: unknown type ${type}`);
-  const ids = d.steps.map((s) => s.id);
-  if (ids.length !== SETTINGS.stepIds.length || SETTINGS.stepIds.some((id) => !ids.includes(id))) problems.push(`steps: list each of ${SETTINGS.stepIds.join(", ")} once`);
+  for (const type of d.expiringTypes) if (types[type] === undefined && !ids.has(type)) problems.push(`expiringTypes: unknown type ${type}`);
+  const stepIds = d.steps.map((s) => s.id);
+  if (stepIds.length !== SETTINGS.stepIds.length || SETTINGS.stepIds.some((id) => !stepIds.includes(id))) problems.push(`steps: list each of ${SETTINGS.stepIds.join(", ")} once`);
   if (!d.steps.some((s) => s.on)) problems.push("steps: keep at least one step on");
   if (d.steps.some((s) => !within(s.days, SETTINGS.limits.stepDays))) problems.push("steps: 1 to 60 days");
   if (!within(d.signUpReminders.everyDays, SETTINGS.limits.remindEveryDays)) problems.push("signUpReminders.everyDays: 1 to 30");

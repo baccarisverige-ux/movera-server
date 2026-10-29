@@ -125,11 +125,12 @@ describe("the details screen", () => {
     expect(res.json()).toMatchObject({ code: "invalid_transition", reason: "account_not_active" });
   });
 
+  // v0.17.0 owner item 13 ("Yes, same as Sweden"): France has the info session too.
   it("a driver account in France: its own documents; no fleet yet, no cars", async () => {
     const res = await call(app, "POST", "/driver/onboarding", member, details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", country: "FR", cityId: "paris", language: "fr", accountType: "driver", company: undefined }));
     expect(res.statusCode).toBe(200);
     memberId = res.json().driverId;
-    expect(res.json()).toMatchObject({ accountStatus: "on_hold", accountType: "driver", zoneIds: ["FR-PC"], requiredDocuments: ["terms", "vtc_card", "driving_license", "national_id", "profile_photo"] });
+    expect(res.json()).toMatchObject({ accountStatus: "on_hold", accountType: "driver", zoneIds: ["FR-PC"], requiredDocuments: ["terms", "info_session", "vtc_card", "driving_license", "national_id", "profile_photo"] });
     expect(res.json()).not.toHaveProperty("fleet");
     expect(res.json()).not.toHaveProperty("payoutTo");
     expect((await call(app, "GET", "/driver/fleet", member)).statusCode).toBe(404);

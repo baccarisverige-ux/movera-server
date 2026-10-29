@@ -2,7 +2,7 @@ import type { Executor } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { notify } from "../notifications/service.js";
 import { ONBOARDING } from "./onboardingRules.js";
-import { daysLeft, onboardingSettings, requiredOf, type OnboardingSettings } from "./onboardingSettings.js";
+import { daysLeft, onboardingSettings, requiredOf, typeInfo, type OnboardingSettings } from "./onboardingSettings.js";
 import { pickableCars } from "./readiness.js";
 
 /**
@@ -51,9 +51,11 @@ function documentLines(required: string[], docs: DocRow[], scope: Scope, setting
     const doc = docs.find((d) => d.type === type);
     const fix = { target: "document", documentType: type, scope, ...(vehicleId ? { vehicleId } : {}) };
     const base = { scope, documentType: type, ...(vehicleId ? { vehicleId } : {}), ...(doc ? { documentId: doc.document_id } : {}) };
-    const kind = ONBOARDING.documents.types[type]?.kind;
-    if (type === INFO.type && kind === "admin_check" && doc?.status !== "approved") {
-      out.push({ kind: "info_session_waiting", level: "waiting", ...base, status: INFO.status, fix: { target: "info_session", contentSlot: INFO.contentSlot } });
+    const kind = typeInfo(settings, type)?.kind;
+    if (kind === "admin_check" && doc?.status !== "approved" && doc?.status !== "rejected") {
+      // The info session has its "How to book" page; an admin_check type of the admin's own only waits (item 14).
+      if (type === INFO.type) out.push({ kind: "info_session_waiting", level: "waiting", ...base, status: INFO.status, fix: { target: "info_session", contentSlot: INFO.contentSlot } });
+      else out.push({ kind: "admin_check_waiting", level: "waiting", ...base, status: INFO.status });
       continue;
     }
     if (doc === undefined || doc.status === "missing") out.push({ kind: "document_needed", level: "blocks_online", ...base, status: "needed", fix });
@@ -159,7 +161,7 @@ export async function sweepDocumentExpiry(ex: Executor, now: Date): Promise<void
       for (const d of larger) await ex.insertInto("document_notices").values({ document_id: doc.document_id, expires_at: expiresAt, warn_day: d, sent_at: now }).onConflict((c) => c.doNothing()).execute();
     }
     const language = lang(driver.language);
-    const name = ONBOARDING.documents.types[doc.type]?.name[language] ?? doc.type;
+    const name = typeInfo(settings, doc.type)?.name[language] ?? doc.type;
     const text = EXPIRY_TEXT[kind][language](name, left);
     await notify(ex, {
       audience: "driver",
@@ -175,7 +177,7 @@ export async function sweepDocumentExpiry(ex: Executor, now: Date): Promise<void
 /** The account waits on itself: details not sent, or a required file document missing or rejected. */
 async function waitsOnItself(ex: Executor, d: DriverLike, settings: OnboardingSettings): Promise<boolean> {
   if (d.account_status === "pending") return true;
-  const required = [...requiredOf(settings, "driver"), ...(d.account_type === "fleet" ? requiredOf(settings, "fleet") : [])].filter((t) => ONBOARDING.documents.types[t]?.kind === "file");
+  const required = [...requiredOf(settings, "driver"), ...(d.account_type === "fleet" ? requiredOf(settings, "fleet") : [])].filter((t) => typeInfo(settings, t)?.kind === "file");
   if (required.length === 0) return false;
   const docs = await ex.selectFrom("documents").select(["type", "status"]).where("owner_kind", "=", "driver").where("owner_id", "=", d.driver_id).where("type", "in", required).execute();
   return required.some((t) => {

@@ -1607,6 +1607,7 @@
         "FR": {
           "driver": [
             "terms",
+            "info_session",
             "vtc_card",
             "driving_license",
             "national_id",
@@ -1658,7 +1659,7 @@
       "appLink": "the SMS to a number without an account ends with the app's install link (deploy setting)"
     },
     "settings": {
-      "note": "v0.17.0 (owner decisions of 2026-10-29, driver group 2 \"Onboarding\", items 1, 3, 10, 11 and the note check \"Use admin's settings (Recommended)\"): the admin's Drivers › Onboarding and Vehicles › Rules settings are one config document per country, onboarding (configDocs.rules, configDocs.countryOnly), saved and published with GET/PUT /admin/config/onboarding?country and POST /admin/config/onboarding/publish { country } (settings.edit / settings.publish), the same draft / publish / version rule as the other documents. Until a country has one published, the server and the apps use defaults[country] (the admin's own defaults). Publishing changes at once: the documents each new and existing account needs (Driver.requiredDocuments, requiredFleetDocuments, Vehicle.requiredDocuments), the expiry warnings, the sign-up reminders and the car rules. Tunisia stays present but closed (no documents).",
+      "note": "v0.17.0 (owner decisions of 2026-10-29, driver group 2 \"Onboarding\", items 1, 3, 10, 11 and the note check \"Use admin's settings (Recommended)\"): the admin's Drivers › Onboarding and Vehicles › Rules settings are one config document per country, onboarding (configDocs.rules, configDocs.countryOnly), saved and published with GET/PUT /admin/config/onboarding?country and POST /admin/config/onboarding/publish { country } (settings.edit / settings.publish), the same draft / publish / version rule as the other documents. Until a country has one published, the server and the apps use defaults[country] (the admin's own defaults). Publishing changes at once: the documents each new and existing account needs (Driver.requiredDocuments, requiredFleetDocuments, Vehicle.requiredDocuments), the expiry warnings, the sign-up reminders and the car rules. Tunisia stays present but closed (no documents). v0.17.0 (owner item 14: \"First answer , and admin can change text and add or delete documents so must add on contract and server and admin ! Also same for Sweden\"): per country the admin also creates new document types (customTypes), changes the name and help text of any type (texts), sets which expire (expiringTypes), and adds or removes types in each list.",
       "doc": "onboarding",
       "schema": "OnboardingSettings",
       "defaults": {
@@ -1685,7 +1686,6 @@
           "expiringTypes": [
             "driving_license",
             "taxi_driver_license",
-            "company_registration",
             "taxi_traffic_permit",
             "vehicle_registration",
             "insurance"
@@ -1817,12 +1817,15 @@
             "warnDays": 30,
             "autoHold": true,
             "photosNeeded": true
-          }
+          },
+          "customTypes": [],
+          "texts": {}
         },
         "FR": {
           "documents": {
             "driver": [
               "terms",
+              "info_session",
               "vtc_card",
               "driving_license",
               "national_id",
@@ -1843,16 +1846,15 @@
             ]
           },
           "expiringTypes": [
-            "vtc_card",
             "driving_license",
             "national_id",
-            "company_registration",
-            "vtc_register_certificate",
-            "rc_pro_insurance",
-            "urssaf_certificate",
+            "vtc_card",
             "vehicle_registration",
             "insurance",
-            "vtc_sticker"
+            "rc_pro_insurance",
+            "urssaf_certificate",
+            "vtc_sticker",
+            "vtc_register_certificate"
           ],
           "steps": [
             {
@@ -1981,7 +1983,9 @@
             "warnDays": 30,
             "autoHold": true,
             "photosNeeded": true
-          }
+          },
+          "customTypes": [],
+          "texts": {}
         },
         "TN": {
           "documents": {
@@ -2117,7 +2121,9 @@
             "warnDays": 30,
             "autoHold": true,
             "photosNeeded": true
-          }
+          },
+          "customTypes": [],
+          "texts": {}
         }
       },
       "stepIds": [
@@ -2176,10 +2182,27 @@
         "steps: every id of stepIds once, at least one on, days within limits.stepDays. The server stores and serves them; the admin panel shows the funnel with them.",
         "signUpReminders.everyDays within limits.remindEveryDays, stuckAfterDays within limits.stuckAfterDays.",
         "expiry.warnDays: 1 to 3 numbers within limits.warnDays, largest first, each smaller than the one before.",
-        "vehicles.categories: each category of the catalog at most once; minYear, minSeats within limits; a category that is on allows at least one fuel of fuels; vehicles.warnDays within limits.vehicleWarnDays."
+        "vehicles.categories: each category of the catalog at most once; minYear, minSeats within limits; a category that is on allows at least one fuel of fuels; vehicles.warnDays within limits.vehicleWarnDays.",
+        "customTypes: ids unique and of idPattern; the scope list a custom type is in matches its owner (driver → documents.driver, fleet → documents.fleet, vehicle → documents.vehicle); names and help in sv, fr and en."
       ],
-      "driverRead": "GET /driver/onboarding/settings → OnboardingSettings of the driver's country (published, else defaults; version 0 = defaults), so the app offers only the car categories a car fits, asks the photos and shows the warnings the server uses. A driver with no country yet names it: ?country=SE.",
-      "admin": "The draft and publish calls take country only; a zoneId is 400 invalid_request (reason scope_country_only)."
+      "driverRead": "GET /driver/onboarding/settings → OnboardingSettings of the driver's country (published, else defaults; version 0 = defaults), so the app offers only the car categories a car fits, asks the photos and shows the warnings the server uses. A driver with no country yet names it: ?country=SE. v0.17.0 (item 14): the answer also has documentTypes: { [type]: { owner, kind, expires, name, help? } } for every type in the country's lists, contract types with the admin's texts and the custom types, so the app renders a type it does not know from this data.",
+      "admin": "The draft and publish calls take country only; a zoneId is 400 invalid_request (reason scope_country_only).",
+      "customTypes": {
+        "note": "v0.17.0 (owner item 14): a document type the admin creates for one country. { id, owner: driver | fleet | vehicle, kind: file | admin_check, expires: boolean, name: { sv, fr, en }, help: { sv, fr, en } } (all three languages, non-empty). The server makes the id (custom_ + 10 lower-case letters or digits) the first time the draft is saved: a new entry is sent without id and with draftKey (any short text the panel chooses), and the lists (documents.driver / fleet / vehicle, expiringTypes) may name it by \"draft:<draftKey>\"; the server replaces each with the new id and drops draftKey. An id once made never changes; an entry with an id the country does not have is 400 invalid_document. expires true puts the type in expiringTypes, false takes it out (the server keeps the two in step). owner fleet is a company document of a fleet account (owner_kind driver); owner vehicle a car document. Deleting an entry removes the type from the country: it must not stay in a list. Documents already uploaded for it stay stored.",
+        "idPattern": "^custom_[a-z0-9]{10}$",
+        "draftRef": "draft:",
+        "owners": [
+          "driver",
+          "fleet",
+          "vehicle"
+        ],
+        "kinds": [
+          "file",
+          "admin_check"
+        ]
+      },
+      "texts": "v0.17.0 (owner item 14): texts[type] = { name?: { sv, fr, en }, help?: { sv, fr, en } } replaces the contract name, and adds a help / checklist text, of a contract type in this country. A key that is not a contract type of documents.types is 400 invalid_document (a custom type carries its own texts).",
+      "adminCheck": "v0.17.0 (owner items 8 and 13): an admin marks a kind admin_check document (the info session, or a custom one) with POST /admin/drivers/{driverId}/documents/{type}/check { decision: approved | rejected, note? } (documents.approve); approved counts for activation like any approved document. Until then the driver sees waiting_for_movera."
     },
     "documentExpiry": {
       "note": "v0.17.0 (owner item 1: \"First answer but add reminder to driver one month before expire\"; item 3; note check): the admin types the expiry date when approving (POST /admin/documents/{documentId}/review { decision: approved, expiresAt }). For a type in settings.expiringTypes of the driver's country, approving without expiresAt is 400 invalid_request (reason expiry_required) and a date not in the future is 400 (reason expiry_in_past); other types keep expiresAt optional. A driver may send expiresAt on upload; the admin's date wins.",
@@ -2209,7 +2232,8 @@
         "account_not_active": "blocks_online: the account is pending / on_hold / suspended and every document is done; Movera activates it (no fix)",
         "fleet_not_approved": "blocks_online: the fleet is pending / rejected / blocked (no fix)",
         "fleet_no_approved_car": "blocks_online: the fleet has no car that can be picked (approved, every car document approved); owner fix: fleet_vehicles (add / finish a car); member: no fix (\"Your fleet has no approved car yet…\")",
-        "no_vehicle": "blocks_online: the fleet has a car that can be picked but this driver has none picked (fix: pick_vehicle)"
+        "no_vehicle": "blocks_online: the fleet has a car that can be picked but this driver has none picked (fix: pick_vehicle)",
+        "admin_check_waiting": "waiting: a custom admin_check document not marked yet; status waiting_for_movera (no fix)"
       },
       "fixTargets": [
         "document",
@@ -2220,7 +2244,7 @@
       "scope": "driver (Driver.requiredDocuments), fleet (requiredFleetDocuments), vehicle (the picked car, or for a fleet owner every car of the fleet)"
     },
     "infoSession": {
-      "note": "v0.17.0 (owner item 8: \"How to book + 'Waiting for Movera' (Recommended)\"): the info_session document (kind admin_check; SE only by default, France has none) shows the shown state waiting_for_movera until an admin marks it approved. Tapping it opens \"How to book your info session\", the admin's content slot driver-info-session (title, text sv / fr / en, an https link in the text) from GET /driver/content.",
+      "note": "v0.17.0 (owner item 8: \"How to book + 'Waiting for Movera' (Recommended)\"): the info_session document (kind admin_check; Sweden and France (owner item 13: \"Yes, same as Sweden\")) shows the shown state waiting_for_movera until an admin marks it approved. Tapping it opens \"How to book your info session\", the admin's content slot driver-info-session (title, text sv / fr / en, an https link in the text) from GET /driver/content.",
       "type": "info_session",
       "status": "waiting_for_movera",
       "contentSlot": "driver-info-session"

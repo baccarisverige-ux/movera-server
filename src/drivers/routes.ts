@@ -9,7 +9,7 @@ import { parseBody } from "../http/validate.js";
 import { addVehicle, getDriverProfile, liveDrivers, listVehicles, loadDriver, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
 import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, startOwnCompany, submitOnboarding } from "./onboarding.js";
 import { listReminders } from "./reminders.js";
-import { onboardingSettings } from "./onboardingSettings.js";
+import { documentTypes, onboardingSettings } from "./onboardingSettings.js";
 import { acceptInvitation, cancelInvitation, declineInvitation, inviteByPhone, listInvitations, requestJoin, type InviteDeps } from "./invitations.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { driverDocumentFile, listDocuments, uploadDocument, type Upload } from "../documents/service.js";
@@ -61,7 +61,8 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const pick = row.country ?? country;
     if (!pick) throw new ApiError("invalid_request", "Name the country.", { reason: "country_required" });
     const settings = await onboardingSettings(deps.db, pick);
-    return { ...settings, country: pick };
+    // v0.17.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
+    return { ...settings, country: pick, documentTypes: documentTypes(settings) };
   });
   app.post(`${API_PREFIX}/driver/fleet/start-company`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
