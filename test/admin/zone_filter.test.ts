@@ -6,7 +6,7 @@ import { adminSession } from "../support/admin.js";
 import { testWorld } from "../support/world.js";
 
 /**
- * contract v0.16.2 (owner 2026-10-29, "Fix fully"): the admin lists follow the country and zones picked in the
+ * contract v0.17.2 (owner 2026-10-29, "Fix fully"): the admin lists follow the country and zones picked in the
  * panel: zoneId, zoneIds and country narrow every list inside the admin's own zones; an unknown filter is 400.
  */
 

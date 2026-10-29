@@ -4,7 +4,7 @@ import type { Executor } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 
 /**
- * contract v0.16.2 (owner 2026-10-29, "Fix fully"): the zone filters of the admin lists. `zoneId` (one zone),
+ * contract v0.17.2 (owner 2026-10-29, "Fix fully"): the zone filters of the admin lists. `zoneId` (one zone),
  * `zoneIds` (several, comma separated or repeated) and `country` (every zone of that country) narrow a list to
  * those zones, always inside the admin's own zones. A named zone outside them is 403 zone_out_of_scope; a
  * country's zones the admin does not cover are left out. A query key the list does not know is 400 unknown_filter.
