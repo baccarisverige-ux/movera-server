@@ -233,7 +233,8 @@ describe("the fleet's cars", () => {
     // v0.10.1: an approved car whose documents are not all approved cannot be picked.
     const early = await call(app, "PATCH", "/driver/profile", member, { expectedVersion: m.version, vehicleId: carId });
     expect(early.statusCode).toBe(409);
-    expect(early.json()).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_registration", "vehicle:insurance", "vehicle:vehicle_photo_front", "vehicle:vehicle_photo_back", "vehicle:vehicle_photo_side", "vehicle:vehicle_photo_inside"] });
+    // v0.18.0 owner item 16: the member signs in with a test number, so he is not asked for the car photos.
+    expect(early.json()).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_registration", "vehicle:insurance"] });
     await approveVehicleDocuments(database.db, carId, ownerId, "SE");
     const pick = await call(app, "PATCH", "/driver/profile", member, { expectedVersion: m.version, vehicleId: carId });
     expect(pick.json()).toMatchObject({ vehicleId: carId, categoryIds: ["economy", "comfort"] });

@@ -6,7 +6,7 @@ import { loadDriver } from "../../src/drivers/service.js";
 import type { OnboardingSettings } from "../../src/drivers/onboardingSettings.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
-import { approveDriverDocuments, approveVehicleDocuments } from "../support/seed.js";
+import { approveDriverDocuments, approveFleetDocuments, approveVehicleDocuments } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
@@ -91,6 +91,8 @@ beforeAll(async () => {
     ID[who] = res.json().driverId;
     if (p.accountType === "fleet") FLEET[who] = res.json().fleet.fleetId;
   }
+  // Signed in through the test numbers; from here on they are ordinary drivers (owner item 16 exempts test accounts).
+  await database.db.deleteFrom("test_phones").where("app", "=", "driver").execute();
 });
 afterAll(async () => {
   await app.close();
@@ -315,6 +317,33 @@ describe("items 1 and 3: expiry typed by the admin, warnings at 30 / 7 / 1 days,
   });
 });
 
+describe("item 16: every car needs its four photos approved; test accounts keep working", () => {
+  const asTest = (who: Who, on: boolean) =>
+    on
+      ? database.db.insertInto("test_phones").values({ phone: TEST_PHONES[PEOPLE[who].phone]!, app: "driver", note: "test" }).execute()
+      : database.db.deleteFrom("test_phones").where("phone", "=", TEST_PHONES[PEOPLE[who].phone]!).execute();
+  for (const [country, owner, plate] of [["SE", "seOwner", "SE 077"], ["FR", "frOwner", "AA-077-FR"]] as const) {
+    it(`${country}: an approved car with its papers but no photos is blocked with 'Add 4 photos of your car'; a test account may drive it`, async () => {
+      const car = await call(app, "POST", "/driver/vehicles", H[owner]!, { make: "Skoda", model: "Superb", year: 2022, color: "Blue", seats: 4, plate, categoryIds: ["economy"] });
+      const vehicleId = car.json().vehicleId as string;
+      expect((await call(app, "POST", `/admin/vehicles/${vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved" })).statusCode).toBe(200);
+      const papers = country === "SE" ? ["vehicle_registration", "insurance"] : ["vehicle_registration", "insurance", "vtc_sticker"];
+      await approveVehicleDocuments(database.db, vehicleId, ID[owner]!, country, papers);
+      const o = await me(owner);
+      const refused = await call(app, "PATCH", "/driver/profile", H[owner]!, { expectedVersion: o.version, vehicleId });
+      expect(refused.json()).toMatchObject({ code: "documents_not_approved", reason: "vehicle_documents_not_approved", details: ["vehicle:vehicle_photo_front", "vehicle:vehicle_photo_back", "vehicle:vehicle_photo_side", "vehicle:vehicle_photo_inside"] });
+      expect((await reminders(owner)).items).toContainEqual({ kind: "vehicle_photos_needed", level: "blocks_online", scope: "vehicle", vehicleId, documentType: "vehicle_photo_front", fix: { target: "document", documentType: "vehicle_photo_front", scope: "vehicle", vehicleId } });
+      await asTest(owner, true);
+      try {
+        expect((await call(app, "PATCH", "/driver/profile", H[owner]!, { expectedVersion: o.version, vehicleId })).json()).toMatchObject({ vehicleId });
+        expect((await reminders(owner)).items.some((i: { kind: string }) => i.kind === "vehicle_photos_needed")).toBe(false);
+      } finally {
+        await asTest(owner, false);
+      }
+    });
+  }
+});
+
 describe("item 7: Start my own company", () => {
   it("Sweden: the driver becomes a fleet on hold with a pending company, keeps his documents, and only the company's are new", async () => {
     await approveDriverDocuments(database.db, ID.seConvert!);
@@ -392,6 +421,11 @@ describe("items 10, 11 and the note check: what the admin publishes is what the 
     expect((await goOnline("seMember")).json()).toMatchObject({ onlineStatus: "online" });
     expect((await reminders("seMember")).items).toContainEqual(expect.objectContaining({ kind: "document_expired", level: "due_soon" }));
     await goOffline("seMember");
+    // Checker: activation follows the same switch (an expired licence does not hold the account back).
+    await approveFleetDocuments(database.db, ID.seConvert!);
+    await database.db.updateTable("documents").set({ status: "expired", expires_at: new Date(clock.now.getTime() - DAY) }).where("owner_id", "=", ID.seConvert!).where("type", "=", "driving_license").execute();
+    await approveDriverDocuments(database.db, ID.seConvert!, ["national_id"]);
+    expect((await activate("seConvert")).json()).toMatchObject({ accountStatus: "active" });
   });
 
   it("France: photos off and a stricter economy year are followed at once", async () => {

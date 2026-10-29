@@ -1,5 +1,5 @@
 import type { Executor } from "../db/db.js";
-import { liveRequiredDocuments, onboardingSettings, requiredOf } from "./onboardingSettings.js";
+import { PHOTO_TYPES, onboardingSettings, requiredOf } from "./onboardingSettings.js";
 
 /**
  * Contract v0.14.0 (driverOnboarding.activation, owner decision 2026-10-28): which required documents still lack an
@@ -20,8 +20,12 @@ async function missing(ex: Executor, ownerKind: "driver" | "vehicle", ownerId: s
 
 /** Activation: the person's driver documents; a fleet owner also the company's (requiredFleetDocuments). No car. */
 export async function activationBlockers(ex: Executor, driver: { driver_id: string; country: string | null; account_type: string | null }, now: Date = new Date()): Promise<string[]> {
-  const own = await missing(ex, "driver", driver.driver_id, "driver", await liveRequiredDocuments(ex, driver.country, "driver"), now);
-  const company = driver.account_type === "fleet" ? await missing(ex, "driver", driver.driver_id, "fleet", await liveRequiredDocuments(ex, driver.country, "fleet"), now) : [];
+  if (!driver.country) return [];
+  // An expired document counts as done where the admin turned blockAtExpiry off (it still shows red to the driver).
+  const settings = await onboardingSettings(ex, driver.country);
+  const lenient = !settings.expiry.blockAtExpiry;
+  const own = await missing(ex, "driver", driver.driver_id, "driver", requiredOf(settings, "driver"), now, lenient);
+  const company = driver.account_type === "fleet" ? await missing(ex, "driver", driver.driver_id, "fleet", requiredOf(settings, "fleet"), now, lenient) : [];
   return [...own, ...company];
 }
 
@@ -51,18 +55,35 @@ export async function vehicleCountry(ex: Executor, v: { fleet_id: string | null;
   return null;
 }
 
-/** A car is picked or driven only when every required car document is approved (the country of its fleet, else its driver). */
-export async function vehicleDocumentBlockers(ex: Executor, v: { vehicle_id: string; fleet_id: string | null; driver_id: string | null }, now: Date = new Date()): Promise<string[]> {
+/**
+ * v0.18.0 (owner item 16: "keep approved account works for test only"): a test account (a driver-app number of
+ * test_phones, the seeded test drivers among them) is not asked for the car photos.
+ */
+export async function isTestDriver(ex: Executor, driverId: string | null | undefined): Promise<boolean> {
+  if (!driverId) return false;
+  const row = await ex.selectFrom("drivers").innerJoin("test_phones", "test_phones.phone", "drivers.phone").select("drivers.driver_id")
+    .where("drivers.driver_id", "=", driverId).where("test_phones.app", "=", "driver").executeTakeFirst();
+  return row !== undefined;
+}
+
+/**
+ * A car is picked or driven only when every required car document is approved (the country of its fleet, else its
+ * driver). v0.18.0 (owner item 16): the four photos too, for every car, old or new; `forDriver` is the driver who
+ * picks or drives it, and a test account is not asked for the photos.
+ */
+export async function vehicleDocumentBlockers(ex: Executor, v: { vehicle_id: string; fleet_id: string | null; driver_id: string | null }, now: Date = new Date(), forDriver?: string): Promise<string[]> {
   const country = await vehicleCountry(ex, v);
   if (!country) return [];
   const settings = await onboardingSettings(ex, country);
-  return missing(ex, "vehicle", v.vehicle_id, "vehicle", requiredOf(settings, "vehicle"), now, !settings.vehicles.autoHold);
+  const exempt = await isTestDriver(ex, forDriver);
+  const required = requiredOf(settings, "vehicle").filter((t) => !(exempt && PHOTO_TYPES.includes(t)));
+  return missing(ex, "vehicle", v.vehicle_id, "vehicle", required, now, !settings.vehicles.autoHold);
 }
 
 /** v0.17.0 (owner item 9): the fleet's cars a driver could pick: approved, with every car document approved. */
-export async function pickableCars(ex: Executor, fleetId: string, now: Date): Promise<string[]> {
+export async function pickableCars(ex: Executor, fleetId: string, now: Date, forDriver?: string): Promise<string[]> {
   const cars = await ex.selectFrom("vehicles").select(["vehicle_id", "fleet_id", "driver_id"]).where("fleet_id", "=", fleetId).where("status", "=", "approved").execute();
   const out: string[] = [];
-  for (const car of cars) if ((await vehicleDocumentBlockers(ex, car, now)).length === 0) out.push(car.vehicle_id);
+  for (const car of cars) if ((await vehicleDocumentBlockers(ex, car, now, forDriver)).length === 0) out.push(car.vehicle_id);
   return out;
 }

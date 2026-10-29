@@ -165,7 +165,7 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
     if (vehicle === undefined || !mine) throw badRequest("That vehicle is not yours.", "vehicle_not_found");
     if (vehicle.status !== "approved") throw badRequest("That vehicle is not approved yet.", "vehicle_not_approved");
     // v0.10.1: only a car whose required documents are all approved can be picked.
-    const carMissing = await vehicleDocumentBlockers(trx, vehicle, now);
+    const carMissing = await vehicleDocumentBlockers(trx, vehicle, now, driverId);
     if (carMissing.length > 0) throw new ApiError("documents_not_approved", "That car's documents are not all approved.", { reason: "vehicle_documents_not_approved", details: carMissing });
     if (vehicle.fleet_id !== null && vehicle.driver_id !== null && vehicle.driver_id !== driverId) {
       // One car, one driver at a time: in use while the other driver is online or on a trip; an offline driver's pick moves.
@@ -224,12 +224,12 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     if (expired.length > 0) throw new ApiError("documents_not_approved", "A document has expired; upload a new one.", { reason: "documents_expired", details: expired, projection: await stale(row, trx)() });
     // v0.17.0 (owner item 9): no car picked; a fleet with no car that can be picked says so.
     if (row.vehicle_id === null) {
-      if (row.fleet_id !== null && (await pickableCars(trx, row.fleet_id, now)).length === 0) throw await refuse("Your fleet has no approved car yet.", "fleet_no_approved_car");
+      if (row.fleet_id !== null && (await pickableCars(trx, row.fleet_id, now, driverId)).length === 0) throw await refuse("Your fleet has no approved car yet.", "fleet_no_approved_car");
       throw await refuse("Choose an approved car first.", "no_vehicle");
     }
     const vehicle = await trx.selectFrom("vehicles").select(["vehicle_id", "status", "driver_id", "fleet_id"]).where("vehicle_id", "=", row.vehicle_id).executeTakeFirst();
     if (vehicle?.status !== "approved") throw await refuse("Your car is not approved.", "vehicle_not_approved");
-    const carMissing = await vehicleDocumentBlockers(trx, vehicle, now);
+    const carMissing = await vehicleDocumentBlockers(trx, vehicle, now, driverId);
     if (carMissing.length > 0) throw new ApiError("documents_not_approved", "Your car's documents are not all approved.", { reason: "vehicle_documents_not_approved", details: carMissing, projection: await stale(row, trx)() });
     if (vehicle.fleet_id !== null && vehicle.driver_id !== driverId) throw await refuse("Another driver has this car now; pick a car again.", "vehicle_in_use");
     if (row.category_ids.length === 0) throw await refuse("No car type is chosen.", "no_category");

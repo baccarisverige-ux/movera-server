@@ -2,8 +2,8 @@ import type { Executor } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { notify } from "../notifications/service.js";
 import { ONBOARDING } from "./onboardingRules.js";
-import { daysLeft, onboardingSettings, requiredOf, typeInfo, type OnboardingSettings } from "./onboardingSettings.js";
-import { pickableCars } from "./readiness.js";
+import { PHOTO_TYPES, daysLeft, onboardingSettings, requiredOf, typeInfo, type OnboardingSettings } from "./onboardingSettings.js";
+import { isTestDriver, pickableCars } from "./readiness.js";
 
 /**
  * Contract v0.17.0 §25 (owner decisions of 2026-10-29, driver group 2, items 1, 2, 3, 8, 9 and the note check):
@@ -90,10 +90,20 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date)
     const carIds = owner && fleet ? (await ex.selectFrom("vehicles").select("vehicle_id").where("fleet_id", "=", fleet.fleet_id).execute()).map((r) => r.vehicle_id) : driver.vehicle_id ? [driver.vehicle_id] : [];
     const carSettings = fleet ? await onboardingSettings(ex, fleet.country) : settings;
     const carDocs = await docsOf(ex, "vehicle", carIds);
-    for (const id of carIds) items.push(...documentLines(requiredOf(carSettings, "vehicle"), carDocs.filter((d) => d.owner_id === id), "vehicle", carSettings, now, id));
+    // v0.18.0 (owner item 16): the four photos are one line "Add 4 photos of your car"; a test account is not asked.
+    const exempt = await isTestDriver(ex, driver.driver_id);
+    for (const id of carIds) {
+      const mine = carDocs.filter((d) => d.owner_id === id);
+      const required = requiredOf(carSettings, "vehicle");
+      items.push(...documentLines(required.filter((t) => !PHOTO_TYPES.includes(t)), mine, "vehicle", carSettings, now, id));
+      const photos = required.filter((t) => PHOTO_TYPES.includes(t));
+      const todo = photos.filter((t) => !["approved", "in_review"].includes(mine.find((d) => d.type === t)?.status ?? "missing"));
+      if (!exempt && todo.length > 0) items.push({ kind: "vehicle_photos_needed", level: "blocks_online", scope: "vehicle", vehicleId: id, documentType: todo[0]!, fix: { target: "document", documentType: todo[0]!, scope: "vehicle", vehicleId: id } });
+      else if (!exempt && photos.some((t) => mine.find((d) => d.type === t)?.status === "in_review")) items.push({ kind: "document_in_review", level: "waiting", scope: "vehicle", vehicleId: id, documentType: photos.find((t) => mine.find((d) => d.type === t)?.status === "in_review")! });
+    }
     if (fleet && fleet.status !== "approved") items.push({ kind: "fleet_not_approved", level: "blocks_online" });
     if (fleet && fleet.status === "approved" && driver.vehicle_id === null) {
-      const pickable = await pickableCars(ex, fleet.fleet_id, now);
+      const pickable = await pickableCars(ex, fleet.fleet_id, now, driver.driver_id);
       if (pickable.length === 0) items.push({ kind: "fleet_no_approved_car", level: "blocks_online", ...(owner ? { fix: { target: "fleet_vehicles" } } : {}) });
       else items.push({ kind: "no_vehicle", level: "blocks_online", fix: { target: "pick_vehicle" } });
     }
