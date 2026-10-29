@@ -26,7 +26,8 @@ async function testDriversMissSomething(db: Db | Parameters<typeof seedTestAccou
  */
 export async function prepareTestWeek(
   db: Db,
-  env: Pick<Env, "MOVERA_ENV" | "SEED_TEST_ON_START" | "ADMIN_BOOTSTRAP_EMAIL" | "ADMIN_BOOTSTRAP_NAME" | "ADMIN_PANEL_URL"> & Partial<Pick<Env, "ADMIN_PASSWORD_RESET">>,
+  env: Pick<Env, "MOVERA_ENV" | "SEED_TEST_ON_START" | "ADMIN_BOOTSTRAP_EMAIL" | "ADMIN_BOOTSTRAP_NAME" | "ADMIN_PANEL_URL"> &
+    Partial<Pick<Env, "ADMIN_PASSWORD_RESET" | "ADMIN_TEST_EMAIL" | "ADMIN_TEST_NAME" | "ADMIN_TEST_PASSWORD_RESET">>,
   log: Log,
   { accounts = DEFAULT_TEST_ACCOUNTS, now = new Date() }: { accounts?: TestAccounts; now?: Date } = {},
 ): Promise<void> {
@@ -48,26 +49,45 @@ export async function prepareTestWeek(
     });
   }
   if (env.ADMIN_BOOTSTRAP_EMAIL !== undefined) {
-    const { adminId, created } = await createAdmin(db, { email: env.ADMIN_BOOTSTRAP_EMAIL, name: env.ADMIN_BOOTSTRAP_NAME ?? env.ADMIN_BOOTSTRAP_EMAIL, role: "super" }, now);
-    const admin = await db.selectFrom("admins").select("password_hash").where("admin_id", "=", adminId).executeTakeFirstOrThrow();
-    const openLink = await db
-      .selectFrom("admin_setup_links")
-      .select("admin_id")
-      .where("admin_id", "=", adminId)
-      .where("used_at", "is", null)
-      .where("expires_at", ">", now)
-      .executeTakeFirst();
-    if (admin.password_hash === null && openLink === undefined) {
-      const link = await createSetupLink({ db, jwtSecret: "unused-by-links", panelUrl: env.ADMIN_PANEL_URL, clock: () => now }, adminId, "bootstrap");
-      log.info({ adminId, created, expiresAt: link.expiresAt, setupLink: link.url }, "admin password link (open it to choose the password)");
-    } else if (env.ADMIN_PASSWORD_RESET !== undefined && admin.password_hash !== null) {
-      // Forgot password: one link per ADMIN_PASSWORD_RESET value (the value's hash marks the link that answered it).
-      const by = `reset:${createHash("sha256").update(env.ADMIN_PASSWORD_RESET).digest("hex").slice(0, 32)}`;
-      const answered = await db.selectFrom("admin_setup_links").select("admin_id").where("admin_id", "=", adminId).where("created_by", "=", by).executeTakeFirst();
-      if (answered === undefined) {
-        const link = await createSetupLink({ db, jwtSecret: "unused-by-links", panelUrl: env.ADMIN_PANEL_URL, clock: () => now }, adminId, by);
-        log.info({ adminId, expiresAt: link.expiresAt, setupLink: link.url }, "admin password reset link (open it to choose a new password)");
-      }
+    await prepareSuperAdmin(db, env, log, now, { email: env.ADMIN_BOOTSTRAP_EMAIL, name: env.ADMIN_BOOTSTRAP_NAME, reset: env.ADMIN_PASSWORD_RESET });
+  }
+  if (env.ADMIN_TEST_EMAIL !== undefined) {
+    // A second Super admin for automated checks on staging (owner decision 2026-10-29), made the same way.
+    await prepareSuperAdmin(db, env, log, now, { email: env.ADMIN_TEST_EMAIL, name: env.ADMIN_TEST_NAME, reset: env.ADMIN_TEST_PASSWORD_RESET, which: "test" });
+  }
+}
+
+/**
+ * Makes this Super admin if it does not exist (an existing one is kept as it is) and writes its password link to the
+ * log while it has neither a password nor an unused link; `reset` asks for one new link even though a password exists.
+ */
+async function prepareSuperAdmin(
+  db: Db,
+  env: Pick<Env, "ADMIN_PANEL_URL">,
+  log: Log,
+  now: Date,
+  { email, name, reset, which }: { email: string; name: string | undefined; reset: string | undefined; which?: "test" },
+): Promise<void> {
+  const label = which === undefined ? {} : { admin: which };
+  const { adminId, created } = await createAdmin(db, { email, name: name ?? email, role: "super" }, now);
+  const admin = await db.selectFrom("admins").select("password_hash").where("admin_id", "=", adminId).executeTakeFirstOrThrow();
+  const openLink = await db
+    .selectFrom("admin_setup_links")
+    .select("admin_id")
+    .where("admin_id", "=", adminId)
+    .where("used_at", "is", null)
+    .where("expires_at", ">", now)
+    .executeTakeFirst();
+  if (admin.password_hash === null && openLink === undefined) {
+    const link = await createSetupLink({ db, jwtSecret: "unused-by-links", panelUrl: env.ADMIN_PANEL_URL, clock: () => now }, adminId, "bootstrap");
+    log.info({ ...label, adminId, created, expiresAt: link.expiresAt, setupLink: link.url }, "admin password link (open it to choose the password)");
+  } else if (reset !== undefined && admin.password_hash !== null) {
+    // Forgot password: one link per reset value (the value's hash marks the link that answered it).
+    const by = `reset:${createHash("sha256").update(reset).digest("hex").slice(0, 32)}`;
+    const answered = await db.selectFrom("admin_setup_links").select("admin_id").where("admin_id", "=", adminId).where("created_by", "=", by).executeTakeFirst();
+    if (answered === undefined) {
+      const link = await createSetupLink({ db, jwtSecret: "unused-by-links", panelUrl: env.ADMIN_PANEL_URL, clock: () => now }, adminId, by);
+      log.info({ ...label, adminId, expiresAt: link.expiresAt, setupLink: link.url }, "admin password reset link (open it to choose a new password)");
     }
   }
 }

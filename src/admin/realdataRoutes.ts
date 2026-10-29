@@ -7,6 +7,7 @@ import { ApiError } from "../http/errors.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { parseBody } from "../http/validate.js";
+import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearDispatch } from "../dispatch/feed.js";
@@ -30,20 +31,20 @@ const Page = { cursor: z.string().max(512).optional(), limit: z.coerce.number().
 const When = { from: z.string().datetime().optional(), to: z.string().datetime().optional() };
 const Bool = z.enum(["true", "false"]).transform((v) => v === "true");
 
-const PayoutsQuery = z.object({ ...Page, ...When, status: many(z.enum(["pending", "pending_approval", "paid", "failed", "held"])), driverId: ID.optional() });
+const PayoutsQuery = { ...Page, ...When, status: many(z.enum(["pending", "pending_approval", "paid", "failed", "held"])), driverId: ID.optional(), ...ZoneFilterQuery };
 const DriverPayoutsQuery = z.object({ ...Page, ...When });
 const CreatePayoutBody = z.object({ driverId: ID, from: z.string().datetime(), to: z.string().datetime(), note: z.string().max(1000).optional() });
 const PaidBody = z.object({ note: z.string().max(1000).optional() }).default({});
-const RefundsQuery = z.object({ ...Page, ...When, status: many(z.enum(["pending_approval", "done", "rejected"])), paymentId: z.string().max(80).optional(), tripId: ID.optional() });
+const RefundsQuery = { ...Page, ...When, status: many(z.enum(["pending_approval", "done", "rejected"])), paymentId: z.string().max(80).optional(), tripId: ID.optional(), ...ZoneFilterQuery };
 const TicketStatus = z.enum(["open", "pending", "resolved", "closed"]);
-const TicketsQuery = z.object({ ...Page, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional() });
+const TicketsQuery = { ...Page, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), ...ZoneFilterQuery };
 const OwnTicketsQuery = z.object({ ...Page, status: TicketStatus.optional() });
 const TicketBody = z.object({ tripId: ID.optional(), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().min(1).max(200), text: z.string().min(1).max(5000) });
 const ReplyBody = z.object({ text: z.string().min(1).max(5000), status: z.enum(["pending", "resolved", "closed"]).optional() });
-const RatingsQuery = z.object({ ...Page, ...When, rater: z.enum(["rider", "driver"]).optional(), hidden: Bool.optional(), maxStars: z.coerce.number().int().min(1).max(5).optional(), driverId: ID.optional(), riderId: ID.optional(), zoneId: ID.optional() });
+const RatingsQuery = { ...Page, ...When, rater: z.enum(["rider", "driver"]).optional(), hidden: Bool.optional(), maxStars: z.coerce.number().int().min(1).max(5).optional(), driverId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
 const ModerationBody = z.object({ reason: z.string().min(1).max(500) });
-const RiskQuery = z.object({ ...Page, who: z.enum(["driver", "rider"]).optional(), zoneId: ID.optional() });
-const KpiQuery = z.object({ zoneId: ID.optional(), fromDate: z.string().optional(), toDate: z.string().optional() });
+const RiskQuery = { ...Page, who: z.enum(["driver", "rider"]).optional(), ...ZoneFilterQuery };
+const KpiQuery = { fromDate: z.string().optional(), toDate: z.string().optional(), ...ZoneFilterQuery };
 const StreamQuery = z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(200).default(100), zoneId: ID.optional() });
 
 const keyOf = (request: FastifyRequest) => {
@@ -95,7 +96,8 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   /* ---- payouts */
   app.get(`${API_PREFIX}/admin/payouts`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.read");
-    return listPayouts(deps.db, who, clean(parseBody(PayoutsQuery, request.query)));
+    const query = parseQuery(PayoutsQuery, request.query);
+    return listPayouts(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)));
   });
   app.post(`${API_PREFIX}/admin/payouts`, async (request, reply) => {
     const who = await authenticateAdmin(request, guard, "finance.edit");
@@ -118,7 +120,8 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   /* ---- refunds */
   app.get(`${API_PREFIX}/admin/refunds`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.read");
-    return listRefunds(deps.db, who, clean(parseBody(RefundsQuery, request.query)));
+    const query = parseQuery(RefundsQuery, request.query);
+    return listRefunds(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)));
   });
 
   /* ---- support tickets */
@@ -139,7 +142,8 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   });
   app.get(`${API_PREFIX}/admin/tickets`, async (request) => {
     const who = await authenticateAdmin(request, guard, "support.reply");
-    return adminTickets(deps.db, who, clean(parseBody(TicketsQuery, request.query)));
+    const query = parseQuery(TicketsQuery, request.query);
+    return adminTickets(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)));
   });
   app.get(`${API_PREFIX}/admin/tickets/:ticketId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "support.reply");
@@ -156,8 +160,8 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   /* ---- ratings */
   app.get(`${API_PREFIX}/admin/ratings`, async (request) => {
     const who = await authenticateAdmin(request, guard, "settings.read");
-    const query = parseBody(RatingsQuery, request.query);
-    return listRatings(deps.db, who, clean({ cursor: query.cursor, limit: query.limit, from: query.rater, hidden: query.hidden, maxStars: query.maxStars, driverId: query.driverId, riderId: query.riderId, zoneId: query.zoneId, since: query.from, until: query.to }));
+    const query = parseQuery(RatingsQuery, request.query);
+    return listRatings(deps.db, await narrowToZones(deps.db, who, query), clean({ cursor: query.cursor, limit: query.limit, from: query.rater, hidden: query.hidden, maxStars: query.maxStars, driverId: query.driverId, riderId: query.riderId, since: query.from, until: query.to }));
   });
   for (const verb of ["hide", "restore"] as const) {
     app.post(`${API_PREFIX}/admin/ratings/:tripId/:from/${verb}`, async (request) => {
@@ -172,11 +176,13 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   /* ---- risk and KPIs */
   app.get(`${API_PREFIX}/admin/risk/signals`, async (request) => {
     const who = await authenticateAdmin(request, guard, "safety.edit");
-    return riskSignals(deps.db, who, clean(parseBody(RiskQuery, request.query)), now());
+    const query = parseQuery(RiskQuery, request.query);
+    return riskSignals(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)), now());
   });
   app.get(`${API_PREFIX}/admin/kpis`, async (request) => {
     const who = await authenticateAdmin(request, guard, "overview.read");
-    return kpis(deps.db, who, clean(parseBody(KpiQuery, request.query)), now());
+    const query = parseQuery(KpiQuery, request.query);
+    return kpis(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)), now());
   });
 
   /* ---- the admin dispatch feed */
