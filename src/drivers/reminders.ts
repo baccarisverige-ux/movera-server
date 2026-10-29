@@ -87,7 +87,8 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date)
     // The cars: an owner sees every car of his fleet; a member the one he picked.
     const fleet = driver.fleet_id ? await ex.selectFrom("fleets").select(["fleet_id", "status", "owner_driver_id", "country"]).where("fleet_id", "=", driver.fleet_id).executeTakeFirst() : undefined;
     const owner = fleet?.owner_driver_id === driver.driver_id;
-    const carIds = owner && fleet ? (await ex.selectFrom("vehicles").select("vehicle_id").where("fleet_id", "=", fleet.fleet_id).execute()).map((r) => r.vehicle_id) : driver.vehicle_id ? [driver.vehicle_id] : [];
+    // v0.18.0 (owner decision 19): car documents are the owner's; a member gets no car-document lines.
+    const carIds = owner && fleet ? (await ex.selectFrom("vehicles").select("vehicle_id").where("fleet_id", "=", fleet.fleet_id).execute()).map((r) => r.vehicle_id) : !fleet && driver.vehicle_id ? [driver.vehicle_id] : [];
     const carSettings = fleet ? await onboardingSettings(ex, fleet.country) : settings;
     const carDocs = await docsOf(ex, "vehicle", carIds);
     // v0.18.0 (owner item 16): the four photos are one line "Add 4 photos of your car"; a test account is not asked.

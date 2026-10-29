@@ -324,7 +324,11 @@ export const vehicleView = (v: VehicleRow) => ({
 });
 
 /** Vehicle with its v0.5.3 fields: who has it picked, whether that driver is out with it, its documents. */
-export async function vehicleFullView(ex: Executor, v: VehicleRow) {
+/**
+ * v0.18.0 (owner decision 19): `viewer` is the driver who asks. The fleet's owner sees the car's documents; a member
+ * sees no car documents, only whether he can pick the car (pickable, notPickableReason). No viewer = an admin.
+ */
+export async function vehicleFullView(ex: Executor, v: VehicleRow, viewer?: { driverId: string; owner: boolean }) {
   let inUse = false;
   let country: string | null = null;
   if (v.fleet_id) {
@@ -338,12 +342,21 @@ export async function vehicleFullView(ex: Executor, v: VehicleRow) {
     const owner = await ex.selectFrom("drivers").select("country").where("driver_id", "=", v.driver_id).executeTakeFirst();
     country = owner?.country ?? null;
   }
+  const pick = viewer ? await pickability(ex, v, viewer.driverId, inUse) : undefined;
   return {
     ...vehicleView(v),
     ...(v.fleet_id ? { inUse } : {}),
-    documents: await documentSummaries(ex, "vehicle", v.vehicle_id),
-    requiredDocuments: await liveRequiredDocuments(ex, country, "vehicle"),
+    ...(viewer && !viewer.owner ? {} : { documents: await documentSummaries(ex, "vehicle", v.vehicle_id), requiredDocuments: await liveRequiredDocuments(ex, country, "vehicle") }),
+    ...(pick ? { pickable: pick.reason === null, ...(pick.reason ? { notPickableReason: pick.reason } : {}) } : {}),
   };
+}
+
+/** Whether `driverId` can pick the car now, and why not (contract.json#driverOnboarding.carDocuments). */
+async function pickability(ex: Executor, v: VehicleRow, driverId: string, inUse: boolean): Promise<{ reason: string | null }> {
+  if (v.status !== "approved") return { reason: "vehicle_not_approved" };
+  if ((await vehicleDocumentBlockers(ex, v, new Date(), driverId)).length > 0) return { reason: "vehicle_documents_not_approved" };
+  if (inUse && v.driver_id !== driverId) return { reason: "vehicle_in_use" };
+  return { reason: null };
 }
 
 /** The driver's car goes back to the fleet pool (v0.5.3). */
@@ -356,14 +369,15 @@ export async function listVehicles(ex: Executor, driverId: string) {
   const me = await loadDriver(ex, driverId);
   let q = ex.selectFrom("vehicles").selectAll();
   if (me.fleet_id !== null) {
+    // v0.18.0 (owner decision 19): a member sees every car of the fleet, with whether he can pick it.
     q = q.where("fleet_id", "=", me.fleet_id);
-    if (me.account_type !== "fleet") q = q.where("status", "=", "approved");
   } else {
     q = q.where("driver_id", "=", driverId).where("fleet_id", "is", null);
   }
   const rows = await q.orderBy("created_at").execute();
   const items = [];
-  for (const r of rows) items.push(await vehicleFullView(ex, r as unknown as VehicleRow));
+  const owner = me.account_type === "fleet" || me.fleet_id === null;
+  for (const r of rows) items.push(await vehicleFullView(ex, r as unknown as VehicleRow, { driverId, owner }));
   return { items, nextCursor: null };
 }
 

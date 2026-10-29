@@ -317,6 +317,39 @@ describe("items 1 and 3: expiry typed by the admin, warnings at 30 / 7 / 1 days,
   });
 });
 
+describe("decision 19: car documents are the fleet owner's; a member only picks a car", () => {
+  for (const [country, owner, member, plate] of [["SE", "seOwner", "seMember", "SE 019"], ["FR", "frOwner", "frMember", "AA-019-FR"]] as const) {
+    it(`${country}: the member gets 403 on car documents, sees none, and lists every car with whether he can pick it`, async () => {
+      const pending = await call(app, "POST", "/driver/vehicles", H[owner]!, { make: "Kia", model: "Niro", year: 2022, color: "Red", seats: 4, plate, categoryIds: ["economy"] });
+      const vehicleId = pending.json().vehicleId as string;
+      const ownerDoc = await upload(owner, { type: "insurance", ownerId: vehicleId });
+      // Upload and read by the member: refused.
+      const body = multipart({ type: "insurance", ownerId: vehicleId });
+      const up = await app.inject({ method: "POST", url: "/api/v1/driver/documents", headers: { ...H[member]!, ...body.headers, "idempotency-key": `g2-${Math.random()}` }, payload: body.payload });
+      expect(up.statusCode).toBe(403);
+      expect(up.json()).toMatchObject({ code: "forbidden", reason: "fleet_owner_only" });
+      const read = await call(app, "GET", `/driver/documents/${ownerDoc}/file`, H[member]!);
+      expect(read.json()).toMatchObject({ code: "forbidden", reason: "fleet_owner_only" });
+      expect((await call(app, "GET", `/driver/documents/${ownerDoc}/file`, H[owner]!)).statusCode).toBe(200);
+      // His document list and Home sheet: no car documents.
+      const mine = (await call(app, "GET", "/driver/documents", H[member]!)).json().items as Array<{ ownerId: string }>;
+      expect(mine.every((d) => d.ownerId === ID[member])).toBe(true);
+      expect((await reminders(member)).items.filter((i: { scope?: string }) => i.scope === "vehicle")).toEqual([]);
+      expect((await reminders(owner)).items.some((i: { scope?: string; vehicleId?: string }) => i.scope === "vehicle" && i.vehicleId === vehicleId)).toBe(true);
+      // Every car of the fleet, the pending one too, with pickable; no documents for the member.
+      const cars = (await call(app, "GET", "/driver/vehicles", H[member]!)).json().items as Array<Record<string, unknown>>;
+      const it = cars.find((v) => v["vehicleId"] === vehicleId)!;
+      expect(it).toMatchObject({ status: "pending", pickable: false, notPickableReason: "vehicle_not_approved" });
+      expect(it).not.toHaveProperty("documents");
+      expect(it).not.toHaveProperty("requiredDocuments");
+      const fleetCars = (await call(app, "GET", "/driver/fleet", H[member]!)).json().vehicles as Array<Record<string, unknown>>;
+      expect(fleetCars.find((v) => v["vehicleId"] === vehicleId)).toMatchObject({ pickable: false });
+      const ownerView = (await call(app, "GET", "/driver/vehicles", H[owner]!)).json().items.find((v: { vehicleId: string }) => v.vehicleId === vehicleId);
+      expect(ownerView.documents).toEqual([expect.objectContaining({ type: "insurance" })]);
+    });
+  }
+});
+
 describe("item 16: every car needs its four photos approved; test accounts keep working", () => {
   const asTest = (who: Who, on: boolean) =>
     on

@@ -76,6 +76,9 @@ export async function recordAcceptance(trx: Trx, driverId: string, type: string,
 /** GET /driver/documents: the account's own documents and its cars' (DocumentPage). */
 export async function listDocuments(ex: Executor, driverId: string, statuses?: string[]) {
   let q = ex.selectFrom("documents").selectAll().where("driver_id", "=", driverId);
+  // v0.18.0 (owner decision 19): a member sees only his own documents, never a car's.
+  const me = await ex.selectFrom("drivers").select(["account_type", "fleet_id"]).where("driver_id", "=", driverId).executeTakeFirst();
+  if (me?.account_type === "driver") q = q.where("owner_kind", "=", "driver");
   if (statuses?.length) q = q.where("status", "in", statuses as never);
   const rows = await q.orderBy("created_at").execute();
   return { items: rows.map((r) => documentView(r as DocumentRow, "driver")), nextCursor: null };
@@ -103,6 +106,8 @@ export async function uploadDocument(trx: Trx, key: DocumentKey, driverId: strin
     if (car === undefined) throw badRequest("No such car.", "vehicle_not_found");
     const me = await trx.selectFrom("drivers").select(["fleet_id"]).where("driver_id", "=", driverId).executeTakeFirstOrThrow();
     const owns = car.fleet_id !== null ? await isFleetOwner(trx, driverId, car.fleet_id) : car.driver_id === driverId;
+    // v0.18.0 (owner decision 19): a member of the car's fleet is refused; only its owner uploads car documents.
+    if (!owns && car.fleet_id !== null && me.fleet_id === car.fleet_id) throw new ApiError("forbidden", "Only the fleet owner handles the cars' documents.", { reason: "fleet_owner_only" });
     if (!owns) throw badRequest("That car is not yours.", "vehicle_not_found");
     void me;
     ownerKind = "vehicle";
@@ -136,6 +141,17 @@ async function isFleetOwner(ex: Executor, driverId: string, fleetId: string): Pr
 export async function driverDocumentFile(ex: Executor, key: DocumentKey, driverId: string, documentId: string): Promise<{ mediaType: string; fileName: string; bytes: Buffer }> {
   const row = (await ex.selectFrom("documents").selectAll().where("document_id", "=", documentId).executeTakeFirst()) as DocumentRow | undefined;
   if (row === undefined) throw notFound("No such document.", "document_not_found");
+  // v0.18.0 (owner decision 19): a car's document only for the owner of the car's fleet.
+  if (row.owner_kind === "vehicle") {
+    const car = await ex.selectFrom("vehicles").select(["fleet_id", "driver_id"]).where("vehicle_id", "=", row.owner_id).executeTakeFirst();
+    const owns = car?.fleet_id ? await isFleetOwner(ex, driverId, car.fleet_id) : car?.driver_id === driverId;
+    if (!owns) {
+      const me = await ex.selectFrom("drivers").select("fleet_id").where("driver_id", "=", driverId).executeTakeFirst();
+      if (car?.fleet_id && me?.fleet_id === car.fleet_id) throw new ApiError("forbidden", "Only the fleet owner handles the cars' documents.", { reason: "fleet_owner_only" });
+      throw notFound("No such document.", "document_not_found");
+    }
+    return readFile(ex, key, row);
+  }
   let allowed = row.driver_id === driverId;
   if (!allowed) {
     const owner = await ex.selectFrom("drivers").select("fleet_id").where("driver_id", "=", row.driver_id).executeTakeFirst();

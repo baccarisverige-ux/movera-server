@@ -55,16 +55,15 @@ export async function fleetView(ex: Executor, row: FleetRow, viewer: "owner" | "
 }
 
 /** FleetView: the company, the drivers (owner and admins) and the cars (a member sees the approved ones). */
-export async function fleetFullView(ex: Executor, row: FleetRow, viewer: "owner" | "member" | "admin", now: Date = new Date()) {
+export async function fleetFullView(ex: Executor, row: FleetRow, viewer: "owner" | "member" | "admin", now: Date = new Date(), asking?: string) {
   const drivers =
     viewer === "member"
       ? []
       : await ex.selectFrom("drivers").select(["driver_id", "first_name", "last_name", "account_status", "online_status", "vehicle_id", "fleet_linked_at"]).where("fleet_id", "=", row.fleet_id).orderBy("fleet_linked_at").execute();
-  let carsQuery = ex.selectFrom("vehicles").selectAll().where("fleet_id", "=", row.fleet_id);
-  if (viewer === "member") carsQuery = carsQuery.where("status", "=", "approved");
-  const cars = await carsQuery.orderBy("created_at").execute();
+  // v0.18.0 (owner decision 19): a member sees every car, without its documents, with whether he can pick it.
+  const cars = await ex.selectFrom("vehicles").selectAll().where("fleet_id", "=", row.fleet_id).orderBy("created_at").execute();
   const vehicles = [];
-  for (const car of cars) vehicles.push(await vehicleFullView(ex, car as never));
+  for (const car of cars) vehicles.push(await vehicleFullView(ex, car as never, viewer === "admin" ? undefined : { driverId: asking ?? row.owner_driver_id, owner: viewer === "owner" }));
   return {
     fleet: await fleetView(ex, row, viewer),
     drivers: drivers.map((d) => ({
@@ -238,7 +237,7 @@ export async function getDriverFleet(ex: Executor, driverId: string, now: Date) 
   const row = await loadDriver(ex, driverId);
   if (row.fleet_id === null) throw notFound("You are not in a fleet yet.", "no_fleet");
   const fleet = await loadFleet(ex, row.fleet_id);
-  return fleetFullView(ex, fleet, fleet.owner_driver_id === driverId ? "owner" : "member", now);
+  return fleetFullView(ex, fleet, fleet.owner_driver_id === driverId ? "owner" : "member", now, driverId);
 }
 
 /** GET /driver/fleet/earnings?from&to (the owner): every driver's net earnings in the period; default this week. */

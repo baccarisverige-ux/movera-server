@@ -11882,6 +11882,23 @@ components:
           - hybrid
           - electric
           description: 'v0.18.0: the car''s fuel (contract.json#driverOnboarding.settings.fuels).'
+        pickable:
+          type: boolean
+          description: 'v0.18.0: the asking driver can pick this car now. v0.18.0 (owner decision 19: "Driver dont see documents
+            of cars only fleet owner ! Driver can only pick car to drive ! He can see all fleet cars and pick one"): a car''s
+            documents (registration, insurance, the four photos and any other car type) are uploaded and read only by the
+            owner of the car''s fleet (an owner who also drives sees them as owner). A member gets 403 forbidden, reason fleet_owner_only,
+            on POST /driver/documents with a car''s ownerId and on GET /driver/documents/{documentId}/file of a car document;
+            GET /driver/documents lists only his own documents; his GET /driver/reminders has no car-document lines (they
+            go to the owner). He still lists every car of the fleet (GET /driver/vehicles, GET /driver/fleet) with pickable
+            and, when false, notPickableReason, and without the cars'' documents and requiredDocuments.'
+        notPickableReason:
+          type: string
+          enum:
+          - vehicle_not_approved
+          - vehicle_documents_not_approved
+          - vehicle_in_use
+          description: 'v0.18.0: why not (pickable false); the app says "Can''t be driven".'
     DriverAccountType:
       type: string
       enum:

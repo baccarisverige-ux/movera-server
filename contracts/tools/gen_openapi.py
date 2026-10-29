@@ -1847,6 +1847,11 @@ S["AdminBankReviewCommand"] = obj({"decision": s(enum=["approved", "rejected"]),
 op("post", "/admin/drivers/{driverId}/bank/review", "adminReviewDriverBank", "Approve or reject a driver's bank details", ["admin"], "Admin · People",
    params=[pref("DriverId")], body="AdminBankReviewCommand", ok=(200, "Document"), mutation=True, permission="documents.approve", desc="v0.18.0: " + AA["note"] + " " + AA["bankReview"])
 
+# ---- v0.18.0 (owner decision 19): car documents for the fleet owner only; members see pickable.
+CD = C["driverOnboarding"]["carDocuments"]
+S["Vehicle"]["properties"]["pickable"] = b("v0.18.0: the asking driver can pick this car now. " + CD["note"])
+S["Vehicle"]["properties"]["notPickableReason"] = s("v0.18.0: why not (pickable false); the app says \"Can't be driven\".", enum=CD["notPickableReasons"])
+
 # ---------------------------------------------------------------- document
 TAG_DESC = {"Admin · System": "Crashes & errors from the apps and the server, grouped (v0.16.0)", "Admin · Zones": "Zones from the server: list, create, outline, open and close (v0.11.0)", "Auth": "Sign-in, tokens and push devices for the rider and driver apps (v0.5.0)", "Admin · Auth": "Admin panel sign-in with e-mail and password (v0.5.1)",
             "Maps": "Address search, geocoding and road routes through the server (v0.5.1); read-only, no Idempotency-Key",

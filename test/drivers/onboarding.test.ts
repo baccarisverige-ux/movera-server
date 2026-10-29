@@ -221,8 +221,8 @@ describe("the fleet's cars", () => {
     expect(car.statusCode).toBe(201);
     expect(car.json()).toMatchObject({ fleetId, status: "pending", inUse: false, documents: [], requiredDocuments: ["vehicle_registration", "insurance", "vehicle_photo_front", "vehicle_photo_back", "vehicle_photo_side", "vehicle_photo_inside"] });
     carId = car.json().vehicleId;
-    // Pending: not in the member's list yet.
-    expect((await call(app, "GET", "/driver/vehicles", member)).json().items).toEqual([]);
+    // v0.18.0 owner decision 19: the member sees every fleet car; a pending one is not pickable.
+    expect((await call(app, "GET", "/driver/vehicles", member)).json().items).toEqual([expect.objectContaining({ vehicleId: carId, status: "pending", pickable: false, notPickableReason: "vehicle_not_approved" })]);
     const list = (await call(app, "GET", `/admin/vehicles?fleetId=${fleetId}`, admin.headers)).json();
     expect(list.items).toEqual([expect.objectContaining({ vehicleId: carId, status: "pending" })]);
     const review = await call(app, "POST", `/admin/vehicles/${carId}/review`, admin.headers, { expectedVersion: 1, decision: "approved" });
@@ -311,7 +311,8 @@ describe("documents", () => {
     const res = await upload(owner, { type: "vehicle_registration", ownerId: carId });
     expect(res.json()).toMatchObject({ ownerId: carId, type: "vehicle_registration", status: "in_review" });
     expect((await call(app, "GET", "/driver/vehicles", owner)).json().items[0].documents).toEqual([expect.objectContaining({ type: "vehicle_registration" })]);
-    expect((await upload(member, { type: "vehicle_registration", ownerId: carId })).json()).toMatchObject({ reason: "vehicle_not_found" });
+    // v0.18.0 owner decision 19: a member of the car's fleet is told it is the owner's (403).
+    expect((await upload(member, { type: "vehicle_registration", ownerId: carId })).json()).toMatchObject({ code: "forbidden", reason: "fleet_owner_only" });
   });
 
   it("only the owner of a file (or his fleet owner, or an admin) reads it; the admin's read is in the audit", async () => {
