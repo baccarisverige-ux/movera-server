@@ -1,4 +1,4 @@
--- movera-server migration 0033: driver onboarding group 2 (contract v0.17.0 §25, owner 2026-10-29).
+-- movera-server migration 0033: driver onboarding group 2 (contract v0.18.0 §27, owner 2026-10-29).
 -- The per-country onboarding settings document, the car's fuel, and the notices already sent (expiry warnings per
 -- document and expiry date, sign-up reminders) so each one goes out once.
 ALTER TABLE config_drafts DROP CONSTRAINT IF EXISTS config_drafts_doc_check;

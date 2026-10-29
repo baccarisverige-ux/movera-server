@@ -50,7 +50,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await updateDriverProfile(trx, who.subjectId, request.body ?? {}, now()) }))).body;
   });
 
-  // v0.17.0 (§25): the Home sheet's important reminders, the country's onboarding settings, Start my own company.
+  // v0.18.0 (§27): the Home sheet's important reminders, the country's onboarding settings, Start my own company.
   app.get(`${API_PREFIX}/driver/reminders`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     return listReminders(deps.db, await loadDriver(deps.db, who.subjectId), now());
@@ -62,7 +62,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const pick = row.country ?? country;
     if (!pick) throw new ApiError("invalid_request", "Name the country.", { reason: "country_required" });
     const settings = await onboardingSettings(deps.db, pick);
-    // v0.17.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
+    // v0.18.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
     return { ...settings, country: pick, documentTypes: documentTypes(settings) };
   });
   app.post(`${API_PREFIX}/driver/fleet/start-company`, async (request) => {

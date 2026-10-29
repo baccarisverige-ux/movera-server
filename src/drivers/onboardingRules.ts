@@ -32,7 +32,7 @@ const SETTINGS_DEFAULTS = (contract as unknown as { driverOnboarding: { settings
 
 /**
  * The document types a person (`driver`), a company (`fleet`) or a car (`vehicle`) must have in `country` with the
- * contract defaults (v0.17.0: a car also needs the four photos). The live lists are the admin's onboarding document:
+ * contract defaults (v0.18.0: a car also needs the four photos). The live lists are the admin's onboarding document:
  * liveRequiredDocuments in onboardingSettings.ts; this one serves seeds and tests.
  */
 export function requiredDocuments(country: string | null | undefined, scope: DocumentScope): string[] {

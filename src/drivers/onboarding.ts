@@ -179,7 +179,7 @@ export async function unlinkFromFleet(trx: Trx, row: DriverRow, now: Date, reaso
 }
 
 /**
- * POST /driver/fleet/start-company (contract v0.17.0, driverOnboarding.startCompany, owner item 7): a driver account
+ * POST /driver/fleet/start-company (contract v0.18.0, driverOnboarding.startCompany, owner item 7): a driver account
  * becomes a fleet account with a new pending company he owns, and waits on hold for Movera like a new fleet. He leaves
  * his fleet first (car released, offline). Every document he has stays: only the company's documents
  * (requiredFleetDocuments) he does not have yet and his new cars' are still needed.

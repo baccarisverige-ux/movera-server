@@ -97,7 +97,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
       : {}),
     ...(row.account_type === "fleet" ? { payoutTo: "self" } : row.account_type === "driver" && fleet ? { payoutTo: "fleet" } : {}),
     ...(row.account_type ? { pendingFleetInvitations: await pendingInvitations(ex, row) } : {}),
-    // v0.17.0 (§25): the lists of the country's onboarding settings (the admin's), else the contract defaults.
+    // v0.18.0 (§27): the lists of the country's onboarding settings (the admin's), else the contract defaults.
     requiredDocuments: await liveRequiredDocuments(ex, row.country, "driver"),
     ...(row.account_type === "fleet" ? { requiredFleetDocuments: await liveRequiredDocuments(ex, row.country, "fleet") } : {}),
     ...(active ? { activeTripId: active.trip_id } : {}),
@@ -219,10 +219,10 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
       const fleet = await trx.selectFrom("fleets").select("status").where("fleet_id", "=", row.fleet_id).executeTakeFirst();
       if (fleet?.status !== "approved") throw await refuse("Your fleet is not approved.", "fleet_not_approved");
     }
-    // v0.17.0 (owner items 1 and 3): an expired required document keeps the driver offline while blockAtExpiry is on.
+    // v0.18.0 (owner items 1 and 3): an expired required document keeps the driver offline while blockAtExpiry is on.
     const expired = await expiredBlockers(trx, row, now);
     if (expired.length > 0) throw new ApiError("documents_not_approved", "A document has expired; upload a new one.", { reason: "documents_expired", details: expired, projection: await stale(row, trx)() });
-    // v0.17.0 (owner item 9): no car picked; a fleet with no car that can be picked says so.
+    // v0.18.0 (owner item 9): no car picked; a fleet with no car that can be picked says so.
     if (row.vehicle_id === null) {
       if (row.fleet_id !== null && (await pickableCars(trx, row.fleet_id, now, driverId)).length === 0) throw await refuse("Your fleet has no approved car yet.", "fleet_no_approved_car");
       throw await refuse("Choose an approved car first.", "no_vehicle");
@@ -389,7 +389,7 @@ export async function addVehicle(trx: Trx, driverId: string, body: unknown, now:
   // v0.5.3: fleet accounts own the cars; a driver account picks one of its fleet's.
   if (me.account_type === "driver") throw new ApiError("forbidden", "Your fleet adds its cars; you pick one of them.", { reason: "fleet_vehicles_only" });
   const fleetId = me.account_type === "fleet" ? me.fleet_id : null;
-  // v0.17.0 (owner item 11): every category must fit the country's car rules.
+  // v0.18.0 (owner item 11): every category must fit the country's car rules.
   const country = await vehicleCountry(trx, { fleet_id: fleetId, driver_id: driverId });
   if (country) {
     const settings = await onboardingSettings(trx, country);

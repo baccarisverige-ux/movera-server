@@ -6,7 +6,7 @@ import { PHOTO_TYPES, daysLeft, onboardingSettings, requiredOf, typeInfo, type O
 import { isTestDriver, pickableCars } from "./readiness.js";
 
 /**
- * Contract v0.17.0 §25 (owner decisions of 2026-10-29, driver group 2, items 1, 2, 3, 8, 9 and the note check):
+ * Contract v0.18.0 §27 (owner decisions of 2026-10-29, driver group 2, items 1, 2, 3, 8, 9 and the note check):
  * the Home sheet's "Important reminders", the expiry warnings and the expired mark, and the 'Finish your sign-up'
  * reminders. Notices go through GET /notifications (the app's push path), each once.
  */

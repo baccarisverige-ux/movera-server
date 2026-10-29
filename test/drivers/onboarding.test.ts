@@ -125,7 +125,7 @@ describe("the details screen", () => {
     expect(res.json()).toMatchObject({ code: "invalid_transition", reason: "account_not_active" });
   });
 
-  // v0.17.0 owner item 13 ("Yes, same as Sweden"): France has the info session too.
+  // v0.18.0 owner item 13 ("Yes, same as Sweden"): France has the info session too.
   it("a driver account in France: its own documents; no fleet yet, no cars", async () => {
     const res = await call(app, "POST", "/driver/onboarding", member, details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", country: "FR", cityId: "paris", language: "fr", accountType: "driver", company: undefined }));
     expect(res.statusCode).toBe(200);

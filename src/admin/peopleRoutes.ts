@@ -122,7 +122,7 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
   app.put(`${API_PREFIX}/admin/drivers/:driverId/categories`, action(adminSetDriverCategories, "vehicles.edit", "driverId"));
   app.post(`${API_PREFIX}/admin/drivers/:driverId/bank/review`, action(adminReviewBank, "documents.approve", "driverId"));
 
-  // v0.17.0 (owner items 8 and 13): the info session (or an admin's own admin_check type) marked held.
+  // v0.18.0 (owner items 8 and 13): the info session (or an admin's own admin_check type) marked held.
   app.post(`${API_PREFIX}/admin/drivers/:driverId/documents/:type/check`, async (request) => {
     const who = await authenticateAdmin(request, guard, "documents.approve");
     const driverId = param(request, "driverId");

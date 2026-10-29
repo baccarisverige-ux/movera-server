@@ -5,7 +5,7 @@ import { PHOTO_TYPES, onboardingSettings, requiredOf } from "./onboardingSetting
  * Contract v0.14.0 (driverOnboarding.activation, owner decision 2026-10-28): which required documents still lack an
  * approved one. Items read "<scope>:<type>" (driver:terms, fleet:company_registration, vehicle:insurance).
  * Account activation and car approval are separate: a missing car never holds an account back.
- * v0.17.0 (§25): the lists are the country's onboarding settings; an approved document whose expiresAt has passed
+ * v0.18.0 (§27): the lists are the country's onboarding settings; an approved document whose expiresAt has passed
  * counts as expired (before the hourly sweep marks it), and an expired one counts as done only where the admin turned
  * the block off (blockAtExpiry for people, autoHold for cars).
  */
@@ -30,7 +30,7 @@ export async function activationBlockers(ex: Executor, driver: { driver_id: stri
 }
 
 /**
- * v0.17.0 (owner items 1 and 3): an active account's required documents that expired. With blockAtExpiry on they keep
+ * v0.18.0 (owner items 1 and 3): an active account's required documents that expired. With blockAtExpiry on they keep
  * the driver offline (reason documents_expired); off, none.
  */
 export async function expiredBlockers(ex: Executor, driver: { driver_id: string; country: string | null; account_type: string | null }, now: Date): Promise<string[]> {
@@ -80,7 +80,7 @@ export async function vehicleDocumentBlockers(ex: Executor, v: { vehicle_id: str
   return missing(ex, "vehicle", v.vehicle_id, "vehicle", required, now, !settings.vehicles.autoHold);
 }
 
-/** v0.17.0 (owner item 9): the fleet's cars a driver could pick: approved, with every car document approved. */
+/** v0.18.0 (owner item 9): the fleet's cars a driver could pick: approved, with every car document approved. */
 export async function pickableCars(ex: Executor, fleetId: string, now: Date, forDriver?: string): Promise<string[]> {
   const cars = await ex.selectFrom("vehicles").select(["vehicle_id", "fleet_id", "driver_id"]).where("fleet_id", "=", fleetId).where("status", "=", "approved").execute();
   const out: string[] = [];

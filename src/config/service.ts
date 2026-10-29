@@ -25,7 +25,7 @@ export const APP_DOCS: readonly ConfigDoc[] = ["rider_app_config", "driver_app_c
  */
 export const RULES_DOCS: readonly ConfigDoc[] = ["country_rules"];
 /**
- * v0.17.0 (contract.json#configDocs.countryOnly, §25): the onboarding settings are published per country only; the
+ * v0.18.0 (contract.json#configDocs.countryOnly, §27): the onboarding settings are published per country only; the
  * document names its country, not a zone.
  */
 export const COUNTRY_ONLY_DOCS: readonly ConfigDoc[] = ["onboarding"];
@@ -127,7 +127,7 @@ export async function getDraft(db: Executor, doc: ConfigDoc, zoneId: string): Pr
     delete document["usesStandard"];
     return { doc, zoneId, usesStandard: true, version: 1, liveVersion: 0, document, updatedAt: standard.published_at.toISOString(), ...(standard.published_by ? { updatedBy: standard.published_by } : {}) };
   }
-  // v0.17.0 (§25): a country with no onboarding settings yet starts from the contract defaults (the admin's own).
+  // v0.18.0 (§27): a country with no onboarding settings yet starts from the contract defaults (the admin's own).
   if (COUNTRY_ONLY_DOCS.includes(doc) && zone.kind === "standard") {
     return { doc, country: zone.country, version: 1, liveVersion: 0, document: defaultSettings(zone.country), updatedAt: new Date(0).toISOString() };
   }
@@ -147,7 +147,7 @@ async function lockDraftVersion(trx: Trx, doc: ConfigDoc, zoneId: string): Promi
 export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string }, now: Date): Promise<ConfigDraftView> {
   const zone = await getScope(trx, input.zoneId);
   if (input.doc === "onboarding" && schemaProblem(SCHEMA.onboarding, input.document) === null) {
-    // v0.17.0 (owner item 14): new document types get their server id; draft:<key> in the lists becomes it.
+    // v0.18.0 (owner item 14): new document types get their server id; draft:<key> in the lists becomes it.
     const before = await lockDraftVersion(trx, input.doc, input.zoneId);
     const live = await trx.selectFrom("config_live").select("document").where("doc", "=", "onboarding").where("zone_id", "=", input.zoneId).executeTakeFirst();
     const known = new Set([before.document, live?.document].flatMap((d) => ((d as OnboardingSettings | null)?.customTypes ?? []).map((c) => c.id!)));

@@ -521,11 +521,11 @@ export interface VehiclesTable {
   version: Generated<number>;
   created_at: Timestamp;
   updated_at: Timestamp;
-  /** v0.17.0 (§25): petrol, diesel, hybrid or electric; NULL for a car registered before. */
+  /** v0.18.0 (§27): petrol, diesel, hybrid or electric; NULL for a car registered before. */
   fuel: ColumnType<"petrol" | "diesel" | "hybrid" | "electric" | null, "petrol" | "diesel" | "hybrid" | "electric" | null | undefined, "petrol" | "diesel" | "hybrid" | "electric" | null>;
 }
 
-/** v0.17.0 (§25): expiry notices sent, one per document, expiry date and warning day (0 = expired). */
+/** v0.18.0 (§27): expiry notices sent, one per document, expiry date and warning day (0 = expired). */
 export interface DocumentNoticesTable {
   document_id: string;
   expires_at: Timestamp;
@@ -533,7 +533,7 @@ export interface DocumentNoticesTable {
   sent_at: Timestamp;
 }
 
-/** v0.17.0 (§25): 'Finish your sign-up' notices sent. */
+/** v0.18.0 (§27): 'Finish your sign-up' notices sent. */
 export interface SignUpRemindersTable {
   driver_id: string;
   sent_at: Timestamp;

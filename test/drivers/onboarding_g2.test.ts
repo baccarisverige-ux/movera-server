@@ -10,7 +10,7 @@ import { approveDriverDocuments, approveFleetDocuments, approveVehicleDocuments 
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
- * Contract v0.17.0 §25, owner decisions of 2026-10-29 (driver group 2 "Onboarding", items 1-11 and the note check),
+ * Contract v0.18.0 §27, owner decisions of 2026-10-29 (driver group 2 "Onboarding", items 1-11 and the note check),
  * each for Sweden and France (owner: "U need to do the work for france too"); Tunisia stays closed.
  */
 

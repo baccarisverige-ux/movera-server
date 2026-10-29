@@ -43,7 +43,7 @@ function checkZone(who: Principal, zoneId: string): void {
 /** The scope key of a request: the zone id, or standard-<CC> for a country; a country needs one zone of it (owner 2026-10-27). */
 async function scopeKey(db: Db, who: Principal, scope: { zoneId?: string | undefined; country?: string | undefined }, doc?: ConfigDoc): Promise<string> {
   if ((scope.zoneId === undefined) === (scope.country === undefined)) throw new ApiError("invalid_request", "Name exactly one of zoneId or country.", { reason: "scope_required" });
-  // v0.17.0 (contract.json#configDocs.countryOnly): the onboarding settings exist per country only.
+  // v0.18.0 (contract.json#configDocs.countryOnly): the onboarding settings exist per country only.
   if (doc !== undefined && COUNTRY_ONLY_DOCS.includes(doc) && scope.zoneId !== undefined) throw new ApiError("invalid_request", "These settings are per country; name the country.", { reason: "scope_country_only" });
   if (scope.zoneId !== undefined) {
     checkZone(who, scope.zoneId);

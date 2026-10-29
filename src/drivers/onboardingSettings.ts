@@ -3,7 +3,7 @@ import { contract } from "../contract/contract.js";
 import { ONBOARDING, type DocumentScope } from "./onboardingRules.js";
 
 /**
- * Contract v0.17.0 §25 (contract.json#driverOnboarding.settings, owner decisions of 2026-10-29, items 10 and 11 and
+ * Contract v0.18.0 §27 (contract.json#driverOnboarding.settings, owner decisions of 2026-10-29, items 10 and 11 and
  * the note check): the admin's Drivers › Onboarding and Vehicles › Rules settings, one `onboarding` config document
  * per country (stored under standard-<CC> like every country document). Nothing published = the contract defaults,
  * which are the admin's own defaults (Sweden base year 2015, France 2016, Tunisia closed with no documents).
@@ -12,7 +12,7 @@ import { ONBOARDING, type DocumentScope } from "./onboardingRules.js";
 export type Fuel = "petrol" | "diesel" | "hybrid" | "electric";
 export type CategoryRule = { category: string; on: boolean; minYear: number; minSeats: number; fuels: Fuel[] };
 export type LocalText = { sv: string; fr: string; en: string };
-/** v0.17.0 (owner item 14): a document type the admin made for one country. */
+/** v0.18.0 (owner item 14): a document type the admin made for one country. */
 export type CustomType = { id?: string; draftKey?: string; owner: "driver" | "fleet" | "vehicle"; kind: "file" | "admin_check"; expires: boolean; name: LocalText; help: LocalText };
 export type OnboardingSettings = {
   version: number;

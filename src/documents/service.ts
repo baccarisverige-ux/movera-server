@@ -89,7 +89,7 @@ export async function listDocuments(ex: Executor, driverId: string, statuses?: s
  * contract does not know, a type of another kind than file, a bad media type or a file over the limit is 400.
  */
 export async function uploadDocument(trx: Trx, key: DocumentKey, driverId: string, upload: Upload, now: Date) {
-  // v0.17.0 (owner item 14): the types of the driver's country, the admin's own included.
+  // v0.18.0 (owner item 14): the types of the driver's country, the admin's own included.
   const country = (await trx.selectFrom("drivers").select("country").where("driver_id", "=", driverId).executeTakeFirst())?.country ?? null;
   const info = country ? typeInfo(await onboardingSettings(trx, country), upload.type) : undefined;
   const kind = info?.kind ?? documentKind(upload.type);
@@ -197,7 +197,7 @@ async function countryOfDocument(ex: Executor, row: DocumentRow): Promise<string
 /** POST /admin/documents/{id}/review (documents.approve): approved or rejected, with a note and an expiry. */
 export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: string[] }, documentId: string, body: { decision: "approved" | "rejected"; expiresAt?: string | undefined; note?: string | undefined }, now: Date) {
   const row = await loadForAdmin(trx, who, documentId, true);
-  // v0.17.0 (owner item 1, contract.json#driverOnboarding.documentExpiry): the admin types the expiry date when
+  // v0.18.0 (owner item 1, contract.json#driverOnboarding.documentExpiry): the admin types the expiry date when
   // approving a type of the country's expiringTypes; the admin's date wins over the one the driver sent.
   const typed = body.expiresAt ? new Date(body.expiresAt) : null;
   if (typed !== null && Number.isNaN(typed.getTime())) throw badRequest("expiresAt is not a date.", "invalid_expires_at");
@@ -226,7 +226,7 @@ export async function driverInScope(ex: Executor, who: { zones: string[] }, driv
 }
 
 /**
- * POST /admin/drivers/{driverId}/documents/{type}/check (documents.approve, contract v0.17.0 settings.adminCheck,
+ * POST /admin/drivers/{driverId}/documents/{type}/check (documents.approve, contract v0.18.0 settings.adminCheck,
  * owner items 8 and 13): an admin marks a kind admin_check document (the info session, or one of the admin's own).
  */
 export async function checkDocument(trx: Trx, who: { subjectId: string; zones: string[] }, driverId: string, type: string, body: { decision: "approved" | "rejected"; note?: string | undefined }, now: Date) {
