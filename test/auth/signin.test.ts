@@ -100,6 +100,29 @@ describe("requesting a code", () => {
     expect(res.statusCode).toBe(429);
     expect(res.json()).toMatchObject({ reason: "otp_too_many" });
   });
+
+  it("over 60 codes per address per hour, the wait is the real time until the oldest one leaves the hour", async () => {
+    const ip = "198.51.100.7";
+    const rows = Array.from({ length: 60 }, (_, i) => ({
+      session_id: `otp_IPLIMIT${String(clock.now.getTime()).slice(-8)}${String(i).padStart(10, "0")}`,
+      phone: OTHER_TEST_PHONE,
+      app: "rider" as const,
+      code_sha256: "00",
+      is_test: true,
+      locale: null,
+      ip,
+      max_attempts: 5,
+      expires_at: clock.now,
+      consumed_at: clock.now,
+      // the oldest was 20 minutes ago, the others 1 minute ago: 40 minutes = 2400 s are left
+      created_at: new Date(clock.now.getTime() - (i === 0 ? 1200 : 60) * 1000),
+    }));
+    await database.db.insertInto("otp_sessions").values(rows).execute();
+    const res = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", remoteAddress: ip, headers: { "content-type": "application/json" }, payload: { phone: RIDER_PHONE, app: "rider" } });
+    expect(res.statusCode).toBe(429);
+    expect(res.json()).toMatchObject({ code: "rate_limited", reason: "otp_too_many" });
+    expect(res.headers["retry-after"]).toBe("2400");
+  });
 });
 
 describe("verifying the code", () => {
