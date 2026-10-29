@@ -4,7 +4,8 @@ import { adminCoversZone, authenticate, authenticateAdmin } from "../auth/guard.
 import { ApiError } from "../http/errors.js";
 import { signOut } from "../auth/service.js";
 import { API_PREFIX } from "../http/prefix.js";
-import { readIdempotencyKey } from "../http/idempotency.js";
+import { readIdempotencyKey, runIdempotent } from "../http/idempotency.js";
+import { audit } from "./audit.js";
 import { parseBody } from "../http/validate.js";
 import { adminRefresh, adminSignIn, checkSetupLink, createSetupLink, loadAdminMe, setupPassword, type AdminDeps } from "./auth.js";
 
@@ -14,6 +15,8 @@ const SignInBody = z.object({ email: z.string().min(3).max(254), password: z.str
 const SetupBody = z.object({ setupToken: z.string().min(16).max(256), password: z.string().min(1).max(256) });
 const SetupCheckBody = z.object({ setupToken: z.string().min(16).max(256) });
 const RefreshBody = z.object({ refreshToken: z.string().min(1).max(512) });
+// contract v0.16.1 §9: the admin's own panel language; null clears it.
+const MeBody = z.object({ language: z.enum(["en", "fr", "sv"]).nullable() }).strict();
 const AdminIdParam = z.object({ adminId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
 
 export async function adminAuthRoutes(app: FastifyInstance, deps: AdminDeps): Promise<void> {
@@ -40,6 +43,28 @@ export async function adminAuthRoutes(app: FastifyInstance, deps: AdminDeps): Pr
   app.get(`${API_PREFIX}/admin/auth/me`, async (request) => {
     const who = await authenticateAdmin(request, guard);
     return loadAdminMe(deps.db, who.subjectId);
+  });
+
+  // contract v0.16.1 §9 (owner 2026-10-29, "Fix fully (Recommended)"): any signed-in admin saves their own
+  // panel language, so it stays after reload, sign-in and on other devices. Audited; no permission id.
+  app.patch(`${API_PREFIX}/admin/auth/me`, async (request) => {
+    const who = await authenticateAdmin(request, guard);
+    const { language } = parseBody(MeBody, request.body);
+    const key = request.headers["idempotency-key"];
+    const now = deps.clock?.() ?? new Date();
+    const result = await runIdempotent(
+      deps.db,
+      { actor: "admin", subjectId: who.subjectId, key: Array.isArray(key) ? key[0] : key, method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null },
+      async (trx) => {
+        const before = await trx.selectFrom("admins").select("language").where("admin_id", "=", who.subjectId).forUpdate().executeTakeFirstOrThrow();
+        if (before.language !== language) {
+          await trx.updateTable("admins").set({ language, updated_at: now }).where("admin_id", "=", who.subjectId).execute();
+          await audit(trx, { adminId: who.subjectId, action: "admin.language", targetType: "admin", targetId: who.subjectId, detail: { from: before.language, to: language }, at: now });
+        }
+        return { status: 200, body: await loadAdminMe(trx, who.subjectId) };
+      },
+    );
+    return result.body;
   });
 
   app.post(`${API_PREFIX}/admin/agents/:adminId/setup-link`, async (request, reply) => {

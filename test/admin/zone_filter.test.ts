@@ -79,6 +79,19 @@ describe("admin lists follow country and zones", () => {
     }
   });
 
+  it("kpis and risk signals: by country and zones", async () => {
+    const fr = await get("/admin/kpis?country=FR", superAdmin);
+    expect(fr.statusCode, fr.body).toBe(200);
+    const frZones = new Set((fr.json().days as { zoneId: string }[]).map((day) => day.zoneId));
+    expect(frZones.size).toBeGreaterThan(0);
+    for (const zone of frZones) expect(zone.startsWith("FR") || ["CDG", "ORY"].includes(zone), zone).toBe(true);
+    const se = await get("/admin/kpis?zoneIds=Z001,Z002", superAdmin);
+    expect([...new Set((se.json().days as { zoneId: string }[]).map((day) => day.zoneId))].sort()).toEqual(["Z001", "Z002"]);
+    for (const filter of ["country=FR", "zoneIds=FR-PC,Z001"]) expect((await get(`/admin/risk/signals?${filter}`, superAdmin)).statusCode).toBe(200);
+    expect((await get("/admin/kpis?zoneIds=FR-PC", stockholmOnly)).statusCode).toBe(403);
+    expect((await get("/admin/risk/signals?country=FR", stockholmOnly)).json().items).toEqual([]);
+  });
+
   it("stays inside the admin's zones", async () => {
     expect(await itemIds("/admin/trips?country=SE", stockholmOnly)).toEqual([ids.seTrip]);
     expect(await itemIds("/admin/trips?country=FR", stockholmOnly)).toEqual([]);
@@ -89,7 +102,7 @@ describe("admin lists follow country and zones", () => {
   });
 
   it("an unknown filter is 400 unknown_filter", async () => {
-    for (const path of ["/admin/trips", "/admin/riders", "/admin/drivers", "/admin/payments", "/admin/refunds", "/admin/payouts", "/admin/tickets", "/admin/ratings", "/admin/incidents", "/admin/live/drivers"]) {
+    for (const path of ["/admin/trips", "/admin/riders", "/admin/drivers", "/admin/payments", "/admin/refunds", "/admin/payouts", "/admin/tickets", "/admin/ratings", "/admin/incidents", "/admin/live/drivers", "/admin/risk/signals", "/admin/kpis"]) {
       const res = await get(`${path}?zone=FR-PC`, superAdmin);
       expect(res.statusCode, path).toBe(400);
       expect(res.json().reason, path).toBe("unknown_filter");

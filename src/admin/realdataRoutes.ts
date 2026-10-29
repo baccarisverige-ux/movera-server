@@ -43,8 +43,8 @@ const TicketBody = z.object({ tripId: ID.optional(), category: z.string().regex(
 const ReplyBody = z.object({ text: z.string().min(1).max(5000), status: z.enum(["pending", "resolved", "closed"]).optional() });
 const RatingsQuery = { ...Page, ...When, rater: z.enum(["rider", "driver"]).optional(), hidden: Bool.optional(), maxStars: z.coerce.number().int().min(1).max(5).optional(), driverId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
 const ModerationBody = z.object({ reason: z.string().min(1).max(500) });
-const RiskQuery = z.object({ ...Page, who: z.enum(["driver", "rider"]).optional(), zoneId: ID.optional() });
-const KpiQuery = z.object({ zoneId: ID.optional(), fromDate: z.string().optional(), toDate: z.string().optional() });
+const RiskQuery = { ...Page, who: z.enum(["driver", "rider"]).optional(), ...ZoneFilterQuery };
+const KpiQuery = { fromDate: z.string().optional(), toDate: z.string().optional(), ...ZoneFilterQuery };
 const StreamQuery = z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(200).default(100), zoneId: ID.optional() });
 
 const keyOf = (request: FastifyRequest) => {
@@ -176,11 +176,13 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   /* ---- risk and KPIs */
   app.get(`${API_PREFIX}/admin/risk/signals`, async (request) => {
     const who = await authenticateAdmin(request, guard, "safety.edit");
-    return riskSignals(deps.db, who, clean(parseBody(RiskQuery, request.query)), now());
+    const query = parseQuery(RiskQuery, request.query);
+    return riskSignals(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)), now());
   });
   app.get(`${API_PREFIX}/admin/kpis`, async (request) => {
     const who = await authenticateAdmin(request, guard, "overview.read");
-    return kpis(deps.db, who, clean(parseBody(KpiQuery, request.query)), now());
+    const query = parseQuery(KpiQuery, request.query);
+    return kpis(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)), now());
   });
 
   /* ---- the admin dispatch feed */

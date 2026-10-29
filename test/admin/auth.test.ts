@@ -200,3 +200,39 @@ describe("setup links from the panel", () => {
     expect((await get("/admin/auth/me", bearer(admin.session.accessToken))).json()).toMatchObject({ reason: "session_ended" });
   });
 });
+
+// contract v0.16.1 §9 (owner 2026-10-29, "Fix fully (Recommended)"): the admin saves their own panel language.
+describe("PATCH /admin/auth/me (own language)", () => {
+  const patch = (payload: unknown, headers: Record<string, string> = {}) =>
+    app.inject({ method: "PATCH", url: "/api/v1/admin/auth/me", headers: { "content-type": "application/json", "idempotency-key": `k-${++n}-${Date.now()}`, ...headers }, payload: payload as object });
+
+  it("saves the language for any role, answers AdminMe, keeps it on me and a new sign-in, and audits it", async () => {
+    const { session, adminId, email } = await newAdmin("viewer");
+    const saved = await patch({ language: "sv" }, bearer(session.accessToken));
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ adminId, role: "viewer", language: "sv" });
+    expect((await get("/admin/auth/me", bearer(session.accessToken))).json()).toMatchObject({ language: "sv" });
+    const again = (await post("/admin/auth/sign-in", { email, password: PASSWORD })).json();
+    expect(again.admin).toMatchObject({ language: "sv" });
+
+    expect((await patch({ language: "fr" }, bearer(session.accessToken))).json()).toMatchObject({ language: "fr" });
+    const cleared = await patch({ language: null }, bearer(session.accessToken));
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().language).toBeUndefined();
+
+    const rows = await database.db.selectFrom("admin_audit").select(["action", "target_id", "detail"]).where("admin_id", "=", adminId).where("action", "=", "admin.language").orderBy("at").execute();
+    expect(rows.map((r) => r.target_id)).toEqual([adminId, adminId, adminId]);
+    expect(rows.map((r) => (typeof r.detail === "string" ? JSON.parse(r.detail) : r.detail))).toEqual([
+      { from: null, to: "sv" },
+      { from: "sv", to: "fr" },
+      { from: "fr", to: null },
+    ]);
+  });
+
+  it("refuses another language, a missing field and no token", async () => {
+    const { session } = await newAdmin("ops");
+    expect((await patch({ language: "de" }, bearer(session.accessToken))).statusCode).toBe(400);
+    expect((await patch({}, bearer(session.accessToken))).statusCode).toBe(400);
+    expect((await patch({ language: "sv" })).statusCode).toBe(401);
+  });
+});
