@@ -253,6 +253,22 @@ export interface TestPhonesTable {
   created_at: Timestamp;
 }
 
+/** v0.15.0 (migration 0031): numbers that asked to join after 403 sign_in_restricted. */
+export interface SignInWaitlistTable {
+  phone: string;
+  app: "rider" | "driver";
+  locale: "sv" | "fr" | "en" | null;
+  ip: string | null;
+  count: Generated<number>;
+  first_at: Timestamp;
+  last_at: Timestamp;
+}
+
+export interface SignInWaitlistAsksTable {
+  ip: string;
+  at: Timestamp;
+}
+
 export interface OtpSessionsTable {
   session_id: string;
   phone: string;
@@ -899,6 +915,8 @@ export interface Database {
   timers: TimersTable;
   test_phones: TestPhonesTable;
   otp_sessions: OtpSessionsTable;
+  sign_in_waitlist: SignInWaitlistTable;
+  sign_in_waitlist_asks: SignInWaitlistAsksTable;
   auth_sessions: AuthSessionsTable;
   refresh_tokens: RefreshTokensTable;
   push_devices: PushDevicesTable;
