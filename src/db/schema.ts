@@ -280,6 +280,19 @@ export interface TestPhonesTable {
 }
 
 /** v0.15.0 (migration 0031): numbers that asked to join after 403 sign_in_restricted. */
+/** contract v0.18.1 §26: the frozen final price of a trip's latest complete-preview (migration 0034). */
+export interface CompletePreviewsTable {
+  trip_id: string;
+  preview_id: string;
+  driver_id: string;
+  expires_at: Timestamp;
+  early_end: boolean;
+  fare_minor: ColumnType<string, number | string, number | string>;
+  wallet_minor: ColumnType<string, number | string, number | string>;
+  money: ColumnType<Record<string, unknown>, string, string>;
+  created_at: Timestamp;
+}
+
 export interface SignInWaitlistTable {
   phone: string;
   app: "rider" | "driver";
@@ -958,6 +971,7 @@ export interface Database {
   test_phones: TestPhonesTable;
   otp_sessions: OtpSessionsTable;
   sign_in_waitlist: SignInWaitlistTable;
+  complete_previews: CompletePreviewsTable;
   sign_in_waitlist_asks: SignInWaitlistAsksTable;
   auth_sessions: AuthSessionsTable;
   refresh_tokens: RefreshTokensTable;

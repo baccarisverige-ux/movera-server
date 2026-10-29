@@ -43,6 +43,8 @@ export type ErrorBody = {
   reason?: string;
   projection?: unknown;
   details?: string[];
+  /** contract v0.18.1 §26: the fresh frozen price with reason price_changed. */
+  preview?: unknown;
 };
 
 const REASON = /^[a-z][a-z0-9_]{0,63}$/;
@@ -54,7 +56,7 @@ export class ApiError extends Error {
   constructor(
     readonly code: ErrorCode,
     message: string,
-    readonly options: { reason?: string; projection?: unknown; details?: string[]; retryAfterSeconds?: number } = {},
+    readonly options: { reason?: string; projection?: unknown; details?: string[]; retryAfterSeconds?: number; preview?: unknown } = {},
   ) {
     super(message);
     this.name = "ApiError";
@@ -73,6 +75,7 @@ export class ApiError extends Error {
       ...(this.options.reason !== undefined ? { reason: this.options.reason } : {}),
       ...(this.options.projection !== undefined ? { projection: this.options.projection } : {}),
       ...(this.options.details !== undefined ? { details: this.options.details } : {}),
+      ...(this.options.preview !== undefined ? { preview: this.options.preview } : {}),
     };
   }
 }

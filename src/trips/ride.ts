@@ -17,7 +17,7 @@ import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
 import { extrasOf } from "../rules/priceExtras.js";
 import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
-import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
+import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { nextStatus, RIDER_ONBOARD, type TripStatus } from "../rules/transitions.js";
 import { tripProjection } from "./projection.js";
 
@@ -369,9 +369,14 @@ async function walletCovers(ex: Executor, riderId: string, fareMinor: number): P
  * The trip is paid: the wallet pays the part the driver was shown at boarding (never more, so money that reaches
  * the wallet later stays there), the driver collects the rest in cash.
  */
+/** What the rider's wallet pays of a fare (the part reserved on the trip, at most the wallet and the fare). */
+function walletPart(walletMinor: number, trip: TripRow, fareMinor: number): number {
+  return Math.max(0, Math.min(walletMinor, fareMinor, Number(trip.wallet_applied_minor ?? 0)));
+}
+
 async function spendWallet(trx: Trx, trip: TripRow, fareMinor: number, now: Date): Promise<number> {
   const rider = await trx.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).forUpdate().executeTakeFirstOrThrow();
-  const applied = Math.max(0, Math.min(Number(rider.wallet_minor), fareMinor, Number(trip.wallet_applied_minor ?? 0)));
+  const applied = walletPart(Number(rider.wallet_minor), trip, fareMinor);
   if (applied > 0) {
     await trx.updateTable("riders").set({ wallet_minor: sql`wallet_minor - ${applied}`, updated_at: now }).where("rider_id", "=", trip.rider_id).execute();
     await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: trip.rider_id, kind: "charge", currency: trip.currency, amount_minor: -applied, trip_id: trip.trip_id, at: now }).execute();
@@ -736,22 +741,90 @@ export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: Number(trip.driver_bonus_minor ?? 0) }, now);
 }
 
-export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; subjectId: string }, tripId: string, body: { expectedVersion: number; cashCollected?: Money; fare?: Money }, now: Date): Promise<TripRow> {
+/**
+ * The fare complete sets (one code path for complete and its preview, contract v0.18.1 §26). Finished before the
+ * destination (owner decision 28, like the rider's early end): the rider pays for what was driven, never more than
+ * booked. An admin's fare is taken as given; at the drop-off the booked fare stands.
+ */
+async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin", adminFare: Money | undefined, now: Date) {
+  const early = adminFare === undefined && actor === "driver" && (await endedBeforeDropoff(ex, trip));
+  const measured = early ? await drivenFare(ex, trip, now) : null;
+  // Only when it is less than booked: at the cap the booked fare and its lines stand as they are.
+  const driven = measured !== null && measured.total.amountMinor < Number(trip.fare_minor) ? measured : null;
+  // v0.7.1 (§3.8): at the drop-off the waiting at the middle stops is added, from each arrival to leaving.
+  const stopped = !early && adminFare === undefined ? await withStopWaiting(ex, trip, now) : null;
+  const fare = adminFare?.amountMinor ?? driven?.total.amountMinor ?? stopped?.fare_minor ?? Number(trip.fare_minor);
+  const money: { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number } = adminFare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : (stopped ?? {});
+  return { early, fare, money };
+}
+
+/** contract v0.18.1 §26: how long a preview's price holds. */
+export const PREVIEW_FREEZE_SECONDS = (contract as unknown as { completePreview: { freezeSeconds: number } }).completePreview.freezeSeconds;
+
+type FrozenMoney = { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number };
+
+/** The CompletePreview body of a frozen price. */
+function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; early: boolean; fare: number; wallet: number; money: FrozenMoney }) {
+  const lines = row.money.fare_lines !== undefined ? (JSON.parse(row.money.fare_lines) as FareLine[]) : ((trip.fare_lines as FareLine[]) ?? []);
+  const sum = (amountMinor: number): Money => ({ amountMinor, currency: trip.currency });
+  const earnings = row.money.driver_earnings_minor ?? Number(trip.driver_earnings_minor ?? 0);
+  return {
+    previewId: row.previewId,
+    expiresAt: row.expiresAt.toISOString(),
+    tripId: trip.trip_id,
+    total: sum(row.fare),
+    cashDue: sum(row.fare - row.wallet),
+    driverEarnings: sum(earnings),
+    earlyEnd: row.early,
+    fareLines: lines,
+  };
+}
+
+/**
+ * GET /driver/trips/{tripId}/complete-preview (contract v0.18.1 §26): what complete would set now (the same
+ * finalPrice), frozen for PREVIEW_FREEZE_SECONDS under a new previewId that replaces the trip's earlier one. The trip
+ * and the wallet are not changed.
+ */
+export async function completePreview(ex: Executor, driverId: string, tripId: string, now: Date) {
+  const trip = await readOwnTrip(ex, tripId, { actor: "driver", subjectId: driverId });
+  if (!ONBOARD.includes(trip.status)) {
+    throw new ApiError("invalid_transition", "The rider is not on board.", { reason: "trip_not_on_board", projection: tripProjection(trip, "driver") });
+  }
+  const { early, fare, money } = await finalPrice(ex, trip, "driver", undefined, now);
+  const rider = await ex.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).executeTakeFirstOrThrow();
+  const wallet = walletPart(Number(rider.wallet_minor), trip, fare);
+  const previewId = newId("cpv", now.getTime());
+  const expiresAt = new Date(now.getTime() + PREVIEW_FREEZE_SECONDS * 1000);
+  const row = { preview_id: previewId, driver_id: driverId, expires_at: expiresAt, early_end: early, fare_minor: fare, wallet_minor: wallet, money: JSON.stringify(money), created_at: now };
+  await ex.insertInto("complete_previews").values({ trip_id: tripId, ...row }).onConflict((c) => c.column("trip_id").doUpdateSet(row)).execute();
+  return previewBody(trip, { previewId, expiresAt, early, fare, wallet, money });
+}
+
+/** Thrown inside complete's transaction; the route answers 409 price_changed with a fresh preview made after it. */
+export class PriceChanged extends Error {
+  constructor(readonly tripId: string) {
+    super("The price changed.");
+  }
+}
+
+export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; subjectId: string }, tripId: string, body: { expectedVersion: number; cashCollected?: Money; fare?: Money; previewId?: string }, now: Date): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, who);
   if (body.fare && body.fare.currency !== trip.currency) throw badRequest(`The fare is in ${trip.currency}.`, "currency_mismatch");
   expectVersion(trip, body.expectedVersion, who.actor);
   if (body.cashCollected && body.cashCollected.currency !== trip.currency) throw badRequest(`Cash is counted in ${trip.currency}.`, "currency_mismatch");
-  // Finished before the destination (owner decision 28, like the rider's early end): the rider pays for what was
-  // driven, never more than booked. An admin's fare is taken as given; at the drop-off the booked fare stands.
-  const early = body.fare === undefined && who.actor === "driver" && (await endedBeforeDropoff(trx, trip));
-  const measured = early ? await drivenFare(trx, trip, now) : null;
-  // Only when it is less than booked: at the cap the booked fare and its lines stand as they are.
-  const driven = measured !== null && measured.total.amountMinor < Number(trip.fare_minor) ? measured : null;
-  // v0.7.1 (§3.8): at the drop-off the waiting at the middle stops is added, from each arrival to leaving.
-  const stopped = !early && body.fare === undefined ? await withStopWaiting(trx, trip, now) : null;
-  const fare = body.fare?.amountMinor ?? driven?.total.amountMinor ?? stopped?.fare_minor ?? Number(trip.fare_minor);
-  const money = body.fare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : (stopped ?? {});
+  // contract v0.18.1 §26: the driver's latest unexpired preview is the price, exactly (no early-end flip, no extra
+  // minutes); otherwise the trip is priced as now.
+  const previewed = who.actor === "driver" && body.fare === undefined && body.previewId !== undefined;
+  const frozen = previewed
+    ? await trx.selectFrom("complete_previews").selectAll().where("trip_id", "=", trip.trip_id).where("preview_id", "=", body.previewId!).where("driver_id", "=", who.subjectId).where("expires_at", ">", now).executeTakeFirst()
+    : undefined;
+  const { fare, money } = frozen
+    ? { fare: Number(frozen.fare_minor), money: frozen.money as FrozenMoney }
+    : await finalPrice(trx, trip, who.actor, body.fare, now);
   const wallet = await spendWallet(trx, trip, fare, now);
+  // With a previewId the cash shown must be the cash part of this price; if not, nothing is completed and the app
+  // gets a fresh price to show (409 price_changed, never a 400 that leaves the driver stuck).
+  if (previewed && body.cashCollected && body.cashCollected.amountMinor !== fare - wallet) throw new PriceChanged(trip.trip_id);
   // The rider owes the fare (outstanding fees included) less what the wallet paid; more cash than that is a miscount,
   // and it would raise the driver's cash balance and the trip's refund room above the fare.
   if (body.cashCollected && body.cashCollected.amountMinor > fare - wallet) {
