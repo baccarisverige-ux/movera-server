@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { bookAndAccept, drive, fakeOsrm, PLACES, Sim, type Driver, type Json, type Rider } from "./harness.js";
 
 /**
- * Contract v0.17.3 §26 (owner 2026-10-29, live bug A, "Server's final price (Recommended)"): the driver app asks
+ * Contract v0.18.1 §26 (owner 2026-10-29, live bug A, "Server's final price (Recommended)"): the driver app asks
  * GET /driver/trips/{tripId}/complete-preview before Collect cash, and the amount it shows is the fare complete sets.
  * Owner decision 28: completing farther than 300 m from the drop-off is an early end (what was driven + minimum).
  */
@@ -50,7 +50,7 @@ const nearDropoff = (km: number) => ({ lat: PLACES.medborgar.lat + km / 111.1950
 const stored = (tripId: string) => sim.db.selectFrom("trips").select(["fare_minor", "cash_collected_minor", "wallet_applied_minor"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
 const sum = (lines: Json[]) => lines.reduce((total: number, l: Json) => total + l["amount"]["amountMinor"], 0);
 
-describe("complete-preview (contract v0.17.3 §26)", () => {
+describe("complete-preview (contract v0.18.1 §26)", () => {
   it("one fix at the pickup, 0 km, far from the drop-off: early end at the category minimum, and complete charges the same", async () => {
     const { tripId } = await bookAndAccept(sim, rider, a);
     await drive(a, tripId, "in_trip");
@@ -132,7 +132,7 @@ describe("complete-preview (contract v0.17.3 §26)", () => {
   });
 });
 
-describe("the frozen price (contract v0.17.3 §26, checker findings)", () => {
+describe("the frozen price (contract v0.18.1 §26, checker findings)", () => {
   it("a newer preview replaces the older one and is the price complete uses; cash stored = fare less wallet", async () => {
     const { tripId } = await bookAndAccept(sim, rider, a);
     await drive(a, tripId, "in_trip");

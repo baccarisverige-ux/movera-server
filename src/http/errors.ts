@@ -43,7 +43,7 @@ export type ErrorBody = {
   reason?: string;
   projection?: unknown;
   details?: string[];
-  /** contract v0.17.3 §26: the fresh frozen price with reason price_changed. */
+  /** contract v0.18.1 §26: the fresh frozen price with reason price_changed. */
   preview?: unknown;
 };
 

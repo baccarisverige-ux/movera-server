@@ -62,7 +62,7 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
     });
   }
 
-  // contract v0.17.3 §26: the final price complete would set now (read-only), shown before Collect cash.
+  // contract v0.18.1 §26: the final price complete would set now (frozen 2 minutes), shown before Collect cash.
   app.get(`${API_PREFIX}/driver/trips/:tripId/complete-preview`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     return completePreview(deps.db, who.subjectId, tripId(request), now());
@@ -76,7 +76,7 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
       return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await completeTrip(trx, { actor: "driver", subjectId: who.subjectId }, id, body, now()), "driver") }))).body;
     } catch (error) {
       if (!(error instanceof PriceChanged)) throw error;
-      // contract v0.17.3 §26: the complete rolled back; a fresh frozen price for the sheet.
+      // contract v0.18.1 §26: the complete rolled back; a fresh frozen price for the sheet.
       const preview = await deps.db.transaction().execute((trx) => completePreview(trx, who.subjectId, id, now()));
       throw new ApiError("conflict", "The price changed. Collect the new amount.", { reason: "price_changed", preview });
     }

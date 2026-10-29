@@ -4,6 +4,7 @@ import { closeWeeks } from "../admin/payouts.js";
 import { summarize } from "../admin/kpis.js";
 import { purgeOldMessages } from "../trips/messages.js";
 import { purgeOldErrorGroups } from "../telemetry/errors.js";
+import { sweepDocumentExpiry, sweepSignUpReminders } from "../drivers/reminders.js";
 import type { TimerHandler } from "./timers.js";
 
 /** Housekeeping that runs on the timer worker, so only one instance does it at a time. */
@@ -53,6 +54,10 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   // Every trip with the rider on board has a driver-silence check (owner decision 2026-10-26), also one boarded
   // before the check existed.
   await bookSilenceChecks(trx, now);
+  // contract v0.18.0 §27 (owner items 1 and 3, note check): documents expire at their date, with the 30 / 7 / 1
+  // day warnings, and accounts that wait on themselves get 'Finish your sign-up' every few days.
+  await sweepDocumentExpiry(trx, now);
+  await sweepSignUpReminders(trx, now);
   await trx
     .insertInto("timers")
     .values({ kind: SWEEP_IDEMPOTENCY_KEYS, ref_id: "all", due_at: new Date(now.getTime() + HOUR_MS) })

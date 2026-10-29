@@ -1,4 +1,4 @@
--- movera-server migration 0034: the frozen final price before Collect cash (contract v0.17.3 §26, owner 2026-10-29,
+-- movera-server migration 0034: the frozen final price before Collect cash (contract v0.18.1 §26, owner 2026-10-29,
 -- live bug A). GET /driver/trips/{tripId}/complete-preview keeps one row per trip (a new preview replaces it) for
 -- 2 minutes; POST /trips/{tripId}/complete { previewId } then uses exactly this price. Deleted with the trip.
 CREATE TABLE IF NOT EXISTS complete_previews (

@@ -742,7 +742,7 @@ export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
 }
 
 /**
- * The fare complete sets (one code path for complete and its preview, contract v0.17.3 §26). Finished before the
+ * The fare complete sets (one code path for complete and its preview, contract v0.18.1 §26). Finished before the
  * destination (owner decision 28, like the rider's early end): the rider pays for what was driven, never more than
  * booked. An admin's fare is taken as given; at the drop-off the booked fare stands.
  */
@@ -758,7 +758,7 @@ async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin"
   return { early, fare, money };
 }
 
-/** contract v0.17.3 §26: how long a preview's price holds. */
+/** contract v0.18.1 §26: how long a preview's price holds. */
 export const PREVIEW_FREEZE_SECONDS = (contract as unknown as { completePreview: { freezeSeconds: number } }).completePreview.freezeSeconds;
 
 type FrozenMoney = { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number };
@@ -781,7 +781,7 @@ function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; e
 }
 
 /**
- * GET /driver/trips/{tripId}/complete-preview (contract v0.17.3 §26): what complete would set now (the same
+ * GET /driver/trips/{tripId}/complete-preview (contract v0.18.1 §26): what complete would set now (the same
  * finalPrice), frozen for PREVIEW_FREEZE_SECONDS under a new previewId that replaces the trip's earlier one. The trip
  * and the wallet are not changed.
  */
@@ -812,7 +812,7 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   if (body.fare && body.fare.currency !== trip.currency) throw badRequest(`The fare is in ${trip.currency}.`, "currency_mismatch");
   expectVersion(trip, body.expectedVersion, who.actor);
   if (body.cashCollected && body.cashCollected.currency !== trip.currency) throw badRequest(`Cash is counted in ${trip.currency}.`, "currency_mismatch");
-  // contract v0.17.3 §26: the driver's latest unexpired preview is the price, exactly (no early-end flip, no extra
+  // contract v0.18.1 §26: the driver's latest unexpired preview is the price, exactly (no early-end flip, no extra
   // minutes); otherwise the trip is priced as now.
   const previewed = who.actor === "driver" && body.fare === undefined && body.previewId !== undefined;
   const frozen = previewed

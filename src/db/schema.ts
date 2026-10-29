@@ -280,7 +280,7 @@ export interface TestPhonesTable {
 }
 
 /** v0.15.0 (migration 0031): numbers that asked to join after 403 sign_in_restricted. */
-/** contract v0.17.3 §26: the frozen final price of a trip's latest complete-preview (migration 0033). */
+/** contract v0.18.1 §26: the frozen final price of a trip's latest complete-preview (migration 0034). */
 export interface CompletePreviewsTable {
   trip_id: string;
   preview_id: string;
@@ -414,7 +414,7 @@ export interface ZonesTable {
   updated_by: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
-export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch" | "country_rules";
+export type ConfigDoc = "rider_app_config" | "driver_app_config" | "pricing" | "dispatch" | "country_rules" | "onboarding";
 
 export interface ConfigDraftsTable {
   doc: ConfigDoc;
@@ -534,6 +534,22 @@ export interface VehiclesTable {
   version: Generated<number>;
   created_at: Timestamp;
   updated_at: Timestamp;
+  /** v0.18.0 (§27): petrol, diesel, hybrid or electric; NULL for a car registered before. */
+  fuel: ColumnType<"petrol" | "diesel" | "hybrid" | "electric" | null, "petrol" | "diesel" | "hybrid" | "electric" | null | undefined, "petrol" | "diesel" | "hybrid" | "electric" | null>;
+}
+
+/** v0.18.0 (§27): expiry notices sent, one per document, expiry date and warning day (0 = expired). */
+export interface DocumentNoticesTable {
+  document_id: string;
+  expires_at: Timestamp;
+  warn_day: number;
+  sent_at: Timestamp;
+}
+
+/** v0.18.0 (§27): 'Finish your sign-up' notices sent. */
+export interface SignUpRemindersTable {
+  driver_id: string;
+  sent_at: Timestamp;
 }
 
 export interface TripLocationsTable {
@@ -980,6 +996,8 @@ export interface Database {
   error_group_devices: ErrorGroupDevicesTable;
   documents: DocumentsTable;
   document_files: DocumentFilesTable;
+  document_notices: DocumentNoticesTable;
+  sign_up_reminders: SignUpRemindersTable;
   fleet_invitations: FleetInvitationsTable;
   notifications: NotificationsTable;
   sms_outbox: SmsOutboxTable;

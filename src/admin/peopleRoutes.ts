@@ -7,7 +7,7 @@ import { ApiError, notFound } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
-import { adminDocumentFile, reviewDocument } from "../documents/service.js";
+import { adminDocumentFile, checkDocument, driverInScope, reviewDocument } from "../documents/service.js";
 import type { DocumentKey } from "../documents/files.js";
 import { adminGetFleet, adminRemoveFleetDriver, listFleets, renewFleetCode, reviewFleet } from "../drivers/onboarding.js";
 import { adminDecideInvitation, type InviteDeps } from "../drivers/invitations.js";
@@ -15,6 +15,7 @@ import { driverView, loadDriver, vehicleFullView, type VehicleRow } from "../dri
 import { sendFile } from "../drivers/routes.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { audit } from "./audit.js";
+import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminUpdateVehicle } from "./vehicleActions.js";
 
 /** contract v0.5.3 §14 (admin side): fleets, driver detail, vehicles list and review, document review and file. */
 
@@ -109,6 +110,27 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
     const documentId = param(request, "documentId");
     const body = parseBody(DocumentReviewBody, request.body);
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await reviewDocument(trx, who, documentId, body, now()) }))).body;
+  });
+  // v0.18.0 (contract.json#driverOnboarding.adminActions): the group 2 admin items on live; zone before body.
+  const action = (fn: (trx: import("../db/db.js").Trx, who: Principal, id: string, body: unknown, at: Date) => Promise<unknown>, permission: string, idName: "vehicleId" | "driverId") => async (request: FastifyRequest) => {
+    const who = await authenticateAdmin(request, guard, permission);
+    const id = param(request, idName);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await fn(trx, who, id, request.body ?? {}, now()) }))).body;
+  };
+  app.patch(`${API_PREFIX}/admin/vehicles/:vehicleId`, action(adminUpdateVehicle, "vehicles.edit", "vehicleId"));
+  app.post(`${API_PREFIX}/admin/vehicles/:vehicleId/driver`, action(adminLinkVehicleDriver, "vehicles.edit", "vehicleId"));
+  app.put(`${API_PREFIX}/admin/drivers/:driverId/categories`, action(adminSetDriverCategories, "vehicles.edit", "driverId"));
+  app.post(`${API_PREFIX}/admin/drivers/:driverId/bank/review`, action(adminReviewBank, "documents.approve", "driverId"));
+
+  // v0.18.0 (owner items 8 and 13): the info session (or an admin's own admin_check type) marked held.
+  app.post(`${API_PREFIX}/admin/drivers/:driverId/documents/:type/check`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "documents.approve");
+    const driverId = param(request, "driverId");
+    const type = param(request, "type");
+    // The zone first: an admin outside the driver's zones is refused whatever the body says.
+    await driverInScope(deps.db, who, driverId);
+    const body = parseBody(z.object({ decision: z.enum(["approved", "rejected"]), note: z.string().max(1000).optional() }), request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await checkDocument(trx, who, driverId, type, body, now()) }))).body;
   });
   app.get(`${API_PREFIX}/admin/documents/:documentId/file`, async (request, reply) => {
     const who = await authenticateAdmin(request, guard, "documents.approve");
