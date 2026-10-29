@@ -1,9 +1,14 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { authenticate, type Principal } from "../auth/guard.js";
+import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
 import { schemaProblem } from "../contract/schemas.js";
 import type { Db } from "../db/db.js";
+import { z } from "zod";
 import { ApiError, badRequest } from "../http/errors.js";
+import { runIdempotent } from "../http/idempotency.js";
 import { API_PREFIX } from "../http/prefix.js";
+import { parseBody } from "../http/validate.js";
+import { listErrorGroups, recordError, setErrorStatus, type ErrorApp, type ErrorKind, type ErrorPlatform } from "./errors.js";
+import { scrub } from "./scrub.js";
 
 /**
  * contract §11 (`contract.json#telemetry`): POST /telemetry/logs|analytics|crashes from any app. No token needed (one
@@ -21,26 +26,24 @@ const KINDS = [
   ["crashes", "crash", "TelemetryCrash"],
 ] as const;
 
-/** Keys whose values are never kept, whatever they hold. */
-const PRIVATE_KEY = /^(lat|lng|lon|latitude|longitude|phone|email|e-?mail|token|accesstoken|refreshtoken|password|authorization|code|pin)$/i;
+export { scrub, scrubText } from "./scrub.js";
 
-export function scrubText(text: string): string {
-  return text
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [token]")
-    .replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/g, "[token]")
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
-    .replace(/-?\d{1,3}\.\d{3,}\s*[,;\s]\s*-?\d{1,3}\.\d{3,}/g, "[coordinates]")
-    .replace(/-?\b\d{1,3}\.\d{4,}\b/g, "[coordinate]")
-    .replace(/\+?\d[\d\s().-]{6,}\d/g, "[phone]");
-}
+const ErrorsQuery = z.object({
+  cursor: z.string().max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  app: z.enum(["driver", "rider", "server"]).optional(),
+  platform: z.enum(["android", "ios", "web", "server"]).optional(),
+  version: z.string().min(1).max(40).optional(),
+  status: z.enum(["open", "fixed"]).optional(),
+});
+const ErrorStatusBody = z.object({ status: z.enum(["open", "fixed"]) });
+const ERROR_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-export function scrub(value: unknown, depth = 0): unknown {
-  if (typeof value === "string") return scrubText(value);
-  if (depth > 8 || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((v) => scrub(v, depth + 1));
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value)) out[k] = PRIVATE_KEY.test(k) ? "[removed]" : scrub(v, depth + 1);
-  return out;
+/** contract v0.16.0: the app of a crash report, from the body or else the signed-in caller; null when unknown. */
+function appOf(body: Record<string, unknown>, who: Principal | null): ErrorApp | null {
+  if (body["app"] === "driver" || body["app"] === "rider") return body["app"];
+  if (who?.actor === "driver" || who?.actor === "rider") return who.actor;
+  return null;
 }
 
 export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps): Promise<void> {
@@ -75,6 +78,26 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
       if (problem !== null) throw badRequest(`The ${kind} is not valid: ${problem}.`, "invalid_body");
       const who = await caller(request);
       const clean = scrub(body) as Record<string, unknown>;
+      // v0.16.0: a crash report that names its app (or comes with a rider/driver token) and platform is grouped
+      // for the admin's Crashes & errors. One without (an older app) is kept as before, ungrouped.
+      const errorApp = kind === "crash" ? appOf(clean, who) : null;
+      const platform = clean["platform"] as ErrorPlatform | undefined;
+      if (errorApp !== null && platform !== undefined) {
+        await recordError(deps.db, {
+          app: errorApp,
+          platform,
+          kind: (clean["kind"] as ErrorKind | undefined) ?? "crash",
+          message: String(clean["error"]),
+          stack: typeof clean["stack"] === "string" ? clean["stack"] : undefined,
+          appVersion: typeof clean["appVersion"] === "string" ? clean["appVersion"] : undefined,
+          device: who !== null ? `${who.actor}:${who.subjectId}` : `ip:${request.ip}`,
+          body: clean,
+          actor: who?.actor ?? null,
+          subjectId: who?.subjectId ?? null,
+          at,
+        });
+        return reply.status(202).send();
+      }
       await deps.db
         .insertInto("telemetry")
         .values({
@@ -90,4 +113,24 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
       return reply.status(202).send();
     });
   }
+
+  // v0.16.0 (owner 2026-10-29): Crashes & errors. Any signed-in admin, every role ("All admin roles (Recommended)"); no permission id, like GET /admin/auth/me.
+  app.get(`${API_PREFIX}/admin/errors`, async (request) => {
+    await authenticateAdmin(request, guard);
+    const q = parseBody(ErrorsQuery, request.query);
+    return listErrorGroups(deps.db, { cursor: q.cursor, limit: q.limit, app: q.app, platform: q.platform, version: q.version, status: q.status });
+  });
+  app.patch(`${API_PREFIX}/admin/errors/:errorId`, async (request) => {
+    const who = await authenticateAdmin(request, guard);
+    const errorId = (request.params as { errorId: string }).errorId;
+    if (!ERROR_ID.test(errorId)) throw badRequest("Not a valid id.", "invalid_id");
+    const body = parseBody(ErrorStatusBody, request.body);
+    const key = request.headers["idempotency-key"];
+    const result = await runIdempotent(
+      deps.db,
+      { actor: "admin", subjectId: who.subjectId, key: Array.isArray(key) ? key[0] : key, method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null },
+      async (trx) => ({ status: 200, body: await setErrorStatus(trx, who, errorId, body.status, now()) }),
+    );
+    return result.body;
+  });
 }

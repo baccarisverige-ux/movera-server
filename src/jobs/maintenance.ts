@@ -3,6 +3,7 @@ import { bookSilenceChecks } from "../trips/ride.js";
 import { closeWeeks } from "../admin/payouts.js";
 import { summarize } from "../admin/kpis.js";
 import { purgeOldMessages } from "../trips/messages.js";
+import { purgeOldErrorGroups } from "../telemetry/errors.js";
 import type { TimerHandler } from "./timers.js";
 
 /** Housekeeping that runs on the timer worker, so only one instance does it at a time. */
@@ -45,6 +46,8 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   await trx.deleteFrom("trip_locations").where("measured_at", "<", new Date(now.getTime() - 30 * 24 * HOUR_MS)).execute();
   // App telemetry after 30 days (contract §11).
   await trx.deleteFrom("telemetry").where("at", "<", new Date(now.getTime() - 30 * 24 * HOUR_MS)).execute();
+  // contract v0.16.0: an error group not seen for 30 days goes too (its devices with it).
+  await purgeOldErrorGroups(trx, new Date(now.getTime() - 30 * 24 * HOUR_MS));
   // Quotes nobody booked, a day after they expired.
   await trx.deleteFrom("quotes").where("expires_at", "<", new Date(now.getTime() - 24 * HOUR_MS)).where("used_at", "is", null).execute();
   // Every trip with the rider on board has a driver-silence check (owner decision 2026-10-26), also one boarded

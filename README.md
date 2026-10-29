@@ -91,6 +91,11 @@ Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_cop
   (one row per phone and app in `sign_in_waitlist`, 30 asks per address an hour); admins read `GET /admin/waitlist`.
 - Test accounts (v0.15.0): `GET /auth/test-accounts` lists the test numbers with each account's status, for the
   staging builds' sign-in screen. The route exists only outside production (production answers `404`).
+- Crashes & errors (v0.16.0, owner 2026-10-29): `POST /telemetry/crashes` reports that name `app` and `platform` (or
+  carry a rider/driver token) are grouped in `error_groups` by app + platform + normalized message + top stack frame;
+  the server's own unhandled 5xx errors are recorded as app `server`, scrubbed. Any signed-in admin (every role) reads
+  `GET /admin/errors` and mark groups with `PATCH /admin/errors/{id}`; a fixed group that occurs again reopens.
+  At most 200 reports are kept per group; groups not seen for 30 days are deleted.
 - SMS: there is no provider yet (the owner picks 46elks or Twilio). Every message the server wants sent (fleet
   invitations today) is written to `sms_outbox`, as `skipped` while no provider exists, so nothing is lost.
 
