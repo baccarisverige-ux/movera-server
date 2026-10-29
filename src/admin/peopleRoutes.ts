@@ -15,6 +15,7 @@ import { driverView, loadDriver, vehicleFullView, type VehicleRow } from "../dri
 import { sendFile } from "../drivers/routes.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { audit } from "./audit.js";
+import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminUpdateVehicle } from "./vehicleActions.js";
 
 /** contract v0.5.3 §14 (admin side): fleets, driver detail, vehicles list and review, document review and file. */
 
@@ -110,6 +111,17 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
     const body = parseBody(DocumentReviewBody, request.body);
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await reviewDocument(trx, who, documentId, body, now()) }))).body;
   });
+  // v0.18.0 (contract.json#driverOnboarding.adminActions): the group 2 admin items on live; zone before body.
+  const action = (fn: (trx: import("../db/db.js").Trx, who: Principal, id: string, body: unknown, at: Date) => Promise<unknown>, permission: string, idName: "vehicleId" | "driverId") => async (request: FastifyRequest) => {
+    const who = await authenticateAdmin(request, guard, permission);
+    const id = param(request, idName);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await fn(trx, who, id, request.body ?? {}, now()) }))).body;
+  };
+  app.patch(`${API_PREFIX}/admin/vehicles/:vehicleId`, action(adminUpdateVehicle, "vehicles.edit", "vehicleId"));
+  app.post(`${API_PREFIX}/admin/vehicles/:vehicleId/driver`, action(adminLinkVehicleDriver, "vehicles.edit", "vehicleId"));
+  app.put(`${API_PREFIX}/admin/drivers/:driverId/categories`, action(adminSetDriverCategories, "vehicles.edit", "driverId"));
+  app.post(`${API_PREFIX}/admin/drivers/:driverId/bank/review`, action(adminReviewBank, "documents.approve", "driverId"));
+
   // v0.17.0 (owner items 8 and 13): the info session (or an admin's own admin_check type) marked held.
   app.post(`${API_PREFIX}/admin/drivers/:driverId/documents/:type/check`, async (request) => {
     const who = await authenticateAdmin(request, guard, "documents.approve");
