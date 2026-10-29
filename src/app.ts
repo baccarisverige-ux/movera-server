@@ -185,7 +185,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
       (env.OSRM_URL !== undefined ? new OsrmRouter(env.OSRM_URL, 2500, (error) => app.log.warn({ err: error }, "OSRM unavailable; distance estimated")) : new EstimateRouter());
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
-    await tripRoutes(app, { db, jwtSecret, paymentMethods: env.PAYMENT_METHODS, currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: env.PAYMENT_METHODS, currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
