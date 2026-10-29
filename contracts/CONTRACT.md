@@ -1,4 +1,6 @@
-# Movera shared contract v0.17.0
+# Movera shared contract v0.17.3
+
+v0.17.3 (owner decisions of 2026-10-29, live bug A "Cash screen 86 kr vs charged 54 kr", "Server's final price (Recommended)"; X-Api-Version stays `0.5`, additive; 0.17.1 and 0.17.2 are allocated to other jobs): **The final price before Collect cash** (§26, `contract.json#completePreview`): `GET /driver/trips/{tripId}/complete-preview` → `CompletePreview { tripId, total, cashDue, driverEarnings, earlyEnd, fareLines }`, computed by the same code as `complete`; the app sends `cashCollected` = the `cashDue` it showed. **Owner decision 28 written down** (§3.5, `contract.json#pricing.driverEndsEarly`, `completeNearDropoffMeters` 300): a driver who completes farther than 300 m from the drop-off ended the trip early and the rider pays what was driven, as the rider's end early.
 
 v0.17.0 (owner decisions of 2026-10-29, "Driver past ride detail"; X-Api-Version stays `0.5`, additive): **The route of a past ride** (§25, `contract.json#tripPath`): `GET /trips/{tripId}/path` (the trip's rider or driver, once the trip has ended) → `TripPath { tripId, source: driven | planned, points: LatLng[], pickup, dropoff, stops, keptUntil? }`. `driven` is thinned from the trip's own GPS trace (at most 300 points); once the trace is deleted (30 days, §12) or when none was sent, `planned` is the server's road route through the stops. No new storage, no longer retention.
 
@@ -276,6 +278,8 @@ The server prices every quote and every fare from the zone's **pricing document*
 **Quote and fare.** The quote prices the server's own route (OSRM km and minutes, §10; a distance a client sends is a hint) with no waiting. The fare at completion is the same calculation with the quote's km and minutes, the stops made and the waiting the trip had, rounded once. Route changes keep the v0.4.3 rule (§3 "Route-change pricing").
 
 **Rider ends the trip early** (`end_early`, owner decisions 8 and 19): ride part = base + km driven × perKm + minutes on board × perMin, × the booked surge multiplier, then the minimum and maximum; no extras; then the app fee and the pickup fee. When that is above the booked fare (the quote total plus route changes, without the outstanding fee), the ride part is lowered (`maximum_adjust`) so that ride part + app fee + pickup fee is exactly the booked fare; the total is then rounded once to the price step. `driverEarnings` follow that ride part.
+
+**Driver ends the trip early** (v0.17.3, owner decision 28, `contract.json#pricing.driverEndsEarly`): when the driver completes and their latest fix (`POST /driver/location`) is farther than `completeNearDropoffMeters` (300 m) from the drop-off, the trip ended early and is priced exactly as the rider's end early above (km on board from the trace, minutes since boarding, the category minimum and maximum, never more than the booked fare). Within 300 m, or with no fix, the booked fare stands plus the waiting at middle stops. An admin's force-complete fare is taken as given. The driver app shows this price before collecting cash (§26).
 
 **Not in the formula** in v0.5.1: `cleaningFee` (charged afterwards with `POST /admin/trips/{id}/adjust`), `tollsPassThrough` (no tolls are priced), the smart surge algorithm (kept in the document, off in the test week), promotions (`discount`, hidden in the test week).
 
@@ -772,3 +776,12 @@ Owner decisions "chat only support roles in their zones" and of 2026-10-28; the 
 - **`planned`.** No usable trace (deleted after 30 days, or never sent): the server's road route (§10) from the pickup through the stops to the drop-off; the straight-line estimate when OSRM does not answer.
 - **Privacy.** No new storage and no longer retention: the path follows the trace's 30-day rule. Only each driver's latest position is kept beyond it.
 - **Apps.** The driver's past-ride screen keeps the map fixed at the top (about 40 % of the height), fits the whole line with the pickup and drop-off pins, and scrolls only the details; a failed call shows the two pins only.
+
+## 26. The final price before Collect cash (v0.17.3)
+
+`contract.json#completePreview` (owner decisions of 2026-10-29, live bug A: "Server's final price (Recommended)").
+
+- **Call.** `GET /driver/trips/{tripId}/complete-preview` → `CompletePreview { tripId, total: Money, cashDue: Money, driverEarnings: Money, earlyEnd: boolean, fareLines: FareLine[] }`. Only the trip's driver (anyone else `404 not_found`); only on board (`rider_onboard`, `in_trip`, `approaching_dropoff`), else `409 invalid_transition`, reason `trip_not_on_board`. Read-only: no Idempotency-Key, nothing stored, the wallet untouched.
+- **Same as complete.** `total` and `fareLines` come from the same code as `POST /trips/{tripId}/complete` at that moment with the driver's latest fix (§3.5 "Driver ends the trip early"). `earlyEnd` is true beyond 300 m from the drop-off. `cashDue` = `total` less what the rider's wallet would pay; `driverEarnings` is the driver's part of `total` (the cash balance on the sheet).
+- **Complete.** On a cash trip the app sends `cashCollected` = the `cashDue` it showed (at most the fare less the wallet, else `400 invalid_request`, reason `cash_above_fare`), then shows the `fare` of the returned `TripProjection`. Rider, receipt and history read the same trip fare.
+- **Apps.** "Collect <cashDue>"; when `earlyEnd`, also "Ending before the destination – price recalculated" (sv "Avslutas före destinationen – priset räknades om", fr "Fin avant la destination – prix recalculé"). A failed preview never shows the booked price as the amount to collect.

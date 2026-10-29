@@ -7,7 +7,7 @@ import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { tripProjection } from "./projection.js";
 import { stopCommand } from "./stops.js";
-import { completeTrip, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
+import { completePreview, completeTrip, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
 
 /** contract §3: the driver's trip commands, the rider's early end, ratings and the driver's earnings. */
 
@@ -60,6 +60,12 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
       return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await stopCommand(trx, who.subjectId, params.tripId, params.stopIndex, verb, body.expectedVersion, now()), "driver") }))).body;
     });
   }
+
+  // contract v0.17.3 §26: the final price complete would set now (read-only), shown before Collect cash.
+  app.get(`${API_PREFIX}/driver/trips/:tripId/complete-preview`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    return completePreview(deps.db, who.subjectId, tripId(request), now());
+  });
 
   app.post(`${API_PREFIX}/trips/:tripId/complete`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);

@@ -1,11 +1,11 @@
-# Movera API v0.17.0 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.17.3 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.17.0
+  version: 0.17.3
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.17.0 in this folder; this file must agree with them.
+    v0.17.3 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -80,7 +80,7 @@ tags:
   description: 'Zones from the server: list, create, outline, open and close (v0.11.0)'
 x-contract:
   name: movera
-  version: 0.17.0
+  version: 0.17.3
   source: contract.json
 paths:
   /auth/otp/request:
@@ -8084,6 +8084,54 @@ paths:
           $ref: '#/components/responses/Unavailable'
         '409':
           $ref: '#/components/responses/Conflict'
+  /driver/trips/{tripId}/complete-preview:
+    get:
+      operationId: previewCompleteTrip
+      summary: The final price before completing (read-only)
+      description: 'v0.17.3 (CONTRACT.md §26): the trip''s own driver (anyone else 404 not_found); only while the trip is
+        on board (rider_onboard, in_trip, approaching_dropoff), else 409 invalid_transition, reason trip_not_on_board. Read-only:
+        no Idempotency-Key, nothing is stored, the wallet is not touched. total and fareLines are computed by the same code
+        as POST /trips/{tripId}/complete would at that moment with the driver''s latest fix (pricing.driverEndsEarly): earlyEnd
+        is true when the driver is farther than pricing.completeNearDropoffMeters from the drop-off. cashDue = total − the
+        part the rider''s wallet would pay. driverEarnings = the driver''s part of that total (as TripProjection.driverEarnings
+        after complete), for the sheet''s cash balance. The app then sends POST /trips/{tripId}/complete { expectedVersion,
+        cashCollected = the cashDue it showed } on a cash trip. More than the fare less the wallet is 400 invalid_request,
+        reason cash_above_fare. After completing the app shows the fare of the returned TripProjection.'
+      tags:
+      - Driver · Trip
+      x-actor:
+      - driver
+      x-read-only: true
+      parameters:
+      - $ref: '#/components/parameters/TripId'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletePreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /admin/zones/{zoneId}/dispatch-control:
     get:
       operationId: adminGetDispatchControl
@@ -15436,6 +15484,42 @@ components:
         keptUntil:
           $ref: '#/components/schemas/Timestamp'
       additionalProperties: false
+    CompletePreview:
+      type: object
+      description: 'v0.17.3 (CONTRACT.md §26): the final price complete would set now. total and fareLines are computed by
+        the same code as POST /trips/{tripId}/complete would at that moment with the driver''s latest fix (pricing.driverEndsEarly):
+        earlyEnd is true when the driver is farther than pricing.completeNearDropoffMeters from the drop-off. cashDue = total
+        − the part the rider''s wallet would pay. driverEarnings = the driver''s part of that total (as TripProjection.driverEarnings
+        after complete), for the sheet''s cash balance.'
+      required:
+      - tripId
+      - total
+      - cashDue
+      - driverEarnings
+      - earlyEnd
+      - fareLines
+      properties:
+        tripId:
+          $ref: '#/components/schemas/Id'
+        total:
+          $ref: '#/components/schemas/Money'
+        cashDue:
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'What the driver collects in cash: total less what the rider''s wallet would pay. Send it as cashCollected
+            on complete.'
+        driverEarnings:
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: The driver's part of total (TripProjection.driverEarnings after complete).
+        earlyEnd:
+          type: boolean
+          description: 'The driver is farther than 300 m from the drop-off: priced as what was driven (owner decision 28).'
+        fareLines:
+          type: array
+          items:
+            $ref: '#/components/schemas/FareLine'
+      additionalProperties: false
     RouteRequest:
       type: object
       required:
@@ -16368,7 +16452,10 @@ components:
       - type: object
         properties:
           cashCollected:
-            $ref: '#/components/schemas/Money'
+            allOf:
+            - $ref: '#/components/schemas/Money'
+            description: 'v0.17.3: on a cash trip the cashDue of GET /driver/trips/{tripId}/complete-preview that the app
+              showed; at most the fare less the wallet (else 400 cash_above_fare). Absent: the fare less the wallet.'
     NoShowCommand:
       allOf:
       - $ref: '#/components/schemas/TripCommand'

@@ -17,7 +17,7 @@ import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
 import { extrasOf } from "../rules/priceExtras.js";
 import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
-import { applyCommand, expectVersion, lockOwnTrip } from "./commands.js";
+import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { nextStatus, RIDER_ONBOARD, type TripStatus } from "../rules/transitions.js";
 import { tripProjection } from "./projection.js";
 
@@ -369,9 +369,14 @@ async function walletCovers(ex: Executor, riderId: string, fareMinor: number): P
  * The trip is paid: the wallet pays the part the driver was shown at boarding (never more, so money that reaches
  * the wallet later stays there), the driver collects the rest in cash.
  */
+/** What the rider's wallet pays of a fare (the part reserved on the trip, at most the wallet and the fare). */
+function walletPart(walletMinor: number, trip: TripRow, fareMinor: number): number {
+  return Math.max(0, Math.min(walletMinor, fareMinor, Number(trip.wallet_applied_minor ?? 0)));
+}
+
 async function spendWallet(trx: Trx, trip: TripRow, fareMinor: number, now: Date): Promise<number> {
   const rider = await trx.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).forUpdate().executeTakeFirstOrThrow();
-  const applied = Math.max(0, Math.min(Number(rider.wallet_minor), fareMinor, Number(trip.wallet_applied_minor ?? 0)));
+  const applied = walletPart(Number(rider.wallet_minor), trip, fareMinor);
   if (applied > 0) {
     await trx.updateTable("riders").set({ wallet_minor: sql`wallet_minor - ${applied}`, updated_at: now }).where("rider_id", "=", trip.rider_id).execute();
     await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: trip.rider_id, kind: "charge", currency: trip.currency, amount_minor: -applied, trip_id: trip.trip_id, at: now }).execute();
@@ -736,21 +741,47 @@ export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: Number(trip.driver_bonus_minor ?? 0) }, now);
 }
 
+/**
+ * The fare complete sets (one code path for complete and its preview, contract v0.17.3 §26). Finished before the
+ * destination (owner decision 28, like the rider's early end): the rider pays for what was driven, never more than
+ * booked. An admin's fare is taken as given; at the drop-off the booked fare stands.
+ */
+async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin", adminFare: Money | undefined, now: Date) {
+  const early = adminFare === undefined && actor === "driver" && (await endedBeforeDropoff(ex, trip));
+  const measured = early ? await drivenFare(ex, trip, now) : null;
+  // Only when it is less than booked: at the cap the booked fare and its lines stand as they are.
+  const driven = measured !== null && measured.total.amountMinor < Number(trip.fare_minor) ? measured : null;
+  // v0.7.1 (§3.8): at the drop-off the waiting at the middle stops is added, from each arrival to leaving.
+  const stopped = !early && adminFare === undefined ? await withStopWaiting(ex, trip, now) : null;
+  const fare = adminFare?.amountMinor ?? driven?.total.amountMinor ?? stopped?.fare_minor ?? Number(trip.fare_minor);
+  const money: { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number } = adminFare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : (stopped ?? {});
+  return { early, fare, money };
+}
+
+/**
+ * GET /driver/trips/{tripId}/complete-preview (contract v0.17.3 §26): what complete would set now, read-only: the
+ * total, its lines, the cash due after the wallet and whether the trip ends early (decision 28).
+ */
+export async function completePreview(ex: Executor, driverId: string, tripId: string, now: Date) {
+  const trip = await readOwnTrip(ex, tripId, { actor: "driver", subjectId: driverId });
+  if (!ONBOARD.includes(trip.status)) {
+    throw new ApiError("invalid_transition", "The rider is not on board.", { reason: "trip_not_on_board", projection: tripProjection(trip, "driver") });
+  }
+  const { early, fare, money } = await finalPrice(ex, trip, "driver", undefined, now);
+  const lines = money.fare_lines !== undefined ? (JSON.parse(money.fare_lines) as FareLine[]) : ((trip.fare_lines as FareLine[]) ?? []);
+  const rider = await ex.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).executeTakeFirstOrThrow();
+  const wallet = walletPart(Number(rider.wallet_minor), trip, fare);
+  const sum = (amountMinor: number): Money => ({ amountMinor, currency: trip.currency });
+  const earnings = money.driver_earnings_minor ?? Number(trip.driver_earnings_minor ?? 0);
+  return { tripId, total: sum(fare), cashDue: sum(fare - wallet), driverEarnings: sum(earnings), earlyEnd: early, fareLines: lines };
+}
+
 export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; subjectId: string }, tripId: string, body: { expectedVersion: number; cashCollected?: Money; fare?: Money }, now: Date): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, who);
   if (body.fare && body.fare.currency !== trip.currency) throw badRequest(`The fare is in ${trip.currency}.`, "currency_mismatch");
   expectVersion(trip, body.expectedVersion, who.actor);
   if (body.cashCollected && body.cashCollected.currency !== trip.currency) throw badRequest(`Cash is counted in ${trip.currency}.`, "currency_mismatch");
-  // Finished before the destination (owner decision 28, like the rider's early end): the rider pays for what was
-  // driven, never more than booked. An admin's fare is taken as given; at the drop-off the booked fare stands.
-  const early = body.fare === undefined && who.actor === "driver" && (await endedBeforeDropoff(trx, trip));
-  const measured = early ? await drivenFare(trx, trip, now) : null;
-  // Only when it is less than booked: at the cap the booked fare and its lines stand as they are.
-  const driven = measured !== null && measured.total.amountMinor < Number(trip.fare_minor) ? measured : null;
-  // v0.7.1 (§3.8): at the drop-off the waiting at the middle stops is added, from each arrival to leaving.
-  const stopped = !early && body.fare === undefined ? await withStopWaiting(trx, trip, now) : null;
-  const fare = body.fare?.amountMinor ?? driven?.total.amountMinor ?? stopped?.fare_minor ?? Number(trip.fare_minor);
-  const money = body.fare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : (stopped ?? {});
+  const { fare, money } = await finalPrice(trx, trip, who.actor, body.fare, now);
   const wallet = await spendWallet(trx, trip, fare, now);
   // The rider owes the fare (outstanding fees included) less what the wallet paid; more cash than that is a miscount,
   // and it would raise the driver's cash balance and the trip's refund room above the fare.
