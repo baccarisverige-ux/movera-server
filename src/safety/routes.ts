@@ -6,6 +6,7 @@ import { ApiError } from "../http/errors.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { parseBody } from "../http/validate.js";
+import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "../admin/zoneFilter.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { adminIncident, adminIncidentCommand, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
@@ -23,17 +24,17 @@ const RideCheckBody = z.object({ checkId: ID, trigger: z.enum(RC.triggers), at: 
 const CommandBody = z.object({ expectedVersion: z.number().int().min(1), note: z.string().max(1000).optional() });
 const many = <T extends z.ZodTypeAny>(item: T) => z.union([item, z.array(item)]).optional().transform((v) => (v === undefined ? undefined : Array.isArray(v) ? v : [v]));
 const Status = z.enum(["open", "investigating", "resolved", "dismissed"]);
-const ListQuery = z.object({
+const ListQuery = {
   cursor: z.string().max(512).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   status: many(Status),
   severity: z.enum(["low", "medium", "high", "critical"]).optional(),
   kind: z.string().max(64).optional(),
   tripId: ID.optional(),
-  zoneId: ID.optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
-});
+  ...ZoneFilterQuery,
+};
 const StreamQuery = z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(200).default(100) });
 
 const keyOf = (request: FastifyRequest) => {
@@ -69,7 +70,8 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
 
   app.get(`${API_PREFIX}/admin/incidents`, async (request) => {
     const who = await authenticateAdmin(request, guard, "incidents.read");
-    return listIncidents(deps.db, who, clean(parseBody(ListQuery, request.query)) as never);
+    const query = parseQuery(ListQuery, request.query);
+    return listIncidents(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)) as never);
   });
 
   app.get(`${API_PREFIX}/admin/incidents/stream`, async (request, reply) => {
