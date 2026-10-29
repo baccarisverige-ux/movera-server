@@ -122,11 +122,15 @@ export async function requestOtp(
     if (client.ip !== undefined) {
       const fromIp = await trx
         .selectFrom("otp_sessions")
-        .select((eb) => eb.fn.countAll<string>().as("n"))
+        .select((eb) => [eb.fn.countAll<string>().as("n"), eb.fn.min("created_at").as("oldest")])
         .where("ip", "=", client.ip)
         .where("created_at", ">", hourAgo)
         .executeTakeFirstOrThrow();
-      if (Number(fromIp.n) >= OTP.perIpPerHour) throw rateLimited("Too many sign-in attempts. Try again later.", 600, "otp_too_many");
+      if (Number(fromIp.n) >= OTP.perIpPerHour) {
+        // The real wait: until the oldest code from this address leaves the hour window.
+        const oldest = new Date(fromIp.oldest as Date | string).getTime();
+        throw rateLimited("Too many sign-in attempts. Try again later.", (oldest + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
+      }
     }
 
     const sessionId = newId("otp", now.getTime());
