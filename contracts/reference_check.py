@@ -486,6 +486,6 @@ if not set(c['driverAccountStatus']) <= set(_au['testAccounts']['statuses']) or 
 _tc = c['telemetry']['crashReport']; _te = c['telemetry']['errorGroups']
 if set(_tc['apps']) != {'driver', 'rider'} or not set(_tc['apps']) < set(_te['apps']) or 'server' not in _te['apps']: bad += 1; print('ERROR GROUP apps')
 if not set(_tc['platforms']) < set(_te['platforms']) or _tc['defaultKind'] not in _tc['kinds']: bad += 1; print('ERROR GROUP platforms/kind')
-if _te['statuses'] != ['open', 'fixed'] or _te['maxEventsPerGroup'] < 1 or 'system.read' not in _te['permission']: bad += 1; print('ERROR GROUP statuses/permission')
+if _te['statuses'] != ['open', 'fixed'] or _te['maxEventsPerGroup'] < 1 or 'every role' not in _te['permission']: bad += 1; print('ERROR GROUP statuses/permission')
 if 'system.read' not in c['adminPermissions']['values']: bad += 1; print('ERROR GROUP system.read missing')
 print('OK' if not bad else f'{bad} mismatches'); sys.exit(1 if bad else 0)

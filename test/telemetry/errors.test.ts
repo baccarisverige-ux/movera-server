@@ -5,6 +5,7 @@ import { contract } from "../../src/contract/contract.js";
 import { readEnv } from "../../src/env.js";
 import { sweepIdempotencyKeysHandler } from "../../src/jobs/maintenance.js";
 import { MAX_EVENTS_PER_GROUP, fingerprint, normalizeMessage, topFrame } from "../../src/telemetry/errors.js";
+import { ADMIN_ROLES } from "../../src/admin/permissions.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
@@ -22,7 +23,6 @@ const SECRET = "test-secret-".padEnd(48, "x");
 let ipCounter = 0;
 const freshIp = () => `10.7.${Math.floor(++ipCounter / 250)}.${ipCounter % 250}`;
 let superAdmin: { headers: Record<string, string> };
-let viewer: { headers: Record<string, string> };
 let keyCounter = 0;
 const key = () => `errors-test-key-${++keyCounter}`.padEnd(20, "x");
 
@@ -33,7 +33,6 @@ beforeAll(async () => {
     throw new Error("Database exploded for anna@example.com at row 42");
   });
   superAdmin = await adminSession(app, database.db, "super", { now: clock.now });
-  viewer = await adminSession(app, database.db, "viewer", { now: clock.now });
 });
 afterAll(async () => {
   await app.close();
@@ -130,8 +129,11 @@ describe("GET /admin/errors", () => {
     expect((await list("?app=admin")).statusCode).toBe(400);
   });
 
-  it("needs system.read: a viewer is 403, no token 401", async () => {
-    expect((await list("", viewer.headers)).statusCode).toBe(403);
+  it("is open to every admin role (owner: \"All admin roles (Recommended)\"); no token 401", async () => {
+    for (const role of ADMIN_ROLES) {
+      const session = await adminSession(app, database.db, role, { now: clock.now });
+      expect((await list("", session.headers)).statusCode, role).toBe(200);
+    }
     expect((await app.inject({ method: "GET", url: "/api/v1/admin/errors" })).statusCode).toBe(401);
   });
 });
@@ -153,10 +155,20 @@ describe("PATCH /admin/errors/{errorId}", () => {
     expect(again).toMatchObject({ status: "open", fixedAt: null, count: 2 });
   });
 
-  it("needs system.read, an Idempotency-Key, a known id and a valid status", async () => {
+  it("any admin role may mark fixed or open again", async () => {
+    await crash({ error: "Any role", app: "driver", platform: "web" });
+    const group = (await items()).find((g) => g.message === "Any role")!;
+    for (const role of ADMIN_ROLES.filter((r) => r !== "super")) {
+      const session = await adminSession(app, database.db, role, { now: clock.now });
+      const res = await patch(group.id, role.length % 2 === 0 ? "fixed" : "open", session.headers);
+      expect(res.statusCode, role).toBe(200);
+    }
+  });
+
+  it("needs a signed-in admin, an Idempotency-Key, a known id and a valid status", async () => {
     await crash({ error: "Guarded", app: "rider", platform: "web" });
     const group = (await items()).find((g) => g.message === "Guarded")!;
-    expect((await patch(group.id, "fixed", viewer.headers)).statusCode).toBe(403);
+    expect((await patch(group.id, "fixed", { authorization: "Bearer nope" })).statusCode).toBe(401);
     expect((await patch(group.id, "closed")).statusCode).toBe(400);
     expect((await patch("err_missing", "fixed")).statusCode).toBe(404);
     const noKey = await app.inject({ method: "PATCH", url: `/api/v1/admin/errors/${group.id}`, headers: { ...superAdmin.headers, "content-type": "application/json" }, payload: { status: "fixed" } });

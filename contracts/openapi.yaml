@@ -4477,13 +4477,13 @@ paths:
       operationId: adminListErrors
       summary: Crashes & errors, grouped (newest first)
       description: 'v0.16.0: app + platform + the message with numbers, hex and ids replaced + the top stack frame. GET /admin/errors?app=&platform=&version=&status=&cursor=&limit=
-        → ErrorGroupPage, newest lastSeen first; PATCH /admin/errors/{errorId} { status } → ErrorGroup. Permission: system.read
-        for the list and for marking fixed (owner: "No code now every one can see and later we add").'
+        → ErrorGroupPage, newest lastSeen first; PATCH /admin/errors/{errorId} { status } → ErrorGroup. Permission: any signed-in
+        admin, every role, for the list and for marking fixed; no permission id, like GET /admin/auth/me (owner 2026-10-29:
+        "No code now every one can see and later we add"; "All admin roles (Recommended)"). The rest of System keeps system.read..'
       tags:
       - Admin · System
       x-actor:
       - admin
-      x-permission: system.read
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
@@ -4550,12 +4550,13 @@ paths:
     patch:
       operationId: adminSetErrorStatus
       summary: Mark a crash or error group fixed (or open)
-      description: 'v0.16.0: a group marked fixed that occurs again is open again. Audited.'
+      description: 'v0.16.0: a group marked fixed that occurs again is open again. Audited. Permission: any signed-in admin,
+        every role, for the list and for marking fixed; no permission id, like GET /admin/auth/me (owner 2026-10-29: "No code
+        now every one can see and later we add"; "All admin roles (Recommended)"). The rest of System keeps system.read..'
       tags:
       - Admin · System
       x-actor:
       - admin
-      x-permission: system.read
       parameters:
       - $ref: '#/components/parameters/ErrorId'
       - $ref: '#/components/parameters/IdempotencyKey'

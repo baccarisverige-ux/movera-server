@@ -114,14 +114,14 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
     });
   }
 
-  // v0.16.0 (owner 2026-10-29): Crashes & errors. Both need system.read ("No code now every one can see and later we add").
+  // v0.16.0 (owner 2026-10-29): Crashes & errors. Any signed-in admin, every role ("All admin roles (Recommended)"); no permission id, like GET /admin/auth/me.
   app.get(`${API_PREFIX}/admin/errors`, async (request) => {
-    await authenticateAdmin(request, guard, "system.read");
+    await authenticateAdmin(request, guard);
     const q = parseBody(ErrorsQuery, request.query);
     return listErrorGroups(deps.db, { cursor: q.cursor, limit: q.limit, app: q.app, platform: q.platform, version: q.version, status: q.status });
   });
   app.patch(`${API_PREFIX}/admin/errors/:errorId`, async (request) => {
-    const who = await authenticateAdmin(request, guard, "system.read");
+    const who = await authenticateAdmin(request, guard);
     const errorId = (request.params as { errorId: string }).errorId;
     if (!ERROR_ID.test(errorId)) throw badRequest("Not a valid id.", "invalid_id");
     const body = parseBody(ErrorStatusBody, request.body);

@@ -1307,7 +1307,7 @@
       ],
       "reopen": "a group marked fixed that occurs again is open again",
       "maxEventsPerGroup": 200,
-      "permission": "system.read for the list and for marking fixed (owner: \"No code now every one can see and later we add\")",
+      "permission": "any signed-in admin, every role, for the list and for marking fixed; no permission id, like GET /admin/auth/me (owner 2026-10-29: \"No code now every one can see and later we add\"; \"All admin roles (Recommended)\"). The rest of System keeps system.read.",
       "admin": "GET /admin/errors?app=&platform=&version=&status=&cursor=&limit= → ErrorGroupPage, newest lastSeen first; PATCH /admin/errors/{errorId} { status } → ErrorGroup."
     }
   },

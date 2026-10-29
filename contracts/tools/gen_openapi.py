@@ -1504,11 +1504,11 @@ op("get", "/admin/waitlist", "adminListWaitlist", "The sign-in waiting list (new
 S["ErrorGroupPage"] = {"allOf": [ref("Page"), {"type": "object", "properties": {"items": arr(ref("ErrorGroup"))}}], "description": "Page<ErrorGroup>"}
 op("get", "/admin/errors", "adminListErrors", "Crashes & errors, grouped (newest first)", ["admin"], "Admin · System",
    params=AL + [q("app", s(enum=TE["apps"])), q("platform", s(enum=TE["platforms"])), q("version", s(), "An app version the group was seen in."),
-                q("status", s(enum=TE["statuses"]))], ok=(200, "ErrorGroupPage"), permission="system.read",
+                q("status", s(enum=TE["statuses"]))], ok=(200, "ErrorGroupPage"),
    desc="v0.16.0: " + TE["fingerprint"] + ". " + TE["admin"] + " Permission: " + TE["permission"] + ".")
 op("patch", "/admin/errors/{errorId}", "adminSetErrorStatus", "Mark a crash or error group fixed (or open)", ["admin"], "Admin · System",
-   params=[pref("ErrorId")], body="ErrorGroupStatusCommand", ok=(200, "ErrorGroup"), mutation=True, permission="system.read",
-   desc="v0.16.0: " + TE["reopen"] + ". Audited.")
+   params=[pref("ErrorId")], body="ErrorGroupStatusCommand", ok=(200, "ErrorGroup"), mutation=True,
+   desc="v0.16.0: " + TE["reopen"] + ". Audited. Permission: " + TE["permission"] + ".")
 op("get", "/admin/trips/{tripId}", "adminGetTrip", "Trip detail incl. money split", ["admin"], "Admin · Trips",
    params=TID, ok=(200, TP), permission="trips.read")
 for seg, cmd, opid, body, summ, perm, appr, okc in [
