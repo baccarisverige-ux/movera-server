@@ -37,12 +37,12 @@ afterAll(async () => {
   await database.drop();
 });
 
-type Sse = { events: Array<{ id: string; data: Record<string, unknown> }>; comments: string[]; status: number; headers: http.IncomingHttpHeaders; ended: boolean; close: () => void };
+type Sse = { events: Array<{ id: string; data: Record<string, unknown> }>; comments: string[]; cursors: string[]; status: number; headers: http.IncomingHttpHeaders; ended: boolean; close: () => void };
 
 /** Opens an SSE connection like a phone would and collects what arrives. */
 function listen(path: string, headers: Record<string, string>): Promise<Sse> {
   return new Promise((resolve, reject) => {
-    const out: Sse = { events: [], comments: [], status: 0, headers: {}, ended: false, close: () => undefined };
+    const out: Sse = { events: [], comments: [], cursors: [], status: 0, headers: {}, ended: false, close: () => undefined };
     const req = http.get(`${base}${path}`, { headers: { ...headers, accept: "text/event-stream" } }, (res) => {
       out.status = res.statusCode ?? 0;
       out.headers = res.headers;
@@ -59,6 +59,7 @@ function listen(path: string, headers: Record<string, string>): Promise<Sse> {
             const id = /^id: (.*)$/m.exec(block)?.[1] ?? "";
             const data = /^data: (.*)$/m.exec(block)?.[1];
             if (data) out.events.push({ id, data: JSON.parse(data) });
+            else if (id) out.cursors.push(id);
           }
         }
       });
@@ -199,5 +200,35 @@ describe("driver offer feed", () => {
     expect(sse.status).toBe(200);
     expect(sse.headers["content-type"]).toContain("text/event-stream");
     sse.close();
+  });
+
+  it("03c: a feed opened without a cursor starts at the newest event (an id: with no data), so an app that just started gets no old history (no old driverOffline)", async () => {
+    const driver = (await signIn(app, TEST_PHONES[4]!, "driver")).headers;
+    const driverId = (await call(app, "GET", "/driver/profile", driver)).json().driverId as string;
+    const old = new Date(Date.now() - 3 * 3600_000);
+    for (const [sequence, offer] of [
+      [1, { offerId: "o1", status: "expired" }],
+      [2, { offerId: "o2", status: "expired", driverOffline: true }],
+      [3, { offerId: "o3", status: "withdrawn" }],
+    ] as const) {
+      await database.db.insertInto("offer_events").values({ driver_id: driverId, sequence, event_id: `evt_old_${sequence}`, kind: "offer_withdrawn", offer: JSON.stringify(offer), occurred_at: old }).execute();
+    }
+    const fresh = await listen("/driver/offers/stream", driver);
+    expect(await until(() => fresh.cursors.length === 1)).toBe(true);
+    expect(fresh.cursors).toEqual(["3"]);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(fresh.events).toEqual([]);
+    fresh.close();
+
+    // A cursor (after=, Last-Event-ID) still replays from there; after=0 is the whole history.
+    const resumed = await listen("/driver/offers/stream?after=1", driver);
+    expect(await until(() => resumed.events.length === 2)).toBe(true);
+    expect(resumed.events.map((e) => e.id)).toEqual(["2", "3"]);
+    expect(resumed.events[0]!.data).toMatchObject({ sequence: 2, driverOffline: true });
+    expect(resumed.cursors).toEqual([]);
+    resumed.close();
+    const all = await listen("/driver/offers/stream", { ...driver, "last-event-id": "0" });
+    expect(await until(() => all.events.length === 3)).toBe(true);
+    all.close();
   });
 });
