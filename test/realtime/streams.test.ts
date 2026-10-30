@@ -231,4 +231,66 @@ describe("driver offer feed", () => {
     expect(await until(() => all.events.length === 3)).toBe(true);
     all.close();
   });
+
+  /** A driver who went online at `onlineSince`, with offer events written straight into the feed. */
+  async function onlineDriver(phone: string, onlineSince: Date) {
+    const headers = (await signIn(app, phone, "driver")).headers;
+    const driverId = (await call(app, "GET", "/driver/profile", headers)).json().driverId as string;
+    await database.db.updateTable("drivers").set({ online_status: "online", online_since: onlineSince }).where("driver_id", "=", driverId).execute();
+    const event = (sequence: number, offer: Record<string, unknown>, at: Date) =>
+      database.db.insertInto("offer_events").values({ driver_id: driverId, sequence, event_id: `evt_${driverId}_${sequence}`, kind: offer.status === "open" ? "offer_created" : "offer_withdrawn", offer: JSON.stringify(offer), occurred_at: at }).execute();
+    return { headers, event };
+  }
+
+  it("03c fix: an offer made after Go online but before the feed opens is delivered; an old driverOffline from before Go online is not", async () => {
+    const onlineSince = new Date(Date.now() - 60_000);
+    const { headers, event } = await onlineDriver(TEST_PHONES[0]!, onlineSince);
+    await event(1, { offerId: "old1", status: "expired" }, new Date(onlineSince.getTime() - 3 * 3600_000));
+    await event(2, { offerId: "old2", status: "expired", driverOffline: true }, new Date(onlineSince.getTime() - 3600_000));
+    await event(3, { offerId: "new3", status: "open" }, new Date(onlineSince.getTime() + 5_000));
+    const sse = await listen("/driver/offers/stream", headers);
+    expect(await until(() => sse.events.length === 1)).toBe(true);
+    expect(sse.cursors).toEqual(["2"]);
+    expect(sse.events.map((e) => e.id)).toEqual(["3"]);
+    expect(sse.events[0]!.data).toMatchObject({ sequence: 3, offer: { offerId: "new3" } });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sse.events.some((e) => e.data.driverOffline === true)).toBe(false);
+    sse.close();
+  });
+
+  it("03c fix: an empty feed still sends `id: 0`, and a reconnect after a network loss gets the offers made in the gap", async () => {
+    const onlineSince = new Date(Date.now() - 60_000);
+    const { headers, event } = await onlineDriver(TEST_PHONES[2]!, onlineSince);
+    const first = await listen("/driver/offers/stream", headers);
+    expect(await until(() => first.cursors.length === 1)).toBe(true);
+    expect(first.cursors).toEqual(["0"]);
+    first.close();
+    // Network loss: two offers are made while the phone is away.
+    await event(1, { offerId: "gap1", status: "open" }, new Date());
+    await event(2, { offerId: "gap2", status: "expired" }, new Date());
+    // The app reconnects with the cursor it got (after=0) ...
+    const resumed = await listen("/driver/offers/stream?after=0", headers);
+    expect(await until(() => resumed.events.length === 2)).toBe(true);
+    expect(resumed.events.map((e) => e.id)).toEqual(["1", "2"]);
+    resumed.close();
+    // ... and even an app that lost its cursor gets everything since Go online.
+    const noCursor = await listen("/driver/offers/stream", headers);
+    expect(await until(() => noCursor.events.length === 2)).toBe(true);
+    expect(noCursor.cursors).toEqual(["0"]);
+    expect(noCursor.events.map((e) => (e.data.offer as { offerId: string }).offerId)).toEqual(["gap1", "gap2"]);
+    noCursor.close();
+  });
+
+  it("03c fix: online with only old events (an old driverOffline before Go online) replays nothing and sends the cursor", async () => {
+    const onlineSince = new Date(Date.now() - 60_000);
+    const { headers, event } = await onlineDriver(TEST_PHONES[3]!, onlineSince);
+    await event(1, { offerId: "o1", status: "expired" }, new Date(onlineSince.getTime() - 7200_000));
+    await event(2, { offerId: "o2", status: "expired", driverOffline: true }, new Date(onlineSince.getTime() - 1000));
+    const sse = await listen("/driver/offers/stream", headers);
+    expect(await until(() => sse.cursors.length === 1)).toBe(true);
+    expect(sse.cursors).toEqual(["2"]);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sse.events).toEqual([]);
+    sse.close();
+  });
 });
