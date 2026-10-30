@@ -7,6 +7,7 @@ import { cancelTimer, scheduleTimer, TimerBusy, type TimerHandler } from "../job
 import { liveDocument } from "../config/service.js";
 import { autoOfflineIfDue } from "./autoOffline.js";
 import { STALE_AFTER_SECONDS } from "../drivers/service.js";
+import { zoneChecker } from "../drivers/presence.js";
 import { pickupPayMinor, type PickupPayRate } from "../rules/pickupPay.js";
 import { applyCommand } from "../trips/commands.js";
 import { tripProjection } from "../trips/projection.js";
@@ -145,8 +146,11 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
     .execute();
   const since = new Date(now.getTime() - 30 * 24 * 3600_000);
   const pool: Pool = { candidates: [], meta: new Map() };
+  // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
+  const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
   for (const d of rows) {
     if (!d.zone_ids.includes(trip.zone_id)) continue;
+    if (!insideOwn({ lat: d.lat, lng: d.lng }, d.zone_ids)) continue;
     // A driver who cancelled this trip is not offered it again.
     if (trip.cancelled_driver_ids.includes(d.driver_id)) continue;
     if (!d.category_ids.includes(trip.category_id)) continue;

@@ -13,6 +13,8 @@ import { documentSummaries } from "../documents/service.js";
 import { carRuleProblems, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
 import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
 import { signUpView } from "./reminders.js";
+import { DRIVER_HOME, areaView, hasFreshPosition } from "./presence.js";
+import { RIDERS_ONLINE_WINDOW_SECONDS, ridersOnlineByZone } from "../riders/presence.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -102,6 +104,8 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     ...(row.account_type === "fleet" ? { requiredFleetDocuments: await liveRequiredDocuments(ex, row.country, "fleet") } : {}),
     ...(active ? { activeTripId: active.trip_id } : {}),
     ...(row.scheduled_rides ? { scheduledRides: row.scheduled_rides } : {}),
+    // v0.18.4 (G3-R2): the driver is told when his latest position is outside all his zones (no trips there).
+    ...(viewer === "driver" ? await areaView(ex, row) : {}),
     version: row.version,
     ...(viewer === "admin" ? await signUpView(ex, row) : {}),
     ...(viewer === "admin" && location
@@ -237,6 +241,9 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     const fix = await trx.selectFrom("driver_locations").select("zone_id").where("driver_id", "=", driverId).executeTakeFirst();
     const zones = [...row.zone_ids, ...(fix?.zone_id ? [fix.zone_id] : [])];
     if (!(await termsAccepted(trx, "driver", driverId, zones))) throw await refuse("Accept the new terms first.", TERMS_REASON);
+    // v0.18.4 (decision 2, G3-R5): a fresh position, last, so the reason card shows the first thing to fix. Outside
+    // his zones he still goes online (G3-R2); the answer says outsideArea.
+    if (!(await hasFreshPosition(trx, driverId, now))) throw await refuse("Turn on location to go online.", DRIVER_HOME.locationRequired.reason);
   } else if (await activeTripOf(trx, driverId)) {
     throw await refuse("Finish or hand back your trip before going offline.", "on_trip");
   }
@@ -252,12 +259,14 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
 }
 
 /** POST /driver/location: up to 50 fixes; answers how many were taken. */
-export async function postLocations(trx: Trx, driverId: string, body: unknown, now: Date): Promise<{ accepted: number; serverTime: string }> {
+export async function postLocations(trx: Trx, driverId: string, body: unknown, now: Date): Promise<{ accepted: number; serverTime: string; outsideArea?: boolean }> {
   const problem = schemaProblem("LocationBatch", body);
   if (problem !== null) throw badRequest(`The location batch is not valid: ${problem}.`, "invalid_body");
   const batch = body as { fixes: Fix[]; tripId?: string };
   const accepted = await storeFixes(trx, driverId, batch.fixes, batch.tripId, now);
-  return { accepted, serverTime: now.toISOString() };
+  // v0.18.4 (G3-R2): so the app can show "You are not eligible to drive in this area" when he drives out.
+  const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids", "language"]).where("driver_id", "=", driverId).executeTakeFirst();
+  return { accepted, serverTime: now.toISOString(), ...(driver ? await areaView(trx, driver) : {}) };
 }
 
 async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: string | undefined, now: Date): Promise<number> {
@@ -456,7 +465,8 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
       ...(where ? { zoneId: where } : {}),
     });
   }
-  return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString() };
+  // v0.18.4 (G3-R4): real riders online per zone, for the Dashboard.
+  return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString(), ridersOnline: await ridersOnlineByZone(ex, zones, now), ridersOnlineWindowSeconds: RIDERS_ONLINE_WINDOW_SECONDS };
 }
 
 export async function tripTrace(ex: Executor, tripId: string) {
