@@ -276,23 +276,23 @@ describe("items 1 and 3: expiry typed by the admin, warnings at 30 / 7 / 1 days,
   it("warnings once per warning day (sv and fr texts), then expired on the date", async () => {
     const start = clock.now;
     await sweepDocumentExpiry(database.db, new Date(start.getTime() + 5 * DAY)); // 35 days left: nothing yet
-    expect((await notices("seConvert")).filter((n) => n.kind.startsWith("document_"))).toEqual([]);
+    expect((await notices("seConvert")).filter((n) => n.kind === "document_expiring" || n.kind === "document_expired")).toEqual([]);
     await sweepDocumentExpiry(database.db, new Date(start.getTime() + 11 * DAY)); // 29 days left
     await sweepDocumentExpiry(database.db, new Date(start.getTime() + 11 * DAY + 3_600_000));
-    let se = (await notices("seConvert")).filter((n) => n.kind.startsWith("document_"));
+    let se = (await notices("seConvert")).filter((n) => n.kind === "document_expiring" || n.kind === "document_expired");
     expect(se).toHaveLength(1);
     expect(se[0]).toMatchObject({ kind: "document_expiring", title: "Körkort går ut om 29 dagar", data: { type: "driving_license", scope: "driver", daysLeft: 29 } });
-    const fr = (await notices("frConvert")).filter((n) => n.kind.startsWith("document_"));
+    const fr = (await notices("frConvert")).filter((n) => n.kind === "document_expiring" || n.kind === "document_expired");
     expect(fr[0]).toMatchObject({ kind: "document_expiring", title: "Carte professionnelle VTC expire dans 29 jours" });
     // The Home sheet on that day (read through the service: the test tokens would have expired by then).
     const sheet = await listReminders(database.db, await loadDriver(database.db, ID.seConvert!), new Date(start.getTime() + 11 * DAY));
     expect(sheet.items).toContainEqual(expect.objectContaining({ kind: "document_expiring", level: "due_soon", documentType: "driving_license", daysLeft: 29 }));
     await sweepDocumentExpiry(database.db, new Date(start.getTime() + 34 * DAY)); // 6 days left: the 7-day warning
     await sweepDocumentExpiry(database.db, new Date(start.getTime() + 39 * DAY + 3_600_000)); // under a day left: the 1-day warning
-    se = (await notices("seConvert")).filter((n) => n.kind.startsWith("document_"));
+    se = (await notices("seConvert")).filter((n) => n.kind === "document_expiring" || n.kind === "document_expired");
     expect(se.map((n) => n.data?.["daysLeft"])).toEqual([1, 6, 29]);
     await sweepDocumentExpiry(database.db, new Date(start.getTime() + 40 * DAY));
-    se = (await notices("seConvert")).filter((n) => n.kind.startsWith("document_"));
+    se = (await notices("seConvert")).filter((n) => n.kind === "document_expiring" || n.kind === "document_expired");
     expect(se[0]).toMatchObject({ kind: "document_expired", title: "Körkort har gått ut" });
     const docs = (await call(app, "GET", "/driver/documents", H.seConvert!)).json().items;
     expect(docs.find((d: { type: string }) => d.type === "driving_license")).toMatchObject({ status: "expired" });

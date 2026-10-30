@@ -10,7 +10,7 @@ import { zoneAt } from "../config/zoneLookup.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { documentSummaries } from "../documents/service.js";
-import { categoryProblem, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
+import { carRuleProblems, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
 import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
 import { signUpView } from "./reminders.js";
 
@@ -343,12 +343,21 @@ export async function vehicleFullView(ex: Executor, v: VehicleRow, viewer?: { dr
     country = owner?.country ?? null;
   }
   const pick = viewer ? await pickability(ex, v, viewer.driverId, inUse) : undefined;
+  // v0.18.3 (R2): the rules the car breaks now, for the admin's red warning and the fleet owner.
+  const ruleProblems = !viewer || viewer.owner ? await rulesBrokenBy(ex, v, country) : [];
   return {
     ...vehicleView(v),
     ...(v.fleet_id ? { inUse } : {}),
+    ...(ruleProblems.length > 0 ? { ruleProblems } : {}),
     ...(viewer && !viewer.owner ? {} : { documents: await documentSummaries(ex, "vehicle", v.vehicle_id), requiredDocuments: await liveRequiredDocuments(ex, country, "vehicle") }),
     ...(pick ? { pickable: pick.reason === null, ...(pick.reason ? { notPickableReason: pick.reason } : {}) } : {}),
   };
+}
+
+/** v0.18.3 (R2, vehicleRules.approval): "<category>:<problem>" for every car rule of its country the car breaks. */
+export async function rulesBrokenBy(ex: Executor, v: Pick<VehicleRow, "year" | "seats" | "category_ids"> & { fuel?: Fuel | null }, country: string | null): Promise<string[]> {
+  if (!country) return [];
+  return carRuleProblems({ year: v.year, seats: v.seats, fuel: v.fuel ?? null }, await onboardingSettings(ex, country), v.category_ids);
 }
 
 /** Whether `driverId` can pick the car now, and why not (contract.json#driverOnboarding.carDocuments). */
@@ -394,10 +403,8 @@ export async function addVehicle(trx: Trx, driverId: string, body: unknown, now:
   if (country) {
     const settings = await onboardingSettings(trx, country);
     const car = { year: v.year, seats: v.seats ?? 4, fuel: v.fuel ?? null };
-    const problems = (v.categoryIds ?? []).flatMap((c) => {
-      const problem = categoryProblem(car, settings, c);
-      return problem === null ? [] : [`${c}:${problem}`];
-    });
+    // v0.18.3 (R2): the base year for every car, an extra only with a ride category.
+    const problems = carRuleProblems(car, settings, v.categoryIds ?? []);
     if (problems.length > 0) throw new ApiError("invalid_request", "The car does not fit every chosen category.", { reason: "category_not_allowed", details: problems });
   }
   const vehicleId = newId("veh", now.getTime());

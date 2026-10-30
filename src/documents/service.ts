@@ -4,6 +4,7 @@ import { newId } from "../ids.js";
 import { ONBOARDING, documentKind } from "../drivers/onboardingRules.js";
 import { audit } from "../admin/audit.js";
 import { onboardingSettings, ownerKindOf, typeInfo } from "../drivers/onboardingSettings.js";
+import { noticeDocumentReview } from "../drivers/reviewNotices.js";
 import { openFile, sealFile, type DocumentKey } from "./files.js";
 
 /**
@@ -195,14 +196,33 @@ async function countryOfDocument(ex: Executor, row: DocumentRow): Promise<string
 }
 
 /** POST /admin/documents/{id}/review (documents.approve): approved or rejected, with a note and an expiry. */
-export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: string[] }, documentId: string, body: { decision: "approved" | "rejected"; expiresAt?: string | undefined; note?: string | undefined }, now: Date) {
+/** `date` plus whole calendar months (the last day of a shorter month when the day does not exist there), in UTC. */
+export function addMonths(date: Date, months: number): Date {
+  const out = new Date(date.getTime());
+  const day = out.getUTCDate();
+  out.setUTCDate(1);
+  out.setUTCMonth(out.getUTCMonth() + months);
+  const last = new Date(Date.UTC(out.getUTCFullYear(), out.getUTCMonth() + 1, 0)).getUTCDate();
+  out.setUTCDate(Math.min(day, last));
+  return out;
+}
+
+export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: string[] }, documentId: string, body: { decision: "approved" | "rejected"; expiresAt?: string | undefined; issuedAt?: string | undefined; note?: string | undefined }, now: Date) {
   const row = await loadForAdmin(trx, who, documentId, true);
   // v0.18.0 (owner item 1, contract.json#driverOnboarding.documentExpiry): the admin types the expiry date when
   // approving a type of the country's expiringTypes; the admin's date wins over the one the driver sent.
-  const typed = body.expiresAt ? new Date(body.expiresAt) : null;
+  let typed = body.expiresAt ? new Date(body.expiresAt) : null;
   if (typed !== null && Number.isNaN(typed.getTime())) throw badRequest("expiresAt is not a date.", "invalid_expires_at");
   if (body.decision === "approved") {
     const settings = await onboardingSettings(trx, await countryOfDocument(trx, row));
+    // v0.18.3 (R9, settings.validMonths): the issue date plus the type's valid months, unless the admin typed the date.
+    if (typed === null && body.issuedAt !== undefined) {
+      const issued = new Date(body.issuedAt);
+      if (Number.isNaN(issued.getTime())) throw badRequest("issuedAt is not a date.", "invalid_issued_at");
+      if (issued.getTime() > now.getTime()) throw badRequest("The issue date cannot be in the future.", "issued_in_future");
+      const months = settings.validMonths?.[row.type];
+      if (months !== undefined) typed = addMonths(issued, months);
+    }
     if (settings.expiringTypes.includes(row.type) && typed === null) throw badRequest("Type the expiry date to approve this document.", "expiry_required");
     if (typed !== null && typed.getTime() <= now.getTime()) throw badRequest("The expiry date must be in the future.", "expiry_in_past");
   }
@@ -212,6 +232,8 @@ export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: 
     .set({ status: body.decision, expires_at: expiresAt, reviewed_at: now, reviewed_by: who.subjectId, review_note: body.note ?? null, version: row.version + 1, updated_at: now })
     .where("document_id", "=", documentId)
     .execute();
+  // v0.18.3 (R6): the bell notice, with the reason.
+  await noticeDocumentReview(trx, row, body.decision, body.note ?? null, now);
   await audit(trx, { adminId: who.subjectId, action: "document.review", targetType: "document", targetId: documentId, zoneId: await zoneOfDocument(trx, row), detail: { driverId: row.driver_id, type: row.type, from: row.status, to: body.decision, note: body.note ?? null }, at: now });
   const fresh = await trx.selectFrom("documents").selectAll().where("document_id", "=", documentId).executeTakeFirstOrThrow();
   return documentView(fresh as DocumentRow, "admin");
@@ -238,6 +260,8 @@ export async function checkDocument(trx: Trx, who: { subjectId: string; zones: s
   const documentId = existing?.document_id ?? newId("doc", now.getTime());
   if (existing) await trx.updateTable("documents").set({ ...fields, version: existing.version + 1 }).where("document_id", "=", documentId).execute();
   else await trx.insertInto("documents").values({ document_id: documentId, driver_id: driverId, owner_kind: "driver", owner_id: driverId, type, created_at: now, ...fields }).execute();
+  // v0.18.3 (R6): the bell notice (info session held, or not).
+  await noticeDocumentReview(trx, { document_id: documentId, driver_id: driverId, owner_kind: "driver", owner_id: driverId, type }, body.decision, body.note ?? null, now);
   await audit(trx, { adminId: who.subjectId, action: "document.check", targetType: "document", targetId: documentId, zoneId: driver.zone_ids[0] ?? null, detail: { driverId, type, from: existing?.status ?? null, to: body.decision, note: body.note ?? null }, at: now });
   const row = await trx.selectFrom("documents").selectAll().where("document_id", "=", documentId).executeTakeFirstOrThrow();
   return documentView(row as DocumentRow, "admin");

@@ -4,7 +4,7 @@ import type { Principal } from "../auth/guard.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { parseBody } from "../http/validate.js";
 import { reviewDocument } from "../documents/service.js";
-import { categoryProblem, onboardingSettings, type Fuel } from "../drivers/onboardingSettings.js";
+import { carRuleProblems, categoryProblem, onboardingSettings, type Fuel } from "../drivers/onboardingSettings.js";
 import { vehicleCountry, vehicleDocumentBlockers } from "../drivers/readiness.js";
 import { driverView, loadDriver, vehicleFullView, type DriverRow, type VehicleRow } from "../drivers/service.js";
 import { audit } from "./audit.js";
@@ -70,13 +70,20 @@ async function carProblems(ex: Executor, car: { fleet_id: string | null; driver_
   });
 }
 
+/** v0.18.3 (R2): the whole car against the rules (base year, every category, an extra alone). */
+async function wholeCarProblems(ex: Executor, car: { fleet_id: string | null; driver_id: string | null; year: number; seats: number; fuel: Fuel | null }, categoryIds: string[]): Promise<string[]> {
+  const country = await vehicleCountry(ex, car);
+  if (!country) return [];
+  return carRuleProblems({ year: car.year, seats: car.seats, fuel: car.fuel }, await onboardingSettings(ex, country), categoryIds);
+}
+
 /** PATCH /admin/vehicles/{vehicleId} (vehicles.edit). */
 export async function adminUpdateVehicle(trx: Trx, who: Principal, vehicleId: string, rawBody: unknown, now: Date) {
   const { car, zone } = await carInScope(trx, who, vehicleId, true);
   const body = parseBody(UpdateBody, rawBody);
   if (car.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The car changed since you last saw it.", { projection: await vehicleFullView(trx, car) });
   const next = { year: body.year ?? car.year, seats: body.seats ?? car.seats, fuel: body.fuel ?? car.fuel, category_ids: body.categoryIds ?? car.category_ids };
-  const problems = await carProblems(trx, { ...car, ...next }, next.category_ids);
+  const problems = await wholeCarProblems(trx, { ...car, ...next }, next.category_ids);
   if (problems.length > 0) throw new ApiError("invalid_request", "The car does not fit every category.", { reason: "category_not_allowed", details: problems });
   const changes = {
     ...(body.make !== undefined ? { make: body.make.trim() } : {}),

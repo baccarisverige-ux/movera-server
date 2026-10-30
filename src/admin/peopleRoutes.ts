@@ -11,7 +11,9 @@ import { adminDocumentFile, checkDocument, driverInScope, reviewDocument } from 
 import type { DocumentKey } from "../documents/files.js";
 import { adminGetFleet, adminRemoveFleetDriver, listFleets, renewFleetCode, reviewFleet } from "../drivers/onboarding.js";
 import { adminDecideInvitation, type InviteDeps } from "../drivers/invitations.js";
-import { driverView, loadDriver, vehicleFullView, type VehicleRow } from "../drivers/service.js";
+import { driverView, loadDriver, rulesBrokenBy, vehicleFullView, type VehicleRow } from "../drivers/service.js";
+import { vehicleCountry } from "../drivers/readiness.js";
+import { noticeVehicleReview } from "../drivers/reviewNotices.js";
 import { sendFile } from "../drivers/routes.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { audit } from "./audit.js";
@@ -30,7 +32,7 @@ const VehiclesQuery = z.object({ ...Page, status: many, driverId: ID.optional(),
 const FleetReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional() });
 const VersionBody = z.object(Version);
 const VehicleReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional() });
-const DocumentReviewBody = z.object({ decision: z.enum(["approved", "rejected"]), expiresAt: z.string().datetime().optional(), note: z.string().max(1000).optional() });
+const DocumentReviewBody = z.object({ decision: z.enum(["approved", "rejected"]), expiresAt: z.string().datetime().optional(), issuedAt: z.string().datetime().optional(), note: z.string().max(1000).optional() });
 
 const keyOf = (request: FastifyRequest) => {
   const value = request.headers["idempotency-key"];
@@ -184,6 +186,11 @@ async function reviewVehicle(trx: Db extends never ? never : import("../db/db.js
   const zone = await zoneOfVehicle(trx, row);
   if (!who.zones.includes("*") && (zone === null || !who.zones.includes(zone))) throw new ApiError("forbidden", "This car is outside your zones.", { reason: "zone_out_of_scope" });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The car changed since you last saw it.", { projection: await vehicleFullView(trx, row) });
+  // v0.18.3 (R2, vehicleRules.approval): a car that breaks its country's car rules cannot be approved.
+  if (body.decision === "approved") {
+    const problems = await rulesBrokenBy(trx, row, await vehicleCountry(trx, row));
+    if (problems.length > 0) throw new ApiError("invalid_transition", "The car breaks the car rules of its country.", { reason: "vehicle_rules_not_met", details: problems });
+  }
   await trx.updateTable("vehicles").set({ status: body.decision, version: row.version + 1, updated_at: now }).where("vehicle_id", "=", vehicleId).execute();
   if (body.decision !== "approved") {
     const drivers = await trx.selectFrom("drivers").select(["driver_id", "online_status", "version"]).where("vehicle_id", "=", vehicleId).where("online_status", "in", ["online", "going_online"]).execute();
@@ -192,6 +199,8 @@ async function reviewVehicle(trx: Db extends never ? never : import("../db/db.js
       await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: d.driver_id, dueAt: now, payload: {} });
     }
   }
+  // v0.18.3 (R6): the bell notice to the car's fleet owner.
+  await noticeVehicleReview(trx, row, body.decision, body.note ?? null, now);
   await audit(trx, { adminId: who.subjectId, action: "vehicle.review", targetType: "vehicle", targetId: vehicleId, zoneId: zone, detail: { from: row.status, to: body.decision, note: body.note ?? null }, at: now });
   const fresh = await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", vehicleId).executeTakeFirstOrThrow();
   return vehicleFullView(trx, fresh as unknown as VehicleRow);

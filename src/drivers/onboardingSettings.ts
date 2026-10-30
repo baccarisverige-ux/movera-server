@@ -26,14 +26,19 @@ export type OnboardingSettings = {
   vehicles: { categories: CategoryRule[]; warnDays: number; autoHold: boolean; photosNeeded: boolean };
   customTypes?: CustomType[];
   texts?: Record<string, { name?: LocalText; help?: LocalText }>;
+  /** v0.18.3 (R8): the upload guide per type, written by the admin. */
+  guides?: Record<string, DocumentGuide>;
+  /** v0.18.3 (R9): months a type is valid from its issue date. */
+  validMonths?: Record<string, number>;
 };
+export type DocumentGuide = { checklist?: LocalText[]; tips?: LocalText[] };
 
 type SettingsContract = {
   defaults: Record<string, Omit<OnboardingSettings, "version" | "country" | "publishedAt">>;
   stepIds: string[];
   fuels: Fuel[];
   photoTypes: string[];
-  limits: Record<"stepDays" | "remindEveryDays" | "stuckAfterDays" | "warnDays" | "vehicleWarnDays" | "minYear" | "minSeats", [number, number]>;
+  limits: Record<"stepDays" | "remindEveryDays" | "stuckAfterDays" | "warnDays" | "vehicleWarnDays" | "minYear" | "minSeats" | "validMonths", [number, number]>;
 };
 
 export const SETTINGS = (contract as unknown as { driverOnboarding: { settings: SettingsContract } }).driverOnboarding.settings;
@@ -73,17 +78,25 @@ export function daysLeft(expiresAt: Date, now: Date): number {
 
 /* ---------------------------------------------------------------- document types (owner item 14) */
 
-export type TypeInfo = { owner: "driver" | "fleet" | "vehicle"; kind: "file" | "acceptance" | "admin_check"; expires: boolean; custom: boolean; name: LocalText; help?: LocalText };
+export type TypeInfo = { owner: "driver" | "fleet" | "vehicle"; kind: "file" | "acceptance" | "admin_check"; expires: boolean; custom: boolean; name: LocalText; help?: LocalText; guide?: DocumentGuide; validMonths?: number };
+
+/** v0.18.3 (R8, R9): the admin's guide and valid months of a type in the country, when set. */
+const extrasOf = (settings: OnboardingSettings, type: string) => ({
+  ...(settings.guides?.[type] ? { guide: settings.guides[type] } : {}),
+  ...(settings.validMonths?.[type] !== undefined ? { validMonths: settings.validMonths[type] } : {}),
+});
 
 /** A type as the country shows it: a contract type with the admin's texts, or one of the admin's own; undefined = unknown here. */
 export function typeInfo(settings: OnboardingSettings, type: string): TypeInfo | undefined {
   const custom = settings.customTypes?.find((c) => c.id === type);
-  if (custom) return { owner: custom.owner, kind: custom.kind, expires: custom.expires, custom: true, name: custom.name, help: custom.help };
+  if (custom) return { owner: custom.owner, kind: custom.kind, expires: custom.expires, custom: true, name: custom.name, help: custom.help, ...extrasOf(settings, type) };
   const base = ONBOARDING.documents.types[type];
   if (base === undefined) return undefined;
   const text = settings.texts?.[type];
   const owner = base.owner === "vehicle" ? "vehicle" : settings.documents.fleet.includes(type) && !settings.documents.driver.includes(type) ? "fleet" : "driver";
-  return { owner, kind: base.kind, expires: settings.expiringTypes.includes(type), custom: false, name: (text?.name ?? base.name) as LocalText, ...(text?.help ? { help: text.help } : {}) };
+  // v0.18.3 (R5, documents.namesByCountry): the admin's name for the country, else the country's, else the contract's.
+  const name = text?.name ?? base.nameByCountry?.[settings.country] ?? base.name;
+  return { owner, kind: base.kind, expires: settings.expiringTypes.includes(type), custom: false, name: name as LocalText, ...(text?.help ? { help: text.help } : {}), ...extrasOf(settings, type) };
 }
 
 /** The owner kind a document of `type` is stored under (a fleet's company papers belong to the owner's account). */
@@ -173,6 +186,13 @@ export function settingsProblems(document: unknown): string[] {
     if (rule.on && rule.fuels.length === 0) problems.push(`vehicles.${rule.category}: allow at least one fuel`);
   }
   if (!within(d.vehicles.warnDays, SETTINGS.limits.vehicleWarnDays)) problems.push("vehicles.warnDays: 1 to 120");
+  // v0.18.3 (R8, R9): guides and valid months only for types of the country.
+  const known = (type: string) => types[type] !== undefined || ids.has(type);
+  for (const type of Object.keys(d.guides ?? {})) if (!known(type)) problems.push(`guides: unknown type ${type}`);
+  for (const [type, months] of Object.entries(d.validMonths ?? {})) {
+    if (!known(type)) problems.push(`validMonths: unknown type ${type}`);
+    else if (!within(months, SETTINGS.limits.validMonths)) problems.push(`validMonths.${type}: 1 to 120 months`);
+  }
   return problems;
 }
 
@@ -180,14 +200,45 @@ export function settingsProblems(document: unknown): string[] {
 
 export type CarFacts = { year: number; seats: number; fuel: Fuel | null };
 
-/** Why a car does not fit a category (contract.json#driverOnboarding.vehicleRules.problems), or null. No rule = not checked. */
+/** v0.18.3 (R2, vehicleRules.extraCategories): categories that only come on top of a ride category (child_seat). */
+export const EXTRA_CATEGORIES: readonly string[] = (contract as unknown as { driverOnboarding: { vehicleRules: { extraCategories: string[] } } }).driverOnboarding.vehicleRules.extraCategories;
+
+/** v0.18.3 (R2, vehicleRules.baseYear): the smallest minYear of the ride categories that are on (SE 2015, FR 2016); null = none. */
+export function baseYear(settings: OnboardingSettings): number | null {
+  const years = settings.vehicles.categories.filter((r) => r.on && !EXTRA_CATEGORIES.includes(r.category)).map((r) => r.minYear);
+  return years.length === 0 ? null : Math.min(...years);
+}
+
+/**
+ * Why a car does not fit a category (contract.json#driverOnboarding.vehicleRules.problems), or null. v0.18.3 (R2): a
+ * category with no rule (child_seat) is still held to the country's base year.
+ */
 export function categoryProblem(car: CarFacts, settings: OnboardingSettings, category: string): string | null {
   const rule = settings.vehicles.categories.find((r) => r.category === category);
-  if (rule === undefined) return null;
+  if (rule === undefined) {
+    const base = baseYear(settings);
+    return base !== null && car.year < base ? "year_too_old" : null;
+  }
   if (!rule.on) return "category_off";
   if (car.year < rule.minYear) return "year_too_old";
   if (car.seats < rule.minSeats) return "too_few_seats";
   if (car.fuel === null) return SETTINGS.fuels.every((f) => rule.fuels.includes(f)) ? null : "fuel_required";
   if (!rule.fuels.includes(car.fuel)) return "fuel_not_allowed";
   return null;
+}
+
+/**
+ * v0.18.3 (R2): every "<category>:<problem>" of a car with these categories: each category's problem (base year
+ * included), "car:year_too_old" for a car with no category below the base year, and "<extra>:extra_needs_ride" for an
+ * extra without a ride category. Empty = the car fits.
+ */
+export function carRuleProblems(car: CarFacts, settings: OnboardingSettings, categoryIds: readonly string[]): string[] {
+  const problems = categoryIds.flatMap((c) => {
+    const problem = categoryProblem(car, settings, c);
+    return problem === null ? [] : [`${c}:${problem}`];
+  });
+  const base = baseYear(settings);
+  if (categoryIds.length === 0 && base !== null && car.year < base) problems.push("car:year_too_old");
+  if (!categoryIds.some((c) => !EXTRA_CATEGORIES.includes(c))) for (const c of categoryIds) problems.push(`${c}:extra_needs_ride`);
+  return problems;
 }

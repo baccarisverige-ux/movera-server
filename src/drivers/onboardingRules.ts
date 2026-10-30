@@ -12,7 +12,7 @@ type Onboarding = {
   countries: Record<string, { open: boolean; cities: City[] }>;
   fleetCode: { prefix: string; length: number; alphabet: string; joinAttemptsPerHour: number };
   documents: {
-    types: Record<string, { owner: "driver" | "vehicle"; kind: "file" | "acceptance" | "admin_check"; name: Record<string, string> }>;
+    types: Record<string, { owner: "driver" | "vehicle"; kind: "file" | "acceptance" | "admin_check"; name: Record<string, string>; nameByCountry?: Record<string, Record<string, string>> }>;
     required: Record<string, { driver: string[]; fleet: string[]; vehicle: string[] }>;
     upload: { maxBytes: number; mediaTypes: string[] };
   };
