@@ -76,7 +76,8 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     const who = await authenticate(request, guard, ["driver"]);
     const { after: afterQuery } = parseBody(z.object({ after: z.coerce.number().int().min(0).optional() }), request.query);
     const lastEventId = request.headers["last-event-id"];
-    const after = afterQuery ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : 0);
+    const cursor = afterQuery ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : undefined);
+    const after = cursor ?? 0;
     const read = async (from: number) =>
       deps.db.selectFrom("offer_events").selectAll().where("driver_id", "=", who.subjectId).where("sequence", ">", String(from)).orderBy("sequence").limit(200).execute();
     const envelope = (row: Awaited<ReturnType<typeof read>>[number]) => {
@@ -89,8 +90,22 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
       return { items: rows.map(envelope), nextCursor: rows.length === 200 ? String(rows[rows.length - 1]!.sequence) : null };
     }
     if (deps.hub === undefined) throw new ApiError("unavailable", "Live offers are not available; poll /driver/offers.", { reason: "realtime_unavailable", retryAfterSeconds: 5 });
+    // Driver 03c (live test 2026-10-30): a feed opened without a cursor (an app that just started) does not replay the
+    // driver's whole history (an old driverOffline set the driver offline again right after Go online). It starts at the
+    // newest event from before this Go online (occurred_at < online_since), so everything since Go online is still sent
+    // (offers made between the app's GET /driver/offers and this open, an auto-offline of this session). Offline (no
+    // online_since): the newest event. An `id:` is always sent (`id: 0` with no events) so the app always has a cursor
+    // for its next reconnect. `?after=0` / Last-Event-ID still replay from there.
+    let head: number | undefined;
+    if (cursor === undefined) {
+      const driver = await deps.db.selectFrom("drivers").select("online_since").where("driver_id", "=", who.subjectId).executeTakeFirst();
+      let query = deps.db.selectFrom("offer_events").select((eb) => eb.fn.max("sequence").as("head")).where("driver_id", "=", who.subjectId);
+      if (driver?.online_since) query = query.where("occurred_at", "<", driver.online_since);
+      head = Number((await query.executeTakeFirst())?.head ?? 0);
+    }
     const stream = openEventStream(request, reply);
-    let last = after;
+    if (head !== undefined) stream.cursor(head);
+    let last = head ?? after;
     let running = false;
     let again = false;
     const pump = async () => {
