@@ -77,6 +77,21 @@ describe("address search (read-only: no Idempotency-Key)", () => {
     expect(bad.json()).toMatchObject({ code: "invalid_request", reason: "invalid_coordinates" });
   });
 
+  it("drivers search any address too (owner decision G3-D3); without a token it is 401", async () => {
+    const ac = await post(app, "/locations/autocomplete", driver, { query: "arl" });
+    expect(ac.statusCode).toBe(200);
+    expect(ac.json()).toEqual({ suggestions: [{ title: "Arlanda", subtitle: "Stockholm-Arlanda flygplats", placeId: "p-arn" }] });
+    const geo = await post(app, "/locations/geocode", driver, { query: "Sergels torg" });
+    expect(geo.statusCode).toBe(200);
+    expect(geo.json()).toEqual({ address: "Sergels torg, Stockholm", latitude: 59.3326, longitude: 18.0649 });
+    const rev = await post(app, "/locations/reverse-geocode", driver, { latitude: 59.33, longitude: 18.06 });
+    expect(rev.statusCode).toBe(200);
+    for (const [path, payload] of [["autocomplete", { query: "arl" }], ["geocode", { query: "Sergels torg" }], ["reverse-geocode", { latitude: 59.33, longitude: 18.06 }]] as const) {
+      const anon = await app.inject({ method: "POST", url: `/api/v1/locations/${path}`, headers: { "content-type": "application/json" }, payload });
+      expect(anon.statusCode).toBe(401);
+    }
+  });
+
   it("without a Google key the server says 503 maps_unavailable", async () => {
     const res = await post(noKey, "/locations/autocomplete", rider, { query: "arl" });
     expect(res.statusCode).toBe(503);

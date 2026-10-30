@@ -54,11 +54,13 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
   };
 
   app.post(`${API_PREFIX}/locations/autocomplete`, async (request) => {
-    const who = await authenticate(request, guard, ["rider"]);
+    // Riders and drivers (owner decision G3-D3: the driver's destination mode searches any address).
+    const who = await authenticate(request, guard, ["rider", "driver"]);
     const body = (request.body ?? {}) as { query: string; latitude?: number; longitude?: number; limit?: number };
     check("AutocompleteRequest", body);
-    const session = sessions.get(who.subjectId) ?? randomUUID();
-    sessions.set(who.subjectId, session);
+    const key = `${who.actor}:${who.subjectId}`;
+    const session = sessions.get(key) ?? randomUUID();
+    sessions.set(key, session);
     const bias = body.latitude !== undefined && body.longitude !== undefined ? { lat: body.latitude, lng: body.longitude } : undefined;
     // Suggestions come from the countries with an open zone (Sweden, and France since the Paris zone).
     const regions = (await deps.db.selectFrom("zones").select("country").distinct().where("open", "=", true).execute()).map((z) => z.country.toLowerCase());
@@ -69,13 +71,14 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
   });
 
   app.post(`${API_PREFIX}/locations/geocode`, async (request) => {
-    const who = await authenticate(request, guard, ["rider"]);
+    const who = await authenticate(request, guard, ["rider", "driver"]);
     const body = (request.body ?? {}) as { query: string; placeId?: string };
     check("GeocodeRequest", body);
     const lang = await language(request, who.actor, who.subjectId);
-    const session = sessions.get(who.subjectId);
+    const key = `${who.actor}:${who.subjectId}`;
+    const session = sessions.get(key);
     // Resolving a picked suggestion ends the provider session.
-    if (body.placeId) sessions.delete(who.subjectId);
+    if (body.placeId) sessions.delete(key);
     return guarded(() => deps.places.geocode({ query: body.query.trim(), ...(body.placeId ? { placeId: body.placeId } : {}), language: lang, ...(session ? { session } : {}) }));
   });
 
