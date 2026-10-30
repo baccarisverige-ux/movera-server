@@ -1,3 +1,4 @@
+import { haversineKm } from "../../src/maps/routing.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
@@ -24,6 +25,11 @@ async function place(driverId: string, at: { lat: number; lng: number }, opts: {
   await db.insertInto("driver_locations").values({ driver_id: driverId, ...row }).onConflict((c) => c.column("driver_id").doUpdateSet(row)).execute();
 }
 
+/** v0.18.4 (G3-D4): a shown car is 100–200 m from the real one (plus ~10 m rounding). */
+const near = (shown: { lat: number; lng: number }, real: { lat: number; lng: number }) => {
+  const m = haversineKm(shown, real) * 1000;
+  return m > 88 && m < 212;
+};
 const nearby = async (query = `lat=${NORRMALM.lat}&lng=${NORRMALM.lng}`, headers = rider) => call(app, "GET", `/rider/nearby-vehicles?${query}`, headers);
 
 beforeAll(async () => {
@@ -63,10 +69,10 @@ describe("nearby cars", () => {
     expect(Object.keys(first).sort()).toEqual(["key", "lat", "lng"]);
     expect(Object.keys(second).sort()).toEqual(["heading", "key", "lat", "lng"]);
     expect(second.heading).toBe(272);
-    // Nearest first, positions at 4 decimals.
-    expect(first.lat).toBeCloseTo(north(300).lat, 4);
-    expect(first.lat).toBe(Math.round(north(300).lat * 1e4) / 1e4);
-    expect(first.lng).toBe(18.0649);
+    // Nearest first, positions moved 100–200 m (v0.18.4, G3-D4) and at 4 decimals.
+    expect(near(first, north(300))).toBe(true);
+    expect(first.lat).toBe(Math.round(first.lat * 1e4) / 1e4);
+    expect(first.lng).toBe(Math.round(first.lng * 1e4) / 1e4);
     const text = res.body;
     for (const id of ids) expect(text).not.toContain(id);
     expect(text).not.toMatch(/Driver\d|NRB|Volvo|plate|driverId|vehicleId/);
@@ -83,14 +89,14 @@ describe("nearby cars", () => {
     await busy(ids[5]!);
     const body = (await nearby()).json();
     expect(body.items).toHaveLength(1);
-    expect(body.items[0].lat).toBe(Math.round(north(100).lat * 1e4) / 1e4);
+    expect(near(body.items[0], north(100))).toBe(true);
   });
 
   it("gives at most 15 cars, the nearest ones", async () => {
     for (let i = 0; i < 18; i++) await place(ids[i]!, north(100 + i * 100));
     const body = (await nearby()).json();
     expect(body.items).toHaveLength(15);
-    expect(body.items.at(-1).lat).toBe(Math.round(north(1500).lat * 1e4) / 1e4);
+    expect(near(body.items.at(-1), north(1500))).toBe(true);
   });
 
   it("keeps one car's key through the day and changes it the next day", async () => {

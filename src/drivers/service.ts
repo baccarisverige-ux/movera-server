@@ -466,7 +466,10 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
     });
   }
   // v0.18.4 (G3-R4): real riders online per zone, for the Dashboard.
-  return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString(), ridersOnline: await ridersOnlineByZone(ex, zones, now), ridersOnlineWindowSeconds: RIDERS_ONLINE_WINDOW_SECONDS };
+  const ridersOnline = await ridersOnlineByZone(ex, zones, now);
+  // v0.18.4 (G3-D5): supply and demand per zone, one rule for the Dashboard's rows and its shortage alert.
+  const zoneSupply = await zoneSupplyOf(ex, items, [...ridersOnline.map((r) => r.zoneId), ...items.flatMap((d) => (d.zoneId ? [d.zoneId] : []))], zones);
+  return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString(), ridersOnline, ridersOnlineWindowSeconds: RIDERS_ONLINE_WINDOW_SECONDS, zoneSupply };
 }
 
 export async function tripTrace(ex: Executor, tripId: string) {
@@ -500,4 +503,29 @@ export async function seedDriver(
     .where("driver_id", "=", driverId)
     .execute();
   return { driverId, vehicleId };
+}
+
+/**
+ * Contract v0.18.4 §29 (contract.json#driverHome.zoneSupply, owner G3-D5 "Fix it"): every driver online or on_trip
+ * counts in his LiveDriver.zoneId, stale or not; free = online with no active trip; waiting = live requests with no
+ * driver yet; short when waiting > free.
+ */
+async function zoneSupplyOf(ex: Executor, drivers: Array<{ onlineStatus: string; activeTripId?: string; zoneId?: string }>, shown: string[], zones: string[]) {
+  const waitingRows = await ex
+    .selectFrom("trips")
+    .select(["zone_id", (eb) => eb.fn.countAll<string>().as("n")])
+    .where("kind", "=", "live")
+    .where("status", "in", ["requested", "searching", "offered"])
+    .where("driver_id", "is", null)
+    .groupBy("zone_id")
+    .execute();
+  const inScope = (z: string) => zones.includes("*") || zones.includes(z);
+  const list = [...new Set([...shown, ...waitingRows.map((r) => r.zone_id)])].filter(inScope).sort();
+  return list.map((zoneId) => {
+    const here = drivers.filter((d) => d.zoneId === zoneId);
+    const free = here.filter((d) => d.onlineStatus === "online" && !d.activeTripId).length;
+    const waiting = Number(waitingRows.find((r) => r.zone_id === zoneId)?.n ?? 0);
+    const level = waiting === 0 ? "ok" : waiting <= free ? "tight" : "short";
+    return { zoneId, online: here.length, free, busy: here.length - free, waiting, level, shortage: level === "short" };
+  });
 }

@@ -1,3 +1,4 @@
+import { driverPerformance, scoreInputs } from "../drivers/performance.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent, lockTrip, OFFER_EVENTS_CHANNEL, type TripRow } from "../db/tripLog.js";
@@ -144,7 +145,6 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
     .where("drivers.online_status", "in", ["online", "on_trip"])
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
     .execute();
-  const since = new Date(now.getTime() - 30 * 24 * 3600_000);
   const pool: Pool = { candidates: [], meta: new Map() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
   const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
@@ -165,22 +165,14 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
     if (Number(radarOpen.n) >= RADAR_LIST_MAX) continue;
     const here = { lat: d.lat, lng: d.lng };
     const km = dispatchKm(here, pickup);
-    const answered = await trx
-      .selectFrom("offers")
-      .select([sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status IN ('claimed', 'declined', 'expired'))`.as("all")])
-      .where("driver_id", "=", d.driver_id)
-      .where("kind", "in", ["exclusive", "assigned"])
-      .where("sent_at", ">", since)
-      .executeTakeFirstOrThrow();
     const candidate: Candidate = {
       driverId: d.driver_id,
       km,
       categoryIds: d.category_ids,
       idleMin: d.last_free_at ? (now.getTime() - d.last_free_at.getTime()) / 60_000 : 0,
-      ...(d.rating_count > 0 ? { rating: d.rating_sum / d.rating_count } : {}),
-      ...(Number(answered.all) > 0 ? { acceptancePct: (Number(answered.took) / Number(answered.all)) * 100 } : {}),
-      // Cancel rate: the driver's cancels against the trips they took, last 30 days (§3.6 factor "cancel").
-      ...(Number(answered.took) > 0 ? { cancelPct: Math.min(100, (Number((await trx.selectFrom("driver_cancels").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("at", ">", since).executeTakeFirstOrThrow()).n) / Number(answered.took)) * 100) } : {}),
+      // v0.18.4 (G3-D2): the driver's real numbers (contract.json#driverHome.performance); a null one is left out
+      // and the engine uses the §3.6 default.
+      ...scoreInputs(await driverPerformance(trx, d.driver_id, now)),
     };
     pool.candidates.push(candidate);
     const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600));

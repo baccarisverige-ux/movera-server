@@ -8,13 +8,28 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 /**
  * The free cars near the rider, for its map while it chooses a ride (contract v0.5.2 §13, contract.json#riderNearby).
  * Nothing in the answer tells who drives: no driver or vehicle id, name, plate, category or trip; positions are
- * rounded; the key is an HMAC of the driver id and the day, so one car keeps its key through the day only.
+ * moved 100–200 m (v0.18.4, G3-D4) and rounded; the key is an HMAC of the driver id and the day, so one car keeps its key through the day only.
  */
 
 type Rules = { radiusMeters: number; maxVehicles: number; freshSeconds: number; refreshSeconds: number; roundDecimals: number };
 const RULES = (contract as unknown as { riderNearby: Rules }).riderNearby;
 
 const METERS_PER_DEGREE = 111_320;
+
+/** v0.18.4 (G3-D4, contract.json#driverHome.nearbyBlur): every car is moved minMeters..maxMeters, stable per slot. */
+type Blur = { minMeters: number; maxMeters: number; stableMinutes: number };
+const BLUR = (contract as unknown as { driverHome: { nearbyBlur: Blur } }).driverHome.nearbyBlur;
+
+/** The car's shown position: moved by a distance and direction from an HMAC of the driver and the time slot. */
+export function blurred(secret: string, driverId: string, at: { lat: number; lng: number }, now: Date): { lat: number; lng: number } {
+  const slot = Math.floor(now.getTime() / (BLUR.stableMinutes * 60_000));
+  const h = createHmac("sha256", secret).update(`nearby-blur|${slot}|${driverId}`).digest();
+  const meters = BLUR.minMeters + (h.readUInt32BE(0) / 0xffffffff) * (BLUR.maxMeters - BLUR.minMeters);
+  const angle = (h.readUInt32BE(4) / 0xffffffff) * 2 * Math.PI;
+  const dLat = (meters * Math.cos(angle)) / METERS_PER_DEGREE;
+  const dLng = (meters * Math.sin(angle)) / (METERS_PER_DEGREE * Math.max(0.01, Math.cos((at.lat * Math.PI) / 180)));
+  return { lat: at.lat + dLat, lng: at.lng + dLng };
+}
 
 /** The day in Stockholm (YYYY-MM-DD): the key changes at local midnight. */
 function stockholmDay(now: Date): string {
@@ -54,10 +69,11 @@ export async function nearbyVehicles(ex: Executor, point: { lat: number; lng: nu
     .filter((x) => x.meters <= RULES.radiusMeters)
     .sort((a, b) => a.meters - b.meters || (a.r.driver_id < b.r.driver_id ? -1 : 1))
     .slice(0, RULES.maxVehicles)
-    .map(({ r }) => ({
+    .map(({ r }) => ({ r, shown: blurred(secret, r.driver_id, { lat: r.lat, lng: r.lng }, now) }))
+    .map(({ r, shown }) => ({
       key: vehicleKey(secret, r.driver_id, now),
-      lat: round(r.lat),
-      lng: round(r.lng),
+      lat: round(shown.lat),
+      lng: round(shown.lng),
       ...(r.heading !== null && Number.isFinite(r.heading) ? { heading: Math.round(((r.heading % 360) + 360) % 360) } : {}),
     }));
   return { items, refreshSeconds: RULES.refreshSeconds, radiusMeters: RULES.radiusMeters };
