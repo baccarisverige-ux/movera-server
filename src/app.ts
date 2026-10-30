@@ -33,18 +33,20 @@ import { dispatchRoutes } from "./dispatch/routes.js";
 import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
+import { pushServicesFrom, type PushServices } from "./push/config.js";
+import { pushRoutes } from "./push/routes.js";
 import { CachedPlaces, GooglePlaces, NoPlaces, type Places } from "./maps/places.js";
 
 export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>> };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices };
 
 const READY_TIMEOUT_MS = 2000;
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger
       ? {
@@ -166,6 +168,11 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     }
     return { status: "ready", database: "ok" };
   });
+
+  // Push (contract v0.18.3 R7): GET /push/config needs no token and no database.
+  const pushServices = push ?? pushServicesFrom(env, { ...(clock ? { clock } : {}), warn: (message) => app.log.warn(message) });
+  if (pushServices.status === "invalid") app.log.warn({ problem: pushServices.problem }, "FIREBASE_SERVICE_ACCOUNT is not usable: push is off");
+  await pushRoutes(app, { config: pushServices.config });
 
   if (db !== undefined) {
     const jwtSecret = env.JWT_SECRET ?? DEV_JWT_SECRET;

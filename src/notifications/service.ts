@@ -40,6 +40,16 @@ export function notificationView(row: NotificationRow) {
   };
 }
 
+/**
+ * After a notice is written, the push dispatcher (src/push/dispatcher.ts) is kicked: it sends the push only once the
+ * command has committed, outside this transaction, so a push never slows or breaks the command (contract v0.18.3 R7).
+ */
+const notifyListeners = new Set<() => void>();
+export function onNotify(listener: () => void): () => void {
+  notifyListeners.add(listener);
+  return () => notifyListeners.delete(listener);
+}
+
 export async function notify(
   ex: Executor,
   notice: { audience: Audience; subjectId: string; kind: string; title: string; body: string; deepLink?: string; tripId?: string; data?: Record<string, unknown> },
@@ -61,6 +71,13 @@ export async function notify(
       created_at: now,
     })
     .execute();
+  for (const listener of notifyListeners) {
+    try {
+      listener();
+    } catch {
+      // a push kick never breaks the command
+    }
+  }
   return notificationId;
 }
 

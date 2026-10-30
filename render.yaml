@@ -43,6 +43,9 @@ services:
       # Address search; filled in Render's dashboard (never committed).
       - key: GOOGLE_MAPS_API_KEY
         sync: false
+      # Push (contract v0.18.3 R7): the Firebase service account JSON; filled in Render's dashboard (never committed).
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
       # Road routes and distances for the test week (the rider's map draws the road, not a straight line). The public
       # OSRM demo server is for trying things out only; Movera's own OSRM replaces it (docs/DECISIONS.md, decision 4).
       - key: OSRM_URL

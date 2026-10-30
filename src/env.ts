@@ -91,6 +91,11 @@ const schema = z.object({
   ADMIN_TEST_EMAIL: z.string().email().optional(),
   ADMIN_TEST_NAME: z.string().min(1).max(120).optional(),
   ADMIN_TEST_PASSWORD_RESET: z.string().min(1).max(200).optional(),
+  /**
+   * Push (contract v0.18.3 R7): the Firebase service account JSON (project movera-200b2). Sends every bell notice as an
+   * FCM push and serves GET /push/config. Unset or unusable: push is off, nothing else changes. Never logged.
+   */
+  FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
   CORS_ORIGINS: z
     .string()
     .optional()

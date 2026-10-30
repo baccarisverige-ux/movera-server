@@ -823,6 +823,8 @@ export interface NotificationsTable {
   data: JsonDefault<Record<string, unknown>>;
   read_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   created_at: Timestamp;
+  /** v0.18.3 (R7): when the push dispatcher took it (sent or skipped); NULL = waiting. */
+  pushed_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
 // Every SMS asked for; skipped while no provider is connected.

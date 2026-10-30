@@ -14,12 +14,16 @@ import { CONFIG_CHANNEL } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
 import { DISPATCH_EVENTS_CHANNEL } from "./dispatch/feed.js";
 import { prepareTestWeek } from "./testWeek.js";
+import { pushServicesFrom } from "./push/config.js";
+import { PushDispatcher } from "./push/dispatcher.js";
+import { onNotify } from "./notifications/service.js";
 
 const env = readEnv();
 
 let db: Db | undefined;
 let hub: NotificationHub | undefined;
 let worker: TimerWorker | undefined;
+let pusher: PushDispatcher | undefined;
 // Until the server's logger exists, a dropped connection is reported on stderr.
 let warn = (error: Error) => console.warn("database connection dropped:", error.message);
 
@@ -31,7 +35,10 @@ if (env.DATABASE_URL !== undefined) {
   await hub.start();
 }
 
-const app = await buildApp({ env, db, ...(hub ? { hub } : {}) });
+let log: (message: string) => void = (message) => console.warn(message);
+const push = pushServicesFrom(env, { warn: (message) => log(message) });
+const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}) });
+log = (message) => app.log.warn(message);
 warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 
 if (db !== undefined) {
@@ -42,6 +49,15 @@ if (db !== undefined) {
   await prepareTestWeek(db, env, app.log);
   worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, ...rideHandlers, ...pricingHandlers }, logger: app.log });
   worker.start();
+  // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
+  if (push.sender !== undefined) {
+    pusher = new PushDispatcher(db, push.sender, { logger: app.log });
+    onNotify(() => pusher?.kick());
+    pusher.start();
+    app.log.info("push sending is on");
+  } else {
+    app.log.info({ push: push.status }, "push sending is off (no usable FIREBASE_SERVICE_ACCOUNT)");
+  }
 } else {
   app.log.warn("DATABASE_URL is not set: running without a database (development only)");
 }
@@ -50,6 +66,7 @@ const close = async (signal: string) => {
   app.log.info({ signal }, "shutting down");
   await app.close();
   await worker?.stop();
+  await pusher?.stop();
   await hub?.stop();
   await db?.destroy();
   process.exit(0);
