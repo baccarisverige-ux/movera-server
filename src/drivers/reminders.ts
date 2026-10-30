@@ -25,6 +25,7 @@ export type Reminder = {
   daysLeft?: number;
   reviewNote?: string;
   fix?: { target: string; documentType?: string; scope?: Scope; vehicleId?: string; contentSlot?: string };
+  actions?: Array<{ target: string }>;
 };
 
 type DriverLike = { driver_id: string; country: string | null; account_type: string | null; account_status: string; fleet_id: string | null; vehicle_id: string | null; language?: string | null; created_at?: Date };
@@ -33,6 +34,8 @@ type DocRow = { document_id: string; type: string; status: string; expires_at: D
 const INFO = (contract as unknown as { driverOnboarding: { infoSession: { type: string; status: string; contentSlot: string } } }).driverOnboarding.infoSession;
 type SignUpText = { kind: string; text: { title: Record<string, string>; body: Record<string, string> } };
 const SIGN_UP = (contract as unknown as { driverOnboarding: { signUpReminders: SignUpText } }).driverOnboarding.signUpReminders;
+/** v0.18.3 (R10, reminders.kinds.account_not_active): the lines that mean a document is not done yet. */
+const DOCUMENT_TODO = ["document_needed", "document_rejected", "document_expired", "document_in_review", "info_session_waiting", "admin_check_waiting", "vehicle_photos_needed"];
 const RANK: Record<Level, number> = { blocks_online: 0, due_soon: 1, waiting: 2 };
 
 /** Warning days, largest first: people expiry.warnDays; cars vehicles.warnDays, then the smaller people days. */
@@ -103,13 +106,16 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date)
       else if (!exempt && photos.some((t) => mine.find((d) => d.type === t)?.status === "in_review")) items.push({ kind: "document_in_review", level: "waiting", scope: "vehicle", vehicleId: id, documentType: photos.find((t) => mine.find((d) => d.type === t)?.status === "in_review")! });
     }
     if (fleet && fleet.status !== "approved") items.push({ kind: "fleet_not_approved", level: "blocks_online" });
+    // v0.18.3 (R4): a driver account in no fleet is told to join one (or start his own company).
+    if (driver.account_type === "driver" && driver.fleet_id === null) items.push({ kind: "no_fleet", level: "blocks_online", fix: { target: "join_fleet" }, actions: [{ target: "join_fleet" }, { target: "start_company" }] });
     if (fleet && fleet.status === "approved" && driver.vehicle_id === null) {
       const pickable = await pickableCars(ex, fleet.fleet_id, now, driver.driver_id);
       if (pickable.length === 0) items.push({ kind: "fleet_no_approved_car", level: "blocks_online", ...(owner ? { fix: { target: "fleet_vehicles" } } : {}) });
       else items.push({ kind: "no_vehicle", level: "blocks_online", fix: { target: "pick_vehicle" } });
     }
   }
-  if (driver.account_status !== "active" && !items.some((i) => i.level === "blocks_online" && i.kind.startsWith("document_"))) items.push({ kind: "account_not_active", level: "blocks_online" });
+  // v0.18.3 (R10): "not active yet" only once every document is done (none needed, rejected, expired, in review or waiting).
+  if (driver.account_status !== "active" && !items.some((i) => DOCUMENT_TODO.includes(i.kind))) items.push({ kind: "account_not_active", level: "blocks_online" });
   items.sort((a, b) => RANK[a.level] - RANK[b.level] || (a.expiresAt ?? "~").localeCompare(b.expiresAt ?? "~") || (a.documentType ?? "").localeCompare(b.documentType ?? ""));
   return { items, blocksOnline: items.filter((i) => i.level === "blocks_online").length };
 }
