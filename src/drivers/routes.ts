@@ -1,3 +1,4 @@
+import { driverPerformance } from "./performance.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, adminCoversZone } from "../auth/guard.js";
@@ -42,7 +43,8 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
 
   app.get(`${API_PREFIX}/driver/profile`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    return getDriverProfile(deps.db, who.subjectId);
+    // v0.18.4 (G3-D2): his own acceptance %, cancellation % and rating.
+    return { ...(await getDriverProfile(deps.db, who.subjectId)), performance: await driverPerformance(deps.db, who.subjectId, now()) };
   });
 
   app.patch(`${API_PREFIX}/driver/profile`, async (request) => {

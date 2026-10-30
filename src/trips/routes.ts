@@ -1,3 +1,4 @@
+import { markRiderSeen } from "../riders/presence.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, type Principal } from "../auth/guard.js";
@@ -188,8 +189,10 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
 
   // contract v0.5.2 §13: the free cars around the rider's map, with nothing that tells who drives.
   app.get(`${API_PREFIX}/rider/nearby-vehicles`, async (request) => {
-    await authenticate(request, guard, ["rider"]);
+    const who = await authenticate(request, guard, ["rider"]);
     const point = parseBody(NearbyQuery, request.query);
+    // v0.18.4 (G3-R4): the open map makes the rider "online" in its zone for the admin's Dashboard.
+    await markRiderSeen(deps.db, who.subjectId, point, now());
     return nearbyVehicles(deps.db, point, deps.jwtSecret, now());
   });
 

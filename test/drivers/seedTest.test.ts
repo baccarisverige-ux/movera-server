@@ -40,7 +40,8 @@ describe("the seeded test accounts", () => {
       const required = [...me.requiredDocuments, ...(me.requiredFleetDocuments ?? [])];
       const approved = me.documents.filter((x: { status: string }) => x.status === "approved").map((x: { type: string }) => x.type);
       for (const type of required) expect(approved).toContain(type);
-      const online = await call(app, "POST", "/driver/availability", headers, { expectedVersion: me.version, onlineStatus: "online" });
+      // v0.18.4 (decision 2): with a fresh position.
+      const online = await call(app, "POST", "/driver/availability", headers, { expectedVersion: me.version, onlineStatus: "online", location: { lat: 59.3326, lng: 18.0649, accuracy: 5, measuredAt: clock.now.toISOString() } });
       expect(online.json()).toMatchObject({ onlineStatus: "online" });
     }
     // (A second code request for the same phone within 30 s is refused, so the owner's first session is reused.)

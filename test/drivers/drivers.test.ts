@@ -66,7 +66,8 @@ describe("going online and offline", () => {
 
   it("a driver on a trip cannot go offline", async () => {
     const me = await profile();
-    await call(app, "POST", "/driver/availability", driver, { expectedVersion: me.version, onlineStatus: "online" });
+    // v0.18.4 (decision 2): going online needs a fresh position.
+    await call(app, "POST", "/driver/availability", driver, { expectedVersion: me.version, onlineStatus: "online", location: fix(59.3326, 18.0649) });
     const tripId = await assignedTrip();
     const res = await call(app, "POST", "/driver/availability", driver, { expectedVersion: me.version + 1, onlineStatus: "offline" });
     expect(res.json()).toMatchObject({ code: "invalid_transition", reason: "on_trip", projection: { activeTripId: tripId } });
@@ -87,7 +88,8 @@ async function assignedTrip(): Promise<string> {
 describe("location", () => {
   it("keeps the newest fix and its zone; old and future fixes are dropped; an older batch never replaces a newer one", async () => {
     const res = await call(app, "POST", "/driver/location", driver, { fixes: [fix(59.33, 18.06, 20), fix(59.3326, 18.0649, 5, { speedMps: 9, moving: true, heading: 90 }), fix(59.0, 18.0, 3600), fix(59.0, 18.0, -600)] });
-    expect(res.json()).toEqual({ accepted: 2, serverTime: clock.now.toISOString() });
+    // v0.18.4 (G3-R2): the driver is inside his zones.
+    expect(res.json()).toEqual({ accepted: 2, serverTime: clock.now.toISOString(), outsideArea: false });
     const stored = await database.db.selectFrom("driver_locations").selectAll().where("driver_id", "=", driverId).executeTakeFirstOrThrow();
     expect(stored).toMatchObject({ lat: 59.3326, lng: 18.0649, moving: true, speed_mps: 9, zone_id: "Z001" });
     await call(app, "POST", "/driver/location", driver, { fixes: [fix(59.2, 17.6, 30)] });
@@ -116,7 +118,7 @@ describe("location", () => {
 describe("admin live map", () => {
   it("lists online drivers with their position; stale after 120 s; limited to the admin's zones", async () => {
     const me = await profile();
-    if (me.onlineStatus !== "online") await call(app, "POST", "/driver/availability", driver, { expectedVersion: me.version, onlineStatus: "online" });
+    if (me.onlineStatus !== "online") await call(app, "POST", "/driver/availability", driver, { expectedVersion: me.version, onlineStatus: "online", location: fix(59.3326, 18.0649) });
     await call(app, "POST", "/driver/location", driver, { fixes: [fix(59.3326, 18.0649)] });
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
     const live = (await call(app, "GET", "/admin/live/drivers?zoneId=Z001", admin.headers)).json();

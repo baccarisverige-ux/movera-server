@@ -74,7 +74,9 @@ async function approveFleet(who: Who) {
   expect(res.statusCode).toBe(200);
   return res.json().code as string;
 }
-const goOnline = async (who: Who) => call(app, "POST", "/driver/availability", H[who]!, { expectedVersion: (await me(who)).version, onlineStatus: "online" });
+// v0.18.4 (decision 2): going online sends a fresh position, in the driver's own country.
+const homeOf = (who: Who) => (PEOPLE[who].country === "FR" ? { lat: 48.8566, lng: 2.3522 } : { lat: 59.3326, lng: 18.0649 });
+const goOnline = async (who: Who) => call(app, "POST", "/driver/availability", H[who]!, { expectedVersion: (await me(who)).version, onlineStatus: "online", location: { ...homeOf(who), accuracy: 5, measuredAt: clock.now.toISOString() } });
 const goOffline = async (who: Who) => call(app, "POST", "/driver/availability", H[who]!, { expectedVersion: (await me(who)).version, onlineStatus: "offline" });
 
 beforeAll(async () => {

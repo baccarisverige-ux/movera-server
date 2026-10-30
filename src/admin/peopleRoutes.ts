@@ -1,3 +1,4 @@
+import { driverPerformance } from "../drivers/performance.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { sql } from "kysely";
@@ -91,7 +92,8 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
     const who = await authenticateAdmin(request, guard, "drivers.read");
     const row = await loadDriver(deps.db, param(request, "driverId"));
     if (!who.zones.includes("*") && !row.zone_ids.some((z) => who.zones.includes(z))) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
-    return driverView(deps.db, row, "admin");
+    // v0.18.4 (G3-D2): the same numbers the driver sees.
+    return { ...(await driverView(deps.db, row, "admin")), performance: await driverPerformance(deps.db, row.driver_id, now()) };
   });
 
   /* ---- vehicles */

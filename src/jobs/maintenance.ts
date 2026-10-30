@@ -5,6 +5,7 @@ import { summarize } from "../admin/kpis.js";
 import { purgeOldMessages } from "../trips/messages.js";
 import { purgeOldErrorGroups } from "../telemetry/errors.js";
 import { sweepDocumentExpiry, sweepSignUpReminders } from "../drivers/reminders.js";
+import { NO_FIX_OFFLINE, ensureNoFixTimer, noFixOfflineHandler } from "../drivers/presence.js";
 import type { TimerHandler } from "./timers.js";
 
 /** Housekeeping that runs on the timer worker, so only one instance does it at a time. */
@@ -75,9 +76,12 @@ export async function ensureMaintenanceTimers(ex: Executor, now: Date = new Date
     ])
     .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
     .execute();
+  // contract v0.18.4 §29 (G3-R1): online drivers with no position for noFixMinutes go offline (every 30 s).
+  await ensureNoFixTimer(ex, now);
 }
 
 export const maintenanceHandlers: Record<string, TimerHandler> = {
   [SWEEP_IDEMPOTENCY_KEYS]: sweepIdempotencyKeysHandler,
   [NIGHTLY]: nightlyHandler,
+  [NO_FIX_OFFLINE]: noFixOfflineHandler,
 };

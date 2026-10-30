@@ -13,6 +13,8 @@ import { documentSummaries } from "../documents/service.js";
 import { carRuleProblems, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
 import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
 import { signUpView } from "./reminders.js";
+import { DRIVER_HOME, areaView, hasFreshPosition } from "./presence.js";
+import { RIDERS_ONLINE_WINDOW_SECONDS, ridersOnlineByZone } from "../riders/presence.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -102,6 +104,8 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     ...(row.account_type === "fleet" ? { requiredFleetDocuments: await liveRequiredDocuments(ex, row.country, "fleet") } : {}),
     ...(active ? { activeTripId: active.trip_id } : {}),
     ...(row.scheduled_rides ? { scheduledRides: row.scheduled_rides } : {}),
+    // v0.18.4 (G3-R2): the driver is told when his latest position is outside all his zones (no trips there).
+    ...(viewer === "driver" ? await areaView(ex, row) : {}),
     version: row.version,
     ...(viewer === "admin" ? await signUpView(ex, row) : {}),
     ...(viewer === "admin" && location
@@ -237,6 +241,9 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     const fix = await trx.selectFrom("driver_locations").select("zone_id").where("driver_id", "=", driverId).executeTakeFirst();
     const zones = [...row.zone_ids, ...(fix?.zone_id ? [fix.zone_id] : [])];
     if (!(await termsAccepted(trx, "driver", driverId, zones))) throw await refuse("Accept the new terms first.", TERMS_REASON);
+    // v0.18.4 (decision 2, G3-R5): a fresh position, last, so the reason card shows the first thing to fix. Outside
+    // his zones he still goes online (G3-R2); the answer says outsideArea.
+    if (!(await hasFreshPosition(trx, driverId, now))) throw await refuse("Turn on location to go online.", DRIVER_HOME.locationRequired.reason);
   } else if (await activeTripOf(trx, driverId)) {
     throw await refuse("Finish or hand back your trip before going offline.", "on_trip");
   }
@@ -252,12 +259,14 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
 }
 
 /** POST /driver/location: up to 50 fixes; answers how many were taken. */
-export async function postLocations(trx: Trx, driverId: string, body: unknown, now: Date): Promise<{ accepted: number; serverTime: string }> {
+export async function postLocations(trx: Trx, driverId: string, body: unknown, now: Date): Promise<{ accepted: number; serverTime: string; outsideArea?: boolean }> {
   const problem = schemaProblem("LocationBatch", body);
   if (problem !== null) throw badRequest(`The location batch is not valid: ${problem}.`, "invalid_body");
   const batch = body as { fixes: Fix[]; tripId?: string };
   const accepted = await storeFixes(trx, driverId, batch.fixes, batch.tripId, now);
-  return { accepted, serverTime: now.toISOString() };
+  // v0.18.4 (G3-R2): so the app can show "You are not eligible to drive in this area" when he drives out.
+  const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids", "language"]).where("driver_id", "=", driverId).executeTakeFirst();
+  return { accepted, serverTime: now.toISOString(), ...(driver ? await areaView(trx, driver) : {}) };
 }
 
 async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: string | undefined, now: Date): Promise<number> {
@@ -456,7 +465,11 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
       ...(where ? { zoneId: where } : {}),
     });
   }
-  return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString() };
+  // v0.18.4 (G3-R4): real riders online per zone, for the Dashboard.
+  const ridersOnline = await ridersOnlineByZone(ex, zones, now);
+  // v0.18.4 (G3-D5): supply and demand per zone, one rule for the Dashboard's rows and its shortage alert.
+  const zoneSupply = await zoneSupplyOf(ex, items, [...ridersOnline.map((r) => r.zoneId), ...items.flatMap((d) => (d.zoneId ? [d.zoneId] : []))], zones);
+  return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString(), ridersOnline, ridersOnlineWindowSeconds: RIDERS_ONLINE_WINDOW_SECONDS, zoneSupply };
 }
 
 export async function tripTrace(ex: Executor, tripId: string) {
@@ -490,4 +503,29 @@ export async function seedDriver(
     .where("driver_id", "=", driverId)
     .execute();
   return { driverId, vehicleId };
+}
+
+/**
+ * Contract v0.18.4 §29 (contract.json#driverHome.zoneSupply, owner G3-D5 "Fix it"): every driver online or on_trip
+ * counts in his LiveDriver.zoneId, stale or not; free = online with no active trip; waiting = live requests with no
+ * driver yet; short when waiting > free.
+ */
+async function zoneSupplyOf(ex: Executor, drivers: Array<{ onlineStatus: string; activeTripId?: string; zoneId?: string }>, shown: string[], zones: string[]) {
+  const waitingRows = await ex
+    .selectFrom("trips")
+    .select(["zone_id", (eb) => eb.fn.countAll<string>().as("n")])
+    .where("kind", "=", "live")
+    .where("status", "in", ["requested", "searching", "offered"])
+    .where("driver_id", "is", null)
+    .groupBy("zone_id")
+    .execute();
+  const inScope = (z: string) => zones.includes("*") || zones.includes(z);
+  const list = [...new Set([...shown, ...waitingRows.map((r) => r.zone_id)])].filter(inScope).sort();
+  return list.map((zoneId) => {
+    const here = drivers.filter((d) => d.zoneId === zoneId);
+    const free = here.filter((d) => d.onlineStatus === "online" && !d.activeTripId).length;
+    const waiting = Number(waitingRows.find((r) => r.zone_id === zoneId)?.n ?? 0);
+    const level = waiting === 0 ? "ok" : waiting <= free ? "tight" : "short";
+    return { zoneId, online: here.length, free, busy: here.length - free, waiting, level, shortage: level === "short" };
+  });
 }

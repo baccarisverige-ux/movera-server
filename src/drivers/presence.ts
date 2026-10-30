@@ -1,0 +1,138 @@
+import { audit } from "../admin/audit.js";
+import { liveDocument } from "../config/service.js";
+import { contract } from "../contract/contract.js";
+import type { Executor, Trx } from "../db/db.js";
+import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
+import { notify } from "../notifications/service.js";
+import { DRIVER_ASSIGNED } from "../rules/transitions.js";
+import { inPolygon, type Polygon } from "../zones/geometry.js";
+
+/**
+ * Contract v0.18.4 §29 (contract.json#driverHome, owner decisions of driver group 3):
+ * - G3-R1: an online driver (not on a trip) with no position for DriverAppConfig.offers.autoOffline.noFixMinutes
+ *   (default 5) is set offline by a job every 30 s, told so (bell + push) and the admin audit gets a line.
+ * - G3-R2: whether the driver's latest position is inside one of his own zones (no trips outside them).
+ */
+
+type Texts = Record<string, Record<string, string>>;
+type Home = {
+  setOffline: { jobEverySeconds: number; noticeKind: string; deepLink: string; auditAction: string; text: Texts };
+  locationRequired: { reason: string; freshSeconds: number };
+};
+export const DRIVER_HOME = (contract as unknown as { driverHome: Home }).driverHome;
+const DEFAULT_NO_FIX_MINUTES = (contract as unknown as { configDefaults: { noFixMinutesBeforeOffline: number } }).configDefaults.noFixMinutesBeforeOffline;
+
+export const NO_FIX_OFFLINE = "no_fix_offline";
+const lang = (language: string | null | undefined) => (language === "sv" || language === "fr" ? language : "en");
+
+/** The zone's noFixMinutes (0 = never); the contract default when the document has none or a bad value. */
+export async function noFixMinutes(ex: Executor, zoneId: string): Promise<number> {
+  const doc = await liveDocument<{ offers?: { autoOffline?: { noFixMinutes?: unknown } } }>(ex, "driver_app_config", zoneId);
+  const value = doc?.document.offers?.autoOffline?.noFixMinutes;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : DEFAULT_NO_FIX_MINUTES;
+}
+
+/** Books the first run (every instance calls this at start; one row wins). */
+export async function ensureNoFixTimer(ex: Executor, now: Date): Promise<void> {
+  await ex
+    .insertInto("timers")
+    .values({ kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000) })
+    .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
+    .execute();
+}
+
+/** Every jobEverySeconds: set offline each online driver whose latest position is too old, then book the next run. */
+export const noFixOfflineHandler: TimerHandler = async (trx, timer) => {
+  const now = timer.firedAt;
+  await setOfflineWithoutPosition(trx, now);
+  await trx
+    .insertInto("timers")
+    .values({ kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000) })
+    .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
+    .execute();
+};
+
+export async function setOfflineWithoutPosition(trx: Trx, now: Date): Promise<string[]> {
+  // The shortest window any zone could have is the cheapest prefilter: nobody fresher than 1 minute is looked at.
+  const rows = await trx
+    .selectFrom("drivers")
+    .leftJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
+    .select(["drivers.driver_id", "drivers.zone_ids", "drivers.online_since", "drivers.language", "driver_locations.received_at", "driver_locations.zone_id as fixZone"])
+    .where("drivers.online_status", "=", "online")
+    .where((eb) => eb.or([eb("driver_locations.received_at", "is", null), eb("driver_locations.received_at", "<", new Date(now.getTime() - 60_000))]))
+    .orderBy("drivers.driver_id")
+    .execute();
+  const done: string[] = [];
+  for (const r of rows) {
+    const zoneId = r.zone_ids[0] ?? r.fixZone ?? null;
+    const minutes = zoneId ? await noFixMinutes(trx, zoneId) : DEFAULT_NO_FIX_MINUTES;
+    if (minutes === 0) continue;
+    const last = r.received_at ?? r.online_since;
+    if (last !== null && now.getTime() - last.getTime() < minutes * 60_000) continue;
+    // Lock the driver; one busy with a command is looked at again on the next run.
+    const locked = await trx.selectFrom("drivers").select(["online_status", "version"]).where("driver_id", "=", r.driver_id).forUpdate().skipLocked().executeTakeFirst();
+    if (locked === undefined || locked.online_status !== "online") continue;
+    const onTrip = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", r.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+    if (onTrip) continue;
+    await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: locked.version + 1, updated_at: now }).where("driver_id", "=", r.driver_id).execute();
+    // As going offline by hand: the open offers are withdrawn by a job that locks each trip in turn.
+    await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: r.driver_id, dueAt: now, payload: {} });
+    const language = lang(r.language);
+    const text = DRIVER_HOME.setOffline.text;
+    await notify(trx, { audience: "driver", subjectId: r.driver_id, kind: DRIVER_HOME.setOffline.noticeKind, title: text.title![language]!, body: text.body![language]!, deepLink: DRIVER_HOME.setOffline.deepLink, data: { reason: "no_position" } }, now);
+    await audit(trx, { adminId: null, action: DRIVER_HOME.setOffline.auditAction, targetType: "driver", targetId: r.driver_id, zoneId, detail: { reason: "no_position", lastFixAt: r.received_at?.toISOString() ?? null, minutes }, at: now });
+    done.push(r.driver_id);
+  }
+  return done;
+}
+
+/* ---------------------------------------------------------------- G3-R2: inside his own zones */
+
+type ZoneShape = { zone_id: string; south: number; west: number; north: number; east: number; polygon: unknown };
+
+function inside(point: { lat: number; lng: number }, z: ZoneShape): boolean {
+  if (point.lat < z.south || point.lat > z.north || point.lng < z.west || point.lng > z.east) return false;
+  return inPolygon(point.lat, point.lng, z.polygon as Polygon);
+}
+
+/** Is the point inside any of these zones (bounds first, the outline decides)? */
+export async function insideZones(ex: Executor, point: { lat: number; lng: number }, zoneIds: string[]): Promise<boolean> {
+  if (zoneIds.length === 0) return false;
+  const zones = await ex.selectFrom("zones").select(["zone_id", "south", "west", "north", "east", "polygon"]).where("zone_id", "in", zoneIds).execute();
+  return zones.some((z) => inside(point, z));
+}
+
+/** A checker over many drivers at once (dispatch): the zones are read once. */
+export async function zoneChecker(ex: Executor, zoneIds: string[]): Promise<(point: { lat: number; lng: number }, own: string[]) => boolean> {
+  const zones = zoneIds.length ? await ex.selectFrom("zones").select(["zone_id", "south", "west", "north", "east", "polygon"]).where("zone_id", "in", zoneIds).execute() : [];
+  return (point, own) => zones.some((z) => own.includes(z.zone_id) && inside(point, z));
+}
+
+/** Driver.outsideArea / areaZones (driver view, location ack): missing while the server has no position. */
+export async function areaView(ex: Executor, driver: { driver_id: string; zone_ids: string[]; language?: string | null }): Promise<Record<string, unknown>> {
+  const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driver.driver_id).executeTakeFirst();
+  if (fix === undefined) return {};
+  if (await insideZones(ex, fix, driver.zone_ids)) return { outsideArea: false };
+  const language = lang(driver.language);
+  const zones = driver.zone_ids.length ? await ex.selectFrom("zones").select(["zone_id", "name", "names"]).where("zone_id", "in", driver.zone_ids).execute() : [];
+  const named = driver.zone_ids.flatMap((id) => {
+    const z = zones.find((x) => x.zone_id === id);
+    if (!z) return [];
+    const names = (z.names ?? {}) as Record<string, string>;
+    return [{ zoneId: id, name: names[language] ?? z.name }];
+  });
+  return { outsideArea: true, areaZones: named };
+}
+
+/** Decision 2 / G3-R5: a position measured and received within freshSeconds. */
+export async function hasFreshPosition(ex: Executor, driverId: string, now: Date): Promise<boolean> {
+  const since = new Date(now.getTime() - DRIVER_HOME.locationRequired.freshSeconds * 1000);
+  const row = await ex
+    .selectFrom("driver_locations")
+    .select("driver_id")
+    .where("driver_id", "=", driverId)
+    .where("received_at", ">=", since)
+    .where("measured_at", ">=", since)
+    .executeTakeFirst();
+  return row !== undefined;
+}

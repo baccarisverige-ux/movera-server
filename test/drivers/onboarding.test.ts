@@ -256,7 +256,8 @@ describe("the fleet's cars", () => {
     // The documents tests below upload the member's own files; take the seeded approvals away again.
     await database.db.deleteFrom("documents").where("owner_id", "=", memberId).where("reviewed_by", "=", "seed").execute();
     const m = await me(member);
-    const online = await call(app, "POST", "/driver/availability", member, { expectedVersion: m.version, onlineStatus: "online" });
+    // v0.18.4 (decision 2): with a fresh position (the member drives in Paris).
+    const online = await call(app, "POST", "/driver/availability", member, { expectedVersion: m.version, onlineStatus: "online", location: { lat: 48.8566, lng: 2.3522, accuracy: 5, measuredAt: clock.now.toISOString() } });
     expect(online.json()).toMatchObject({ onlineStatus: "online" });
     expect((await call(app, "GET", "/driver/vehicles", owner)).json().items[0]).toMatchObject({ driverId: memberId, inUse: true });
     const o = await me(owner);
