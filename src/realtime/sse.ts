@@ -11,6 +11,8 @@ export function wantsEventStream(request: FastifyRequest): boolean {
 
 export type EventStream = {
   send: (id: string | number, data: unknown) => boolean;
+  /** An `id:` with no data: the client's cursor (Last-Event-ID) moves there, no event is dispatched (SSE). */
+  cursor: (id: string | number) => void;
   comment: (text: string) => void;
   close: () => void;
   closed: () => boolean;
@@ -58,6 +60,9 @@ export function openEventStream(request: FastifyRequest, reply: FastifyReply, he
     send: (id, data) => {
       if (done) return false;
       return raw.write(`id: ${id}\ndata: ${JSON.stringify(data)}\n\n`);
+    },
+    cursor: (id) => {
+      if (!done) raw.write(`id: ${id}\n\n`);
     },
     comment: (text) => {
       if (!done) raw.write(`: ${text.replace(/\n/g, " ")}\n\n`);

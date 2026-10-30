@@ -174,4 +174,17 @@ describe("G3-D5: one supply/demand rule per zone for the rows and the shortage a
     expect(after.find((r) => r.zoneId === "Z001")).toMatchObject({ waiting: 1, free: 1, level: "tight", shortage: false });
     expect(after.find((r) => r.zoneId === "FR-PC")).toMatchObject({ waiting: 0, level: "ok", shortage: false });
   });
+
+  it("03c (live test: an alert counted a ride booked for another day): a scheduled booking not yet due is no waiting rider and no rider online, SE and FR", async () => {
+    const admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    for (const zone of ["Z001", "FR-PC"]) {
+      const tripId = await insertTrip(database.db, await insertRider(database.db), { status: "requested", kind: "scheduled" });
+      await database.db.updateTable("trips").set({ zone_id: zone, scheduled_at: new Date(clock.now.getTime() + 2 * 24 * 3600_000) }).where("trip_id", "=", tripId).execute();
+    }
+    const body = (await call(app, "GET", "/admin/live/drivers?zoneIds=Z001,FR-PC", admin)).json() as { zoneSupply: Array<Record<string, unknown>>; ridersOnline: Array<{ zoneId: string; count: number }> };
+    for (const zone of ["Z001", "FR-PC"]) {
+      expect(body.zoneSupply.find((r) => r.zoneId === zone) ?? { waiting: 0 }).toMatchObject({ waiting: 0 });
+      expect(body.ridersOnline.find((r) => r.zoneId === zone)).toEqual({ zoneId: zone, count: 0 });
+    }
+  });
 });
