@@ -17,6 +17,7 @@ import { listMessages, sendMessage } from "./messages.js";
 import { callTripPeer } from "./call.js";
 import { disabledTelephony, type TelephonyProvider } from "../telephony/provider.js";
 import { eventEnvelope } from "../realtime/events.js";
+import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
 import { streamTrip } from "../realtime/streams.js";
@@ -131,7 +132,9 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const lastEventId = request.headers["last-event-id"];
     const after = query.after ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : 0);
     const viewer = who.actor as "rider" | "driver" | "admin";
-    await getTrip(deps.db, tripId, { actor: viewer, subjectId: who.subjectId });
+    const seen = await getTrip(deps.db, tripId, { actor: viewer, subjectId: who.subjectId });
+    // v0.18.5 (G9, chat.appStorage.afterTrip): after the trip the apps get no chat text.
+    const hideMessage = viewer !== "admin" && TERMINAL.has(seen["status"] as TripStatus);
     if (wantsEventStream(request)) {
       if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available; poll the trip instead.", { reason: "realtime_unavailable", retryAfterSeconds: 5 });
       await streamTrip(request, reply, { db: deps.db, hub: deps.hub, ...(deps.clock ? { clock: deps.clock } : {}) }, tripId, who, after);
@@ -139,7 +142,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     }
     const rows = await tripEventsAfter(deps.db, tripId, after, query.limit + 1);
     const serverTime = now();
-    const items = rows.slice(0, query.limit).map((row) => eventEnvelope(row, viewer, serverTime));
+    const items = rows.slice(0, query.limit).map((row) => eventEnvelope(row, viewer, serverTime, { hideMessage }));
     const last = items[items.length - 1];
     return { items, nextCursor: rows.length > query.limit && last ? String(last["sequence"]) : null };
   });

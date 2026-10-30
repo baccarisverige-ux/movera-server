@@ -1,5 +1,6 @@
 import { pricingRoutes } from "./pricing/routes.js";
 import { contentRoutes } from "./content/routes.js";
+import { legalRoutes } from "./legal/routes.js";
 import { zoneRoutes } from "./zones/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
@@ -185,6 +186,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });
     await pricingRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await contentRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(clock ? { clock } : {}) });
+    // v0.18.5 (G1-B2): terms and privacy per country.
+    await legalRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await zoneRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =

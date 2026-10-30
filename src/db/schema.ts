@@ -157,6 +157,48 @@ export interface DocumentFilesTable {
   ciphertext: Buffer;
 }
 
+/** v0.18.5 (G2-D1, migration 0038): an upload that renews an approved document, waiting for review. */
+export interface DocumentRenewalsTable {
+  renewal_id: string;
+  document_id: string;
+  status: Generated<"in_review" | "rejected">;
+  expires_at: Date | null;
+  file_name: string;
+  media_type: string;
+  file_size: number;
+  uploaded_at: Date;
+  reviewed_at: Date | null;
+  reviewed_by: string | null;
+  review_note: string | null;
+  version: Generated<number>;
+  key_id: string;
+  iv: Buffer;
+  tag: Buffer;
+  ciphertext: Buffer;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+
+/** v0.18.5 (G1-B2, migration 0038): published terms and privacy texts per country. */
+export interface LegalTextsTable {
+  country: string;
+  version: number;
+  terms: Json;
+  privacy: Json;
+  company: JsonDefault;
+  reaccept: Generated<boolean>;
+  published_at: Date;
+  published_by: string;
+}
+
+export interface LegalAcceptancesTable {
+  actor: "rider" | "driver";
+  subject_id: string;
+  country: string;
+  version: number;
+  accepted_at: Date;
+}
+
 export interface DriverLocationsTable {
   driver_id: string;
   lat: number;
@@ -1001,6 +1043,9 @@ export interface Database {
   error_group_devices: ErrorGroupDevicesTable;
   documents: DocumentsTable;
   document_files: DocumentFilesTable;
+  document_renewals: DocumentRenewalsTable;
+  legal_texts: LegalTextsTable;
+  legal_acceptances: LegalAcceptancesTable;
   document_notices: DocumentNoticesTable;
   sign_up_reminders: SignUpRemindersTable;
   fleet_invitations: FleetInvitationsTable;

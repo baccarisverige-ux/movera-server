@@ -52,7 +52,7 @@ describe("Phase 4: rate limits", () => {
   it("P4-2: document uploads are limited per driver and hour (429 upload_limit), before the file is read", async () => {
     const driver = await sim.driver(2, null);
     const send = async () => {
-      const { body, contentType } = multipart({ type: "driving_license" }, Buffer.from("jpeg-bytes-".repeat(50)));
+      const { body, contentType } = multipart({ type: "driving_license" }, Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("jpeg-bytes-".repeat(50))]));
       const res = await fetch(`${sim.base}/driver/documents`, { method: "POST", headers: { authorization: `Bearer ${driver.token}`, "content-type": contentType, "idempotency-key": `p4-upload-${Math.random().toString(36).slice(2)}-xxxxxxxx` }, body });
       return { status: res.status, body: (await res.json()) as Record<string, unknown> };
     };

@@ -41,7 +41,7 @@ function multipart(fields: Record<string, string>) {
   const boundary = "----movera-g2-boundary";
   const parts: Buffer[] = [];
   for (const [k, v] of Object.entries(fields)) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="doc.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`), Buffer.from("jpeg-bytes-".repeat(50)), Buffer.from(`\r\n--${boundary}--\r\n`));
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="doc.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`), Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("jpeg-bytes-".repeat(50))]), Buffer.from(`\r\n--${boundary}--\r\n`));
   return { payload: Buffer.concat(parts), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
 }
 async function upload(who: Who, fields: Record<string, string>): Promise<string> {
@@ -152,20 +152,23 @@ describe("item 10 + note check: the onboarding settings document, per country, w
 describe("item 11: car rules per category and country, and the four photos", () => {
   const car = (extra: Record<string, unknown>) => ({ make: "Volvo", model: "V60", color: "Black", seats: 4, ...extra });
 
-  it("Sweden: refuses a car built before 2015 for economy, an XL with 4 seats, a petrol car as electric, an electric car with no fuel given", async () => {
+  // v0.18.5 (G2-D5.3): the owner no longer picks categories; the rules are checked when the admin gives them on approval.
+  it("Sweden: refuses a car built before 2015; the admin cannot give an XL with 4 seats, Electric to a petrol car or to a car with no fuel given", async () => {
     const old = await call(app, "POST", "/driver/vehicles", H.seOwner!, car({ year: 2014, plate: "SE 001", categoryIds: ["economy"] }));
-    expect(old.json()).toMatchObject({ code: "invalid_request", reason: "category_not_allowed", details: ["economy:year_too_old"] });
-    const xl = await call(app, "POST", "/driver/vehicles", H.seOwner!, car({ year: 2020, plate: "SE 002", categoryIds: ["economy", "xl"] }));
-    expect(xl.json()).toMatchObject({ reason: "category_not_allowed", details: ["xl:too_few_seats"] });
-    const petrol = await call(app, "POST", "/driver/vehicles", H.seOwner!, car({ year: 2020, plate: "SE 003", fuel: "petrol", categoryIds: ["electric"] }));
-    expect(petrol.json()).toMatchObject({ details: ["electric:fuel_not_allowed"] });
-    const noFuel = await call(app, "POST", "/driver/vehicles", H.seOwner!, car({ year: 2020, plate: "SE 004", categoryIds: ["electric"] }));
-    expect(noFuel.json()).toMatchObject({ details: ["electric:fuel_required"] });
+    expect(old.json()).toMatchObject({ code: "invalid_request", reason: "category_not_allowed", details: ["car:year_too_old"] });
+    const approve = async (plate: string, extra: Record<string, unknown>, categoryIds: string[]) => {
+      const added = await call(app, "POST", "/driver/vehicles", H.seOwner!, car({ year: 2020, plate, ...extra }));
+      expect(added.statusCode).toBe(201);
+      return (await call(app, "POST", `/admin/vehicles/${added.json().vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds })).json();
+    };
+    expect(await approve("SE 002", {}, ["economy", "xl"])).toMatchObject({ code: "invalid_transition", reason: "vehicle_rules_not_met", details: ["xl:too_few_seats"] });
+    expect(await approve("SE 003", { fuel: "petrol" }, ["electric"])).toMatchObject({ details: ["electric:fuel_not_allowed"] });
+    expect(await approve("SE 004", {}, ["electric"])).toMatchObject({ details: ["electric:fuel_required"] });
   });
 
-  it("France: base year 2016, so a 2015 car does not fit economy there", async () => {
+  it("France: base year 2016, so a 2015 car is refused there", async () => {
     const old = await call(app, "POST", "/driver/vehicles", H.frOwner!, car({ year: 2015, plate: "AA-001-FR", categoryIds: ["economy"] }));
-    expect(old.json()).toMatchObject({ reason: "category_not_allowed", details: ["economy:year_too_old"] });
+    expect(old.json()).toMatchObject({ reason: "category_not_allowed", details: ["car:year_too_old"] });
     const ok = await call(app, "POST", "/driver/vehicles", H.frOwner!, car({ year: 2016, plate: "AA-002-FR", fuel: "hybrid", categoryIds: ["economy"] }));
     expect(ok.statusCode).toBe(201);
     expect(ok.json()).toMatchObject({ fuel: "hybrid", requiredDocuments: ["vehicle_registration", "insurance", "vtc_sticker", "vehicle_photo_front", "vehicle_photo_back", "vehicle_photo_side", "vehicle_photo_inside"] });
@@ -177,7 +180,7 @@ describe("item 11: car rules per category and country, and the four photos", () 
     expect(ok.statusCode).toBe(201);
     expect(ok.json().requiredDocuments).toEqual(["vehicle_registration", "insurance", "vehicle_photo_front", "vehicle_photo_back", "vehicle_photo_side", "vehicle_photo_inside"]);
     ID.seCar = ok.json().vehicleId;
-    const reviewCar = await call(app, "POST", `/admin/vehicles/${ID.seCar}/review`, sup.headers, { expectedVersion: 1, decision: "approved" });
+    const reviewCar = await call(app, "POST", `/admin/vehicles/${ID.seCar}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy", "electric"] });
     expect(reviewCar.statusCode).toBe(200);
     await approveVehicleDocuments(database.db, ID.seCar!, ID.seOwner!, "SE", ["vehicle_registration", "insurance"]);
     const o = await me("seOwner");
@@ -305,7 +308,7 @@ describe("items 1 and 3: expiry typed by the admin, warnings at 30 / 7 / 1 days,
       const c = who === "seMember" ? "SE" : "FR";
       if (c === "FR") {
         await approveVehicleDocuments(database.db, ID.frCar!, ID.frOwner!, "FR");
-        const reviewCar = await call(app, "POST", `/admin/vehicles/${ID.frCar}/review`, sup.headers, { expectedVersion: 1, decision: "approved" });
+        const reviewCar = await call(app, "POST", `/admin/vehicles/${ID.frCar}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy"] });
         expect(reviewCar.statusCode).toBe(200);
         const m = await me(who);
         expect((await call(app, "PATCH", "/driver/profile", H[who]!, { expectedVersion: m.version, vehicleId: ID.frCar })).statusCode).toBe(200);
@@ -361,7 +364,7 @@ describe("item 16: every car needs its four photos approved; test accounts keep 
     it(`${country}: an approved car with its papers but no photos is blocked with 'Add 4 photos of your car'; a test account may drive it`, async () => {
       const car = await call(app, "POST", "/driver/vehicles", H[owner]!, { make: "Skoda", model: "Superb", year: 2022, color: "Blue", seats: 4, plate, categoryIds: ["economy"] });
       const vehicleId = car.json().vehicleId as string;
-      expect((await call(app, "POST", `/admin/vehicles/${vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved" })).statusCode).toBe(200);
+      expect((await call(app, "POST", `/admin/vehicles/${vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy"] })).statusCode).toBe(200);
       const papers = country === "SE" ? ["vehicle_registration", "insurance"] : ["vehicle_registration", "insurance", "vtc_sticker"];
       await approveVehicleDocuments(database.db, vehicleId, ID[owner]!, country, papers);
       const o = await me(owner);
@@ -470,8 +473,11 @@ describe("items 10, 11 and the note check: what the admin publishes is what the 
     });
     const fleetCar = (await call(app, "GET", "/driver/vehicles", H.frOwner!)).json().items.find((v: { vehicleId: string }) => v.vehicleId === ID.frCar);
     expect(fleetCar.requiredDocuments).toEqual(["vehicle_registration", "insurance", "vtc_sticker"]);
+    // v0.18.5 (G2-D5.3): checked when the admin gives the category.
     const old = await call(app, "POST", "/driver/vehicles", H.frOwner!, { make: "Renault", model: "Talisman", year: 2018, color: "Grey", plate: "AA-003-FR", seats: 4, categoryIds: ["economy"] });
-    expect(old.json()).toMatchObject({ reason: "category_not_allowed", details: ["economy:year_too_old"] });
+    expect(old.statusCode).toBe(201);
+    const give = await call(app, "POST", `/admin/vehicles/${old.json().vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy"] });
+    expect(give.json()).toMatchObject({ reason: "vehicle_rules_not_met", details: ["economy:year_too_old"] });
   });
 });
 
