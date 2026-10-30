@@ -75,7 +75,9 @@ describe("automatic dispatch at run time", () => {
     const tripId = await book();
     expect((await tripOf(tripId)).status).toBe("offered");
     const [first] = await openOffers("A");
-    expect(first).toMatchObject({ tripId, kind: "exclusive", status: "open", reasonCode: "best-match", fare: { amountMinor: 21700 }, driverEarnings: { amountMinor: 15760 } });
+    expect(first).toMatchObject({ tripId, kind: "exclusive", status: "open", fare: { amountMinor: 21700 }, driverEarnings: { amountMinor: 15760 } });
+    // v0.18.6 (owner G4-E7 "Remove short line explain"): no "why you got this trip" reason on the offer any more.
+    expect(first).not.toHaveProperty("reasonCode");
     expect(new Date(first.expiresAt).getTime() - clock.now.getTime()).toBe(15_000);
     expect(await openOffers("B")).toEqual([]);
 
@@ -83,7 +85,8 @@ describe("automatic dispatch at run time", () => {
     expect(await openOffers("A")).toEqual([]);
     const [second] = await openOffers("B");
     // Ranked again before every offer: A missed one, so its acceptance fell and B now ranks first.
-    expect(second).toMatchObject({ tripId, kind: "exclusive", reasonCode: "best-match" });
+    expect(second).toMatchObject({ tripId, kind: "exclusive" });
+    expect(second).not.toHaveProperty("reasonCode");
     const events = await database.db.selectFrom("offer_events").select(["kind", "sequence"]).where("driver_id", "=", drivers.A.id).orderBy("sequence").execute();
     expect(events.slice(-2).map((e) => e.kind)).toEqual(["offer_created", "offer_withdrawn"]);
   });

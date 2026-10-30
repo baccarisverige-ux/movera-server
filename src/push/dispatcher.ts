@@ -27,6 +27,20 @@ export type DispatcherOptions = {
 
 const KICK_DELAYS_MS = [50, 1500];
 
+type PushRow = {
+  notification_id: string;
+  audience: "rider" | "driver";
+  subject_id: string;
+  kind: string;
+  title: string;
+  body: string;
+  deep_link: string | null;
+  created_at: Date;
+  bell: boolean;
+  push_until: Date | null;
+  data: Record<string, unknown> | null;
+};
+
 export class PushDispatcher {
   private readonly clock: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -104,27 +118,34 @@ export class PushDispatcher {
 
   private async sweepOnce(): Promise<number> {
     const now = this.clock();
-    const rows = await sql<{ notification_id: string; audience: "rider" | "driver"; subject_id: string; kind: string; title: string; body: string; deep_link: string | null; created_at: Date }>`
+    const rows = await sql<PushRow>`
       UPDATE notifications SET pushed_at = ${now}
       WHERE notification_id IN (
         SELECT notification_id FROM notifications WHERE pushed_at IS NULL ORDER BY created_at LIMIT ${this.options.batch ?? 50} FOR UPDATE SKIP LOCKED
       )
-      RETURNING notification_id, audience, subject_id, kind, title, body, deep_link, created_at`.execute(this.db);
+      RETURNING notification_id, audience, subject_id, kind, title, body, deep_link, created_at, bell, push_until, data`.execute(this.db);
     const maxAge = this.options.maxAgeMs ?? 60 * 60 * 1000;
-    await Promise.all(rows.rows.filter((row) => now.getTime() - new Date(row.created_at).getTime() <= maxAge).map((row) => this.pushOne(row)));
+    // v0.18.6 (G4 decision 1): a push with push_until (a new offer) is dropped once the offer has run out.
+    const due = (row: PushRow) => now.getTime() - new Date(row.created_at).getTime() <= maxAge && (row.push_until === null || new Date(row.push_until).getTime() > now.getTime());
+    await Promise.all(rows.rows.filter(due).map((row) => this.pushOne(row, now)));
     return rows.rows.length;
   }
 
-  private async pushOne(row: { notification_id: string; audience: "rider" | "driver"; subject_id: string; kind: string; title: string; body: string; deep_link: string | null }): Promise<void> {
+  private async pushOne(row: PushRow, now: Date): Promise<void> {
     if (row.audience === "rider") {
       const rider = await this.db.selectFrom("riders").select("consents").where("rider_id", "=", row.subject_id).executeTakeFirst();
       if ((rider?.consents as { rideUpdates?: unknown } | null | undefined)?.rideUpdates === false) return;
     }
     const devices = await this.db.selectFrom("push_devices").select(["token", "platform"]).where("actor", "=", row.audience).where("subject_id", "=", row.subject_id).where("provider", "=", "fcm").execute();
-    const data = { notificationId: row.notification_id, kind: row.kind, deepLink: row.deep_link ?? "" };
+    // v0.18.6 (contract.json#driverOffers.push.data): a push-only row (the new-offer push) carries its own data too,
+    // as strings, and the sound rule; bell notices keep the v0.18.3 data.
+    const extra = row.bell === false ? Object.fromEntries(Object.entries(row.data ?? {}).map(([k, v]) => [k, String(v)])) : {};
+    const data = { ...extra, notificationId: row.notification_id, kind: row.kind, deepLink: row.deep_link ?? "" };
+    const sound = extra["sound"] === "offer" || extra["sound"] === "none" ? (extra["sound"] as "offer" | "none") : undefined;
+    const ttlSeconds = row.push_until === null ? undefined : Math.max(1, Math.ceil((new Date(row.push_until).getTime() - now.getTime()) / 1000));
     await Promise.all(
       devices.map(async (device) => {
-        const message = { token: device.token, platform: device.platform, title: row.title, body: row.body, data };
+        const message = { token: device.token, platform: device.platform, title: row.title, body: row.body, data, ...(sound ? { sound } : {}), ...(ttlSeconds ? { ttlSeconds } : {}) };
         let result: SendResult = await this.sender.send(message);
         if (result === "retry" && !this.stopped) {
           await this.sleep(this.options.retryDelayMs ?? 2000);

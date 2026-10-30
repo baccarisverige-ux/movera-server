@@ -5,9 +5,10 @@ import { liveDocument } from "../config/service.js";
 import { scheduleTimer } from "../jobs/timers.js";
 
 /**
- * contract.json#autoOffline (v0.8.0, owner 2026-10-27): after offers.autoOffline.missedExclusive (default 10)
- * Exclusive offers of live trips in a row that the driver declined or let expire, the driver goes offline. Misses of
- * Radar, assigned and reservation offers, and of Exclusive offers sent while the driver was on a trip, never count.
+ * contract.json#autoOffline (v0.8.0, owner 2026-10-27; v0.18.6 owner G4-E3 "Count them"): after
+ * offers.autoOffline.missedExclusive (default 10, G4-E2 "Set 10 everywhere") Exclusive or hand-sent (assigned) offers of
+ * live trips in a row that the driver declined or let expire, the driver goes offline. Misses of Radar offers (also an
+ * admin radar group) and reservation offers, and of any offer sent while the driver was on a trip, never count.
  * ANY accepted offer (claimed) or going online (online_since) sets the count back to 0. The driver app counts the same way.
  */
 const DEFAULT_LIMIT = (contract as unknown as { configDefaults: { missedExclusiveBeforeOffline: number } }).configDefaults.missedExclusiveBeforeOffline;
@@ -18,7 +19,10 @@ export async function autoOfflineLimit(trx: Trx, zoneId: string): Promise<number
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : DEFAULT_LIMIT;
 }
 
-/** Called with the driver row locked, after an Exclusive offer was declined or expired. True when it set the driver offline. */
+/** The offer kinds whose misses count (contract.json#autoOffline.counts: exclusive, assigned). */
+export const COUNTING_KINDS: readonly string[] = (contract as unknown as { autoOffline: { counts: string[] } }).autoOffline.counts;
+
+/** Called with the driver row locked, after an Exclusive or assigned offer was declined or expired. True when it set the driver offline. */
 export async function autoOfflineIfDue(trx: Trx, driverId: string, tripId: string, now: Date): Promise<boolean> {
   const driver = await trx.selectFrom("drivers").select(["online_status", "online_since", "version"]).where("driver_id", "=", driverId).executeTakeFirst();
   if (driver === undefined || driver.online_status !== "online") return false;
@@ -41,7 +45,7 @@ export async function autoOfflineIfDue(trx: Trx, driverId: string, tripId: strin
   let run = 0;
   for (const offer of await query.execute()) {
     if (offer.status === "claimed") break;
-    if (offer.kind === "exclusive" && offer.tripKind === "live" && !offer.driver_on_trip) run += 1;
+    if (COUNTING_KINDS.includes(offer.kind) && offer.tripKind === "live" && !offer.driver_on_trip) run += 1;
     if (run >= limit) break;
   }
   if (run < limit) return false;

@@ -3,6 +3,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { streamConfig } from "../realtime/streams.js";
 import { z } from "zod";
 import { withCatalog } from "../pricing/routes.js";
+import { raiseMaxFactor, withRaiseLimit } from "./raiseLimit.js";
 import { adminCoversZone, authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
 import type { Db } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
@@ -69,8 +70,10 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     await getZone(deps.db, zoneId);
     const live = await liveDocument(deps.db, doc, zoneId);
     if (live === null) throw new ApiError("not_found", "No settings are published for this zone yet.", { reason: "config_not_published" });
+    // v0.18.6 (owner G4-E4): the rider app always gets the raise limit the server checks (the zone's dispatch document).
+    const document = doc === "rider_app_config" ? withRaiseLimit(live.document as Record<string, unknown>, await raiseMaxFactor(deps.db, zoneId)) : (live.document as Record<string, unknown>);
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
-    return withCatalog(deps.db, live.document as Record<string, unknown>);
+    return withCatalog(deps.db, document);
   };
   app.get(`${API_PREFIX}/rider/config`, serveAppDoc("rider_app_config", "rider"));
   app.get(`${API_PREFIX}/driver/config`, serveAppDoc("driver_app_config", "driver"));

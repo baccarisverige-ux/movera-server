@@ -648,6 +648,8 @@ export interface OffersTable {
   decline_reason: string | null;
   /** v0.8.0: the driver was on a trip when the offer was sent (a trigger sets it); such a miss never counts for auto-offline. */
   driver_on_trip: Generated<boolean>;
+  /** v0.18.6 (G4 decision 3): the rider's rating when the offer was sent; NULL = none (no rating, or the zone's switch is off). */
+  rider_rating: ColumnType<number | null, number | null | undefined, number | null>;
 }
 
 export interface OfferEventsTable {
@@ -870,6 +872,10 @@ export interface NotificationsTable {
   created_at: Timestamp;
   /** v0.18.3 (R7): when the push dispatcher took it (sent or skipped); NULL = waiting. */
   pushed_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** v0.18.6 (G4 decision 1): false = push only (a new-offer push), never in GET /notifications. */
+  bell: ColumnType<boolean, boolean | undefined, boolean>;
+  /** v0.18.6: not sent after this time (the offer's expiresAt); NULL = the dispatcher's usual age limit. */
+  push_until: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
 // Every SMS asked for; skipped while no provider is connected.

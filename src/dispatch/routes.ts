@@ -120,6 +120,20 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     return reply;
   });
 
+  // v0.18.6 (G4 decision 4, contract.json#driverOffers.acceptCheck): "did my accept go through?" after a lost answer.
+  // The driver's own offer as it is now (any status); with the trip (driver view) when it is claimed, i.e. his.
+  app.get(`${API_PREFIX}/driver/offers/:offerId`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const { offerId } = parseBody(z.object({ offerId: ID }), request.params);
+    const offer = await deps.db.selectFrom("offers").selectAll().where("offer_id", "=", offerId).executeTakeFirst();
+    if (offer === undefined || offer.driver_id !== who.subjectId) throw new ApiError("not_found", "No such offer.", { reason: "offer_not_found" });
+    const trip = await deps.db.selectFrom("trips").selectAll().where("trip_id", "=", offer.trip_id).executeTakeFirstOrThrow();
+    // An open offer whose time is over reads as expired (as accept would answer), even before the round timer ran.
+    const status = offer.status === "open" && offer.expires_at.getTime() <= now().getTime() ? "expired" : offer.status;
+    const mine = status === "claimed" && trip.driver_id === who.subjectId;
+    return { offer: offerView({ ...offer, status }, trip), ...(mine ? { trip: tripProjection(trip, "driver") } : {}) };
+  });
+
   app.post(`${API_PREFIX}/offers/:offerId/accept`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     const { offerId } = parseBody(z.object({ offerId: ID }), request.params);
