@@ -146,13 +146,17 @@ describe("verifying the code", () => {
     expect(driver.account_status).toBe("pending");
   });
 
-  it("a wrong code is 400 invalid_otp_code; the 6th try is 429 even with the right code", async () => {
+  // v0.18.5 (G1-B3): the 5th wrong code itself is 429 (was: the 6th try); see test/auth/deepfix_g1.test.ts.
+  it("a wrong code is 400 invalid_otp_code; the 5th wrong code is 429, and the right code after it too", async () => {
     const challenge = (await post("/auth/otp/request", { phone: TEST_PHONES[4]!, app: "rider" })).json();
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       const wrong = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: "0000" });
       expect(wrong.statusCode).toBe(400);
       expect(wrong.json()).toMatchObject({ code: "invalid_request", reason: "invalid_otp_code" });
     }
+    const fifth = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: "0000" });
+    expect(fifth.statusCode).toBe(429);
+    expect(fifth.json()).toMatchObject({ code: "rate_limited", reason: "otp_too_many_attempts" });
     const locked = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: "1234" });
     expect(locked.statusCode).toBe(429);
     expect(locked.json()).toMatchObject({ code: "rate_limited", reason: "otp_too_many_attempts" });

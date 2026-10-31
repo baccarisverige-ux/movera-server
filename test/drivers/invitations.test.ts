@@ -75,7 +75,11 @@ describe("the owner invites a number", () => {
   it("a driver with an account is told in the app and by SMS; the owner sees it pending", async () => {
     const res = await call(app, "POST", "/driver/fleet/invite", owner, { phone: TEST_PHONES[1] });
     expect(res.statusCode).toBe(201);
-    expect(res.json()).toMatchObject({ fleetId, fleetName: "Åkessons Taxi AB", direction: "owner_invite", status: "pending", driverId: annaId, driverName: "Anna Lind", phone: TEST_PHONES[1], version: 1 });
+    // v0.18.5 (G2-D5.5): the owner sees only the number until the driver accepts.
+    expect(res.json()).toMatchObject({ fleetId, fleetName: "Åkessons Taxi AB", direction: "owner_invite", status: "pending", phone: TEST_PHONES[1], version: 1 });
+    expect(res.json()).not.toHaveProperty("driverName");
+    expect(res.json()).not.toHaveProperty("driverId");
+    void annaId;
     invitationId = res.json().invitationId;
     expect(new Date(res.json().expiresAt).getTime() - clock.now.getTime()).toBe(7 * 24 * 3600_000);
     const list = await notices(anna);
@@ -99,7 +103,8 @@ describe("the owner invites a number", () => {
     const declined = await call(app, "POST", `/driver/fleet/invitations/${invitationId}/decline`, anna);
     expect(declined.json()).toMatchObject({ invitationId, status: "declined", version: 2 });
     expect((await call(app, "POST", `/driver/fleet/invitations/${invitationId}/accept`, anna)).json()).toMatchObject({ code: "invalid_transition", reason: "invitation_closed" });
-    expect(await notice(owner, "Inbjudan avböjd")).toMatchObject({ body: "Anna Lind tackade nej till inbjudan." });
+    // v0.18.5 (G2-D5.5): the decline names the invited number, not the person.
+    expect(await notice(owner, "Inbjudan avböjd")).toMatchObject({ body: `${TEST_PHONES[1]} tackade nej till inbjudan.` });
     expect((await me(anna)).pendingFleetInvitations).toBe(0);
     expect(await me(anna)).not.toHaveProperty("fleet");
   });

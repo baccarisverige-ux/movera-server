@@ -17,6 +17,7 @@ import { schemaProblem } from "../contract/schemas.js";
 import { driverDocumentFile, listDocuments, uploadDocument, type Upload } from "../documents/service.js";
 import type { DocumentKey } from "../documents/files.js";
 import { ONBOARDING } from "./onboardingRules.js";
+import { riderDriverPhoto } from "../trips/driverPhoto.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
@@ -184,6 +185,13 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const { documentId } = parseBody(z.object({ documentId: ID }), request.params);
     const file = await driverDocumentFile(deps.db, deps.documentKey, who.subjectId, documentId);
     return sendFile(reply, file);
+  });
+
+  // v0.18.5 (G2-D3, contract.json#driverOnboarding.riderDriverPhoto): the trip's rider sees the driver's approved photo.
+  app.get(`${API_PREFIX}/rider/trips/:tripId/driver-photo`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    return sendFile(reply, await riderDriverPhoto(deps.db, deps.documentKey, who.subjectId, tripId, now()));
   });
 
   app.get(`${API_PREFIX}/admin/live/drivers`, async (request) => {

@@ -30,6 +30,71 @@ type DocumentRow = {
   version: number;
 };
 
+/** v0.18.5 (G2-D5.2, documents.upload.contentCheck): what the file's first bytes say it is, or null. */
+export function sniffMediaType(bytes: Buffer): string | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (bytes.length >= 5 && bytes.subarray(0, 5).toString("latin1") === "%PDF-") return "application/pdf";
+  if (bytes.length >= 12 && bytes.subarray(4, 8).toString("latin1") === "ftyp" && HEIC_BRANDS.includes(bytes.subarray(8, 12).toString("latin1"))) return "image/heic";
+  return null;
+}
+const HEIC_BRANDS = ["heic", "heix", "hevc", "hevx", "mif1", "msf1", "heim", "heis"];
+
+/** v0.18.5 (G2-D5.8, documentExpiry.maxYearsAhead): an end date at most 15 years after today. */
+export const EXPIRY_MAX_YEARS = (ONBOARDING as unknown as { documentExpiry: { maxYearsAhead: number } }).documentExpiry.maxYearsAhead;
+export function assertExpiryWithin(expiresAt: Date, now: Date): void {
+  const max = new Date(now.getTime());
+  max.setUTCFullYear(max.getUTCFullYear() + EXPIRY_MAX_YEARS);
+  if (expiresAt.getTime() > max.getTime()) throw badRequest(`The end date is more than ${EXPIRY_MAX_YEARS} years ahead. Check the end date.`, "expiry_too_far");
+}
+
+/** v0.18.5 (G2-D5.7, reviewReason): every rejection (or block) says why. */
+export function assertReason(decision: string, note: string | undefined): void {
+  if ((decision === "rejected" || decision === "blocked") && (note ?? "").trim() === "") throw badRequest("Write why, so the driver knows what to fix.", "note_required");
+}
+
+type RenewalRow = {
+  renewal_id: string;
+  document_id: string;
+  status: "in_review" | "rejected";
+  expires_at: Date | null;
+  file_name: string;
+  media_type: string;
+  file_size: number;
+  uploaded_at: Date;
+  reviewed_at: Date | null;
+  review_note: string | null;
+  version: number;
+};
+
+/** v0.18.5 (G2-D1, documentRenewal): a renewal as a Document, renewalOf = the approved document it renews. */
+function renewalView(r: RenewalRow, main: { owner_id: string; type: string }, viewer: "driver" | "admin") {
+  return {
+    documentId: r.renewal_id,
+    ownerId: main.owner_id,
+    type: main.type,
+    status: r.status,
+    ...(r.expires_at ? { expiresAt: r.expires_at.toISOString() } : {}),
+    fileUrl: viewer === "admin" ? `/api/v1/admin/documents/${r.renewal_id}/file` : `/api/v1/driver/documents/${r.renewal_id}/file`,
+    fileName: r.file_name,
+    mediaType: r.media_type,
+    uploadedAt: r.uploaded_at.toISOString(),
+    ...(r.reviewed_at ? { reviewedAt: r.reviewed_at.toISOString() } : {}),
+    ...(r.review_note !== null ? { reviewNote: r.review_note } : {}),
+    version: r.version,
+    renewalOf: r.document_id,
+  };
+}
+
+const RENEWAL_FIELDS = ["renewal_id", "document_id", "status", "expires_at", "file_name", "media_type", "file_size", "uploaded_at", "reviewed_at", "review_note", "version"] as const;
+
+/** The renewals of these documents, by document id. */
+async function renewalsOf(ex: Executor, documentIds: string[]): Promise<Map<string, RenewalRow>> {
+  if (documentIds.length === 0) return new Map();
+  const rows = (await ex.selectFrom("document_renewals").select([...RENEWAL_FIELDS]).where("document_id", "in", documentIds).execute()) as RenewalRow[];
+  return new Map(rows.map((r) => [r.document_id, r]));
+}
+
 export type Upload = { type: string; ownerId?: string | undefined; expiresAt?: string | undefined; fileName: string; mediaType: string; bytes: Buffer; truncated?: boolean };
 
 const fileUrl = (row: DocumentRow, viewer: "driver" | "admin") =>
@@ -62,7 +127,13 @@ export const documentSummary = (row: DocumentRow) => ({
 /** DocumentSummary[] of one owner (a driver or a car), oldest first. */
 export async function documentSummaries(ex: Executor, ownerKind: "driver" | "vehicle", ownerId: string) {
   const rows = await ex.selectFrom("documents").selectAll().where("owner_kind", "=", ownerKind).where("owner_id", "=", ownerId).orderBy("created_at").execute();
-  return rows.map((r) => documentSummary(r as DocumentRow));
+  const renewals = await renewalsOf(ex, rows.map((r) => r.document_id));
+  // v0.18.5 (G2-D1): a waiting renewal is listed right after the document it renews.
+  return rows.flatMap((r) => {
+    const renewal = renewals.get(r.document_id);
+    const own = documentSummary(r as DocumentRow);
+    return renewal ? [own, { documentId: renewal.renewal_id, type: r.type, status: renewal.status, ...(renewal.expires_at ? { expiresAt: renewal.expires_at.toISOString() } : {}), renewalOf: r.document_id }] : [own];
+  });
 }
 
 /** The terms, accepted on onboarding: a document of kind acceptance, approved at once. */
@@ -80,9 +151,18 @@ export async function listDocuments(ex: Executor, driverId: string, statuses?: s
   // v0.18.0 (owner decision 19): a member sees only his own documents, never a car's.
   const me = await ex.selectFrom("drivers").select(["account_type", "fleet_id"]).where("driver_id", "=", driverId).executeTakeFirst();
   if (me?.account_type === "driver") q = q.where("owner_kind", "=", "driver");
-  if (statuses?.length) q = q.where("status", "in", statuses as never);
   const rows = await q.orderBy("created_at").execute();
-  return { items: rows.map((r) => documentView(r as DocumentRow, "driver")), nextCursor: null };
+  const renewals = await renewalsOf(ex, rows.map((r) => r.document_id));
+  const keep = (status: string) => !statuses?.length || statuses.includes(status);
+  // v0.18.5 (G2-D1): the approved document and, after it, its waiting renewal.
+  const items = rows.flatMap((r) => {
+    const renewal = renewals.get(r.document_id);
+    return [
+      ...(keep(r.status) ? [documentView(r as DocumentRow, "driver")] : []),
+      ...(renewal && keep(renewal.status) ? [renewalView(renewal, r, "driver")] : []),
+    ];
+  });
+  return { items, nextCursor: null };
 }
 
 /**
@@ -99,6 +179,9 @@ export async function uploadDocument(trx: Trx, key: DocumentKey, driverId: strin
   if (!ONBOARDING.documents.upload.mediaTypes.includes(upload.mediaType)) throw badRequest("Send a JPEG, PNG, HEIC or PDF.", "unsupported_file_type");
   if (upload.truncated || upload.bytes.length > ONBOARDING.documents.upload.maxBytes) throw badRequest("The file is larger than 10 MB.", "file_too_large");
   if (upload.bytes.length === 0) throw badRequest("The file is empty.", "empty_file");
+  // v0.18.5 (G2-D5.2): the content must be a real JPEG, PNG, HEIC or PDF; it is stored as what it is.
+  const detected = sniffMediaType(upload.bytes);
+  if (detected === null) throw badRequest("This file is not a photo or PDF.", "invalid_file_content");
   const expected = info ? ownerKindOf(info) : ONBOARDING.documents.types[upload.type]!.owner;
   let ownerKind: "driver" | "vehicle" = "driver";
   let ownerId = driverId;
@@ -117,10 +200,22 @@ export async function uploadDocument(trx: Trx, key: DocumentKey, driverId: strin
   if (expected !== ownerKind) throw badRequest(`${upload.type} belongs to a ${expected === "vehicle" ? "car" : "person"}.`, "wrong_document_owner");
   const expiresAt = upload.expiresAt ? new Date(upload.expiresAt) : null;
   if (expiresAt !== null && Number.isNaN(expiresAt.getTime())) throw badRequest("expiresAt is not a date.", "invalid_expires_at");
+  if (expiresAt !== null) assertExpiryWithin(expiresAt, now);
 
-  const existing = await trx.selectFrom("documents").select(["document_id", "version"]).where("owner_kind", "=", ownerKind).where("owner_id", "=", ownerId).where("type", "=", upload.type).executeTakeFirst();
+  const existing = await trx.selectFrom("documents").select(["document_id", "version", "status", "owner_id", "type"]).where("owner_kind", "=", ownerKind).where("owner_id", "=", ownerId).where("type", "=", upload.type).forUpdate().executeTakeFirst();
+  // v0.18.5 (G2-D1, documentRenewal): an approved (or expired) document is never touched by an upload; the new file
+  // waits as its renewal (one per document, a new upload replaces it) until an admin approves it.
+  if (existing && (existing.status === "approved" || existing.status === "expired")) {
+    const sealed = sealFile(key, upload.bytes);
+    const fields = { status: "in_review" as const, expires_at: expiresAt, file_name: upload.fileName.slice(0, 200), media_type: detected, file_size: upload.bytes.length, uploaded_at: now, reviewed_at: null, reviewed_by: null, review_note: null, updated_at: now, ...sealed };
+    const prev = await trx.selectFrom("document_renewals").select(["renewal_id", "version"]).where("document_id", "=", existing.document_id).forUpdate().executeTakeFirst();
+    if (prev) await trx.updateTable("document_renewals").set({ ...fields, version: prev.version + 1 }).where("renewal_id", "=", prev.renewal_id).execute();
+    else await trx.insertInto("document_renewals").values({ renewal_id: newId("drn", now.getTime()), document_id: existing.document_id, created_at: now, ...fields }).execute();
+    const renewal = (await trx.selectFrom("document_renewals").select([...RENEWAL_FIELDS]).where("document_id", "=", existing.document_id).executeTakeFirstOrThrow()) as RenewalRow;
+    return renewalView(renewal, existing, "driver");
+  }
   const documentId = existing?.document_id ?? newId("doc", now.getTime());
-  const fields = { file_name: upload.fileName.slice(0, 200), media_type: upload.mediaType, file_size: upload.bytes.length, uploaded_at: now, expires_at: expiresAt, status: "in_review" as const, reviewed_at: null, reviewed_by: null, review_note: null, updated_at: now };
+  const fields = { file_name: upload.fileName.slice(0, 200), media_type: detected, file_size: upload.bytes.length, uploaded_at: now, expires_at: expiresAt, status: "in_review" as const, reviewed_at: null, reviewed_by: null, review_note: null, updated_at: now };
   if (existing) await trx.updateTable("documents").set({ ...fields, version: existing.version + 1 }).where("document_id", "=", documentId).execute();
   else await trx.insertInto("documents").values({ document_id: documentId, driver_id: driverId, owner_kind: ownerKind, owner_id: ownerId, type: upload.type, created_at: now, ...fields }).execute();
   const sealed = sealFile(key, upload.bytes);
@@ -138,9 +233,13 @@ async function isFleetOwner(ex: Executor, driverId: string, fleetId: string): Pr
   return fleet?.owner_driver_id === driverId;
 }
 
-/** GET /driver/documents/{id}/file: the account's own files and, for a fleet owner, his drivers' and cars'. */
+/**
+ * GET /driver/documents/{id}/file: the account's own files and, for a fleet owner, his cars'. v0.18.5 (G2-D2,
+ * ownerPrivacy): never his drivers' documents. A renewal's id opens the renewal's file (G2-D1).
+ */
 export async function driverDocumentFile(ex: Executor, key: DocumentKey, driverId: string, documentId: string): Promise<{ mediaType: string; fileName: string; bytes: Buffer }> {
-  const row = (await ex.selectFrom("documents").selectAll().where("document_id", "=", documentId).executeTakeFirst()) as DocumentRow | undefined;
+  const renewal = (await ex.selectFrom("document_renewals").selectAll().where("renewal_id", "=", documentId).executeTakeFirst()) as (RenewalRow & { key_id: string; iv: Buffer; tag: Buffer; ciphertext: Buffer }) | undefined;
+  const row = (await ex.selectFrom("documents").selectAll().where("document_id", "=", renewal?.document_id ?? documentId).executeTakeFirst()) as DocumentRow | undefined;
   if (row === undefined) throw notFound("No such document.", "document_not_found");
   // v0.18.0 (owner decision 19): a car's document only for the owner of the car's fleet.
   if (row.owner_kind === "vehicle") {
@@ -151,14 +250,11 @@ export async function driverDocumentFile(ex: Executor, key: DocumentKey, driverI
       if (car?.fleet_id && me?.fleet_id === car.fleet_id) throw new ApiError("forbidden", "Only the fleet owner handles the cars' documents.", { reason: "fleet_owner_only" });
       throw notFound("No such document.", "document_not_found");
     }
-    return readFile(ex, key, row);
+  } else if (row.driver_id !== driverId) {
+    // v0.18.5 (G2-D2): a fleet owner sees nothing of his drivers' documents.
+    throw notFound("No such document.", "document_not_found");
   }
-  let allowed = row.driver_id === driverId;
-  if (!allowed) {
-    const owner = await ex.selectFrom("drivers").select("fleet_id").where("driver_id", "=", row.driver_id).executeTakeFirst();
-    allowed = owner?.fleet_id ? await isFleetOwner(ex, driverId, owner.fleet_id) : false;
-  }
-  if (!allowed) throw notFound("No such document.", "document_not_found");
+  if (renewal) return { mediaType: renewal.media_type, fileName: renewal.file_name, bytes: openFile(key, renewal) };
   return readFile(ex, key, row);
 }
 
@@ -195,7 +291,6 @@ async function countryOfDocument(ex: Executor, row: DocumentRow): Promise<string
   return (await ex.selectFrom("drivers").select("country").where("driver_id", "=", row.driver_id).executeTakeFirst())?.country ?? null;
 }
 
-/** POST /admin/documents/{id}/review (documents.approve): approved or rejected, with a note and an expiry. */
 /** `date` plus whole calendar months (the last day of a shorter month when the day does not exist there), in UTC. */
 export function addMonths(date: Date, months: number): Date {
   const out = new Date(date.getTime());
@@ -207,26 +302,42 @@ export function addMonths(date: Date, months: number): Date {
   return out;
 }
 
-export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: string[] }, documentId: string, body: { decision: "approved" | "rejected"; expiresAt?: string | undefined; issuedAt?: string | undefined; note?: string | undefined }, now: Date) {
-  const row = await loadForAdmin(trx, who, documentId, true);
+type ReviewBody = { decision: "approved" | "rejected"; expiresAt?: string | undefined; issuedAt?: string | undefined; note?: string | undefined };
+
+/** The expiry an approval sets: the admin's date, else issuedAt + validMonths, else `fallback`; checked (items 1, R9, D5.8). */
+async function approvalExpiry(trx: Trx, row: DocumentRow, body: ReviewBody, fallback: Date | null, now: Date): Promise<Date | null> {
   // v0.18.0 (owner item 1, contract.json#driverOnboarding.documentExpiry): the admin types the expiry date when
   // approving a type of the country's expiringTypes; the admin's date wins over the one the driver sent.
   let typed = body.expiresAt ? new Date(body.expiresAt) : null;
   if (typed !== null && Number.isNaN(typed.getTime())) throw badRequest("expiresAt is not a date.", "invalid_expires_at");
-  if (body.decision === "approved") {
-    const settings = await onboardingSettings(trx, await countryOfDocument(trx, row));
-    // v0.18.3 (R9, settings.validMonths): the issue date plus the type's valid months, unless the admin typed the date.
-    if (typed === null && body.issuedAt !== undefined) {
-      const issued = new Date(body.issuedAt);
-      if (Number.isNaN(issued.getTime())) throw badRequest("issuedAt is not a date.", "invalid_issued_at");
-      if (issued.getTime() > now.getTime()) throw badRequest("The issue date cannot be in the future.", "issued_in_future");
-      const months = settings.validMonths?.[row.type];
-      if (months !== undefined) typed = addMonths(issued, months);
-    }
-    if (settings.expiringTypes.includes(row.type) && typed === null) throw badRequest("Type the expiry date to approve this document.", "expiry_required");
-    if (typed !== null && typed.getTime() <= now.getTime()) throw badRequest("The expiry date must be in the future.", "expiry_in_past");
+  if (body.decision !== "approved") return typed ?? fallback;
+  const settings = await onboardingSettings(trx, await countryOfDocument(trx, row));
+  // v0.18.3 (R9, settings.validMonths): the issue date plus the type's valid months, unless the admin typed the date.
+  if (typed === null && body.issuedAt !== undefined) {
+    const issued = new Date(body.issuedAt);
+    if (Number.isNaN(issued.getTime())) throw badRequest("issuedAt is not a date.", "invalid_issued_at");
+    if (issued.getTime() > now.getTime()) throw badRequest("The issue date cannot be in the future.", "issued_in_future");
+    const months = settings.validMonths?.[row.type];
+    if (months !== undefined) typed = addMonths(issued, months);
   }
-  const expiresAt = typed ?? row.expires_at;
+  if (settings.expiringTypes.includes(row.type) && typed === null) throw badRequest("Type the expiry date to approve this document.", "expiry_required");
+  if (typed !== null && typed.getTime() <= now.getTime()) throw badRequest("The expiry date must be in the future.", "expiry_in_past");
+  // v0.18.5 (G2-D5.8): at most 15 years ahead.
+  if (typed !== null) assertExpiryWithin(typed, now);
+  return typed ?? fallback;
+}
+
+/**
+ * POST /admin/documents/{id}/review (documents.approve): approved or rejected, with a note and an expiry. v0.18.5: a
+ * rejection needs a note (G2-D5.7); a renewal's id reviews the renewal (G2-D1): approving it puts its file and end date
+ * on the document (same documentId), rejecting it leaves the approved document as it was.
+ */
+export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: string[] }, documentId: string, body: ReviewBody, now: Date) {
+  const renewal = (await trx.selectFrom("document_renewals").selectAll().where("renewal_id", "=", documentId).forUpdate().executeTakeFirst()) as (RenewalRow & { key_id: string; iv: Buffer; tag: Buffer; ciphertext: Buffer }) | undefined;
+  if (renewal) return reviewRenewal(trx, who, renewal, body, now);
+  const row = await loadForAdmin(trx, who, documentId, true);
+  assertReason(body.decision, body.note);
+  const expiresAt = await approvalExpiry(trx, row, body, row.expires_at, now);
   await trx
     .updateTable("documents")
     .set({ status: body.decision, expires_at: expiresAt, reviewed_at: now, reviewed_by: who.subjectId, review_note: body.note ?? null, version: row.version + 1, updated_at: now })
@@ -236,6 +347,33 @@ export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: 
   await noticeDocumentReview(trx, row, body.decision, body.note ?? null, now);
   await audit(trx, { adminId: who.subjectId, action: "document.review", targetType: "document", targetId: documentId, zoneId: await zoneOfDocument(trx, row), detail: { driverId: row.driver_id, type: row.type, from: row.status, to: body.decision, note: body.note ?? null }, at: now });
   const fresh = await trx.selectFrom("documents").selectAll().where("document_id", "=", documentId).executeTakeFirstOrThrow();
+  return documentView(fresh as DocumentRow, "admin");
+}
+
+async function reviewRenewal(trx: Trx, who: { subjectId: string; zones: string[] }, renewal: RenewalRow & { key_id: string; iv: Buffer; tag: Buffer; ciphertext: Buffer }, body: ReviewBody, now: Date) {
+  const row = await loadForAdmin(trx, who, renewal.document_id, true);
+  assertReason(body.decision, body.note);
+  const zoneId = await zoneOfDocument(trx, row);
+  const detail = { driverId: row.driver_id, type: row.type, renewalId: renewal.renewal_id, from: renewal.status, to: body.decision, note: body.note ?? null };
+  if (body.decision === "rejected") {
+    await trx.updateTable("document_renewals").set({ status: "rejected", reviewed_at: now, reviewed_by: who.subjectId, review_note: body.note ?? null, version: renewal.version + 1, updated_at: now }).where("renewal_id", "=", renewal.renewal_id).execute();
+    await noticeDocumentReview(trx, row, "rejected", body.note ?? null, now);
+    await audit(trx, { adminId: who.subjectId, action: "document.review", targetType: "document", targetId: row.document_id, zoneId, detail, at: now });
+    const fresh = (await trx.selectFrom("document_renewals").select([...RENEWAL_FIELDS]).where("renewal_id", "=", renewal.renewal_id).executeTakeFirstOrThrow()) as RenewalRow;
+    return renewalView(fresh, row, "admin");
+  }
+  const expiresAt = await approvalExpiry(trx, row, body, renewal.expires_at, now);
+  const sealed = { key_id: renewal.key_id, iv: renewal.iv, tag: renewal.tag, ciphertext: renewal.ciphertext };
+  await trx
+    .updateTable("documents")
+    .set({ status: "approved", expires_at: expiresAt, file_name: renewal.file_name, media_type: renewal.media_type, file_size: renewal.file_size, uploaded_at: renewal.uploaded_at, reviewed_at: now, reviewed_by: who.subjectId, review_note: body.note ?? null, version: row.version + 1, updated_at: now })
+    .where("document_id", "=", row.document_id)
+    .execute();
+  await trx.insertInto("document_files").values({ document_id: row.document_id, ...sealed }).onConflict((c) => c.column("document_id").doUpdateSet(sealed)).execute();
+  await trx.deleteFrom("document_renewals").where("renewal_id", "=", renewal.renewal_id).execute();
+  await noticeDocumentReview(trx, row, "approved", body.note ?? null, now);
+  await audit(trx, { adminId: who.subjectId, action: "document.review", targetType: "document", targetId: row.document_id, zoneId, detail, at: now });
+  const fresh = await trx.selectFrom("documents").selectAll().where("document_id", "=", row.document_id).executeTakeFirstOrThrow();
   return documentView(fresh as DocumentRow, "admin");
 }
 
@@ -253,6 +391,7 @@ export async function driverInScope(ex: Executor, who: { zones: string[] }, driv
  */
 export async function checkDocument(trx: Trx, who: { subjectId: string; zones: string[] }, driverId: string, type: string, body: { decision: "approved" | "rejected"; note?: string | undefined }, now: Date) {
   const driver = await driverInScope(trx, who, driverId);
+  assertReason(body.decision, body.note);
   const info = driver.country ? typeInfo(await onboardingSettings(trx, driver.country), type) : undefined;
   if (info?.kind !== "admin_check") throw badRequest(`${type} is not marked by an admin.`, "not_an_admin_check");
   const existing = await trx.selectFrom("documents").select(["document_id", "version", "status"]).where("owner_kind", "=", "driver").where("owner_id", "=", driverId).where("type", "=", type).executeTakeFirst();
@@ -269,8 +408,10 @@ export async function checkDocument(trx: Trx, who: { subjectId: string; zones: s
 
 /** GET /admin/documents/{id}/file (documents.approve): the file, and an audit line that it was read. */
 export async function adminDocumentFile(trx: Trx, key: DocumentKey, who: { subjectId: string; zones: string[] }, documentId: string, now: Date) {
-  const row = await loadForAdmin(trx, who, documentId);
-  const file = await readFile(trx, key, row);
+  // v0.18.5 (G2-D1): a renewal's id opens the renewal's file.
+  const renewal = (await trx.selectFrom("document_renewals").selectAll().where("renewal_id", "=", documentId).executeTakeFirst()) as (RenewalRow & { key_id: string; iv: Buffer; tag: Buffer; ciphertext: Buffer }) | undefined;
+  const row = await loadForAdmin(trx, who, renewal?.document_id ?? documentId);
+  const file = renewal ? { mediaType: renewal.media_type, fileName: renewal.file_name, bytes: openFile(key, renewal) } : await readFile(trx, key, row);
   await audit(trx, { adminId: who.subjectId, action: "document.file", targetType: "document", targetId: documentId, zoneId: await zoneOfDocument(trx, row), detail: { driverId: row.driver_id, type: row.type }, at: now });
   return file;
 }

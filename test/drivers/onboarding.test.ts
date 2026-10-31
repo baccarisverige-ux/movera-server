@@ -51,7 +51,7 @@ function multipart(fields: Record<string, string>, file: { name: string; type: s
   parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\nContent-Type: ${file.type}\r\n\r\n`), file.bytes, Buffer.from(`\r\n--${boundary}--\r\n`));
   return { payload: Buffer.concat(parts), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
 }
-async function upload(headers: Record<string, string>, fields: Record<string, string>, file = { name: "licence.jpg", type: "image/jpeg", bytes: Buffer.from("jpeg-bytes-".repeat(100)) }) {
+async function upload(headers: Record<string, string>, fields: Record<string, string>, file = { name: "licence.jpg", type: "image/jpeg", bytes: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("jpeg-bytes-".repeat(100))]) }) {
   const body = multipart(fields, file);
   return app.inject({ method: "POST", url: "/api/v1/driver/documents", headers: { ...headers, ...body.headers, "idempotency-key": `up-${Math.random()}` }, payload: body.payload });
 }
@@ -225,8 +225,10 @@ describe("the fleet's cars", () => {
     expect((await call(app, "GET", "/driver/vehicles", member)).json().items).toEqual([expect.objectContaining({ vehicleId: carId, status: "pending", pickable: false, notPickableReason: "vehicle_not_approved" })]);
     const list = (await call(app, "GET", `/admin/vehicles?fleetId=${fleetId}`, admin.headers)).json();
     expect(list.items).toEqual([expect.objectContaining({ vehicleId: carId, status: "pending" })]);
-    const review = await call(app, "POST", `/admin/vehicles/${carId}/review`, admin.headers, { expectedVersion: 1, decision: "approved" });
-    expect(review.json()).toMatchObject({ status: "approved", version: 2 });
+    // v0.18.5 (G2-D5.3): the admin gives the categories on approval (Add car's categoryIds are ignored).
+    expect(car.json().categoryIds ?? []).toEqual([]);
+    const review = await call(app, "POST", `/admin/vehicles/${carId}/review`, admin.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy", "comfort"] });
+    expect(review.json()).toMatchObject({ status: "approved", version: 2, categoryIds: ["economy", "comfort"] });
     const mine = (await call(app, "GET", "/driver/vehicles", member)).json();
     expect(mine.items).toEqual([expect.objectContaining({ vehicleId: carId, status: "approved" })]);
     const m = await me(member);
@@ -316,13 +318,14 @@ describe("documents", () => {
     expect((await upload(member, { type: "vehicle_registration", ownerId: carId })).json()).toMatchObject({ code: "forbidden", reason: "fleet_owner_only" });
   });
 
-  it("only the owner of a file (or his fleet owner, or an admin) reads it; the admin's read is in the audit", async () => {
+  // v0.18.5 (G2-D2): the fleet owner no longer reads his drivers' files (was 200).
+  it("only the owner of a file (or an admin) reads it, never his fleet owner; the admin's read is in the audit", async () => {
     const mine = await app.inject({ method: "GET", url: `/api/v1/driver/documents/${licenceId}/file`, headers: member });
     expect(mine.statusCode).toBe(200);
     expect(mine.headers["content-type"]).toBe("application/pdf");
     expect(mine.headers["cache-control"]).toBe("private, no-store");
     expect(mine.rawPayload.toString()).toBe("%PDF-1.4 test");
-    expect((await app.inject({ method: "GET", url: `/api/v1/driver/documents/${licenceId}/file`, headers: owner })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/v1/driver/documents/${licenceId}/file`, headers: owner })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: `/api/v1/driver/documents/${licenceId}/file`, headers: second })).statusCode).toBe(404);
     const sup = await adminSession(app, database.db, "super", { now: clock.now });
     const byAdmin = await app.inject({ method: "GET", url: `/api/v1/admin/documents/${licenceId}/file`, headers: sup.headers });

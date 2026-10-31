@@ -70,13 +70,15 @@ const fullName = (d: { first_name: string; last_name: string }) => `${d.first_na
 
 export function invitationView(row: InvitationRow, fleetName: string, driver: { first_name: string; last_name: string } | undefined, viewer: "driver" | "owner" | "admin", now: Date) {
   const status = row.status === "pending" && row.expires_at.getTime() <= now.getTime() ? "expired" : row.status;
+  // v0.18.5 (G2-D5.5, fleetInvitations.privacy): the owner sees only the invited number until the driver accepts.
+  const hidden = viewer === "owner" && row.direction === "owner_invite" && status !== "accepted";
   return {
     invitationId: row.invitation_id,
     fleetId: row.fleet_id,
     fleetName,
     direction: row.direction,
-    ...(row.driver_id ? { driverId: row.driver_id } : {}),
-    ...(driver ? { driverName: fullName(driver) } : {}),
+    ...(row.driver_id && !hidden ? { driverId: row.driver_id } : {}),
+    ...(driver && !hidden ? { driverName: fullName(driver) } : {}),
     ...(row.phone && viewer !== "driver" ? { phone: row.phone } : {}),
     status,
     createdAt: row.created_at.toISOString(),
@@ -296,7 +298,8 @@ export async function declineInvitation(trx: Trx, _deps: InviteDeps, actorId: st
     await notify(trx, { audience: "driver", subjectId: driver.driver_id, kind: KIND, title: words("declined_title", language(driver), ""), body: words("declined_body_driver", language(driver), fleet.name), data: { invitationId, status: "declined" } }, now);
   } else {
     const owner = await loadDriver(trx, fleet.owner_driver_id);
-    await notify(trx, { audience: "driver", subjectId: owner.driver_id, kind: KIND, title: words("declined_title", language(owner), ""), body: words("declined_body_owner", language(owner), fullName(driver)), data: { invitationId, status: "declined" } }, now);
+    // v0.18.5 (G2-D5.5): the owner never learns the name of a driver who declined; only the number he invited.
+    await notify(trx, { audience: "driver", subjectId: owner.driver_id, kind: KIND, title: words("declined_title", language(owner), ""), body: words("declined_body_owner", language(owner), row.phone ?? fullName(driver)), data: { invitationId, status: "declined" } }, now);
   }
   return viewOf(trx, await load(trx, invitationId), row.direction === "owner_invite" ? "driver" : "owner", now);
 }

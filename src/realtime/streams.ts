@@ -6,6 +6,7 @@ import { CONFIG_CHANNEL, liveDocument } from "../config/service.js";
 import type { Principal } from "../auth/guard.js";
 import { newId } from "../ids.js";
 import { eventEnvelope } from "./events.js";
+import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "./hub.js";
 import { openEventStream } from "./sse.js";
 
@@ -18,11 +19,13 @@ import { openEventStream } from "./sse.js";
 
 type Who = Pick<Principal, "actor" | "subjectId">;
 
-async function maySee(db: Db, tripId: string, who: Who): Promise<boolean> {
-  if (who.actor === "admin") return true;
-  const trip = await db.selectFrom("trips").select(["rider_id", "driver_id"]).where("trip_id", "=", tripId).executeTakeFirst();
-  if (trip === undefined) return false;
-  return (who.actor === "rider" && trip.rider_id === who.subjectId) || (who.actor === "driver" && trip.driver_id === who.subjectId);
+/** Whether `who` may see the trip, and (v0.18.5 G9) whether its chat text is hidden from him: rider / driver after the trip. */
+async function maySee(db: Db, tripId: string, who: Who): Promise<{ ok: boolean; hideMessage: boolean }> {
+  if (who.actor === "admin") return { ok: true, hideMessage: false };
+  const trip = await db.selectFrom("trips").select(["rider_id", "driver_id", "status"]).where("trip_id", "=", tripId).executeTakeFirst();
+  if (trip === undefined) return { ok: false, hideMessage: true };
+  const ok = (who.actor === "rider" && trip.rider_id === who.subjectId) || (who.actor === "driver" && trip.driver_id === who.subjectId);
+  return { ok, hideMessage: TERMINAL.has(trip.status as TripStatus) };
 }
 
 export async function streamTrip(
@@ -48,7 +51,8 @@ export async function streamTrip(
     try {
       do {
         again = false;
-        if (!(await maySee(deps.db, tripId, who))) {
+        const access = await maySee(deps.db, tripId, who);
+        if (!access.ok) {
           stream.comment("access ended");
           stream.close();
           return;
@@ -57,7 +61,7 @@ export async function streamTrip(
         const now = deps.clock?.() ?? new Date();
         for (const row of rows) {
           if (stream.closed()) return;
-          stream.send(Number(row.sequence), eventEnvelope(row, viewer, now));
+          stream.send(Number(row.sequence), eventEnvelope(row, viewer, now, { hideMessage: access.hideMessage }));
           last = Number(row.sequence);
         }
         if (rows.length === 200) again = true;

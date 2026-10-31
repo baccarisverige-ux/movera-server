@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { sql } from "kysely";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
@@ -108,7 +109,7 @@ const step = async (tripId: string, path: string, version: number, body: Record<
 const send = (tripId: string, who: Record<string, string>, text: unknown, key?: string) => call(app, "POST", `/trips/${tripId}/messages`, who, { text }, key);
 const list = async (tripId: string, who: Record<string, string>, query = "") => (await call(app, "GET", `/trips/${tripId}/messages${query}`, who)).json();
 const tripView = async (tripId: string, who: Record<string, string>) => (await call(app, "GET", `/trips/${tripId}`, who)).json();
-const latestNotice = async (who: Record<string, string>) => (await call(app, "GET", "/notifications?limit=1", who)).json().items[0];
+const noticesOf = async (who: Record<string, string>, kind: string) => (await call(app, "GET", "/notifications?limit=200", who)).json().items.filter((n: { kind: string }) => n.kind === kind);
 
 describe("the trip chat", () => {
   it("M1 the rider writes and the driver reads it; the driver answers and the rider's stream carries a message event with the version unchanged", async () => {
@@ -124,13 +125,13 @@ describe("the trip chat", () => {
     const page = await list(tripId, drivers.A.headers);
     expect(schemaProblem("MessagePage", page)).toBeNull();
     expect(page).toEqual({ items: [message], nextCursor: null });
-    // The driver hears of it in the app, with the text itself.
-    expect(await latestNotice(drivers.A.headers)).toMatchObject({ kind: "trip_message", title: "Message from your rider", body: message.text, tripId, read: false });
+    // v0.18.5 (G9, chat.appStorage): no bell notice keeps the message; the stream's message event is the live alert.
+    expect(await noticesOf(drivers.A.headers, "trip_message")).toEqual([]);
 
     const reply = (await send(tripId, drivers.A.headers, "Two minutes, white Volvo")).json();
     expect(reply.from).toBe("driver");
     expect((await list(tripId, rider)).items.map((m: { messageId: string }) => m.messageId)).toEqual([message.messageId, reply.messageId]);
-    expect(await latestNotice(rider)).toMatchObject({ kind: "trip_message", title: "Message from your driver", body: "Two minutes, white Volvo", tripId });
+    expect(await noticesOf(rider, "trip_message")).toEqual([]);
 
     // Both messages are on the trip's stream as `message` events: the Message in the envelope, no projection,
     // and the version the trip had, because a message changes nothing about the trip.
@@ -153,8 +154,9 @@ describe("the trip chat", () => {
     expect((await list(tripId, rider)).items).toEqual([sent.json()]);
     expect((await list(tripId, drivers.A.headers)).items).toEqual([sent.json()]);
     expect((await list(tripId, admin.headers)).items).toEqual([sent.json()]);
-    expect(await latestNotice(rider)).toMatchObject({ kind: "trip_message", title: "Message from Movera", tripId });
-    expect(await latestNotice(drivers.A.headers)).toMatchObject({ kind: "trip_message", title: "Message from Movera", tripId });
+    // v0.18.5 (G9): no stored notice for chat messages, support's included.
+    expect(await noticesOf(rider, "trip_message")).toEqual([]);
+    expect(await noticesOf(drivers.A.headers, "trip_message")).toEqual([]);
   });
 
   it("M3 another rider, or a driver who is not on the trip, finds no trip", async () => {
@@ -224,7 +226,7 @@ describe("the trip chat", () => {
     expect(bad.json()).toMatchObject({ code: "invalid_request", reason: "invalid_cursor" });
   });
 
-  it("M8 the chat closes at drop-off: the rider and the driver get 409 chat_closed at once, reading stays, support may still write", async () => {
+  it("M8 the chat closes at drop-off: the rider and the driver get 409 chat_closed at once and read no history (v0.18.5 G9); support reads and may still write", async () => {
     const { tripId, version } = await accepted();
     expect((await send(tripId, rider, "I'm at the main door")).statusCode).toBe(201);
     let v = version;
@@ -239,8 +241,11 @@ describe("the trip chat", () => {
       expect(late.statusCode).toBe(409);
       expect(late.json()).toMatchObject({ code: "invalid_transition", reason: "chat_closed", projection: { tripId, status: "completed" } });
     }
-    expect((await list(tripId, drivers.A.headers)).items.map((m: { text: string }) => m.text)).toEqual(["I'm at the main door"]);
+    // v0.18.5 (G9, chat.appStorage.afterTrip): after the trip the apps get no chat history.
+    expect(await list(tripId, drivers.A.headers)).toEqual({ items: [], nextCursor: null, closed: true });
+    expect(await list(tripId, rider)).toEqual({ items: [], nextCursor: null, closed: true });
     const admin = await adminSession(app, database.db, "support", { now: clock.now });
+    expect((await list(tripId, admin.headers)).items.map((m: { text: string }) => m.text)).toEqual(["I'm at the main door"]);
     expect((await send(tripId, admin.headers, "Movera here: we found your umbrella.")).statusCode).toBe(201);
     const callAfter = await call(app, "POST", `/trips/${tripId}/call`, rider, {});
     expect(callAfter.statusCode).toBe(409);
@@ -309,5 +314,27 @@ describe("the trip chat", () => {
     const events = await database.db.selectFrom("trip_events").select(["trip_id", "message"]).where("kind", "=", "message").where("trip_id", "in", [kept.tripId, gone.tripId]).execute();
     expect(events.find((e) => e.trip_id === gone.tripId)?.message).toBeNull();
     expect(events.find((e) => e.trip_id === kept.tripId)?.message).not.toBeNull();
+  });
+
+  it("M12 v0.18.5 (G9): after the trip the rider's and driver's events carry no message text, the admin's keep it; old chat notices are deleted by migration 0038", async () => {
+    const { tripId, version } = await accepted();
+    const before = await tripView(tripId, rider);
+    expect((await send(tripId, drivers.A.headers, "White Volvo, outside")).statusCode).toBe(201);
+    // During the trip the stream still carries the message (the live alert).
+    const live = (await call(app, "GET", `/trips/${tripId}/events?after=${before.sequence}`, rider)).json().items;
+    expect(live[0]).toMatchObject({ kind: "message", message: { text: "White Volvo, outside" } });
+    await database.db.updateTable("trips").set({ status: "completed", version: version + 1 }).where("trip_id", "=", tripId).execute();
+    for (const side of [rider, drivers.A.headers]) {
+      const events = (await call(app, "GET", `/trips/${tripId}/events?after=${before.sequence}`, side)).json().items;
+      expect(events[0]).toMatchObject({ kind: "message" });
+      expect(events[0]).not.toHaveProperty("message");
+    }
+    const admin = await adminSession(app, database.db, "support", { now: clock.now });
+    const adminEvents = (await call(app, "GET", `/trips/${tripId}/events?after=${before.sequence}`, admin.headers)).json().items;
+    expect(adminEvents[0]).toMatchObject({ kind: "message", message: { text: "White Volvo, outside" } });
+    // Notices written by an older server: the migration removes them.
+    await database.db.insertInto("notifications").values({ notification_id: "ntf_old_chat_1", audience: "driver", subject_id: drivers.A.id, kind: "trip_message", title: "Meddelande från din passagerare", body: "hi", deep_link: null, trip_id: tripId, data: "{}", created_at: clock.now } as never).execute();
+    await sql.raw(readFileSync(new URL("../../migrations/0038_deep_fixes.sql", import.meta.url), "utf8")).execute(database.db);
+    expect(await noticesOf(drivers.A.headers, "trip_message")).toEqual([]);
   });
 });

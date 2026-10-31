@@ -8,7 +8,8 @@ import { ApiError, notFound } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
-import { adminDocumentFile, checkDocument, driverInScope, reviewDocument } from "../documents/service.js";
+import { adminDocumentFile, assertReason, checkDocument, driverInScope, reviewDocument } from "../documents/service.js";
+import { EXTRA_CATEGORIES, onboardingSettings } from "../drivers/onboardingSettings.js";
 import type { DocumentKey } from "../documents/files.js";
 import { adminGetFleet, adminRemoveFleetDriver, listFleets, renewFleetCode, reviewFleet } from "../drivers/onboarding.js";
 import { adminDecideInvitation, type InviteDeps } from "../drivers/invitations.js";
@@ -32,7 +33,7 @@ const FleetsQuery = z.object({ ...Page, status: many, country: z.string().length
 const VehiclesQuery = z.object({ ...Page, status: many, driverId: ID.optional(), fleetId: ID.optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
 const FleetReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional() });
 const VersionBody = z.object(Version);
-const VehicleReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional() });
+const VehicleReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional(), categoryIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,39}$/)).max(20).optional() });
 const DocumentReviewBody = z.object({ decision: z.enum(["approved", "rejected"]), expiresAt: z.string().datetime().optional(), issuedAt: z.string().datetime().optional(), note: z.string().max(1000).optional() });
 
 const keyOf = (request: FastifyRequest) => {
@@ -182,18 +183,28 @@ async function listVehicles(ex: Executor, who: Principal, input: { cursor?: stri
 }
 
 /** POST /admin/vehicles/{id}/review: a car that is no longer approved takes its driver offline (not on a trip). */
-async function reviewVehicle(trx: Db extends never ? never : import("../db/db.js").Trx, who: Principal, vehicleId: string, body: { expectedVersion: number; decision: "approved" | "rejected" | "blocked"; note?: string | undefined }, now: Date) {
+async function reviewVehicle(trx: Db extends never ? never : import("../db/db.js").Trx, who: Principal, vehicleId: string, body: { expectedVersion: number; decision: "approved" | "rejected" | "blocked"; note?: string | undefined; categoryIds?: string[] | undefined }, now: Date) {
   const row = (await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", vehicleId).forUpdate().executeTakeFirst()) as VehicleRow | undefined;
   if (row === undefined) throw notFound("No such vehicle.", "vehicle_not_found");
   const zone = await zoneOfVehicle(trx, row);
   if (!who.zones.includes("*") && (zone === null || !who.zones.includes(zone))) throw new ApiError("forbidden", "This car is outside your zones.", { reason: "zone_out_of_scope" });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The car changed since you last saw it.", { projection: await vehicleFullView(trx, row) });
+  // v0.18.5 (G2-D5.7): a rejection or a block says why.
+  assertReason(body.decision, body.note);
   // v0.18.3 (R2, vehicleRules.approval): a car that breaks its country's car rules cannot be approved.
+  // v0.18.5 (G2-D5.3, vehicleRules.categoriesByAdmin): the admin gives the categories when approving (else the car's own,
+  // set by PATCH); at least one ride category, each one the car fits.
+  const categoryIds = body.decision === "approved" ? [...new Set(body.categoryIds ?? row.category_ids)] : row.category_ids;
   if (body.decision === "approved") {
-    const problems = await rulesBrokenBy(trx, row, await vehicleCountry(trx, row));
+    if (!categoryIds.some((c) => !EXTRA_CATEGORIES.includes(c))) throw new ApiError("invalid_request", "Give the car at least one ride category.", { reason: "categories_required" });
+    const country = await vehicleCountry(trx, row);
+    // Checker finding 4: an id that is no category of the car's country (nor an extra) is refused, never stored.
+    const known = new Set([...(await onboardingSettings(trx, country)).vehicles.categories.map((r) => r.category), ...EXTRA_CATEGORIES]);
+    const unknown = categoryIds.filter((c) => !known.has(c)).map((c) => `${c}:unknown_category`);
+    const problems = [...unknown, ...(await rulesBrokenBy(trx, { ...row, category_ids: categoryIds.filter((c) => known.has(c)) }, country))];
     if (problems.length > 0) throw new ApiError("invalid_transition", "The car breaks the car rules of its country.", { reason: "vehicle_rules_not_met", details: problems });
   }
-  await trx.updateTable("vehicles").set({ status: body.decision, version: row.version + 1, updated_at: now }).where("vehicle_id", "=", vehicleId).execute();
+  await trx.updateTable("vehicles").set({ status: body.decision, category_ids: categoryIds, version: row.version + 1, updated_at: now }).where("vehicle_id", "=", vehicleId).execute();
   if (body.decision !== "approved") {
     const drivers = await trx.selectFrom("drivers").select(["driver_id", "online_status", "version"]).where("vehicle_id", "=", vehicleId).where("online_status", "in", ["online", "going_online"]).execute();
     for (const d of drivers) {
@@ -203,7 +214,7 @@ async function reviewVehicle(trx: Db extends never ? never : import("../db/db.js
   }
   // v0.18.3 (R6): the bell notice to the car's fleet owner.
   await noticeVehicleReview(trx, row, body.decision, body.note ?? null, now);
-  await audit(trx, { adminId: who.subjectId, action: "vehicle.review", targetType: "vehicle", targetId: vehicleId, zoneId: zone, detail: { from: row.status, to: body.decision, note: body.note ?? null }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "vehicle.review", targetType: "vehicle", targetId: vehicleId, zoneId: zone, detail: { from: row.status, to: body.decision, note: body.note ?? null, ...(body.decision === "approved" ? { categoryIds } : {}) }, at: now });
   const fresh = await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", vehicleId).executeTakeFirstOrThrow();
   return vehicleFullView(trx, fresh as unknown as VehicleRow);
 }

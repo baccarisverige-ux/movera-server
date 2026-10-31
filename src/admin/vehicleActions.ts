@@ -172,5 +172,7 @@ export async function adminReviewBank(trx: Trx, who: Principal, driverId: string
   if (body.decision === "rejected" && !body.note?.trim()) throw badRequest("Say why the bank details are rejected.", "note_required");
   const doc = await trx.selectFrom("documents").select("document_id").where("owner_kind", "=", "driver").where("owner_id", "=", driverId).where("type", "=", "bank_statement").executeTakeFirst();
   if (doc === undefined) throw notFound("No bank details are uploaded yet.", "bank_not_uploaded");
-  return reviewDocument(trx, who, doc.document_id, { decision: body.decision, ...(body.note ? { note: body.note } : {}) }, now);
+  // v0.18.5 (G2-D1): new bank details waiting as a renewal are the ones reviewed.
+  const renewal = await trx.selectFrom("document_renewals").select("renewal_id").where("document_id", "=", doc.document_id).where("status", "=", "in_review").executeTakeFirst();
+  return reviewDocument(trx, who, renewal?.renewal_id ?? doc.document_id, { decision: body.decision, ...(body.note ? { note: body.note } : {}) }, now);
 }

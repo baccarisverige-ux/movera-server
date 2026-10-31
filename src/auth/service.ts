@@ -23,7 +23,7 @@ import { attachInvitesToNewDriver } from "../drivers/invitations.js";
 
 type AuthContract = {
   otp: { codeLength: number; expiresSeconds: number; retryAfterSeconds: number; maxAttempts: number };
-  tokens: { accessExpiresSeconds: number; refreshExpiresDays: number };
+  tokens: { accessExpiresSeconds: number; refreshExpiresDays: number; refreshRetryWindowSeconds: number };
   testSignIn: { code: string };
 };
 const AUTH = (contract as unknown as { auth: AuthContract }).auth;
@@ -44,7 +44,7 @@ export const TEST_CODE = AUTH.testSignIn.code;
  * A refresh answer lost on a bad connection makes the app send the same refresh token again. Within this
  * window that is a retry, not theft: the unused replacement is dropped and a new pair is issued.
  */
-export const REFRESH_RETRY_WINDOW_MS = 60_000;
+export const REFRESH_RETRY_WINDOW_MS = AUTH.tokens.refreshRetryWindowSeconds * 1000; // v0.18.5 (G1-B6): 60 s, contract.json#auth.tokens.refreshRetry
 
 export type App = "rider" | "driver";
 
@@ -207,7 +207,11 @@ export async function verifyOtp(
       return { ok: false, error: badRequest("This sign-in is not active. Ask for a new code.", "invalid_otp_session") };
     }
     if (!sameHash(session.code_sha256, codeHash(session.session_id, input.code))) {
-      await trx.updateTable("otp_sessions").set({ attempts: session.attempts + 1 }).where("session_id", "=", session.session_id).execute();
+      const attempts = session.attempts + 1;
+      await trx.updateTable("otp_sessions").set({ attempts }).where("session_id", "=", session.session_id).execute();
+      // v0.18.5 (G1-B3, owner "Fix it (Recommended)"): counted before the answer, so the wrong code that reaches
+      // maxAttempts (the 5th) already says "Too many wrong tries".
+      if (attempts >= session.max_attempts) return { ok: false, error: rateLimited("Too many wrong codes. Ask for a new code.", OTP.retryAfterSeconds, "otp_too_many_attempts") };
       return { ok: false, error: badRequest("That code is not right.", "invalid_otp_code") };
     }
     await trx.updateTable("otp_sessions").set({ consumed_at: now, attempts: session.attempts + 1 }).where("session_id", "=", session.session_id).execute();

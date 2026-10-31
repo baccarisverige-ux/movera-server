@@ -10,7 +10,7 @@ import { zoneAt } from "../config/zoneLookup.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { documentSummaries } from "../documents/service.js";
-import { carRuleProblems, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
+import { EXTRA_CATEGORIES, carRuleProblems, categoryProblem, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
 import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
 import { signUpView } from "./reminders.js";
 import { DRIVER_HOME, areaView, hasFreshPosition } from "./presence.js";
@@ -354,13 +354,25 @@ export async function vehicleFullView(ex: Executor, v: VehicleRow, viewer?: { dr
   const pick = viewer ? await pickability(ex, v, viewer.driverId, inUse) : undefined;
   // v0.18.3 (R2): the rules the car breaks now, for the admin's red warning and the fleet owner.
   const ruleProblems = !viewer || viewer.owner ? await rulesBrokenBy(ex, v, country) : [];
+  // v0.18.5 (G2-D5.3, vehicleRules.fitCategories): the categories the admin may give this car.
+  const fit = !viewer || viewer.owner ? await fitCategories(ex, v, country) : undefined;
   return {
     ...vehicleView(v),
     ...(v.fleet_id ? { inUse } : {}),
     ...(ruleProblems.length > 0 ? { ruleProblems } : {}),
+    ...(fit ? { fitCategories: fit } : {}),
     ...(viewer && !viewer.owner ? {} : { documents: await documentSummaries(ex, "vehicle", v.vehicle_id), requiredDocuments: await liveRequiredDocuments(ex, country, "vehicle") }),
     ...(pick ? { pickable: pick.reason === null, ...(pick.reason ? { notPickableReason: pick.reason } : {}) } : {}),
   };
+}
+
+/** v0.18.5 (G2-D5.3): the country's ride categories that are on, and the extras, that the car fits now. */
+export async function fitCategories(ex: Executor, v: Pick<VehicleRow, "year" | "seats"> & { fuel?: Fuel | null }, country: string | null): Promise<string[] | undefined> {
+  if (!country) return undefined;
+  const settings = await onboardingSettings(ex, country);
+  const car = { year: v.year, seats: v.seats, fuel: v.fuel ?? null };
+  const all = [...new Set([...settings.vehicles.categories.filter((r) => r.on).map((r) => r.category), ...EXTRA_CATEGORIES])];
+  return all.filter((c) => categoryProblem(car, settings, c) === null);
 }
 
 /** v0.18.3 (R2, vehicleRules.approval): "<category>:<problem>" for every car rule of its country the car breaks. */
@@ -412,15 +424,16 @@ export async function addVehicle(trx: Trx, driverId: string, body: unknown, now:
   if (country) {
     const settings = await onboardingSettings(trx, country);
     const car = { year: v.year, seats: v.seats ?? 4, fuel: v.fuel ?? null };
-    // v0.18.3 (R2): the base year for every car, an extra only with a ride category.
-    const problems = carRuleProblems(car, settings, v.categoryIds ?? []);
+    // v0.18.5 (G2-D5.3, "The owner never decide !!"): the categories the app sends are ignored; the admin gives them
+    // on approval. The car is still held to the country's base year (car:year_too_old).
+    const problems = carRuleProblems(car, settings, []);
     if (problems.length > 0) throw new ApiError("invalid_request", "The car does not fit every chosen category.", { reason: "category_not_allowed", details: problems });
   }
   const vehicleId = newId("veh", now.getTime());
   try {
     await trx
       .insertInto("vehicles")
-      .values({ vehicle_id: vehicleId, driver_id: fleetId ? null : driverId, fleet_id: fleetId, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate.toUpperCase(), seats: v.seats ?? 4, category_ids: v.categoryIds ?? [], fuel: v.fuel ?? null, created_at: now, updated_at: now })
+      .values({ vehicle_id: vehicleId, driver_id: fleetId ? null : driverId, fleet_id: fleetId, make: v.make, model: v.model, year: v.year, color: v.color, plate: v.plate.toUpperCase(), seats: v.seats ?? 4, category_ids: [], fuel: v.fuel ?? null, created_at: now, updated_at: now })
       .execute();
   } catch (error) {
     if ((error as { constraint?: string }).constraint === "vehicles_plate") throw new ApiError("conflict", "A car with this plate is already registered.", { reason: "plate_taken" });

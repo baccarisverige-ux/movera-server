@@ -10,6 +10,7 @@ import { parseBody } from "../http/validate.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { CONFIG_CHANNEL, getZone } from "../config/service.js";
+import { unacceptedLegalCountries } from "../legal/service.js";
 
 /**
  * Contract v0.10.0 §19 (owner Content answers 2026-10-28, contract.json#content): the admin's Content page publishes
@@ -133,7 +134,8 @@ async function unacceptedZones(ex: Executor, actor: "rider" | "driver", subjectI
 
 /** §19 Legal: until the new terms are accepted the rider cannot book and the driver cannot go online. */
 export async function termsAccepted(ex: Executor, actor: "rider" | "driver", subjectId: string, zoneIds: readonly string[]): Promise<boolean> {
-  return (await unacceptedZones(ex, actor, subjectId, zoneIds)).length === 0;
+  // v0.18.5 (G1-B2): also the country's legal texts (contract.json#legal) when their live version asks for re-acceptance.
+  return (await unacceptedZones(ex, actor, subjectId, zoneIds)).length === 0 && (await unacceptedLegalCountries(ex, actor, subjectId, zoneIds)).length === 0;
 }
 
 export const TERMS_REASON = "terms_not_accepted";

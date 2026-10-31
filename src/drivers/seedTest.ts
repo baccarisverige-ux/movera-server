@@ -84,6 +84,7 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
   else await trx.insertInto("fleets").values({ fleet_id: fleetId, owner_driver_id: ownerId, created_at: now, ...fleetValues }).execute();
 
   // Every driver in the fleet, each with an approved fleet car picked, and every required document approved.
+  // v0.18.5 (G2-D5.4): 7 seats and electric, so the cars fit every category they have (XL, Electric); migration 0038.
   const vehicleIds = new Map<string, string>();
   for (const d of accounts.drivers) {
     const driverId = driverIds.get(d.phone)!;
@@ -91,7 +92,7 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
     // The plate index ignores case and spaces (vehicles_plate), so the lookup does too.
     const car = await trx.selectFrom("vehicles").select("vehicle_id").where(sql<boolean>`upper(replace(plate, ' ', '')) = ${plate.replace(/\s+/g, "")}`).executeTakeFirst();
     const vehicleId = car?.vehicle_id ?? newId("veh", now.getTime());
-    const carValues = { driver_id: driverId, fleet_id: fleetId, make: d.car.make, model: d.car.model, year: d.car.year, color: d.car.color, plate, seats: 4, category_ids: d.car.categoryIds, status: "approved" as const, updated_at: now };
+    const carValues = { driver_id: driverId, fleet_id: fleetId, make: d.car.make, model: d.car.model, year: d.car.year, color: d.car.color, plate, seats: 7, fuel: "electric" as const, category_ids: d.car.categoryIds, status: "approved" as const, updated_at: now };
     if (car) await trx.updateTable("vehicles").set(carValues).where("vehicle_id", "=", vehicleId).execute();
     else await trx.insertInto("vehicles").values({ vehicle_id: vehicleId, created_at: now, ...carValues }).execute();
     vehicleIds.set(d.phone, vehicleId);

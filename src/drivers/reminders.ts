@@ -24,12 +24,15 @@ export type Reminder = {
   expiresAt?: string;
   daysLeft?: number;
   reviewNote?: string;
-  fix?: { target: string; documentType?: string; scope?: Scope; vehicleId?: string; contentSlot?: string };
-  actions?: Array<{ target: string }>;
+  renewalStatus?: "in_review" | "rejected";
+  invitationId?: string;
+  fleetName?: string;
+  fix?: { target: string; documentType?: string; scope?: Scope; vehicleId?: string; contentSlot?: string; invitationId?: string };
+  actions?: Array<{ target: string; invitationId?: string }>;
 };
 
 type DriverLike = { driver_id: string; country: string | null; account_type: string | null; account_status: string; fleet_id: string | null; vehicle_id: string | null; language?: string | null; created_at?: Date };
-type DocRow = { document_id: string; type: string; status: string; expires_at: Date | null; review_note: string | null; owner_id: string };
+type DocRow = { document_id: string; type: string; status: string; expires_at: Date | null; review_note: string | null; owner_id: string; renewal_status?: "in_review" | "rejected" | null; renewal_note?: string | null };
 
 const INFO = (contract as unknown as { driverOnboarding: { infoSession: { type: string; status: string; contentSlot: string } } }).driverOnboarding.infoSession;
 type SignUpText = { kind: string; text: { title: Record<string, string>; body: Record<string, string> } };
@@ -66,7 +69,8 @@ function documentLines(required: string[], docs: DocRow[], scope: Scope, setting
     else if (doc.status === "in_review") out.push({ kind: "document_in_review", level: "waiting", ...base, status: "in_review" });
     else if (doc.expires_at !== null) {
       const left = daysLeft(doc.expires_at, now);
-      const at = { expiresAt: doc.expires_at.toISOString(), daysLeft: left };
+      // v0.18.5 (G2-D1): a renewal waiting (or rejected) shows on the line; it never changes the level.
+      const at = { expiresAt: doc.expires_at.toISOString(), daysLeft: left, ...(doc.renewal_status ? { renewalStatus: doc.renewal_status } : {}), ...(doc.renewal_status === "rejected" && doc.renewal_note ? { reviewNote: doc.renewal_note } : {}) };
       if (doc.status === "expired" || left === 0) out.push({ kind: "document_expired", level: blocks ? "blocks_online" : "due_soon", ...base, status: "expired", ...at, fix });
       else if (left <= firstWarning) out.push({ kind: "document_expiring", level: "due_soon", ...base, status: "expiring", ...at, fix });
     }
@@ -76,7 +80,13 @@ function documentLines(required: string[], docs: DocRow[], scope: Scope, setting
 
 async function docsOf(ex: Executor, ownerKind: "driver" | "vehicle", ownerIds: string[]): Promise<DocRow[]> {
   if (ownerIds.length === 0) return [];
-  return (await ex.selectFrom("documents").select(["document_id", "type", "status", "expires_at", "review_note", "owner_id"]).where("owner_kind", "=", ownerKind).where("owner_id", "in", ownerIds).execute()) as DocRow[];
+  return (await ex
+    .selectFrom("documents")
+    .leftJoin("document_renewals", "document_renewals.document_id", "documents.document_id")
+    .select(["documents.document_id", "documents.type", "documents.status", "documents.expires_at", "documents.review_note", "documents.owner_id", "document_renewals.status as renewal_status", "document_renewals.review_note as renewal_note"])
+    .where("documents.owner_kind", "=", ownerKind)
+    .where("documents.owner_id", "in", ownerIds)
+    .execute()) as DocRow[];
 }
 
 /** GET /driver/reminders (contract.json#driverOnboarding.reminders). */
@@ -108,6 +118,13 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date)
     if (fleet && fleet.status !== "approved") items.push({ kind: "fleet_not_approved", level: "blocks_online" });
     // v0.18.3 (R4): a driver account in no fleet is told to join one (or start his own company).
     if (driver.account_type === "driver" && driver.fleet_id === null) items.push({ kind: "no_fleet", level: "blocks_online", fix: { target: "join_fleet" }, actions: [{ target: "join_fleet" }, { target: "start_company" }] });
+    // v0.18.5 (G2-D5.6): an owner's pending invitation, with Accept / Decline.
+    if (driver.account_type === "driver" && driver.fleet_id === null) {
+      const invites = await ex.selectFrom("fleet_invitations").innerJoin("fleets", "fleets.fleet_id", "fleet_invitations.fleet_id")
+        .select(["fleet_invitations.invitation_id", "fleets.name"]).where("fleet_invitations.driver_id", "=", driver.driver_id).where("fleet_invitations.direction", "=", "owner_invite")
+        .where("fleet_invitations.status", "=", "pending").where("fleet_invitations.expires_at", ">", now).orderBy("fleet_invitations.created_at").execute();
+      for (const i of invites) items.push({ kind: "fleet_invitation", level: "waiting", invitationId: i.invitation_id, fleetName: i.name, actions: [{ target: "accept_invitation", invitationId: i.invitation_id }, { target: "decline_invitation", invitationId: i.invitation_id }] });
+    }
     if (fleet && fleet.status === "approved" && driver.vehicle_id === null) {
       const pickable = await pickableCars(ex, fleet.fleet_id, now, driver.driver_id);
       if (pickable.length === 0) items.push({ kind: "fleet_no_approved_car", level: "blocks_online", ...(owner ? { fix: { target: "fleet_vehicles" } } : {}) });

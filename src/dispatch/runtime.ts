@@ -1,4 +1,5 @@
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
+import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent, lockTrip, OFFER_EVENTS_CHANNEL, type TripRow } from "../db/tripLog.js";
@@ -480,6 +481,9 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
     ...(driver.rating_count > 0 ? { rating: Math.round((driver.rating_sum / driver.rating_count) * 100) / 100 } : {}),
     vehicle: vehicle ? { vehicleId: vehicle.vehicle_id, make: vehicle.make, model: vehicle.model, color: vehicle.color, plate: vehicle.plate, categoryId: trip.category_id } : {},
   };
+  // v0.18.5 (G2-D3): the rider's link to the driver's approved photo, only when he has one.
+  const photoUrl = await driverPhotoUrl(trx, driverId, trip.trip_id, now);
+  if (photoUrl) Object.assign(summary, { photoUrl });
   const earnings = Number(offer.driver_earnings_minor);
   const pickupPay = Number(offer.pickup_pay_minor);
   trip = await applyCommand(trx, trip, {

@@ -23,7 +23,11 @@ export function redactProjection(projection: Record<string, unknown>, viewer: Vi
   return out;
 }
 
-export function eventEnvelope(row: Selectable<TripEventsTable>, viewer: Viewer, serverTime: Date): Record<string, unknown> {
+/**
+ * `hideMessage` (v0.18.5 G9, contract.json#chat.appStorage.afterTrip): once the trip is terminal the rider and the driver
+ * get the message events without their text; the admin's trip details keep it.
+ */
+export function eventEnvelope(row: Selectable<TripEventsTable>, viewer: Viewer, serverTime: Date, options: { hideMessage?: boolean } = {}): Record<string, unknown> {
   return {
     eventId: row.event_id,
     tripId: row.trip_id,
@@ -36,6 +40,6 @@ export function eventEnvelope(row: Selectable<TripEventsTable>, viewer: Viewer, 
     ...(row.location ? { location: row.location } : {}),
     ...(row.eta_seconds !== null ? { etaSeconds: row.eta_seconds } : {}),
     ...(row.cancel_fee ? { cancelFee: row.cancel_fee } : {}),
-    ...(row.message ? { message: row.message } : {}),
+    ...(row.message && !options.hideMessage ? { message: row.message } : {}),
   };
 }

@@ -12,6 +12,7 @@ import { ONBOARDING, COUNTRY_CURRENCY, COUNTRY_TIME_ZONE, ageAt, cityOf, makeFle
 import { driverView, loadDriver, releaseCar, vehicleFullView, type DriverRow } from "./service.js";
 import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from "./fleets.js";
 import { cancelFleetInvitations, fleetInvitationViews, requestJoin, type InviteDeps } from "./invitations.js";
+import { notify } from "../notifications/service.js";
 
 export { loadFleet, ownedFleet } from "./fleets.js";
 
@@ -219,8 +220,27 @@ export async function leaveFleet(trx: Trx, driverId: string, now: Date) {
   const row = await loadDriver(trx, driverId, true);
   if (row.fleet_id === null) throw new ApiError("invalid_transition", "You are not in a fleet.", { reason: "no_fleet", projection: await driverView(trx, row, "driver") });
   if (row.account_type === "fleet") throw new ApiError("invalid_transition", "The owner cannot leave his own fleet.", { reason: "fleet_owner", projection: await driverView(trx, row, "driver") });
+  const fleet = await loadFleet(trx, row.fleet_id);
   await unlinkFromFleet(trx, row, now, "left");
+  // v0.18.5 (G2-D4): the owner is told.
+  await noticeMembership(trx, fleet, row, "left", now);
   return driverView(trx, await loadDriver(trx, driverId), "driver");
+}
+
+type MembershipTexts = Record<"removed" | "left", { title: Record<string, string>; body: Record<string, string> }>;
+const MEMBERSHIP = (ONBOARDING as unknown as { fleetLeaveNotices: { kind: string; deepLink: string; texts: MembershipTexts } }).fleetLeaveNotices;
+
+/**
+ * v0.18.5 (owner G2-D4 "Notice to the other (Recommended)", contract.json#driverOnboarding.fleetLeaveNotices): a bell
+ * notice (pushed like every notice) to the other side: removed → the driver, left → the fleet's owner.
+ */
+async function noticeMembership(trx: Trx, fleet: FleetRow, driver: DriverRow, change: "removed" | "left", now: Date): Promise<void> {
+  const to = change === "removed" ? driver : await loadDriver(trx, fleet.owner_driver_id);
+  const lang = ["sv", "fr", "en"].includes(to.language ?? "") ? to.language! : to.country === "FR" ? "fr" : to.country === "SE" ? "sv" : "en";
+  const values: Record<string, string> = { fleet: fleet.name, driver: `${driver.first_name} ${driver.last_name}`.trim() };
+  const fill = (t: string) => t.replace(/\{(\w+)\}/g, (_, k: string) => values[k] ?? "");
+  const text = MEMBERSHIP.texts[change];
+  await notify(trx, { audience: "driver", subjectId: to.driver_id, kind: MEMBERSHIP.kind, title: fill(text.title[lang]!), body: fill(text.body[lang]!), deepLink: MEMBERSHIP.deepLink, data: { fleetId: fleet.fleet_id, driverId: driver.driver_id, change } }, now);
 }
 
 /** POST /driver/fleet/drivers/{driverId}/remove (the owner). */
@@ -230,6 +250,8 @@ export async function ownerRemoveDriver(trx: Trx, ownerId: string, driverId: str
   const row = await loadDriver(trx, driverId, true);
   if (row.fleet_id !== fleet.fleet_id) throw notFound("That driver is not in your fleet.", "driver_not_in_fleet");
   await unlinkFromFleet(trx, row, now, "removed_by_owner");
+  // v0.18.5 (G2-D4): the driver is told.
+  await noticeMembership(trx, fleet, row, "removed", now);
 }
 
 /** GET /driver/fleet. */

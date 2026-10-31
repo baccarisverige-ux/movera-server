@@ -4,7 +4,6 @@ import type { TripMessagesTable } from "../db/schema.js";
 import { appendTripEvent, type TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
-import { notify, type Audience } from "../notifications/service.js";
 import { DRIVER_ASSIGNED, TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { lockOwnTrip, readOwnTrip } from "./commands.js";
 import { tripProjection } from "./projection.js";
@@ -12,7 +11,8 @@ import type { Selectable } from "kysely";
 
 /**
  * The trip chat (contract Message, GET and POST /trips/{tripId}/messages): the rider and the driver of a trip
- * write to each other, an admin writes as support. Each message is kept in trip_messages and goes out at once as
+ * write to each other, an admin writes as support. Each message is kept in trip_messages (for the admin's trip details
+ * only, v0.18.5 G9) and goes out at once as
  * a trip event of kind message (§4) carrying the Message. A message is not a change of the trip: the event has
  * the trip's version as it is, and the apps' gate lets a message through even after the trip ended.
  *
@@ -63,13 +63,17 @@ export async function sendMessage(trx: Trx, who: MessageWho, tripId: string, bod
   // The event's sequence is the chat's order; it is taken under the trip lock held above.
   const { sequence } = await appendTripEvent(trx, { tripId, kind: "message", version: trip.version, occurredAt: now, message });
   await trx.insertInto("trip_messages").values({ message_id: message.messageId, trip_id: tripId, sequence, sender: from, sender_id: who.subjectId, text, created_at: now }).execute();
-  await tellTheOtherSide(trx, trip, message, now);
+  // v0.18.5 (G9, owner "Never store messages between rider or driver in driver app or rider app"): no stored notice;
+  // the other side hears of it through the trip stream's message event only (contract.json#chat.appStorage).
   return message;
 }
 
 /** GET /trips/{tripId}/messages?cursor&limit: oldest first; the cursor is the last message's place in the trip's event order. */
-export async function listMessages(ex: Executor, who: MessageWho, tripId: string, input: { cursor?: string; limit: number }): Promise<{ items: Message[]; nextCursor: string | null }> {
-  assertSupportScope(who, await readOwnTrip(ex, tripId, who));
+export async function listMessages(ex: Executor, who: MessageWho, tripId: string, input: { cursor?: string; limit: number }): Promise<{ items: Message[]; nextCursor: string | null; closed?: true }> {
+  const trip = await readOwnTrip(ex, tripId, who);
+  assertSupportScope(who, trip);
+  // v0.18.5 (G9, chat.appStorage.afterTrip): after the trip the rider and the driver read no history; admins keep it.
+  if (who.actor !== "admin" && TERMINAL.has(trip.status as TripStatus)) return { items: [], nextCursor: null, closed: true };
   let query = ex.selectFrom("trip_messages").selectAll().where("trip_id", "=", tripId);
   if (input.cursor) {
     const after = Buffer.from(input.cursor, "base64url").toString("utf8");
@@ -80,30 +84,6 @@ export async function listMessages(ex: Executor, who: MessageWho, tripId: string
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   return { items: page.map(messageView), nextCursor: rows.length > input.limit && last ? Buffer.from(String(last.sequence)).toString("base64url") : null };
-}
-
-const TITLE: Record<Message["from"], Record<string, string>> = {
-  rider: { sv: "Meddelande från din passagerare", fr: "Message de votre passager", en: "Message from your rider" },
-  driver: { sv: "Meddelande från din förare", fr: "Message de votre chauffeur", en: "Message from your driver" },
-  support: { sv: "Meddelande från Movera", fr: "Message de Movera", en: "Message from Movera" },
-};
-
-/**
- * The other side is told in the app (GET /notifications, kind trip_message), the way the apps hear of anything
- * while push is off (contract §8): the rider's message reaches the driver, the driver's the rider, support's both.
- */
-async function tellTheOtherSide(trx: Trx, trip: TripRow, message: Message, now: Date): Promise<void> {
-  const sides: Array<{ audience: Audience; subjectId: string }> = [];
-  if (message.from !== "rider") sides.push({ audience: "rider", subjectId: trip.rider_id });
-  if (message.from !== "driver" && trip.driver_id !== null) sides.push({ audience: "driver", subjectId: trip.driver_id });
-  for (const side of sides) {
-    const row =
-      side.audience === "rider"
-        ? await trx.selectFrom("riders").select("language").where("rider_id", "=", side.subjectId).executeTakeFirst()
-        : await trx.selectFrom("drivers").select("language").where("driver_id", "=", side.subjectId).executeTakeFirst();
-    const title = TITLE[message.from][row?.language ?? "en"] ?? TITLE[message.from]["en"]!;
-    await notify(trx, { ...side, kind: "trip_message", title, body: message.text, tripId: trip.trip_id, data: { messageId: message.messageId, from: message.from } }, now);
-  }
 }
 
 /**

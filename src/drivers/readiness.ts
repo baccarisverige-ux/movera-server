@@ -41,6 +41,8 @@ export async function expiredBlockers(ex: Executor, driver: { driver_id: string;
   for (const scope of scopes) {
     const required = requiredOf(settings, scope);
     if (required.length === 0) continue;
+    // v0.18.5 (G2-D1): the approved document's own row decides; an upload waits apart as a renewal
+    // (document_renewals), so uploading never unblocks: expired, or approved but past its end date, blocks.
     const rows = await ex.selectFrom("documents").select(["type"]).where("owner_kind", "=", "driver").where("owner_id", "=", driver.driver_id).where("type", "in", required)
       .where((eb) => eb.or([eb("status", "=", "expired"), eb.and([eb("status", "=", "approved"), eb("expires_at", "<=", now)])])).execute();
     out.push(...rows.map((r) => `${scope}:${r.type}`));
