@@ -17,10 +17,18 @@ WITH changed AS (
     AND document #> '{offers,autoOffline,missedExclusive}' <> '10'::jsonb
   RETURNING doc, zone_id, version, document, published_at
 )
-INSERT INTO config_history (doc, zone_id, version, document, published_at, published_by, approved_by, note)
-SELECT doc, zone_id, version, document, published_at, NULL, NULL, 'G4-E2: auto-offline limit set to 10 in every zone (owner "Set 10 everywhere", migration 0039)'
-FROM changed
-ON CONFLICT (doc, zone_id, version) DO NOTHING;
+-- Connected driver apps learn of the new version (checker LOW 13): the migration runs at server start, which drops every
+-- open config stream; an app that reconnects with an older Last-Event-ID gets the newest version at once (streamConfig),
+-- and apps re-read GET /driver/config on start and on return to the front. For a server instance still running during a
+-- rolling deploy, a 'null' config_published notice makes every open config stream look again (src/realtime/hub.ts).
+, history AS (
+  INSERT INTO config_history (doc, zone_id, version, document, published_at, published_by, approved_by, note)
+  SELECT doc, zone_id, version, document, published_at, NULL, NULL, 'G4-E2: auto-offline limit set to 10 in every zone (owner "Set 10 everywhere", migration 0039)'
+  FROM changed
+  ON CONFLICT (doc, zone_id, version) DO NOTHING
+  RETURNING zone_id
+)
+SELECT pg_notify('movera_config_published', 'null') WHERE EXISTS (SELECT 1 FROM history);
 
 UPDATE config_drafts SET
   version = version + 1,

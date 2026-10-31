@@ -7,7 +7,8 @@ import { contract, CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { offerSound } from "../../src/dispatch/offerPush.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
-import { TimerWorker } from "../../src/jobs/timers.js";
+import { TimerWorker, type Timer } from "../../src/jobs/timers.js";
+import { SWEEP_IDEMPOTENCY_KEYS, sweepIdempotencyKeysHandler } from "../../src/jobs/maintenance.js";
 import { FcmSender, type PushMessage, type PushSender, type SendResult } from "../../src/push/fcm.js";
 import { PushDispatcher } from "../../src/push/dispatcher.js";
 import { adminSession } from "../support/admin.js";
@@ -157,6 +158,32 @@ describe("G4 decision 1 + E6: a push with sound and vibration for a new offer", 
   });
 });
 
+describe("G4 checker LOW 9 / LOW 10: no push for a closed offer; old push rows are purged", () => {
+  it("an offer declined before the push went out is not pushed", async () => {
+    await database.db.insertInto("push_devices").values({ token: "g4-closed", actor: "driver", subject_id: drivers.A.id, session_id: null, provider: "fcm", platform: "android", app_version: null, locale: null, updated_at: clock.now }).execute();
+    await book();
+    const [offer] = await openOffers("A");
+    expect((await call(app, "POST", `/offers/${offer!.offerId}/decline`, drivers.A.headers, { expectedVersion: offer!.version })).statusCode).toBe(200);
+    const sender = new FakeSender();
+    await new PushDispatcher(database.db, sender, { clock: () => clock.now, sleep: async () => {} }).sweep();
+    expect(sender.sent.filter((m) => m.token === "g4-closed" && m.data["offerId"] === offer!.offerId)).toEqual([]);
+    await database.db.deleteFrom("push_devices").where("token", "=", "g4-closed").execute();
+  });
+
+  it("the hourly sweep deletes new-offer push rows a day after they ran out; bell notices and fresh pushes stay", async () => {
+    const old = new Date(clock.now.getTime() - 2 * 86_400_000);
+    const row = (id: string, bell: boolean, kind: string, pushUntil: Date | null, created: Date) => ({ notification_id: id, audience: "driver" as const, subject_id: drivers.A.id, kind, title: "t", body: "b", data: "{}", created_at: created, pushed_at: created, bell, push_until: pushUntil });
+    await database.db.insertInto("notifications").values([
+      row("ntf_g4_old_push", false, "new_offer", old, old),
+      row("ntf_g4_fresh_push", false, "new_offer", new Date(clock.now.getTime() - 60_000), clock.now),
+      row("ntf_g4_old_bell", true, "set_offline", null, old),
+    ]).execute();
+    await database.db.transaction().execute((trx) => sweepIdempotencyKeysHandler(trx, { timerId: "t", kind: SWEEP_IDEMPOTENCY_KEYS, refId: "all", payload: {}, attempts: 0, firedAt: clock.now } as unknown as Timer));
+    const left = (await database.db.selectFrom("notifications").select("notification_id").where("notification_id", "like", "ntf_g4_%").execute()).map((r) => r.notification_id).sort();
+    expect(left).toEqual(["ntf_g4_fresh_push", "ntf_g4_old_bell"]);
+  });
+});
+
 describe("G4 decision 3: the rider's rating on the offer, admin switch per zone", () => {
   it("shows the rider's real average; nothing when he has no rating (no made-up 4.9)", async () => {
     await book();
@@ -251,8 +278,19 @@ describe("G4-E2: auto-offline limit 10 in every zone (migration 0039)", () => {
     ]).execute();
     await database.db.insertInto("config_drafts").values({ doc: "driver_app_config", zone_id: "FR-PC", version: 3, document: JSON.stringify(doc("FR-PC", "FR", "EUR", 3, 2)), updated_at: at, updated_by: null }).execute();
     const migration = readFileSync(new URL("../../migrations/0039_driver_offers.sql", import.meta.url), "utf8");
+    // Checker LOW 13: the first run tells open config streams to look again (config_published, 'null' = all); the second changes nothing.
+    const listener = await database.pool.connect();
+    const heard: Array<string | undefined> = [];
+    listener.on("notification", (n) => heard.push(n.payload));
+    await listener.query("LISTEN movera_config_published");
     await database.pool.query(migration);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(heard).toEqual(["null"]);
     await database.pool.query(migration);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(heard).toEqual(["null"]);
+    await listener.query("UNLISTEN *");
+    listener.release();
     const live = await database.db.selectFrom("config_live").select(["zone_id", "version", "document"]).where("doc", "=", "driver_app_config").where("zone_id", "in", ["Z003", "FR-PC", "standard-SE"]).orderBy("zone_id").execute();
     const view = Object.fromEntries(live.map((r) => [r.zone_id, { version: r.version, limit: (r.document as { offers: { autoOffline: { missedExclusive: number } } }).offers.autoOffline.missedExclusive, docVersion: (r.document as { version: number }).version }]));
     expect(view).toEqual({ "FR-PC": { version: 3, limit: 10, docVersion: 3 }, Z003: { version: 5, limit: 10, docVersion: 5 }, "standard-SE": { version: 7, limit: 10, docVersion: 7 } });

@@ -136,6 +136,13 @@ export class PushDispatcher {
       const rider = await this.db.selectFrom("riders").select("consents").where("rider_id", "=", row.subject_id).executeTakeFirst();
       if ((rider?.consents as { rideUpdates?: unknown } | null | undefined)?.rideUpdates === false) return;
     }
+    // Checker LOW 9 (G4 decision 1): a new-offer push goes only while its offer is still open (not withdrawn, taken,
+    // declined or expired), not only before push_until.
+    const offerId = row.bell === false ? row.data?.["offerId"] : undefined;
+    if (typeof offerId === "string") {
+      const offer = await this.db.selectFrom("offers").select(["status", "expires_at"]).where("offer_id", "=", offerId).executeTakeFirst();
+      if (offer === undefined || offer.status !== "open" || offer.expires_at.getTime() <= now.getTime()) return;
+    }
     const devices = await this.db.selectFrom("push_devices").select(["token", "platform"]).where("actor", "=", row.audience).where("subject_id", "=", row.subject_id).where("provider", "=", "fcm").execute();
     // v0.18.6 (contract.json#driverOffers.push.data): a push-only row (the new-offer push) carries its own data too,
     // as strings, and the sound rule; bell notices keep the v0.18.3 data.

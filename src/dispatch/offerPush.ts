@@ -1,4 +1,4 @@
-import type { Trx } from "../db/db.js";
+import type { Executor, Trx } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { notify } from "../notifications/service.js";
 
@@ -61,4 +61,18 @@ export async function queueOfferPush(trx: Trx, driverId: string, offer: Record<s
     },
     now,
   );
+}
+
+/** Checker LOW 10: new-offer push rows are useless once their offer ran out; they go a day after push_until. */
+export const OFFER_PUSH_KEEP_MS = 24 * 60 * 60 * 1000;
+
+export async function purgeOfferPushes(ex: Executor, now: Date): Promise<number> {
+  const cutoff = new Date(now.getTime() - OFFER_PUSH_KEEP_MS);
+  const gone = await ex
+    .deleteFrom("notifications")
+    .where("bell", "=", false)
+    .where("kind", "=", OFFER_PUSH.kind)
+    .where((eb) => eb.or([eb("push_until", "<", cutoff), eb.and([eb("push_until", "is", null), eb("created_at", "<", cutoff)])]))
+    .executeTakeFirst();
+  return Number(gone.numDeletedRows);
 }
