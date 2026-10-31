@@ -3,6 +3,7 @@ import type { Trx } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { liveDocument } from "../config/service.js";
 import { scheduleTimer } from "../jobs/timers.js";
+import { markSetOffline } from "../drivers/offlineReason.js";
 
 /**
  * contract.json#autoOffline (v0.8.0, owner 2026-10-27; v0.18.6 owner G4-E3 "Count them"): after
@@ -50,6 +51,8 @@ export async function autoOfflineIfDue(trx: Trx, driverId: string, tripId: strin
   }
   if (run < limit) return false;
   await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
+  // v0.18.6 (owner "Send the real reason"): Driver.offlineReason missed_offers + the set_offline notice.
+  await markSetOffline(trx, driverId, "missed_offers", { count: limit }, now);
   // As going offline by hand: the driver's other open offers are withdrawn by a job that locks each trip in turn.
   await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
   return true;

@@ -391,11 +391,12 @@ const ASSIGNED_TRIP = ["accepted", "driver_to_pickup", "arrived", "rider_onboard
  * admin. The caller holds the trip lock and has applied `assign`. Drivers must be active, online and free.
  * The search keeps running: its next round waits until these offers are answered or run out.
  */
-export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string[], kind: "assigned" | "radar", now: Date): Promise<{ offers: Record<string, unknown>[]; expiresAt: Date; groupId: string | null }> {
+export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string[], kind: "assigned" | "radar", now: Date, secondsOverride?: number): Promise<{ offers: Record<string, unknown>[]; expiresAt: Date; groupId: string | null }> {
   const driverDoc = await liveDocument<{ offers?: { radarSeconds?: number; exclusiveSeconds?: number; assignAcceptSeconds?: number }; pickupPay?: { offers?: Record<string, boolean>; byCategory?: Record<string, PickupPayRate> } }>(trx, "driver_app_config", trip.zone_id);
   const dispatchDoc = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
   const offersDoc = driverDoc?.document.offers ?? {};
-  const seconds = kind === "radar"
+  // v0.18.6 (G4-F4): a radar zone rule gives its own seconds.
+  const seconds = secondsOverride !== undefined ? secondsOverride : kind === "radar"
     ? offersDoc.radarSeconds ?? dispatchDoc?.document.radar.seconds ?? 15
     : offersDoc.assignAcceptSeconds ?? offersDoc.exclusiveSeconds ?? dispatchDoc?.document.exclusive.seconds ?? 15;
   const search = await loadSearch(trx, trip.trip_id);

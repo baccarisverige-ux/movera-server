@@ -3,7 +3,7 @@ import { liveDocument } from "../config/service.js";
 import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
-import { notify } from "../notifications/service.js";
+import { markSetOffline } from "./offlineReason.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { inPolygon, type Polygon } from "../zones/geometry.js";
 
@@ -77,9 +77,8 @@ export async function setOfflineWithoutPosition(trx: Trx, now: Date): Promise<st
     await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: locked.version + 1, updated_at: now }).where("driver_id", "=", r.driver_id).execute();
     // As going offline by hand: the open offers are withdrawn by a job that locks each trip in turn.
     await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: r.driver_id, dueAt: now, payload: {} });
-    const language = lang(r.language);
-    const text = DRIVER_HOME.setOffline.text;
-    await notify(trx, { audience: "driver", subjectId: r.driver_id, kind: DRIVER_HOME.setOffline.noticeKind, title: text.title![language]!, body: text.body![language]!, deepLink: DRIVER_HOME.setOffline.deepLink, data: { reason: "no_position" } }, now);
+    // v0.18.6 (owner "Send the real reason"): Driver.offlineReason no_position + the set_offline notice.
+    await markSetOffline(trx, r.driver_id, "no_position", { minutes }, now);
     await audit(trx, { adminId: null, action: DRIVER_HOME.setOffline.auditAction, targetType: "driver", targetId: r.driver_id, zoneId, detail: { reason: "no_position", lastFixAt: r.received_at?.toISOString() ?? null, minutes }, at: now });
     done.push(r.driver_id);
   }

@@ -59,7 +59,13 @@ export interface DriversTable {
   terms_accepted_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   fleet_id: ColumnType<string | null, string | null | undefined, string | null>;
   fleet_linked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** v0.18.6 (owner "Send the real reason"): why the server set him offline; cleared on going online. */
+  offline_reason: ColumnType<OfflineReason | null, OfflineReason | null | undefined, OfflineReason | null>;
+  offline_note: ColumnType<string | null, string | null | undefined, string | null>;
+  offline_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
+
+export type OfflineReason = "no_position" | "missed_offers" | "vehicle_blocked" | "fleet_removed" | "account_status" | "admin";
 
 export interface FleetsTable {
   fleet_id: string;
@@ -778,6 +784,19 @@ export interface DispatchEventsTable {
   occurred_at: Timestamp;
 }
 
+export interface DispatchPresetsTable { preset_id: string; country: string; name: string; values: Json; version: Generated<number>; created_by: string | null; created_at: Timestamp; updated_by: string | null; updated_at: Timestamp }
+export interface DriverGroupsTable { group_id: string; country: string; name: string; driver_ids: Generated<string[]>; version: Generated<number>; created_by: string | null; created_at: Timestamp; updated_by: string | null; updated_at: Timestamp }
+export interface RadarZonesTable { radar_zone_id: string; country: string; zone_id: string; name: string; polygon: Json; version: Generated<number>; created_by: string | null; created_at: Timestamp; updated_by: string | null; updated_at: Timestamp }
+export interface RadarZoneRulesTable { rule_id: string; country: string; name: string; radar_zone_ids: Json; seconds: number; max_drivers: number; repeat: Generated<boolean>; version: Generated<number>; created_by: string | null; created_at: Timestamp; updated_by: string | null; updated_at: Timestamp }
+export interface RadarZoneSendsTable {
+  send_id: string; trip_id: string; radar_zone_id: string; rule_id: string; seconds: number; max_drivers: number; repeat: boolean; active: Generated<boolean>; rounds: Generated<number>;
+  started_by: string | null; started_at: Timestamp; stopped_at: Timestamp | null; stopped_by: string | null; stop_reason: "admin" | "accepted" | "search_ended" | "trip_over" | "replaced" | null;
+}
+export interface AreaEventsTable {
+  event_id: string; country: string; name: string; lat: number; lng: number; polygon: Json | null; starts_at: Timestamp; ends_at: Timestamp; is_on: Generated<boolean>; details: Json;
+  version: Generated<number>; created_by: string | null; created_at: Timestamp; updated_by: string | null; updated_at: Timestamp;
+}
+
 export interface KpiDaysTable {
   zone_id: string;
   day: ColumnType<string, string, string>;
@@ -1077,6 +1096,12 @@ export interface Database {
   support_tickets: SupportTicketsTable;
   ticket_messages: TicketMessagesTable;
   dispatch_events: DispatchEventsTable;
+  dispatch_presets: DispatchPresetsTable;
+  driver_groups: DriverGroupsTable;
+  radar_zones: RadarZonesTable;
+  radar_zone_rules: RadarZoneRulesTable;
+  radar_zone_sends: RadarZoneSendsTable;
+  area_events: AreaEventsTable;
   kpi_days: KpiDaysTable;
   content_items: ContentItemsTable;
   terms_acceptances: TermsAcceptancesTable;
