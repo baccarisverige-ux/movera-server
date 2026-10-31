@@ -9,6 +9,7 @@ import { cancelTimer, scheduleTimer, TimerBusy, type TimerHandler } from "../job
 import { liveDocument } from "../config/service.js";
 import { autoOfflineIfDue, COUNTING_KINDS } from "./autoOffline.js";
 import { queueOfferPush } from "./offerPush.js";
+import { endTripSends } from "./radarSends.js";
 import { STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { zoneChecker } from "../drivers/presence.js";
 import { pickupPayMinor, type PickupPayRate } from "../rules/pickupPay.js";
@@ -529,6 +530,8 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   });
   await trx.updateTable("drivers").set({ online_status: "on_trip", version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
   await endSearchTimers(trx, trip.trip_id);
+  // v0.18.6 (G4-F4): a repeating radar-zone send ends the moment a driver takes the trip.
+  await endTripSends(trx, trip.trip_id, "accepted", null, now);
   // The driver's offers for other trips are withdrawn by a job that locks each of those trips in turn.
   await scheduleTimer(trx, { kind: WITHDRAW, refId: driverId, dueAt: now, payload: {} });
   return trip;
@@ -566,6 +569,7 @@ export async function stopSearch(trx: Trx, trip: TripRow, now: Date): Promise<vo
   await closeOpenOffers(trx, trip, "withdrawn", now, queue);
   await queue.flush(trx, now);
   await endSearchTimers(trx, trip.trip_id);
+  await endTripSends(trx, trip.trip_id, "trip_over", null, now);
 }
 
 /** Puts the step on the rider's projection without a version change (contract.json#dispatch.searchStep). */
@@ -611,6 +615,7 @@ async function expireSearch(trx: Trx, tripId: string, now: Date) {
   trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   await applyCommand(trx, trip, { command: "expire", actor: "system", now, set: { ended_by_command: "expire" } });
   await endSearchTimers(trx, tripId);
+  await endTripSends(trx, tripId, "search_ended", null, now);
 }
 
 /** POST /trips/{tripId}/keep-waiting (owner decision 24). */

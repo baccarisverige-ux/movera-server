@@ -15,6 +15,7 @@ import { DRIVER_ASSIGNED, TERMINAL } from "../rules/transitions.js";
 import { inPolygon, polygonProblem, type Polygon } from "../zones/geometry.js";
 import { dispatchKm } from "./engine.js";
 import { lockTripNow, sendAdminOffers } from "./runtime.js";
+import { RADAR_ZONE_REPEAT, sendView, type SendRow } from "./radarSends.js";
 
 /**
  * Contract v0.18.6 §32 (owner decisions G4-F1..F6 of 2026-10-31, contract.json#dispatchTools): the admin's Dispatch
@@ -63,7 +64,6 @@ async function uniqueName<T>(run: () => Promise<T>): Promise<T> {
 function checkVersion(row: { version: number }, expected: number, view: unknown): void {
   if (row.version !== expected) throw new ApiError("version_mismatch", "It changed since you last saw it.", { projection: view });
 }
-const iso = (d: Date | null | undefined) => (d ? d.toISOString() : undefined);
 const stamps = (r: { version: number; created_by: string | null; created_at: Date; updated_by: string | null; updated_at: Date }) => ({
   version: r.version,
   ...(r.created_by ? { createdBy: r.created_by } : {}),
@@ -333,12 +333,7 @@ export async function radarZoneFree(ex: Executor, who: Principal, radarZoneId: s
 
 /* ---------------------------------------------------------------- F4 radar-zone send with repeat */
 
-export const RADAR_ZONE_REPEAT = "radar_zone_repeat";
-type SendRow = { send_id: string; trip_id: string; radar_zone_id: string; rule_id: string; seconds: number; max_drivers: number; repeat: boolean; active: boolean; rounds: number; started_by: string | null; started_at: Date; stopped_at: Date | null; stopped_by: string | null; stop_reason: string | null };
-export const sendView = (r: SendRow) => ({
-  sendId: r.send_id, tripId: r.trip_id, radarZoneId: r.radar_zone_id, ruleId: r.rule_id, seconds: r.seconds, maxDrivers: r.max_drivers, repeat: r.repeat, active: r.active, rounds: r.rounds,
-  startedAt: r.started_at.toISOString(), ...(r.stopped_at ? { stoppedAt: iso(r.stopped_at) } : {}), ...(r.stop_reason ? { stopReason: r.stop_reason } : {}),
-});
+export { RADAR_ZONE_REPEAT } from "./radarSends.js";
 
 /** The radar zone and rule of a send (the rule must cover the radar zone), with the free drivers inside now. */
 export async function pickRadarZone(ex: Executor, who: Principal, trip: TripRow, radarZoneId: string, ruleId: string, now: Date) {

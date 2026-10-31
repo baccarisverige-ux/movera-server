@@ -8,6 +8,7 @@ import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
 import { chooseRefundDestination, getWallet, payoutsToMake, riderRefunds, walletEntries } from "../riders/wallet.js";
 import { tripProjection } from "../trips/projection.js";
+import { activeSendOf } from "../dispatch/radarSends.js";
 import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus } from "./lists.js";
 import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminRadarGroup, adminReassign, adminStopRadarZone, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
 
@@ -63,7 +64,10 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
-    return tripProjection(await adminTrip(deps.db, who, tripParam(request)), "admin");
+    const trip = await adminTrip(deps.db, who, tripParam(request));
+    // v0.18.6 (G4-F4): the repeating radar-zone send, while one runs, for every admin who opens the trip.
+    const radarZoneSend = await activeSendOf(deps.db, trip.trip_id);
+    return { ...tripProjection(trip, "admin"), ...(radarZoneSend ? { radarZoneSend } : {}) };
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId/offers`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");

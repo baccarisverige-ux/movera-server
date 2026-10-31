@@ -162,6 +162,9 @@ describe("G4-F4: radar zones and rules; send again until taken", () => {
     expect(sent.json()).toMatchObject({ pickedFrom: "radar_zone", radarZoneSend: { active: true, repeat: true, rounds: 1 } });
     const [first] = await openOffers("A");
     expect(new Date(first!.expiresAt).getTime() - clock.now.getTime()).toBe(20_000);
+    // Checker MEDIUM: any admin who opens the trip sees the running send.
+    const another = (await adminSession(app, database.db, "dispatcher", { now: clock.now })).headers;
+    expect((await call(app, "GET", `/admin/trips/${tripId}`, another)).json().radarZoneSend).toMatchObject({ radarZoneId: zone.radarZoneId, ruleId: rule.ruleId, intervalSeconds: 20, rounds: 1, active: true, startedAt: clock.now.toISOString() });
     expect(await openOffers("B")).toEqual([]);
     // B drives into the area; nobody accepts: the next round reaches him.
     await call(app, "POST", "/driver/location", drivers.B.headers, { fixes: [{ lat: 59.3333, lng: 18.0660, accuracy: 5, measuredAt: new Date(clock.now.getTime() + 1000).toISOString() }] });
@@ -173,6 +176,7 @@ describe("G4-F4: radar zones and rules; send again until taken", () => {
     // The admin stops it: no more rounds.
     const stopped = await call(app, "POST", `/admin/trips/${tripId}/radar-zone/stop`, admin, { note: "Found one by phone" });
     expect(stopped.json()).toMatchObject({ active: false, stopReason: "admin" });
+    expect((await call(app, "GET", `/admin/trips/${tripId}`, admin)).json()).not.toHaveProperty("radarZoneSend");
     expect((await call(app, "POST", `/admin/trips/${tripId}/radar-zone/stop`, admin, {})).json()).toMatchObject({ reason: "radar_zone_send_not_found" });
     const offersBefore = await database.db.selectFrom("offers").select("offer_id").where("trip_id", "=", tripId).execute();
     await advance(25);
@@ -190,9 +194,28 @@ describe("G4-F4: radar zones and rules; send again until taken", () => {
     expect((await call(app, "POST", `/admin/trips/${tripId}/radar-group`, admin, { expectedVersion: await version(tripId), radarZoneId: zone.radarZoneId, ruleId: rule.ruleId })).statusCode).toBe(200);
     const [offer] = await openOffers("A");
     expect((await call(app, "POST", `/offers/${offer!.offerId}/accept`, drivers.A.headers, { expectedVersion: offer!.version })).statusCode).toBe(200);
-    await advance(16);
+    // Checker LOW 2: inactive at once, before any timer fires; the admin view shows nothing.
     const send = await database.db.selectFrom("radar_zone_sends").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
     expect(send).toMatchObject({ active: false, stop_reason: "accepted" });
+    expect(await database.db.selectFrom("timers").select("kind").where("kind", "=", RADAR_ZONE_REPEAT).where("ref_id", "=", send.send_id).execute()).toEqual([]);
+    expect((await call(app, "GET", `/admin/trips/${tripId}`, admin)).json()).not.toHaveProperty("radarZoneSend");
+  });
+
+  it("a repeating send ends at once when the rider cancels, and when the search ends", async () => {
+    const zone = (await call(app, "POST", "/admin/dispatch/radar-zones", admin, { zoneId: "Z001", name: "Cancel zone", polygon: AROUND_A })).json();
+    const rule = (await call(app, "POST", "/admin/dispatch/radar-rules", admin, { country: "SE", name: "Cancel rule", radarZoneIds: "all", seconds: 15, maxDrivers: 3, repeat: true })).json();
+    const tripId = await book();
+    expect((await call(app, "POST", `/admin/trips/${tripId}/radar-group`, admin, { expectedVersion: await version(tripId), radarZoneId: zone.radarZoneId, ruleId: rule.ruleId })).statusCode).toBe(200);
+    const trip = (await call(app, "GET", `/trips/${tripId}`, rider)).json();
+    expect((await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" })).statusCode).toBe(200);
+    expect(await database.db.selectFrom("radar_zone_sends").select(["active", "stop_reason"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow()).toEqual({ active: false, stop_reason: "trip_over" });
+    // Search end: a send running when the 8 minutes are over.
+    const second = await book();
+    expect((await call(app, "POST", `/admin/trips/${second}/radar-group`, admin, { expectedVersion: await version(second), radarZoneId: zone.radarZoneId, ruleId: rule.ruleId })).statusCode).toBe(200);
+    await database.db.updateTable("timers").set({ due_at: clock.now }).where("kind", "=", "search_end").where("ref_id", "=", second).execute();
+    await worker.runDue();
+    expect(await database.db.selectFrom("radar_zone_sends").select(["active", "stop_reason"]).where("trip_id", "=", second).executeTakeFirstOrThrow()).toEqual({ active: false, stop_reason: "search_ended" });
+    expect((await call(app, "GET", `/admin/trips/${second}`, admin)).json()).not.toHaveProperty("radarZoneSend");
   });
 });
 
