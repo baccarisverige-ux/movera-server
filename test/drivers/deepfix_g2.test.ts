@@ -141,7 +141,8 @@ describe("D1: a renewal keeps the approved document valid until the new one is a
       // A rejection needs a reason (D5.7) and leaves the old one as it was.
       expect((await review(renewal.documentId, { decision: "rejected" })).json()).toMatchObject({ code: "invalid_request", reason: "note_required" });
       expect((await review(renewal.documentId, { decision: "rejected", note: "Blurry" })).statusCode).toBe(200);
-      expect((await reminders(driver)).find((r) => r.documentType === "driving_license")).toMatchObject({ kind: "document_expired", renewalStatus: "rejected" });
+      // Checker finding 5: the Home line says why the renewal was rejected.
+      expect((await reminders(driver)).find((r) => r.documentType === "driving_license")).toMatchObject({ kind: "document_expired", renewalStatus: "rejected", reviewNote: "Blurry" });
       // A new upload replaces the waiting renewal (one renewal per document).
       const again = await upload(driver, { type: "driving_license" }, PNG, "image/png");
       expect(again.renewalOf).toBe(first.documentId);
@@ -240,6 +241,10 @@ describe("D5.3: the admin gives the categories when approving a car", () => {
       const wrong = await call(app, "POST", `/admin/vehicles/${vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy", "xl"] });
       expect(wrong.statusCode).toBe(409);
       expect(wrong.json()).toMatchObject({ reason: "vehicle_rules_not_met", details: ["xl:too_few_seats"] });
+      // Checker finding 4: an id that is no category at all is refused, never stored as a fake category.
+      const fake = await call(app, "POST", `/admin/vehicles/${vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy", "foo"] });
+      expect(fake.statusCode).toBe(409);
+      expect(fake.json()).toMatchObject({ reason: "vehicle_rules_not_met", details: ["foo:unknown_category"] });
       const ok = await call(app, "POST", `/admin/vehicles/${vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy", "child_seat"] });
       expect(ok.statusCode, ok.body).toBe(200);
       expect(ok.json()).toMatchObject({ status: "approved", categoryIds: ["economy", "child_seat"] });

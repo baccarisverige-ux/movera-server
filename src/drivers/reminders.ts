@@ -32,7 +32,7 @@ export type Reminder = {
 };
 
 type DriverLike = { driver_id: string; country: string | null; account_type: string | null; account_status: string; fleet_id: string | null; vehicle_id: string | null; language?: string | null; created_at?: Date };
-type DocRow = { document_id: string; type: string; status: string; expires_at: Date | null; review_note: string | null; owner_id: string; renewal_status?: "in_review" | "rejected" | null };
+type DocRow = { document_id: string; type: string; status: string; expires_at: Date | null; review_note: string | null; owner_id: string; renewal_status?: "in_review" | "rejected" | null; renewal_note?: string | null };
 
 const INFO = (contract as unknown as { driverOnboarding: { infoSession: { type: string; status: string; contentSlot: string } } }).driverOnboarding.infoSession;
 type SignUpText = { kind: string; text: { title: Record<string, string>; body: Record<string, string> } };
@@ -70,7 +70,7 @@ function documentLines(required: string[], docs: DocRow[], scope: Scope, setting
     else if (doc.expires_at !== null) {
       const left = daysLeft(doc.expires_at, now);
       // v0.18.5 (G2-D1): a renewal waiting (or rejected) shows on the line; it never changes the level.
-      const at = { expiresAt: doc.expires_at.toISOString(), daysLeft: left, ...(doc.renewal_status ? { renewalStatus: doc.renewal_status } : {}) };
+      const at = { expiresAt: doc.expires_at.toISOString(), daysLeft: left, ...(doc.renewal_status ? { renewalStatus: doc.renewal_status } : {}), ...(doc.renewal_status === "rejected" && doc.renewal_note ? { reviewNote: doc.renewal_note } : {}) };
       if (doc.status === "expired" || left === 0) out.push({ kind: "document_expired", level: blocks ? "blocks_online" : "due_soon", ...base, status: "expired", ...at, fix });
       else if (left <= firstWarning) out.push({ kind: "document_expiring", level: "due_soon", ...base, status: "expiring", ...at, fix });
     }
@@ -83,7 +83,7 @@ async function docsOf(ex: Executor, ownerKind: "driver" | "vehicle", ownerIds: s
   return (await ex
     .selectFrom("documents")
     .leftJoin("document_renewals", "document_renewals.document_id", "documents.document_id")
-    .select(["documents.document_id", "documents.type", "documents.status", "documents.expires_at", "documents.review_note", "documents.owner_id", "document_renewals.status as renewal_status"])
+    .select(["documents.document_id", "documents.type", "documents.status", "documents.expires_at", "documents.review_note", "documents.owner_id", "document_renewals.status as renewal_status", "document_renewals.review_note as renewal_note"])
     .where("documents.owner_kind", "=", ownerKind)
     .where("documents.owner_id", "in", ownerIds)
     .execute()) as DocRow[];

@@ -88,6 +88,8 @@ export async function legalForApps(ex: Executor, country: string) {
     source: live.source,
     ...(live.publishedAt ? { publishedAt: live.publishedAt } : {}),
     reaccept: live.reaccept,
+    // Checker finding 6: the newest version published with reaccept; the app asks again until the person accepted it or a later one.
+    reacceptFrom: await reacceptFrom(ex, country),
     terms: fillDoc(live.terms, live.company),
     privacy: fillDoc(live.privacy, live.company),
   };
@@ -116,15 +118,23 @@ export async function acceptLegal(trx: Trx, actor: "rider" | "driver", subjectId
 }
 
 /** The countries of these zones whose live legal version asks for re-acceptance this person has not given. */
+/** The newest version of a country's texts published with reaccept, or null (never asked again). */
+export async function reacceptFrom(ex: Executor, country: string): Promise<number | null> {
+  const row = await ex.selectFrom("legal_texts").select((eb) => eb.fn.max("version").as("v")).where("country", "=", country).where("reaccept", "=", true).executeTakeFirst();
+  return row?.v === null || row?.v === undefined ? null : Number(row.v);
+}
+
 export async function unacceptedLegalCountries(ex: Executor, actor: "rider" | "driver", subjectId: string, zoneIds: readonly string[]): Promise<string[]> {
   if (zoneIds.length === 0) return [];
   const rows = await ex.selectFrom("zones").select("country").where("zone_id", "in", [...new Set(zoneIds)]).execute();
   const out: string[] = [];
   for (const country of new Set(rows.map((r) => r.country))) {
     if (!LEGAL.countries.includes(country)) continue;
-    const live = await liveLegal(ex, country);
-    if (!live.reaccept) continue;
-    const done = await ex.selectFrom("legal_acceptances").select("version").where("actor", "=", actor).where("subject_id", "=", subjectId).where("country", "=", country).where("version", "=", live.version).executeTakeFirst();
+    // Checker finding 6 (contract.json#legal.accept): the person must have accepted the newest version published with
+    // reaccept, or any later one (accepting v3 also satisfies v2); a later publish without reaccept never unblocks.
+    const required = await reacceptFrom(ex, country);
+    if (required === null) continue;
+    const done = await ex.selectFrom("legal_acceptances").select("version").where("actor", "=", actor).where("subject_id", "=", subjectId).where("country", "=", country).where("version", ">=", required).executeTakeFirst();
     if (!done) out.push(country);
   }
   return out;

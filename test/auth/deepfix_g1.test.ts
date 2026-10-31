@@ -166,6 +166,27 @@ describe("G1-B2: terms and privacy per country (SE and FR), sv/fr/en, from the a
     expect(read.terms.text.fr).toContain("Numéro d’immatriculation : 123 456 789.");
   });
 
+  it("checker finding 6: a later version without re-accept never unblocks someone who did not accept the re-accept version; accepting the newer one counts (FR)", async () => {
+    const sup = await adminSession(app, database.db, "super", { now: clock.now });
+    const draft = (await call(app, "GET", "/admin/legal/FR", sup.headers)).json();
+    const texts = { terms: draft.live.terms, privacy: draft.live.privacy };
+    const v2 = await call(app, "POST", "/admin/legal/FR/publish", sup.headers, { ...texts, reaccept: true });
+    expect(v2.statusCode, v2.body).toBe(200);
+    const required = v2.json().version as number;
+    const v3 = await call(app, "POST", "/admin/legal/FR/publish", sup.headers, { ...texts, reaccept: false });
+    expect(v3.json().version).toBe(required + 1);
+    const read = (await app.inject({ method: "GET", url: "/api/v1/legal/FR" })).json();
+    expect(read).toMatchObject({ version: required + 1, reaccept: false, reacceptFrom: required });
+    const { termsAccepted } = await import("../../src/content/routes.js");
+    const rider = await signIn(app, TEST_PHONES[2]!, "rider");
+    const riderId = (await database.db.selectFrom("riders").select("rider_id").where("phone", "=", TEST_PHONES[2]!).executeTakeFirstOrThrow()).rider_id;
+    // Never accepted the re-accept version: still blocked although the live one asks nothing.
+    expect(await termsAccepted(database.db, "rider", riderId, ["FR-PC"])).toBe(false);
+    // Accepting the live (newer) version also satisfies the older re-accept one.
+    expect((await call(app, "POST", "/account/legal/accept", rider.headers, { country: "FR", version: required + 1 })).statusCode).toBe(204);
+    expect(await termsAccepted(database.db, "rider", riderId, ["FR-PC"])).toBe(true);
+  });
+
   it("an admin limited to Swedish zones cannot publish France's texts", async () => {
     const se = await adminSession(app, database.db, "ops", { zoneIds: ["Z001"], now: clock.now });
     const draft = (await call(app, "GET", "/admin/legal/SE", se.headers)).json();
