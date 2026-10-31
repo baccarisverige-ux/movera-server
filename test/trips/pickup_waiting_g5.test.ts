@@ -251,23 +251,59 @@ describe("prices from the server: served config and TripProjection.terms (contra
       maxPickupMoveMeters: 200,
     };
     expect((await driverView(tripId)).terms).toEqual(terms);
-    expect((await riderView(tripId)).terms).toEqual(terms);
+    // Contract §2: the rider never sees the driver's shares.
+    const { noShowDriverSharePct: _n, cancelDriverSharePct: _c, ...riderTerms } = terms;
+    void _n;
+    void _c;
+    expect((await riderView(tripId)).terms).toEqual(riderTerms);
   });
 });
 
 describe("Q2: cancel after the driver arrived counts as a no-show (admin switch, default on)", () => {
-  it("after the free minutes, with the driver at the pickup: the no-show fee (65 kr), 80 % to the driver, feeKind no_show", async () => {
+  it("the free waiting over (5 min after arrival), driver at the pickup: the no-show fee (65 kr), 80 % to the driver, feeKind no_show", async () => {
     const { tripId, version } = await accepted();
     const v = await arrived(tripId, version);
-    await advance(180);
+    await advance(301);
     const res = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: v, reasonCode: "plans_changed" });
-    expect(res.json()).toMatchObject({ status: "cancelled_by_rider", fare: { amountMinor: 6500 }, cancellation: { fee: { amountMinor: 6500, currency: "SEK" }, feeKind: "no_show", feeStatus: "owed", driverShare: { amountMinor: 5200, currency: "SEK" } } });
+    expect(res.json()).toMatchObject({ status: "cancelled_by_rider", fare: { amountMinor: 6500 }, cancellation: { fee: { amountMinor: 6500, currency: "SEK" }, feeKind: "no_show", feeStatus: "owed" } });
+    // The rider never sees the driver's part (contract §2); the driver does.
+    expect(res.json().cancellation).not.toHaveProperty("driverShare");
+    expect((await driverView(tripId)).cancellation).toMatchObject({ driverShare: { amountMinor: 5200, currency: "SEK" } });
     expect(await database.db.selectFrom("rider_fees").select(["kind", "amount_minor"]).where("trip_id", "=", tripId).executeTakeFirst()).toEqual({ kind: "no_show", amount_minor: "6500" });
     expect(await database.db.selectFrom("earnings_entries").select(["kind", "amount_minor"]).where("trip_id", "=", tripId).execute()).toEqual([{ kind: "fee_share", amount_minor: "5200" }]);
     // The driver's stream event carries the fee too (island "Rider cancelled · You get 52 kr").
     const last = (await events(tripId, drivers.A.headers)).at(-1)!;
     expect(last["kind"]).toBe("trip_projection");
     expect((last["projection"] as Doc)["cancellation"]).toMatchObject({ fee: { amountMinor: 6500 }, driverShare: { amountMinor: 5200 } });
+  });
+
+  it("after the free cancel minutes but seconds after arrival (free waiting not over): the normal cancel fee, not a no-show (checker M1)", async () => {
+    const { tripId, version } = await accepted();
+    await advance(150);
+    const v = await arrived(tripId, version);
+    await advance(5);
+    const res = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: v, reasonCode: "plans_changed" });
+    expect(res.json().cancellation).toMatchObject({ fee: { amountMinor: 3500, currency: "SEK" }, feeKind: "cancel" });
+    expect(await database.db.selectFrom("rider_fees").select("kind").where("trip_id", "=", tripId).executeTakeFirst()).toEqual({ kind: "cancel" });
+  });
+
+  it("a reservation: the driver arrived early, the rider cancels before the booked time → the reservation late-cancel fee, not a no-show", async () => {
+    const at = new Date(clock.now.getTime() + 3 * 3600_000);
+    const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"], kind: "scheduled", scheduledAt: at.toISOString() })).json().quotes[0];
+    const booked = (await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "scheduled", scheduledAt: at.toISOString(), paymentMethod: "cash" })).json();
+    expect(booked.status).toBe("requested");
+    // The driver claimed it and is at the pickup 10 minutes early (the waiting clock runs from the booked time; the
+    // booked time is moved to 10 minutes from now so the test token stays valid).
+    const soon = new Date(clock.now.getTime() + 10 * 60_000);
+    const freeUntil = new Date(soon.getTime() + 5 * 60_000).toISOString();
+    await database.db.updateTable("trips").set({
+      scheduled_at: soon, status: "arrived", driver_id: drivers.A.id, accepted_at: new Date(clock.now.getTime() - 3600_000), arrived_at: clock.now, version: booked.version + 1,
+      waiting: JSON.stringify({ arrivedAt: clock.now.toISOString(), freeUntil, noShowAt: freeUntil, chargedSeconds: 0 }),
+    }).where("trip_id", "=", booked.tripId).execute();
+    const res = await call(app, "POST", `/trips/${booked.tripId}/cancel`, rider, { expectedVersion: booked.version + 1, reasonCode: "plans_changed" });
+    expect(res.statusCode, res.body).toBe(200);
+    // RiderAppConfig.cancelFees.reservation.economy: 50 kr inside 60 minutes before pickup.
+    expect(res.json().cancellation).toMatchObject({ fee: { amountMinor: 5000, currency: "SEK" }, feeKind: "cancel" });
   });
 
   it("inside the free minutes the rider always cancels free, even with the driver at the pickup", async () => {
@@ -286,9 +322,10 @@ describe("Q2: cancel after the driver arrived counts as a no-show (admin switch,
     await publish("driver_app_config", "Z001", doc);
     const { tripId, version } = await accepted();
     const v = await arrived(tripId, version);
-    await advance(180);
+    await advance(301);
     const res = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: v, reasonCode: "plans_changed" });
-    expect(res.json().cancellation).toMatchObject({ fee: { amountMinor: 3500, currency: "SEK" }, feeKind: "cancel", driverShare: { amountMinor: 3500, currency: "SEK" } });
+    expect(res.json().cancellation).toMatchObject({ fee: { amountMinor: 3500, currency: "SEK" }, feeKind: "cancel" });
+    expect((await driverView(tripId)).cancellation).toMatchObject({ driverShare: { amountMinor: 3500, currency: "SEK" } });
     expect(await database.db.selectFrom("rider_fees").select("kind").where("trip_id", "=", tripId).executeTakeFirst()).toEqual({ kind: "cancel" });
   });
 
@@ -310,6 +347,9 @@ describe("Q6 / Q5: the amounts the apps show while waiting", () => {
     const view = await driverView(tripId);
     expect(view.waiting).toMatchObject({ chargedSeconds: 0, noShowFee: { amountMinor: 6500, currency: "SEK" }, noShowDriverShare: { amountMinor: 5200, currency: "SEK" } });
     expect((await riderView(tripId)).waiting).toMatchObject({ noShowFee: { amountMinor: 6500, currency: "SEK" } });
+    expect((await riderView(tripId)).waiting).not.toHaveProperty("noShowDriverShare");
+    expect((await events(tripId)).at(-1)!["projection"]).not.toHaveProperty("rider");
+    expect(((await events(tripId)).at(-1)!["projection"] as Doc)["waiting"]).not.toHaveProperty("noShowDriverShare");
     await advance(5 * 60 + 1);
     const noShow = await call(app, "POST", `/trips/${tripId}/no-show`, drivers.A.headers, { expectedVersion: v });
     expect(noShow.json().cancellation).toMatchObject({ fee: { amountMinor: 6500, currency: "SEK" }, feeKind: "no_show", driverShare: { amountMinor: 5200, currency: "SEK" } });
@@ -398,6 +438,21 @@ describe("Q4 / status item 2: one road-route ETA every 30 s for both apps (contr
     await advance(30);
     expect(await riderView(tripId)).not.toHaveProperty("eta");
     expect(await database.db.selectFrom("timers").select("kind").where("kind", "=", TRIP_ETA).where("ref_id", "=", tripId).executeTakeFirst()).toBeUndefined();
+  });
+
+  it("no driver position for more than 2 minutes: the previous ETA is kept as source stale, nothing new is routed (checker L5)", async () => {
+    const { tripId } = await accepted();
+    await worker.runDue();
+    expect((await riderView(tripId)).eta).toMatchObject({ source: "osrm" });
+    await advance(150);
+    const stale = (await riderView(tripId)).eta;
+    expect(stale).toMatchObject({ etaSeconds: 1080, distanceMeters: 8000, target: "pickup", source: "stale", at: clock.now.toISOString() });
+    const last = (await events(tripId)).filter((e) => e["kind"] === "location").at(-1)!;
+    expect(last["eta"]).toMatchObject({ source: "stale", etaSeconds: 1080 });
+    // A fresh position: routed again.
+    await moveTo("A", SPOTS.A);
+    await advance(30);
+    expect((await riderView(tripId)).eta).toMatchObject({ source: "osrm" });
   });
 
   it("the admin's live trip rows carry the driver's position and the ETA", async () => {

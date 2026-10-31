@@ -310,11 +310,19 @@ export function appDocWithPricing(doc: ConfigDoc, appDocument: Doc, pricing: Pri
  */
 export async function withLivePricing(ex: Executor, doc: ConfigDoc, zoneId: string, document: Doc): Promise<Doc> {
   if (doc !== "rider_app_config" && doc !== "driver_app_config") return document;
-  const pricing = await liveDocument<PricingForApps>(ex, "pricing", zoneId);
-  let next = pricing ? appDocWithPricing(doc, document, pricing.document) : document;
+  // One query for the zone's (or its country standard's) pricing and driver documents.
+  const zone = countryOfKey(zoneId) === null ? await ex.selectFrom("zones").select("country").where("zone_id", "=", zoneId).executeTakeFirst() : undefined;
+  const keys = zone ? [zoneId, standardKey(zone.country)] : [zoneId];
+  const rows = await ex.selectFrom("config_live").select(["doc", "zone_id", "document"]).where("doc", "in", ["pricing", "driver_app_config"]).where("zone_id", "in", keys).execute();
+  const pick = <T,>(name: ConfigDoc): T | null => {
+    const own = rows.find((r) => r.doc === name && r.zone_id === zoneId) ?? rows.find((r) => r.doc === name);
+    return (own?.document as T | undefined) ?? null;
+  };
+  const pricing = pick<PricingForApps>("pricing");
+  let next = pricing ? appDocWithPricing(doc, document, pricing) : document;
   if (doc === "rider_app_config") {
-    const driver = await liveDocument<{ waiting?: { cancelAfterArrivedIsNoShow?: unknown } }>(ex, "driver_app_config", zoneId);
-    const flag = driver?.document.waiting?.cancelAfterArrivedIsNoShow;
+    const driver = pick<{ waiting?: { cancelAfterArrivedIsNoShow?: unknown } }>("driver_app_config");
+    const flag = driver?.waiting?.cancelAfterArrivedIsNoShow;
     const waiting: Doc = isObject(next["waiting"]) ? next["waiting"] : {};
     next = { ...next, waiting: { ...waiting, cancelAfterArrivedIsNoShow: typeof flag === "boolean" ? flag : CANCEL_AFTER_ARRIVED_DEFAULT } };
   }

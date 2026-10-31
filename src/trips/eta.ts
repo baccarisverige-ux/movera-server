@@ -1,6 +1,6 @@
 import type { Trx } from "../db/db.js";
 import { appendTripEvent, type TripRow } from "../db/tripLog.js";
-import { fixView } from "../drivers/service.js";
+import { fixView, STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { contract } from "../contract/contract.js";
 import { scheduleTimer, cancelTimer, type TimerHandler } from "../jobs/timers.js";
 import { lockTripNow } from "../dispatch/runtime.js";
@@ -21,7 +21,7 @@ import { TERMINAL, type TripStatus } from "../rules/transitions.js";
  */
 
 type Place = { lat: number; lng: number };
-export type TripEta = { etaSeconds: number; distanceMeters: number; target: "pickup" | "dropoff"; at: string; source: "osrm" | "estimate" };
+export type TripEta = { etaSeconds: number; distanceMeters: number; target: "pickup" | "dropoff"; at: string; source: "osrm" | "estimate" | "stale" };
 
 const PW = (contract as unknown as { pickupWaiting: { eta: { everySeconds: number; staleAfterSeconds: number } } }).pickupWaiting.eta;
 export const TRIP_ETA = "trip_eta";
@@ -48,6 +48,9 @@ export function estimateEta(from: Place, to: Place, target: "pickup" | "dropoff"
 }
 
 export const isFreshEta = (eta: TripEta | null | undefined, now: Date): eta is TripEta => !!eta && now.getTime() - Date.parse(eta.at) <= ETA_STALE_MS;
+/** Checker L5: a position older than dispatch's "gone" age (STALE_AFTER_SECONDS) is not routed; the previous ETA is kept as source stale. */
+export const isStaleFix = (fix: { received_at: Date }, now: Date): boolean => now.getTime() - fix.received_at.getTime() > STALE_AFTER_SECONDS * 1000;
+const staleOf = (previous: TripEta, target: "pickup" | "dropoff", now: Date): TripEta => ({ ...previous, target, at: now.toISOString(), source: "stale" });
 
 /** Books the first tick (at accept, and for a trip that has none yet). */
 export async function startEta(trx: Trx, tripId: string, now: Date): Promise<void> {
@@ -73,9 +76,17 @@ export function etaHandler(router: Router): TimerHandler {
     const fix = await trx.selectFrom("driver_locations").selectAll().where("driver_id", "=", trip.driver_id!).executeTakeFirst();
     await scheduleTimer(trx, { kind: TRIP_ETA, refId: trip.trip_id, dueAt: new Date(now.getTime() + ETA_EVERY_MS), payload: {} });
     if (!fix) return;
-    const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
-    const leg = await router.route([{ lat: fix.lat, lng: fix.lng }, to]);
-    const eta: TripEta = { etaSeconds: Math.max(ETA_MIN_SECONDS, leg.durationSeconds), distanceMeters: leg.distanceMeters, target, at: now.toISOString(), source: leg.source };
+    const previous = trip.eta as TripEta | null;
+    let eta: TripEta;
+    if (isStaleFix(fix, now)) {
+      // No fresh position: nothing new to route; the apps keep the last number and see it is old (source stale).
+      if (!previous || previous.target !== target) return;
+      eta = staleOf(previous, target, now);
+    } else {
+      const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
+      const leg = await router.route([{ lat: fix.lat, lng: fix.lng }, to]);
+      eta = { etaSeconds: Math.max(ETA_MIN_SECONDS, leg.durationSeconds), distanceMeters: leg.distanceMeters, target, at: now.toISOString(), source: leg.source };
+    }
     await trx.updateTable("trips").set({ eta: JSON.stringify(eta) }).where("trip_id", "=", trip.trip_id).execute();
     // A location event (no version change) with the ETA: the apps' gate never replaces the projection with it (§4).
     await appendTripEvent(trx, { tripId: trip.trip_id, kind: "location", version: trip.version, occurredAt: now, location: fixView(fix), etaSeconds: eta.etaSeconds, eta });
@@ -83,16 +94,18 @@ export function etaHandler(router: Router): TimerHandler {
 }
 
 /** The ETA for a read of the trip: the stored one while fresh, else the estimate from the driver's latest fix. */
-export function etaForRead(trip: TripRow, fix: Place, now: Date): TripEta | null {
+export function etaForRead(trip: TripRow, fix: Place & { received_at?: Date }, now: Date): TripEta | null {
   const target = etaTarget(trip);
   if (target === null) return null;
   const stored = trip.eta as TripEta | null;
   if (isFreshEta(stored, now) && stored.target === target) return stored;
+  // An old position gives no new estimate: the last ETA, marked stale (none when there never was one).
+  if (fix.received_at !== undefined && isStaleFix({ received_at: fix.received_at }, now)) return stored && stored.target === target ? staleOf(stored, target, now) : null;
   return estimateEta(fix, (target === "pickup" ? trip.pickup : trip.dropoff) as Place, target, now);
 }
 
 /** The admin projection of a trip with its live ETA (for lists). */
-export function withEta(trip: TripRow, fix: Place | undefined, now: Date, viewer: "rider" | "driver" | "admin"): Record<string, unknown> {
+export function withEta(trip: TripRow, fix: (Place & { received_at?: Date }) | undefined, now: Date, viewer: "rider" | "driver" | "admin"): Record<string, unknown> {
   const projection = tripProjection(trip, viewer, { now });
   if (!fix) return projection;
   const eta = etaForRead(trip, fix, now);

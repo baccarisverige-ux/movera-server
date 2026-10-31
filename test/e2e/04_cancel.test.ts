@@ -72,9 +72,11 @@ describe("scenario 4: rider cancels at each stage; driver cancels; no-show; fees
   it("arrived, after the free minutes: a cancel counts as a no-show (v0.18.7 Q2, admin switch on by default): the 65 kr no-show fee, 80 % to the driver", async () => {
     const { tripId } = await bookAndAccept(sim, rider, a);
     await drive(a, tripId, "arrived");
-    await sim.advance(180);
+    // Only once the free waiting is over (checker M1): 5 free minutes after arrival.
+    await sim.advance(301);
     const res = await cancel(tripId);
-    expect(res.body.cancellation).toMatchObject({ fee: { amountMinor: 6500, currency: "SEK" }, feeKind: "no_show", feeStatus: "owed", driverShare: { amountMinor: 5200, currency: "SEK" } });
+    expect(res.body.cancellation).toMatchObject({ fee: { amountMinor: 6500, currency: "SEK" }, feeKind: "no_show", feeStatus: "owed" });
+    expect(res.body.cancellation).not.toHaveProperty("driverShare");
     expect(await ledger(tripId)).toEqual([{ kind: "fee_share", amount_minor: "5200" }]);
   });
 

@@ -32,6 +32,26 @@ function waitingNow(row: TripRow, waiting: WaitingRow, now: Date): WaitingRow & 
   return { ...waiting, chargedSecondsNow: seconds, ...(perMin !== undefined ? { chargedSoFar: { amountMinor: Math.floor((seconds * perMin) / 60 + 0.5), currency: row.currency } } : {}) };
 }
 
+/**
+ * Contract §2: the rider never sees the driver's money. v0.18.7 (checker L1): also the driver's part of a fee and the share
+ * percentages inside cancellation, waiting and terms. One function for GET answers and for the stream's redaction.
+ */
+export function hideDriverMoney(projection: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...projection };
+  const without = (key: string, hidden: string[]) => {
+    const value = out[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const copy = { ...(value as Record<string, unknown>) };
+      for (const h of hidden) delete copy[h];
+      out[key] = copy;
+    }
+  };
+  without("cancellation", ["driverShare"]);
+  without("waiting", ["noShowDriverShare"]);
+  without("terms", ["noShowDriverSharePct", "cancelDriverSharePct"]);
+  return out;
+}
+
 export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number; now?: Date } = {}): Record<string, unknown> {
   const currency = row.currency;
   const lines = (row.fare_lines as Array<{ code: string; amount: Money }>) ?? [];
@@ -102,5 +122,5 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (viewer !== "driver" && row.search_step && ["searching", "offered", "expired"].includes(row.status)) projection["searchStep"] = row.search_step;
   // Admins only: the driver sent no position for 30 minutes with the rider on board (owner decision 2026-10-26).
   if (viewer === "admin" && row.driver_silent_alert) projection["driverSilentAlert"] = row.driver_silent_alert;
-  return projection;
+  return viewer === "rider" ? hideDriverMoney(projection) : projection;
 }

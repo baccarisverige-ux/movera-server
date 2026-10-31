@@ -34,9 +34,11 @@ ALTER TABLE trip_events ADD CONSTRAINT trip_events_kind_check
 -- to another value keeps it.
 WITH changed AS (
   UPDATE config_live
-     SET document = jsonb_set(document, '{booking,maxPickupMoveMeters}', '200'::jsonb),
+     SET document = jsonb_set(jsonb_set(document, '{booking,maxPickupMoveMeters}', '200'::jsonb), '{version}', to_jsonb(version + 1))
+                    || jsonb_build_object('publishedAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
          version = version + 1,
-         published_at = now()
+         published_at = now(),
+         published_by = NULL
    WHERE doc IN ('rider_app_config', 'driver_app_config')
      AND (document #>> '{booking,maxPickupMoveMeters}')::numeric = 500
   RETURNING doc, zone_id, version, document, published_at
@@ -46,6 +48,6 @@ INSERT INTO config_history (doc, zone_id, version, document, published_at, publi
   FROM changed
   ON CONFLICT (doc, zone_id, version) DO NOTHING;
 UPDATE config_drafts
-   SET document = jsonb_set(document, '{booking,maxPickupMoveMeters}', '200'::jsonb), version = version + 1
+   SET document = jsonb_set(document, '{booking,maxPickupMoveMeters}', '200'::jsonb), version = version + 1, updated_at = now()
  WHERE doc IN ('rider_app_config', 'driver_app_config')
    AND (document #>> '{booking,maxPickupMoveMeters}')::numeric = 500;

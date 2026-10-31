@@ -704,7 +704,10 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   // also after the driver arrived (owner 2026-10-29). After them, a cancel with the driver at the pickup is a no-show
   // when the zone says so (admin setting, default on): the no-show fee with the no-show share.
   if (isFreeCancel({ kind, rule, minutesSinceAccept, minutesBeforePickup })) return null;
-  if (trip.status === "arrived" && rules.cancelAfterArrivedIsNoShow) {
+  // Checker M1: it is a no-show only from waiting.freeUntil on, the moment the driver himself could mark one (a
+  // reservation's clock runs from the booked time); a cancel seconds after arrival is the normal cancel fee.
+  const waiting = trip.waiting as Waiting | null;
+  if (trip.status === "arrived" && rules.cancelAfterArrivedIsNoShow && waiting !== null && now.getTime() >= Date.parse(waiting.freeUntil)) {
     const noShow = (await waitingOf(ex, trip)).noShowFee.amountMinor;
     return noShow > 0 ? { fee: { amountMinor: noShow, currency: trip.currency }, kind: "no_show" } : null;
   }

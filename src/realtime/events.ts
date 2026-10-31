@@ -1,6 +1,6 @@
 import type { Selectable } from "kysely";
 import type { TripEventsTable } from "../db/schema.js";
-import type { Viewer } from "../trips/projection.js";
+import { hideDriverMoney, type Viewer } from "../trips/projection.js";
 
 /** The realtime envelope (contract §4, RealtimeEvent) for one stored event, as one viewer may see it. */
 
@@ -22,7 +22,7 @@ export function redactProjection(projection: Record<string, unknown>, viewer: Vi
   // v0.18.7 (Q1): the rider never gets his own summary (it is the driver's view of him).
   for (const [k, v] of Object.entries(projection)) if (!RIDER_HIDDEN.has(k) && k !== "driverRatingStatus" && k !== "driverSilentAlert" && k !== "rider") out[k] = v;
   if (Array.isArray(out["fareLines"])) out["fareLines"] = (out["fareLines"] as Array<{ code: string }>).filter((l) => !DRIVER_ONLY_LINES.has(l.code));
-  return out;
+  return hideDriverMoney(out);
 }
 
 /**
