@@ -1,6 +1,6 @@
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
-import { etaHandler, startEta, TRIP_ETA } from "../trips/eta.js";
+import { etaHandler, startEta } from "../trips/eta.js";
 import { EstimateRouter } from "../maps/routing.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
@@ -676,4 +676,6 @@ export const withdrawHandler: TimerHandler = async (trx, timer) => {
 
 // v0.18.7: the ETA tick booked at accept rides with the dispatch handlers (straight-line estimate here; main.ts sets the
 // server's real router over it, [TRIP_ETA]: etaHandler(router)).
-export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler, [TRIP_ETA]: etaHandler(new EstimateRouter()) };
+export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler, // "trip_eta" spelled out and the handler made on first use: trips/eta.ts imports this module, so when eta.ts loads
+// first (main.ts), TRIP_ETA is not initialised yet while this line runs (Render deploy of 48e587e crashed on it).
+  trip_eta: (trx, timer) => etaHandler(new EstimateRouter())(trx, timer) };
