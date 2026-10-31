@@ -9,6 +9,7 @@ import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
 import { randomBytes } from "node:crypto";
 import { defaultSettings, prepareSettings, settingsProblems, type OnboardingSettings } from "../drivers/onboardingSettings.js";
+import { DEFAULT_RAISE_MAX_FACTOR, raiseMaxFactor, validFactor, withRaiseLimit } from "./raiseLimit.js";
 
 /**
  * Config documents (contract v0.5.1 §6, contract.json#configDocs and #configVersion). The admin panel builds each
@@ -165,7 +166,9 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
   }
   // v0.8.1 §6.5: tips, raise steps and driver bonus limits come from the scope's rules (its own, else the standard).
   const rules = await liveRules(trx, input.zoneId);
-  const document = rules === null ? input.document : withCountryRules(input.doc, input.document as Doc, rules);
+  let document = rules === null ? input.document : withCountryRules(input.doc, input.document as Doc, rules);
+  // v0.18.6 (G4-E4, configDocs.mustMatch): a rider document carries its zone's raise limit from the dispatch document.
+  if (input.doc === "rider_app_config" && isObject(document)) document = withRaiseLimit(document, await raiseMaxFactor(trx, input.zoneId));
   const version = current.version + 1;
   const values = { doc: input.doc, zone_id: input.zoneId, version, document: JSON.stringify(document), updated_at: now, updated_by: input.adminId };
   await trx.insertInto("config_drafts").values(values).onConflict((c) => c.columns(["doc", "zone_id"]).doUpdateSet(values)).execute();
@@ -233,6 +236,14 @@ export async function publishDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: st
     // A standard's pricing also keeps in step the own app documents of the zones that price with it.
     const keys = zone.kind === "standard" ? [input.zoneId, ...(await zonesUsingStandard(trx, "pricing", zone.country))] : [input.zoneId];
     appDocuments.push(...(await rewriteAppDocs(trx, keys, (doc, d) => appDocWithPricing(doc, d, pricing), { ...by, note: `pricing v${version}: waiting, no-show and pickup fee`, adoptStandard: zone.kind !== "standard" }, now)));
+  }
+  if (input.doc === "dispatch") {
+    // v0.18.6 (owner G4-E4, configDocs.mustMatch): the rider documents that use this dispatch document get its raise
+    // limit (RiderAppConfig.raisePrice.maxFactor), as their next version with config_published, so the rider app hides
+    // the raise buttons over it.
+    const factor = validFactor((document["raisePrice"] as { maxFactor?: unknown } | undefined)?.maxFactor) ?? DEFAULT_RAISE_MAX_FACTOR;
+    const keys = zone.kind === "standard" ? [input.zoneId, ...(await zonesUsingStandard(trx, "dispatch", zone.country))] : [input.zoneId];
+    await rewriteAppDocs(trx, keys, (doc, d) => (doc === "rider_app_config" ? withRaiseLimit(d, factor) : d), { ...by, note: `dispatch v${version}: rider raise limit ×${factor}` }, now);
   }
   if (input.doc === "country_rules") {
     // v0.8.1 (owner 2026-10-28): a zone's own rules reach only that zone (on the standard app documents it takes

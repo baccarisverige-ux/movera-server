@@ -9,6 +9,7 @@ import { TimerWorker } from "./jobs/timers.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { dispatchHandlers } from "./dispatch/runtime.js";
+import { RADAR_ZONE_REPEAT, radarZoneRepeatHandler } from "./dispatch/tools.js";
 import { rideHandlers } from "./trips/ride.js";
 import { CONFIG_CHANNEL } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
@@ -47,7 +48,7 @@ if (db !== undefined) {
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db);
   await prepareTestWeek(db, env, app.log);
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, ...rideHandlers, ...pricingHandlers }, logger: app.log });
+  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers }, logger: app.log });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
   if (push.sender !== undefined) {

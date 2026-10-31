@@ -52,7 +52,20 @@ export function onNotify(listener: () => void): () => void {
 
 export async function notify(
   ex: Executor,
-  notice: { audience: Audience; subjectId: string; kind: string; title: string; body: string; deepLink?: string; tripId?: string; data?: Record<string, unknown> },
+  notice: {
+    audience: Audience;
+    subjectId: string;
+    kind: string;
+    title: string;
+    body: string;
+    deepLink?: string;
+    tripId?: string;
+    data?: Record<string, unknown>;
+    /** v0.18.6 (G4 decision 1): false = push only, never a bell notice (the new-offer push). */
+    bell?: boolean;
+    /** v0.18.6: not pushed after this time (the offer's expiresAt). */
+    pushUntil?: Date;
+  },
   now: Date,
 ): Promise<string> {
   const notificationId = newId("ntf", now.getTime());
@@ -69,6 +82,8 @@ export async function notify(
       trip_id: notice.tripId ?? null,
       data: JSON.stringify(notice.data ?? {}),
       created_at: now,
+      ...(notice.bell === false ? { bell: false } : {}),
+      ...(notice.pushUntil ? { push_until: notice.pushUntil } : {}),
     })
     .execute();
   for (const listener of notifyListeners) {
@@ -83,7 +98,8 @@ export async function notify(
 
 /** GET /notifications?cursor&limit&unreadOnly: newest first; cursor = the last row's (createdAt, id). */
 export async function listNotifications(ex: Executor, who: { audience: Audience; subjectId: string }, input: { cursor?: string | undefined; limit: number; unreadOnly?: boolean | undefined }) {
-  let q = ex.selectFrom("notifications").selectAll().where("audience", "=", who.audience).where("subject_id", "=", who.subjectId);
+  // v0.18.6: push-only rows (bell = false, the new-offer push) are never bell notices.
+  let q = ex.selectFrom("notifications").selectAll().where("audience", "=", who.audience).where("subject_id", "=", who.subjectId).where("bell", "=", true);
   if (input.unreadOnly) q = q.where("read_at", "is", null);
   if (input.cursor) {
     const [at, id] = Buffer.from(input.cursor, "base64url").toString("utf8").split("|");
@@ -102,14 +118,14 @@ export async function listNotifications(ex: Executor, who: { audience: Audience;
 /** POST /notifications/{id}/read: own notices only; reading twice is fine. */
 export async function markNotificationRead(ex: Executor, who: { audience: Audience; subjectId: string }, notificationId: string, now: Date) {
   const row = await ex.selectFrom("notifications").selectAll().where("notification_id", "=", notificationId).executeTakeFirst();
-  if (row === undefined || row.audience !== who.audience || row.subject_id !== who.subjectId) throw notFound("No such notification.", "notification_not_found");
+  if (row === undefined || row.audience !== who.audience || row.subject_id !== who.subjectId || row.bell === false) throw notFound("No such notification.", "notification_not_found");
   if (row.read_at === null) await ex.updateTable("notifications").set({ read_at: now }).where("notification_id", "=", notificationId).execute();
   return notificationView({ ...(row as unknown as NotificationRow), read_at: row.read_at ?? now });
 }
 
 /** Unread notices of one kind, for a badge. */
 export async function unreadCount(ex: Executor, who: { audience: Audience; subjectId: string }, kind?: string): Promise<number> {
-  let q = ex.selectFrom("notifications").select((eb) => eb.fn.countAll<string>().as("n")).where("audience", "=", who.audience).where("subject_id", "=", who.subjectId).where("read_at", "is", null);
+  let q = ex.selectFrom("notifications").select((eb) => eb.fn.countAll<string>().as("n")).where("audience", "=", who.audience).where("subject_id", "=", who.subjectId).where("bell", "=", true).where("read_at", "is", null);
   if (kind) q = q.where("kind", "=", kind);
   return Number((await q.executeTakeFirstOrThrow()).n);
 }

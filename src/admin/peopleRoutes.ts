@@ -10,6 +10,7 @@ import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { adminDocumentFile, assertReason, checkDocument, driverInScope, reviewDocument } from "../documents/service.js";
 import { EXTRA_CATEGORIES, onboardingSettings } from "../drivers/onboardingSettings.js";
+import { markSetOffline } from "../drivers/offlineReason.js";
 import type { DocumentKey } from "../documents/files.js";
 import { adminGetFleet, adminRemoveFleetDriver, listFleets, renewFleetCode, reviewFleet } from "../drivers/onboarding.js";
 import { adminDecideInvitation, type InviteDeps } from "../drivers/invitations.js";
@@ -209,6 +210,8 @@ async function reviewVehicle(trx: Db extends never ? never : import("../db/db.js
     const drivers = await trx.selectFrom("drivers").select(["driver_id", "online_status", "version"]).where("vehicle_id", "=", vehicleId).where("online_status", "in", ["online", "going_online"]).execute();
     for (const d of drivers) {
       await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: d.version + 1, updated_at: now }).where("driver_id", "=", d.driver_id).execute();
+      // v0.18.6 (owner "Send the real reason"): vehicle_blocked with the admin's note.
+      await markSetOffline(trx, d.driver_id, "vehicle_blocked", { note: body.note ?? null }, now);
       await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: d.driver_id, dueAt: now, payload: {} });
     }
   }

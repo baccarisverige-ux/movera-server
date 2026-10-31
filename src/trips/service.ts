@@ -16,13 +16,12 @@ import { afterRiderCancel, bookingRulesFor, riderCancelFee, riderFeeColumns } fr
 import type { PricingDocument } from "../rules/fare.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
+import { raiseMaxFactor } from "../config/raiseLimit.js";
 import { tripProjection, type Viewer } from "./projection.js";
 
 /** Trip requests, reads and the rider's cancel (contract §3, §7). */
 
 const RIDER_REASONS: readonly string[] = (contract as unknown as { cancelReasons: { rider: string[] } }).cancelReasons.rider;
-/** contract.json#dispatch.raisePrice (owner decision 25): the new fare may not pass maxFactor × the quoted fare. */
-const RAISE_MAX_FACTOR: number = (contract as unknown as { dispatch: { raisePrice: { maxFactor: number } } }).dispatch.raisePrice.maxFactor;
 
 type Place = { address?: string; lat: number; lng: number };
 type CreateTrip = {
@@ -196,8 +195,11 @@ export async function raisePrice(trx: Trx, riderId: string, tripId: string, body
   if (increase.amountMinor <= 0) throw badRequest("The raise must be more than nothing.", "increase_not_positive");
   const fareMinor = Number(trip.fare_minor) + increase.amountMinor;
   const booked = Number(trip.booked_fare_minor);
-  if (fareMinor > booked * RAISE_MAX_FACTOR) {
-    throw badRequest(`The fare can be raised to at most ${RAISE_MAX_FACTOR} times the quoted price.`, "raise_too_high");
+  // contract.json#dispatch.raisePrice (owner decision 25; v0.18.6 G4-E4: per zone, DispatchDocument.raisePrice.maxFactor,
+  // default 2): the new fare may not pass maxFactor × the quoted fare.
+  const maxFactor = await raiseMaxFactor(trx, trip.zone_id);
+  if (fareMinor > booked * maxFactor) {
+    throw badRequest(`The fare can be raised to at most ${maxFactor} times the quoted price.`, "raise_too_high");
   }
   // The offers out there carry the old price: withdrawn, and the drivers who declined it may be asked again.
   await stopSearch(trx, trip, now);

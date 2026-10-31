@@ -9,6 +9,7 @@ import { newId } from "../ids.js";
 import { zoneAt } from "../config/zoneLookup.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
+import { CLEAR_OFFLINE_REASON } from "./offlineReason.js";
 import { documentSummaries } from "../documents/service.js";
 import { EXTRA_CATEGORIES, carRuleProblems, categoryProblem, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
 import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
@@ -53,6 +54,10 @@ export type DriverRow = {
   terms_accepted_at: Date | null;
   fleet_id: string | null;
   fleet_linked_at: Date | null;
+  // v0.18.6 (owner "Send the real reason")
+  offline_reason?: string | null;
+  offline_note?: string | null;
+  offline_at?: Date | null;
 };
 
 type Fix = { lat: number; lng: number; accuracy: number; heading?: number; speedMps?: number; moving?: boolean; measuredAt: string };
@@ -78,6 +83,8 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     driverId: row.driver_id,
     accountStatus: row.account_status,
     onlineStatus: row.online_status,
+    // v0.18.6 (owner "Send the real reason"): why the server set him offline, while he is offline.
+    ...(row.online_status === "offline" && row.offline_reason ? { offlineReason: row.offline_reason, ...(row.offline_note ? { offlineNote: row.offline_note } : {}), ...(row.offline_at ? { offlineAt: row.offline_at.toISOString() } : {}) } : {}),
     ...(location ? { moving: location.moving } : {}),
     firstName: row.first_name,
     ...(row.rating_count > 0 ? { rating: Math.round((row.rating_sum / row.rating_count) * 100) / 100 } : {}),
@@ -250,7 +257,7 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
   const online = body.onlineStatus === "online";
   await trx
     .updateTable("drivers")
-    .set({ online_status: body.onlineStatus, online_since: online ? now : null, ...(online ? { last_free_at: now } : {}), version: row.version + 1, updated_at: now })
+    .set({ online_status: body.onlineStatus, online_since: online ? now : null, ...(online ? { last_free_at: now } : {}), ...CLEAR_OFFLINE_REASON, version: row.version + 1, updated_at: now })
     .where("driver_id", "=", driverId)
     .execute();
   // Going offline withdraws the driver's open offers (a job locks each trip in turn).

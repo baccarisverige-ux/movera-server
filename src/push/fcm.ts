@@ -1,3 +1,4 @@
+import { contract } from "../contract/contract.js";
 import { createSign } from "node:crypto";
 
 /**
@@ -77,7 +78,19 @@ export class GoogleAccessTokens {
   }
 }
 
-export type PushMessage = { token: string; platform: "ios" | "android" | "web"; title: string; body: string; data: Record<string, string> };
+export type PushMessage = {
+  token: string;
+  platform: "ios" | "android" | "web";
+  title: string;
+  body: string;
+  data: Record<string, string>;
+  /** v0.18.6 (contract.json#driverOffers.push): offer = the Movera offer sound + vibration; none = quiet (Radar). */
+  sound?: "offer" | "none";
+  /** v0.18.6: seconds the push is still useful (until the offer runs out). */
+  ttlSeconds?: number;
+};
+
+const NATIVE = (contract as unknown as { driverOffers: { push: { native: { androidChannel: string; androidQuietChannel: string; soundFile: string; iosSound: string } } } }).driverOffers.push.native;
 /** sent; dead_token: FCM says the token is gone (remove it); retry: try again later; failed: give up on this one. */
 export type SendResult = "sent" | "dead_token" | "retry" | "failed";
 
@@ -96,7 +109,32 @@ export class FcmSender implements PushSender {
   /** The FCM v1 message. Web gets data only (the service worker shows it and opens deepLink on tap). */
   static body(message: PushMessage) {
     const data = { ...message.data, title: message.title, body: message.body };
-    if (message.platform === "web") return { message: { token: message.token, data, webpush: { headers: { Urgency: "high" } } } };
+    const ttl = message.ttlSeconds;
+    if (message.platform === "web") return { message: { token: message.token, data, webpush: { headers: { Urgency: "high", ...(ttl ? { TTL: String(ttl) } : {}) } } } };
+    if (message.sound !== undefined) {
+      // v0.18.6 (G4 decision 1, E6): a new offer. Sound + vibration (Exclusive / assigned) or quiet (Radar).
+      const loud = message.sound === "offer";
+      return {
+        message: {
+          token: message.token,
+          notification: { title: message.title, body: message.body },
+          data,
+          android: {
+            priority: "HIGH",
+            ...(ttl ? { ttl: `${ttl}s` } : {}),
+            notification: {
+              click_action: "FLUTTER_NOTIFICATION_CLICK",
+              channel_id: loud ? NATIVE.androidChannel : NATIVE.androidQuietChannel,
+              ...(loud ? { sound: NATIVE.soundFile, default_vibrate_timings: true } : {}),
+            },
+          },
+          apns: {
+            ...(ttl ? { headers: { "apns-expiration": String(Math.floor(Date.now() / 1000) + ttl) } } : {}),
+            payload: { aps: loud ? { sound: NATIVE.iosSound, "interruption-level": "time-sensitive" } : {} },
+          },
+        },
+      };
+    }
     return {
       message: {
         token: message.token,

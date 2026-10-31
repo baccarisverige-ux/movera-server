@@ -230,7 +230,9 @@ describe("Phase 4: route-by-route authorization matrix", () => {
     expect(failures).toEqual([]);
     const after = await owner.trip(tripId);
     expect({ status: after.status, version: after.version }).toEqual({ status: before.status, version: before.version });
-  });
+    // v0.18.6 added 23 operations (Dispatch tools); every route is called many ways, so this test needs more time when the
+    // whole suite runs in parallel (about 10 s alone).
+  }, 60_000);
 
   it("P4-6: a zone-limited admin lists only riders who rode in their zones", async () => {
     const z002 = await outOfZoneSuper();

@@ -8,8 +8,9 @@ import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
 import { chooseRefundDestination, getWallet, payoutsToMake, riderRefunds, walletEntries } from "../riders/wallet.js";
 import { tripProjection } from "../trips/projection.js";
+import { activeSendOf } from "../dispatch/radarSends.js";
 import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus } from "./lists.js";
-import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminRadarGroup, adminReassign, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
+import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminRadarGroup, adminReassign, adminStopRadarZone, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
 
 /** contract §3.1, §7: the admin's trip tools, lists, account status, audit; the rider's wallet and refunds. */
 
@@ -25,7 +26,7 @@ const When = { from: z.string().datetime().optional(), to: z.string().datetime()
 
 const ReasonBody = z.object({ ...Version, reasonCode: z.string(), note: Note, driverBonus: Money.optional() });
 const AssignBody = z.object({ ...Version, driverId: ID, note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
-const RadarBody = z.object({ ...Version, driverIds: z.array(ID).min(1).max(10), note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
+const RadarBody = z.object({ ...Version, driverIds: z.array(ID).min(1).max(10).optional(), groupId: ID.optional(), radarZoneId: ID.optional(), ruleId: ID.optional(), note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
 const NoShowBody = z.object({ ...Version, note: Note, waiveFee: z.boolean().optional() });
 const CompleteBody = z.object({ ...Version, note: Note, fare: Money.optional() });
 const AdjustBody = z.object({ ...Version, fare: Money.optional(), waitingSeconds: z.number().int().min(0).optional(), waiveCancelFee: z.boolean().optional(), reason: Note });
@@ -63,7 +64,10 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
-    return tripProjection(await adminTrip(deps.db, who, tripParam(request)), "admin");
+    const trip = await adminTrip(deps.db, who, tripParam(request));
+    // v0.18.6 (G4-F4): the repeating radar-zone send, while one runs, for every admin who opens the trip.
+    const radarZoneSend = await activeSendOf(deps.db, trip.trip_id);
+    return { ...tripProjection(trip, "admin"), ...(radarZoneSend ? { radarZoneSend } : {}) };
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId/offers`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
@@ -115,6 +119,8 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   command("reassign", "trips.intervene", ReasonBody, (trx, who, id, body) => view(adminReassign(trx, who, id, clean(body) as never, now())));
   command("assign", "trips.intervene", AssignBody, (trx, who, id, body) => view(adminAssign(trx, who, id, clean(body) as never, now())));
   command("radar-group", "trips.intervene", RadarBody, async (trx, who, id, body) => ({ status: 200, body: await adminRadarGroup(trx, who, id, clean(body) as never, now()) }));
+  // v0.18.6 (G4-F4): stop the repeating radar-zone send of a trip.
+  command("radar-zone/stop", "trips.intervene", z.object({ note: z.string().max(1000).optional() }), async (trx, who, id, body) => ({ status: 200, body: await adminStopRadarZone(trx, who, id, clean(body) as never, now()) }));
   command("no-show", "trips.intervene", NoShowBody, (trx, who, id, body) => view(adminNoShow(trx, who, id, clean(body) as never, now())));
   command("complete", "trips.intervene", CompleteBody, (trx, who, id, body) => view(adminComplete(trx, who, id, clean(body) as never, now())));
   command("driver-bonus", "trips.intervene", BonusBody, (trx, who, id, body) => view(adminDriverBonus(trx, who, id, clean(body) as never, now())));

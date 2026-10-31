@@ -4,6 +4,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { scheduleTimer } from "../jobs/timers.js";
+import { markSetOffline } from "./offlineReason.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { recordAcceptance } from "../documents/service.js";
@@ -177,6 +178,8 @@ export async function unlinkFromFleet(trx: Trx, row: DriverRow, now: Date, reaso
     .where("driver_id", "=", row.driver_id)
     .execute();
   if (online) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: row.driver_id, dueAt: now, payload: {} });
+  // v0.18.6 (owner "Send the real reason"): removed or fleet blocked = fleet_removed; leaving himself says nothing.
+  if (online && reason !== "left") await markSetOffline(trx, row.driver_id, "fleet_removed", {}, now);
 }
 
 /**

@@ -112,7 +112,8 @@ export async function streamConfig(
     if (payload === null || (payload["doc"] === doc && payload["zoneId"] === zoneId)) void check().catch((error) => request.log.warn({ err: error }, "config stream read failed"));
     // v0.10.0 content of this zone and v0.11.0 zones (any zone: the apps keep every open zone) ride along on the
     // app document's stream. Their id is the app document version already sent, so Last-Event-ID stays that.
-    else if (payload["doc"] === "zones" || (payload["doc"] === "content" && payload["zoneId"] === zoneId)) {
+    // v0.18.6 (G4-F6, contract.json#dispatchTools.events): the events of the driver's country ride along on the driver stream.
+    else if (payload["doc"] === "zones" || (payload["doc"] === "content" && payload["zoneId"] === zoneId) || (payload["doc"] === "events" && doc === "driver_app_config" && payload["zoneId"] === zoneId)) {
       if (stream.closed()) return;
       const now = deps.clock?.() ?? new Date();
       const publishedAt = typeof payload["publishedAt"] === "string" ? payload["publishedAt"] : now.toISOString();

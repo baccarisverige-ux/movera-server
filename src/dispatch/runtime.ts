@@ -7,7 +7,9 @@ import { ApiError } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { cancelTimer, scheduleTimer, TimerBusy, type TimerHandler } from "../jobs/timers.js";
 import { liveDocument } from "../config/service.js";
-import { autoOfflineIfDue } from "./autoOffline.js";
+import { autoOfflineIfDue, COUNTING_KINDS } from "./autoOffline.js";
+import { queueOfferPush } from "./offerPush.js";
+import { endTripSends } from "./radarSends.js";
 import { STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { zoneChecker } from "../drivers/presence.js";
 import { pickupPayMinor, type PickupPayRate } from "../rules/pickupPay.js";
@@ -219,8 +221,22 @@ export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<s
     tripSeconds: trip.duration_seconds ?? 0,
     tripMeters: trip.distance_meters ?? 0,
     ...(trip.scheduled_at ? { scheduledAt: trip.scheduled_at.toISOString() } : {}),
-    ...(offer.reason_code ? { reasonCode: offer.reason_code } : {}),
+    // v0.18.6 (G4 decision 3): the rider's real rating when the offer was sent; none without one (never made up).
+    ...(offer.rider_rating !== null && offer.rider_rating !== undefined ? { riderRating: offer.rider_rating } : {}),
+    // v0.18.6 (owner G4-E7 "Remove short line explain"): Offer.reasonCode is no longer sent (no "why you" line).
   };
+}
+
+/**
+ * v0.18.6 (G4 decision 3, contract.json#driverOffers.riderRating): the rider's average of visible ratings, 2 decimals,
+ * or null when he has none or the trip's zone switched it off (DriverAppConfig.offers.offerCard.riderRating false).
+ */
+export async function riderRatingForOffer(ex: Executor, trip: TripRow): Promise<number | null> {
+  const doc = await liveDocument<{ offers?: { offerCard?: { riderRating?: unknown } } }>(ex, "driver_app_config", trip.zone_id);
+  if (doc?.document.offers?.offerCard?.riderRating === false) return null;
+  const rider = await ex.selectFrom("riders").select(["rating_sum", "rating_count"]).where("rider_id", "=", trip.rider_id).executeTakeFirst();
+  if (rider === undefined || rider.rating_count <= 0) return null;
+  return Math.round((rider.rating_sum / rider.rating_count) * 100) / 100;
 }
 
 type FeedKind = "offer_created" | "offer_updated" | "offer_withdrawn";
@@ -242,9 +258,10 @@ export class FeedQueue {
     const ids = [...new Set([...this.drivers(), ...alsoLock])].sort();
     if (ids.length === 0) return;
     await trx.selectFrom("drivers").select("driver_id").where("driver_id", "in", ids).orderBy("driver_id").forUpdate().execute();
-    // v0.8.0 (contract.json#autoOffline): a declined or expired Exclusive offer may end a run that sets the driver offline.
+    // v0.8.0 (contract.json#autoOffline): a declined or expired Exclusive offer may end a run that sets the driver offline;
+    // v0.18.6 (owner G4-E3 "Count them"): a hand-sent (assigned) one too.
     for (const e of this.events) {
-      const missed = e.offer["kind"] === "exclusive" && (e.offer["status"] === "declined" || e.offer["status"] === "expired");
+      const missed = COUNTING_KINDS.includes(e.offer["kind"] as string) && (e.offer["status"] === "declined" || e.offer["status"] === "expired");
       if (missed && (await autoOfflineIfDue(trx, e.driverId, e.offer["tripId"] as string, now))) e.offer = { ...e.offer, driverOffline: true };
     }
     for (const e of this.events) {
@@ -252,6 +269,8 @@ export class FeedQueue {
       const sequence = Number(bumped.offer_seq);
       await trx.insertInto("offer_events").values({ driver_id: e.driverId, sequence, event_id: newId("evt", now.getTime()), kind: e.kind, offer: JSON.stringify(e.offer), occurred_at: now }).execute();
       await sql`SELECT pg_notify(${OFFER_EVENTS_CHANNEL}, ${JSON.stringify({ driverId: e.driverId, sequence })})`.execute(trx);
+      // v0.18.6 (G4 decision 1, E6): a new offer also goes as a push (sound + vibration for Exclusive / assigned, Radar quiet).
+      if (e.kind === "offer_created") await queueOfferPush(trx, e.driverId, e.offer, now);
     }
     this.events.length = 0;
   }
@@ -331,6 +350,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   const rate = driverDoc?.document.pickupPay?.byCategory?.[trip.category_id];
   const kinds = driverDoc?.document.pickupPay?.offers ?? {};
   const groupId = round.kind === "radar" ? newId("grp", now.getTime()) : null;
+  const riderRating = await riderRatingForOffer(trx, trip);
   for (const driverId of round.driverIds) {
     const meta = pool.meta.get(driverId)!;
     const pickupPay = rate ? pickupPayMinor(rate, kinds, round.kind, meta.km, meta.etaSeconds / 60) : 0;
@@ -353,6 +373,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
       expires_at: expiresAt,
       answered_at: null,
       decline_reason: null,
+      rider_rating: riderRating,
     };
     await trx.insertInto("offers").values(offer).execute();
     const row = (await loadOffer(trx, offer.offer_id))!;
@@ -371,11 +392,12 @@ const ASSIGNED_TRIP = ["accepted", "driver_to_pickup", "arrived", "rider_onboard
  * admin. The caller holds the trip lock and has applied `assign`. Drivers must be active, online and free.
  * The search keeps running: its next round waits until these offers are answered or run out.
  */
-export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string[], kind: "assigned" | "radar", now: Date): Promise<{ offers: Record<string, unknown>[]; expiresAt: Date; groupId: string | null }> {
+export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string[], kind: "assigned" | "radar", now: Date, secondsOverride?: number): Promise<{ offers: Record<string, unknown>[]; expiresAt: Date; groupId: string | null }> {
   const driverDoc = await liveDocument<{ offers?: { radarSeconds?: number; exclusiveSeconds?: number; assignAcceptSeconds?: number }; pickupPay?: { offers?: Record<string, boolean>; byCategory?: Record<string, PickupPayRate> } }>(trx, "driver_app_config", trip.zone_id);
   const dispatchDoc = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
   const offersDoc = driverDoc?.document.offers ?? {};
-  const seconds = kind === "radar"
+  // v0.18.6 (G4-F4): a radar zone rule gives its own seconds.
+  const seconds = secondsOverride !== undefined ? secondsOverride : kind === "radar"
     ? offersDoc.radarSeconds ?? dispatchDoc?.document.radar.seconds ?? 15
     : offersDoc.assignAcceptSeconds ?? offersDoc.exclusiveSeconds ?? dispatchDoc?.document.exclusive.seconds ?? 15;
   const search = await loadSearch(trx, trip.trip_id);
@@ -384,6 +406,7 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   const rate = driverDoc?.document.pickupPay?.byCategory?.[trip.category_id];
   const kinds = driverDoc?.document.pickupPay?.offers ?? {};
   const groupId = kind === "radar" ? newId("grp", now.getTime()) : null;
+  const riderRating = await riderRatingForOffer(trx, trip);
   const sorted = [...driverIds].sort();
   // Lock order: trip (held), then drivers by id.
   const rows = await trx.selectFrom("drivers").selectAll().where("driver_id", "in", sorted).orderBy("driver_id").forUpdate().execute();
@@ -422,6 +445,7 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
       expires_at: expiresAt,
       answered_at: null,
       decline_reason: null,
+      rider_rating: riderRating,
     };
     await trx.insertInto("offers").values(offer).execute();
     const view = offerView((await loadOffer(trx, offer.offer_id))!, trip);
@@ -506,6 +530,8 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   });
   await trx.updateTable("drivers").set({ online_status: "on_trip", version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
   await endSearchTimers(trx, trip.trip_id);
+  // v0.18.6 (G4-F4): a repeating radar-zone send ends the moment a driver takes the trip.
+  await endTripSends(trx, trip.trip_id, "accepted", null, now);
   // The driver's offers for other trips are withdrawn by a job that locks each of those trips in turn.
   await scheduleTimer(trx, { kind: WITHDRAW, refId: driverId, dueAt: now, payload: {} });
   return trip;
@@ -543,6 +569,7 @@ export async function stopSearch(trx: Trx, trip: TripRow, now: Date): Promise<vo
   await closeOpenOffers(trx, trip, "withdrawn", now, queue);
   await queue.flush(trx, now);
   await endSearchTimers(trx, trip.trip_id);
+  await endTripSends(trx, trip.trip_id, "trip_over", null, now);
 }
 
 /** Puts the step on the rider's projection without a version change (contract.json#dispatch.searchStep). */
@@ -588,6 +615,7 @@ async function expireSearch(trx: Trx, tripId: string, now: Date) {
   trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   await applyCommand(trx, trip, { command: "expire", actor: "system", now, set: { ended_by_command: "expire" } });
   await endSearchTimers(trx, tripId);
+  await endTripSends(trx, tripId, "search_ended", null, now);
 }
 
 /** POST /trips/{tripId}/keep-waiting (owner decision 24). */

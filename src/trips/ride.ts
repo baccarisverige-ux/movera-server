@@ -2,7 +2,8 @@ import { checkTags } from "../admin/ratings.js";
 import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
 import { rideCheckHandlers } from "../safety/rideCheck.js";
 import { sql, type Updateable } from "kysely";
-import type { TripsTable } from "../db/schema.js";
+import type { OfflineReason, TripsTable } from "../db/schema.js";
+import { markSetOffline } from "../drivers/offlineReason.js";
 import { contract } from "../contract/contract.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { liveDocument } from "../config/service.js";
@@ -268,6 +269,20 @@ export async function releaseDriver(trx: Trx, driverId: string | null, now: Date
   const mayDrive = sql<boolean>`account_status = 'active'
     AND (vehicle_id IS NULL OR EXISTS (SELECT 1 FROM vehicles v WHERE v.vehicle_id = drivers.vehicle_id AND v.status = 'approved'))
     AND (fleet_id IS NULL OR EXISTS (SELECT 1 FROM fleets f WHERE f.fleet_id = drivers.fleet_id AND f.status = 'approved'))`;
+  // v0.18.6 (owner "Send the real reason"): which block keeps him offline at the end of the trip.
+  const before = await trx
+    .selectFrom("drivers")
+    .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
+    .leftJoin("fleets", "fleets.fleet_id", "drivers.fleet_id")
+    .select(["drivers.online_status", "drivers.account_status", "drivers.vehicle_id", "vehicles.status as vehicleStatus", "drivers.fleet_id", "fleets.status as fleetStatus"])
+    .where("drivers.driver_id", "=", driverId)
+    .executeTakeFirst();
+  const blockedBy: OfflineReason | null =
+    before === undefined || before.online_status !== "on_trip" ? null
+    : before.account_status !== "active" ? "account_status"
+    : before.vehicle_id !== null && before.vehicleStatus !== "approved" ? "vehicle_blocked"
+    : before.fleet_id !== null && before.fleetStatus !== "approved" ? "fleet_removed"
+    : null;
   await trx
     .updateTable("drivers")
     .set({
@@ -279,6 +294,7 @@ export async function releaseDriver(trx: Trx, driverId: string | null, now: Date
     })
     .where("driver_id", "=", driverId)
     .execute();
+  if (blockedBy !== null) await markSetOffline(trx, driverId, blockedBy, {}, now);
 }
 
 export async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share" | "bonus" | "adjustment"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
