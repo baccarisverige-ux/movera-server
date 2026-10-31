@@ -15,10 +15,26 @@ type RiderRow = {
   rating_count: number;
   version: number;
   outstanding_minor: string;
+  outstanding_currency: string | null;
   consents: unknown;
 };
 
-export function riderView(row: RiderRow, currency: string): Record<string, unknown> {
+/**
+ * v0.18.7 (Q3, contract.json#pickupWaiting.debtByCurrency): what the rider owes per currency, oldest debt first.
+ * Rider.outstanding is the first of them (riders.outstanding_minor / outstanding_currency keep that one).
+ */
+export async function outstandingByCurrency(ex: Executor, riderId: string): Promise<Array<{ amountMinor: number; currency: string }>> {
+  const owed = await ex.selectFrom("rider_fees").select(["currency", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
+  const out: Array<{ amountMinor: number; currency: string }> = [];
+  for (const fee of owed) {
+    const entry = out.find((e) => e.currency === fee.currency);
+    if (entry) entry.amountMinor += Number(fee.amount_minor);
+    else out.push({ amountMinor: Number(fee.amount_minor), currency: fee.currency });
+  }
+  return out;
+}
+
+export function riderView(row: RiderRow, currency: string, byCurrency?: Array<{ amountMinor: number; currency: string }>): Record<string, unknown> {
   const outstanding = Number(row.outstanding_minor);
   return {
     riderId: row.rider_id,
@@ -28,7 +44,9 @@ export function riderView(row: RiderRow, currency: string): Record<string, unkno
     ...(row.rating_count > 0 ? { rating: Math.round((row.rating_sum / row.rating_count) * 100) / 100 } : {}),
     status: row.status,
     version: row.version,
-    outstanding: outstanding > 0 ? { amountMinor: outstanding, currency } : null,
+    // v0.18.7 (Q3): the owed fees in the rider's oldest owed currency; every currency in outstandingByCurrency.
+    outstanding: outstanding > 0 ? { amountMinor: outstanding, currency: row.outstanding_currency ?? currency } : null,
+    ...(byCurrency !== undefined ? { outstandingByCurrency: byCurrency } : {}),
     ...(row.language ? { language: row.language } : {}),
     consents: row.consents ?? {},
   };
@@ -43,7 +61,7 @@ async function loadRider(ex: Executor, riderId: string, lock = false): Promise<R
 }
 
 export async function getRiderProfile(ex: Executor, riderId: string, currency: string) {
-  return riderView(await loadRider(ex, riderId), currency);
+  return riderView(await loadRider(ex, riderId), currency, await outstandingByCurrency(ex, riderId));
 }
 
 export async function updateRiderProfile(trx: Trx, riderId: string, body: unknown, currency: string, now: Date) {
@@ -67,7 +85,7 @@ export async function updateRiderProfile(trx: Trx, riderId: string, body: unknow
     })
     .where("rider_id", "=", riderId)
     .execute();
-  return riderView(await loadRider(trx, riderId), currency);
+  return riderView(await loadRider(trx, riderId), currency, await outstandingByCurrency(trx, riderId));
 }
 
 export async function requestDeletion(trx: Trx, riderId: string, now: Date) {

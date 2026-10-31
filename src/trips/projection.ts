@@ -1,4 +1,5 @@
 import type { TripRow } from "../db/tripLog.js";
+import { tripTerms } from "./ride.js";
 
 /**
  * TripProjection (contract §2) from a trips row, per viewer: the rider never sees the driver's money
@@ -15,9 +16,48 @@ const money = (minor: string | number | null | undefined, currency: string): Mon
   minor === null || minor === undefined ? undefined : { amountMinor: Number(minor), currency };
 const iso = (value: Date | null | undefined) => (value ? value.toISOString() : undefined);
 
-export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number } = {}): Record<string, unknown> {
+const ETA_STATUSES = new Set(["accepted", "driver_to_pickup", "rider_onboard", "in_trip", "approaching_dropoff"]);
+
+type WaitingRow = { arrivedAt: string; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money };
+
+/**
+ * v0.18.7 (Q5, contract.json#pickupWaiting.runningTotal): while the driver waits, the paid seconds and cost so far at
+ * read time (no version change): seconds after freeUntil × the trip's per-minute waiting price.
+ */
+function waitingNow(row: TripRow, waiting: WaitingRow, now: Date): WaitingRow & { chargedSecondsNow?: number; chargedSoFar?: Money } {
+  if (row.status !== "arrived") return waiting;
+  const terms = tripTerms(row);
+  const perMin = (terms?.["waitPerMin"] as Money | undefined)?.amountMinor;
+  const seconds = Math.max(0, Math.floor((now.getTime() - Date.parse(waiting.freeUntil)) / 1000));
+  return { ...waiting, chargedSecondsNow: seconds, ...(perMin !== undefined ? { chargedSoFar: { amountMinor: Math.floor((seconds * perMin) / 60 + 0.5), currency: row.currency } } : {}) };
+}
+
+/**
+ * Contract §2: the rider never sees the driver's money. v0.18.7 (checker L1): also the driver's part of a fee and the share
+ * percentages inside cancellation, waiting and terms. One function for GET answers and for the stream's redaction.
+ */
+export function hideDriverMoney(projection: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...projection };
+  const without = (key: string, hidden: string[]) => {
+    const value = out[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const copy = { ...(value as Record<string, unknown>) };
+      for (const h of hidden) delete copy[h];
+      out[key] = copy;
+    }
+  };
+  without("cancellation", ["driverShare"]);
+  without("waiting", ["noShowDriverShare"]);
+  without("terms", ["noShowDriverSharePct", "cancelDriverSharePct"]);
+  return out;
+}
+
+export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number; now?: Date } = {}): Record<string, unknown> {
   const currency = row.currency;
   const lines = (row.fare_lines as Array<{ code: string; amount: Money }>) ?? [];
+  const terms = tripTerms(row);
+  // The stored ETA shows while the car is going somewhere (to the pickup, or to the drop-off with the rider on board).
+  const eta = row.driver_id && ETA_STATUSES.has(row.status) ? (row.eta as { etaSeconds: number } | null) : null;
   const projection: Record<string, unknown> = {
     tripId: row.trip_id,
     rideId: row.trip_id,
@@ -49,7 +89,12 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     ...(viewer === "admin" ? { driverRatingStatus: row.driver_rating_status } : {}),
     pinRequired: row.pin_required,
     ...(row.driver_summary ? { driver: row.driver_summary } : {}),
-    ...(row.waiting ? { waiting: row.waiting } : {}),
+    // v0.18.7 (Q1): the rider as the driver sees him; never in the rider's own view.
+    ...(row.rider_summary && viewer !== "rider" ? { rider: row.rider_summary } : {}),
+    // v0.18.7: the rules this trip is charged by, and the server's road-route ETA (TripEta) while it has one.
+    ...(terms ? { terms } : {}),
+    ...(eta ? { eta, etaSeconds: eta.etaSeconds } : {}),
+    ...(row.waiting ? { waiting: waitingNow(row, row.waiting as WaitingRow, overrides.now ?? new Date()) } : {}),
     ...(row.cancellation ? { cancellation: row.cancellation } : {}),
   };
   if (row.quote_id) {
@@ -77,5 +122,5 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (viewer !== "driver" && row.search_step && ["searching", "offered", "expired"].includes(row.status)) projection["searchStep"] = row.search_step;
   // Admins only: the driver sent no position for 30 minutes with the rider on board (owner decision 2026-10-26).
   if (viewer === "admin" && row.driver_silent_alert) projection["driverSilentAlert"] = row.driver_silent_alert;
-  return projection;
+  return viewer === "rider" ? hideDriverMoney(projection) : projection;
 }

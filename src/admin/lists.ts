@@ -1,7 +1,7 @@
 import { sql } from "kysely";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import type { Executor, Trx } from "../db/db.js";
-import { driverView, loadDriver } from "../drivers/service.js";
+import { driverView, fixView, loadDriver } from "../drivers/service.js";
 import { activationBlockers } from "../drivers/readiness.js";
 
 export { activationBlockers };
@@ -9,7 +9,8 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { markSetOffline } from "../drivers/offlineReason.js";
 import { riderView } from "../riders/service.js";
-import { tripProjection } from "../trips/projection.js";
+import { withEta } from "../trips/eta.js";
+import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { audit } from "./audit.js";
 
 /** Admin lists (contract §7: cursor pages, newest first) and account status changes. */
@@ -24,7 +25,7 @@ export const zonesOf = (who: Principal) => (who.zones.includes("*") ? null : who
 
 export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string };
 
-export async function listTrips(ex: Executor, who: Principal, input: TripQuery) {
+export async function listTrips(ex: Executor, who: Principal, input: TripQuery, now: Date = new Date()) {
   let q = ex.selectFrom("trips").selectAll();
   const zones = zonesOf(who);
   if (zones) q = q.where("zone_id", "in", zones.length ? zones : ["-"]);
@@ -49,7 +50,17 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery) 
   const rows = await q.orderBy("created_at", "desc").orderBy("trip_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
-  return { items: page.map((r) => tripProjection(r, "admin")), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.trip_id) : null };
+  // v0.18.7 (contract.json#pickupWaiting.adminLiveRow): a row of a trip going on with a driver carries his position and
+  // the live ETA, for the live table's ETA column and map link.
+  const liveDrivers = [...new Set(page.filter((r) => r.driver_id && !TERMINAL.has(r.status as TripStatus)).map((r) => r.driver_id!))];
+  const fixes = liveDrivers.length ? await ex.selectFrom("driver_locations").selectAll().where("driver_id", "in", liveDrivers).execute() : [];
+  const fixOf = new Map(fixes.map((f) => [f.driver_id, f]));
+  const items = page.map((r) => {
+    const fix = r.driver_id && !TERMINAL.has(r.status as TripStatus) ? fixOf.get(r.driver_id) : undefined;
+    const projection = withEta(r, fix, now, "admin");
+    return fix ? { ...projection, driverLocation: fixView(fix) } : projection;
+  });
+  return { items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.trip_id) : null };
 }
 
 /** Riders have no zone: a zone-limited admin sees only riders with a trip in their zones (P4-6). */
@@ -73,12 +84,22 @@ export async function listRiders(ex: Executor, who: Principal, input: { cursor?:
   const rows = await q.orderBy("created_at", "desc").orderBy("rider_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
-  return { items: page.map((r) => adminRiderView(r, currency)), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.rider_id) : null };
+  // v0.18.7 (Q3): what each rider owes per currency, oldest debt first (contract.json#pickupWaiting.debtByCurrency).
+  const owed = page.length ? await ex.selectFrom("rider_fees").select(["rider_id", "currency", "amount_minor"]).where("rider_id", "in", page.map((r) => r.rider_id)).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute() : [];
+  const byRider = new Map<string, Array<{ amountMinor: number; currency: string }>>();
+  for (const fee of owed) {
+    const list = byRider.get(fee.rider_id) ?? [];
+    const entry = list.find((e) => e.currency === fee.currency);
+    if (entry) entry.amountMinor += Number(fee.amount_minor);
+    else list.push({ amountMinor: Number(fee.amount_minor), currency: fee.currency });
+    byRider.set(fee.rider_id, list);
+  }
+  return { items: page.map((r) => adminRiderView(r, currency, byRider.get(r.rider_id) ?? [])), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.rider_id) : null };
 }
 
-export function adminRiderView(row: Record<string, unknown>, currency: string) {
+export function adminRiderView(row: Record<string, unknown>, currency: string, byCurrency?: Array<{ amountMinor: number; currency: string }>) {
   const wallet = Number(row["wallet_minor"] ?? 0);
-  return { ...riderView(row as never, currency), wallet: { amountMinor: wallet, currency }, ...(row["deletion_requested_at"] ? { deletionRequestedAt: (row["deletion_requested_at"] as Date).toISOString() } : {}) };
+  return { ...riderView(row as never, currency, byCurrency), wallet: { amountMinor: wallet, currency }, ...(row["deletion_requested_at"] ? { deletionRequestedAt: (row["deletion_requested_at"] as Date).toISOString() } : {}) };
 }
 
 export async function listDrivers(ex: Executor, who: Principal, input: { cursor?: string; limit: number; accountStatus?: string[]; onlineStatus?: string[]; zoneId?: string; categoryId?: string; q?: string }) {

@@ -14,7 +14,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
 import { haversineKm } from "../maps/routing.js";
-import { cancelFee, type FeeRule } from "../rules/cancelFees.js";
+import { cancelFee, isFreeCancel, type FeeRule } from "../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../rules/fare.js";
 import { extrasOf } from "../rules/priceExtras.js";
 import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
@@ -30,15 +30,22 @@ import { tripProjection } from "./projection.js";
 
 type Money = { amountMinor: number; currency: string };
 type Place = { lat: number; lng: number };
-type Waiting = { arrivedAt: string; freeUntil: string; noShowAt: string; chargedSeconds: number };
+type Waiting = { arrivedAt: string; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money };
 type Who = { actor: "rider" | "driver" | "admin"; subjectId: string };
 
 const C = contract as unknown as {
   cancelReasons: Record<string, string[]>;
-  configDefaults: { noShowDriverSharePct: number };
+  configDefaults: { noShowDriverSharePct: number; maxPickupMoveMeters: number; cancelAfterArrivedIsNoShow: boolean };
+  pickupWaiting: { pickupMove: { range: [number, number] } };
 };
 const REASONS = C.cancelReasons;
 const DEFAULT_NO_SHOW_SHARE = C.configDefaults.noShowDriverSharePct;
+/** v0.18.7 (contract.json#pickupWaiting): the pickup move limit and the cancel-after-arrival rule, per zone, with their defaults. */
+export const DEFAULT_MAX_PICKUP_MOVE_METERS = C.configDefaults.maxPickupMoveMeters;
+export const DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW = C.configDefaults.cancelAfterArrivedIsNoShow;
+const PICKUP_MOVE_RANGE = C.pickupWaiting.pickupMove.range;
+export const validPickupMoveMeters = (value: unknown): number | null =>
+  typeof value === "number" && Number.isInteger(value) && value >= PICKUP_MOVE_RANGE[0] && value <= PICKUP_MOVE_RANGE[1] ? value : null;
 
 /** Within this distance of the drop-off the trip shows "Almost there" (near_dropoff). */
 export const NEAR_DROPOFF_METERS = 500;
@@ -97,10 +104,16 @@ export type BookingRules = {
   waiting: CategoryWaitingRules | null;
   noShowDriverSharePct: number;
   waitDriverSharePct: number;
+  /** v0.18.7 (Q2): the zone's "cancel after the driver arrived counts as a no-show" at booking time. */
+  cancelAfterArrivedIsNoShow: boolean;
+  /** v0.18.7 (status item 4): the zone's pickup move limit at booking time. */
+  maxPickupMoveMeters: number;
 };
 type AppDocs = {
   rider: { cancelFees?: { live?: Record<string, FeeRule>; reservation?: Record<string, FeeRule> } } | undefined;
-  driver: { cancelFees?: { driverSharePct?: unknown }; waiting?: { driverSharePct?: unknown; driverShareWaitPct?: unknown } } | undefined;
+  driver:
+    | { cancelFees?: { driverSharePct?: unknown }; waiting?: { driverSharePct?: unknown; driverShareWaitPct?: unknown; cancelAfterArrivedIsNoShow?: unknown }; booking?: { maxPickupMoveMeters?: unknown } }
+    | undefined;
 };
 
 async function appDocs(ex: Executor, zoneId: string): Promise<AppDocs> {
@@ -118,20 +131,61 @@ function cancelRuleOf(docs: AppDocs, kind: string, categoryId: string): FeeRule 
 /** At POST /trips (contract.json#bookingSnapshot): the rules of this moment, kept on the trip. */
 export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string, categoryId: string, pricing: PricingDocument | null): Promise<BookingRules> {
   const docs = await appDocs(ex, zoneId);
+  // v0.18.7: the waiting terms always get kept (TripProjection.terms): the quoted pricing document, else the live one.
+  const priced = pricing ?? (await liveDocument<PricingDocument>(ex, "pricing", zoneId))?.document ?? null;
   return {
     cancelRule: cancelRuleOf(docs, kind, categoryId),
     cancelDriverSharePct: sharePct(docs.driver?.cancelFees?.driverSharePct, DEFAULT_CANCEL_SHARE),
-    waiting: pricing?.categories[categoryId]?.waiting ?? null,
+    waiting: priced?.categories[categoryId]?.waiting ?? null,
     noShowDriverSharePct: sharePct(docs.driver?.waiting?.driverSharePct, DEFAULT_NO_SHOW_SHARE),
     waitDriverSharePct: sharePct(docs.driver?.waiting?.driverShareWaitPct, 100),
+    cancelAfterArrivedIsNoShow: cancelAfterArrivedOf(docs.driver),
+    maxPickupMoveMeters: validPickupMoveMeters(docs.driver?.booking?.maxPickupMoveMeters) ?? DEFAULT_MAX_PICKUP_MOVE_METERS,
   };
 }
 
-/** The trip's kept rules; a trip booked before v0.8.0 has none and reads today's settings. */
-async function rulesOf(ex: Executor, trip: TripRow): Promise<BookingRules> {
-  const kept = trip.booking_rules as BookingRules | null;
-  if (kept !== null && typeof kept === "object") return kept;
+/** v0.18.7 (Q2): DriverAppConfig.waiting.cancelAfterArrivedIsNoShow of a zone's live driver document, default on. */
+export function cancelAfterArrivedOf(driverDoc: AppDocs["driver"]): boolean {
+  const value = driverDoc?.waiting?.cancelAfterArrivedIsNoShow;
+  return typeof value === "boolean" ? value : DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW;
+}
+
+/** The pickup move limit of a zone now (its live driver document), for a trip booked before v0.18.7. */
+export async function pickupMoveLimitOf(ex: Executor, zoneId: string): Promise<number> {
+  const doc = await liveDocument<NonNullable<AppDocs["driver"]>>(ex, "driver_app_config", zoneId);
+  return validPickupMoveMeters(doc?.document.booking?.maxPickupMoveMeters) ?? DEFAULT_MAX_PICKUP_MOVE_METERS;
+}
+
+/** The trip's kept rules; a trip booked before v0.8.0 has none and reads today's settings; one booked before v0.18.7 lacks the new fields and takes the defaults. */
+export async function rulesOf(ex: Executor, trip: TripRow): Promise<BookingRules> {
+  const kept = trip.booking_rules as Partial<BookingRules> | null;
+  if (kept !== null && typeof kept === "object" && kept.cancelRule !== undefined) {
+    const old = kept as Omit<BookingRules, "cancelAfterArrivedIsNoShow" | "maxPickupMoveMeters"> & Partial<BookingRules>;
+    return { ...old, cancelAfterArrivedIsNoShow: old.cancelAfterArrivedIsNoShow ?? DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW, maxPickupMoveMeters: old.maxPickupMoveMeters ?? DEFAULT_MAX_PICKUP_MOVE_METERS };
+  }
   return bookingRulesFor(ex, trip.zone_id, trip.kind, trip.category_id, null);
+}
+
+/**
+ * v0.18.7 (contract.json#pickupWaiting.terms): TripProjection.terms, the rules this trip is charged by, from its kept
+ * booking rules (null for a trip with none: the apps fall back to the served config).
+ */
+export function tripTerms(trip: Pick<TripRow, "booking_rules" | "currency">): Record<string, unknown> | null {
+  const kept = trip.booking_rules as Partial<BookingRules> | null;
+  if (kept === null || typeof kept !== "object" || !kept.waiting) return null;
+  const w = kept.waiting;
+  return {
+    currency: trip.currency,
+    freeWaitMin: w.freeWaitMin,
+    waitPerMin: w.perMin,
+    noShowAfterMin: w.noShowAfterMin,
+    noShowFee: w.noShowFee,
+    noShowDriverSharePct: kept.noShowDriverSharePct ?? DEFAULT_NO_SHOW_SHARE,
+    cancelRule: kept.cancelRule ?? null,
+    cancelDriverSharePct: kept.cancelDriverSharePct ?? DEFAULT_CANCEL_SHARE,
+    cancelAfterArrivedIsNoShow: kept.cancelAfterArrivedIsNoShow ?? DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW,
+    maxPickupMoveMeters: kept.maxPickupMoveMeters ?? DEFAULT_MAX_PICKUP_MOVE_METERS,
+  };
 }
 
 async function waitingOf(ex: Executor, trip: TripRow): Promise<CategoryWaitingRules> {
@@ -318,11 +372,16 @@ export async function credit(trx: Trx, entry: { driverId: string; tripId: string
     .execute();
 }
 
-/** Rider.outstanding = the sum of owed fees; the oldest one names the source trip (§3.7). */
+/**
+ * Rider.outstanding = the sum of owed fees in ONE currency, the oldest owed fee's; that fee names the source trip (§3.7).
+ * v0.18.7 (Q3, contract.json#pickupWaiting.debtByCurrency): a fee is never summed into another currency; the quote reads
+ * rider_fees itself for its own currency.
+ */
 export async function refreshOutstanding(trx: Trx, riderId: string, now: Date) {
-  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
-  const total = owed.reduce((sum, f) => sum + Number(f.amount_minor), 0);
-  await trx.updateTable("riders").set({ outstanding_minor: total, outstanding_source_trip_id: owed[0]?.trip_id ?? null, updated_at: now }).where("rider_id", "=", riderId).execute();
+  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor", "currency"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
+  const currency = owed[0]?.currency ?? null;
+  const total = owed.filter((f) => f.currency === currency).reduce((sum, f) => sum + Number(f.amount_minor), 0);
+  await trx.updateTable("riders").set({ outstanding_minor: total, outstanding_currency: currency, outstanding_source_trip_id: owed[0]?.trip_id ?? null, updated_at: now }).where("rider_id", "=", riderId).execute();
 }
 
 /**
@@ -360,7 +419,8 @@ async function settleCarriedFees(trx: Trx, trip: TripRow, cash: number, now: Dat
   if (!line) return;
   // The ride is paid first; only cash beyond it pays old fees (a short count leaves them owed).
   const towardFees = Math.max(0, Math.min(line.amount.amountMinor, cash - (Number(trip.fare_minor) - line.amount.amountMinor)));
-  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", trip.rider_id).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").forUpdate().execute();
+  // v0.18.7 (Q3): a cash trip pays only the fees owed in its own currency.
+  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", trip.rider_id).where("status", "=", "owed").where("currency", "=", trip.currency).orderBy("created_at").orderBy("trip_id").forUpdate().execute();
   let left = towardFees;
   for (const fee of owed) {
     const amount = Number(fee.amount_minor);
@@ -418,7 +478,17 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     // A reservation's clock starts at the booked time, not when an early driver arrives.
     const start = trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
     const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
-    const waiting: Waiting = { arrivedAt: now.toISOString(), freeUntil: at(rules.freeWaitMin), noShowAt: at(rules.noShowAfterMin), chargedSeconds: 0 };
+    // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
+    const noShowFee: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
+    const noShowShare = (await rulesOf(trx, trip)).noShowDriverSharePct;
+    const waiting: Waiting = {
+      arrivedAt: now.toISOString(),
+      freeUntil: at(rules.freeWaitMin),
+      noShowAt: at(rules.noShowAfterMin),
+      chargedSeconds: 0,
+      noShowFee,
+      noShowDriverShare: { amountMinor: feeSplit(noShowFee, noShowShare).driver, currency: trip.currency },
+    };
     return applyCommand(trx, trip, { command, actor: "driver", now, set: { arrived_at: now, waiting: JSON.stringify(waiting) } });
   }
   if (command === "board") {
@@ -435,7 +505,16 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: tripId, dueAt: new Date(now.getTime() + SILENT_ALERT_MS), payload: {} });
     return boarded;
   }
-  if (command === "start_trip") return applyCommand(trx, trip, { command, actor: "driver", now, set: { started_at: now } });
+  if (command === "start_trip") {
+    // v0.18.7 (Q5): the fare the rider sees from Start trip includes the charged waiting (set at board; set again here
+    // so a trip boarded by an older build shows the same total the driver asks for).
+    const waiting = trip.waiting as Waiting | null;
+    const set: Updateable<TripsTable> = { started_at: now };
+    if (waiting && waiting.chargedSeconds > 0 && !((trip.fare_lines as FareLine[]) ?? []).some((l) => l.code === "waiting")) {
+      Object.assign(set, fareColumns(trip, await fareWithWaiting(trx, trip, waiting.chargedSeconds)));
+    }
+    return applyCommand(trx, trip, { command, actor: "driver", now, set });
+  }
   return applyCommand(trx, trip, { command, actor: "driver", now });
 }
 
@@ -583,7 +662,8 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
   const rules = await waitingOf(trx, trip);
   const fee: Money | null = !waive && rules.noShowFee.amountMinor > 0 ? { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency } : null;
   const share = (await rulesOf(trx, trip)).noShowDriverSharePct;
-  const cancellation = { actor, reasonCode: "rider_no_show", at: now.toISOString(), fee, ...(fee ? { feeStatus: "owed" } : {}) };
+  // v0.18.7 (Q6): feeKind and the driver's part, so both apps show the amount.
+  const cancellation = { actor, reasonCode: "rider_no_show", at: now.toISOString(), fee, ...(fee ? { feeStatus: "owed", feeKind: "no_show", driverShare: { amountMinor: feeSplit(fee, share).driver, currency: fee.currency } } : {}) };
   const ended = await applyCommand(trx, trip, {
     command: "no_show",
     actor,
@@ -608,15 +688,30 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
  * inside the free minutes; a live trip is charged only when the driver was really coming (see
  * NORMAL_PICKUP_METERS_PER_MIN). The fee is on the booked fare without an outstanding fee.
  */
-export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<Money | null> {
+export type RiderFee = { fee: Money; kind: "cancel" | "no_show" };
+
+export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<RiderFee | null> {
   if (trip.accepted_at === null || trip.driver_id === null) return null;
-  const rule = (await rulesOf(ex, trip)).cancelRule;
+  const rules = await rulesOf(ex, trip);
+  const rule = rules.cancelRule;
   if (rule === null) return null;
   const owed = outstandingLine(trip);
   const fare = { amountMinor: Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0), currency: trip.currency };
   const minutesSinceAccept = (now.getTime() - trip.accepted_at.getTime()) / 60_000;
   const minutesBeforePickup = trip.scheduled_at ? (trip.scheduled_at.getTime() - now.getTime()) / 60_000 : 0;
-  const amount = cancelFee({ kind: trip.kind === "scheduled" ? "reservation" : "live", rule, fare: fare as Parameters<typeof cancelFee>[0]["fare"], minutesSinceAccept, minutesBeforePickup });
+  const kind = trip.kind === "scheduled" ? "reservation" : "live";
+  // v0.18.7 (Q2, contract.json#pickupWaiting.cancelAfterArrived): inside the free minutes the rider always cancels free,
+  // also after the driver arrived (owner 2026-10-29). After them, a cancel with the driver at the pickup is a no-show
+  // when the zone says so (admin setting, default on): the no-show fee with the no-show share.
+  if (isFreeCancel({ kind, rule, minutesSinceAccept, minutesBeforePickup })) return null;
+  // Checker M1: it is a no-show only from waiting.freeUntil on, the moment the driver himself could mark one (a
+  // reservation's clock runs from the booked time); a cancel seconds after arrival is the normal cancel fee.
+  const waiting = trip.waiting as Waiting | null;
+  if (trip.status === "arrived" && rules.cancelAfterArrivedIsNoShow && waiting !== null && now.getTime() >= Date.parse(waiting.freeUntil)) {
+    const noShow = (await waitingOf(ex, trip)).noShowFee.amountMinor;
+    return noShow > 0 ? { fee: { amountMinor: noShow, currency: trip.currency }, kind: "no_show" } : null;
+  }
+  const amount = cancelFee({ kind, rule, fare: fare as Parameters<typeof cancelFee>[0]["fare"], minutesSinceAccept, minutesBeforePickup });
   if (amount.amountMinor <= 0) return null;
   if (trip.kind === "live" && trip.status !== "arrived" && trip.accept_pickup_meters !== null) {
     // No position from the driver means no proof they were coming: no fee.
@@ -627,19 +722,25 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
     const needed = minutesSinceAccept * NORMAL_PICKUP_METERS_PER_MIN * CAME_CLOSER_SHARE;
     if (!atPickup && trip.accept_pickup_meters - nowMeters < needed) return null;
   }
-  return amount;
+  return { fee: amount, kind: "cancel" };
+}
+
+/** The driver's share of a rider fee: the cancel share, or the no-show share when the cancel counted as a no-show (v0.18.7). */
+export async function riderFeeSharePct(ex: Executor, trip: TripRow, kind: RiderFee["kind"]): Promise<number> {
+  const rules = await rulesOf(ex, trip);
+  return kind === "no_show" ? rules.noShowDriverSharePct : rules.cancelDriverSharePct;
 }
 
 /** After the rider's cancel: the driver is free again and gets their share of a fee (owed by the rider). */
-export async function riderFeeColumns(ex: Executor, trip: TripRow, fee: Money) {
-  return feeColumns(fee, (await rulesOf(ex, trip)).cancelDriverSharePct);
+export async function riderFeeColumns(ex: Executor, trip: TripRow, charged: RiderFee) {
+  return feeColumns(charged.fee, await riderFeeSharePct(ex, trip, charged.kind));
 }
 
-export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: TripRow, fee: Money | null, now: Date) {
-  if (fee && before.driver_id) {
-    const share = (await rulesOf(trx, before)).cancelDriverSharePct;
-    await chargeRiderFee(trx, cancelled, "cancel", fee, now);
-    await credit(trx, { driverId: before.driver_id, tripId: before.trip_id, kind: "fee_share", currency: fee.currency, amount: feeSplit(fee, share).driver }, now);
+export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: TripRow, charged: RiderFee | null, now: Date) {
+  if (charged && before.driver_id) {
+    const share = await riderFeeSharePct(trx, before, charged.kind);
+    await chargeRiderFee(trx, cancelled, charged.kind, charged.fee, now);
+    await credit(trx, { driverId: before.driver_id, tripId: before.trip_id, kind: "fee_share", currency: charged.fee.currency, amount: feeSplit(charged.fee, share).driver }, now);
   }
   await releaseDriver(trx, before.driver_id, now);
 }
@@ -701,6 +802,9 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
       arrived_at: null,
       waiting: null,
       driver_summary: null,
+      // v0.18.7 (Q1, Q4): the next driver gets his own rider summary at accept; the ETA starts again with him.
+      rider_summary: null,
+      eta: null,
       accept_pickup_meters: null,
       pickup_pay_minor: 0,
       driver_earnings_minor: earnings,

@@ -8,6 +8,7 @@ import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
 import { chooseRefundDestination, getWallet, payoutsToMake, riderRefunds, walletEntries } from "../riders/wallet.js";
 import { tripProjection } from "../trips/projection.js";
+import { withDriverPosition } from "../trips/service.js";
 import { activeSendOf } from "../dispatch/radarSends.js";
 import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus } from "./lists.js";
 import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminRadarGroup, adminReassign, adminStopRadarZone, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
@@ -60,14 +61,15 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   app.get(`${API_PREFIX}/admin/trips`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
     const query = parseQuery(TripsQuery, request.query);
-    return listTrips(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)) as never);
+    return listTrips(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)) as never, now());
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
     const trip = await adminTrip(deps.db, who, tripParam(request));
     // v0.18.6 (G4-F4): the repeating radar-zone send, while one runs, for every admin who opens the trip.
     const radarZoneSend = await activeSendOf(deps.db, trip.trip_id);
-    return { ...tripProjection(trip, "admin"), ...(radarZoneSend ? { radarZoneSend } : {}) };
+    // v0.18.7 (contract.json#pickupWaiting.adminLiveRow): the driver's position and the live ETA, like the list rows.
+    return { ...(await withDriverPosition(deps.db, trip, tripProjection(trip, "admin", { now: now() }), now())), ...(radarZoneSend ? { radarZoneSend } : {}) };
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId/offers`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");

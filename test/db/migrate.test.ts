@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, appendFileSync, writeFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, appendFileSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -33,7 +33,7 @@ async function tables(database: TestDatabase): Promise<string[]> {
 describe("migrate", () => {
   it("applies every migration once; a second run applies nothing", async () => {
     const database = await emptyDb();
-    expect(await migrate(database.pool)).toEqual(["0001_foundation.sql", "0002_auth.sql", "0003_admin.sql", "0004_config.sql", "0005_quotes.sql", "0006_trips.sql", "0007_drivers.sql", "0008_dispatch.sql", "0009_ride.sql", "0010_admin.sql", "0011_onboarding.sql", "0012_invitations.sql", "0013_trip_messages.sql", "0014_zones_stockholm_paris.sql", "0015_stockholm_south.sql", "0016_driver_silent_alert.sql", "0017_paris_ile_de_france.sql", "0018_document_upload_attempts.sql", "0019_telemetry.sql", "0020_earnings_trip_index.sql", "0021_incidents.sql", "0021_price_extras.sql", "0022_settings_flow.sql", "0023_pricing_v071.sql", "0024_surge_samples.sql", "0025_realdata.sql", "0026_content.sql", "0027_kpi_money.sql", "0028_zones.sql", "0029_ride_checks.sql", "0030_chat.sql", "0031_sign_in_waitlist.sql", "0032_error_groups.sql", "0033_onboarding_settings.sql", "0034_complete_previews.sql", "0035_car_base_year.sql", "0036_push_sent.sql", "0037_driver_home.sql", "0038_deep_fixes.sql", "0039_driver_offers.sql", "0040_dispatch_tools.sql"]);
+    expect(await migrate(database.pool)).toEqual(["0001_foundation.sql", "0002_auth.sql", "0003_admin.sql", "0004_config.sql", "0005_quotes.sql", "0006_trips.sql", "0007_drivers.sql", "0008_dispatch.sql", "0009_ride.sql", "0010_admin.sql", "0011_onboarding.sql", "0012_invitations.sql", "0013_trip_messages.sql", "0014_zones_stockholm_paris.sql", "0015_stockholm_south.sql", "0016_driver_silent_alert.sql", "0017_paris_ile_de_france.sql", "0018_document_upload_attempts.sql", "0019_telemetry.sql", "0020_earnings_trip_index.sql", "0021_incidents.sql", "0021_price_extras.sql", "0022_settings_flow.sql", "0023_pricing_v071.sql", "0024_surge_samples.sql", "0025_realdata.sql", "0026_content.sql", "0027_kpi_money.sql", "0028_zones.sql", "0029_ride_checks.sql", "0030_chat.sql", "0031_sign_in_waitlist.sql", "0032_error_groups.sql", "0033_onboarding_settings.sql", "0034_complete_previews.sql", "0035_car_base_year.sql", "0036_push_sent.sql", "0037_driver_home.sql", "0038_deep_fixes.sql", "0039_driver_offers.sql", "0040_dispatch_tools.sql", "0041_pickup_waiting.sql"]);
     expect(await migrate(database.pool)).toEqual([]);
     expect(await tables(database)).toEqual(
       ["admin_audit", "admin_setup_links", "admin_sign_in_failures", "admins", "approvals", "area_events", "auth_link_tokens", "auth_provider_links", "auth_sessions", "categories", "complete_previews", "config_drafts", "config_history", "config_live", "content_items", "dispatch_controls", "dispatch_events", "dispatch_presets", "document_files", "document_notices", "document_renewals", "document_upload_attempts", "documents", "driver_cancels", "driver_groups", "driver_locations", "drivers", "earnings_entries", "error_group_devices", "error_groups", "fleet_invitations", "fleet_join_attempts", "fleets", "idempotency_keys", "incident_events", "incidents", "kpi_days", "legal_acceptances", "legal_texts", "notifications", "offer_events", "offers", "otp_sessions", "payouts", "push_devices", "quotes", "radar_zone_rules", "radar_zone_sends", "radar_zones", "ratings", "refresh_tokens", "refunds", "ride_checks", "rider_fees", "riders", "schema_migrations", "searches", "sign_in_waitlist", "sign_in_waitlist_asks", "sign_up_reminders", "smart_surge_state", "sms_outbox", "support_tickets", "surge_samples", "surge_schedules", "telemetry", "terms_acceptances", "test_phones", "ticket_messages", "timers", "trip_events", "trip_locations", "trip_messages", "trips", "vehicles", "wallet_entries", "zones"],
@@ -45,7 +45,7 @@ describe("migrate", () => {
     const other = createPool(database.url, 2);
     cleanups.push(() => other.end());
     const [a, b] = await Promise.all([migrate(database.pool), migrate(other)]);
-    expect([...a, ...b].sort()).toEqual(["0001_foundation.sql", "0002_auth.sql", "0003_admin.sql", "0004_config.sql", "0005_quotes.sql", "0006_trips.sql", "0007_drivers.sql", "0008_dispatch.sql", "0009_ride.sql", "0010_admin.sql", "0011_onboarding.sql", "0012_invitations.sql", "0013_trip_messages.sql", "0014_zones_stockholm_paris.sql", "0015_stockholm_south.sql", "0016_driver_silent_alert.sql", "0017_paris_ile_de_france.sql", "0018_document_upload_attempts.sql", "0019_telemetry.sql", "0020_earnings_trip_index.sql", "0021_incidents.sql", "0021_price_extras.sql", "0022_settings_flow.sql", "0023_pricing_v071.sql", "0024_surge_samples.sql", "0025_realdata.sql", "0026_content.sql", "0027_kpi_money.sql", "0028_zones.sql", "0029_ride_checks.sql", "0030_chat.sql", "0031_sign_in_waitlist.sql", "0032_error_groups.sql", "0033_onboarding_settings.sql", "0034_complete_previews.sql", "0035_car_base_year.sql", "0036_push_sent.sql", "0037_driver_home.sql", "0038_deep_fixes.sql", "0039_driver_offers.sql", "0040_dispatch_tools.sql"]);
+    expect([...a, ...b].sort()).toEqual(["0001_foundation.sql", "0002_auth.sql", "0003_admin.sql", "0004_config.sql", "0005_quotes.sql", "0006_trips.sql", "0007_drivers.sql", "0008_dispatch.sql", "0009_ride.sql", "0010_admin.sql", "0011_onboarding.sql", "0012_invitations.sql", "0013_trip_messages.sql", "0014_zones_stockholm_paris.sql", "0015_stockholm_south.sql", "0016_driver_silent_alert.sql", "0017_paris_ile_de_france.sql", "0018_document_upload_attempts.sql", "0019_telemetry.sql", "0020_earnings_trip_index.sql", "0021_incidents.sql", "0021_price_extras.sql", "0022_settings_flow.sql", "0023_pricing_v071.sql", "0024_surge_samples.sql", "0025_realdata.sql", "0026_content.sql", "0027_kpi_money.sql", "0028_zones.sql", "0029_ride_checks.sql", "0030_chat.sql", "0031_sign_in_waitlist.sql", "0032_error_groups.sql", "0033_onboarding_settings.sql", "0034_complete_previews.sql", "0035_car_base_year.sql", "0036_push_sent.sql", "0037_driver_home.sql", "0038_deep_fixes.sql", "0039_driver_offers.sql", "0040_dispatch_tools.sql", "0041_pickup_waiting.sql"]);
   });
 
   it("refuses to start when an applied migration was edited", async () => {
@@ -63,7 +63,47 @@ describe("migrate", () => {
     await expect(migrate(database.pool, dir)).rejects.toThrow(/Migration 0099_broken\.sql failed/);
     expect(await tables(database)).not.toContain("half_done");
     const applied = await database.pool.query("SELECT name FROM schema_migrations ORDER BY name");
-    expect(applied.rows).toEqual([{ name: "0001_foundation.sql" }, { name: "0002_auth.sql" }, { name: "0003_admin.sql" }, { name: "0004_config.sql" }, { name: "0005_quotes.sql" }, { name: "0006_trips.sql" }, { name: "0007_drivers.sql" }, { name: "0008_dispatch.sql" }, { name: "0009_ride.sql" }, { name: "0010_admin.sql" }, { name: "0011_onboarding.sql" }, { name: "0012_invitations.sql" }, { name: "0013_trip_messages.sql" }, { name: "0014_zones_stockholm_paris.sql" }, { name: "0015_stockholm_south.sql" }, { name: "0016_driver_silent_alert.sql" }, { name: "0017_paris_ile_de_france.sql" }, { name: "0018_document_upload_attempts.sql" }, { name: "0019_telemetry.sql" }, { name: "0020_earnings_trip_index.sql" }, { name: "0021_incidents.sql" }, { name: "0021_price_extras.sql" }, { name: "0022_settings_flow.sql" }, { name: "0023_pricing_v071.sql" }, { name: "0024_surge_samples.sql" }, { name: "0025_realdata.sql" }, { name: "0026_content.sql" }, { name: "0027_kpi_money.sql" }, { name: "0028_zones.sql" }, { name: "0029_ride_checks.sql" }, { name: "0030_chat.sql" }, { name: "0031_sign_in_waitlist.sql" }, { name: "0032_error_groups.sql" }, { name: "0033_onboarding_settings.sql" }, { name: "0034_complete_previews.sql" }, { name: "0035_car_base_year.sql" }, { name: "0036_push_sent.sql" }, { name: "0037_driver_home.sql" }, { name: "0038_deep_fixes.sql" }, { name: "0039_driver_offers.sql" }, { name: "0040_dispatch_tools.sql" }]);
+    expect(applied.rows).toEqual([{ name: "0001_foundation.sql" }, { name: "0002_auth.sql" }, { name: "0003_admin.sql" }, { name: "0004_config.sql" }, { name: "0005_quotes.sql" }, { name: "0006_trips.sql" }, { name: "0007_drivers.sql" }, { name: "0008_dispatch.sql" }, { name: "0009_ride.sql" }, { name: "0010_admin.sql" }, { name: "0011_onboarding.sql" }, { name: "0012_invitations.sql" }, { name: "0013_trip_messages.sql" }, { name: "0014_zones_stockholm_paris.sql" }, { name: "0015_stockholm_south.sql" }, { name: "0016_driver_silent_alert.sql" }, { name: "0017_paris_ile_de_france.sql" }, { name: "0018_document_upload_attempts.sql" }, { name: "0019_telemetry.sql" }, { name: "0020_earnings_trip_index.sql" }, { name: "0021_incidents.sql" }, { name: "0021_price_extras.sql" }, { name: "0022_settings_flow.sql" }, { name: "0023_pricing_v071.sql" }, { name: "0024_surge_samples.sql" }, { name: "0025_realdata.sql" }, { name: "0026_content.sql" }, { name: "0027_kpi_money.sql" }, { name: "0028_zones.sql" }, { name: "0029_ride_checks.sql" }, { name: "0030_chat.sql" }, { name: "0031_sign_in_waitlist.sql" }, { name: "0032_error_groups.sql" }, { name: "0033_onboarding_settings.sql" }, { name: "0034_complete_previews.sql" }, { name: "0035_car_base_year.sql" }, { name: "0036_push_sent.sql" }, { name: "0037_driver_home.sql" }, { name: "0038_deep_fixes.sql" }, { name: "0039_driver_offers.sql" }, { name: "0040_dispatch_tools.sql" }, { name: "0041_pickup_waiting.sql" }]);
+  });
+});
+
+describe("migration 0041 (driver group 5)", () => {
+  it("moves the pickup move limit 500 → 200 with version + history, and splits the rider's debt per currency", async () => {
+    const database = await emptyDb();
+    const dir = copyOfMigrations();
+    const file = "0041_pickup_waiting.sql";
+    const kept = readFileSync(join(dir, file));
+    rmSync(join(dir, file));
+    await migrate(database.pool, dir);
+    // A 0040-state world: a driver document on 500 (version 3), a draft on 500, and fees owed in two currencies.
+    const doc = { version: 3, publishedAt: "2026-10-01T00:00:00.000Z", zoneId: "Z001", booking: { maxStops: 3, maxPickupMoveMeters: 500 } };
+    await database.pool.query("INSERT INTO config_live (doc, zone_id, version, document, published_at) VALUES ('driver_app_config', 'Z001', 3, $1, now())", [JSON.stringify(doc)]);
+    await database.pool.query("INSERT INTO config_drafts (doc, zone_id, version, document) VALUES ('rider_app_config', 'Z001', 4, $1)", [JSON.stringify({ ...doc, version: 4 })]);
+    const riderId = await insertRider(database.db);
+    const se = await insertTrip(database.db, riderId, { status: "cancelled_by_rider" });
+    const fr = await insertTrip(database.db, riderId, { status: "cancelled_by_rider" });
+    await database.pool.query("INSERT INTO rider_fees (trip_id, rider_id, kind, currency, amount_minor, status, created_at) VALUES ($1, $2, 'cancel', 'SEK', 10000, 'owed', '2026-10-01'), ($3, $2, 'cancel', 'EUR', 500, 'owed', '2026-10-02')", [se, riderId, fr]);
+    await database.pool.query("UPDATE riders SET outstanding_minor = 10500 WHERE rider_id = $1", [riderId]);
+    writeFileSync(join(dir, file), kept);
+    expect(await migrate(database.pool, dir)).toEqual([file]);
+    const live = (await database.pool.query("SELECT version, document FROM config_live WHERE doc = 'driver_app_config' AND zone_id = 'Z001'")).rows[0];
+    expect(live.version).toBe(4);
+    expect(live.document.booking.maxPickupMoveMeters).toBe(200);
+    expect(live.document.version).toBe(4);
+    expect(live.document.publishedAt).toMatch(/^2026-/);
+    const history = (await database.pool.query("SELECT version, document, note FROM config_history WHERE doc = 'driver_app_config' AND zone_id = 'Z001'")).rows;
+    expect(history).toHaveLength(1);
+    expect(history[0].version).toBe(4);
+    expect(history[0].document).toEqual(live.document);
+    expect(history[0].note).toMatch(/500 -> 200/);
+    const draft = (await database.pool.query("SELECT version, document FROM config_drafts WHERE doc = 'rider_app_config'")).rows[0];
+    expect(draft.version).toBe(5);
+    expect(draft.document.booking.maxPickupMoveMeters).toBe(200);
+    const rider = (await database.pool.query("SELECT outstanding_minor, outstanding_currency, outstanding_source_trip_id FROM riders WHERE rider_id = $1", [riderId])).rows[0];
+    expect(rider).toEqual({ outstanding_minor: "10000", outstanding_currency: "SEK", outstanding_source_trip_id: se });
+    // Running it again changes nothing more.
+    expect(await migrate(database.pool, dir)).toEqual([]);
+    expect((await database.pool.query("SELECT version FROM config_live WHERE doc = 'driver_app_config'")).rows[0].version).toBe(4);
   });
 });
 

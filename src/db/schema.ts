@@ -16,6 +16,8 @@ export interface RidersTable {
   language: string | null;
   outstanding_minor: ColumnType<string, number | string | undefined, number | string>;
   outstanding_source_trip_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.7 (Q3): the currency of outstanding_minor (the oldest owed fee's); null when nothing is owed. */
+  outstanding_currency: ColumnType<string | null, string | null | undefined, string | null>;
   consents: JsonDefault;
   deletion_requested_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   /** v0.18.4 (G3-R4): the last map or price call and its zone, for riders online. */
@@ -272,6 +274,12 @@ export interface TripsTable {
   /** The admin alert for a driver silent on board (owner decision 2026-10-26); see trips/ride.ts. */
   driver_silent_alert: ColumnType<unknown, string | null | undefined, string | null>;
   driver_summary: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.7 (Q1): RiderSummary for the driver and admin, set at accept. */
+  rider_summary: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.7 (Q4): TripEta, the server's road-route ETA, refreshed by the eta timer (trips/eta.ts). */
+  eta: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.7 (status item 4): the pickup as booked, set on the first move; the move limit is measured from it. */
+  booked_pickup: ColumnType<unknown, string | null | undefined, string | null>;
   arrived_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   boarded_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   started_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
@@ -296,6 +304,8 @@ export interface TripEventsTable {
   projection: Json | null;
   location: Json | null;
   eta_seconds: number | null;
+  /** v0.18.7: TripEta on the ETA tick's location event. */
+  eta: Json | null;
   cancel_fee: Json | null;
   message: Json | null;
 }

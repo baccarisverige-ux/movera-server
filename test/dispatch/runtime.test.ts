@@ -107,10 +107,10 @@ describe("automatic dispatch at run time", () => {
     expect(seen.acceptedAt).toBe(clock.now.toISOString());
     expect(seen).not.toHaveProperty("driverEarnings");
     expect((await call(app, "GET", "/driver/profile", drivers.B.headers)).json()).toMatchObject({ onlineStatus: "on_trip", activeTripId: tripId });
-    // No more rounds for this trip.
+    // No more rounds for this trip; only the ETA tick (v0.18.7, trips/eta.ts) stays with the trip.
     await advance(60);
     expect((await tripOf(tripId)).status).toBe("accepted");
-    expect(await database.db.selectFrom("timers").selectAll().where("ref_id", "like", `${tripId}%`).execute()).toEqual([]);
+    expect((await database.db.selectFrom("timers").selectAll().where("ref_id", "like", `${tripId}%`).execute()).map((t) => t.kind)).toEqual(["trip_eta"]);
   });
 
   it("a late or second accept loses: 409 with the offer", async () => {
