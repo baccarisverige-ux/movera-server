@@ -65,9 +65,19 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   const minutes = leg.durationSeconds / 60;
 
   // An unpaid cash fee from an earlier trip rides along on the next price (§3.7, owner decision 7).
-  const rider = await trx.selectFrom("riders").select(["outstanding_minor", "outstanding_source_trip_id"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
-  const owed = Number(rider.outstanding_minor);
-  const outstanding = owed > 0 ? { outstandingFee: { amountMinor: owed, currency: pricing.document.currency }, ...(rider.outstanding_source_trip_id ? { outstandingSourceTripId: rider.outstanding_source_trip_id } : {}) } : {};
+  // v0.18.7 (Q3, contract.json#pickupWaiting.debtByCurrency): only the fees owed in THIS zone's currency; 100 kr owed in
+  // Stockholm never becomes 100 € on a Paris quote (the debt waits for the next Swedish trip).
+  const owedHere = await trx
+    .selectFrom("rider_fees")
+    .select(["trip_id", "amount_minor"])
+    .where("rider_id", "=", riderId)
+    .where("status", "=", "owed")
+    .where("currency", "=", pricing.document.currency)
+    .orderBy("created_at")
+    .orderBy("trip_id")
+    .execute();
+  const owed = owedHere.reduce((sum, f) => sum + Number(f.amount_minor), 0);
+  const outstanding = owed > 0 ? { outstandingFee: { amountMinor: owed, currency: pricing.document.currency }, outstandingSourceTripId: owedHere[0]!.trip_id } : {};
 
   // v0.7.1 (§3.5, §16): the rider's fixed route; the airport fees from the airport zones (the server decides).
   const extras: PriceExtras = { ...riderExtras(body as unknown as Record<string, unknown>), ...(await airportExtras(trx, body.pickup, body.dropoff)) };

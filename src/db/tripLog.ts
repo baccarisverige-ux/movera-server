@@ -49,7 +49,8 @@ export type TripEventKind =
   | "rider_on_the_way"
   | "payment_updated"
   | "rating_updated"
-  | "message";
+  | "message"
+  | "pickup_moved";
 
 export type NewTripEvent = {
   tripId: string;
@@ -60,6 +61,8 @@ export type NewTripEvent = {
   projection?: unknown;
   location?: unknown;
   etaSeconds?: number;
+  /** v0.18.7: TripEta on the ETA tick's location event. */
+  eta?: unknown;
   cancelFee?: unknown;
   message?: unknown;
 };
@@ -93,6 +96,7 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
       projection: json(event.projection),
       location: json(event.location),
       eta_seconds: event.etaSeconds ?? null,
+      eta: json(event.eta),
       cancel_fee: json(event.cancelFee),
       message: json(event.message),
     })

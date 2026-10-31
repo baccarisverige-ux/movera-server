@@ -303,6 +303,26 @@ export function appDocWithPricing(doc: ConfigDoc, appDocument: Doc, pricing: Pri
 }
 
 /**
+ * v0.18.7 (contract.json#pickupWaiting.servedConfig): an app document as it is SERVED: waiting terms and rider pickup fees
+ * from the zone's live pricing document (configDocs.mustMatch applied on every read, so an app document published before
+ * the prices, or edited by hand, never shows other amounts), and RiderAppConfig.waiting.cancelAfterArrivedIsNoShow copied
+ * from the zone's driver document (Q2). Without a pricing document the app document is served as published.
+ */
+export async function withLivePricing(ex: Executor, doc: ConfigDoc, zoneId: string, document: Doc): Promise<Doc> {
+  if (doc !== "rider_app_config" && doc !== "driver_app_config") return document;
+  const pricing = await liveDocument<PricingForApps>(ex, "pricing", zoneId);
+  let next = pricing ? appDocWithPricing(doc, document, pricing.document) : document;
+  if (doc === "rider_app_config") {
+    const driver = await liveDocument<{ waiting?: { cancelAfterArrivedIsNoShow?: unknown } }>(ex, "driver_app_config", zoneId);
+    const flag = driver?.document.waiting?.cancelAfterArrivedIsNoShow;
+    const waiting: Doc = isObject(next["waiting"]) ? next["waiting"] : {};
+    next = { ...next, waiting: { ...waiting, cancelAfterArrivedIsNoShow: typeof flag === "boolean" ? flag : CANCEL_AFTER_ARRIVED_DEFAULT } };
+  }
+  return next;
+}
+const CANCEL_AFTER_ARRIVED_DEFAULT = (contract as unknown as { configDefaults: { cancelAfterArrivedIsNoShow: boolean } }).configDefaults.cancelAfterArrivedIsNoShow;
+
+/**
  * contract.json#configDocs.useStandard (v0.8.0, owner 2026-10-27): the zone's own document and draft go (the
  * history keeps every version); the standard is re-stamped above the zone's last own version so the zone's apps
  * never see a lower number, and every zone using it is told.

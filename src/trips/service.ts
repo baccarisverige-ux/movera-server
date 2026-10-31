@@ -11,8 +11,8 @@ import { nextStatus, TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { sameExtras, asksSeatOutsideChildSeat } from "../rules/priceExtras.js";
 import { fixView } from "../drivers/service.js";
 import { haversineKm } from "../maps/routing.js";
-import { DISPATCH } from "../dispatch/engine.js";
-import { afterRiderCancel, bookingRulesFor, riderCancelFee, riderFeeColumns } from "./ride.js";
+import { etaForRead } from "./eta.js";
+import { afterRiderCancel, bookingRulesFor, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
 import type { PricingDocument } from "../rules/fare.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
@@ -147,15 +147,10 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   return trip;
 }
 
-export async function getTrip(ex: Executor, tripId: string, who: { actor: "rider" | "driver" | "admin"; subjectId: string }): Promise<Record<string, unknown>> {
+export async function getTrip(ex: Executor, tripId: string, who: { actor: "rider" | "driver" | "admin"; subjectId: string }, now: Date = new Date()): Promise<Record<string, unknown>> {
   const trip = await readOwnTrip(ex, tripId, who);
-  return withDriverPosition(ex, trip, tripProjection(trip, who.actor));
+  return withDriverPosition(ex, trip, tripProjection(trip, who.actor, { now }), now);
 }
-
-const TO_PICKUP: readonly string[] = ["accepted", "driver_to_pickup"];
-const ON_BOARD: readonly string[] = ["rider_onboard", "in_trip", "approaching_dropoff"];
-/** Roads are longer than the straight line (the same factor as the driven distance in ride.ts). */
-const ROAD_FACTOR = 1.25;
 
 /**
  * TripProjection.driverLocation and etaSeconds (contract §2) on a read of the trip: the driver's last fix while the
@@ -164,16 +159,59 @@ const ROAD_FACTOR = 1.25;
  * it against the drop-off). A fix from after the end is the driver's own business and is never sent. The ETA is
  * the road distance to the pickup (before boarding) or to the drop-off (on board) at dispatch's pickup speed.
  */
-export async function withDriverPosition(ex: Executor, trip: TripRow, projection: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function withDriverPosition(ex: Executor, trip: TripRow, projection: Record<string, unknown>, now: Date = new Date()): Promise<Record<string, unknown>> {
   if (!trip.driver_id) return projection;
   const fix = await ex.selectFrom("driver_locations").selectAll().where("driver_id", "=", trip.driver_id).executeTakeFirst();
   if (fix === undefined) return projection;
   const over = TERMINAL.has(trip.status as TripStatus);
   if (over && (trip.ended_at === null || fix.measured_at.getTime() > trip.ended_at.getTime())) return projection;
   const out: Record<string, unknown> = { ...projection, driverLocation: fixView(fix) };
-  const target = ON_BOARD.includes(trip.status) ? (trip.dropoff as Place) : TO_PICKUP.includes(trip.status) ? (trip.pickup as Place) : null;
-  if (target !== null) out["etaSeconds"] = Math.max(60, Math.round(((haversineKm(fix, target) * ROAD_FACTOR) / DISPATCH.score.pickupKmh) * 3600));
+  // v0.18.7 (Q4): the server's road-route ETA while fresh, else the straight-line estimate; the same for every viewer.
+  const eta = etaForRead(trip, fix, now);
+  if (eta !== null) Object.assign(out, { eta, etaSeconds: eta.etaSeconds });
   return out;
+}
+
+/**
+ * v0.18.7 (contract.json#pickupWaiting.pickupMove, owner status item 4 and note check "200 m default, admin can change"):
+ * PATCH /trips/{tripId} { expectedVersion, pickup }. The straight-line distance from the BOOKED pickup to the new one may
+ * not pass the zone's booking.maxPickupMoveMeters (kept on the trip at booking; the zone's live driver document for an
+ * older trip). Allowed while requested, searching, offered, accepted or driver_to_pickup; the driver at the pickup
+ * fixes it. Version + 1 and one pickup_moved event with the projection; the fare does not change.
+ */
+const PICKUP_MOVE_STATUSES: ReadonlySet<string> = new Set((contract as unknown as { pickupWaiting: { pickupMove: { allowedStatuses: string[] } } }).pickupWaiting.pickupMove.allowedStatuses);
+
+export async function movePickup(trx: Trx, riderId: string, tripId: string, body: unknown, now: Date): Promise<TripRow> {
+  // Another rider's trip is 404 before anything about the body is said (route matrix, §3).
+  const trip = await lockOwnTrip(trx, tripId, { actor: "rider", subjectId: riderId });
+  const problem = schemaProblem("UpdateTripRequest", body);
+  if (problem !== null) throw badRequest(`The request is not valid: ${problem}.`, "invalid_body");
+  const update = body as { expectedVersion: number; pickup?: Place; dropoff?: unknown; stops?: unknown; routeQuoteId?: unknown; paymentMethod?: unknown; paymentMethodId?: unknown };
+  if (update.dropoff !== undefined || update.stops !== undefined || update.routeQuoteId !== undefined || update.paymentMethod !== undefined || update.paymentMethodId !== undefined) {
+    throw badRequest("Only the pickup can be moved for now; a destination change is not available yet.", "route_change_not_available");
+  }
+  if (update.pickup === undefined) throw badRequest("Nothing to change: send pickup.", "nothing_to_change");
+  expectVersion(trip, update.expectedVersion, "rider");
+  if (!PICKUP_MOVE_STATUSES.has(trip.status)) {
+    throw new ApiError("invalid_transition", "The driver is already there; the pickup cannot be moved.", { reason: "pickup_fixed_after_arrival", projection: tripProjection(trip, "rider") });
+  }
+  const kept = (trip.booking_rules as { maxPickupMoveMeters?: number } | null)?.maxPickupMoveMeters;
+  const maxMeters = typeof kept === "number" ? kept : await pickupMoveLimitOf(trx, trip.zone_id);
+  const booked = ((trip.booked_pickup ?? trip.pickup) as Place);
+  const meters = Math.round(haversineKm(booked, update.pickup) * 1000);
+  if (meters > maxMeters) {
+    throw new ApiError("invalid_request", `The pickup can be moved at most ${maxMeters} m; cancel and book again for another place.`, { reason: "pickup_move_too_far", details: [`maxMeters=${maxMeters}`, `meters=${meters}`] });
+  }
+  const version = trip.version + 1;
+  await trx
+    .updateTable("trips")
+    .set({ pickup: JSON.stringify(update.pickup), booked_pickup: JSON.stringify(booked), version, updated_at: now })
+    .where("trip_id", "=", tripId)
+    .execute();
+  const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+  const sequence = Number(updated.sequence) + 1;
+  await appendTripEvent(trx, { tripId, kind: "pickup_moved", version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence, now }) });
+  return { ...updated, sequence: String(sequence) };
 }
 
 /**
@@ -234,12 +272,14 @@ export async function riderCancel(
   expectVersion(trip, body.expectedVersion, "rider");
   // Only a row of the transition table may charge; anything else is refused by applyCommand below.
   const charged = nextStatus(trip.status as never, "cancel", "rider", trip.kind) === null ? null : await riderCancelFee(trx, trip, now);
+  // v0.18.7 (Q2, Q6): feeKind says which rule charged (a cancel after the driver arrived may count as a no-show) and
+  // driverShare is the driver's part, so both apps show the amount at once.
   const cancellation = {
     actor: "rider",
     reasonCode: body.reasonCode,
     at: now.toISOString(),
-    fee: charged,
-    ...(charged ? { feeStatus: "owed" } : {}),
+    fee: charged?.fee ?? null,
+    ...(charged ? { feeStatus: "owed", feeKind: charged.kind, driverShare: { amountMinor: feeSplit(charged.fee, await riderFeeSharePct(trx, trip, charged.kind)).driver, currency: charged.fee.currency } } : {}),
     ...(body.note ? { note: body.note } : {}),
   };
   // The fee is the trip's money in the same change, so the one trip_projection event shows it (§4).

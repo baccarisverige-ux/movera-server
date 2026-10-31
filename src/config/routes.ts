@@ -12,7 +12,7 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
-import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey, useStandard } from "./service.js";
+import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey, useStandard, withLivePricing } from "./service.js";
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
@@ -71,7 +71,11 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const live = await liveDocument(deps.db, doc, zoneId);
     if (live === null) throw new ApiError("not_found", "No settings are published for this zone yet.", { reason: "config_not_published" });
     // v0.18.6 (owner G4-E4): the rider app always gets the raise limit the server checks (the zone's dispatch document).
-    const document = doc === "rider_app_config" ? withRaiseLimit(live.document as Record<string, unknown>, await raiseMaxFactor(deps.db, zoneId)) : (live.document as Record<string, unknown>);
+    let document = doc === "rider_app_config" ? withRaiseLimit(live.document as Record<string, unknown>, await raiseMaxFactor(deps.db, zoneId)) : (live.document as Record<string, unknown>);
+    // v0.18.7 (contract.json#pickupWaiting.servedConfig): the waiting / no-show terms and rider pickup fees of the zone's
+    // LIVE pricing document, whatever the app document says (a driver in Paris reads French terms in euro), and the
+    // rider app gets the zone's "cancel after arrival = no-show" switch from the driver document.
+    document = await withLivePricing(deps.db, doc, zoneId, document);
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);
   };

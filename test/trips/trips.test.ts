@@ -178,12 +178,17 @@ describe("rider account", () => {
 
   it("an unpaid fee shows on the profile and rides along on the next price", async () => {
     const riderId = (await call(app, "GET", "/rider/profile", other)).json().riderId;
-    await database.db.updateTable("riders").set({ outstanding_minor: 6500, outstanding_source_trip_id: "trp_previous" }).where("rider_id", "=", riderId).execute();
-    expect((await call(app, "GET", "/rider/profile", other)).json().outstanding).toEqual({ amountMinor: 6500, currency: "SEK" });
+    // v0.18.7 (Q3): the debt is the owed fee rows themselves (per currency), not a number on the rider.
+    const previous = (await book(await economyQuote(other), other)).json().tripId as string;
+    await database.db.updateTable("trips").set({ status: "cancelled_by_rider" }).where("trip_id", "=", previous).execute();
+    await database.db.insertInto("rider_fees").values({ trip_id: previous, rider_id: riderId, kind: "cancel", currency: "SEK", amount_minor: 6500, status: "owed", created_at: clock.now }).execute();
+    await database.db.updateTable("riders").set({ outstanding_minor: 6500, outstanding_currency: "SEK", outstanding_source_trip_id: previous }).where("rider_id", "=", riderId).execute();
+    expect((await call(app, "GET", "/rider/profile", other)).json()).toMatchObject({ outstanding: { amountMinor: 6500, currency: "SEK" }, outstandingByCurrency: [{ amountMinor: 6500, currency: "SEK" }] });
     const quote = await economyQuote(other);
     expect(quote.total).toEqual({ amountMinor: 28200, currency: "SEK" });
-    expect(quote.fareLines.at(-1)).toEqual({ code: "outstanding_fee", amount: { amountMinor: 6500, currency: "SEK" }, sourceTripId: "trp_previous" });
-    await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).where("rider_id", "=", riderId).execute();
+    expect(quote.fareLines.at(-1)).toEqual({ code: "outstanding_fee", amount: { amountMinor: 6500, currency: "SEK" }, sourceTripId: previous });
+    await database.db.deleteFrom("rider_fees").where("trip_id", "=", previous).execute();
+    await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).where("rider_id", "=", riderId).execute();
   });
 
   it("account deletion is recorded (202)", async () => {

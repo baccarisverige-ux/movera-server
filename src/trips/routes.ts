@@ -22,7 +22,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
 import { streamTrip } from "../realtime/streams.js";
 import { DriverCancelBody, driverCancel } from "./rideRoutes.js";
-import { activeTrip, createTrip, getTrip, raisePrice, riderCancel, riderTrips, setCancelReason, riderOnTheWay, withDriverPosition } from "./service.js";
+import { activeTrip, createTrip, getTrip, movePickup, raisePrice, riderCancel, riderTrips, setCancelReason, riderOnTheWay, withDriverPosition } from "./service.js";
 
 /** contract §3, §7: trips for the rider (with the deprecated /rides aliases), the rider profile, payment methods. */
 
@@ -80,7 +80,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     app.get(`${API_PREFIX}/${base}/:${param}`, async (request) => {
       const who = await authenticate(request, guard, base === "rides" ? ["rider"] : ["rider", "driver", "admin"]);
       const id = parseBody(z.object({ [param]: ID }), request.params)[param] as string;
-      return getTrip(deps.db, id, { actor: who.actor as "rider" | "driver" | "admin", subjectId: who.subjectId });
+      return getTrip(deps.db, id, { actor: who.actor as "rider" | "driver" | "admin", subjectId: who.subjectId }, now());
     });
 
     app.post(`${API_PREFIX}/${base}/:${param}/cancel`, async (request) => {
@@ -102,6 +102,14 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const who = await authenticate(request, guard, ["rider", "driver"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
     return tripPath(deps.db, roads, tripId, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId });
+  });
+
+  // v0.18.7 (contract.json#pickupWaiting.pickupMove): the rider moves the pickup, at most booking.maxPickupMoveMeters.
+  app.patch(`${API_PREFIX}/trips/:tripId`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const id = parseBody(z.object({ tripId: ID }), request.params).tripId;
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await movePickup(trx, who.subjectId, id, request.body ?? {}, now()), "rider", { now: now() }) }));
+    return result.body;
   });
 
   app.post(`${API_PREFIX}/trips/:tripId/cancel-reason`, async (request) => {

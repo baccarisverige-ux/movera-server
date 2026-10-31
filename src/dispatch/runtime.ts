@@ -1,5 +1,7 @@
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
+import { etaHandler, startEta, TRIP_ETA } from "../trips/eta.js";
+import { EstimateRouter } from "../maps/routing.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent, lockTrip, OFFER_EVENTS_CHANNEL, type TripRow } from "../db/tripLog.js";
@@ -508,6 +510,11 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   // v0.18.5 (G2-D3): the rider's link to the driver's approved photo, only when he has one.
   const photoUrl = await driverPhotoUrl(trx, driverId, trip.trip_id, now);
   if (photoUrl) Object.assign(summary, { photoUrl });
+  // v0.18.7 (Q1, contract.json#pickupWaiting.riderSummary): the rider as the driver sees him, first name + rating when the
+  // zone shows ratings (the same switch as the offer card); no surname, no phone.
+  const riderRow = await trx.selectFrom("riders").select("first_name").where("rider_id", "=", trip.rider_id).executeTakeFirstOrThrow();
+  const riderRating = await riderRatingForOffer(trx, trip);
+  const riderSummary = { firstName: riderRow.first_name || "Rider", ...(riderRating !== null ? { rating: riderRating } : {}) };
   const earnings = Number(offer.driver_earnings_minor);
   const pickupPay = Number(offer.pickup_pay_minor);
   trip = await applyCommand(trx, trip, {
@@ -523,12 +530,16 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       // Movera keeps fare − driverEarnings − pickupPay (§3.2).
       commission_minor: Number(trip.fare_minor) - earnings - pickupPay - Number(trip.driver_bonus_minor ?? 0),
       driver_summary: JSON.stringify(summary),
+      rider_summary: JSON.stringify(riderSummary),
+      eta: null,
       search_step: null,
       // Where the driver started from: the rider cancel "came closer" check measures against it.
       accept_pickup_meters: offer.pickup_meters,
     },
   });
   await trx.updateTable("drivers").set({ online_status: "on_trip", version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
+  // v0.18.7 (Q4): the server's road-route ETA starts ticking now (trips/eta.ts).
+  await startEta(trx, trip.trip_id, now);
   await endSearchTimers(trx, trip.trip_id);
   // v0.18.6 (G4-F4): a repeating radar-zone send ends the moment a driver takes the trip.
   await endTripSends(trx, trip.trip_id, "accepted", null, now);
@@ -663,4 +674,6 @@ export const withdrawHandler: TimerHandler = async (trx, timer) => {
   await queue.flush(trx, now);
 };
 
-export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler };
+// v0.18.7: the ETA tick booked at accept rides with the dispatch handlers (straight-line estimate here; main.ts sets the
+// server's real router over it, [TRIP_ETA]: etaHandler(router)).
+export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler, [TRIP_ETA]: etaHandler(new EstimateRouter()) };

@@ -12,13 +12,15 @@ export function redactProjection(projection: Record<string, unknown>, viewer: Vi
   if (viewer === "admin") return projection;
   if (viewer === "driver") {
     const { searchStep: _s, driverSilentAlert: _a, driverRatingStatus, ...rest } = projection;
+    // (the rider summary, v0.18.7 Q1, is the driver's to see)
     void _s;
     void _a;
     // Each side sees its own ratingStatus; the stored (admin) projection carries the driver's separately.
     return driverRatingStatus === undefined ? rest : { ...rest, ratingStatus: driverRatingStatus };
   }
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(projection)) if (!RIDER_HIDDEN.has(k) && k !== "driverRatingStatus" && k !== "driverSilentAlert") out[k] = v;
+  // v0.18.7 (Q1): the rider never gets his own summary (it is the driver's view of him).
+  for (const [k, v] of Object.entries(projection)) if (!RIDER_HIDDEN.has(k) && k !== "driverRatingStatus" && k !== "driverSilentAlert" && k !== "rider") out[k] = v;
   if (Array.isArray(out["fareLines"])) out["fareLines"] = (out["fareLines"] as Array<{ code: string }>).filter((l) => !DRIVER_ONLY_LINES.has(l.code));
   return out;
 }
@@ -39,6 +41,8 @@ export function eventEnvelope(row: Selectable<TripEventsTable>, viewer: Viewer, 
     ...(row.projection ? { projection: redactProjection(row.projection as Record<string, unknown>, viewer) } : {}),
     ...(row.location ? { location: row.location } : {}),
     ...(row.eta_seconds !== null ? { etaSeconds: row.eta_seconds } : {}),
+    // v0.18.7 (contract.json#pickupWaiting.eta): the ETA tick's TripEta.
+    ...(row.eta ? { eta: row.eta } : {}),
     ...(row.cancel_fee ? { cancelFee: row.cancel_fee } : {}),
     ...(row.message && !options.hideMessage ? { message: row.message } : {}),
   };
