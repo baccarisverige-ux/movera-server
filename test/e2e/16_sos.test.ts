@@ -144,6 +144,18 @@ describe("scenario 16: SOS and incidents", () => {
     expect((await sos(a, tripId)).status).toBe(409);
   });
 
+  it("owner G14 'SOS only during a trip': a rider still searching (no driver yet) gets 409 trip_not_live", async () => {
+    const { tripId } = await rider.book();
+    const searching = await sos(rider, tripId);
+    expect(searching.status).toBe(409);
+    expect(searching.body).toMatchObject({ code: "invalid_transition", reason: "trip_not_live", projection: { tripId } });
+    await sim.tick();
+    const offered = await sos(rider, tripId);
+    expect(offered.status).toBe(409);
+    expect(offered.body).toMatchObject({ reason: "trip_not_live" });
+    await rider.command(tripId, "cancel", { reasonCode: "plans_changed" });
+  });
+
   it("car lost: no driver position for 30 min with the rider on board opens a critical incident that closes itself when the car is back", async () => {
     const { tripId } = await bookAndAccept(sim, rider, a);
     await drive(a, tripId, "rider_onboard");

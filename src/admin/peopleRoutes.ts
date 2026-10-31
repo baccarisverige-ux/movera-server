@@ -9,7 +9,7 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { adminDocumentFile, assertReason, checkDocument, driverInScope, reviewDocument } from "../documents/service.js";
-import { EXTRA_CATEGORIES } from "../drivers/onboardingSettings.js";
+import { EXTRA_CATEGORIES, onboardingSettings } from "../drivers/onboardingSettings.js";
 import type { DocumentKey } from "../documents/files.js";
 import { adminGetFleet, adminRemoveFleetDriver, listFleets, renewFleetCode, reviewFleet } from "../drivers/onboarding.js";
 import { adminDecideInvitation, type InviteDeps } from "../drivers/invitations.js";
@@ -197,7 +197,11 @@ async function reviewVehicle(trx: Db extends never ? never : import("../db/db.js
   const categoryIds = body.decision === "approved" ? [...new Set(body.categoryIds ?? row.category_ids)] : row.category_ids;
   if (body.decision === "approved") {
     if (!categoryIds.some((c) => !EXTRA_CATEGORIES.includes(c))) throw new ApiError("invalid_request", "Give the car at least one ride category.", { reason: "categories_required" });
-    const problems = await rulesBrokenBy(trx, { ...row, category_ids: categoryIds }, await vehicleCountry(trx, row));
+    const country = await vehicleCountry(trx, row);
+    // Checker finding 4: an id that is no category of the car's country (nor an extra) is refused, never stored.
+    const known = new Set([...(await onboardingSettings(trx, country)).vehicles.categories.map((r) => r.category), ...EXTRA_CATEGORIES]);
+    const unknown = categoryIds.filter((c) => !known.has(c)).map((c) => `${c}:unknown_category`);
+    const problems = [...unknown, ...(await rulesBrokenBy(trx, { ...row, category_ids: categoryIds.filter((c) => known.has(c)) }, country))];
     if (problems.length > 0) throw new ApiError("invalid_transition", "The car breaks the car rules of its country.", { reason: "vehicle_rules_not_met", details: problems });
   }
   await trx.updateTable("vehicles").set({ status: body.decision, category_ids: categoryIds, version: row.version + 1, updated_at: now }).where("vehicle_id", "=", vehicleId).execute();
