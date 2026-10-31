@@ -316,3 +316,75 @@ describe("Offline reason (owner 'Send the real reason')", () => {
     for (const r of Object.values(reasons)) for (const l of ["sv", "fr", "en"]) expect(r[l]!.length).toBeGreaterThan(0);
   });
 });
+
+describe("G4-F3..F6: list, change and delete groups, radar zones, rules and events (admin tools CRUD)", () => {
+  it("groups: list per country, rename, change members (country check), version mismatch, not found, delete; Swedish admin sees Sweden only", async () => {
+    const made = (await call(app, "POST", "/admin/dispatch/groups", admin, { country: "SE", name: "Night shift", driverIds: [drivers.A.id] })).json();
+    expect(made).toMatchObject({ version: 1, driverIds: [drivers.A.id] });
+    const listed = (await call(app, "GET", "/admin/dispatch/groups?country=SE", admin)).json().items;
+    expect(listed.map((g: { groupId: string }) => g.groupId)).toContain(made.groupId);
+    expect((await call(app, "PUT", `/admin/dispatch/groups/${made.groupId}`, admin, { expectedVersion: 1, driverIds: [drivers.C.id] })).json()).toMatchObject({ reason: "driver_not_in_country" });
+    const changed = (await call(app, "PUT", `/admin/dispatch/groups/${made.groupId}`, admin, { expectedVersion: 1, name: "Night crew", driverIds: [drivers.A.id, drivers.B.id] })).json();
+    expect(changed).toMatchObject({ name: "Night crew", version: 2, driverIds: [drivers.A.id, drivers.B.id] });
+    expect((await call(app, "PUT", `/admin/dispatch/groups/${made.groupId}`, admin, { expectedVersion: 1, name: "Stale" })).json()).toMatchObject({ code: "version_mismatch" });
+    expect((await call(app, "PUT", "/admin/dispatch/groups/dgr_nothing", admin, { expectedVersion: 1, name: "X" })).json()).toMatchObject({ reason: "group_not_found" });
+    const swede = (await adminSession(app, database.db, "ops", { zoneIds: ["Z001"], now: clock.now })).headers;
+    expect((await call(app, "GET", "/admin/dispatch/groups", swede)).json().items.every((g: { country: string }) => g.country === "SE")).toBe(true);
+    expect((await call(app, "DELETE", `/admin/dispatch/groups/${made.groupId}?expectedVersion=1`, admin)).json()).toMatchObject({ code: "version_mismatch" });
+    expect((await call(app, "DELETE", `/admin/dispatch/groups/${made.groupId}?expectedVersion=2`, admin)).statusCode).toBe(204);
+    expect((await call(app, "DELETE", `/admin/dispatch/groups/${made.groupId}?expectedVersion=2`, admin)).json()).toMatchObject({ reason: "group_not_found" });
+    expect((await audits("dispatch.group.delete")).map((a) => a.target_id)).toContain(made.groupId);
+  });
+
+  it("radar zones and rules: list, rename, redraw (shape check), rule zones must be of the country, delete in order", async () => {
+    const zone = (await call(app, "POST", "/admin/dispatch/radar-zones", admin, { zoneId: "Z001", name: "CRUD zone", polygon: AROUND_A })).json();
+    expect((await call(app, "GET", "/admin/dispatch/radar-zones?country=SE", admin)).json().items.map((z: { radarZoneId: string }) => z.radarZoneId)).toContain(zone.radarZoneId);
+    expect((await call(app, "PUT", `/admin/dispatch/radar-zones/${zone.radarZoneId}`, admin, { expectedVersion: 1, polygon: [[59.33, 18.06], [59.33, 18.06], [59.33, 18.06]] })).json()).toMatchObject({ reason: "invalid_polygon" });
+    const bigger: Array<[number, number]> = [[59.331, 18.062], [59.331, 18.069], [59.336, 18.069], [59.336, 18.062]];
+    const redrawn = (await call(app, "PUT", `/admin/dispatch/radar-zones/${zone.radarZoneId}`, admin, { expectedVersion: 1, name: "CRUD zone 2", polygon: bigger })).json();
+    expect(redrawn).toMatchObject({ name: "CRUD zone 2", version: 2, polygon: bigger });
+    expect((await call(app, "PUT", "/admin/dispatch/radar-zones/rzn_nothing", admin, { expectedVersion: 1, name: "X" })).json()).toMatchObject({ reason: "radar_zone_not_found" });
+    expect((await call(app, "DELETE", "/admin/dispatch/radar-zones/rzn_nothing?expectedVersion=1", admin)).json()).toMatchObject({ reason: "radar_zone_not_found" });
+
+    expect((await call(app, "POST", "/admin/dispatch/radar-rules", admin, { country: "FR", name: "Wrong country", radarZoneIds: [zone.radarZoneId], seconds: 20, maxDrivers: 5, repeat: false })).json()).toMatchObject({ reason: "zone_not_in_country", details: [zone.radarZoneId] });
+    const rule = (await call(app, "POST", "/admin/dispatch/radar-rules", admin, { country: "SE", name: "CRUD rule", radarZoneIds: [zone.radarZoneId], seconds: 20, maxDrivers: 5, repeat: false })).json();
+    expect((await call(app, "GET", "/admin/dispatch/radar-rules?country=SE", admin)).json().items.map((r: { ruleId: string }) => r.ruleId)).toContain(rule.ruleId);
+    expect((await call(app, "PUT", `/admin/dispatch/radar-rules/${rule.ruleId}`, admin, { expectedVersion: 1, radarZoneIds: ["rzn_nothing"] })).json()).toMatchObject({ reason: "zone_not_in_country" });
+    const changedRule = (await call(app, "PUT", `/admin/dispatch/radar-rules/${rule.ruleId}`, admin, { expectedVersion: 1, name: "CRUD rule 2", radarZoneIds: "all", seconds: 30, maxDrivers: 2, repeat: true })).json();
+    expect(changedRule).toMatchObject({ name: "CRUD rule 2", version: 2, radarZoneIds: "all", seconds: 30, maxDrivers: 2, repeat: true });
+    expect((await call(app, "PUT", `/admin/dispatch/radar-rules/${rule.ruleId}`, admin, { expectedVersion: 1, name: "Stale" })).json()).toMatchObject({ code: "version_mismatch" });
+    expect((await call(app, "PUT", "/admin/dispatch/radar-rules/rzr_nothing", admin, { expectedVersion: 1, name: "X" })).json()).toMatchObject({ reason: "radar_rule_not_found" });
+    expect((await call(app, "DELETE", `/admin/dispatch/radar-rules/${rule.ruleId}?expectedVersion=1`, admin)).json()).toMatchObject({ code: "version_mismatch" });
+    expect((await call(app, "DELETE", `/admin/dispatch/radar-rules/${rule.ruleId}?expectedVersion=2`, admin)).statusCode).toBe(204);
+    expect((await call(app, "DELETE", `/admin/dispatch/radar-zones/${zone.radarZoneId}?expectedVersion=2`, admin)).statusCode).toBe(204);
+    expect((await audits("dispatch.radar_rule.delete")).map((a) => a.target_id)).toContain(rule.ruleId);
+    expect((await audits("dispatch.radar_zone.delete")).map((a) => a.target_id)).toContain(zone.radarZoneId);
+  });
+
+  it("events: list per country and time window, not found, version mismatch, delete signals the drivers", async () => {
+    const details = { title: { sv: "Match", fr: "Match", en: "Match" }, description: { sv: "Slutar 22:00", fr: "Fin 22 h", en: "Ends 22:00" }, pickupNote: { sv: "Port 1", fr: "Porte 1", en: "Gate 1" } };
+    const startsAt = new Date(clock.now.getTime() + 24 * 3600_000).toISOString();
+    const endsAt = new Date(clock.now.getTime() + 27 * 3600_000).toISOString();
+    const event = (await call(app, "POST", "/admin/dispatch/events", admin, { country: "SE", name: "CRUD match", location: { lat: 59.37, lng: 18.0 }, startsAt, endsAt, details })).json();
+    const inWindow = (await call(app, "GET", `/admin/dispatch/events?country=SE&from=${encodeURIComponent(startsAt)}&to=${encodeURIComponent(endsAt)}`, admin)).json().items;
+    expect(inWindow.map((e: { eventId: string }) => e.eventId)).toContain(event.eventId);
+    const later = new Date(clock.now.getTime() + 48 * 3600_000).toISOString();
+    const outside = (await call(app, "GET", `/admin/dispatch/events?country=SE&from=${encodeURIComponent(later)}`, admin)).json().items;
+    expect(outside.map((e: { eventId: string }) => e.eventId)).not.toContain(event.eventId);
+    expect((await call(app, "GET", "/admin/dispatch/events?country=FR", admin)).json().items.map((e: { eventId: string }) => e.eventId)).not.toContain(event.eventId);
+    expect((await call(app, "PUT", "/admin/dispatch/events/evt_nothing", admin, { expectedVersion: 1, on: false })).json()).toMatchObject({ reason: "event_not_found" });
+    expect((await call(app, "PUT", `/admin/dispatch/events/${event.eventId}`, admin, { expectedVersion: 1, startsAt: endsAt, endsAt: startsAt })).json()).toMatchObject({ reason: "ends_before_start" });
+    expect((await call(app, "DELETE", `/admin/dispatch/events/${event.eventId}?expectedVersion=9`, admin)).json()).toMatchObject({ code: "version_mismatch" });
+    const listener = await database.pool.connect();
+    const heard: string[] = [];
+    listener.on("notification", (n) => heard.push(n.payload ?? ""));
+    await listener.query("LISTEN movera_config_published");
+    expect((await call(app, "DELETE", `/admin/dispatch/events/${event.eventId}?expectedVersion=1`, admin)).statusCode).toBe(204);
+    await new Promise((r) => setTimeout(r, 150));
+    await listener.query("UNLISTEN *");
+    listener.release();
+    expect(heard.map((h) => JSON.parse(h)).some((p: { doc: string }) => p.doc === "events")).toBe(true);
+    expect((await call(app, "GET", "/admin/dispatch/events?country=SE", admin)).json().items.map((e: { eventId: string }) => e.eventId)).not.toContain(event.eventId);
+    expect((await audits("dispatch.event.delete")).map((a) => a.target_id)).toContain(event.eventId);
+  });
+});
