@@ -365,18 +365,19 @@ describe("the rider ends early", () => {
     expect(ended.fare.amountMinor).toBeLessThanOrEqual(quote.total.amountMinor);
     expect(ended.fareLines.map((l: { code: string }) => l.code)).toEqual(expect.arrayContaining(["base", "distance", "time", "app_fee"]));
     expect((await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 3 })).statusCode).toBe(201);
-    expect((await call(app, "POST", `/trips/${tripId}/rating`, drivers.A.headers, { stars: 3 })).json()).toMatchObject({ code: "invalid_transition", reason: "rating_not_allowed" });
+    // v0.18.10 (owner G8 Q1): after the rider's early end the driver rates too.
+    expect((await call(app, "POST", `/trips/${tripId}/rating`, drivers.A.headers, { stars: 3 })).statusCode).toBe(201);
     // End early is only on board.
     await advance(1);
     const other = await accepted();
     expect((await call(app, "POST", `/trips/${other.tripId}/end-early`, rider, { expectedVersion: other.version })).json()).toMatchObject({ code: "invalid_transition" });
   });
 
-  it("a plain cancel is never rated; tips are not available yet", async () => {
+  it("a plain cancel is never rated, with or without a tip (v0.18.10: tips exist, contract.json#finish.tips)", async () => {
     const { tripId } = await book();
     const trip = await riderView(tripId);
     await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
     expect((await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 5 })).json()).toMatchObject({ code: "invalid_transition" });
-    expect((await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 5, tip: { amountMinor: 2000, currency: "SEK" } })).json()).toMatchObject({ reason: "tips_not_available" });
+    expect((await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 5, tip: { amountMinor: 2000, currency: "SEK" } })).json()).toMatchObject({ reason: "rating_not_allowed" });
   });
 });

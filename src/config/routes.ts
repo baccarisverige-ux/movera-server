@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { withPaymentOptions } from "../trips/finish.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { streamConfig } from "../realtime/streams.js";
 import { z } from "zod";
@@ -16,7 +17,8 @@ import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, ge
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
-export type ConfigDeps = { db: Db; jwtSecret: string; defaultZoneId: string; hub?: NotificationHub; clock?: () => Date };
+/** paymentMethods (v0.18.10): what the server takes today (env PAYMENT_METHODS), for the served paymentOptions. */
+export type ConfigDeps = { db: Db; jwtSecret: string; defaultZoneId: string; paymentMethods?: readonly string[]; hub?: NotificationHub; clock?: () => Date };
 
 const ZONE_ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const DocParam = z.object({ doc: z.enum(CONFIG_DOCS as [ConfigDoc, ...ConfigDoc[]]) });
@@ -76,6 +78,8 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     // LIVE pricing document, whatever the app document says (a driver in Paris reads French terms in euro), and the
     // rider app gets the zone's "cancel after arrival = no-show" switch from the driver document.
     document = await withLivePricing(deps.db, doc, zoneId, document);
+    // v0.18.10 (contract.json#finish.paymentMethods.served): the admin's methods (never google_pay) and what the server takes.
+    document = withPaymentOptions(document, deps.paymentMethods ?? ["cash"]);
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);
   };

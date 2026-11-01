@@ -9,11 +9,13 @@ import { ApiError } from "../http/errors.js";
 import { tripProjection } from "./projection.js";
 import { stopCommand } from "./stops.js";
 import { checkPin, contractAtLeast, riderPin, verifyPin } from "./pin.js";
+import { driverReceipt, giveTip, riderReceipt } from "./finish.js";
 import { completePreview, completeTrip, PriceChanged, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
 
 /** contract §3: the driver's trip commands, the rider's early end, ratings and the driver's earnings. */
 
-export type RideDeps = { db: Db; jwtSecret: string; currency: string; timeZone: string; clock?: () => Date };
+/** paymentMethods: what the server takes today (env PAYMENT_METHODS, default cash), for the tip method (v0.18.10). */
+export type RideDeps = { db: Db; jwtSecret: string; currency: string; timeZone: string; paymentMethods?: readonly string[]; clock?: () => Date };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Fix = z.object({ lat: z.number(), lng: z.number(), accuracy: z.number().min(0) }).passthrough();
@@ -36,6 +38,7 @@ const keyOf = (request: FastifyRequest) => {
 export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<void> {
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
   const now = () => deps.clock?.() ?? new Date();
+  const supported = deps.paymentMethods ?? ["cash"];
   const idem = (request: FastifyRequest, who: { actor: string; subjectId: string }) => ({
     actor: who.actor as "rider" | "driver",
     subjectId: who.subjectId,
@@ -124,8 +127,32 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
     const who = await authenticate(request, guard, ["rider", "driver"]);
     const id = tripId(request);
     const actor = who.actor as "rider" | "driver";
-    const result = await runIdempotent(deps.db, idem(request, { actor, subjectId: who.subjectId }), async (trx) => rateTrip(trx, { actor, subjectId: who.subjectId }, id, request.body ?? {}, now()));
+    const result = await runIdempotent(deps.db, idem(request, { actor, subjectId: who.subjectId }), async (trx) => {
+      const rated = await rateTrip(trx, { actor, subjectId: who.subjectId }, id, request.body ?? {}, now());
+      // v0.18.10 (contract.json#finish.tips): a tip sent with the rating, same rules as POST /trips/{tripId}/tip (default cash).
+      const body = (request.body ?? {}) as { tip?: unknown; tipMethod?: unknown };
+      if (actor === "rider" && body.tip !== undefined) await giveTip(trx, who.subjectId, id, { amount: body.tip, method: body.tipMethod ?? "cash" }, supported, now());
+      return rated;
+    });
     return result.status === 204 ? reply.status(204).send() : reply.status(result.status).send(result.body);
+  });
+
+  // v0.18.10 (contract.json#finish.tips): the rider's tip, 100 % to the driver.
+  app.post(`${API_PREFIX}/trips/:tripId/tip`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const id = tripId(request);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await giveTip(trx, who.subjectId, id, request.body ?? {}, supported, now()) }));
+    return reply.status(result.status).send(result.body);
+  });
+
+  // v0.18.10 (contract.json#finish.receipt): the receipt of an ended trip, for its rider and its driver.
+  app.get(`${API_PREFIX}/trips/:tripId/receipt`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    return riderReceipt(deps.db, who.subjectId, tripId(request));
+  });
+  app.get(`${API_PREFIX}/driver/trips/:tripId/receipt`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    return driverReceipt(deps.db, who.subjectId, tripId(request));
   });
 
   app.get(`${API_PREFIX}/driver/earnings`, async (request) => {

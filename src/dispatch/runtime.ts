@@ -1,4 +1,5 @@
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
+import { commissionOf } from "../rules/commission.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { etaHandler, startEta } from "../trips/eta.js";
 import { EstimateRouter } from "../maps/routing.js";
@@ -559,7 +560,7 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       driver_earnings_minor: earnings,
       pickup_pay_minor: pickupPay,
       // Movera keeps fare − driverEarnings − pickupPay (§3.2).
-      commission_minor: Number(trip.fare_minor) - earnings - pickupPay - Number(trip.driver_bonus_minor ?? 0),
+      commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, earnings, pickupPay, Number(trip.driver_bonus_minor ?? 0)),
       driver_summary: JSON.stringify(summary),
       rider_summary: JSON.stringify(riderSummary),
       eta: null,

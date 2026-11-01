@@ -1,4 +1,5 @@
 import { randomInt } from "node:crypto";
+import { commissionOf } from "../rules/commission.js";
 import { checkTags } from "../admin/ratings.js";
 import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
 import { rideCheckHandlers } from "../safety/rideCheck.js";
@@ -23,7 +24,7 @@ import { extrasOf } from "../rules/priceExtras.js";
 import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { nextStatus, RIDER_ONBOARD, type TripStatus } from "../rules/transitions.js";
-import { tripProjection } from "./projection.js";
+import { driverTotalOf, earningsLinesOf, tripProjection, type EndInfo } from "./projection.js";
 import { effectiveWaiting, waitingExtrasOf, type WaitingExtras, type WaitingRuleId } from "./waitingRules.js";
 import { inPolygon, type Polygon } from "../zones/geometry.js";
 
@@ -126,7 +127,23 @@ export type BookingRules = {
   pin: PinSettings;
   /** v0.18.9 (contract.json#onTrip.stopWaiting): the category's price per minute at a middle stop at booking time (absent before v0.18.9). */
   stopWaitPerMin?: Money;
+  /** v0.18.10 (contract.json#finish.earlyEnd.driver): the zone's re-price limits at booking time (absent before v0.18.10). */
+  earlyEnd?: EarlyEndSettings;
 };
+export type EarlyEndSettings = { repriceOverKm: number; repriceOverMin: number };
+const EARLY_END = contract as unknown as { configDefaults: { earlyEnd: EarlyEndSettings }; finish: { earlyEnd: { settings: { ranges: Record<keyof EarlyEndSettings, [number, number]> } } } };
+const EARLY_END_DEFAULTS = EARLY_END.configDefaults.earlyEnd;
+const EARLY_END_RANGES = EARLY_END.finish.earlyEnd.settings.ranges;
+/** DriverAppConfig.cancelFees.earlyEnd of a driver document; a missing or out-of-range number takes the default (2 km, 8 min). */
+export function earlyEndSettingsOf(doc: unknown): EarlyEndSettings {
+  const e = (doc as { cancelFees?: { earlyEnd?: Record<string, unknown> } } | undefined)?.cancelFees?.earlyEnd;
+  const pick = (k: keyof EarlyEndSettings) => {
+    const v = e?.[k];
+    const [lo, hi] = EARLY_END_RANGES[k];
+    return typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : EARLY_END_DEFAULTS[k];
+  };
+  return { repriceOverKm: pick("repriceOverKm"), repriceOverMin: pick("repriceOverMin") };
+}
 export type PinSettings = { required: boolean; maxAttempts: number; lockMinutes: number };
 const PIN_DEFAULTS = (contract as unknown as { configDefaults: { pickupPin: PinSettings } }).configDefaults.pickupPin;
 const intIn = (v: unknown, lo: number, hi: number, fallback: number) => (typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi ? v : fallback);
@@ -173,6 +190,7 @@ export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string
     cancelAfterArrivedIsNoShow: cancelAfterArrivedOf(docs.driver),
     maxPickupMoveMeters: validPickupMoveMeters(docs.driver?.booking?.maxPickupMoveMeters) ?? DEFAULT_MAX_PICKUP_MOVE_METERS,
     ...waitingAndPinOf(docs.driver, priced?.currency ?? (typeof docs.driver?.currency === "string" ? docs.driver.currency : null)),
+    earlyEnd: earlyEndSettingsOf(docs.driver),
   };
 }
 
@@ -293,13 +311,18 @@ async function kmOnBoard(ex: Executor, trip: TripRow, since: Date): Promise<numb
 
 /** What was driven (owner decisions 8, 19): the rider ends early, or the driver ends the trip on board. */
 async function drivenFare(ex: Executor, trip: TripRow, now: Date): Promise<Fare> {
+  return (await driven(ex, trip, now)).fare;
+}
+
+/** The driven fare with the km and minutes on board it was priced from. */
+async function driven(ex: Executor, trip: TripRow, now: Date): Promise<{ fare: Fare; km: number; minutes: number }> {
   const doc = await pricingOf(ex, trip);
   const since = trip.boarded_at ?? now;
   const km = Math.round((await kmOnBoard(ex, trip, since)) * 1000) / 1000;
   const minutes = Math.round(Math.max(0, now.getTime() - since.getTime()) / 600) / 100;
   const owed = outstandingLine(trip);
   const booked = Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0);
-  return priceFare(doc, {
+  const fare = priceFare(doc, {
     categoryId: trip.category_id,
     km,
     minutes,
@@ -307,6 +330,24 @@ async function drivenFare(ex: Executor, trip: TripRow, now: Date): Promise<Fare>
     surgeMultiplier: Number(trip.surge_multiplier),
     endEarly: { kmDriven: km, minutesOnBoard: minutes, bookedFare: { amountMinor: booked, currency: trip.currency } },
   });
+  return { fare, km, minutes };
+}
+
+/**
+ * v0.18.10 (owner G8 Q2, contract.json#finish.earlyEnd): the driven fare's columns PLUS the paid waiting at the middle
+ * stops (fee and minutes are kept on every early end).
+ */
+async function drivenColumns(ex: Executor, trip: TripRow, fare: Fare, now: Date) {
+  const base = fareColumns(trip, fare);
+  const asDriven = { ...trip, fare_minor: String(base.fare_minor), fare_lines: fare.fareLines, driver_earnings_minor: String(base.driver_earnings_minor) } as TripRow;
+  return (await withStopWaiting(ex, asDriven, now)) ?? base;
+}
+
+/** The re-price limits of a trip: kept at booking (v0.18.10), else the zone's live driver document. */
+async function earlyEndOf(ex: Executor, trip: TripRow): Promise<EarlyEndSettings> {
+  const kept = (trip.booking_rules as Partial<BookingRules> | null)?.earlyEnd;
+  if (kept) return earlyEndSettingsOf({ cancelFees: { earlyEnd: kept } });
+  return earlyEndSettingsOf((await liveDocument(ex, "driver_app_config", trip.zone_id))?.document);
 }
 
 /** The driver's latest fix is farther than COMPLETE_NEAR_DROPOFF_METERS from the drop-off (no fix: not early). */
@@ -322,12 +363,13 @@ export function scaledFare(trip: TripRow, fareMinor: number) {
   const before = Number(trip.fare_minor);
   const earnings = before > 0 ? Math.round((Number(trip.driver_earnings_minor ?? 0) * fareMinor) / before) : 0;
   const pickupPay = Number(trip.pickup_pay_minor ?? 0);
+  const lines = [...((trip.fare_lines as FareLine[]) ?? []), ...(fareMinor !== before ? [{ code: "adjustment", amount: { amountMinor: fareMinor - before, currency: trip.currency } }] : [])];
   return {
     fare_minor: fareMinor,
     // The lines stay; one "adjustment" line carries the difference, so they still add up to the fare.
-    fare_lines: JSON.stringify([...((trip.fare_lines as FareLine[]) ?? []), ...(fareMinor !== before ? [{ code: "adjustment", amount: { amountMinor: fareMinor - before, currency: trip.currency } }] : [])]),
+    fare_lines: JSON.stringify(lines),
     driver_earnings_minor: earnings,
-    commission_minor: fareMinor - earnings - pickupPay - Number(trip.driver_bonus_minor ?? 0),
+    commission_minor: commissionOf(fareMinor, lines, earnings, pickupPay, Number(trip.driver_bonus_minor ?? 0)),
   };
 }
 
@@ -357,7 +399,7 @@ async function withStopWaiting(ex: Executor, trip: TripRow, now: Date) {
   const total = Number(trip.fare_minor) + withStops.total.amountMinor - without.total.amountMinor;
   const driver = Number(trip.driver_earnings_minor) + withStops.driverEarnings.amountMinor - without.driverEarnings.amountMinor;
   const pickupPay = Number(trip.pickup_pay_minor ?? 0);
-  return { fare_minor: total, fare_lines: JSON.stringify(kept), driver_earnings_minor: driver, commission_minor: total - driver - pickupPay - Number(trip.driver_bonus_minor ?? 0) };
+  return { fare_minor: total, fare_lines: JSON.stringify(kept), driver_earnings_minor: driver, commission_minor: commissionOf(total, kept, driver, pickupPay, Number(trip.driver_bonus_minor ?? 0)) };
 }
 
 function fareColumns(trip: TripRow, fare: Fare) {
@@ -366,7 +408,7 @@ function fareColumns(trip: TripRow, fare: Fare) {
     fare_minor: fare.total.amountMinor,
     fare_lines: JSON.stringify(fare.fareLines),
     driver_earnings_minor: fare.driverEarnings.amountMinor,
-    commission_minor: fare.total.amountMinor - fare.driverEarnings.amountMinor - pickupPay - Number(trip.driver_bonus_minor ?? 0),
+    commission_minor: commissionOf(fare.total.amountMinor, fare.fareLines, fare.driverEarnings.amountMinor, pickupPay, Number(trip.driver_bonus_minor ?? 0)),
   };
 }
 
@@ -407,7 +449,7 @@ export async function releaseDriver(trx: Trx, driverId: string | null, now: Date
   if (blockedBy !== null) await markSetOffline(trx, driverId, blockedBy, {}, now);
 }
 
-export async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share" | "bonus" | "adjustment"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
+export async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share" | "bonus" | "adjustment" | "tip"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
   if (entry.amount === 0 && entry.kind !== "trip") return;
   await trx
     .insertInto("earnings_entries")
@@ -844,13 +886,14 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
 
   if (onboard) {
     // Ended on board: the rider pays for what was driven, in cash, like an early end (owner decision 8).
-    const fare = await drivenFare(trx, trip, now);
-    const wallet = await spendWallet(trx, trip, fare.total.amountMinor, now);
+    const money = await drivenColumns(trx, trip, await drivenFare(trx, trip, now), now);
+    const wallet = await spendWallet(trx, trip, money.fare_minor, now);
+    const info: EndInfo = { endedEarly: true, endedBy: "driver", reasonCode: body.reasonCode };
     const ended = await applyCommand(trx, trip, {
       command: "cancel",
       actor: "driver",
       now,
-      set: { ...fareColumns(trip, fare), cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: fare.total.amountMinor - wallet, wallet_applied_minor: wallet },
+      set: { ...money, cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet },
     });
     await creditTrip(trx, ended, now);
     await releaseDriver(trx, driverId, now);
@@ -898,7 +941,7 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
       accept_pickup_meters: null,
       pickup_pay_minor: 0,
       driver_earnings_minor: earnings,
-      commission_minor: Number(trip.fare_minor) - earnings - Number(trip.driver_bonus_minor ?? 0),
+      commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, earnings, 0, Number(trip.driver_bonus_minor ?? 0)),
       wallet_applied_minor: 0,
       search_step: null,
       ...(input.exclude ? { cancelled_driver_ids: sql<string[]>`array_append(cancelled_driver_ids, ${input.exclude})` } : {}),
@@ -922,15 +965,19 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
   if (!ONBOARD.includes(trip.status)) {
     throw new ApiError("invalid_transition", `A rider cannot end_early a trip that is ${trip.status}.`, { projection: tripProjection(trip, "rider") });
   }
-  const fare = await drivenFare(trx, trip, now);
-  const wallet = await spendWallet(trx, trip, fare.total.amountMinor, now);
-  const cancellation = { actor: "rider", reasonCode: body.reasonCode ?? "something_else", at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
+  // v0.18.10 (owner G8 Q1/Q2): what was driven plus the paid waiting at the stops.
+  const money = await drivenColumns(trx, trip, await drivenFare(trx, trip, now), now);
+  const wallet = await spendWallet(trx, trip, money.fare_minor, now);
+  const reasonCode = body.reasonCode ?? "something_else";
+  const cancellation = { actor: "rider", reasonCode, at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
+  const info: EndInfo = { endedEarly: true, endedBy: "rider", reasonCode };
   const ended = await applyCommand(trx, trip, {
     command: "end_early",
     actor: "rider",
     now,
-    // An owed fee the trip carried stays owed: the trip did not complete (§3.7).
-    set: { ...fareColumns(trip, fare), cancellation: JSON.stringify(cancellation), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: fare.total.amountMinor - wallet, wallet_applied_minor: wallet, rating_status: "pending" },
+    // An owed fee the trip carried stays owed: the trip did not complete (§3.7). v0.18.10 (owner G8 Q1): the driver gets
+    // the normal finish (TripProjection.finish) and rates the rider.
+    set: { ...money, cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, ended, now);
   await releaseDriver(trx, trip.driver_id, now);
@@ -958,26 +1005,40 @@ export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
  */
 async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin", adminFare: Money | undefined, now: Date) {
   const early = adminFare === undefined && actor === "driver" && (await endedBeforeDropoff(ex, trip));
-  const measured = early ? await drivenFare(ex, trip, now) : null;
-  // Only when it is less than booked: at the cap the booked fare and its lines stand as they are.
-  const driven = measured !== null && measured.total.amountMinor < Number(trip.fare_minor) ? measured : null;
-  // v0.7.1 (§3.8): at the drop-off the waiting at the middle stops is added, from each arrival to leaving.
-  const stopped = !early && adminFare === undefined ? await withStopWaiting(ex, trip, now) : null;
-  const fare = adminFare?.amountMinor ?? driven?.total.amountMinor ?? stopped?.fare_minor ?? Number(trip.fare_minor);
-  const money: { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number } = adminFare ? scaledFare(trip, fare) : driven ? fareColumns(trip, driven) : (stopped ?? {});
-  return { early, fare, money };
+  // v0.7.1 (§3.8): the waiting at the middle stops is added, from each arrival to leaving. v0.18.10 (owner G8 Q2): also
+  // when the driver ends early.
+  const stopped = adminFare === undefined ? await withStopWaiting(ex, trip, now) : null;
+  let info: EndInfo = { endedEarly: false };
+  let money: FrozenMoney = adminFare ? scaledFare(trip, adminFare.amountMinor) : (stopped ?? {});
+  if (early) {
+    const measured = await driven(ex, trip, now);
+    const limits = await earlyEndOf(ex, trip);
+    // How much shorter than booked (never negative): the booked road km and minutes against what was driven on board.
+    const shortKm = Math.round(Math.max(0, (trip.distance_meters ?? 0) / 1000 - measured.km) * 100) / 100;
+    const shortMin = Math.round(Math.max(0, (trip.duration_seconds ?? 0) / 60 - measured.minutes) * 100) / 100;
+    // A new price only when more than repriceOverKm or repriceOverMin shorter, and only when it is less than booked
+    // (at the cap the booked fare and its lines stand as they are).
+    const repriced = (shortKm > limits.repriceOverKm || shortMin > limits.repriceOverMin) && measured.fare.total.amountMinor < Number(trip.fare_minor);
+    if (repriced) money = await drivenColumns(ex, trip, measured.fare, now);
+    info = { endedEarly: true, endedBy: "driver", reasonCode: "ended_before_dropoff", repriced, shortKm, shortMin };
+  }
+  const fare = money.fare_minor ?? Number(trip.fare_minor);
+  return { early, fare, money: { ...money, end_info: JSON.stringify(info) } as FrozenMoney, info };
 }
 
 /** contract v0.18.1 §26: how long a preview's price holds. */
 export const PREVIEW_FREEZE_SECONDS = (contract as unknown as { completePreview: { freezeSeconds: number } }).completePreview.freezeSeconds;
 
-type FrozenMoney = { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number };
+type FrozenMoney = { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number; end_info?: string };
 
 /** The CompletePreview body of a frozen price. */
 function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; early: boolean; fare: number; wallet: number; money: FrozenMoney }) {
   const lines = row.money.fare_lines !== undefined ? (JSON.parse(row.money.fare_lines) as FareLine[]) : ((trip.fare_lines as FareLine[]) ?? []);
   const sum = (amountMinor: number): Money => ({ amountMinor, currency: trip.currency });
   const earnings = row.money.driver_earnings_minor ?? Number(trip.driver_earnings_minor ?? 0);
+  const info = row.money.end_info !== undefined ? (JSON.parse(row.money.end_info) as EndInfo) : null;
+  // v0.18.10 (owner G8 Q3): the same one number the finished screen shows (incl. pickup pay, bonus, Movera's changes).
+  const asEnded = { ...trip, driver_earnings_minor: String(earnings) };
   return {
     previewId: row.previewId,
     expiresAt: row.expiresAt.toISOString(),
@@ -985,7 +1046,10 @@ function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; e
     total: sum(row.fare),
     cashDue: sum(row.fare - row.wallet),
     driverEarnings: sum(earnings),
+    driverTotal: sum(driverTotalOf(asEnded)),
+    earningsBreakdown: earningsLinesOf(asEnded).map((l) => ({ code: l.code, amount: sum(l.amountMinor) })),
     earlyEnd: row.early,
+    ...(info?.endedEarly ? { repriced: info.repriced === true, shortKm: info.shortKm ?? 0, shortMin: info.shortMin ?? 0 } : {}),
     fareLines: lines,
   };
 }
@@ -1067,13 +1131,15 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
   if (problem !== null) throw badRequest(`The rating is not valid: ${problem}.`, "invalid_body");
   const rating = body as RatingBody;
   if (!rating.skip && rating.stars === undefined) throw badRequest("Give 1 to 5 stars, or skip.", "stars_missing");
-  if (rating.tip) throw badRequest("Tips are not available yet.", "tips_not_available");
+  // v0.18.10 (contract.json#finish.tips): the rider's tip is given by the rating route after the rating (giveTip).
+  if (rating.tip && who.actor !== "rider") throw badRequest("Only the rider tips.", "tip_not_allowed");
   // contract v0.9.0: tags from the fixed list for this rater (contract.json#ratings.tags).
   if (!rating.skip) checkTags(who.actor, rating.tags ?? []);
   const trip = await lockOwnTrip(trx, tripId, who);
   const allowed =
     trip.status === "completed" ||
-    (who.actor === "rider" && trip.status === "cancelled_by_rider" && trip.ended_by_command === "end_early");
+    // v0.18.10 (owner G8 Q1): after the rider's early end both sides rate.
+    (trip.status === "cancelled_by_rider" && trip.ended_by_command === "end_early");
   const column = who.actor === "rider" ? "rating_status" : "driver_rating_status";
   if (!allowed || trip[column] !== "pending") {
     throw new ApiError("invalid_transition", allowed ? "This trip was already rated." : "This trip cannot be rated.", { reason: allowed ? "already_rated" : "rating_not_allowed", projection: tripProjection(trip, who.actor) });
@@ -1123,7 +1189,7 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
            coalesce(sum(amount_minor) FILTER (WHERE kind = 'fee_share'), 0) AS fees,
            coalesce(sum(amount_minor) FILTER (WHERE kind = 'tip'), 0) AS tips,
            coalesce(sum(amount_minor) FILTER (WHERE kind = 'adjustment'), 0) AS adjustments,
-           coalesce(sum(cash_minor) FILTER (WHERE kind = 'trip'), 0) AS cash
+           coalesce(sum(cash_minor) FILTER (WHERE kind IN ('trip', 'tip')), 0) AS cash
       FROM earnings_entries
      WHERE driver_id = ${driverId} AND at >= ${from} AND at < ${to}
      GROUP BY 1 ORDER BY 1`.execute(ex);

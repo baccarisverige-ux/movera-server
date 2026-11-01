@@ -1,5 +1,7 @@
 import type { TripRow } from "../db/tripLog.js";
 import { tripTerms } from "./ride.js";
+import { contract } from "../contract/contract.js";
+import { debtOf } from "../rules/commission.js";
 
 /**
  * TripProjection (contract §2) from a trips row, per viewer: the rider never sees the driver's money
@@ -51,6 +53,10 @@ export function hideDriverMoney(projection: Record<string, unknown>): Record<str
   without("waiting", ["noShowDriverShare"]);
   without("terms", ["noShowDriverSharePct", "cancelDriverSharePct"]);
   without("routeChange", ["driverEarnings", "earningsDifference"]);
+  // v0.18.10 (contract.json#finish): the driver's one number, Movera's changes, the old debt and who gets what.
+  without("finish", ["driverTotal", "earningsBreakdown"]);
+  without("tip", ["driverShare"]);
+  for (const key of ["driverTotal", "earningsBreakdown", "driverAdjustments", "debtCollected", "moneySplit"]) delete out[key];
   delete out["adminFlag"];
   delete out["pinAttempts"];
   delete out["pinBlocked"];
@@ -67,13 +73,74 @@ export function hideReversalDetails(out: Record<string, unknown>): void {
 
 /** v0.18.8 (contract.json#arrivedWaiting.pin): the driver never sees the rider's PIN nor the tries count. */
 export function hidePinFromDriver(out: Record<string, unknown>): Record<string, unknown> {
-  const { pickupPin: _p, pinAttempts: _a, pinBlocked: _b, adminFlag: _f, ...rest } = out;
+  // v0.18.10: "who gets what" (moneySplit) is the admin's.
+  const { pickupPin: _p, pinAttempts: _a, pinBlocked: _b, adminFlag: _f, moneySplit: _m, ...rest } = out;
+  void _m;
   void _f;
   void _b;
   void _p;
   void _a;
   hideReversalDetails(rest);
   return rest;
+}
+
+
+/* ---------------------------------------------------------------- v0.18.10 (contract.json#finish) */
+
+const SOS = (contract as unknown as { safety: { sos: { riderStatuses: string[]; driverStatuses: string[] } } }).safety.sos;
+const SOS_RIDER = new Set(SOS.riderStatuses);
+const SOS_DRIVER = new Set(SOS.driverStatuses);
+
+export type EndInfo = { endedEarly: boolean; endedBy?: "rider" | "driver"; reasonCode?: string; repriced?: boolean; shortKm?: number; shortMin?: number };
+
+/** What ended the trip (trips.end_info, set at the end; older trips: from the ending command). */
+export function endInfoOf(trip: Pick<TripRow, "end_info" | "ended_by_command" | "cancellation" | "boarded_at">): EndInfo {
+  const kept = trip.end_info as EndInfo | null;
+  if (kept && typeof kept === "object") return kept;
+  const reason = (trip.cancellation as { reasonCode?: string } | null)?.reasonCode;
+  if (trip.ended_by_command === "end_early") return { endedEarly: true, endedBy: "rider", ...(reason ? { reasonCode: reason } : {}) };
+  if (trip.ended_by_command === "cancel" && trip.boarded_at !== null) return { endedEarly: true, endedBy: "driver", ...(reason ? { reasonCode: reason } : {}) };
+  return { endedEarly: false };
+}
+
+type MoneyRow = Pick<TripRow, "driver_earnings_minor" | "pickup_pay_minor" | "driver_bonus_minor" | "tip" | "driver_adjustments_minor">;
+const tipMinor = (row: Pick<TripRow, "tip">) => Number((row.tip as { amount?: Money } | null)?.amount?.amountMinor ?? 0);
+
+/** contract.json#finish.driverMoney (owner G8 Q3): the driver's one number for a trip and its lines (trip line always). */
+export function earningsLinesOf(row: MoneyRow): Array<{ code: string; amountMinor: number }> {
+  const lines = [
+    { code: "trip", amountMinor: Number(row.driver_earnings_minor ?? 0) },
+    { code: "pickup_pay", amountMinor: Number(row.pickup_pay_minor ?? 0) },
+    { code: "bonus", amountMinor: Number(row.driver_bonus_minor ?? 0) },
+    { code: "tip", amountMinor: tipMinor(row) },
+    { code: "adjustment", amountMinor: Number(row.driver_adjustments_minor ?? 0) },
+  ];
+  return lines.filter((l) => l.code === "trip" || l.amountMinor !== 0);
+}
+export const driverTotalOf = (row: MoneyRow): number => earningsLinesOf(row).reduce((sum, l) => sum + l.amountMinor, 0);
+
+/** An ended trip with a fare the driver collected or the rider paid (complete, the rider's early end, a driver cancel on board). */
+const FINISH_COMMANDS = new Set(["complete", "end_early"]);
+function finishOf(row: TripRow, viewer: Viewer): Record<string, unknown> | null {
+  if (row.ended_at === null) return null;
+  const onboardCancel = row.ended_by_command === "cancel" && row.boarded_at !== null && row.payment_status !== null;
+  if (!FINISH_COMMANDS.has(row.ended_by_command ?? "") && !onboardCancel) return null;
+  const currency = row.currency;
+  const fare = Number(row.fare_minor);
+  const end = endInfoOf(row);
+  const rating = viewer === "driver" ? row.driver_rating_status : row.rating_status;
+  return {
+    endedEarly: end.endedEarly,
+    ...(end.endedBy ? { endedBy: end.endedBy } : {}),
+    ...(end.reasonCode ? { reasonCode: end.reasonCode } : {}),
+    ...(end.repriced !== undefined ? { repriced: end.repriced } : {}),
+    total: { amountMinor: fare, currency },
+    cashToCollect: { amountMinor: Math.max(0, fare - Number(row.wallet_applied_minor ?? 0)), currency },
+    ...(viewer !== "rider"
+      ? { driverTotal: { amountMinor: driverTotalOf(row), currency }, earningsBreakdown: earningsLinesOf(row).map((l) => ({ code: l.code, amount: { amountMinor: l.amountMinor, currency } })) }
+      : {}),
+    ratingAllowed: rating === "pending",
+  };
 }
 
 export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number; now?: Date } = {}): Record<string, unknown> {
@@ -142,6 +209,36 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     const bonus = money(row.driver_bonus_minor, currency);
     if (bonus && bonus.amountMinor > 0) projection["driverBonus"] = bonus;
   }
+  // v0.18.10 (contract.json#finish): the tip, the finish block, the driver's one number, the old debt and "who gets what".
+  if (row.tip) {
+    const { driverShare, ...forRider } = row.tip as Record<string, unknown>;
+    projection["tip"] = viewer === "rider" ? forRider : { ...forRider, driverShare };
+  }
+  const finish = finishOf(row, viewer);
+  if (finish) projection["finish"] = finish;
+  if (viewer !== "rider" && row.driver_id) {
+    projection["driverTotal"] = { amountMinor: driverTotalOf(row), currency };
+    projection["earningsBreakdown"] = earningsLinesOf(row).map((l) => ({ code: l.code, amount: { amountMinor: l.amountMinor, currency } }));
+    const adjustments = Number(row.driver_adjustments_minor ?? 0);
+    if (adjustments !== 0) projection["driverAdjustments"] = { amountMinor: adjustments, currency };
+  }
+  const debt = debtOf(lines);
+  if (viewer !== "rider" && debt > 0) projection["debtCollected"] = { amountMinor: debt, currency };
+  if (viewer === "admin") {
+    const refunded = Number(row.refunded_minor ?? 0);
+    const tip = tipMinor(row);
+    projection["moneySplit"] = {
+      riderPaid: { amountMinor: Number(row.fare_minor) + tip - refunded, currency },
+      driverTotal: { amountMinor: row.driver_id ? driverTotalOf(row) : 0, currency },
+      movera: { amountMinor: Number(row.commission_minor ?? 0), currency },
+      debtCollected: { amountMinor: debt, currency },
+      ...(tip > 0 ? { tip: { amountMinor: tip, currency } } : {}),
+      refunded: { amountMinor: refunded, currency },
+    };
+  }
+  // v0.18.10 (owner G8 Q4): SOS only once a driver is assigned (safety.sos.*Statuses); "Call 112" is always there.
+  if (viewer === "rider") projection["sosAvailable"] = SOS_RIDER.has(row.status);
+  if (viewer === "driver") projection["sosAvailable"] = SOS_DRIVER.has(row.status);
   // The wallet pays first; the driver collects the rest in cash (shown once the wallet covers part of it).
   const wallet = Number(row.wallet_applied_minor ?? 0);
   if (wallet > 0) {
