@@ -346,6 +346,8 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   await trx.updateTable("searches").set({ state: JSON.stringify(planned.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
   const round = planned.round;
   if (round.type === "wait") {
+    // A wait is radar.seconds (exclusive.seconds with Radar off), contract.json ranges radar.seconds 5–120: 0 s is not a
+    // contract value and would spin the round timer, so the same guard applies (checker M2, 2026-11-01).
     await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(Math.min(now.getTime() + positiveSeconds(round.seconds, 15) * 1000, search.end_at.getTime())), payload: {} });
     return;
   }
