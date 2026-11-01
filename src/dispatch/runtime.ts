@@ -138,6 +138,14 @@ async function freeDriversInZone(ex: Executor, zoneId: string, now: Date): Promi
 
 type Pool = { candidates: Candidate[]; meta: Map<string, { km: number; etaSeconds: number; meters: number }> };
 
+/** v0.18.9: of `zoneIds`, those with the same country and currency as `zoneId` (neighbours never cross a border). */
+async function sameCountryZones(trx: Trx, zoneId: string, zoneIds: string[]): Promise<string[]> {
+  const home = await trx.selectFrom("zones").select(["country", "currency"]).where("zone_id", "=", zoneId).executeTakeFirst();
+  if (!home) return [];
+  const rows = await trx.selectFrom("zones").select("zone_id").where("zone_id", "in", zoneIds).where("country", "=", home.country).where("currency", "=", home.currency).execute();
+  return rows.map((r) => r.zone_id);
+}
+
 /** Drivers who may get an offer now, with what the score needs (contract §3.6; stale ones are left out, §12). */
 async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Date): Promise<Pool> {
   const pickup = trip.pickup as Place;
@@ -157,7 +165,9 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
   const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
   // v0.18.9: with neighbours on, drivers of the listed zones are candidates too (the engine asks them from afterStep).
-  const neighbourZones = doc.neighbours?.on ? doc.neighbours.zoneIds.filter((z) => z !== trip.zone_id) : [];
+  // Only zones of the same country and currency as the trip zone may lend drivers (a SE zone never borrows FR).
+  const listed = doc.neighbours?.on ? doc.neighbours.zoneIds.filter((z) => z !== trip.zone_id) : [];
+  const neighbourZones = listed.length ? await sameCountryZones(trx, trip.zone_id, listed) : [];
   for (const d of rows) {
     const own = d.zone_ids.includes(trip.zone_id);
     const neighbour = !own && d.zone_ids.some((z) => neighbourZones.includes(z));

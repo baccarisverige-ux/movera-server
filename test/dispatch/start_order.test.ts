@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { contractJson } from "../../src/contract/contract.js";
-import { newSearch, planRound, rank, startMode, startOf, stepsOf, type Candidate, type DispatchDoc } from "../../src/dispatch/engine.js";
+import { newSearch, planRound, rank, startMode, startOf, stepsOf, type Candidate, type DispatchDoc, type Ranked } from "../../src/dispatch/engine.js";
 
 /** v0.18.9 (owner 2026-11-01, rule 16): per-zone start / order / distances. Defaults keep the behaviour before. */
 const base = contractJson<DispatchDoc>("fixtures/config/dispatch_document.json");
@@ -37,6 +37,19 @@ describe.each(zones)("dispatch start & order (%s)", (_country, doc) => {
     expect(near.round).toMatchObject({ type: "offer", kind: "exclusive", driverIds: ["D1"] });
     const far = planRound(d, newSearch(s.mode, s.pending), rank(d, drivers(2.6, 2.9), "economy"));
     expect(far.round).toMatchObject({ type: "offer", kind: "radar", driverIds: ["D1", "D2"] });
+  });
+
+  it("byDistance uses the NEAREST not-yet-asked driver, not the top-scored one", () => {
+    const d = with_(doc, { start: { mode: "byDistance", nearKm: 2 } });
+    const r = (id: string, km: number, score: number): Ranked => ({ id, km, score, fav: false, near: false, riding: false, out: false });
+    // Best score is 2.6 km away (outside nearKm), the nearest (1.2 km) has a lower score → Exclusive first.
+    const ranked = [r("BEST", 2.6, 90), r("NEAR", 1.2, 40)];
+    const res = planRound(d, newSearch("radar", "byDistance"), ranked);
+    expect(res.state.cur).toBe("exclusive");
+    expect(res.round).toMatchObject({ type: "offer", kind: "exclusive" });
+    // Best score near (1 km) but already asked; the next nearest is 2.8 km → Radar first.
+    const asked = { ...newSearch("radar", "byDistance"), asked: ["NEAR"] };
+    expect(planRound(d, asked, [r("FAR", 2.8, 90), r("NEAR", 1, 10)]).round).toMatchObject({ kind: "radar" });
   });
 
   it("both: Exclusive to the best and Radar to the next radar.drivers at once (best left out)", () => {

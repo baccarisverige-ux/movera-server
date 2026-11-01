@@ -199,10 +199,13 @@ export function planRound(doc: DispatchDoc, input: SearchState, ranked: Ranked[]
   const pending = s.pending;
   delete s.pending;
   if (pending === "byDistance") {
-    // v0.18.9: the best ranked driver in range within start.nearKm → Exclusive first, else Radar first.
+    // v0.18.9: the NEAREST eligible not-yet-asked driver (smallest km, not the top score) within start.nearKm →
+    // Exclusive first, else Radar first.
     const nearKm = doc.start?.nearKm ?? 2;
-    const best = inRange(doc, ranked, "exclusive", kmAt(doc, "exclusive", 0), 0).find((r) => !s.asked.includes(r.id));
-    s.cur = best && best.km <= nearKm ? "exclusive" : "radar";
+    const nearest = inRange(doc, ranked, "exclusive", kmAt(doc, "exclusive", 0), 0)
+      .filter((r) => !s.asked.includes(r.id))
+      .reduce<Ranked | undefined>((m, r) => (!m || r.km < m.km ? r : m), undefined);
+    s.cur = nearest && nearest.km <= nearKm ? "exclusive" : "radar";
   } else if (pending === "both") {
     // v0.18.9: Exclusive to the best driver and, at the same moment, Radar to the next radar.drivers (best left out).
     const exKm = kmAt(doc, "exclusive", 0);
