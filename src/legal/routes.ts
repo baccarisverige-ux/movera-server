@@ -48,7 +48,11 @@ export async function legalRoutes(app: FastifyInstance, deps: LegalDeps): Promis
   };
 
   // No bearer token: the sign-in screen opens the terms and the privacy policy (auth.beforeSignIn.allowed).
-  app.get(`${API_PREFIX}/legal/:country`, async (request) => legalForApps(deps.db, countryOf(request)));
+  // v0.18.8: ?zoneId= fills the Terms' {waitingRules} with that zone's live numbers.
+  app.get(`${API_PREFIX}/legal/:country`, async (request) => {
+    const zoneId = (request.query as { zoneId?: unknown } | undefined)?.zoneId;
+    return legalForApps(deps.db, countryOf(request), typeof zoneId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(zoneId) ? zoneId : undefined);
+  });
 
   app.get(`${API_PREFIX}/admin/legal/:country`, async (request) => {
     const who = await authenticateAdmin(request, guard, "settings.read");

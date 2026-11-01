@@ -1,6 +1,6 @@
 import type { Selectable } from "kysely";
 import type { TripEventsTable } from "../db/schema.js";
-import { hideDriverMoney, type Viewer } from "../trips/projection.js";
+import { hideDriverMoney, hidePinFromDriver, type Viewer } from "../trips/projection.js";
 
 /** The realtime envelope (contract §4, RealtimeEvent) for one stored event, as one viewer may see it. */
 
@@ -16,7 +16,9 @@ export function redactProjection(projection: Record<string, unknown>, viewer: Vi
     void _s;
     void _a;
     // Each side sees its own ratingStatus; the stored (admin) projection carries the driver's separately.
-    return driverRatingStatus === undefined ? rest : { ...rest, ratingStatus: driverRatingStatus };
+    // v0.18.8: never the rider's PIN or the tries count on the driver's stream.
+    const shown = hidePinFromDriver(rest);
+    return driverRatingStatus === undefined ? shown : { ...shown, ratingStatus: driverRatingStatus };
   }
   const out: Record<string, unknown> = {};
   // v0.18.7 (Q1): the rider never gets his own summary (it is the driver's view of him).

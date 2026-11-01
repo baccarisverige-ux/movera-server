@@ -12,7 +12,7 @@ import { sameExtras, asksSeatOutsideChildSeat } from "../rules/priceExtras.js";
 import { fixView } from "../drivers/service.js";
 import { haversineKm } from "../maps/routing.js";
 import { etaForRead } from "./eta.js";
-import { afterRiderCancel, bookingRulesFor, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
+import { afterRiderCancel, bookingRulesFor, newPin, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
 import type { PricingDocument } from "../rules/fare.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
@@ -85,6 +85,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
 
   const tripId = newId("trp", now.getTime());
   const driverEarnings = Number(quote.driver_earnings_minor);
+  // v0.8.0 (contract.json#bookingSnapshot): the trip keeps every rule of booking time; v0.18.8 also the zone's PIN switch.
+  const bookingRules = await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote));
   try {
     await trx
       .insertInto("trips")
@@ -124,7 +126,10 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
         pricing_version: quote.pricing_version,
         pricing_scope: quote.pricing_scope,
         // v0.8.0 (contract.json#bookingSnapshot): the trip keeps every rule of booking time.
-        booking_rules: JSON.stringify(await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote))),
+        booking_rules: JSON.stringify(bookingRules),
+        // v0.18.8 (contract.json#arrivedWaiting.pin): a 4-digit PIN the rider tells the driver before Start, when the zone asks for one.
+        pin_required: bookingRules.pin.required,
+        pickup_pin: bookingRules.pin.required ? newPin() : null,
         notes: body.notes ?? null,
         created_at: now,
         updated_at: now,
