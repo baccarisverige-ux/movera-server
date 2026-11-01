@@ -9,7 +9,7 @@ import { seedDriver } from "../../src/drivers/service.js";
 import { readEnv } from "../../src/env.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { EstimateRouter } from "../../src/maps/routing.js";
-import { isLongStop, kmFromRoute, RIDE_CHECK_SCAN, rideCheckScanHandler } from "../../src/safety/rideCheckServer.js";
+import { isLongStop, kmFromRoute, measuredFields, stoppedMinutes, RIDE_CHECK_SCAN, rideCheckScanHandler } from "../../src/safety/rideCheckServer.js";
 import { MAX_STOPS_DEFAULT, rideCheckSettingsOf, routeChangeSettingsOf } from "../../src/trips/onTripSettings.js";
 import { rideHandlers } from "../../src/trips/ride.js";
 import { adminSession } from "../support/admin.js";
@@ -169,6 +169,28 @@ describe("settings with defaults (owner rule 16, decision 2: 2 km)", () => {
     expect(served.rideCheck).toMatchObject({ offRouteKm: 4, stopMinutes: 2 });
     expect(served.routeChange).toMatchObject({ driverCanRefuse: false, answerSeconds: 60 });
   });
+
+  it("G7 live fix: the old finishFarFromDropoffKm is never served; endFarMeters is (driver and rider, SE and FR)", async () => {
+    await publish("driver_app_config", "Z001", driverDoc({ rideCheck: { endFarMeters: 800, finishFarFromDropoffKm: 3 } }));
+    await publish("driver_app_config", "FR-PC", driverDoc({ rideCheck: { finishFarFromDropoffKm: 3 } }, true));
+    for (const [zone, meters, path, who] of [["Z001", 800, "/driver/config", driverA.headers], ["Z001", 800, "/rider/config", rider], ["FR-PC", 500, "/rider/config", rider]] as const) {
+      {
+        const served = (await call(app, "GET", `${path}?zoneId=${zone}`, who)).json();
+        expect(served.rideCheck.finishFarFromDropoffKm, `${path} ${zone}`).toBeUndefined();
+        expect(served.rideCheck.endFarMeters, `${path} ${zone}`).toBe(meters);
+      }
+    }
+  });
+
+  it("G7 live fix: the measured value of each trigger", () => {
+    expect(measuredFields("long_stop", 2.4)).toEqual({ measured: { value: 2, unit: "min" } });
+    expect(measuredFields("off_route", 3.04)).toEqual({ measured: { value: 3, unit: "km" } });
+    expect(measuredFields("dropped_far", 812.6)).toEqual({ measured: { value: 813, unit: "m" } });
+    expect(measuredFields("possible_crash", 1)).toEqual({});
+    const t0 = Date.parse("2026-11-02T10:00:00Z");
+    const at = (s: number, d = 0) => ({ lat: 59.32 + d, lng: 18.07, measured_at: new Date(t0 + s * 1000) });
+    expect(stoppedMinutes([at(0, 0.01), at(30), at(90), at(210)])).toBe(3);
+  });
 });
 
 describe("item 5: max stops, enforced by the server (default 3, per zone)", () => {
@@ -230,7 +252,7 @@ describe("items 1 + 2: the server's ride check, asked to the rider AND the drive
     const incidents = await database.db.selectFrom("incidents").selectAll().where("trip_id", "=", trip.tripId).execute();
     expect(incidents).toHaveLength(1);
     expect(incidents[0]).toMatchObject({ kind: "ride_check", raised_by: "system", alarm: false });
-    expect(incidents[0]!.ride_check).toMatchObject({ by: "driver", answer: "no_answer", trigger: "off_route" });
+    expect(incidents[0]!.ride_check).toMatchObject({ by: "driver", answer: "no_answer", trigger: "off_route", answerSeconds: 60 });
     expect((await view(trip.tripId, rider)).rideCheck.alertedAt).toBeDefined();
     // The same reason does not ask again within repeatMinutes.
     await moveTo({ lat: 59.33, lng: 18.165 }, 30);
@@ -263,6 +285,10 @@ describe("items 1 + 2: the server's ride check, asked to the rider AND the drive
     }
     const rc = (await view(trip.tripId, rider)).rideCheck;
     expect(rc).toMatchObject({ trigger: "long_stop" });
+    const row = await database.db.selectFrom("ride_checks").select("position").where("trip_id", "=", trip.tripId).where("side", "=", "rider").executeTakeFirstOrThrow();
+    const pos = (typeof row.position === "string" ? JSON.parse(row.position) : row.position) as { measured: { value: number; unit: string } };
+    expect(pos.measured.unit).toBe("min");
+    expect(pos.measured.value).toBeGreaterThanOrEqual(2);
   });
 
   it("the admin switch off: no server checks in that zone", async () => {
@@ -283,6 +309,10 @@ describe("items 1 + 2: the server's ride check, asked to the rider AND the drive
     expect(done.statusCode, done.body).toBe(200);
     const rc = (await view(trip.tripId, rider)).rideCheck;
     expect(rc).toMatchObject({ trigger: "dropped_far" });
+    const far = await database.db.selectFrom("ride_checks").select("position").where("trip_id", "=", trip.tripId).where("check_id", "=", rc.checkId).executeTakeFirstOrThrow();
+    const farPos = (typeof far.position === "string" ? JSON.parse(far.position) : far.position) as { measured: { value: number; unit: string } };
+    expect(farPos.measured.unit).toBe("m");
+    expect(farPos.measured.value).toBeGreaterThan(500);
     const ok = await report(trip.tripId, "rider", rc.checkId, "dropped_far", "ok");
     expect(ok.statusCode, ok.body).toBe(200);
     // Ended trips get it as payment_updated (the apps' after-terminal gate lets it through).
@@ -298,6 +328,12 @@ describe("items 1 + 2: the server's ride check, asked to the rider AND the drive
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
     const list = (await call(app, "GET", `/admin/ride-checks?tripId=${trip.tripId}`, admin.headers)).json();
     expect(list.items.map((r: Doc) => [r.side, r.origin, r.trigger, r.zoneId])).toEqual([["rider", "server", "off_route", "Z001"], ["driver", "server", "off_route", "Z001"]].sort((a, b) => (a[0]! < b[0]! ? 1 : -1)));
+    // G7 live fix: the real km off the route and the zone's answer time (not "0 km", not a fixed 2 minutes).
+    for (const row of list.items as Doc[]) {
+      expect(row.measured).toMatchObject({ unit: "km" });
+      expect((row.measured as { value: number }).value).toBeGreaterThan(2);
+      expect(row.answerSeconds).toBe(120);
+    }
     expect((await call(app, "GET", `/admin/ride-checks?tripId=${trip.tripId}&answer=waiting`, admin.headers)).json().items).toHaveLength(2);
     expect((await call(app, "GET", `/admin/ride-checks?tripId=${trip.tripId}&answer=ok`, admin.headers)).json().items).toHaveLength(0);
     const paris = await adminSession(app, database.db, "safety", { zoneIds: ["FR-PC"], now: clock.now });

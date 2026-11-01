@@ -24507,7 +24507,10 @@ components:
     RideCheckRow:
       type: object
       description: 'v0.18.9: RideCheckRow { tripId, zoneId, side: rider | driver, checkId, origin: server | app, trigger,
-        shownAt?, answer?: ok | need_help, answeredAt?, noAnswerAt?, incidentId?, position?, createdAt }, newest first; nextCursor.'
+        shownAt?, answer?: ok | need_help, answeredAt?, noAnswerAt?, incidentId?, position?, measured?: { value, unit: min
+        | km | m } (server checks: minutes stopped, km off the route, metres from the drop-off when asked), answerSeconds?
+        (the zone''s noAnswerSeconds when asked), createdAt }, newest first; nextCursor. A served DriverAppConfig / RiderAppConfig
+        rideCheck never carries the pre-v0.18.9 finishFarFromDropoffKm; endFarMeters is the one setting.'
       required:
       - tripId
       - zoneId
