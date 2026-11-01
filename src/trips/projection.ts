@@ -26,7 +26,12 @@ type WaitingRow = { arrivedAt: string; freeUntil: string; noShowAt: string; char
  */
 function waitingNow(row: TripRow, waiting: WaitingRow, now: Date): WaitingRow & { chargedSecondsNow?: number; chargedSoFar?: Money; paidMinutes?: number } {
   // v0.18.8 (contract.json#arrivedWaiting.projection.waiting): whole paid minutes, rounded up, for the admin waiting box.
-  if (row.status !== "arrived") return { ...waiting, paidMinutes: Math.ceil(Math.max(0, waiting.chargedSeconds) / 60) };
+  // G6 live fix 7: a trip that ended while the driver was waiting (no-show / cancel from arrived) never boarded, so
+  // chargedSeconds stayed 0: count the paid seconds up to the end (freeUntil → ended_at).
+  if (row.status !== "arrived") {
+    const endedWaiting = waiting.chargedSeconds > 0 || row.boarded_at || !row.ended_at ? 0 : Math.max(0, Math.floor((new Date(row.ended_at).getTime() - Date.parse(waiting.freeUntil)) / 1000));
+    return { ...waiting, paidMinutes: Math.ceil(Math.max(0, waiting.chargedSeconds, endedWaiting) / 60) };
+  }
   const terms = tripTerms(row);
   const perMin = (terms?.["waitPerMin"] as Money | undefined)?.amountMinor;
   const seconds = Math.max(0, Math.floor((now.getTime() - Date.parse(waiting.freeUntil)) / 1000));

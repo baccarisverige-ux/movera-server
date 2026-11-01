@@ -502,6 +502,21 @@ describe("item 3: admin Reverse no-show (reason required, driver share kept unle
     const rows = (await call(app, "GET", "/admin/trips?status=rider_onboard", admin.headers)).json().items as Doc[];
     expect((rows.find((r) => r["tripId"] === tripId)!["waiting"] as Doc)["paidMinutes"]).toBe(2);
   });
+
+  it("live fix 7: a no-show after paid waiting keeps its paid minutes (freeUntil → no-show), and they stop growing", async () => {
+    const { tripId, version } = await accepted();
+    const arrived = await arriveAt(tripId, version);
+    const w = (await riderView(tripId)).waiting as Doc;
+    const paidSeconds = (Date.parse(w["noShowAt"] as string) - Date.parse(w["freeUntil"] as string)) / 1000 + 166;
+    await advance((Date.parse(w["noShowAt"] as string) - clock.now.getTime()) / 1000 + 166);
+    const res = await call(app, "POST", `/trips/${tripId}/no-show`, driverA.headers, { expectedVersion: arrived.version });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(paidSeconds).toBeGreaterThan(0);
+    expect(res.json().waiting.paidMinutes).toBe(Math.ceil(paidSeconds / 60));
+    await advance(600);
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    expect((await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json().waiting.paidMinutes).toBe(Math.ceil(paidSeconds / 60));
+  });
 });
 
 describe("item 4: the waiting / no-show / cancel rules in the Terms (SE + FR, sv / fr / en)", () => {
