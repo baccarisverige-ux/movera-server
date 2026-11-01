@@ -428,13 +428,19 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
     const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "received_at", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
     const fresh = fix && now.getTime() - fix.received_at.getTime() <= STALE_AFTER_SECONDS * 1000 && now.getTime() - fix.measured_at.getTime() <= DISPATCH_FIX_MAX_AGE_SECONDS * 1000;
     const already = await trx.selectFrom("offers").select("offer_id").where("trip_id", "=", trip.trip_id).where("driver_id", "=", driverId).where("status", "=", "open").where("expires_at", ">", now).executeTakeFirst();
-    if (already && d.account_status === "active" && d.online_status === "online" && !busy) {
+    if (already && kind === "radar" && d.account_status === "active" && d.online_status === "online" && !busy) {
       kept.push(offerView((await loadOffer(trx, already.offer_id))!, trip));
       continue;
     }
-    if (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh || already) {
+    if (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh || (already && kind === "radar")) {
       skipped.push({ driverId, name: d.first_name || driverId, reason: busy ? "driver_on_trip" : "driver_not_available" });
       continue;
+    }
+    if (already) {
+      // An exclusive assign replaces the driver's open (automatic) offer: withdrawn, then the admin's exclusive one.
+      const old = (await loadOffer(trx, already.offer_id, true))!;
+      await trx.updateTable("offers").set({ status: "withdrawn", version: old.version + 1, answered_at: now }).where("offer_id", "=", old.offer_id).execute();
+      queue.push(driverId, "offer_withdrawn", offerView({ ...old, status: "withdrawn", version: old.version + 1 }, trip));
     }
     const km = dispatchKm(fix!, trip.pickup as Place);
     const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600));
@@ -477,7 +483,7 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
 
 /** Open offers of a trip are sent again with the trip's new money (a bonus was added). */
 export async function refreshOpenOffers(trx: Trx, trip: TripRow, now: Date): Promise<void> {
-  const open = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip.trip_id).where("status", "=", "open").orderBy("offer_id").forUpdate().execute();
+  const open = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip.trip_id).where("status", "=", "open").where("expires_at", ">", now).orderBy("offer_id").forUpdate().execute();
   const queue = new FeedQueue();
   for (const offer of open) {
     await trx.updateTable("offers").set({ version: offer.version + 1 }).where("offer_id", "=", offer.offer_id).execute();

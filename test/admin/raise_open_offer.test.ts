@@ -134,10 +134,25 @@ describe.each(Object.entries(CASES))("admin raise + radar to a driver who alread
     const mixed = await radar(tripId, { driverIds: [drivers.A.id, drivers.B.id] });
     expect(mixed.statusCode, mixed.body).toBe(200);
     expect(mixed.json().offers).toHaveLength(1);
+    expect(mixed.json().skipped).toEqual([{ driverId: drivers.B.id, reason: "driver_not_available" }]);
     const before = await adminView(tripId);
     const none = await radar(tripId, { driverIds: [drivers.B.id], driverBonus: money(5000) });
     expect(none.statusCode).toBe(409);
     expect(none.json()).toMatchObject({ code: "conflict", reason: "driver_not_available" });
     expect((await adminView(tripId)).driverBonus ?? null).toEqual(before.driverBonus ?? null);
+  });
+
+  it("exclusive assign to the driver with the automatic offer replaces it: old withdrawn, one open exclusive admin offer with the bonus", async () => {
+    const { tripId, auto } = await bookWithAutoOffer(c);
+    const res = await call(app, "POST", `/admin/trips/${tripId}/assign`, admin, { expectedVersion: (await adminView(tripId)).version, driverId: drivers.A.id, driverBonus: money(5000) });
+    expect(res.statusCode, res.body).toBe(200);
+    const items = (await call(app, "GET", "/driver/offers", drivers.A.headers)).json().items;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "assigned", source: "admin", fare: money(auto.fare.amountMinor + 5000) });
+    expect(items[0].offerId).not.toBe(auto.offerId);
+    const rows = await database.db.selectFrom("offers").select(["offer_id", "status"]).where("trip_id", "=", tripId).where("driver_id", "=", drivers.A.id).orderBy("offer_id").execute();
+    expect(rows.map((r) => r.status).sort()).toEqual(["open", "withdrawn"]);
+    const kinds = (await database.db.selectFrom("offer_events").select("kind").where("driver_id", "=", drivers.A.id).orderBy("sequence", "desc").limit(2).execute()).map((e) => e.kind);
+    expect(kinds).toEqual(["offer_created", "offer_withdrawn"]);
   });
 });

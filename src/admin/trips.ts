@@ -160,13 +160,13 @@ export async function adminRadarGroup(trx: Trx, who: Principal, tripId: string, 
     if (body.driverIds.length === 0) throw badRequest("Give at least one driver.", "invalid_body");
     if (new Set(body.driverIds).size !== body.driverIds.length) throw badRequest("Each driver once.", "duplicate_driver");
     const sent = await offerTo(trx, who, tripId, body.driverIds, "radar", body, now);
-    return { groupId: sent.groupId!, tripId, offers: sent.offers, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "drivers" };
+    return { groupId: sent.groupId!, tripId, offers: sent.offers, skipped: sent.skipped, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "drivers" };
   }
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   if (body.groupId !== undefined) {
     const ids = await pickGroup(trx, who, trip, body.groupId, now);
     const sent = await offerTo(trx, who, tripId, ids, "radar", body, now, { detail: { driverGroupId: body.groupId } });
-    return { groupId: sent.groupId!, tripId, offers: sent.offers, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "group" };
+    return { groupId: sent.groupId!, tripId, offers: sent.offers, skipped: sent.skipped, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "group" };
   }
   const picked = await pickRadarZone(trx, who, trip, body.radarZoneId!, body.ruleId!, now);
   if (picked.ids.length === 0) {
@@ -178,7 +178,7 @@ export async function adminRadarGroup(trx: Trx, who: Principal, tripId: string, 
   }
   const sent = await offerTo(trx, who, tripId, picked.ids, "radar", body, now, { seconds: picked.rule.seconds, detail: { radarZoneId: body.radarZoneId, ruleId: body.ruleId, repeat: picked.rule.repeat } });
   const send = await startRadarZoneSend(trx, who, sent.trip, picked, sent.expiresAt, now);
-  return { groupId: sent.groupId!, tripId, offers: sent.offers, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "radar_zone", radarZoneSend: send };
+  return { groupId: sent.groupId!, tripId, offers: sent.offers, skipped: sent.skipped, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "radar_zone", radarZoneSend: send };
 }
 
 export async function adminStopRadarZone(trx: Trx, who: Principal, tripId: string, body: { note?: string }, now: Date) {
