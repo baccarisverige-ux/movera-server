@@ -139,7 +139,7 @@ async function freeDriversInZone(ex: Executor, zoneId: string, now: Date): Promi
 type Pool = { candidates: Candidate[]; meta: Map<string, { km: number; etaSeconds: number; meters: number }> };
 
 /** Drivers who may get an offer now, with what the score needs (contract §3.6; stale ones are left out, §12). */
-async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Date): Promise<Pool> {
+async function candidatesFor(trx: Trx, trip: TripRow, now: Date): Promise<Pool> {
   const pickup = trip.pickup as Place;
   // Lock the online drivers in id order before counting their open offers, so two rounds at once (two server
   // instances) cannot both give one free driver an Exclusive (lock order: trip, offers, then drivers by id).
@@ -187,6 +187,21 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
     pool.meta.set(d.driver_id, { km, etaSeconds, meters: Math.round(km * 1000) });
   }
   return pool;
+}
+
+/**
+ * Checker 2026-11-01 (admin money sent at once): the drivers the automatic dispatch could offer this trip now (same
+ * filter as a round: free, online, his zone and category, fresh position, no open Exclusive elsewhere, radar list not
+ * full, did not cancel it), less those who already declined or let an offer of this trip expire, nearest first.
+ */
+export async function freeCandidatesByDistance(trx: Trx, trip: TripRow, now: Date, maxKm = Infinity): Promise<string[]> {
+  const pool = await candidatesFor(trx, trip, now);
+  const missed = await trx.selectFrom("offers").select("driver_id").where("trip_id", "=", trip.trip_id).where("status", "in", ["declined", "expired"]).execute();
+  const gone = new Set(missed.map((m) => m.driver_id));
+  return pool.candidates
+    .filter((c) => !gone.has(c.driverId) && c.km <= maxKm)
+    .sort((a, b) => a.km - b.km || a.driverId.localeCompare(b.driverId))
+    .map((c) => c.driverId);
 }
 
 /* ---------------------------------------------------------------- offers */
@@ -343,7 +358,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     if (mode === null) return;
     state = newSearch(mode);
   }
-  const pool = await candidatesFor(trx, trip, doc, now);
+  const pool = await candidatesFor(trx, trip, now);
   const planned = planRound(doc, state, rank(doc, pool.candidates, trip.category_id));
   await trx.updateTable("searches").set({ state: JSON.stringify(planned.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
   const round = planned.round;

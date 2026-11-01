@@ -7,7 +7,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { lockTrip, type TripRow } from "../db/tripLog.js";
 import { dispatchKm } from "../dispatch/engine.js";
 import { addBonus, bonusFor, scopeCovers, sideOfKind, type BonusScope } from "../dispatch/bonusScope.js";
-import { refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
+import { freeCandidatesByDistance, refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
 import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
@@ -209,9 +209,8 @@ async function sendWithMoney(trx: Trx, trip: TripRow, scope: BonusScope, now: Da
   const open = await trx.selectFrom("offers").select(["driver_id", "kind"]).where("trip_id", "=", trip.trip_id).where("status", "=", "open").where("expires_at", ">", now).execute();
   const dispatch = await liveDocument<{ radius?: { steps?: number[] } }>(trx, "dispatch", trip.zone_id);
   const reachKm = Math.max(5, ...(dispatch?.document.radius?.steps ?? []));
-  const near = (await nearbyDrivers(trx, trip, { scope: "radius", radiusKm: reachKm }, now)).items
-    .filter((d) => d.onlineStatus === "online" && (d.categoryIds as string[]).includes(trip.category_id))
-    .map((d) => d.driverId);
+  // Same drivers the automatic dispatch would ask (checker 2026-11-01), nearest first.
+  const near = await freeCandidatesByDistance(trx, trip, now, reachKm);
   const send = async (ids: string[], kind: "assigned" | "radar") => {
     if (!ids.length) return [] as string[];
     try {
@@ -223,8 +222,11 @@ async function sendWithMoney(trx: Trx, trip: TripRow, scope: BonusScope, now: Da
     }
   };
   if (scopeCovers(scope, "exclusive") && !open.some((o) => sideOfKind(o.kind) === "exclusive")) {
-    const nearest = near[0];
-    if (nearest) done.exclusiveTo = (await send([nearest], "assigned"))[0] ?? null;
+    // The nearest free one; if he is refused (skipped), the next one by distance.
+    for (const id of near) {
+      done.exclusiveTo = (await send([id], "assigned"))[0] ?? null;
+      if (done.exclusiveTo) break;
+    }
   }
   if (scopeCovers(scope, "radar")) {
     const convert = scope === "radar" ? open.filter((o) => sideOfKind(o.kind) === "exclusive").map((o) => o.driver_id) : [];

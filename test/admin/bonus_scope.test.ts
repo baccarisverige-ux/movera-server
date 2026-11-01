@@ -165,6 +165,33 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     expect(res.json().driverBonusByKind).toMatchObject({ exclusive: money(800) });
   });
 
+  it("a driver who holds an open exclusive offer on another trip is skipped: the next nearest free driver gets the exclusive", async () => {
+    const { tripId, auto } = await bookWithAutoOffer(c);
+    const other = await database.db.selectFrom("trips").select("trip_id").where("trip_id", "!=", tripId).executeTakeFirstOrThrow();
+    const row = await database.db.selectFrom("offers").selectAll().where("offer_id", "=", auto.offerId).executeTakeFirstOrThrow();
+    await database.db.insertInto("offers").values({ ...row, offer_id: `${row.offer_id}x`, trip_id: other.trip_id, kind: "assigned" }).execute();
+    await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();
+    const res = await bonusPost(tripId, { amount: money(900), applyTo: "exclusive" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.B.id, radarTo: [] });
+    expect((await offersOf("B"))[0]).toMatchObject({ tripId, kind: "assigned", driverBonus: money(900) });
+  });
+
+  it("a driver who declined this ride is not offered it again (exclusive and radar)", async () => {
+    const { tripId, auto } = await bookWithAutoOffer(c);
+    const declined = await call(app, "POST", `/offers/${auto.offerId}/decline`, drivers.A.headers, { expectedVersion: auto.version });
+    expect(declined.statusCode, declined.body).toBe(200);
+    await database.db.updateTable("offers").set({ status: "withdrawn" }).where("trip_id", "=", tripId).where("status", "=", "open").execute();
+    const radar = await bonusPost(tripId, { amount: money(400), applyTo: "radar" });
+    expect(radar.statusCode, radar.body).toBe(200);
+    expect(radar.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [drivers.B.id] });
+    await database.db.updateTable("offers").set({ status: "withdrawn" }).where("trip_id", "=", tripId).where("status", "=", "open").execute();
+    const both = await bonusPost(tripId, { amount: money(400), applyTo: "both" });
+    expect(both.statusCode, both.body).toBe(200);
+    expect(both.json().moneySend).toEqual({ exclusiveTo: drivers.B.id, radarTo: [] });
+    expect(await offersOf("A")).toHaveLength(0);
+  });
+
   it("accept pays the kind the driver took: the radar driver gets the radar money, commission counts only that", async () => {
     const { tripId } = await bookWithAutoOffer(c);
     expect((await bonusPost(tripId, { amount: money(300), applyTo: "radar" })).statusCode).toBe(200);
