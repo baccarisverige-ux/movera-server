@@ -1,4 +1,5 @@
 import type { TripRow } from "../db/tripLog.js";
+import { bonusFor, priorityFor } from "../dispatch/bonusScope.js";
 import { tripTerms } from "./ride.js";
 import { contract } from "../contract/contract.js";
 import { debtOf } from "../rules/commission.js";
@@ -248,6 +249,13 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   // v0.18.10 (owner G8 Q4): SOS only once a driver is assigned (safety.sos.*Statuses); "Call 112" is always there.
   if (viewer === "rider") projection["sosAvailable"] = SOS_RIDER.has(row.status);
   if (viewer === "driver") projection["sosAvailable"] = SOS_DRIVER.has(row.status);
+  // Owner bug 2026-11-01: the admin sees the money (and badge) per kind of offer while the trip waits for a driver.
+  if (viewer === "admin" && (row.bonus_exclusive_minor !== null && row.bonus_exclusive_minor !== undefined || row.bonus_radar_minor !== null && row.bonus_radar_minor !== undefined || Number(row.driver_bonus_minor ?? 0) > 0 || row.priority)) {
+    projection["driverBonusByKind"] = {
+      exclusive: { amountMinor: bonusFor(row, "exclusive"), currency, priority: priorityFor(row, "exclusive") },
+      radar: { amountMinor: bonusFor(row, "radar"), currency, priority: priorityFor(row, "radar") },
+    };
+  }
   // The wallet pays first; the driver collects the rest in cash (shown once the wallet covers part of it).
   const wallet = Number(row.wallet_applied_minor ?? 0);
   if (wallet > 0) {

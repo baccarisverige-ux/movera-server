@@ -250,6 +250,11 @@ export interface TripsTable {
   pickup_pay_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   driver_bonus_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   priority: Generated<boolean>;
+  /** Owner bug 2026-11-01: the admin's money per kind of offer (NULL = driver_bonus_minor / priority for both). */
+  bonus_exclusive_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  bonus_radar_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  priority_exclusive: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
+  priority_radar: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
   payment_method: string;
   payment_method_id: string | null;
   payment_status: string | null;

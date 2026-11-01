@@ -1,5 +1,6 @@
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
 import { commissionOf } from "../rules/commission.js";
+import { bonusFor, priorityFor, scopeCovers, sideOfKind, type BonusScope } from "./bonusScope.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { etaHandler, startEta } from "../trips/eta.js";
 import { EstimateRouter } from "../maps/routing.js";
@@ -139,7 +140,7 @@ async function freeDriversInZone(ex: Executor, zoneId: string, now: Date): Promi
 type Pool = { candidates: Candidate[]; meta: Map<string, { km: number; etaSeconds: number; meters: number }> };
 
 /** Drivers who may get an offer now, with what the score needs (contract §3.6; stale ones are left out, §12). */
-async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Date): Promise<Pool> {
+async function candidatesFor(trx: Trx, trip: TripRow, now: Date): Promise<Pool> {
   const pickup = trip.pickup as Place;
   // Lock the online drivers in id order before counting their open offers, so two rounds at once (two server
   // instances) cannot both give one free driver an Exclusive (lock order: trip, offers, then drivers by id).
@@ -189,6 +190,21 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
   return pool;
 }
 
+/**
+ * Checker 2026-11-01 (admin money sent at once): the drivers the automatic dispatch could offer this trip now (same
+ * filter as a round: free, online, his zone and category, fresh position, no open Exclusive elsewhere, radar list not
+ * full, did not cancel it), less those who already declined or let an offer of this trip expire, nearest first.
+ */
+export async function freeCandidatesByDistance(trx: Trx, trip: TripRow, now: Date, maxKm = Infinity): Promise<string[]> {
+  const pool = await candidatesFor(trx, trip, now);
+  const missed = await trx.selectFrom("offers").select("driver_id").where("trip_id", "=", trip.trip_id).where("status", "in", ["declined", "expired"]).execute();
+  const gone = new Set(missed.map((m) => m.driver_id));
+  return pool.candidates
+    .filter((c) => !gone.has(c.driverId) && c.km <= maxKm)
+    .sort((a, b) => a.km - b.km || a.driverId.localeCompare(b.driverId))
+    .map((c) => c.driverId);
+}
+
 /* ---------------------------------------------------------------- offers */
 
 type OfferRow = Awaited<ReturnType<typeof loadOffer>>;
@@ -201,7 +217,8 @@ async function loadOffer(ex: Executor, offerId: string, lock = false) {
 export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<string, unknown> {
   const money = (minor: string | number) => ({ amountMinor: Number(minor), currency: offer.currency });
   // A Movera bonus is inside the fare and earnings the driver sees (contract.json#adminDispatch.driverBonus).
-  const bonus = Number(trip.driver_bonus_minor ?? 0);
+  // Owner bug 2026-11-01: only the money (and badge) the admin added for this kind of offer (bonusScope.ts).
+  const bonus = bonusFor(trip, offer.kind);
   return {
     offerId: offer.offer_id,
     tripId: offer.trip_id,
@@ -213,7 +230,7 @@ export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<s
     driverEarnings: money(Number(offer.driver_earnings_minor) + bonus),
     ...(bonus > 0 ? { driverBonus: money(bonus) } : {}),
     ...(Number(offer.pickup_pay_minor) > 0 ? { pickupPay: money(offer.pickup_pay_minor) } : {}),
-    priority: trip.priority,
+    priority: priorityFor(trip, offer.kind),
     source: offer.source,
     ...(offer.group_id ? { groupId: offer.group_id } : {}),
     pickup: trip.pickup,
@@ -342,7 +359,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     if (mode === null) return;
     state = newSearch(mode);
   }
-  const pool = await candidatesFor(trx, trip, doc, now);
+  const pool = await candidatesFor(trx, trip, now);
   const planned = planRound(doc, state, rank(doc, pool.candidates, trip.category_id));
   await trx.updateTable("searches").set({ state: JSON.stringify(planned.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
   const round = planned.round;
@@ -440,7 +457,15 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
     const fresh = fix && now.getTime() - fix.received_at.getTime() <= STALE_AFTER_SECONDS * 1000 && now.getTime() - fix.measured_at.getTime() <= DISPATCH_FIX_MAX_AGE_SECONDS * 1000;
     const already = await trx.selectFrom("offers").select("offer_id").where("trip_id", "=", trip.trip_id).where("driver_id", "=", driverId).where("status", "=", "open").where("expires_at", ">", now).executeTakeFirst();
     if (already && kind === "radar" && d.account_status === "active" && d.online_status === "online" && !busy) {
-      kept.push(offerView((await loadOffer(trx, already.offer_id))!, trip));
+      let mine = (await loadOffer(trx, already.offer_id))!;
+      if (mine.kind !== "radar") {
+        // Owner bug 2026-11-01: the admin sent him Radar, so his kept automatic exclusive offer becomes a radar one and
+        // shows the radar money (money is kept per kind of offer, bonusScope.ts).
+        await trx.updateTable("offers").set({ kind: "radar", version: mine.version + 1 }).where("offer_id", "=", mine.offer_id).execute();
+        mine = { ...mine, kind: "radar", version: mine.version + 1 };
+        queue.push(driverId, "offer_updated", offerView(mine, trip));
+      }
+      kept.push(offerView(mine, trip));
       continue;
     }
     if (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh || (already && kind === "radar")) {
@@ -492,15 +517,22 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   return { offers: made, kept, skipped: skipped.map(({ driverId, reason }) => ({ driverId, reason })), expiresAt, groupId };
 }
 
-/** Open offers of a trip are sent again with the trip's new money (a bonus was added). */
-export async function refreshOpenOffers(trx: Trx, trip: TripRow, now: Date): Promise<void> {
-  const open = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip.trip_id).where("status", "=", "open").where("expires_at", ">", now).orderBy("offer_id").forUpdate().execute();
+/**
+ * Open offers of a trip are sent again with the trip's new money (a bonus was added) — only the kinds the money is for
+ * (owner bug 2026-11-01: "Exclusive" money must not show on Radar offers). Answers how many of each kind were refreshed.
+ */
+export async function refreshOpenOffers(trx: Trx, trip: TripRow, now: Date, scope: BonusScope = "both"): Promise<{ exclusive: number; radar: number }> {
+  const all = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip.trip_id).where("status", "=", "open").where("expires_at", ">", now).orderBy("offer_id").forUpdate().execute();
+  const open = all.filter((offer) => scopeCovers(scope, sideOfKind(offer.kind)));
   const queue = new FeedQueue();
+  const counts = { exclusive: 0, radar: 0 };
   for (const offer of open) {
+    counts[sideOfKind(offer.kind)] += 1;
     await trx.updateTable("offers").set({ version: offer.version + 1 }).where("offer_id", "=", offer.offer_id).execute();
     queue.push(offer.driver_id, "offer_updated", offerView({ ...offer, version: offer.version + 1 }, trip));
   }
   await queue.flush(trx, now);
+  return counts;
 }
 
 /* ---------------------------------------------------------------- driver answers */
@@ -560,7 +592,10 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       driver_earnings_minor: earnings,
       pickup_pay_minor: pickupPay,
       // Movera keeps fare − driverEarnings − pickupPay (§3.2).
-      commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, earnings, pickupPay, Number(trip.driver_bonus_minor ?? 0)),
+      // The money the admin added for the kind of offer he took (owner bug 2026-11-01), not the other kind's.
+      driver_bonus_minor: bonusFor(trip, offer.kind),
+      priority: priorityFor(trip, offer.kind),
+      commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, earnings, pickupPay, bonusFor(trip, offer.kind)),
       driver_summary: JSON.stringify(summary),
       rider_summary: JSON.stringify(riderSummary),
       eta: null,
