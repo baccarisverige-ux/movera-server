@@ -7,6 +7,9 @@ ALTER TABLE trips ADD COLUMN IF NOT EXISTS pickup_pin char(4);
 ALTER TABLE trips ADD COLUMN IF NOT EXISTS pin_attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE trips ADD COLUMN IF NOT EXISTS pin_locked_until timestamptz;
 ALTER TABLE trips ADD COLUMN IF NOT EXISTS pin_verified_at timestamptz;
+-- Checker round 1 (M2): all wrong tries of the trip; at 3 x maxAttempts the PIN is blocked until an admin unlocks it.
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS pin_wrong_total integer NOT NULL DEFAULT 0;
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS pin_blocked boolean NOT NULL DEFAULT false;
 
 -- Reverse no-show: a fee already paid is refunded to the rider's wallet (status refunded).
 ALTER TABLE rider_fees DROP CONSTRAINT IF EXISTS rider_fees_status_check;

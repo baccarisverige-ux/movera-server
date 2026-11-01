@@ -262,6 +262,8 @@ export interface TripsTable {
   pin_attempts: Generated<number>;
   pin_locked_until: ColumnType<Date | null, Date | null | undefined, Date | null>;
   pin_verified_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  pin_wrong_total: Generated<number>;
+  pin_blocked: Generated<boolean>;
   config_versions: JsonDefault;
   distance_meters: ColumnType<number | null, number | null | undefined, number | null>;
   duration_seconds: ColumnType<number | null, number | null | undefined, number | null>;

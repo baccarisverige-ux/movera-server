@@ -8,7 +8,7 @@ import { parseBody } from "../http/validate.js";
 import { ApiError } from "../http/errors.js";
 import { tripProjection } from "./projection.js";
 import { stopCommand } from "./stops.js";
-import { checkPin, riderPin, verifyPin } from "./pin.js";
+import { checkPin, contractAtLeast, riderPin, verifyPin } from "./pin.js";
 import { completePreview, completeTrip, PriceChanged, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
 
 /** contract §3: the driver's trip commands, the rider's early end, ratings and the driver's earnings. */
@@ -19,7 +19,7 @@ const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Fix = z.object({ lat: z.number(), lng: z.number(), accuracy: z.number().min(0) }).passthrough();
 const Command = z.object({ expectedVersion: z.number().int().min(1), location: Fix.optional() });
 /** v0.18.8 (contract.json#arrivedWaiting.pin): board / start may carry the rider's PIN (or the token of /pin/verify). */
-const StepBody = Command.extend({ pin: z.string().regex(/^\d{4}$/).optional(), verifiedPinToken: z.string().max(200).optional() });
+const StepBody = Command.extend({ pin: z.string().regex(/^\d{4}$/).optional() });
 const Money = z.object({ amountMinor: z.number().int().min(0), currency: z.string().regex(/^[A-Z]{3}$/) });
 const CompleteBody = Command.extend({ cashCollected: Money.optional(), previewId: ID.optional() });
 const NoShowBody = Command.extend({ reasonCode: z.string().optional() });
@@ -51,9 +51,18 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
       const who = await authenticate(request, guard, ["driver"]);
       const id = tripId(request);
       const body = parseBody(StepBody, request.body);
-      // v0.18.8: the PIN is checked (and a wrong try counted) in its own transaction before the step.
-      if (body.pin !== undefined && (command === "board" || command === "start_trip")) await checkPin(deps.db, who.subjectId, id, body.pin, now());
-      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, body.expectedVersion, now(), body.location), "driver") }))).body;
+      // v0.18.8: the PIN is checked (and a wrong try counted) in its own transaction before the step. Checker round 1 (M4):
+      // a driver app older than contract 0.18.8 (no or a lower X-Contract-Version) has no PIN step: the check is skipped and logged.
+      const pinStep = command === "board" || command === "start_trip";
+      const pinAware = contractAtLeast(request.headers["x-contract-version"]);
+      let expected = body.expectedVersion;
+      if (pinStep && pinAware && body.pin !== undefined) {
+        const checked = await checkPin(deps.db, who.subjectId, id, body.pin, now());
+        // A right PIN bumped the version (L5): the step goes on from the version the driver saw + that bump.
+        if (checked?.bumped && checked.version === body.expectedVersion + 1) expected = checked.version;
+      }
+      if (pinStep && !pinAware) request.log.info({ tripId: id, driverId: who.subjectId }, "pin check skipped: driver app before contract 0.18.8");
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, expected, now(), body.location, { skipPin: pinStep && !pinAware }), "driver") }))).body;
     });
   }
 

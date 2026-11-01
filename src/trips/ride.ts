@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { checkTags } from "../admin/ratings.js";
 import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
 import { rideCheckHandlers } from "../safety/rideCheck.js";
@@ -512,7 +513,10 @@ async function spendWallet(trx: Trx, trip: TripRow, fareMinor: number, now: Date
 
 type StepCommand = "head_to_pickup" | "arrive" | "board" | "start_trip";
 
-export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place): Promise<TripRow> {
+/** A fresh 4-digit rider PIN (contract.json#arrivedWaiting.pin). */
+export const newPin = () => String(randomInt(0, 10_000)).padStart(4, "0");
+
+export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place, options: { skipPin?: boolean } = {}): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, expectedVersion, "driver");
   if (command === "arrive") {
@@ -556,7 +560,7 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     await scheduleTimer(trx, { kind: WAITING_NO_SHOW, refId: tripId, dueAt: new Date(waiting.noShowAt), payload: { arrivedAt: waiting.arrivedAt } });
     return applyCommand(trx, trip, { command, actor: "driver", now, set: { arrived_at: now, waiting: JSON.stringify(waiting) } });
   }
-  if ((command === "board" || command === "start_trip") && trip.pin_required && trip.pin_verified_at === null && ["arrived", "driver_to_pickup", "accepted"].includes(trip.status)) {
+  if ((command === "board" || command === "start_trip") && !options.skipPin && trip.pin_required && trip.pin_verified_at === null && ["arrived", "driver_to_pickup", "accepted"].includes(trip.status)) {
     // v0.18.8 (contract.json#arrivedWaiting.pin): the rider's PIN first (checked by checkPin before this transaction).
     throw new ApiError("invalid_transition", "Ask the rider for the 4-digit code first.", { reason: "pin_required", projection: tripProjection(trip, "driver") });
   }
@@ -875,6 +879,13 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
       // v0.18.7 (Q1, Q4): the next driver gets his own rider summary at accept; the ETA starts again with him.
       rider_summary: null,
       eta: null,
+      // Checker round 1 (H1): the PIN state belongs to one driver; a new driver gets a fresh PIN (the rider sees the new one).
+      pin_verified_at: null,
+      pin_attempts: 0,
+      pin_locked_until: null,
+      pin_wrong_total: 0,
+      pin_blocked: false,
+      ...(trip.pin_required ? { pickup_pin: newPin() } : {}),
       accept_pickup_meters: null,
       pickup_pay_minor: 0,
       driver_earnings_minor: earnings,

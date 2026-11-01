@@ -51,6 +51,7 @@ export function hideDriverMoney(projection: Record<string, unknown>): Record<str
   without("waiting", ["noShowDriverShare"]);
   without("terms", ["noShowDriverSharePct", "cancelDriverSharePct"]);
   delete out["pinAttempts"];
+  delete out["pinBlocked"];
   hideReversalDetails(out);
   return out;
 }
@@ -64,7 +65,8 @@ export function hideReversalDetails(out: Record<string, unknown>): void {
 
 /** v0.18.8 (contract.json#arrivedWaiting.pin): the driver never sees the rider's PIN nor the tries count. */
 export function hidePinFromDriver(out: Record<string, unknown>): Record<string, unknown> {
-  const { pickupPin: _p, pinAttempts: _a, ...rest } = out;
+  const { pickupPin: _p, pinAttempts: _a, pinBlocked: _b, ...rest } = out;
+  void _b;
   void _p;
   void _a;
   hideReversalDetails(rest);
@@ -108,7 +110,7 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     ...(viewer === "admin" ? { driverRatingStatus: row.driver_rating_status } : {}),
     pinRequired: row.pin_required,
     // v0.18.8: the PIN (rider and admin views; taken out for the driver below and on his stream) and whether it was given.
-    ...(row.pin_required && row.pickup_pin ? { pickupPin: row.pickup_pin, pinVerified: row.pin_verified_at !== null, pinAttempts: Number(row.pin_attempts ?? 0) } : {}),
+    ...(row.pin_required && row.pickup_pin ? { pickupPin: row.pickup_pin, pinVerified: row.pin_verified_at !== null, pinAttempts: Number(row.pin_attempts ?? 0), pinBlocked: row.pin_blocked === true } : {}),
     ...(row.driver_summary ? { driver: row.driver_summary } : {}),
     // v0.18.7 (Q1): the rider as the driver sees him; never in the rider's own view.
     ...(row.rider_summary && viewer !== "rider" ? { rider: row.rider_summary } : {}),

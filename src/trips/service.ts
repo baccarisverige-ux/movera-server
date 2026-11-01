@@ -1,4 +1,3 @@
-import { randomInt } from "node:crypto";
 import { appendTripEvent } from "../db/tripLog.js";
 import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { sql } from "kysely";
@@ -13,7 +12,7 @@ import { sameExtras, asksSeatOutsideChildSeat } from "../rules/priceExtras.js";
 import { fixView } from "../drivers/service.js";
 import { haversineKm } from "../maps/routing.js";
 import { etaForRead } from "./eta.js";
-import { afterRiderCancel, bookingRulesFor, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
+import { afterRiderCancel, bookingRulesFor, newPin, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
 import type { PricingDocument } from "../rules/fare.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
@@ -130,7 +129,7 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
         booking_rules: JSON.stringify(bookingRules),
         // v0.18.8 (contract.json#arrivedWaiting.pin): a 4-digit PIN the rider tells the driver before Start, when the zone asks for one.
         pin_required: bookingRules.pin.required,
-        pickup_pin: bookingRules.pin.required ? String(randomInt(0, 10_000)).padStart(4, "0") : null,
+        pickup_pin: bookingRules.pin.required ? newPin() : null,
         notes: body.notes ?? null,
         created_at: now,
         updated_at: now,

@@ -16,6 +16,7 @@ import { tripProjection } from "../trips/projection.js";
 import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver, scaledFare } from "../trips/ride.js";
 import { audit } from "./audit.js";
 import { creditWallet } from "../riders/wallet.js";
+import { adminUnlockPin } from "../trips/pin.js";
 import { registerApprovalHandler, runOrRequest, type PendingApproval } from "./approvals.js";
 import { resumTripDay } from "./kpis.js";
 
@@ -225,6 +226,7 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
   const takeBack = body.takeBackDriverShare === true;
   const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", trip.trip_id).forUpdate().executeTakeFirst();
   let feeStatus = cancellation["feeStatus"] as string | undefined;
+  let refunded = false;
   if (fee && fee.status === "owed") {
     const carrying = await trx.selectFrom("trips").select("trip_id").where("rider_id", "=", trip.rider_id).where("status", "not in", [...TERMINAL]).where(sql<boolean>`fare_lines @> '[{"code":"outstanding_fee"}]'::jsonb`).executeTakeFirst();
     if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; reverse it when that ride is over.", { reason: "fee_on_running_trip", projection: tripProjection(trip, "admin") });
@@ -234,7 +236,10 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
   } else if (fee && fee.status === "paid") {
     await creditWallet(trx, trip.rider_id, { amountMinor: Number(fee.amount_minor), currency: fee.currency }, trip.trip_id, now);
     await trx.updateTable("rider_fees").set({ status: "refunded", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
-    feeStatus = "refunded";
+    // Checker round 1 (M3): live 0.18.7 apps know only paid / owed / waived (statusWords.feeStatus): the wire says waived,
+    // refundedAt + refundedToWallet tell the money went back.
+    feeStatus = "waived";
+    refunded = true;
   }
   const share = Number(trip.driver_earnings_minor ?? 0);
   if (takeBack && share > 0 && trip.driver_id) {
@@ -242,10 +247,18 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
   }
   const earnings = takeBack ? 0 : share;
   const reversal = { at: now.toISOString(), by: who.subjectId, reason: body.reason, driverShareTakenBack: takeBack };
-  const next = { ...cancellation, ...(feeStatus ? { feeStatus } : {}), reversal };
+  const next = { ...cancellation, ...(feeStatus ? { feeStatus } : {}), ...(refunded ? { refundedAt: now.toISOString(), refundedToWallet: true } : {}), reversal };
   const done = await touchTrip(trx, trip, { cancellation: JSON.stringify(next), fare_minor: 0, fare_lines: JSON.stringify([]), driver_earnings_minor: earnings, commission_minor: -earnings }, now);
   await audit(trx, { adminId: who.subjectId, action: "trip.reverse_no_show", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { reason: body.reason, takeBackDriverShare: takeBack, feeStatus: feeStatus ?? null, driverShare: share }, at: now });
   await resumTripDay(trx, trip.trip_id, now);
+  return done;
+}
+
+/** v0.18.8 checker round 1 (M2): POST /admin/trips/{tripId}/pin/unlock { expectedVersion, reason } — audited trip.pin_unlock. */
+export async function adminPinUnlock(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; reason: string }, now: Date): Promise<TripRow> {
+  const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
+  const done = await adminUnlockPin(trx, trip, now);
+  await audit(trx, { adminId: who.subjectId, action: "trip.pin_unlock", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { reason: body.reason, wrongTotal: Number(trip.pin_wrong_total), blocked: trip.pin_blocked }, at: now });
   return done;
 }
 

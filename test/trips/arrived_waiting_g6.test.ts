@@ -123,7 +123,9 @@ async function forced(input: { pickup: typeof PARIS; dropoff: typeof PARIS; kind
   await database.db.updateTable("trips").set({ status: "driver_to_pickup", driver_id: driverA.id, accepted_at: clock.now, version: trip.version + 1 }).where("trip_id", "=", trip.tripId).execute();
   return { tripId: trip.tripId as string, version: (trip.version as number) + 1 };
 }
-const step = (tripId: string, path: string, version: number, body: Doc = {}) => call(app, "POST", `/trips/${tripId}/${path}`, driverA.headers, { expectedVersion: version, ...body });
+/** A 0.18.8 driver app (it reports its contract, so the server asks it for the PIN). */
+const NEW_APP = { "x-contract-version": "0.18.8" };
+const step = (tripId: string, path: string, version: number, body: Doc = {}, appHeaders: Record<string, string> = NEW_APP) => call(app, "POST", `/trips/${tripId}/${path}`, { ...driverA.headers, ...appHeaders }, { expectedVersion: version, ...body });
 const riderView = async (tripId: string) => (await call(app, "GET", `/trips/${tripId}`, rider)).json();
 const driverView = async (tripId: string) => (await call(app, "GET", `/trips/${tripId}`, driverA.headers)).json();
 const events = async (tripId: string, who = rider) => (await call(app, "GET", `/trips/${tripId}/events?after=0`, { ...who, accept: "application/json" })).json().items as Doc[];
@@ -320,7 +322,10 @@ describe("item 2: rider PIN before Start (per-zone admin switch, default off)", 
     expect((await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json().pinAttempts).toBe(1);
     const right = await step(tripId, "board", arrived.version, { pin });
     expect(right.statusCode, right.body).toBe(200);
-    expect(right.json()).toMatchObject({ status: "rider_onboard", pinVerified: true });
+    expect(right.json()).toMatchObject({ status: "rider_onboard", pinVerified: true, version: arrived.version + 2 });
+    // L5: the right PIN was its own version with a trip_projection, so the rider's pinVerified updates on the stream.
+    const verifiedEvent = (await events(tripId)).find((e) => e["version"] === arrived.version + 1)!;
+    expect((verifiedEvent["projection"] as Doc)["pinVerified"]).toBe(true);
     expect((await step(tripId, "start", right.json().version)).statusCode).toBe(200);
   });
 
@@ -339,7 +344,77 @@ describe("item 2: rider PIN before Start (per-zone admin switch, default off)", 
     const ok = await call(app, "POST", `/trips/${tripId}/pin/verify`, driverA.headers, { pin });
     expect(ok.statusCode, ok.body).toBe(200);
     expect(ok.json().verifiedPinToken.length).toBeGreaterThanOrEqual(16);
-    expect((await step(tripId, "board", arrived.version, { verifiedPinToken: ok.json().verifiedPinToken })).statusCode).toBe(200);
+    expect(ok.json().version).toBe(arrived.version + 1);
+    expect((await step(tripId, "board", ok.json().version)).statusCode).toBe(200);
+  });
+
+
+  it("checker H1: a new driver gets a fresh PIN state — verified / tries / lock cleared and the PIN rotated", async () => {
+    await publish("driver_app_config", "Z001", driverDoc({ pickupPin: { required: true } }));
+    const { tripId, version } = await accepted();
+    const arrived = await arriveAt(tripId, version);
+    const pin = (await riderView(tripId)).pickupPin as string;
+    const wrongPin = pin === "0000" ? "1111" : "0000";
+    await call(app, "POST", `/trips/${tripId}/pin/verify`, driverA.headers, { pin: wrongPin });
+    const ok = (await call(app, "POST", `/trips/${tripId}/pin/verify`, driverA.headers, { pin })).json();
+    const cancel = await call(app, "POST", `/trips/${tripId}/cancel`, driverA.headers, { expectedVersion: ok.version, reasonCode: "vehicle_issue_before_start" });
+    expect(cancel.statusCode, cancel.body).toBe(200);
+    void arrived;
+    const row = await database.db.selectFrom("trips").select(["pin_verified_at", "pin_attempts", "pin_wrong_total", "pin_locked_until", "pickup_pin", "driver_id"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ pin_verified_at: null, pin_attempts: 0, pin_wrong_total: 0, pin_locked_until: null, driver_id: null });
+    expect(row.pickup_pin).toMatch(/^\d{4}$/);
+    expect((await riderView(tripId)).pickupPin).toBe(row.pickup_pin);
+    expect((await riderView(tripId)).pinVerified).toBe(false);
+  });
+
+  it("checker M2: guesses only once arrived; 3 × maxAttempts wrong in all block the PIN until an admin unlocks it", async () => {
+    await publish("driver_app_config", "Z001", driverDoc({ pickupPin: { required: true, maxAttempts: 2, lockMinutes: 1 } }));
+    const { tripId, version } = await accepted();
+    const early = await call(app, "POST", `/trips/${tripId}/pin/verify`, driverA.headers, { pin: "1234" });
+    expect(early.statusCode).toBe(409);
+    expect(early.json().reason).toBe("pin_not_now");
+    const arrived = await arriveAt(tripId, version);
+    const pin = (await riderView(tripId)).pickupPin as string;
+    const wrongPin = pin === "0000" ? "1111" : "0000";
+    const reasons: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      reasons.push((await call(app, "POST", `/trips/${tripId}/pin/verify`, driverA.headers, { pin: wrongPin })).json().reason);
+      if (i % 2 === 1) await advance(61);
+    }
+    expect(reasons).toEqual(["pin_wrong", "pin_locked", "pin_wrong", "pin_locked", "pin_wrong", "pin_blocked"]);
+    await relogin();
+    // Blocked: even the right PIN, even after the lock time.
+    await advance(120);
+    await relogin();
+    expect((await call(app, "POST", `/trips/${tripId}/pin/verify`, driverA.headers, { pin })).json().reason).toBe("pin_blocked");
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const view = (await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json();
+    expect(view).toMatchObject({ pickupPin: pin, pinBlocked: true });
+    expect((await call(app, "POST", `/admin/trips/${tripId}/pin/unlock`, admin.headers, { expectedVersion: view.version, reason: "" })).statusCode).toBe(400);
+    const unlocked = await call(app, "POST", `/admin/trips/${tripId}/pin/unlock`, admin.headers, { expectedVersion: view.version, reason: "Rider confirmed by phone" });
+    expect(unlocked.statusCode, unlocked.body).toBe(200);
+    expect(unlocked.json()).toMatchObject({ pinBlocked: false, pinAttempts: 0 });
+    expect(await database.db.selectFrom("admin_audit").select("action").where("target_id", "=", tripId).where("action", "=", "trip.pin_unlock").execute()).toHaveLength(1);
+    const ok = await call(app, "POST", `/trips/${tripId}/pin/verify`, driverA.headers, { pin });
+    expect(ok.statusCode, ok.body).toBe(200);
+    void arrived;
+  });
+
+  it("checker M4: a driver app before contract 0.18.8 (no X-Contract-Version) is not asked for the PIN", async () => {
+    await publish("driver_app_config", "Z001", driverDoc({ pickupPin: { required: true } }));
+    const { tripId, version } = await accepted();
+    const arrived = await arriveAt(tripId, version);
+    expect((await step(tripId, "board", arrived.version, {}, { "x-contract-version": "0.18.7" })).statusCode).toBe(200);
+  });
+
+  it("checker L8: the rider's PIN is gone once the trip is over", async () => {
+    await publish("driver_app_config", "Z001", driverDoc({ pickupPin: { required: true } }));
+    const { tripId, version } = await accepted();
+    expect((await call(app, "GET", `/trips/${tripId}/pin`, rider)).statusCode).toBe(200);
+    await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: version, reasonCode: "plans_changed" });
+    const res = await call(app, "GET", `/trips/${tripId}/pin`, rider);
+    expect(res.statusCode).toBe(404);
+    expect(res.json().reason).toBe("pin_trip_over");
   });
 
   it("France: the switch works the same in a Paris zone", async () => {
@@ -411,7 +486,7 @@ describe("item 3: admin Reverse no-show (reason required, driver share kept unle
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
     const res = await call(app, "POST", `/admin/trips/${tripId}/reverse-no-show`, admin.headers, { expectedVersion: version, reason: "Rider was there" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().cancellation).toMatchObject({ fee: { amountMinor: 6500, currency: "EUR" }, feeStatus: "refunded" });
+    expect(res.json().cancellation).toMatchObject({ fee: { amountMinor: 6500, currency: "EUR" }, feeStatus: "waived", refundedToWallet: true, refundedAt: expect.any(String) });
     expect(await database.db.selectFrom("wallet_entries").select(["kind", "amount_minor", "currency"]).where("trip_id", "=", tripId).execute()).toEqual([{ kind: "refund", amount_minor: "6500", currency: "EUR" }]);
     expect(await database.db.selectFrom("rider_fees").select("status").where("trip_id", "=", tripId).executeTakeFirst()).toEqual({ status: "refunded" });
   });
