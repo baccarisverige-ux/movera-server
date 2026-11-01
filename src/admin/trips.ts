@@ -258,9 +258,11 @@ export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string,
   let current = updated;
   let moneySend: MoneySend | undefined;
   if (!taken && body.applyTo && ["searching", "offered"].includes(updated.status)) {
-    current = await applyCommand(trx, updated, { command: "assign", actor: "admin", now });
-    moneySend = await sendWithMoney(trx, current, scope, now);
+    // Live test 2026-11-01: nobody free → no offer went out, so the trip keeps its waiting status (searching) for the
+    // automatic dispatch; it becomes offered only when an offer was really sent.
+    moneySend = await sendWithMoney(trx, updated, scope, now);
     current = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    if (moneySend.exclusiveTo || moneySend.radarTo.length) current = await applyCommand(trx, current, { command: "assign", actor: "admin", now });
   }
   await audit(trx, { adminId: who.subjectId, action: "trip.driver_bonus", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { amount: body.amount, applyTo: scope, total: bonus, note: body.note ?? null, ...(moneySend ? { sent: moneySend } : {}) }, at: now });
   return moneySend ? Object.assign(current, { moneySend }) : current;

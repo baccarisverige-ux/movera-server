@@ -159,10 +159,31 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     const { tripId, auto } = await bookWithAutoOffer(c);
     await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();
     await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "in", [drivers.A.id, drivers.B.id]).execute();
+    // As live: nobody was free, so the automatic dispatch left the trip searching (no offer out).
+    await database.db.updateTable("trips").set({ status: "searching" }).where("trip_id", "=", tripId).execute();
     const res = await bonusPost(tripId, { amount: money(800), applyTo: "exclusive" });
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [] });
     expect(res.json().driverBonusByKind).toMatchObject({ exclusive: money(800) });
+    // Live test 2026-11-01: no offer went out, so the trip keeps waiting (not offered) and no priority was asked.
+    expect(res.json().status).toBe("searching");
+    expect(res.json().driverBonusByKind.exclusive.priority).toBe(false);
+    // The automatic dispatch still picks it up when a driver comes online, with the money and no Priority badge.
+    await placeDrivers(c);
+    clock.now = new Date(clock.now.getTime() + 60_000);
+    await worker.runDue();
+    const [next] = await offersOf("A").then((items: unknown[]) => items.length ? items : offersOf("B"));
+    expect(next).toMatchObject({ tripId, driverBonus: money(800), priority: false });
+  });
+
+  it("Add money without priority: the offer sent at once has no Priority badge", async () => {
+    const { tripId, auto } = await bookWithAutoOffer(c);
+    await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();
+    const res = await bonusPost(tripId, { amount: money(500), applyTo: "exclusive" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().moneySend.exclusiveTo).toBe(drivers.A.id);
+    expect(res.json().status).toBe("offered");
+    expect((await offersOf("A"))[0]).toMatchObject({ tripId, driverBonus: money(500), priority: false });
   });
 
   it("a driver who holds an open exclusive offer on another trip is skipped: the next nearest free driver gets the exclusive", async () => {
