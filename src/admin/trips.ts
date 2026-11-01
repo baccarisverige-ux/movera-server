@@ -6,6 +6,7 @@ import { liveDocument } from "../config/service.js";
 import type { Executor, Trx } from "../db/db.js";
 import { lockTrip, type TripRow } from "../db/tripLog.js";
 import { dispatchKm } from "../dispatch/engine.js";
+import { addBonus, bonusFor, type BonusScope } from "../dispatch/bonusScope.js";
 import { refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
 import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { ApiError, badRequest } from "../http/errors.js";
@@ -70,9 +71,11 @@ async function bonusLimit(ex: Executor, trip: TripRow): Promise<number> {
  * Every bonus on a trip counts toward its limit: the bonus waiting on the trip plus what was already paid out on
  * it (lost drivers, or the bonus paid at completion, which is the same money then).
  */
-async function bonusSoFar(ex: Executor, trip: TripRow): Promise<number> {
+async function bonusSoFar(ex: Executor, trip: TripRow, scope: BonusScope = "both"): Promise<number> {
+  // Owner bug 2026-11-01: money waiting for one kind of offer counts only against that kind (the driver gets one of them).
+  const waiting = scope === "both" ? Number(trip.driver_bonus_minor ?? 0) : bonusFor(trip, scope);
   const paid = await ex.selectFrom("earnings_entries").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("kind", "=", "bonus").executeTakeFirstOrThrow();
-  return (trip.status === "completed" ? 0 : Number(trip.driver_bonus_minor ?? 0)) + Number(paid.n);
+  return (trip.status === "completed" ? 0 : waiting) + Number(paid.n);
 }
 
 /** A trip's fare is never below 0 (audit Phase 4, P4-3: a negative fare made negative driver earnings). */
@@ -80,11 +83,11 @@ function notBelowZero(fare: Money | undefined) {
   if (fare !== undefined && fare.amountMinor < 0) throw badRequest("The fare cannot be below 0.", "invalid_amount");
 }
 
-async function checkBonus(ex: Executor, trip: TripRow, amount: Money) {
+async function checkBonus(ex: Executor, trip: TripRow, amount: Money, scope: BonusScope = "both") {
   sameCurrency(trip, amount, "The bonus");
   if (amount.amountMinor <= 0) throw badRequest("The bonus must be more than 0.", "invalid_amount");
   const limit = await bonusLimit(ex, trip);
-  if ((await bonusSoFar(ex, trip)) + amount.amountMinor > limit) {
+  if ((await bonusSoFar(ex, trip, scope)) + amount.amountMinor > limit) {
     throw badRequest(`A trip can carry at most ${limit / 100} ${trip.currency} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
   }
 }
@@ -125,26 +128,28 @@ export async function adminReassign(trx: Trx, who: Principal, tripId: string, bo
 
 /* ---------------------------------------------------------------- assign, radar group, bonus */
 
-type OfferBody = { expectedVersion: number; note?: string; driverBonus?: Money; priority?: boolean };
+type OfferBody = { expectedVersion: number; note?: string; driverBonus?: Money; priority?: boolean; applyTo?: BonusScope };
 
-async function withBonus(trx: Trx, trip: TripRow, body: OfferBody): Promise<TripRow> {
+/** The kinds a send's money is for: what the admin chose, else the kind of this send (exclusive or radar). */
+const sendScope = (body: OfferBody, kind: "assigned" | "radar"): BonusScope => body.applyTo ?? (kind === "radar" ? "radar" : "exclusive");
+
+async function withBonus(trx: Trx, trip: TripRow, body: OfferBody, scope: BonusScope): Promise<TripRow> {
   if (!body.driverBonus && body.priority === undefined) return trip;
-  const already = Number(trip.driver_bonus_minor ?? 0);
-  if (body.driverBonus) await checkBonus(trx, trip, body.driverBonus);
-  const bonus = already + (body.driverBonus?.amountMinor ?? 0);
-  await trx.updateTable("trips").set({ driver_bonus_minor: bonus, commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus, ...(body.priority !== undefined ? { priority: body.priority } : {}) }).where("trip_id", "=", trip.trip_id).execute();
+  if (body.driverBonus) await checkBonus(trx, trip, body.driverBonus, scope);
+  await trx.updateTable("trips").set(addBonus(trip, body.driverBonus?.amountMinor ?? 0, scope, body.priority)).where("trip_id", "=", trip.trip_id).execute();
   return trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
 }
 
 async function offerTo(trx: Trx, who: Principal, tripId: string, driverIds: string[], kind: "assigned" | "radar", body: OfferBody, now: Date, extra: { seconds?: number; detail?: Record<string, unknown> } = {}) {
   let trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   // Locked once a driver accepted (contract.json#adminDispatch.lockedStatuses): the transition table says so.
-  trip = await withBonus(trx, trip, body);
+  const scope = sendScope(body, kind);
+  trip = await withBonus(trx, trip, body, scope);
   trip = await applyCommand(trx, trip, { command: "assign", actor: "admin", now });
   // Same path as "Add money": every open offer of the trip shows the new money / Priority badge at once (offer_updated).
-  if (body.driverBonus || body.priority !== undefined) await refreshOpenOffers(trx, trip, now);
+  if (body.driverBonus || body.priority !== undefined) await refreshOpenOffers(trx, trip, now, scope);
   const sent = await sendAdminOffers(trx, trip, driverIds, kind, now, extra.seconds);
-  await audit(trx, { adminId: who.subjectId, action: kind === "assigned" ? "trip.assign" : "trip.radar_group", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { driverIds, note: body.note ?? null, driverBonus: body.driverBonus ?? null, priority: body.priority ?? null, groupId: sent.groupId, sentTo: sent.offers.map((o) => o["driverId"]), refreshed: sent.kept.map((o) => o["driverId"]), skipped: sent.skipped, ...(extra.detail ?? {}) }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: kind === "assigned" ? "trip.assign" : "trip.radar_group", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { driverIds, note: body.note ?? null, driverBonus: body.driverBonus ?? null, ...(body.driverBonus || body.priority !== undefined ? { applyTo: scope } : {}), priority: body.priority ?? null, groupId: sent.groupId, sentTo: sent.offers.map((o) => o["driverId"]), refreshed: sent.kept.map((o) => o["driverId"]), skipped: sent.skipped, ...(extra.detail ?? {}) }, at: now });
   // A driver who already saw the trip keeps that offer: it is listed with the new ones (no shape change; the admin counts
   // the offers outside groupId as refreshed).
   return { trip, ...sent, offers: [...sent.offers, ...sent.kept] };
@@ -190,18 +195,24 @@ export async function adminStopRadarZone(trx: Trx, who: Principal, tripId: strin
 }
 
 /** "Add money to trip": Movera pays it; open offers show the new money at once. */
-export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; amount: Money; priority?: boolean; note?: string }, now: Date): Promise<TripRow> {
+export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; amount: Money; priority?: boolean; note?: string; applyTo?: BonusScope }, now: Date): Promise<TripRow> {
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   if (["cancelled_by_rider", "cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system", "expired", "failed", "no_show"].includes(trip.status)) {
     throw new ApiError("invalid_transition", "This trip is over; pay a lost driver with the cancel or reassign bonus.", { reason: "trip_over", projection: tripProjection(trip, "admin") });
   }
-  await checkBonus(trx, trip, body.amount);
-  const bonus = Number(trip.driver_bonus_minor ?? 0) + body.amount.amountMinor;
-  const updated = await touchTrip(trx, trip, { driver_bonus_minor: bonus, commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus, ...(body.priority !== undefined ? { priority: body.priority } : {}) }, now);
+  // Owner bug 2026-11-01: "Apply to: Exclusive" is for exclusive offers only (radar offers keep their money); a trip
+  // a driver already took gets it whatever the scope (it is his trip now). Old callers without applyTo: both.
+  const taken = Boolean(trip.driver_id) && !["requested", "searching", "offered"].includes(trip.status);
+  const scope: BonusScope = taken ? "both" : body.applyTo ?? "both";
+  await checkBonus(trx, trip, body.amount, scope);
+  const columns = addBonus(trip, body.amount.amountMinor, scope, body.priority);
+  // On a taken trip the money is his: driver_bonus_minor grows by the amount (not the max of the two kinds).
+  const bonus = taken ? Number(trip.driver_bonus_minor ?? 0) + body.amount.amountMinor : columns.driver_bonus_minor;
+  const updated = await touchTrip(trx, trip, { ...columns, driver_bonus_minor: bonus, commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus }, now);
   // A completed trip's earnings are already written: the bonus is its own entry now.
   if (updated.status === "completed" && updated.driver_id) await credit(trx, { driverId: updated.driver_id, tripId, kind: "bonus", currency: trip.currency, amount: body.amount.amountMinor }, now);
-  await refreshOpenOffers(trx, updated, now);
-  await audit(trx, { adminId: who.subjectId, action: "trip.driver_bonus", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { amount: body.amount, total: bonus, note: body.note ?? null }, at: now });
+  await refreshOpenOffers(trx, updated, now, scope);
+  await audit(trx, { adminId: who.subjectId, action: "trip.driver_bonus", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { amount: body.amount, applyTo: scope, total: bonus, note: body.note ?? null }, at: now });
   return updated;
 }
 

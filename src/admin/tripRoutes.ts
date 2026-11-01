@@ -26,14 +26,16 @@ const many = <T extends z.ZodTypeAny>(item: T) => z.union([item, z.array(item)])
 const Page = { cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) };
 const When = { from: z.string().datetime().optional(), to: z.string().datetime().optional() };
 
+// Owner bug 2026-11-01: which kind of offer the admin's money is for (default: the send's kind; Add money: both).
+const ApplyTo = z.enum(["exclusive", "radar", "both"]);
 const ReasonBody = z.object({ ...Version, reasonCode: z.string(), note: Note, driverBonus: Money.optional() });
-const AssignBody = z.object({ ...Version, driverId: ID, note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
-const RadarBody = z.object({ ...Version, driverIds: z.array(ID).min(1).max(10).optional(), groupId: ID.optional(), radarZoneId: ID.optional(), ruleId: ID.optional(), note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
+const AssignBody = z.object({ ...Version, driverId: ID, note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional(), applyTo: ApplyTo.optional() });
+const RadarBody = z.object({ ...Version, driverIds: z.array(ID).min(1).max(10).optional(), groupId: ID.optional(), radarZoneId: ID.optional(), ruleId: ID.optional(), note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional(), applyTo: ApplyTo.optional() });
 const NoShowBody = z.object({ ...Version, note: Note, waiveFee: z.boolean().optional() });
 const CompleteBody = z.object({ ...Version, note: Note, fare: Money.optional() });
 const AdjustBody = z.object({ ...Version, fare: Money.optional(), waitingSeconds: z.number().int().min(0).optional(), waiveCancelFee: z.boolean().optional(), reason: Note });
 const RefundBody = z.object({ ...Version, amount: Money, paymentId: z.string().optional(), reason: Note, fromDriver: z.boolean().optional() });
-const BonusBody = z.object({ ...Version, amount: Money, priority: z.boolean().optional(), note: z.string().max(1000).optional() });
+const BonusBody = z.object({ ...Version, amount: Money, priority: z.boolean().optional(), note: z.string().max(1000).optional(), applyTo: ApplyTo.optional() });
 const DriverStatusBody = z.object({ ...Version, accountStatus: z.enum(["pending", "active", "on_hold", "suspended"]), note: Note });
 const RiderStatusBody = z.object({ ...Version, status: z.enum(["active", "suspended"]), note: Note });
 
