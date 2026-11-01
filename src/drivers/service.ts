@@ -1,3 +1,4 @@
+import { scheduleRideCheckScan } from "../safety/rideCheckServer.js";
 import { sql } from "kysely";
 import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { schemaProblem } from "../contract/schemas.js";
@@ -324,6 +325,8 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     // One location event per batch, with the newest fix; it never changes the projection version (§4).
     await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
     await maybeNearDropoff(trx, active, latest.fix, now);
+    // v0.18.9 (contract.json#onTrip.rideCheck): the server's ride check looks at the new fixes in a job right after.
+    await scheduleRideCheckScan(trx, active, now);
     // Car lost (contract v0.7.0 §15): the position is back, so the silence check runs now and takes the alarm down.
     if (active.driver_silent_alert) await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: active.trip_id, dueAt: now });
   }

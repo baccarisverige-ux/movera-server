@@ -264,6 +264,12 @@ export interface TripsTable {
   pin_verified_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   pin_wrong_total: Generated<number>;
   pin_blocked: Generated<boolean>;
+  /** v0.18.9 (migration 0043, contract.json#onTrip): the server ride check, its log per trigger, the measured route, the route change, the admin flag. */
+  ride_check: ColumnType<unknown, string | null | undefined, string | null>;
+  ride_check_log: JsonDefault<Record<string, string>>;
+  planned_route: ColumnType<unknown, string | null | undefined, string | null>;
+  route_change: ColumnType<unknown, string | null | undefined, string | null>;
+  admin_flag: ColumnType<unknown, string | null | undefined, string | null>;
   config_versions: JsonDefault;
   distance_meters: ColumnType<number | null, number | null | undefined, number | null>;
   duration_seconds: ColumnType<number | null, number | null | undefined, number | null>;
@@ -765,7 +771,9 @@ export interface PayoutsTable {
 
 export interface SupportTicketsTable {
   ticket_id: string;
-  opened_by: "rider" | "driver";
+  opened_by: "rider" | "driver" | "admin";
+  /** v0.18.9 owner rule 16: a case opened by an admin that the person sees in their own list. */
+  visible_to_person: ColumnType<boolean, boolean | undefined, boolean>;
   rider_id: string | null;
   driver_id: string | null;
   trip_id: string | null;
@@ -993,6 +1001,40 @@ export interface RideChecksTable {
   position: ColumnType<unknown, string | null | undefined, string | null>;
   incident_id: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: Timestamp;
+  /** v0.18.9: app = the app opened the card; server = the server asked (contract.json#onTrip.rideCheck). */
+  origin: Generated<"app" | "server">;
+}
+
+/** v0.18.9 (migration 0043): a priced route change of a trip (contract.json#onTrip.routeChange). */
+export interface RouteQuotesTable {
+  route_quote_id: string;
+  trip_id: string;
+  trip_version: number;
+  /** The trip's latest route change when priced (null = none): another change since makes the price stale. */
+  base_change_id: string | null;
+  dropoff: ColumnType<unknown, string, string>;
+  stops: ColumnType<unknown, string, string>;
+  distance_meters: number;
+  duration_seconds: number;
+  currency: string;
+  total_minor: ColumnType<string, number | string, number | string>;
+  difference_minor: ColumnType<string, number | string, number | string>;
+  fare_lines: ColumnType<unknown, string, string>;
+  driver_earnings_minor: ColumnType<string, number | string, number | string>;
+  /** v0.18.9 owner rule 16: the trip had a fixed price and the zone's fixedPriceTrips was switch_to_normal. */
+  leaves_fixed_price: ColumnType<boolean, boolean | undefined, boolean>;
+  expires_at: Timestamp;
+  used_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  created_at: Timestamp;
+}
+
+/** v0.18.9 (migration 0043): an admin's note on a trip. */
+export interface AdminTripNotesTable {
+  note_id: string;
+  trip_id: string;
+  admin_id: string;
+  text: string;
+  at: Timestamp;
 }
 
 export interface IncidentEventsTable {
@@ -1122,6 +1164,8 @@ export interface Database {
   kpi_days: KpiDaysTable;
   content_items: ContentItemsTable;
   terms_acceptances: TermsAcceptancesTable;
+  route_quotes: RouteQuotesTable;
+  admin_trip_notes: AdminTripNotesTable;
 }
 
 export interface ContentItemsTable {

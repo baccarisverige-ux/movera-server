@@ -1,3 +1,4 @@
+import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import type { TripsTable } from "../db/schema.js";
 import { appendTripEvent, lockTrip, type TripRow } from "../db/tripLog.js";
@@ -32,6 +33,7 @@ export async function applyCommand(
     .set({ ...(input.set ?? {}), status: to, version, updated_at: input.now })
     .where("trip_id", "=", trip.trip_id)
     .execute();
+  await expireStaleRouteChange(trx, trip, input.now);
   const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   // The stored event carries the full projection; each stream redacts it for its viewer (§4).
   const sequence = Number(updated.sequence) + 1;
@@ -75,9 +77,24 @@ export function expectVersion(trip: TripRow, expectedVersion: number, viewer: Vi
  * After a terminal status only afterTerminal kinds pass the apps' gate (§4), so money changes then go out as
  * payment_updated.
  */
+const ROUTE_CHANGE_STATUSES: ReadonlySet<string> = new Set((contract as unknown as { onTrip: { routeChange: { statuses: string[] } } }).onTrip.routeChange.statuses);
+
+/**
+ * v0.18.9 checker HIGH: a route change still waiting when the trip leaves the route-change statuses (complete, cancel,
+ * no-show) or changes driver (reassign) can never be answered any more: it expires in the same write.
+ */
+async function expireStaleRouteChange(trx: Trx, before: TripRow, now: Date): Promise<void> {
+  const after = await trx.selectFrom("trips").select(["status", "driver_id", "route_change"]).where("trip_id", "=", before.trip_id).executeTakeFirstOrThrow();
+  const change = after.route_change as { status?: string } | null;
+  if (change?.status !== "pending") return;
+  if (ROUTE_CHANGE_STATUSES.has(after.status) && after.driver_id === before.driver_id) return;
+  await trx.updateTable("trips").set({ route_change: JSON.stringify({ ...change, status: "expired", answeredAt: now.toISOString(), answeredBy: "system" }) }).where("trip_id", "=", before.trip_id).execute();
+}
+
 export async function touchTrip(trx: Trx, trip: TripRow, set: Updateable<TripsTable>, now: Date): Promise<TripRow> {
   const version = trip.version + 1;
   await trx.updateTable("trips").set({ ...set, version, updated_at: now }).where("trip_id", "=", trip.trip_id).execute();
+  if (set.status !== undefined || set.driver_id !== undefined) await expireStaleRouteChange(trx, trip, now);
   const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   const sequence = Number(updated.sequence) + 1;
   const kind = isTripStatus(updated.status) && TERMINAL.has(updated.status) ? "payment_updated" : "trip_projection";

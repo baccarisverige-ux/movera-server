@@ -23,7 +23,7 @@ export function readCursor(cursor: string): { at: Date; id: string } {
 }
 export const zonesOf = (who: Principal) => (who.zones.includes("*") ? null : who.zones);
 
-export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string };
+export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string; flagged?: boolean };
 
 export async function listTrips(ex: Executor, who: Principal, input: TripQuery, now: Date = new Date()) {
   let q = ex.selectFrom("trips").selectAll();
@@ -36,6 +36,9 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery, 
   if (input.riderId) q = q.where("rider_id", "=", input.riderId);
   if (input.driverId) q = q.where("driver_id", "=", input.driverId);
   if (input.paymentStatus) q = q.where("payment_status", "=", input.paymentStatus);
+  // v0.18.9 (contract.json#onTrip.adminTrip.new.flag): only the flagged trips (or only the others).
+  if (input.flagged === true) q = q.where(sql<boolean>`(admin_flag->>'flagged')::boolean IS TRUE`);
+  if (input.flagged === false) q = q.where(sql<boolean>`(admin_flag->>'flagged')::boolean IS NOT TRUE`);
   if (input.from) q = q.where("created_at", ">=", new Date(input.from));
   if (input.to) q = q.where("created_at", "<", new Date(input.to));
   if (input.q) {

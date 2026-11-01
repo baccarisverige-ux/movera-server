@@ -1,3 +1,4 @@
+import { addTripNote, flagTrip, openTripCase, revealTripContact, tripNotes } from "./tripTools.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -36,7 +37,7 @@ const BonusBody = z.object({ ...Version, amount: Money, priority: z.boolean().op
 const DriverStatusBody = z.object({ ...Version, accountStatus: z.enum(["pending", "active", "on_hold", "suspended"]), note: Note });
 const RiderStatusBody = z.object({ ...Version, status: z.enum(["active", "suspended"]), note: Note });
 
-const TripsQuery = { ...Page, ...When, status: many(z.string()), kind: z.enum(["live", "scheduled"]).optional(), categoryId: z.string().optional(), riderId: ID.optional(), driverId: ID.optional(), paymentStatus: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
+const TripsQuery = { ...Page, ...When, flagged: z.enum(["true", "false"]).optional().transform((v) => (v === undefined ? undefined : v === "true")), status: many(z.string()), kind: z.enum(["live", "scheduled"]).optional(), categoryId: z.string().optional(), riderId: ID.optional(), driverId: ID.optional(), paymentStatus: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
 const RidersQuery = { ...Page, status: z.enum(["active", "suspended"]).optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
 const DriversQuery = { ...Page, accountStatus: many(z.string()), onlineStatus: many(z.string()), categoryId: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
 const PaymentsQuery = { ...Page, ...When, status: z.string().optional(), method: z.string().optional(), tripId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
@@ -134,6 +135,32 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     const { paymentId: _p, ...rest } = clean(body);
     void _p;
     return adminRefund(trx, who, id, rest as never, now());
+  });
+
+  /* ---- v0.18.9 (contract.json#onTrip.adminTrip.new): flag, notes, case, reveal contact; no trip version change */
+  const tool = <B extends z.ZodTypeAny>(path: string, permission: string, schema: B, status: number, run: (trx: Trx, who: Principal, tripId: string, body: z.infer<B>) => Promise<unknown>) => {
+    app.post(`${API_PREFIX}/admin/trips/:tripId/${path}`, async (request, reply) => {
+      const who = await authenticateAdmin(request, guard, permission);
+      const tripId = tripParam(request);
+      const body = parseBody(schema, request.body);
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status, body: await run(trx, who, tripId, body) }));
+      return reply.status(result.status).send(result.body);
+    });
+  };
+  tool("flag", "trips.annotate", z.object({ flagged: z.boolean(), reason: z.string().trim().max(500).optional() }), 200, (trx, who, id, body) => flagTrip(trx, who, id, clean(body) as never, now()));
+  tool("notes", "trips.annotate", z.object({ text: z.string().trim().min(1).max(2000) }), 201, (trx, who, id, body) => addTripNote(trx, who, id, body, now()));
+  tool("case", "support.reply", z.object({ about: z.enum(["rider", "driver"]), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().trim().min(1).max(200), text: z.string().trim().min(1).max(5000), visibleToPerson: z.boolean().optional() }), 201, (trx, who, id, body) => openTripCase(trx, who, id, body, now()));
+  // The permission is checked per side inside (riders.viewSensitive / drivers.viewSensitive).
+  // Checker MEDIUM: no idempotent replay cache here (it would keep the phone number in idempotency_keys).
+  app.post(`${API_PREFIX}/admin/trips/:tripId/reveal-contact`, async (request, reply) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    const tripId = tripParam(request);
+    const body = parseBody(z.object({ who: z.enum(["rider", "driver"]), reason: z.string().trim().min(1).max(500) }), request.body);
+    return reply.status(200).send(await deps.db.transaction().execute((trx) => revealTripContact(trx, who, tripId, body, now())));
+  });
+  app.get(`${API_PREFIX}/admin/trips/:tripId/notes`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    return tripNotes(deps.db, who, tripParam(request));
   });
 
   app.post(`${API_PREFIX}/admin/refunds/:refundId/paid`, async (request) => {

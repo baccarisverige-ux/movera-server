@@ -7,6 +7,8 @@ import { ApiError, notFound } from "../http/errors.js";
 import { cancelTimer, scheduleTimer, type TimerHandler } from "../jobs/timers.js";
 import { tripProjection } from "../trips/projection.js";
 import { appendIncidentEvent, ESCALATE_MS, INCIDENT_ESCALATE, openIncident, openOf, SAFETY, type IncidentRow } from "./incidents.js";
+import { rideCheckSettings } from "../trips/onTripSettings.js";
+import { sendRideCheckEvent, type ServerRideCheck } from "./rideCheckServer.js";
 
 /**
  * Ride check answers (contract v0.12.0 §22, owner safety part 2 decisions 2026-10-28).
@@ -20,6 +22,7 @@ import { appendIncidentEvent, ESCALATE_MS, INCIDENT_ESCALATE, openIncident, open
 type RideCheckRules = { noAnswerSeconds: number; riderStatuses: string[]; driverStatuses: string[]; completedWithinMinutes: number };
 const RULES = (SAFETY as unknown as { rideCheck: RideCheckRules }).rideCheck;
 export const RIDE_CHECK_NO_ANSWER = "ride_check_no_answer";
+/** The contract's default; v0.18.9: each zone's DriverAppConfig.rideCheck.noAnswerSeconds is used (contract.json#onTrip.rideCheck). */
 export const NO_ANSWER_MS = RULES.noAnswerSeconds * 1000;
 const KIND = "ride_check";
 
@@ -31,7 +34,17 @@ type CheckRow = Selectable<RideChecksTable>;
 
 const timerRef = (tripId: string, side: Side, checkId: string) => `${tripId}|${side}|${checkId}`;
 
-function mayReport(trip: TripRow, side: Side, now: Date): boolean {
+/** v0.18.9: the trip's current server check (TripProjection.rideCheck), when this report answers it. */
+const serverCheckOf = (trip: TripRow, checkId: string): ServerRideCheck | null => {
+  const check = trip.ride_check as ServerRideCheck | null;
+  return check && check.checkId === checkId ? check : null;
+};
+
+function mayReport(trip: TripRow, side: Side, now: Date, checkId?: string): boolean {
+  // v0.18.9: a server check may be answered within completedWithinMinutes of the end, whatever ended the trip.
+  if (checkId && serverCheckOf(trip, checkId)) {
+    return trip.ended_at === null || now.getTime() - trip.ended_at.getTime() <= RULES.completedWithinMinutes * 60_000;
+  }
   const statuses = side === "rider" ? RULES.riderStatuses : RULES.driverStatuses;
   if (!statuses.includes(trip.status)) return false;
   if (trip.status !== "completed") return true;
@@ -81,7 +94,7 @@ export async function reportRideCheck(trx: Trx, who: { actor: Side; subjectId: s
   const trip = await lockTrip(trx, tripId);
   const own = who.actor === "rider" ? trip.rider_id === who.subjectId : trip.driver_id === who.subjectId;
   if (!own) throw notFound("No such trip.", "trip_not_found");
-  if (!mayReport(trip, who.actor, now)) {
+  if (!mayReport(trip, who.actor, now, body.checkId)) {
     throw new ApiError("invalid_transition", "Ride check works only during the trip.", { reason: "trip_not_live", projection: tripProjection(trip, who.actor) });
   }
   let check = await trx.selectFrom("ride_checks").selectAll().where("trip_id", "=", tripId).where("side", "=", who.actor).where("check_id", "=", body.checkId).executeTakeFirst();
@@ -101,7 +114,10 @@ export async function reportRideCheck(trx: Trx, who: { actor: Side; subjectId: s
       })
       .returningAll()
       .executeTakeFirstOrThrow();
-    if (!body.answer) await scheduleTimer(trx, { kind: RIDE_CHECK_NO_ANSWER, refId: timerRef(tripId, who.actor, body.checkId), dueAt: new Date(now.getTime() + NO_ANSWER_MS) });
+    if (!body.answer) {
+      const seconds = (await rideCheckSettings(trx, trip.zone_id)).noAnswerSeconds;
+      await scheduleTimer(trx, { kind: RIDE_CHECK_NO_ANSWER, refId: timerRef(tripId, who.actor, body.checkId), dueAt: new Date(now.getTime() + seconds * 1000) });
+    }
   }
 
   const next: Answer | null = body.answer === undefined ? check.answer : check.answer === "need_help" ? "need_help" : body.answer;
@@ -125,6 +141,12 @@ export async function reportRideCheck(trx: Trx, who: { actor: Side; subjectId: s
       if (incident && (incident.status === "open" || incident.status === "investigating") && rc && rc["checkId"] === check.check_id && rc["by"] === check.side && rc["answer"] === "no_answer") {
         await updateIncident(trx, incident, { rideCheck: { ...rc, lateAnswer: "ok", answeredAt: now.toISOString() } }, now);
       }
+    }
+    // v0.18.9: the answer to a server check shows on the trip for both apps and the admin (no version change).
+    const server = serverCheckOf(trip, body.checkId);
+    if (server && next) {
+      await trx.updateTable("trips").set({ ride_check: JSON.stringify({ ...server, answers: { ...server.answers, [who.actor]: next } }) }).where("trip_id", "=", tripId).execute();
+      await sendRideCheckEvent(trx, tripId, now);
     }
     if (incidentId !== check.incident_id) {
       check = await trx
@@ -156,10 +178,20 @@ export const noAnswerHandler: TimerHandler = async (trx, timer) => {
   if (!check || check.answer !== null || check.no_answer_at !== null) return;
   const now = timer.firedAt;
   const open = await openOf(trx, tripId, KIND);
-  const incidentId =
-    open?.incident_id ??
-    (await openIncident(trx, trip, { kind: KIND, raisedBy: "system", position: (check.position as Position | null) ?? undefined, alarm: false, rideCheck: rideCheckOf(check, "no_answer") }, now)).incident_id;
+  // v0.18.9 (contract.json#onTrip.rideCheck): the zone's noAnswerAlarm (default false = the safety list without sound, as v0.12.0).
+  const alarm = (await rideCheckSettings(trx, trip.zone_id)).noAnswerAlarm;
+  let incidentId = open?.incident_id;
+  if (!incidentId) {
+    incidentId = (await openIncident(trx, trip, { kind: KIND, raisedBy: "system", position: (check.position as Position | null) ?? undefined, alarm, rideCheck: rideCheckOf(check, "no_answer") }, now)).incident_id;
+    if (alarm) await scheduleTimer(trx, { kind: INCIDENT_ESCALATE, refId: incidentId, dueAt: new Date(now.getTime() + ESCALATE_MS) });
+  }
   await trx.updateTable("ride_checks").set({ no_answer_at: now, incident_id: incidentId }).where("trip_id", "=", tripId).where("side", "=", side).where("check_id", "=", checkId).execute();
+  // v0.18.9: a server check nobody answered in time shows the safety alert on the trip.
+  const server = serverCheckOf(trip, checkId);
+  if (server && !server.alertedAt) {
+    await trx.updateTable("trips").set({ ride_check: JSON.stringify({ ...server, alertedAt: now.toISOString() }) }).where("trip_id", "=", tripId).execute();
+    await sendRideCheckEvent(trx, tripId, now);
+  }
 };
 
 export const rideCheckHandlers: Record<string, TimerHandler> = { [RIDE_CHECK_NO_ANSWER]: noAnswerHandler };

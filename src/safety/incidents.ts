@@ -234,6 +234,19 @@ export async function adminIncidentCommand(trx: Trx, who: Principal, incidentId:
   return incidentView(updated, await latestFix(trx, updated.driver_id));
 }
 
+/** v0.18.9 (contract.json#onTrip.adminTrip.new.incidentLevel): the admin changes an incident's level (severity). */
+export async function adminIncidentLevel(trx: Trx, who: Principal, incidentId: string, body: { expectedVersion: number; severity: "low" | "medium" | "high" | "critical"; note?: string | undefined }, now: Date) {
+  const row = await trx.selectFrom("incidents").selectAll().where("incident_id", "=", incidentId).forUpdate().executeTakeFirst();
+  if (!row) throw notFound("No such incident.", "incident_not_found");
+  checkZone(who, row);
+  if (body.expectedVersion !== row.version) throw new ApiError("version_mismatch", "The incident changed since you last saw it.", { projection: incidentView(row, await latestFix(trx, row.driver_id)) });
+  if (row.severity === body.severity) return incidentView(row, await latestFix(trx, row.driver_id));
+  const updated = await trx.updateTable("incidents").set({ severity: body.severity, version: sql`version + 1`, updated_at: now }).where("incident_id", "=", incidentId).returningAll().executeTakeFirstOrThrow();
+  await appendIncidentEvent(trx, updated, "incident_updated", now);
+  await audit(trx, { adminId: who.subjectId, action: "incident.level", targetType: "incident", targetId: incidentId, zoneId: row.zone_id, detail: { from: row.severity, to: body.severity, ...(body.note ? { note: body.note } : {}) }, at: now });
+  return incidentView(updated, await latestFix(trx, updated.driver_id));
+}
+
 const cursorOf = (at: Date, id: string) => Buffer.from(`${at.toISOString()}|${id}`).toString("base64url");
 function readCursor(cursor: string): { at: Date; id: string } {
   const [at, id] = Buffer.from(cursor, "base64url").toString("utf8").split("|");

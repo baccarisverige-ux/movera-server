@@ -1,3 +1,4 @@
+import { checkMaxStops } from "../trips/onTripSettings.js";
 import { contract } from "../contract/contract.js";
 import type { Db, Trx } from "../db/db.js";
 import { schemaProblem } from "../contract/schemas.js";
@@ -56,6 +57,8 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   const zone = await zoneAt(trx, body.pickup);
   // Rides start only in the open zones (owner decision 15); anywhere else is "not available here yet".
   if (zone === null || !zone.open) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
+  // v0.18.9 (contract.json#onTrip.maxStops, owner G7 decision 5): the zone's max stops, checked by the server.
+  await checkMaxStops(trx, zone.zoneId, body.stops.length);
   const pricing = await liveDocument<PricingDocument>(trx, "pricing", zone.zoneId);
   if (pricing === null) throw new ApiError("unavailable", "Prices are not set for this area yet.", { reason: "pricing_not_published", retryAfterSeconds: 60 });
 

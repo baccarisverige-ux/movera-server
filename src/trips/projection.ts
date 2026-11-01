@@ -55,6 +55,8 @@ export function hideDriverMoney(projection: Record<string, unknown>): Record<str
   without("cancellation", ["driverShare"]);
   without("waiting", ["noShowDriverShare"]);
   without("terms", ["noShowDriverSharePct", "cancelDriverSharePct"]);
+  without("routeChange", ["driverEarnings", "earningsDifference"]);
+  delete out["adminFlag"];
   delete out["pinAttempts"];
   delete out["pinBlocked"];
   hideReversalDetails(out);
@@ -70,7 +72,8 @@ export function hideReversalDetails(out: Record<string, unknown>): void {
 
 /** v0.18.8 (contract.json#arrivedWaiting.pin): the driver never sees the rider's PIN nor the tries count. */
 export function hidePinFromDriver(out: Record<string, unknown>): Record<string, unknown> {
-  const { pickupPin: _p, pinAttempts: _a, pinBlocked: _b, ...rest } = out;
+  const { pickupPin: _p, pinAttempts: _a, pinBlocked: _b, adminFlag: _f, ...rest } = out;
+  void _f;
   void _b;
   void _p;
   void _a;
@@ -124,6 +127,10 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     ...(eta ? { eta, etaSeconds: eta.etaSeconds } : {}),
     ...(row.waiting ? { waiting: waitingNow(row, row.waiting as WaitingRow, overrides.now ?? new Date()) } : {}),
     ...(row.cancellation ? { cancellation: row.cancellation } : {}),
+    // v0.18.9 (contract.json#onTrip): the server's ride check (every viewer) and the latest route change.
+    ...(row.ride_check ? { rideCheck: row.ride_check } : {}),
+    ...(row.route_change ? { routeChange: row.route_change } : {}),
+    ...(viewer === "admin" && row.admin_flag ? { adminFlag: row.admin_flag } : {}),
   };
   if (row.quote_id) {
     projection["quote"] = { quoteId: row.quote_id, total: money(row.booked_fare_minor, currency), expiresAt: iso(row.quote_expires_at ?? row.created_at) };
