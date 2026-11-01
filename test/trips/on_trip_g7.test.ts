@@ -559,6 +559,66 @@ describe("owner rule 16 (2026-11-01): the four G7 open questions as admin settin
   });
 });
 
+describe("checker round 1 (route change after the end, reveal not cached, switch off)", () => {
+  async function pending() {
+    const trip = await accepted();
+    const v = await onBoard(trip);
+    const q = (await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: v, dropoff: BROMMA, stops: [] })).json();
+    const asked = (await call(app, "PATCH", `/trips/${trip.tripId}`, rider, { expectedVersion: v, routeQuoteId: q.routeQuoteId })).json();
+    return { tripId: trip.tripId, change: asked.routeChange, version: asked.version as number };
+  }
+
+  it("a pending change expires when the driver completes; accepting it then is refused and nothing moves", async () => {
+    const p = await pending();
+    await moveTo(SODERMALM, 30);
+    const done = await step(p.tripId, "complete", p.version);
+    expect(done.statusCode, done.body).toBe(200);
+    const ended = await view(p.tripId, driverA.headers);
+    expect(ended.routeChange).toMatchObject({ status: "expired", answeredBy: "system" });
+    const late = await step(p.tripId, "route-change/accept", ended.version, { changeId: p.change.changeId });
+    expect(late.statusCode).toBe(409);
+    expect(late.json().reason).toBe("route_change_not_pending");
+    const after = await view(p.tripId, driverA.headers);
+    expect(after.fare).toEqual(ended.fare);
+    expect(after.dropoff).toMatchObject(SODERMALM);
+  });
+
+  it("an admin cancel expires the pending change too (reassign: driver change, same rule)", async () => {
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const p = await pending();
+    const cancel = await call(app, "POST", `/admin/trips/${p.tripId}/cancel`, admin.headers, { expectedVersion: p.version, reasonCode: "admin_other", note: "test" });
+    expect(cancel.statusCode, cancel.body).toBe(200);
+    expect((await view(p.tripId, rider)).routeChange.status).toBe("expired");
+  });
+
+  it("an answer after answerBy is refused even before the timer ran", async () => {
+    const p = await pending();
+    clock.now = new Date(clock.now.getTime() + 61_000); // no worker run: the timer has not fired
+    const late = await step(p.tripId, "route-change/accept", p.version, { changeId: p.change.changeId });
+    expect(late.statusCode).toBe(409);
+    expect(late.json().reason).toBe("route_change_not_pending");
+  });
+
+  it("the admin switches route change off while a change waits: accept is refused, it expires at answerBy", async () => {
+    const p = await pending();
+    await publish("driver_app_config", "Z001", driverDoc({ routeChange: { on: false } }));
+    const acc = await step(p.tripId, "route-change/accept", p.version, { changeId: p.change.changeId });
+    expect(acc.statusCode).toBe(409);
+    expect(acc.json().reason).toBe("route_change_off");
+    await advance(61);
+    expect((await view(p.tripId, rider)).routeChange.status).toBe("expired");
+  });
+
+  it("reveal contact keeps no copy of the phone number in the idempotency store", async () => {
+    const trip = await accepted();
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const shown = await call(app, "POST", `/admin/trips/${trip.tripId}/reveal-contact`, { ...admin.headers, "idempotency-key": "reveal-g7-1" }, { who: "driver", reason: "Driver not answering" });
+    expect(shown.statusCode, shown.body).toBe(200);
+    const rows = await database.db.selectFrom("idempotency_keys").selectAll().execute();
+    expect(JSON.stringify(rows)).not.toContain(TEST_PHONES[1]!);
+  });
+});
+
 describe("migration 0043: the old defaults move to the owner's (2 km, 0 free stop minutes)", () => {
   it("published offRouteKm 3 → 2 and stopFreeWaitMin 3 → 0; other values stay", async () => {
     await publish("driver_app_config", "Z001", driverDoc({ rideCheck: { offRouteKm: 3 }, waiting: { stopFreeWaitMin: 3 } }));

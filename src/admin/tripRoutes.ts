@@ -151,7 +151,13 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   tool("notes", "trips.annotate", z.object({ text: z.string().trim().min(1).max(2000) }), 201, (trx, who, id, body) => addTripNote(trx, who, id, body, now()));
   tool("case", "support.reply", z.object({ about: z.enum(["rider", "driver"]), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().trim().min(1).max(200), text: z.string().trim().min(1).max(5000), visibleToPerson: z.boolean().optional() }), 201, (trx, who, id, body) => openTripCase(trx, who, id, body, now()));
   // The permission is checked per side inside (riders.viewSensitive / drivers.viewSensitive).
-  tool("reveal-contact", "trips.read", z.object({ who: z.enum(["rider", "driver"]), reason: z.string().trim().min(1).max(500) }), 200, (trx, who, id, body) => revealTripContact(trx, who, id, body, now()));
+  // Checker MEDIUM: no idempotent replay cache here (it would keep the phone number in idempotency_keys).
+  app.post(`${API_PREFIX}/admin/trips/:tripId/reveal-contact`, async (request, reply) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    const tripId = tripParam(request);
+    const body = parseBody(z.object({ who: z.enum(["rider", "driver"]), reason: z.string().trim().min(1).max(500) }), request.body);
+    return reply.status(200).send(await deps.db.transaction().execute((trx) => revealTripContact(trx, who, tripId, body, now())));
+  });
   app.get(`${API_PREFIX}/admin/trips/:tripId/notes`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
     return tripNotes(deps.db, who, tripParam(request));

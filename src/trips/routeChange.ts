@@ -235,6 +235,13 @@ export async function answerRouteChange(trx: Trx, who: { actor: "driver" | "ride
   expectVersion(trip, body.expectedVersion, who.actor);
   const change = pendingChange(trip);
   if (!change || change.changeId !== body.changeId) throw conflict("route_change_not_pending", "This route change is no longer waiting for an answer.", trip, who.actor);
+  // Checker HIGH: never after the trip left the route-change statuses or after answerBy (the timer may be late).
+  if (!STATUSES.has(trip.status) || now.getTime() > Date.parse(change.answerBy)) {
+    if (verb !== "withdraw" || !STATUSES.has(trip.status)) throw conflict("route_change_not_pending", "This route change is no longer waiting for an answer.", trip, who.actor);
+  }
+  // Checker LOW (decision: expire for safety): the admin switched route change off while it waited → it cannot be
+  // accepted (409 route_change_off); refuse / withdraw still work, and the timer marks it expired at answerBy.
+  if (verb === "accept" && !(await routeChangeSettings(trx, trip.zone_id)).on) throw conflict("route_change_off", "Changing the route was switched off.", trip, who.actor);
   await cancelTimer(trx, ROUTE_CHANGE_EXPIRE, `${tripId}|${change.changeId}`);
   if (verb === "accept") return applyChange(trx, trip, change, "driver", now);
   const status = verb === "refuse" ? "refused" : "withdrawn";
