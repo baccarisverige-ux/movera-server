@@ -5499,7 +5499,7 @@
       },
       "adminList": {
         "endpoint": "GET /admin/ride-checks?zoneId=&tripId=&trigger=&answer=&origin=&from=&to=&cursor=&limit= (incidents.read; the admin's zones)",
-        "row": "RideCheckRow { tripId, zoneId, side: rider | driver, checkId, origin: server | app, trigger, shownAt?, answer?: ok | need_help, answeredAt?, noAnswerAt?, incidentId?, position?, createdAt }, newest first; nextCursor.",
+        "row": "RideCheckRow { tripId, zoneId, side: rider | driver, checkId, origin: server | app, trigger, shownAt?, answer?: ok | need_help, answeredAt?, noAnswerAt?, incidentId?, position?, measured?: { value, unit: min | km | m } (server checks: minutes stopped, km off the route, metres from the drop-off when asked), answerSeconds? (the zone's noAnswerSeconds when asked), createdAt }, newest first; nextCursor. A served DriverAppConfig / RiderAppConfig rideCheck never carries the pre-v0.18.9 finishFarFromDropoffKm; endFarMeters is the one setting.",
         "answerFilter": "answer = ok | need_help | no_answer | waiting (no answer yet, not timed out)."
       },
       "texts": {
