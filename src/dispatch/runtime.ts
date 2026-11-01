@@ -25,7 +25,7 @@ import {
   planRound,
   rank,
   searchEndSec,
-  startMode,
+  startOf,
   waitingSteps,
   type Candidate,
   type Control,
@@ -90,7 +90,8 @@ export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<v
   const free = await freeDriversInZone(trx, trip.zone_id, now);
   const busy = busyOf(Number(waiting.n), free);
   const control = await controlOf(trx, trip.zone_id);
-  const mode = startMode(doc, control, busy, localTime(doc.timeZone, now));
+  const start = startOf(doc, control, busy, localTime(doc.timeZone, now));
+  const mode = start?.mode ?? null;
   const steps: Step[] = waitingSteps(doc).map((w) => ({ id: w.id, kind: w.kind, message: w.message, extraMin: w.extraMin ?? null, atSec: w.atSec }));
   const endAt = new Date(now.getTime() + searchEndSec(doc) * 1000);
   const values = {
@@ -100,7 +101,7 @@ export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<v
     busy,
     document: JSON.stringify(doc),
     doc_version: live.version,
-    state: mode ? JSON.stringify(newSearch(mode)) : null,
+    state: start ? JSON.stringify(newSearch(start.mode, start.pending)) : null,
     end_at: endAt,
     steps: JSON.stringify(steps),
     fired: JSON.stringify([]),
@@ -111,7 +112,7 @@ export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<v
   // A trip back in searching after a driver cancel starts a new search; who was asked stays asked (§3.6).
   const previous = await trx.selectFrom("searches").select("state").where("trip_id", "=", trip.trip_id).executeTakeFirst();
   const asked = (previous?.state as SearchState | null)?.asked ?? [];
-  if (mode && asked.length) values.state = JSON.stringify({ ...newSearch(mode), asked });
+  if (start && asked.length) values.state = JSON.stringify({ ...newSearch(start.mode, start.pending), asked });
   await trx.insertInto("searches").values(values).onConflict((c) => c.column("trip_id").doUpdateSet(values)).execute();
   for (const step of steps) {
     await scheduleTimer(trx, { kind: STEP, refId: `${trip.trip_id}:${step.id}`, dueAt: new Date(now.getTime() + step.atSec * 1000), payload: { tripId: trip.trip_id, stepId: step.id } });
@@ -155,8 +156,12 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
   const pool: Pool = { candidates: [], meta: new Map() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
   const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
+  // v0.18.9: with neighbours on, drivers of the listed zones are candidates too (the engine asks them from afterStep).
+  const neighbourZones = doc.neighbours?.on ? doc.neighbours.zoneIds.filter((z) => z !== trip.zone_id) : [];
   for (const d of rows) {
-    if (!d.zone_ids.includes(trip.zone_id)) continue;
+    const own = d.zone_ids.includes(trip.zone_id);
+    const neighbour = !own && d.zone_ids.some((z) => neighbourZones.includes(z));
+    if (!own && !neighbour) continue;
     if (!insideOwn({ lat: d.lat, lng: d.lng }, d.zone_ids)) continue;
     // A driver who cancelled this trip is not offered it again.
     if (trip.cancelled_driver_ids.includes(d.driver_id)) continue;
@@ -176,6 +181,7 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
       driverId: d.driver_id,
       km,
       categoryIds: d.category_ids,
+      ...(neighbour ? { neighbour: true } : {}),
       idleMin: d.last_free_at ? (now.getTime() - d.last_free_at.getTime()) / 60_000 : 0,
       // v0.18.4 (G3-D2): the driver's real numbers (contract.json#driverHome.performance); a null one is left out
       // and the engine uses the §3.6 default.
@@ -337,9 +343,9 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   let state = search.state as SearchState | null;
   if (state === null) {
     // The search started while the zone was paused: it starts its steps now that offers may go out.
-    const mode = startMode(doc, control, Number(search.busy), localTime(doc.timeZone, now));
-    if (mode === null) return;
-    state = newSearch(mode);
+    const start = startOf(doc, control, Number(search.busy), localTime(doc.timeZone, now));
+    if (start === null) return;
+    state = newSearch(start.mode, start.pending);
   }
   const pool = await candidatesFor(trx, trip, doc, now);
   const planned = planRound(doc, state, rank(doc, pool.candidates, trip.category_id));
@@ -351,23 +357,29 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(Math.min(now.getTime() + positiveSeconds(round.seconds, 15) * 1000, search.end_at.getTime())), payload: {} });
     return;
   }
-  const expiresAt = new Date(Math.min(now.getTime() + positiveSeconds(doc[round.kind].seconds, 15) * 1000, search.end_at.getTime()));
+  const expiryOf = (kind: "radar" | "exclusive") => new Date(Math.min(now.getTime() + positiveSeconds(doc[kind].seconds, 15) * 1000, search.end_at.getTime()));
+  const expiresAt = expiryOf(round.kind);
   const driverDoc = await liveDocument<{ pickupPay?: { offers?: Record<string, boolean>; byCategory?: Record<string, PickupPayRate> } }>(trx, "driver_app_config", trip.zone_id);
   const rate = driverDoc?.document.pickupPay?.byCategory?.[trip.category_id];
   const kinds = driverDoc?.document.pickupPay?.offers ?? {};
-  const groupId = round.kind === "radar" ? newId("grp", now.getTime()) : null;
   const riderRating = await riderRatingForOffer(trx, trip);
-  for (const driverId of round.driverIds) {
+  // v0.18.9 start "both": the Exclusive offer and a Radar round to the next drivers go out together; the first accept
+  // wins and acceptOffer withdraws every other open offer (claimed_elsewhere).
+  const sends: Array<{ kind: "radar" | "exclusive"; driverIds: string[]; reasonCode: string | null; expiresAt: Date; groupId: string | null }> = [
+    { kind: round.kind, driverIds: round.driverIds, reasonCode: round.reasonCode ?? null, expiresAt, groupId: round.kind === "radar" ? newId("grp", now.getTime()) : null },
+  ];
+  if (round.alsoRadar) sends.push({ kind: "radar", driverIds: round.alsoRadar.driverIds, reasonCode: null, expiresAt: expiryOf("radar"), groupId: newId("grp", now.getTime()) });
+  for (const send of sends) for (const driverId of send.driverIds) {
     const meta = pool.meta.get(driverId)!;
-    const pickupPay = rate ? pickupPayMinor(rate, kinds, round.kind, meta.km, meta.etaSeconds / 60) : 0;
+    const pickupPay = rate ? pickupPayMinor(rate, kinds, send.kind, meta.km, meta.etaSeconds / 60) : 0;
     const offer = {
       offer_id: newId("ofr", now.getTime()),
       trip_id: tripId,
       driver_id: driverId,
-      kind: round.kind,
+      kind: send.kind,
       round: search.rounds + 1,
-      group_id: groupId,
-      reason_code: round.reasonCode ?? null,
+      group_id: send.groupId,
+      reason_code: send.reasonCode,
       currency: trip.currency,
       fare_minor: Number(trip.fare_minor),
       // Pickup pay is Movera's, on top of the driver's share: the card shows fare + pickupPay (§3.2).
@@ -376,7 +388,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
       pickup_meters: meta.meters,
       pickup_eta_seconds: meta.etaSeconds,
       sent_at: now,
-      expires_at: expiresAt,
+      expires_at: send.expiresAt,
       answered_at: null,
       decline_reason: null,
       rider_rating: riderRating,
@@ -386,7 +398,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     queue.push(driverId, "offer_created", offerView(row, trip));
   }
   trip = await applyCommand(trx, trip, { command: "send_offer", actor: "system", now });
-  await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: expiresAt, payload: {} });
+  await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(Math.min(...sends.map((x) => x.expiresAt.getTime()))), payload: {} });
 }
 
 /* ---------------------------------------------------------------- admin offers (§3.1) */

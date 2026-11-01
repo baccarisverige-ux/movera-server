@@ -185,3 +185,35 @@ describe("automatic dispatch at run time", () => {
     expect(opsPause.json()).toMatchObject({ paused: true, version: 4 });
   });
 });
+
+describe("v0.18.9 dispatch start: both at the same time (owner 2026-11-01)", () => {
+  it("Exclusive to the best driver and Radar to the next ones at once; the first accept wins and the others are withdrawn", async () => {
+    // The test above leaves the zone paused: back to the rules.
+    await database.db.deleteFrom("dispatch_controls").where("zone_id", "=", "Z001").execute();
+    const both = { ...sample("dispatch_document"), start: { mode: "both", nearKm: 2 } };
+    await database.db.updateTable("config_live").set({ document: JSON.stringify(both) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
+    try {
+      const tripId = await book();
+      // Ranked by score (the earlier tests changed acceptance): one Exclusive to the best, Radar to the two others.
+      const all = { A: await openOffers("A"), B: await openOffers("B"), C: await openOffers("C") };
+      const keys = ["A", "B", "C"] as const;
+      const exKey = keys.find((k) => all[k][0]?.kind === "exclusive")!;
+      expect(exKey).toBeDefined();
+      const radarKeys = keys.filter((k) => k !== exKey);
+      for (const k of keys) expect(all[k]).toHaveLength(1);
+      const [rk, other] = radarKeys as ["A" | "B" | "C", "A" | "B" | "C"];
+      const rb = all[rk][0];
+      expect(rb).toMatchObject({ tripId, kind: "radar" });
+      expect(all[other][0]).toMatchObject({ tripId, kind: "radar", groupId: rb.groupId });
+      const accepted = await call(app, "POST", `/offers/${rb.offerId}/accept`, drivers[rk].headers, { expectedVersion: rb.version });
+      expect(accepted.statusCode).toBe(200);
+      expect(await openOffers(exKey)).toEqual([]);
+      expect(await openOffers(other)).toEqual([]);
+      const statuses = await database.db.selectFrom("offers").select(["driver_id", "status"]).where("trip_id", "=", tripId).execute();
+      expect(statuses.find((o) => o.driver_id === drivers[exKey].id)?.status).toBe("claimed_elsewhere");
+      expect(statuses.find((o) => o.driver_id === drivers[other].id)?.status).toBe("claimed_elsewhere");
+    } finally {
+      await database.db.updateTable("config_live").set({ document: JSON.stringify(sample("dispatch_document")) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
+    }
+  });
+});
