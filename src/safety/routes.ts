@@ -9,7 +9,8 @@ import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "../admin/zoneFilter.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
-import { adminIncident, adminIncidentCommand, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
+import { listRideChecks } from "../admin/tripTools.js";
+import { adminIncident, adminIncidentCommand, adminIncidentLevel, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
 import { reportRideCheck } from "./rideCheck.js";
 
 /** contract v0.7.0 §15: rider and driver SOS, admin incidents and the incident feed. */
@@ -35,6 +36,18 @@ const ListQuery = {
   to: z.string().datetime().optional(),
   ...ZoneFilterQuery,
 };
+const RideCheckQuery = {
+  cursor: z.string().max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  tripId: ID.optional(),
+  trigger: z.enum(RC.triggers).optional(),
+  answer: z.enum(["ok", "need_help", "no_answer", "waiting"]).optional(),
+  origin: z.enum(["server", "app"]).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  ...ZoneFilterQuery,
+};
+const LevelBody = z.object({ expectedVersion: z.number().int().min(1), severity: z.enum(["low", "medium", "high", "critical"]), note: z.string().max(1000).optional() });
 const StreamQuery = z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(200).default(100) });
 
 const keyOf = (request: FastifyRequest) => {
@@ -125,6 +138,22 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
   app.get(`${API_PREFIX}/admin/incidents/:incidentId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "incidents.read");
     return adminIncident(deps.db, who, incidentParam(request));
+  });
+
+  // v0.18.9 (contract.json#onTrip.rideCheck.adminList): every ride check, server and app.
+  app.get(`${API_PREFIX}/admin/ride-checks`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "incidents.read");
+    const query = parseQuery(RideCheckQuery, request.query);
+    return listRideChecks(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)) as never);
+  });
+
+  // v0.18.9 (contract.json#onTrip.adminTrip.new.incidentLevel).
+  app.post(`${API_PREFIX}/admin/incidents/:incidentId/level`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "safety.edit");
+    const incidentId = incidentParam(request);
+    const body = parseBody(LevelBody, request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminIncidentLevel(trx, who, incidentId, clean(body), now()) }));
+    return result.body;
   });
 
   for (const command of ["take", "resolve", "dismiss"] as const satisfies readonly IncidentCommand[]) {

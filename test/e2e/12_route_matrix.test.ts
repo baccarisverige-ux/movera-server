@@ -158,6 +158,16 @@ function bodyFor(route: string): Json | undefined {
     "POST /admin/ratings/:tripId/:from/hide": { reason: "audit matrix" },
     "POST /admin/ratings/:tripId/:from/restore": { reason: "audit matrix" },
     "POST /support/tickets": { category: "help", subject: "audit matrix", text: "audit matrix" },
+    // v0.18.9 (G7): valid bodies, so the zone / owner / permission check is what answers.
+    "POST /admin/trips/:tripId/flag": { flagged: true, reason: "audit matrix" },
+    "POST /admin/trips/:tripId/notes": { text: "audit matrix" },
+    "POST /admin/trips/:tripId/case": { about: "rider", category: "help", subject: "audit matrix", text: "audit matrix" },
+    "POST /admin/trips/:tripId/reveal-contact": { who: "rider", reason: "audit matrix" },
+    "POST /admin/incidents/:incidentId/level": { ...v, severity: "low" },
+    "POST /trips/:tripId/route-quote": { ...v, stops: [] },
+    "POST /trips/:tripId/route-change/accept": { ...v, changeId: "rtc_matrix" },
+    "POST /trips/:tripId/route-change/refuse": { ...v, changeId: "rtc_matrix" },
+    "POST /trips/:tripId/route-change/withdraw": { ...v, changeId: "rtc_matrix" },
   };
   return bodies[route] ?? v;
 }

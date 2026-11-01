@@ -2,6 +2,8 @@ import { randomInt } from "node:crypto";
 import { checkTags } from "../admin/ratings.js";
 import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
 import { rideCheckHandlers } from "../safety/rideCheck.js";
+import { askUnexpectedEnd, rideCheckScanHandler } from "../safety/rideCheckServer.js";
+import { routeChangeExpireHandler } from "./routeChange.js";
 import { sql, type Updateable } from "kysely";
 import type { OfflineReason, TripsTable } from "../db/schema.js";
 import { markSetOffline } from "../drivers/offlineReason.js";
@@ -122,6 +124,8 @@ export type BookingRules = {
   stopFreeWaitMin: number;
   /** v0.18.8 (contract.json#arrivedWaiting.pin): the zone's pickupPin settings at booking time. */
   pin: PinSettings;
+  /** v0.18.9 (contract.json#onTrip.stopWaiting): the category's price per minute at a middle stop at booking time (absent before v0.18.9). */
+  stopWaitPerMin?: Money;
 };
 export type PinSettings = { required: boolean; maxAttempts: number; lockMinutes: number };
 const PIN_DEFAULTS = (contract as unknown as { configDefaults: { pickupPin: PinSettings } }).configDefaults.pickupPin;
@@ -163,6 +167,7 @@ export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string
     cancelRule: cancelRuleOf(docs, kind, categoryId),
     cancelDriverSharePct: sharePct(docs.driver?.cancelFees?.driverSharePct, DEFAULT_CANCEL_SHARE),
     waiting: priced?.categories[categoryId]?.waiting ?? null,
+    ...(priced?.categories[categoryId]?.stopWaitPerMin ? { stopWaitPerMin: priced.categories[categoryId]!.stopWaitPerMin } : {}),
     noShowDriverSharePct: sharePct(docs.driver?.waiting?.driverSharePct, DEFAULT_NO_SHOW_SHARE),
     waitDriverSharePct: sharePct(docs.driver?.waiting?.driverShareWaitPct, 100),
     cancelAfterArrivedIsNoShow: cancelAfterArrivedOf(docs.driver),
@@ -227,6 +232,8 @@ export function tripTerms(trip: Pick<TripRow, "booking_rules" | "currency"> & { 
     noShowFee: w.noShowFee,
     waitingRules: arrived?.rules ?? [],
     stopFreeWaitMin: kept.stopFreeWaitMin ?? 0,
+    // v0.18.9 (contract.json#onTrip.stopWaiting): the price per minute at a middle stop, so both apps show it.
+    ...(kept.stopWaitPerMin ? { stopWaitPerMin: kept.stopWaitPerMin } : {}),
     noShowDriverSharePct: kept.noShowDriverSharePct ?? DEFAULT_NO_SHOW_SHARE,
     cancelRule: kept.cancelRule ?? null,
     cancelDriverSharePct: kept.cancelDriverSharePct ?? DEFAULT_CANCEL_SHARE,
@@ -847,7 +854,9 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
     });
     await creditTrip(trx, ended, now);
     await releaseDriver(trx, driverId, now);
-    return ended;
+    // v0.18.9 (contract.json#onTrip.rideCheck): ended on board far from the drop-off → "Is everything OK?" to both.
+    await askUnexpectedEnd(trx, ended, now);
+    return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   }
 
   // Before boarding: back to dispatch (or a reservation back to the list), without this driver.
@@ -1041,6 +1050,11 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   await creditTrip(trx, done, now);
   if (done.payment_method === "cash") await settleCarriedFees(trx, done, cash + wallet, now);
   await releaseDriver(trx, done.driver_id, now);
+  // v0.18.9 (contract.json#onTrip.rideCheck): the driver ended the trip far from the drop-off → "Is everything OK?" to both.
+  if (who.actor === "driver") {
+    await askUnexpectedEnd(trx, done, now);
+    return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+  }
   return done;
 }
 
@@ -1180,5 +1194,10 @@ export const rideHandlers: Record<string, TimerHandler> = {
   [WAITING_NO_SHOW]: waitingAlertHandler("no_show_possible"),
   ...incidentHandlers,
   ...rideCheckHandlers,
+  // v0.18.9: without a router the off-route check measures straight lines (main.ts passes the road router). A literal key
+  // and a lazy call, so this object never touches rideCheckServer.js while the import cycle is still loading.
+  ride_check_scan: (trx, timer) => rideCheckScanHandler()(trx, timer),
+  // v0.18.9 (contract.json#onTrip.routeChange): the driver did not answer in time.
+  route_change_expire: (trx, timer) => routeChangeExpireHandler(trx, timer),
 };
 export type { Who };

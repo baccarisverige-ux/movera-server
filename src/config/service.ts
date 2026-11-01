@@ -328,6 +328,11 @@ export async function withLivePricing(ex: Executor, doc: ConfigDoc, zoneId: stri
     const extras: Doc = {};
     for (const key of ["farPickup", "rideTypes", "stopFreeWaitMin"]) if (driver?.waiting && key in driver.waiting) extras[key] = driver.waiting[key];
     next = { ...next, waiting: { ...waiting, ...extras, cancelAfterArrivedIsNoShow: typeof flag === "boolean" ? flag : CANCEL_AFTER_ARRIVED_DEFAULT } };
+    // v0.18.9 (contract.json#onTrip): the zone's ride check and route change settings live in the driver document; the
+    // rider gets the same numbers.
+    const own = driver as (Doc & { rideCheck?: unknown; routeChange?: unknown }) | null;
+    if (own && isObject(own.rideCheck)) next = { ...next, rideCheck: own.rideCheck };
+    if (own && isObject(own.routeChange)) next = { ...next, routeChange: own.routeChange };
   }
   return next;
 }

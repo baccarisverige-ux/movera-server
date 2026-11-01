@@ -252,6 +252,8 @@ describe("prices from the server: served config and TripProjection.terms (contra
       // v0.18.8 (G6, additive): the applied waiting rules (none before arrive) and the free minutes at each stop.
       waitingRules: [],
       stopFreeWaitMin: 0,
+      // v0.18.9 (G7, additive): the price per minute at a middle stop.
+      stopWaitPerMin: { amountMinor: 500, currency: "SEK" },
     };
     expect((await driverView(tripId)).terms).toEqual(terms);
     // Contract §2: the rider never sees the driver's shares.

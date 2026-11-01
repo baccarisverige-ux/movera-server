@@ -14,6 +14,7 @@ import { haversineKm } from "../maps/routing.js";
 import { etaForRead } from "./eta.js";
 import { afterRiderCancel, bookingRulesFor, newPin, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
 import type { PricingDocument } from "../rules/fare.js";
+import { checkMaxStops } from "./onTripSettings.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { raiseMaxFactor } from "../config/raiseLimit.js";
@@ -72,6 +73,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
     sameExtras(quote.price_extras, request as Record<string, unknown>);
   if (asksSeatOutsideChildSeat(request as Record<string, unknown>, body.categoryId)) throw badRequest(`${body.categoryId} has no child seat; book Child Seat.`, "seat_not_offered");
   if (!matches) throw badRequest("The ride does not match its price. Ask for a new one.", "quote_mismatch");
+  // v0.18.9 (contract.json#onTrip.maxStops): the zone's max now (an admin may have lowered it since the quote).
+  await checkMaxStops(trx, quote.zone_id, body.stops.length);
   if (!options.paymentMethods.includes(body.paymentMethod)) {
     throw badRequest(`${body.paymentMethod} is not available; pay with ${options.paymentMethods.join(" or ")}.`, "payment_method_not_available");
   }
@@ -193,7 +196,8 @@ export async function movePickup(trx: Trx, riderId: string, tripId: string, body
   if (problem !== null) throw badRequest(`The request is not valid: ${problem}.`, "invalid_body");
   const update = body as { expectedVersion: number; pickup?: Place; dropoff?: unknown; stops?: unknown; routeQuoteId?: unknown; paymentMethod?: unknown; paymentMethodId?: unknown };
   if (update.dropoff !== undefined || update.stops !== undefined || update.routeQuoteId !== undefined || update.paymentMethod !== undefined || update.paymentMethodId !== undefined) {
-    throw badRequest("Only the pickup can be moved for now; a destination change is not available yet.", "route_change_not_available");
+    // v0.18.9: a destination / stops change goes through POST /trips/{tripId}/route-quote and PATCH { routeQuoteId }.
+    throw badRequest("Send the new route as a route quote first (POST /trips/{tripId}/route-quote), then PATCH with routeQuoteId only.", "route_change_not_available");
   }
   if (update.pickup === undefined) throw badRequest("Nothing to change: send pickup.", "nothing_to_change");
   expectVersion(trip, update.expectedVersion, "rider");

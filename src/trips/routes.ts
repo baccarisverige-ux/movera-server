@@ -11,6 +11,7 @@ import { parseBody } from "../http/validate.js";
 import { nearbyVehicles } from "../riders/nearby.js";
 import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
 import { tripProjection } from "./projection.js";
+import { answerRouteChange, quoteRouteChange, requestRouteChange } from "./routeChange.js";
 import { tripPath } from "./path.js";
 import { EstimateRouter, type Router } from "../maps/routing.js";
 import { listMessages, sendMessage } from "./messages.js";
@@ -27,6 +28,9 @@ import { activeTrip, createTrip, getTrip, movePickup, raisePrice, riderCancel, r
 /** contract §3, §7: trips for the rider (with the deprecated /rides aliases), the rider profile, payment methods. */
 
 const NearbyQuery = z.object({ lat: z.coerce.number().min(-90).max(90), lng: z.coerce.number().min(-180).max(180) });
+
+const RouteChangeBody = z.object({ expectedVersion: z.number().int().min(1), routeQuoteId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
+const RouteChangeAnswer = z.object({ expectedVersion: z.number().int().min(1), changeId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
 
 export type TripDeps = { db: Db; router?: Router; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date; telephony?: TelephonyProvider };
 
@@ -108,9 +112,32 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   app.patch(`${API_PREFIX}/trips/:tripId`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
     const id = parseBody(z.object({ tripId: ID }), request.params).tripId;
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await movePickup(trx, who.subjectId, id, request.body ?? {}, now()), "rider", { now: now() }) }));
+    const raw = (request.body ?? {}) as Record<string, unknown>;
+    // v0.18.9 (contract.json#onTrip.routeChange): with routeQuoteId the rider confirms a route change.
+    const run = (trx: Parameters<typeof movePickup>[0]) =>
+      typeof raw["routeQuoteId"] === "string" && raw["pickup"] === undefined
+        ? requestRouteChange(trx, who.subjectId, id, parseBody(RouteChangeBody, raw), now())
+        : movePickup(trx, who.subjectId, id, raw, now());
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await run(trx), "rider", { now: now() }) }));
     return result.body;
   });
+
+  // v0.18.9 (contract.json#onTrip.routeChange): the price of a new route, then the driver's answer (or the rider's withdraw).
+  app.post(`${API_PREFIX}/trips/:tripId/route-quote`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const id = parseBody(z.object({ tripId: ID }), request.params).tripId;
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await quoteRouteChange(trx, roads, who.subjectId, id, request.body ?? {}, now()) }));
+    return reply.status(result.status).send(result.body);
+  });
+  for (const [verb, actor] of [["accept", "driver"], ["refuse", "driver"], ["withdraw", "rider"]] as const) {
+    app.post(`${API_PREFIX}/trips/:tripId/route-change/${verb}`, async (request) => {
+      const who = await authenticate(request, guard, [actor]);
+      const id = parseBody(z.object({ tripId: ID }), request.params).tripId;
+      const body = parseBody(RouteChangeAnswer, request.body);
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await answerRouteChange(trx, { actor, subjectId: who.subjectId }, id, verb, body, now()), actor, { now: now() }) }));
+      return result.body;
+    });
+  }
 
   app.post(`${API_PREFIX}/trips/:tripId/cancel-reason`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);

@@ -18,7 +18,8 @@ export const TICKET_CATEGORIES: readonly string[] = SUPPORT.categories;
 type Who = { actor: "rider" | "driver"; subjectId: string };
 type TicketRow = {
   ticket_id: string;
-  opened_by: "rider" | "driver";
+  /** v0.18.9: admin = an internal case an admin opened for the trip's rider or driver (contract.json#onTrip.adminTrip.new.case). */
+  opened_by: "rider" | "driver" | "admin";
   rider_id: string | null;
   driver_id: string | null;
   trip_id: string | null;
@@ -108,7 +109,8 @@ const ownColumn = (who: Who) => (who.actor === "rider" ? "rider_id" : "driver_id
 
 /** GET /support/tickets: the person's own tickets, newest change first. */
 export async function ownTickets(ex: Executor, who: Who, input: { cursor?: string; limit: number; status?: string }) {
-  let q = ex.selectFrom("support_tickets").selectAll().where(ownColumn(who), "=", who.subjectId);
+  // v0.18.9: cases an admin opened are internal; the person does not see them.
+  let q = ex.selectFrom("support_tickets").selectAll().where(ownColumn(who), "=", who.subjectId).where("opened_by", "!=", "admin");
   if (input.status) q = q.where("status", "=", input.status as TicketRow["status"]);
   if (input.cursor) {
     const c = readCursor(input.cursor);
@@ -122,7 +124,7 @@ export async function ownTickets(ex: Executor, who: Who, input: { cursor?: strin
 
 /** GET /support/tickets/{ticketId}: one own ticket with the messages (the admins' answers included). */
 export async function ownTicket(ex: Executor, who: Who, ticketId: string) {
-  const row = await ex.selectFrom("support_tickets").selectAll().where("ticket_id", "=", ticketId).where(ownColumn(who), "=", who.subjectId).executeTakeFirst();
+  const row = await ex.selectFrom("support_tickets").selectAll().where("ticket_id", "=", ticketId).where(ownColumn(who), "=", who.subjectId).where("opened_by", "!=", "admin").executeTakeFirst();
   if (row === undefined) throw notFound("No such ticket.", "ticket_not_found");
   return ticketView(row as TicketRow, await messagesOf(ex, ticketId));
 }
