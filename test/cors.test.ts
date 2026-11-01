@@ -29,6 +29,16 @@ describe("cross-site browser calls", () => {
     expect(res.headers["access-control-allow-methods"]).toContain("POST");
   });
 
+  it("lets the apps send X-Contract-Version (G6 driver app sends it on every call)", async () => {
+    const res = await app.inject({
+      method: "OPTIONS",
+      url: "/api/v1/auth/otp/request",
+      headers: { origin: PAGES, "access-control-request-method": "POST", "access-control-request-headers": "content-type, x-contract-version" },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(res.headers["access-control-allow-headers"]).toContain("X-Contract-Version");
+  });
+
   it("marks an allowed origin's answers and exposes the request id", async () => {
     const res = await app.inject({ method: "GET", url: "/healthz", headers: { origin: PAGES } });
     expect(res.headers["access-control-allow-origin"]).toBe(PAGES);
