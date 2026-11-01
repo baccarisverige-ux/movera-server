@@ -26,6 +26,14 @@ import { RIDERS_ONLINE_WINDOW_SECONDS, ridersOnlineByZone } from "../riders/pres
 
 /** No fix for this long: excluded from dispatch and shown as stale, still online (contract §12). */
 export const STALE_AFTER_SECONDS = 120;
+/**
+ * G5 live re-test (coordinator decision 2026-11-01; the contract has no field): a phone standing still re-sends its last
+ * OS fix, which keeps received_at fresh (presence and auto-offline use received_at). Where the PLACE matters the fix's own
+ * age counts too: dispatch candidacy, offer distance and riders' nearby cars only take a fix measured in the last 5 min
+ * (same as the default noFixMinutes); an ETA from a fix measured more than STALE_AFTER_SECONDS ago is "stale".
+ */
+export const DISPATCH_FIX_MAX_AGE_SECONDS = 300;
+export const ETA_FIX_MAX_AGE_SECONDS = STALE_AFTER_SECONDS;
 /** Fixes older than this, or from the future, are dropped. */
 const MAX_FIX_AGE_MS = 10 * 60 * 1000;
 const MAX_FIX_AHEAD_MS = 60 * 1000;
@@ -297,10 +305,12 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     zone_id: zone?.zoneId ?? null,
   };
   // Only a newer fix replaces the stored one (batches can arrive out of order on a bad connection).
+  // G5 live re-test: the same fix sent again (a phone standing still re-sends its last OS fix with the OS's own
+  // time) refreshes received_at, so the driver is neither stale (120 s) nor set offline while the app keeps sending.
   await trx
     .insertInto("driver_locations")
     .values(values)
-    .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<", latest.at))
+    .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<=", latest.at))
     .execute();
 
   // On a trip, the trip is the one the server knows, whatever tripId the app sent.
