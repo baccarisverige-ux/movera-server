@@ -7,7 +7,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { lockTrip, type TripRow } from "../db/tripLog.js";
 import { dispatchKm } from "../dispatch/engine.js";
 import { refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
-import { STALE_AFTER_SECONDS } from "../drivers/service.js";
+import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL, isTripStatus } from "../rules/transitions.js";
@@ -371,6 +371,7 @@ export async function nearbyDrivers(ex: Executor, trip: TripRow, input: { scope:
     .where("drivers.account_status", "=", "active")
     .where("drivers.online_status", "in", ["online", "on_trip"])
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
+    .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
     .execute();
   const radiusKm = input.scope === "radius" ? input.radiusKm ?? 5 : input.scope === "zone_and_neighbours" ? 25 : Infinity;
   const open = await ex.selectFrom("offers").select(["driver_id", "offer_id"]).where("trip_id", "=", trip.trip_id).where("status", "=", "open").execute();

@@ -12,7 +12,7 @@ import { liveDocument } from "../config/service.js";
 import { autoOfflineIfDue, COUNTING_KINDS } from "./autoOffline.js";
 import { queueOfferPush } from "./offerPush.js";
 import { endTripSends } from "./radarSends.js";
-import { STALE_AFTER_SECONDS } from "../drivers/service.js";
+import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { zoneChecker } from "../drivers/presence.js";
 import { pickupPayMinor, type PickupPayRate } from "../rules/pickupPay.js";
 import { applyCommand } from "../trips/commands.js";
@@ -128,6 +128,7 @@ async function freeDriversInZone(ex: Executor, zoneId: string, now: Date): Promi
     .where("drivers.online_status", "=", "online")
     .where("driver_locations.zone_id", "=", zoneId)
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
+    .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
     .executeTakeFirstOrThrow();
   return Number(row.n);
 }
@@ -149,6 +150,7 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc, now: Dat
     .where("drivers.account_status", "=", "active")
     .where("drivers.online_status", "in", ["online", "on_trip"])
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
+    .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
     .execute();
   const pool: Pool = { candidates: [], meta: new Map() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
@@ -418,8 +420,8 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
     const d = rows.find((r) => r.driver_id === driverId);
     if (!d) throw new ApiError("not_found", "No such driver.", { reason: "driver_not_found" });
     const busy = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", ASSIGNED_TRIP).executeTakeFirst();
-    const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "received_at"]).where("driver_id", "=", driverId).executeTakeFirst();
-    const fresh = fix && now.getTime() - fix.received_at.getTime() <= STALE_AFTER_SECONDS * 1000;
+    const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "received_at", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
+    const fresh = fix && now.getTime() - fix.received_at.getTime() <= STALE_AFTER_SECONDS * 1000 && now.getTime() - fix.measured_at.getTime() <= DISPATCH_FIX_MAX_AGE_SECONDS * 1000;
     if (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh) {
       throw new ApiError("conflict", `${d.first_name || driverId} cannot take a ride now.`, { reason: busy ? "driver_on_trip" : "driver_not_available" });
     }

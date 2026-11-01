@@ -9,6 +9,8 @@ import { seedDriver } from "../../src/drivers/service.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "../../src/jobs/maintenance.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { rideHandlers } from "../../src/trips/ride.js";
+import { isStaleFix } from "../../src/trips/eta.js";
+import { DISPATCH_FIX_MAX_AGE_SECONDS, ETA_FIX_MAX_AGE_SECONDS } from "../../src/drivers/service.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { approveDriverDocuments, approveVehicleDocuments, insertRider, insertTrip } from "../support/seed.js";
@@ -221,6 +223,36 @@ describe("G3-R1: no position for 5 minutes while online → set offline by the s
     const stored = await database.db.selectFrom("driver_locations").selectAll().where("driver_id", "=", SE.id).executeTakeFirstOrThrow();
     expect(clock.now.getTime() - stored.received_at.getTime()).toBeLessThan(120_000);
     expect(stored.measured_at.toISOString()).toBe(still.measuredAt);
+  });
+
+  for (const [minutes, offered] of [[6, false], [3, true]] as const) {
+    it(`checker: a ${minutes}-min-old fix re-sent every 10 s keeps him online; offered: ${offered}; its ETA is stale`, async () => {
+      await ensureMaintenanceTimers(database.db, clock.now);
+      const still = fix(SE.home);
+      expect((await goOnline(SE, still)).statusCode).toBe(200);
+      for (let i = 0; i < minutes * 6; i += 1) {
+        await advance(10);
+        expect((await call(app, "POST", "/driver/location", await headersOf(SE.phone, "driver"), { fixes: [still] })).statusCode).toBe(200);
+      }
+      expect((await row(SE)).online_status).toBe("online");
+      const stored = await database.db.selectFrom("driver_locations").selectAll().where("driver_id", "=", SE.id).executeTakeFirstOrThrow();
+      expect(isStaleFix(stored, clock.now)).toBe(true);
+      const rider = await headersOf(riderPhone, "rider");
+      const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+      const booked = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash" });
+      expect(booked.statusCode).toBe(201);
+      await worker.runDue();
+      const items = (await call(app, "GET", "/driver/offers", await headersOf(SE.phone, "driver"))).json().items as { tripId: string }[];
+      expect(items.map((o) => o.tripId).includes(booked.json().tripId)).toBe(offered);
+    });
+  }
+
+  it("checker: the fix-age limits sit next to STALE_AFTER_SECONDS", () => {
+    expect(DISPATCH_FIX_MAX_AGE_SECONDS).toBe(300);
+    expect(ETA_FIX_MAX_AGE_SECONDS).toBe(120);
+    const now = clock.now;
+    expect(isStaleFix({ received_at: now, measured_at: new Date(now.getTime() - 60_000) }, now)).toBe(false);
+    expect(isStaleFix({ received_at: now, measured_at: new Date(now.getTime() - 121_000) }, now)).toBe(true);
   });
 
   it("noFixMinutes 0 = never", async () => {

@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { sql } from "kysely";
 import type { Executor } from "../db/db.js";
+import { DISPATCH_FIX_MAX_AGE_SECONDS } from "../drivers/service.js";
 import { contract } from "../contract/contract.js";
 import { haversineKm } from "../maps/routing.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
@@ -55,6 +56,7 @@ export async function nearbyVehicles(ex: Executor, point: { lat: number; lng: nu
     .where("drivers.account_status", "=", "active")
     .where("drivers.online_status", "=", "online")
     .where("driver_locations.received_at", ">", new Date(now.getTime() - RULES.freshSeconds * 1000))
+    .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
     .where("driver_locations.lat", ">=", point.lat - dLat)
     .where("driver_locations.lat", "<=", point.lat + dLat)
     .where("driver_locations.lng", ">=", point.lng - dLng)
