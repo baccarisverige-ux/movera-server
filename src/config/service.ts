@@ -321,10 +321,13 @@ export async function withLivePricing(ex: Executor, doc: ConfigDoc, zoneId: stri
   const pricing = pick<PricingForApps>("pricing");
   let next = pricing ? appDocWithPricing(doc, document, pricing) : document;
   if (doc === "rider_app_config") {
-    const driver = pick<{ waiting?: { cancelAfterArrivedIsNoShow?: unknown } }>("driver_app_config");
+    const driver = pick<{ waiting?: Doc & { cancelAfterArrivedIsNoShow?: unknown } }>("driver_app_config");
     const flag = driver?.waiting?.cancelAfterArrivedIsNoShow;
     const waiting: Doc = isObject(next["waiting"]) ? next["waiting"] : {};
-    next = { ...next, waiting: { ...waiting, cancelAfterArrivedIsNoShow: typeof flag === "boolean" ? flag : CANCEL_AFTER_ARRIVED_DEFAULT } };
+    // v0.18.8 (contract.json#arrivedWaiting.rules.source): the zone's extra waiting rules too, for the rider's terms.
+    const extras: Doc = {};
+    for (const key of ["farPickup", "rideTypes", "stopFreeWaitMin"]) if (driver?.waiting && key in driver.waiting) extras[key] = driver.waiting[key];
+    next = { ...next, waiting: { ...waiting, ...extras, cancelAfterArrivedIsNoShow: typeof flag === "boolean" ? flag : CANCEL_AFTER_ARRIVED_DEFAULT } };
   }
   return next;
 }

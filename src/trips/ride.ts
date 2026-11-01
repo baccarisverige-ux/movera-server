@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { checkTags } from "../admin/ratings.js";
 import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
 import { rideCheckHandlers } from "../safety/rideCheck.js";
@@ -21,6 +22,8 @@ import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { nextStatus, RIDER_ONBOARD, type TripStatus } from "../rules/transitions.js";
 import { tripProjection } from "./projection.js";
+import { effectiveWaiting, waitingExtrasOf, type WaitingExtras, type WaitingRuleId } from "./waitingRules.js";
+import { inPolygon, type Polygon } from "../zones/geometry.js";
 
 /**
  * The ride after a driver accepted (contract §3, §3.5, §3.7): the driver's steps, the waiting clock and no-show,
@@ -30,7 +33,12 @@ import { tripProjection } from "./projection.js";
 
 type Money = { amountMinor: number; currency: string };
 type Place = { lat: number; lng: number };
-type Waiting = { arrivedAt: string; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money };
+type WaitingAlert = { kind: "paid_waiting_started" | "no_show_possible"; at: string };
+/** v0.18.8 (contract.json#arrivedWaiting): the effective rule numbers set at arrive, and the island alerts sent. */
+type Waiting = {
+  arrivedAt: string; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money;
+  rules?: WaitingRuleId[]; freeWaitMin?: number; perMin?: Money; noShowAfterMin?: number; alerts?: WaitingAlert[];
+};
 type Who = { actor: "rider" | "driver" | "admin"; subjectId: string };
 
 const C = contract as unknown as {
@@ -108,11 +116,29 @@ export type BookingRules = {
   cancelAfterArrivedIsNoShow: boolean;
   /** v0.18.7 (status item 4): the zone's pickup move limit at booking time. */
   maxPickupMoveMeters: number;
+  /** v0.18.8 (contract.json#arrivedWaiting.rules): the zone's far pickup / ride type rules at booking time (null: none, booked before v0.18.8). */
+  waitingRules: WaitingExtras | null;
+  /** v0.18.8: free minutes at each middle stop (0 = none). */
+  stopFreeWaitMin: number;
+  /** v0.18.8 (contract.json#arrivedWaiting.pin): the zone's pickupPin settings at booking time. */
+  pin: PinSettings;
 };
+export type PinSettings = { required: boolean; maxAttempts: number; lockMinutes: number };
+const PIN_DEFAULTS = (contract as unknown as { configDefaults: { pickupPin: PinSettings } }).configDefaults.pickupPin;
+const intIn = (v: unknown, lo: number, hi: number, fallback: number) => (typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi ? v : fallback);
+/** DriverAppConfig.pickupPin of a zone's live driver document, with the defaults (off, 5 tries, 5 min). */
+export function pinSettingsOf(doc: unknown): PinSettings {
+  const p = (doc as { pickupPin?: Record<string, unknown> } | undefined)?.pickupPin;
+  return {
+    required: typeof p?.["required"] === "boolean" ? p["required"] : PIN_DEFAULTS.required,
+    maxAttempts: intIn(p?.["maxAttempts"], 1, 10, PIN_DEFAULTS.maxAttempts),
+    lockMinutes: intIn(p?.["lockMinutes"], 1, 60, PIN_DEFAULTS.lockMinutes),
+  };
+}
 type AppDocs = {
   rider: { cancelFees?: { live?: Record<string, FeeRule>; reservation?: Record<string, FeeRule> } } | undefined;
   driver:
-    | { cancelFees?: { driverSharePct?: unknown }; waiting?: { driverSharePct?: unknown; driverShareWaitPct?: unknown; cancelAfterArrivedIsNoShow?: unknown }; booking?: { maxPickupMoveMeters?: unknown } }
+    | { currency?: unknown; cancelFees?: { driverSharePct?: unknown }; waiting?: { driverSharePct?: unknown; driverShareWaitPct?: unknown; cancelAfterArrivedIsNoShow?: unknown }; booking?: { maxPickupMoveMeters?: unknown }; pickupPin?: unknown }
     | undefined;
 };
 
@@ -141,7 +167,14 @@ export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string
     waitDriverSharePct: sharePct(docs.driver?.waiting?.driverShareWaitPct, 100),
     cancelAfterArrivedIsNoShow: cancelAfterArrivedOf(docs.driver),
     maxPickupMoveMeters: validPickupMoveMeters(docs.driver?.booking?.maxPickupMoveMeters) ?? DEFAULT_MAX_PICKUP_MOVE_METERS,
+    ...waitingAndPinOf(docs.driver, priced?.currency ?? (typeof docs.driver?.currency === "string" ? docs.driver.currency : null)),
   };
+}
+
+/** v0.18.8: the zone's waiting rules, stop free minutes and PIN switch of a driver document (none without a currency). */
+function waitingAndPinOf(driverDoc: AppDocs["driver"], currency: string | null): Pick<BookingRules, "waitingRules" | "stopFreeWaitMin" | "pin"> {
+  const extras = currency ? waitingExtrasOf(driverDoc?.waiting, currency) : null;
+  return { waitingRules: extras, stopFreeWaitMin: extras?.stopFreeWaitMin ?? 0, pin: pinSettingsOf(driverDoc) };
 }
 
 /** v0.18.7 (Q2): DriverAppConfig.waiting.cancelAfterArrivedIsNoShow of a zone's live driver document, default on. */
@@ -160,8 +193,16 @@ export async function pickupMoveLimitOf(ex: Executor, zoneId: string): Promise<n
 export async function rulesOf(ex: Executor, trip: TripRow): Promise<BookingRules> {
   const kept = trip.booking_rules as Partial<BookingRules> | null;
   if (kept !== null && typeof kept === "object" && kept.cancelRule !== undefined) {
-    const old = kept as Omit<BookingRules, "cancelAfterArrivedIsNoShow" | "maxPickupMoveMeters"> & Partial<BookingRules>;
-    return { ...old, cancelAfterArrivedIsNoShow: old.cancelAfterArrivedIsNoShow ?? DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW, maxPickupMoveMeters: old.maxPickupMoveMeters ?? DEFAULT_MAX_PICKUP_MOVE_METERS };
+    const old = kept as Omit<BookingRules, "cancelAfterArrivedIsNoShow" | "maxPickupMoveMeters" | "waitingRules" | "stopFreeWaitMin" | "pin"> & Partial<BookingRules>;
+    // v0.18.8: a trip booked before has no extra waiting rules, no free stop minutes and no PIN (as it was booked).
+    return {
+      ...old,
+      cancelAfterArrivedIsNoShow: old.cancelAfterArrivedIsNoShow ?? DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW,
+      maxPickupMoveMeters: old.maxPickupMoveMeters ?? DEFAULT_MAX_PICKUP_MOVE_METERS,
+      waitingRules: old.waitingRules ?? null,
+      stopFreeWaitMin: old.stopFreeWaitMin ?? 0,
+      pin: old.pin ?? { ...PIN_DEFAULTS, required: false },
+    };
   }
   return bookingRulesFor(ex, trip.zone_id, trip.kind, trip.category_id, null);
 }
@@ -170,16 +211,22 @@ export async function rulesOf(ex: Executor, trip: TripRow): Promise<BookingRules
  * v0.18.7 (contract.json#pickupWaiting.terms): TripProjection.terms, the rules this trip is charged by, from its kept
  * booking rules (null for a trip with none: the apps fall back to the served config).
  */
-export function tripTerms(trip: Pick<TripRow, "booking_rules" | "currency">): Record<string, unknown> | null {
+export function tripTerms(trip: Pick<TripRow, "booking_rules" | "currency"> & { waiting?: unknown }): Record<string, unknown> | null {
   const kept = trip.booking_rules as Partial<BookingRules> | null;
   if (kept === null || typeof kept !== "object" || !kept.waiting) return null;
-  const w = kept.waiting;
+  // v0.18.8 (contract.json#arrivedWaiting.projection.terms): from arrive the effective numbers of the applied rule.
+  const arrived = (trip.waiting ?? null) as Waiting | null;
+  const w = arrived?.freeWaitMin !== undefined
+    ? { freeWaitMin: arrived.freeWaitMin, perMin: arrived.perMin ?? kept.waiting.perMin, noShowAfterMin: arrived.noShowAfterMin ?? kept.waiting.noShowAfterMin, noShowFee: arrived.noShowFee ?? kept.waiting.noShowFee }
+    : kept.waiting;
   return {
     currency: trip.currency,
     freeWaitMin: w.freeWaitMin,
     waitPerMin: w.perMin,
     noShowAfterMin: w.noShowAfterMin,
     noShowFee: w.noShowFee,
+    waitingRules: arrived?.rules ?? [],
+    stopFreeWaitMin: kept.stopFreeWaitMin ?? 0,
     noShowDriverSharePct: kept.noShowDriverSharePct ?? DEFAULT_NO_SHOW_SHARE,
     cancelRule: kept.cancelRule ?? null,
     cancelDriverSharePct: kept.cancelDriverSharePct ?? DEFAULT_CANCEL_SHARE,
@@ -206,6 +253,8 @@ export async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSecond
     kind: trip.kind,
     surgeMultiplier: Number(trip.surge_multiplier),
     waitingChargedSeconds: chargedSeconds,
+    // v0.18.8: the effective per-minute price of the rule applied at arrive.
+    ...((trip.waiting as Waiting | null)?.perMin ? { waitingPerMin: (trip.waiting as Waiting).perMin! } : {}),
     // v0.7.1 (§3.8): from the driver's arrived-at-stop to leaving-stop, no free minutes.
     stopWaitSeconds: stopWaitSeconds(trip, now ?? new Date()),
     // The fixed route and the airport zones of the booking are priced again at the end.
@@ -464,7 +513,10 @@ async function spendWallet(trx: Trx, trip: TripRow, fareMinor: number, now: Date
 
 type StepCommand = "head_to_pickup" | "arrive" | "board" | "start_trip";
 
-export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place): Promise<TripRow> {
+/** A fresh 4-digit rider PIN (contract.json#arrivedWaiting.pin). */
+export const newPin = () => String(randomInt(0, 10_000)).padStart(4, "0");
+
+export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place, options: { skipPin?: boolean } = {}): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, expectedVersion, "driver");
   if (command === "arrive") {
@@ -474,13 +526,22 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
         throw new ApiError("invalid_transition", "You are not at the pickup yet.", { reason: "not_at_pickup", projection: tripProjection(trip, "driver") });
       }
     }
-    const rules = await waitingOf(trx, trip);
+    const base = await waitingOf(trx, trip);
+    const kept = await rulesOf(trx, trip);
+    // v0.18.8 (contract.json#arrivedWaiting.rules): the matching admin rule (airport / scheduled / event, far pickup) is
+    // picked now and its numbers are the trip's from here on.
+    const rules = effectiveWaiting(base, kept.waitingRules, {
+      kind: trip.kind,
+      pickupInAirportZone: extrasOf(trip.price_extras).pickupInAirportZone === true,
+      inEvent: kept.waitingRules !== null && kept.waitingRules.rideTypes.event.on ? await pickupInRunningEvent(trx, trip, kept.waitingRules, now) : false,
+      acceptPickupMeters: trip.accept_pickup_meters,
+    });
     // A reservation's clock starts at the booked time, not when an early driver arrives.
     const start = trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
     const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
     // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
     const noShowFee: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
-    const noShowShare = (await rulesOf(trx, trip)).noShowDriverSharePct;
+    const noShowShare = kept.noShowDriverSharePct;
     const waiting: Waiting = {
       arrivedAt: now.toISOString(),
       freeUntil: at(rules.freeWaitMin),
@@ -488,8 +549,20 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
       chargedSeconds: 0,
       noShowFee,
       noShowDriverShare: { amountMinor: feeSplit(noShowFee, noShowShare).driver, currency: trip.currency },
+      rules: rules.rules,
+      freeWaitMin: rules.freeWaitMin,
+      perMin: { amountMinor: rules.perMin.amountMinor, currency: trip.currency },
+      noShowAfterMin: rules.noShowAfterMin,
+      alerts: [],
     };
+    // v0.18.8 (contract.json#arrivedWaiting.alerts): the island messages at the end of the free wait and at the no-show time.
+    await scheduleTimer(trx, { kind: WAITING_PAID, refId: tripId, dueAt: new Date(waiting.freeUntil), payload: { arrivedAt: waiting.arrivedAt } });
+    await scheduleTimer(trx, { kind: WAITING_NO_SHOW, refId: tripId, dueAt: new Date(waiting.noShowAt), payload: { arrivedAt: waiting.arrivedAt } });
     return applyCommand(trx, trip, { command, actor: "driver", now, set: { arrived_at: now, waiting: JSON.stringify(waiting) } });
+  }
+  if ((command === "board" || command === "start_trip") && !options.skipPin && trip.pin_required && trip.pin_verified_at === null && ["arrived", "driver_to_pickup", "accepted"].includes(trip.status)) {
+    // v0.18.8 (contract.json#arrivedWaiting.pin): the rider's PIN first (checked by checkPin before this transaction).
+    throw new ApiError("invalid_transition", "Ask the rider for the 4-digit code first.", { reason: "pin_required", projection: tripProjection(trip, "driver") });
   }
   if (command === "board") {
     // The waiting clock stops: every second after the free wait is charged, 100 % the driver's (§3.5).
@@ -659,8 +732,9 @@ export async function noShow(trx: Trx, driverId: string, tripId: string, body: {
 
 /** The no-show itself (driver after the wait, or an admin who may waive the fee). */
 export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "admin", waive: boolean, now: Date): Promise<TripRow> {
-  const rules = await waitingOf(trx, trip);
-  const fee: Money | null = !waive && rules.noShowFee.amountMinor > 0 ? { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency } : null;
+  // v0.18.8: the no-show fee of the rule applied at arrive (waiting.noShowFee), else the category's.
+  const ruleFee = (trip.waiting as Waiting | null)?.noShowFee ?? (await waitingOf(trx, trip)).noShowFee;
+  const fee: Money | null = !waive && ruleFee.amountMinor > 0 ? { amountMinor: ruleFee.amountMinor, currency: trip.currency } : null;
   const share = (await rulesOf(trx, trip)).noShowDriverSharePct;
   // v0.18.7 (Q6): feeKind and the driver's part, so both apps show the amount.
   const cancellation = { actor, reasonCode: "rider_no_show", at: now.toISOString(), fee, ...(fee ? { feeStatus: "owed", feeKind: "no_show", driverShare: { amountMinor: feeSplit(fee, share).driver, currency: fee.currency } } : {}) };
@@ -708,7 +782,7 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   // reservation's clock runs from the booked time); a cancel seconds after arrival is the normal cancel fee.
   const waiting = trip.waiting as Waiting | null;
   if (trip.status === "arrived" && rules.cancelAfterArrivedIsNoShow && waiting !== null && now.getTime() >= Date.parse(waiting.freeUntil)) {
-    const noShow = (await waitingOf(ex, trip)).noShowFee.amountMinor;
+    const noShow = (waiting.noShowFee ?? (await waitingOf(ex, trip)).noShowFee).amountMinor;
     return noShow > 0 ? { fee: { amountMinor: noShow, currency: trip.currency }, kind: "no_show" } : null;
   }
   const amount = cancelFee({ kind, rule, fare: fare as Parameters<typeof cancelFee>[0]["fare"], minutesSinceAccept, minutesBeforePickup });
@@ -805,6 +879,13 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
       // v0.18.7 (Q1, Q4): the next driver gets his own rider summary at accept; the ETA starts again with him.
       rider_summary: null,
       eta: null,
+      // Checker round 1 (H1): the PIN state belongs to one driver; a new driver gets a fresh PIN (the rider sees the new one).
+      pin_verified_at: null,
+      pin_attempts: 0,
+      pin_locked_until: null,
+      pin_wrong_total: 0,
+      pin_blocked: false,
+      ...(trip.pin_required ? { pickup_pin: newPin() } : {}),
       accept_pickup_meters: null,
       pickup_pay_minor: 0,
       driver_earnings_minor: earnings,
@@ -1054,5 +1135,50 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
   return { driverId, period: input.period, timeZone: tz, periods };
 }
 
-export const rideHandlers: Record<string, TimerHandler> = { [NEAR_DROPOFF]: nearDropoffHandler, [DRIVER_SILENCE]: driverSilenceHandler, ...incidentHandlers, ...rideCheckHandlers };
+/* ---------------------------------------------------------------- waiting rules and island alerts (v0.18.8) */
+
+/**
+ * contract.json#arrivedWaiting.rules.match.event: an admin event of the trip's country that is on and running now (until
+ * endsAt + afterEndMin), with the pickup inside its polygon, or within radiusMeters of its location when it has none.
+ */
+async function pickupInRunningEvent(ex: Executor, trip: TripRow, rules: WaitingExtras, now: Date): Promise<boolean> {
+  const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirst();
+  if (!zone) return false;
+  const after = rules.rideTypes.event.afterEndMin * 60_000;
+  const events = await ex.selectFrom("area_events").select(["lat", "lng", "polygon", "ends_at"]).where("country", "=", zone.country).where("is_on", "=", true).where("starts_at", "<=", now).execute();
+  const pickup = trip.pickup as Place;
+  return events.some((e) => {
+    if (e.ends_at.getTime() + after < now.getTime()) return false;
+    const polygon = e.polygon as Polygon | null;
+    if (polygon) return inPolygon(pickup.lat, pickup.lng, polygon);
+    return haversineKm(pickup, { lat: e.lat, lng: e.lng }) * 1000 <= rules.rideTypes.event.radiusMeters;
+  });
+}
+
+export const WAITING_PAID = "waiting_paid";
+export const WAITING_NO_SHOW = "waiting_no_show";
+
+/** One island alert on the trip (no version change) and a trip_projection event, while the driver still waits from the same arrival. */
+function waitingAlertHandler(kind: WaitingAlert["kind"]): TimerHandler {
+  return async (trx, timer) => {
+    const trip = await lockTripNow(trx, timer.refId);
+    const waiting = trip?.waiting as Waiting | null | undefined;
+    if (!trip || trip.status !== "arrived" || !waiting) return;
+    if ((timer.payload as { arrivedAt?: string } | null)?.arrivedAt !== waiting.arrivedAt) return;
+    if ((waiting.alerts ?? []).some((a) => a.kind === kind)) return;
+    const next: Waiting = { ...waiting, alerts: [...(waiting.alerts ?? []), { kind, at: timer.firedAt.toISOString() }] };
+    await trx.updateTable("trips").set({ waiting: JSON.stringify(next) }).where("trip_id", "=", trip.trip_id).execute();
+    const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+    await appendTripEvent(trx, { tripId: trip.trip_id, kind: "trip_projection", version: updated.version, occurredAt: timer.firedAt, projection: tripProjection(updated, "admin", { sequence: Number(updated.sequence) + 1, now: timer.firedAt }) });
+  };
+}
+
+export const rideHandlers: Record<string, TimerHandler> = {
+  [NEAR_DROPOFF]: nearDropoffHandler,
+  [DRIVER_SILENCE]: driverSilenceHandler,
+  [WAITING_PAID]: waitingAlertHandler("paid_waiting_started"),
+  [WAITING_NO_SHOW]: waitingAlertHandler("no_show_possible"),
+  ...incidentHandlers,
+  ...rideCheckHandlers,
+};
 export type { Who };

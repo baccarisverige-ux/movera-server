@@ -42,7 +42,7 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
   const trips = await sql<Record<string, string>>`
     SELECT count(*) FILTER (WHERE status = 'completed') AS completed,
            count(*) FILTER (WHERE status LIKE 'cancelled_by_%') AS cancelled,
-           count(*) FILTER (WHERE status = 'no_show') AS no_shows,
+           count(*) FILTER (WHERE status = 'no_show' AND NOT coalesce(cancellation ? 'reversal', false)) AS no_shows,
            coalesce(sum(fare_minor) FILTER (WHERE status = 'completed'), 0) AS gross,
            coalesce(sum(commission_minor) FILTER (WHERE status = 'completed'), 0) AS commission,
            coalesce(sum(driver_earnings_minor) FILTER (WHERE status = 'completed'), 0) AS earnings,
@@ -66,7 +66,7 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
       SELECT trip_id FROM trips
        WHERE zone_id = ${zone.zone_id} AND coalesce(ended_at, updated_at) >= ${bounds} AND coalesce(ended_at, updated_at) < ${next}
          AND status IN ('completed', 'no_show', 'cancelled_by_rider', 'cancelled_by_driver', 'cancelled_by_admin', 'cancelled_by_system'))
-    SELECT (SELECT coalesce(sum(amount_minor), 0) FROM rider_fees WHERE status <> 'waived' AND trip_id IN (SELECT trip_id FROM day_trips)) AS fees,
+    SELECT (SELECT coalesce(sum(amount_minor), 0) FROM rider_fees WHERE status NOT IN ('waived', 'refunded') AND trip_id IN (SELECT trip_id FROM day_trips)) AS fees,
            (SELECT coalesce(sum(amount_minor), 0) FROM earnings_entries WHERE kind = 'fee_share' AND trip_id IN (SELECT trip_id FROM day_trips)) AS fee_share,
            (SELECT coalesce(sum(amount_minor), 0) FROM earnings_entries WHERE kind = 'tip' AND trip_id IN (SELECT trip_id FROM day_trips)) AS tips,
            (SELECT coalesce(sum(amount_minor), 0) FROM refunds WHERE status = 'done' AND trip_id IN (SELECT trip_id FROM day_trips)) AS refunds`.execute(ex);
