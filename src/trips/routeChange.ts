@@ -10,7 +10,7 @@ import { extrasOf } from "../rules/priceExtras.js";
 import { contract } from "../contract/contract.js";
 import { lockTripNow } from "../dispatch/runtime.js";
 import { expectVersion, lockOwnTrip, touchTrip } from "./commands.js";
-import { checkMaxStops, routeChangeSettings } from "./onTripSettings.js";
+import { checkMaxStops, routeChangeSettings, type RouteChangeSettings } from "./onTripSettings.js";
 import { tripProjection } from "./projection.js";
 import { pricingOf } from "./ride.js";
 
@@ -40,7 +40,9 @@ export type RouteChange = {
 };
 
 export const ROUTE_CHANGE_EXPIRE = "route_change_expire";
-const STATUSES: ReadonlySet<string> = new Set((contract as unknown as { onTrip: { routeChange: { statuses: string[] } } }).onTrip.routeChange.statuses);
+const RX = (contract as unknown as { onTrip: { routeChange: { statuses: string[]; beforePickupStatuses: string[] } } }).onTrip.routeChange;
+const STATUSES: ReadonlySet<string> = new Set(RX.statuses);
+const BEFORE_PICKUP: ReadonlySet<string> = new Set(RX.beforePickupStatuses);
 const QUOTE_TTL_MS = 5 * 60_000;
 const SAME_STOP_KM = 0.05;
 type StopVisit = { stopIndex: number; arrivedAt: string; leftAt?: string };
@@ -53,19 +55,27 @@ export function pendingChange(trip: Pick<TripRow, "route_change">): RouteChange 
   return change && change.status === "pending" ? change : null;
 }
 
-function checkOpen(trip: TripRow, on: boolean) {
+/** Checks the trip may change its route now; true when it has a fixed price that the change will leave (switch_to_normal). */
+function checkOpen(trip: TripRow, settings: RouteChangeSettings): boolean {
   if (!STATUSES.has(trip.status)) {
     throw new ApiError("invalid_transition", `The route cannot be changed while the trip is ${trip.status}.`, { projection: tripProjection(trip, "rider") });
   }
-  if (!on) throw conflict("route_change_off", "Changing the route is not available here.", trip);
+  if (!settings.on) throw conflict("route_change_off", "Changing the route is not available here.", trip);
+  // Owner rule 16 (G7 open question 1): admin switch routeChange.beforePickup.
+  if (!settings.beforePickup && BEFORE_PICKUP.has(trip.status)) throw conflict("route_change_before_pickup_off", "The route can be changed once you are in the car.", trip);
   if (pendingChange(trip)) throw conflict("route_change_pending", "The driver has not answered your last change yet.", trip);
-  if (extrasOf(trip.price_extras as Record<string, unknown>).fixedRouteId) throw conflict("route_change_fixed_route", "A fixed-price route cannot be changed.", trip);
+  const fixed = Boolean(extrasOf(trip.price_extras as Record<string, unknown>).fixedRouteId);
+  // Owner rule 16 (G7 open question 4): admin setting routeChange.fixedPriceTrips block | switch_to_normal.
+  if (fixed && settings.fixedPriceTrips === "block") throw conflict("route_change_fixed_route", "A fixed-price route cannot be changed.", trip);
+  return fixed;
 }
 
 /** The fare of a route with the trip's own pricing document, surge, car type and extras (stops without waiting). */
-function routeFare(doc: Parameters<typeof priceFare>[0], trip: TripRow, km: number, minutes: number, stops: number): Fare {
+function routeFare(doc: Parameters<typeof priceFare>[0], trip: TripRow, km: number, minutes: number, stops: number, normalPrice = false): Fare {
+  const extras = extrasOf(trip.price_extras as Record<string, unknown>);
+  if (normalPrice) delete extras.fixedRouteId;
   try {
-    return priceFare(doc, { categoryId: trip.category_id, km, minutes, kind: trip.kind, surgeMultiplier: Number(trip.surge_multiplier), stopWaitSeconds: Array.from({ length: stops }, () => 0), ...extrasOf(trip.price_extras as Record<string, unknown>) });
+    return priceFare(doc, { categoryId: trip.category_id, km, minutes, kind: trip.kind, surgeMultiplier: Number(trip.surge_multiplier), stopWaitSeconds: Array.from({ length: stops }, () => 0), ...extras });
   } catch (error) {
     if (error instanceof FareError) throw new ApiError("unavailable", "Prices for this area are not usable right now.", { reason: "pricing_invalid" });
     throw error;
@@ -98,7 +108,7 @@ export async function quoteRouteChange(trx: Trx, router: Router, riderId: string
   const req = body as { expectedVersion: number; dropoff?: Place; stops: Place[]; pickup?: Place };
   if (req.pickup !== undefined) throw badRequest("Move the pickup with PATCH /trips/{tripId} { pickup }.", "invalid_body");
   expectVersion(trip, req.expectedVersion, "rider");
-  checkOpen(trip, (await routeChangeSettings(trx, trip.zone_id)).on);
+  const leavesFixedPrice = checkOpen(trip, await routeChangeSettings(trx, trip.zone_id));
   await checkMaxStops(trx, trip.zone_id, req.stops.length);
   // Stops the driver already reached stay first, in the same order (their waiting is counted by index).
   const oldStops = (trip.stops as Place[]) ?? [];
@@ -112,7 +122,8 @@ export async function quoteRouteChange(trx: Trx, router: Router, riderId: string
   const leg = await router.route(points);
   const doc = await pricingOf(trx, trip);
   const current = routeFare(doc, trip, (trip.distance_meters ?? 0) / 1000, (trip.duration_seconds ?? 0) / 60, oldStops.length);
-  const next = routeFare(doc, trip, leg.distanceMeters / 1000, leg.durationSeconds / 60, req.stops.length);
+  // switch_to_normal: the new route at the normal price, measured against the fixed price the trip has now.
+  const next = routeFare(doc, trip, leg.distanceMeters / 1000, leg.durationSeconds / 60, req.stops.length, leavesFixedPrice);
   // Owner decision 5 (v0.4.3): never below half of (booked fare + the rider's raises); raises stay.
   const raises = ((trip.fare_lines as FareLine[]) ?? []).filter((l) => l.code === "rider_raise").reduce((s, l) => s + l.amount.amountMinor, 0);
   const floor = Math.ceil((Number(trip.booked_fare_minor) + raises) / 2);
@@ -120,7 +131,7 @@ export async function quoteRouteChange(trx: Trx, router: Router, riderId: string
   const raw = fare + next.total.amountMinor - current.total.amountMinor;
   const total = Math.max(raw, floor);
   const earnings = Math.max(0, Number(trip.driver_earnings_minor ?? 0) + next.driverEarnings.amountMinor - current.driverEarnings.amountMinor);
-  const lines = movedLines(trip, current, next, total - raw);
+  const lines = movedLines(trip, current, next, total - raw).filter((l) => !(leavesFixedPrice && l.code === "fixed_route" && l.amount.amountMinor === 0));
   const routeQuoteId = newId("rtq", now.getTime());
   const expiresAt = new Date(now.getTime() + QUOTE_TTL_MS);
   await trx
@@ -139,6 +150,7 @@ export async function quoteRouteChange(trx: Trx, router: Router, riderId: string
       difference_minor: total - fare,
       fare_lines: JSON.stringify(lines),
       driver_earnings_minor: earnings,
+      leaves_fixed_price: leavesFixedPrice,
       expires_at: expiresAt,
       created_at: now,
     })
@@ -152,6 +164,7 @@ export async function quoteRouteChange(trx: Trx, router: Router, riderId: string
     dropoff,
     stops: req.stops,
     expiresAt: expiresAt.toISOString(),
+    ...(leavesFixedPrice ? { leavesFixedPrice: true } : {}),
   };
 }
 
@@ -160,7 +173,10 @@ async function applyChange(trx: Trx, trip: TripRow, change: RouteChange, answere
   const quote = await trx.selectFrom("route_quotes").selectAll().where("route_quote_id", "=", change.routeQuoteId).executeTakeFirstOrThrow();
   const total = Number(quote.total_minor);
   const earnings = Number(quote.driver_earnings_minor);
+  const extras = { ...((trip.price_extras as Record<string, unknown> | null) ?? {}) };
+  if (quote.leaves_fixed_price) delete extras["fixedRouteId"];
   return touchTrip(trx, trip, {
+    ...(quote.leaves_fixed_price ? { price_extras: JSON.stringify(extras) } : {}),
     dropoff: JSON.stringify(quote.dropoff),
     stops: JSON.stringify(quote.stops),
     fare_minor: total,
@@ -190,7 +206,8 @@ export async function requestRouteChange(trx: Trx, riderId: string, tripId: stri
     throw new ApiError("version_mismatch", "The trip changed since this price. Ask for a new one.", { projection: tripProjection(trip, "rider") });
   }
   const settings = await routeChangeSettings(trx, trip.zone_id);
-  checkOpen(trip, settings.on);
+  const fixedNow = checkOpen(trip, settings);
+  if (Boolean(quote.leaves_fixed_price) !== fixedNow) throw new ApiError("version_mismatch", "The trip changed since this price. Ask for a new one.", { projection: tripProjection(trip, "rider") });
   await trx.updateTable("route_quotes").set({ used_at: now }).where("route_quote_id", "=", quote.route_quote_id).execute();
   const currency = trip.currency;
   const change: RouteChange = {

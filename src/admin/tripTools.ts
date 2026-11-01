@@ -54,8 +54,8 @@ export async function addTripNote(trx: Trx, who: Principal, tripId: string, body
   return noteView(row);
 }
 
-/** An internal support case for the trip's rider or driver, opened by the admin (the person's own list does not show it). */
-export async function openTripCase(trx: Trx, who: Principal, tripId: string, body: { about: "rider" | "driver"; category: string; subject: string; text: string }, now: Date) {
+/** A support case for the trip's rider or driver, opened by the admin: internal unless visibleToPerson (owner rule 16). */
+export async function openTripCase(trx: Trx, who: Principal, tripId: string, body: { about: "rider" | "driver"; category: string; subject: string; text: string; visibleToPerson?: boolean | undefined }, now: Date) {
   const trip = await adminTrip(trx, who, tripId);
   if (!TICKET_CATEGORIES.includes(body.category)) throw badRequest(`Unknown category ${body.category}.`, "invalid_body");
   const person = body.about === "rider" ? trip.rider_id : trip.driver_id;
@@ -66,6 +66,7 @@ export async function openTripCase(trx: Trx, who: Principal, tripId: string, bod
     .values({
       ticket_id: ticketId,
       opened_by: "admin",
+      visible_to_person: body.visibleToPerson === true,
       rider_id: body.about === "rider" ? person : null,
       driver_id: body.about === "driver" ? person : null,
       trip_id: tripId,
@@ -81,7 +82,7 @@ export async function openTripCase(trx: Trx, who: Principal, tripId: string, bod
     .executeTakeFirstOrThrow();
   const message = { message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: "support" as const, admin_id: who.subjectId, text: body.text, at: now };
   await trx.insertInto("ticket_messages").values(message).execute();
-  await audit(trx, { adminId: who.subjectId, action: "trip.case", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { ticketId, about: body.about }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "trip.case", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { ticketId, about: body.about, visibleToPerson: body.visibleToPerson === true }, at: now });
   return ticketView(row as never, [{ ...message, admin_name: null } as never]);
 }
 

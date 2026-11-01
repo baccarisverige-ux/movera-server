@@ -6,6 +6,7 @@ import { haversineKm, type LatLng, type Router } from "../maps/routing.js";
 import { isTripStatus, TERMINAL } from "../rules/transitions.js";
 import { tripProjection } from "../trips/projection.js";
 import { rideCheckSettings, type RideCheckSettings } from "../trips/onTripSettings.js";
+import { queueRideCheckPush } from "./rideCheckPush.js";
 
 /**
  * v0.18.9 (contract.json#onTrip.rideCheck, owner G7 decisions 1 + 2): the server starts ride checks itself from the
@@ -114,6 +115,8 @@ export async function askRideCheck(trx: Trx, trip: TripRow, trigger: string, set
       .onConflict((c) => c.doNothing())
       .execute();
     await scheduleTimer(trx, { kind: NO_ANSWER_KIND, refId: `${trip.trip_id}|${side}|${checkId}`, dueAt: answerBy });
+    // Owner rule 16 (G7 open question 3): always a push too, so a locked phone still asks.
+    await queueRideCheckPush(trx, trip, side, subject, { checkId, trigger, answerBy: answerBy.toISOString() }, now);
   }
   const check: ServerRideCheck = { checkId, trigger, askedAt: now.toISOString(), answerBy: answerBy.toISOString(), answers: {} };
   const log = { ...((trip.ride_check_log as Record<string, string> | null) ?? {}), [trigger]: now.toISOString() };

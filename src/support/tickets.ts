@@ -20,6 +20,8 @@ type TicketRow = {
   ticket_id: string;
   /** v0.18.9: admin = an internal case an admin opened for the trip's rider or driver (contract.json#onTrip.adminTrip.new.case). */
   opened_by: "rider" | "driver" | "admin";
+  /** v0.18.9 owner rule 16: an admin-opened case the person sees (absent on old rows = false). */
+  visible_to_person?: boolean;
   rider_id: string | null;
   driver_id: string | null;
   trip_id: string | null;
@@ -49,6 +51,7 @@ export function ticketView(row: TicketRow, messages?: readonly MessageRow[]) {
     updatedAt: row.updated_at.toISOString(),
     ...(row.zone_id ? { zoneId: row.zone_id } : {}),
     lastMessageAt: row.last_message_at.toISOString(),
+    ...(row.opened_by === "admin" ? { visibleToPerson: row.visible_to_person === true } : {}),
     ...(messages
       ? { messages: messages.map((m) => ({ messageId: m.message_id, from: m.sender, text: m.text, at: m.at.toISOString(), ...(m.sender === "support" && m.admin_name ? { adminName: m.admin_name } : {}) })) }
       : {}),
@@ -110,7 +113,7 @@ const ownColumn = (who: Who) => (who.actor === "rider" ? "rider_id" : "driver_id
 /** GET /support/tickets: the person's own tickets, newest change first. */
 export async function ownTickets(ex: Executor, who: Who, input: { cursor?: string; limit: number; status?: string }) {
   // v0.18.9: cases an admin opened are internal; the person does not see them.
-  let q = ex.selectFrom("support_tickets").selectAll().where(ownColumn(who), "=", who.subjectId).where("opened_by", "!=", "admin");
+  let q = ex.selectFrom("support_tickets").selectAll().where(ownColumn(who), "=", who.subjectId).where((eb) => eb.or([eb("opened_by", "!=", "admin"), eb("visible_to_person", "=", true)]));
   if (input.status) q = q.where("status", "=", input.status as TicketRow["status"]);
   if (input.cursor) {
     const c = readCursor(input.cursor);
@@ -124,7 +127,7 @@ export async function ownTickets(ex: Executor, who: Who, input: { cursor?: strin
 
 /** GET /support/tickets/{ticketId}: one own ticket with the messages (the admins' answers included). */
 export async function ownTicket(ex: Executor, who: Who, ticketId: string) {
-  const row = await ex.selectFrom("support_tickets").selectAll().where("ticket_id", "=", ticketId).where(ownColumn(who), "=", who.subjectId).where("opened_by", "!=", "admin").executeTakeFirst();
+  const row = await ex.selectFrom("support_tickets").selectAll().where("ticket_id", "=", ticketId).where(ownColumn(who), "=", who.subjectId).where((eb) => eb.or([eb("opened_by", "!=", "admin"), eb("visible_to_person", "=", true)])).executeTakeFirst();
   if (row === undefined) throw notFound("No such ticket.", "ticket_not_found");
   return ticketView(row as TicketRow, await messagesOf(ex, ticketId));
 }

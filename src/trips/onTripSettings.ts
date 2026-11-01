@@ -17,7 +17,8 @@ type OnTripContract = {
 const C = contract as unknown as OnTripContract;
 
 export type RideCheckSettings = { on: boolean; stopMinutes: number; offRouteKm: number; endFarMeters: number; noAnswerSeconds: number; repeatMinutes: number; noAnswerAlarm: boolean };
-export type RouteChangeSettings = { on: boolean; driverCanRefuse: boolean; answerSeconds: number };
+export type FixedPriceTrips = "block" | "switch_to_normal";
+export type RouteChangeSettings = { on: boolean; driverCanRefuse: boolean; answerSeconds: number; beforePickup: boolean; fixedPriceTrips: FixedPriceTrips };
 
 export const RIDE_CHECK_DEFAULTS: RideCheckSettings = C.configDefaults.rideCheck;
 export const ROUTE_CHANGE_DEFAULTS: RouteChangeSettings = C.configDefaults.routeChange;
@@ -48,7 +49,15 @@ export function rideCheckSettingsOf(driverDoc: unknown): RideCheckSettings {
 export function routeChangeSettingsOf(driverDoc: unknown): RouteChangeSettings {
   const r = isObj(driverDoc) && isObj(driverDoc["routeChange"]) ? driverDoc["routeChange"] : {};
   const d = ROUTE_CHANGE_DEFAULTS;
-  return { on: bool(r["on"], d.on), driverCanRefuse: bool(r["driverCanRefuse"], d.driverCanRefuse), answerSeconds: Math.round(num(r["answerSeconds"], RX_RANGES["answerSeconds"], d.answerSeconds)) };
+  const fixed = r["fixedPriceTrips"];
+  return {
+    on: bool(r["on"], d.on),
+    driverCanRefuse: bool(r["driverCanRefuse"], d.driverCanRefuse),
+    answerSeconds: Math.round(num(r["answerSeconds"], RX_RANGES["answerSeconds"], d.answerSeconds)),
+    // Owner rule 16 (2026-11-01, G7 open questions 1 and 4): admin settings with the defaults that keep the earlier behaviour.
+    beforePickup: bool(r["beforePickup"], d.beforePickup),
+    fixedPriceTrips: fixed === "block" || fixed === "switch_to_normal" ? fixed : d.fixedPriceTrips,
+  };
 }
 
 const maxStopsIn = (doc: unknown): number | null => {

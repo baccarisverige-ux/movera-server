@@ -658,7 +658,12 @@ _ot = c['onTrip']
 _rcfg = rcfg
 import re
 if not (c['configDefaults']['rideCheck'] == dcfg['rideCheck'] == _rcfg['rideCheck']) or c['configDefaults']['rideCheck']['offRouteKm'] != 2: bad += 1; print('RIDE CHECK defaults (owner decision 2: 2 km)')
-if not (c['configDefaults']['routeChange'] == dcfg['routeChange'] == _rcfg['routeChange'] == {'on': True, 'driverCanRefuse': True, 'answerSeconds': 60}): bad += 1; print('ROUTE CHANGE defaults')
+if not (c['configDefaults']['routeChange'] == dcfg['routeChange'] == _rcfg['routeChange'] == {'on': True, 'driverCanRefuse': True, 'answerSeconds': 60, 'beforePickup': True, 'fixedPriceTrips': 'block'}): bad += 1; print('ROUTE CHANGE defaults')
+# v0.18.9 owner rule 16: the 4 settings of the G7 open questions.
+if set(_ot['routeChange']['settings']['fields']) != set(c['configDefaults']['routeChange']): bad += 1; print('ROUTE CHANGE fields')
+if _ot['routeChange']['settings']['values']['fixedPriceTrips'] != ['block', 'switch_to_normal']: bad += 1; print('ROUTE CHANGE fixedPriceTrips values')
+if not set(_ot['routeChange']['beforePickupStatuses']) < set(_ot['routeChange']['statuses']): bad += 1; print('ROUTE CHANGE beforePickupStatuses')
+if 'route_change_before_pickup_off' not in _ot['errors'] or _ot['rideCheck']['push']['kind'] != 'ride_check': bad += 1; print('G7 rule 16 errors / push')
 for _k, (_lo, _hi) in _ot['rideCheck']['settings']['ranges'].items():
     if not (_lo <= c['configDefaults']['rideCheck'][_k] <= _hi): bad += 1; print('RIDE CHECK range', _k)
 if set(_ot['rideCheck']['settings']['fields']) != set(c['configDefaults']['rideCheck']): bad += 1; print('RIDE CHECK fields')

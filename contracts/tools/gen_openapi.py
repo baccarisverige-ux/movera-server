@@ -204,6 +204,7 @@ S["RouteQuote"] = obj({"routeQuoteId": ref("Id"), "tripId": ref("Id"),
                        "difference": {"allOf": [ref("Money")], "description": "total − current fare (may be negative). Re-quoting "
                                       "the route the trip already has gives 0; a route change never refunds an offer raise."},
                        "fareLines": arr(ref("FareLine")), "dropoff": ref("Place"), "stops": arr(ref("Place")),
+                       "leavesFixedPrice": b("v0.18.9 (owner rule 16): true when the trip has a fixed price and the zone's routeChange.fixedPriceTrips is switch_to_normal: on accept the trip is priced like a normal trip."),
                        "expiresAt": ref("Timestamp")},
                       ["routeQuoteId", "tripId", "total", "difference", "dropoff", "stops", "expiresAt"],
                       "Price for a route change after request; apply with PATCH /trips/{tripId}. Priced from the booking "
@@ -375,6 +376,7 @@ S["SupportTicket"] = obj({"ticketId": ref("Id"), "tripId": ref("Id"), "openedBy"
                           "createdAt": ref("Timestamp"), "updatedAt": ref("Timestamp"),
                           "zoneId": {"allOf": [ref("Id")], "description": "v0.9.0: the trip's zone, else the person's first zone; admins see tickets of their zones."},
                           "lastMessageAt": ref("Timestamp"),
+                          "visibleToPerson": b("v0.18.9: admin views only; a case opened by support that the rider / driver sees in their own list (contract.json#onTrip.adminTrip.new.case)."),
                           "messages": arr(ref("TicketMessage"), description="v0.9.0: only on GET /support/tickets/{ticketId} and GET /admin/tickets/{ticketId}, oldest first.")},
                          ["ticketId", "openedBy", "category", "subject", "status", "createdAt", "updatedAt"])
 S["TicketMessage"] = obj({"messageId": ref("Id"), "from": s(enum=["rider", "driver", "support"]), "text": s(minLength=1, maxLength=5000),
@@ -2344,6 +2346,8 @@ S["RouteChangeSettings"] = obj(OrderedDict([
     ("on", {**b("v0.18.9: " + _RX["settings"]["fields"]["on"]), "default": _RXD["on"]}),
     ("driverCanRefuse", {**b("v0.18.9: " + _RX["settings"]["fields"]["driverCanRefuse"]), "default": _RXD["driverCanRefuse"]}),
     ("answerSeconds", {**i("v0.18.9: " + _RX["settings"]["fields"]["answerSeconds"], minimum=15, maximum=300), "default": _RXD["answerSeconds"]}),
+    ("beforePickup", {**b("v0.18.9: " + _RX["settings"]["fields"]["beforePickup"]), "default": _RXD["beforePickup"]}),
+    ("fixedPriceTrips", {**s("v0.18.9: " + _RX["settings"]["fields"]["fixedPriceTrips"], enum=_RX["settings"]["values"]["fixedPriceTrips"]), "default": _RXD["fixedPriceTrips"]}),
 ]), desc="v0.18.9: " + _RX["settings"]["where"])
 S["DriverAppConfig"]["properties"]["routeChange"] = ref("RouteChangeSettings")
 S["RiderAppConfig"]["properties"]["routeChange"] = {"allOf": [ref("RouteChangeSettings")], "description": "v0.18.9: copied from the zone's driver document when served (GET /rider/config)."}
@@ -2394,7 +2398,7 @@ S["AdminTripNoteList"] = obj({"items": arr(ref("AdminTripNote"))}, ["items"])
 S["AdminTripNoteCommand"] = obj({"text": s(minLength=1, maxLength=2000)}, ["text"])
 op("get", "/admin/trips/{tripId}/notes", "adminTripNotes", "The admins' notes on a trip", ["admin"], "Admin · Trips", params=TID, ok=(200, "AdminTripNoteList"), permission="trips.read", desc="v0.18.9: " + OT["adminTrip"]["new"]["notes"])
 op("post", "/admin/trips/{tripId}/notes", "adminAddTripNote", "Add a note to a trip", ["admin"], "Admin · Trips", params=TID, body="AdminTripNoteCommand", ok=(201, "AdminTripNote"), mutation=True, permission="trips.annotate", desc="v0.18.9: " + OT["adminTrip"]["new"]["notes"])
-S["AdminTripCaseCommand"] = obj({"about": s(enum=["rider", "driver"]), "category": s(pattern="^[a-z][a-z0-9_]{0,63}$"), "subject": s(minLength=1, maxLength=200), "text": s(minLength=1, maxLength=5000)}, ["about", "category", "subject", "text"])
+S["AdminTripCaseCommand"] = obj({"about": s(enum=["rider", "driver"]), "category": s(pattern="^[a-z][a-z0-9_]{0,63}$"), "subject": s(minLength=1, maxLength=200), "text": s(minLength=1, maxLength=5000), "visibleToPerson": b("v0.18.9 (owner rule 16): true = the person sees the case in their own help list; false (default) = internal.")}, ["about", "category", "subject", "text"])
 op("post", "/admin/trips/{tripId}/case", "adminOpenTripCase", "Open a support case for the trip's rider or driver", ["admin"], "Admin · Trips", params=TID, body="AdminTripCaseCommand", ok=(201, "SupportTicket"), mutation=True, permission="support.reply", desc="v0.18.9: " + OT["adminTrip"]["new"]["case"])
 S["AdminRevealContactCommand"] = obj({"who": s(enum=["rider", "driver"]), "reason": s(minLength=1, maxLength=500)}, ["who", "reason"])
 S["RevealedContact"] = obj({"who": s(enum=["rider", "driver"]), "phone": s(), "revealedAt": ref("Timestamp")}, ["who", "phone", "revealedAt"])

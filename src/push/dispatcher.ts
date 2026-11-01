@@ -132,7 +132,8 @@ export class PushDispatcher {
   }
 
   private async pushOne(row: PushRow, now: Date): Promise<void> {
-    if (row.audience === "rider") {
+    // v0.18.9 owner rule 16: the ride-check push is safety and always goes, whatever the ride-updates choice.
+    if (row.audience === "rider" && row.kind !== "ride_check") {
       const rider = await this.db.selectFrom("riders").select("consents").where("rider_id", "=", row.subject_id).executeTakeFirst();
       if ((rider?.consents as { rideUpdates?: unknown } | null | undefined)?.rideUpdates === false) return;
     }

@@ -772,6 +772,8 @@ export interface PayoutsTable {
 export interface SupportTicketsTable {
   ticket_id: string;
   opened_by: "rider" | "driver" | "admin";
+  /** v0.18.9 owner rule 16: a case opened by an admin that the person sees in their own list. */
+  visible_to_person: ColumnType<boolean, boolean | undefined, boolean>;
   rider_id: string | null;
   driver_id: string | null;
   trip_id: string | null;
@@ -1019,6 +1021,8 @@ export interface RouteQuotesTable {
   difference_minor: ColumnType<string, number | string, number | string>;
   fare_lines: ColumnType<unknown, string, string>;
   driver_earnings_minor: ColumnType<string, number | string, number | string>;
+  /** v0.18.9 owner rule 16: the trip had a fixed price and the zone's fixedPriceTrips was switch_to_normal. */
+  leaves_fixed_price: ColumnType<boolean, boolean | undefined, boolean>;
   expires_at: Timestamp;
   used_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   created_at: Timestamp;

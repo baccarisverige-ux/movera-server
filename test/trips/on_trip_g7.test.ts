@@ -148,7 +148,7 @@ describe("settings with defaults (owner rule 16, decision 2: 2 km)", () => {
   it("ride check and route change defaults; a value outside its range reads as the default", () => {
     expect(rideCheckSettingsOf(undefined)).toEqual({ on: true, stopMinutes: 2, offRouteKm: 2, endFarMeters: 500, noAnswerSeconds: 120, repeatMinutes: 10, noAnswerAlarm: false });
     expect(rideCheckSettingsOf({ rideCheck: { offRouteKm: 99, stopMinutes: 5, on: "yes" } })).toMatchObject({ offRouteKm: 2, stopMinutes: 5, on: true });
-    expect(routeChangeSettingsOf({ routeChange: { answerSeconds: 5, driverCanRefuse: false } })).toEqual({ on: true, driverCanRefuse: false, answerSeconds: 60 });
+    expect(routeChangeSettingsOf({ routeChange: { answerSeconds: 5, driverCanRefuse: false } })).toEqual({ on: true, driverCanRefuse: false, answerSeconds: 60, beforePickup: true, fixedPriceTrips: "block" });
     expect(MAX_STOPS_DEFAULT).toBe(3);
   });
 
@@ -455,6 +455,107 @@ describe("items 6 + 7: the admin's trip tools", () => {
     const done = await call(app, "POST", `/admin/trips/${trip.tripId}/complete`, admin.headers, { expectedVersion: after.version, note: "Finished by support" });
     expect(done.statusCode, done.body).toBe(200);
     expect(done.json().status).toBe("completed");
+  });
+});
+
+describe("owner rule 16 (2026-11-01): the four G7 open questions as admin settings", () => {
+  it("settings: beforePickup (default true) and fixedPriceTrips (default block); a bad value reads as the default", () => {
+    expect(routeChangeSettingsOf(undefined)).toMatchObject({ beforePickup: true, fixedPriceTrips: "block" });
+    expect(routeChangeSettingsOf({ routeChange: { beforePickup: false, fixedPriceTrips: "switch_to_normal" } })).toMatchObject({ beforePickup: false, fixedPriceTrips: "switch_to_normal" });
+    expect(routeChangeSettingsOf({ routeChange: { beforePickup: "no", fixedPriceTrips: "meter" } })).toMatchObject({ beforePickup: true, fixedPriceTrips: "block" });
+  });
+
+  it("route change before pickup: allowed by default (driver on the way); beforePickup off → only once on board (SE and FR)", async () => {
+    const trip = await accepted();
+    const early = await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: trip.version, stops: [GAMLA_STAN] });
+    expect(early.statusCode, early.body).toBe(201);
+    await publish("driver_app_config", "Z001", driverDoc({ routeChange: { beforePickup: false } }));
+    const blocked = await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: trip.version, stops: [GAMLA_STAN] });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ reason: "route_change_before_pickup_off" });
+    // A price made while it was allowed cannot be confirmed after the admin switched it off.
+    const late = await call(app, "PATCH", `/trips/${trip.tripId}`, rider, { expectedVersion: trip.version, routeQuoteId: early.json().routeQuoteId });
+    expect(late.json()).toMatchObject({ reason: "route_change_before_pickup_off" });
+    const v = await onBoard(trip);
+    expect((await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: v, stops: [GAMLA_STAN] })).statusCode).toBe(201);
+    await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", trip.tripId).execute();
+    await publish("driver_app_config", "FR-PC", driverDoc({ routeChange: { beforePickup: false } }, true));
+    const paris = await forcedParis();
+    expect((await call(app, "POST", `/trips/${paris.tripId}/route-quote`, rider, { expectedVersion: paris.version, stops: [] })).json()).toMatchObject({ reason: "route_change_before_pickup_off" });
+  });
+
+  it("fixed-price trips: block (default) refuses; switch_to_normal prices the new route normally and drops the fixed price on accept", async () => {
+    const pricing = sample("pricing_document");
+    await publish("pricing", "Z001", { ...pricing, fixedRoutes: [{ id: "R1", from: "Norrmalm", to: "Södermalm", categoryId: "economy", price: { amountMinor: 39900, currency: "SEK" } }] });
+    try {
+      const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"], fixedRouteId: "R1" })).json().quotes[0];
+      const res = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash", fixedRouteId: "R1" });
+      expect(res.statusCode, res.body).toBe(201);
+      await worker.runDue();
+      const [offer] = (await call(app, "GET", "/driver/offers", driverA.headers)).json().items;
+      const acc = await call(app, "POST", `/offers/${offer.offerId}/accept`, driverA.headers, { expectedVersion: offer.version });
+      const tripId = res.json().tripId as string;
+      expect(acc.json().fareLines.map((l: Doc) => l.code)).toContain("fixed_route");
+      const v = await onBoard({ tripId, version: acc.json().version });
+      const blocked = await call(app, "POST", `/trips/${tripId}/route-quote`, rider, { expectedVersion: v, dropoff: BROMMA, stops: [] });
+      expect(blocked.statusCode).toBe(409);
+      expect(blocked.json()).toMatchObject({ reason: "route_change_fixed_route" });
+      await publish("driver_app_config", "Z001", driverDoc({ routeChange: { fixedPriceTrips: "switch_to_normal" } }));
+      const q = await call(app, "POST", `/trips/${tripId}/route-quote`, rider, { expectedVersion: v, dropoff: BROMMA, stops: [] });
+      expect(q.statusCode, q.body).toBe(201);
+      expect(q.json().leavesFixedPrice).toBe(true);
+      expect(q.json().fareLines.map((l: Doc) => l.code)).not.toContain("fixed_route");
+      const asked = (await call(app, "PATCH", `/trips/${tripId}`, rider, { expectedVersion: v, routeQuoteId: q.json().routeQuoteId })).json();
+      expect(asked.routeChange.status).toBe("pending");
+      const driverSide = await view(tripId, driverA.headers);
+      const done = await step(tripId, "route-change/accept", driverSide.version, { changeId: driverSide.routeChange.changeId });
+      expect(done.statusCode, done.body).toBe(200);
+      expect(done.json()).toMatchObject({ dropoff: BROMMA, fare: q.json().total });
+      const row = await database.db.selectFrom("trips").select("price_extras").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+      expect((row.price_extras as Doc)["fixedRouteId"]).toBeUndefined();
+    } finally {
+      await publish("pricing", "Z001", pricing);
+    }
+  });
+
+  it("admin case visibility: internal by default; visibleToPerson true shows it in the person's own help list", async () => {
+    const trip = await accepted();
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const internal = (await call(app, "POST", `/admin/trips/${trip.tripId}/case`, admin.headers, { about: "rider", category: "safety", subject: "Internal", text: "Team only." })).json();
+    expect(internal.visibleToPerson).toBe(false);
+    const shown = await call(app, "POST", `/admin/trips/${trip.tripId}/case`, admin.headers, { about: "driver", category: "safety", subject: "About your trip", text: "Please tell us what happened.", visibleToPerson: true });
+    expect(shown.statusCode, shown.body).toBe(201);
+    expect(shown.json()).toMatchObject({ openedBy: "admin", visibleToPerson: true });
+    const own = (await call(app, "GET", "/support/tickets", driverA.headers)).json().items.map((t: Doc) => t.ticketId);
+    expect(own).toContain(shown.json().ticketId);
+    expect(own).not.toContain(internal.ticketId);
+    const one = await call(app, "GET", `/support/tickets/${shown.json().ticketId}`, driverA.headers);
+    expect(one.statusCode).toBe(200);
+    expect(one.json().messages).toMatchObject([{ from: "support", text: "Please tell us what happened." }]);
+    expect((await call(app, "GET", `/support/tickets/${internal.ticketId}`, rider)).statusCode).toBe(404);
+    expect((await call(app, "POST", `/admin/trips/${trip.tripId}/case`, admin.headers, { about: "rider", category: "safety", subject: "x", text: "y", visibleToPerson: "yes" })).statusCode).toBe(400);
+  });
+
+  it("ride-check push: every server check is also pushed to the rider and the driver, in their language, until answerBy", async () => {
+    await database.db.updateTable("riders").set({ consents: JSON.stringify({ rideUpdates: false }) }).execute();
+    const trip = await accepted();
+    await onBoard(trip);
+    await moveTo(FAR_EAST, 20);
+    await worker.runDue();
+    const check = (await view(trip.tripId, rider)).rideCheck;
+    expect(check.trigger).toBe("off_route");
+    const pushes = await database.db.selectFrom("notifications").selectAll().where("trip_id", "=", trip.tripId).where("kind", "=", "ride_check").orderBy("audience").execute();
+    expect(pushes.map((n) => n.audience)).toEqual(["driver", "rider"]);
+    for (const n of pushes) {
+      expect(n.bell).toBe(false);
+      expect(n.push_until?.toISOString()).toBe(check.answerBy);
+      expect(n.data).toMatchObject({ checkId: check.checkId, trigger: "off_route", tripId: trip.tripId });
+      expect(["Är allt OK?", "Is everything OK?", "Tout va bien ?"]).toContain(n.title);
+    }
+    expect(pushes.find((n) => n.audience === "rider")!.deep_link).toBe(`movera-rider://trip/${trip.tripId}`);
+    // Not a bell notice: never in the person's notification list.
+    expect((await call(app, "GET", "/notifications", rider)).json().items.map((n: Doc) => n.kind)).not.toContain("ride_check");
+    await database.db.updateTable("riders").set({ consents: JSON.stringify({}) }).execute();
   });
 });
 

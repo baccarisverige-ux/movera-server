@@ -396,6 +396,8 @@
   "routeChange": {
     "on": true,
     "driverCanRefuse": true,
-    "answerSeconds": 60
+    "answerSeconds": 60,
+    "beforePickup": true,
+    "fixedPriceTrips": "block"
   }
 }

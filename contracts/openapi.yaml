@@ -739,10 +739,14 @@ paths:
         { routeQuoteId, tripId, total, difference, fareLines, dropoff, stops, expiresAt } (the new price; no driver money).
         dropoff absent = the current one. Valid 5 minutes. The new stops may not pass the zone''s maxStops (400 too_many_stops,
         details maxStops=N). Stops the driver already tapped arrived at must stay first, in the same order (400 visited_stop_changed).
-        One pending change at a time (409 route_change_pending). A fixed-route trip cannot change its route (409 route_change_fixed_route).
-        An expired or used route quote → 409 route_quote_expired / route_quote_used; a route quote made at another trip version
-        → 409 version_mismatch on PATCH. Zone switch off → 409 route_change_off; status outside statuses → 409 invalid_transition.
-        accept / refuse with another changeId or a change no longer pending → 409 route_change_not_pending.'
+        One pending change at a time (409 route_change_pending). A fixed-route trip: fixedPriceTrips block → 409 route_change_fixed_route;
+        switch_to_normal → the route quote prices the new route at the normal price (total = current fare + (normal price
+        of the new route − fixed price), never below half of (booked fare + raises)); RouteQuote.leavesFixedPrice true; on
+        accept the trip''s fixedRouteId is removed, so the end fare is the normal price. An expired or used route quote →
+        409 route_quote_expired / route_quote_used; a route quote made at another trip version → 409 version_mismatch on PATCH.
+        Zone switch off → 409 route_change_off; status outside statuses → 409 invalid_transition. accept / refuse with another
+        changeId or a change no longer pending → 409 route_change_not_pending. beforePickup false and the trip still before
+        pickup (beforePickupStatuses) → 409 route_change_before_pickup_off.'
   /trips/{tripId}/cancel:
     post:
       operationId: cancelTrip
@@ -11788,10 +11792,14 @@ paths:
         destination. 4. Rider may withdraw a pending change: POST /trips/{tripId}/route-change/withdraw { expectedVersion,
         changeId }. The new stops may not pass the zone''s maxStops (400 too_many_stops, details maxStops=N). Stops the driver
         already tapped arrived at must stay first, in the same order (400 visited_stop_changed). One pending change at a time
-        (409 route_change_pending). A fixed-route trip cannot change its route (409 route_change_fixed_route). An expired
-        or used route quote → 409 route_quote_expired / route_quote_used; a route quote made at another trip version → 409
-        version_mismatch on PATCH. Zone switch off → 409 route_change_off; status outside statuses → 409 invalid_transition.
-        accept / refuse with another changeId or a change no longer pending → 409 route_change_not_pending.'
+        (409 route_change_pending). A fixed-route trip: fixedPriceTrips block → 409 route_change_fixed_route; switch_to_normal
+        → the route quote prices the new route at the normal price (total = current fare + (normal price of the new route
+        − fixed price), never below half of (booked fare + raises)); RouteQuote.leavesFixedPrice true; on accept the trip''s
+        fixedRouteId is removed, so the end fare is the normal price. An expired or used route quote → 409 route_quote_expired
+        / route_quote_used; a route quote made at another trip version → 409 version_mismatch on PATCH. Zone switch off →
+        409 route_change_off; status outside statuses → 409 invalid_transition. accept / refuse with another changeId or a
+        change no longer pending → 409 route_change_not_pending. beforePickup false and the trip still before pickup (beforePickupStatuses)
+        → 409 route_change_before_pickup_off.'
       tags:
       - Trips
       x-actor:
@@ -11847,10 +11855,14 @@ paths:
         destination. 4. Rider may withdraw a pending change: POST /trips/{tripId}/route-change/withdraw { expectedVersion,
         changeId }. The new stops may not pass the zone''s maxStops (400 too_many_stops, details maxStops=N). Stops the driver
         already tapped arrived at must stay first, in the same order (400 visited_stop_changed). One pending change at a time
-        (409 route_change_pending). A fixed-route trip cannot change its route (409 route_change_fixed_route). An expired
-        or used route quote → 409 route_quote_expired / route_quote_used; a route quote made at another trip version → 409
-        version_mismatch on PATCH. Zone switch off → 409 route_change_off; status outside statuses → 409 invalid_transition.
-        accept / refuse with another changeId or a change no longer pending → 409 route_change_not_pending.'
+        (409 route_change_pending). A fixed-route trip: fixedPriceTrips block → 409 route_change_fixed_route; switch_to_normal
+        → the route quote prices the new route at the normal price (total = current fare + (normal price of the new route
+        − fixed price), never below half of (booked fare + raises)); RouteQuote.leavesFixedPrice true; on accept the trip''s
+        fixedRouteId is removed, so the end fare is the normal price. An expired or used route quote → 409 route_quote_expired
+        / route_quote_used; a route quote made at another trip version → 409 version_mismatch on PATCH. Zone switch off →
+        409 route_change_off; status outside statuses → 409 invalid_transition. accept / refuse with another changeId or a
+        change no longer pending → 409 route_change_not_pending. beforePickup false and the trip still before pickup (beforePickupStatuses)
+        → 409 route_change_before_pickup_off.'
       tags:
       - Trips
       x-actor:
@@ -11906,10 +11918,14 @@ paths:
         destination. 4. Rider may withdraw a pending change: POST /trips/{tripId}/route-change/withdraw { expectedVersion,
         changeId }. The new stops may not pass the zone''s maxStops (400 too_many_stops, details maxStops=N). Stops the driver
         already tapped arrived at must stay first, in the same order (400 visited_stop_changed). One pending change at a time
-        (409 route_change_pending). A fixed-route trip cannot change its route (409 route_change_fixed_route). An expired
-        or used route quote → 409 route_quote_expired / route_quote_used; a route quote made at another trip version → 409
-        version_mismatch on PATCH. Zone switch off → 409 route_change_off; status outside statuses → 409 invalid_transition.
-        accept / refuse with another changeId or a change no longer pending → 409 route_change_not_pending.'
+        (409 route_change_pending). A fixed-route trip: fixedPriceTrips block → 409 route_change_fixed_route; switch_to_normal
+        → the route quote prices the new route at the normal price (total = current fare + (normal price of the new route
+        − fixed price), never below half of (booked fare + raises)); RouteQuote.leavesFixedPrice true; on accept the trip''s
+        fixedRouteId is removed, so the end fare is the normal price. An expired or used route quote → 409 route_quote_expired
+        / route_quote_used; a route quote made at another trip version → 409 version_mismatch on PATCH. Zone switch off →
+        409 route_change_off; status outside statuses → 409 invalid_transition. accept / refuse with another changeId or a
+        change no longer pending → 409 route_change_not_pending. beforePickup false and the trip still before pickup (beforePickupStatuses)
+        → 409 route_change_before_pickup_off.'
       tags:
       - Trips
       x-actor:
@@ -12183,9 +12199,11 @@ paths:
     post:
       operationId: adminOpenTripCase
       summary: Open a support case for the trip's rider or driver
-      description: 'v0.18.9: POST /admin/trips/{tripId}/case { about: rider | driver, category, subject, text } (support.reply)
-        → 201 SupportTicket opened by support for that person and trip (status open; safety → priority high). Internal: the
-        rider''s / driver''s own ticket list does not show cases opened by support. Audited trip.case.'
+      description: 'v0.18.9: POST /admin/trips/{tripId}/case { about: rider | driver, category, subject, text, visibleToPerson?
+        } (support.reply) → 201 SupportTicket opened by support for that person and trip (status open; safety → priority high).
+        visibleToPerson (owner rule 16, 2026-11-01, G7 open question 2): the admin chooses per case; false (default) = internal:
+        the rider''s / driver''s own ticket list does not show it; true = the person sees it, with support''s messages, in
+        their own help list (GET /support/tickets). SupportTicket.visibleToPerson on admin views. Audited trip.case.'
       tags:
       - Admin · Trips
       x-actor:
@@ -13953,6 +13971,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Place'
+        leavesFixedPrice:
+          type: boolean
+          description: 'v0.18.9 (owner rule 16): true when the trip has a fixed price and the zone''s routeChange.fixedPriceTrips
+            is switch_to_normal: on accept the trip is priced like a normal trip.'
         expiresAt:
           $ref: '#/components/schemas/Timestamp'
     Rider:
@@ -15138,6 +15160,10 @@ components:
           description: 'v0.9.0: the trip''s zone, else the person''s first zone; admins see tickets of their zones.'
         lastMessageAt:
           $ref: '#/components/schemas/Timestamp'
+        visibleToPerson:
+          type: boolean
+          description: 'v0.18.9: admin views only; a case opened by support that the rider / driver sees in their own list
+            (contract.json#onTrip.adminTrip.new.case).'
         messages:
           type: array
           items:
@@ -24203,6 +24229,22 @@ components:
           description: 'v0.18.9: The driver''s time to answer (default 60; 15–300). No answer = refused (status expired):
             the trip keeps the old route.'
           default: 60
+        beforePickup:
+          type: boolean
+          description: 'v0.18.9: true (default) = the rider may also change the route before being picked up (accepted, driver_to_pickup,
+            arrived), with the same driver Accept / Refuse. false = only once on board (rider_onboard, in_trip, approaching_dropoff);
+            before that 409 route_change_before_pickup_off. Owner rule 16 (2026-11-01, G7 open question 1).'
+          default: true
+        fixedPriceTrips:
+          type: string
+          enum:
+          - block
+          - switch_to_normal
+          description: 'v0.18.9: "block" (default) = a fixed-price route trip cannot change its route (409 route_change_fixed_route).
+            "switch_to_normal" = the change is allowed and, once accepted, the trip leaves its fixed price and is priced like
+            a normal trip (the trip''s pricing document, surge and car type, without the fixed route). Owner rule 16 (2026-11-01,
+            G7 open question 4).'
+          default: block
     TripRideCheck:
       type: object
       description: 'v0.18.9: TripProjection.rideCheck { checkId, trigger, askedAt, answerBy, answers { rider?, driver? },
@@ -24484,6 +24526,10 @@ components:
           type: string
           minLength: 1
           maxLength: 5000
+        visibleToPerson:
+          type: boolean
+          description: 'v0.18.9 (owner rule 16): true = the person sees the case in their own help list; false (default) =
+            internal.'
     AdminRevealContactCommand:
       type: object
       required:

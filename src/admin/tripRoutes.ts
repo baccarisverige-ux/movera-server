@@ -149,7 +149,7 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   };
   tool("flag", "trips.annotate", z.object({ flagged: z.boolean(), reason: z.string().trim().max(500).optional() }), 200, (trx, who, id, body) => flagTrip(trx, who, id, clean(body) as never, now()));
   tool("notes", "trips.annotate", z.object({ text: z.string().trim().min(1).max(2000) }), 201, (trx, who, id, body) => addTripNote(trx, who, id, body, now()));
-  tool("case", "support.reply", z.object({ about: z.enum(["rider", "driver"]), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().trim().min(1).max(200), text: z.string().trim().min(1).max(5000) }), 201, (trx, who, id, body) => openTripCase(trx, who, id, body, now()));
+  tool("case", "support.reply", z.object({ about: z.enum(["rider", "driver"]), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().trim().min(1).max(200), text: z.string().trim().min(1).max(5000), visibleToPerson: z.boolean().optional() }), 201, (trx, who, id, body) => openTripCase(trx, who, id, body, now()));
   // The permission is checked per side inside (riders.viewSensitive / drivers.viewSensitive).
   tool("reveal-contact", "trips.read", z.object({ who: z.enum(["rider", "driver"]), reason: z.string().trim().min(1).max(500) }), 200, (trx, who, id, body) => revealTripContact(trx, who, id, body, now()));
   app.get(`${API_PREFIX}/admin/trips/:tripId/notes`, async (request) => {
