@@ -42,7 +42,7 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
   const trips = await sql<Record<string, string>>`
     SELECT count(*) FILTER (WHERE status = 'completed') AS completed,
            count(*) FILTER (WHERE status LIKE 'cancelled_by_%') AS cancelled,
-           count(*) FILTER (WHERE status = 'no_show') AS no_shows,
+           count(*) FILTER (WHERE status = 'no_show' AND NOT coalesce(cancellation ? 'reversal', false)) AS no_shows,
            coalesce(sum(fare_minor) FILTER (WHERE status = 'completed'), 0) AS gross,
            coalesce(sum(commission_minor) FILTER (WHERE status = 'completed'), 0) AS commission,
            coalesce(sum(driver_earnings_minor) FILTER (WHERE status = 'completed'), 0) AS earnings,

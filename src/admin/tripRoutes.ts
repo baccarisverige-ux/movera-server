@@ -11,7 +11,7 @@ import { tripProjection } from "../trips/projection.js";
 import { withDriverPosition } from "../trips/service.js";
 import { activeSendOf } from "../dispatch/radarSends.js";
 import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus } from "./lists.js";
-import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminRadarGroup, adminReassign, adminStopRadarZone, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
+import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminReverseNoShow, adminRadarGroup, adminReassign, adminStopRadarZone, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
 
 /** contract §3.1, §7: the admin's trip tools, lists, account status, audit; the rider's wallet and refunds. */
 
@@ -124,6 +124,8 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   // v0.18.6 (G4-F4): stop the repeating radar-zone send of a trip.
   command("radar-zone/stop", "trips.intervene", z.object({ note: z.string().max(1000).optional() }), async (trx, who, id, body) => ({ status: 200, body: await adminStopRadarZone(trx, who, id, clean(body) as never, now()) }));
   command("no-show", "trips.intervene", NoShowBody, (trx, who, id, body) => view(adminNoShow(trx, who, id, clean(body) as never, now())));
+  // v0.18.8 (contract.json#arrivedWaiting.reverseNoShow): reason required; the driver keeps his share unless taken back.
+  command("reverse-no-show", "trips.intervene", z.object({ expectedVersion: z.number().int().min(1), reason: z.string().trim().min(1).max(1000), takeBackDriverShare: z.boolean().optional() }), (trx, who, id, body) => view(adminReverseNoShow(trx, who, id, clean(body) as never, now())));
   command("complete", "trips.intervene", CompleteBody, (trx, who, id, body) => view(adminComplete(trx, who, id, clean(body) as never, now())));
   command("driver-bonus", "trips.intervene", BonusBody, (trx, who, id, body) => view(adminDriverBonus(trx, who, id, clean(body) as never, now())));
   command("adjust", "trips.intervene", AdjustBody, (trx, who, id, body) => adminAdjust(trx, who, id, clean(body) as never, now()));

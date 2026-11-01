@@ -3,6 +3,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { ApiError, notFound } from "../http/errors.js";
 import { audit } from "../admin/audit.js";
+import { waitingRulesText } from "./waitingTerms.js";
 
 /**
  * Contract v0.18.5 §30 (owner G1-B2 "Real texts from admin (Recommended)", contract.json#legal): the terms of use and the
@@ -74,14 +75,30 @@ export function fillText(text: string, company: LegalCompany): string {
     .join("\n\n");
 }
 
-const fillDoc = (doc: LegalDocument, company: LegalCompany): LegalDocument => ({
+/** v0.18.8: per language, the zone's waiting rules ({waitingRules}) next to the company details. */
+type PerLang = Partial<Record<Lang, Record<string, string>>>;
+const fillDoc = (doc: LegalDocument, company: LegalCompany, extra: PerLang = {}): LegalDocument => ({
   title: doc.title,
-  text: { sv: fillText(doc.text.sv, company), fr: fillText(doc.text.fr, company), en: fillText(doc.text.en, company) },
+  text: { sv: fillText(doc.text.sv, { ...company, ...extra.sv }), fr: fillText(doc.text.fr, { ...company, ...extra.fr }), en: fillText(doc.text.en, { ...company, ...extra.en }) },
 });
 
+/** v0.18.8 (contract.json#arrivedWaiting.termsTexts): {waitingRules} of a zone in this country, else nothing (the paragraph goes). */
+async function waitingValues(ex: Executor, country: string, zoneId: string | undefined): Promise<PerLang> {
+  if (!zoneId) return {};
+  const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", zoneId).executeTakeFirst();
+  if (zone?.country !== country) return {};
+  const out: PerLang = {};
+  for (const lang of ["sv", "fr", "en"] as const) {
+    const text = await waitingRulesText(ex, zoneId, lang);
+    if (text) out[lang] = { waitingRules: text };
+  }
+  return out;
+}
+
 /** GET /legal/{country}: what the apps show (LegalTexts). */
-export async function legalForApps(ex: Executor, country: string) {
+export async function legalForApps(ex: Executor, country: string, zoneId?: string) {
   const live = await liveLegal(ex, country);
+  const waiting = await waitingValues(ex, country, zoneId);
   return {
     country: live.country,
     version: live.version,
@@ -90,7 +107,7 @@ export async function legalForApps(ex: Executor, country: string) {
     reaccept: live.reaccept,
     // Checker finding 6: the newest version published with reaccept; the app asks again until the person accepted it or a later one.
     reacceptFrom: await reacceptFrom(ex, country),
-    terms: fillDoc(live.terms, live.company),
+    terms: fillDoc(live.terms, live.company, waiting),
     privacy: fillDoc(live.privacy, live.company),
   };
 }

@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import { appendTripEvent } from "../db/tripLog.js";
 import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { sql } from "kysely";
@@ -85,6 +86,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
 
   const tripId = newId("trp", now.getTime());
   const driverEarnings = Number(quote.driver_earnings_minor);
+  // v0.8.0 (contract.json#bookingSnapshot): the trip keeps every rule of booking time; v0.18.8 also the zone's PIN switch.
+  const bookingRules = await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote));
   try {
     await trx
       .insertInto("trips")
@@ -124,7 +127,10 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
         pricing_version: quote.pricing_version,
         pricing_scope: quote.pricing_scope,
         // v0.8.0 (contract.json#bookingSnapshot): the trip keeps every rule of booking time.
-        booking_rules: JSON.stringify(await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote))),
+        booking_rules: JSON.stringify(bookingRules),
+        // v0.18.8 (contract.json#arrivedWaiting.pin): a 4-digit PIN the rider tells the driver before Start, when the zone asks for one.
+        pin_required: bookingRules.pin.required,
+        pickup_pin: bookingRules.pin.required ? String(randomInt(0, 10_000)).padStart(4, "0") : null,
         notes: body.notes ?? null,
         created_at: now,
         updated_at: now,

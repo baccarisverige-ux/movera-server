@@ -47,6 +47,8 @@ export type FareInput = {
   surgeMultiplier?: number;
   /** Waiting.chargedSeconds: pickup waiting after the free minutes. */
   waitingChargedSeconds?: number;
+  /** v0.18.8 (contract.json#arrivedWaiting): the effective waiting price per minute of the trip (a waiting rule), else the category's. */
+  waitingPerMin?: MoneyJson;
   /** v0.7.1: seconds from the driver's arrived-at-stop to leaving-stop at each extra stop, one entry per stop (no free minutes). */
   stopWaitSeconds?: number[];
   /** v0.6.0 fields, deprecated in v0.7.1: above 0 on any category but child_seat is seat_not_offered; otherwise ignored. */
@@ -145,7 +147,7 @@ export function priceFare(doc: PricingDocument, input: FareInput): Fare {
     }
   } else {
     const stops = input.stopWaitSeconds ?? [];
-    const w = Frac.of(input.waitingChargedSeconds ?? 0).div(Frac.of(60)).mul(amt(cat.waiting.perMin));
+    const w = Frac.of(input.waitingChargedSeconds ?? 0).div(Frac.of(60)).mul(amt(input.waitingPerMin ?? cat.waiting.perMin));
     const sw = Frac.of(stops.reduce((sum, s) => sum + Math.max(0, s), 0)).div(Frac.of(60)).mul(amt(cat.stopWaitPerMin));
     const extraLines: Array<[string, Frac]> = [
       ["waiting", w],

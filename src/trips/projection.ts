@@ -24,12 +24,13 @@ type WaitingRow = { arrivedAt: string; freeUntil: string; noShowAt: string; char
  * v0.18.7 (Q5, contract.json#pickupWaiting.runningTotal): while the driver waits, the paid seconds and cost so far at
  * read time (no version change): seconds after freeUntil × the trip's per-minute waiting price.
  */
-function waitingNow(row: TripRow, waiting: WaitingRow, now: Date): WaitingRow & { chargedSecondsNow?: number; chargedSoFar?: Money } {
-  if (row.status !== "arrived") return waiting;
+function waitingNow(row: TripRow, waiting: WaitingRow, now: Date): WaitingRow & { chargedSecondsNow?: number; chargedSoFar?: Money; paidMinutes?: number } {
+  // v0.18.8 (contract.json#arrivedWaiting.projection.waiting): whole paid minutes, rounded up, for the admin waiting box.
+  if (row.status !== "arrived") return { ...waiting, paidMinutes: Math.ceil(Math.max(0, waiting.chargedSeconds) / 60) };
   const terms = tripTerms(row);
   const perMin = (terms?.["waitPerMin"] as Money | undefined)?.amountMinor;
   const seconds = Math.max(0, Math.floor((now.getTime() - Date.parse(waiting.freeUntil)) / 1000));
-  return { ...waiting, chargedSecondsNow: seconds, ...(perMin !== undefined ? { chargedSoFar: { amountMinor: Math.floor((seconds * perMin) / 60 + 0.5), currency: row.currency } } : {}) };
+  return { ...waiting, chargedSecondsNow: seconds, paidMinutes: Math.ceil(seconds / 60), ...(perMin !== undefined ? { chargedSoFar: { amountMinor: Math.floor((seconds * perMin) / 60 + 0.5), currency: row.currency } } : {}) };
 }
 
 /**
@@ -49,7 +50,25 @@ export function hideDriverMoney(projection: Record<string, unknown>): Record<str
   without("cancellation", ["driverShare"]);
   without("waiting", ["noShowDriverShare"]);
   without("terms", ["noShowDriverSharePct", "cancelDriverSharePct"]);
+  delete out["pinAttempts"];
+  hideReversalDetails(out);
   return out;
+}
+
+/** v0.18.8: the rider and the driver see that a no-show was reversed, not the admin's reason or name. */
+export function hideReversalDetails(out: Record<string, unknown>): void {
+  const c = out["cancellation"] as Record<string, unknown> | undefined;
+  const r = c?.["reversal"] as Record<string, unknown> | undefined;
+  if (c && r) out["cancellation"] = { ...c, reversal: { at: r["at"], driverShareTakenBack: r["driverShareTakenBack"] } };
+}
+
+/** v0.18.8 (contract.json#arrivedWaiting.pin): the driver never sees the rider's PIN nor the tries count. */
+export function hidePinFromDriver(out: Record<string, unknown>): Record<string, unknown> {
+  const { pickupPin: _p, pinAttempts: _a, ...rest } = out;
+  void _p;
+  void _a;
+  hideReversalDetails(rest);
+  return rest;
 }
 
 export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number; now?: Date } = {}): Record<string, unknown> {
@@ -88,6 +107,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     // The driver's own rating status, for admins and for the driver's realtime stream (redactProjection).
     ...(viewer === "admin" ? { driverRatingStatus: row.driver_rating_status } : {}),
     pinRequired: row.pin_required,
+    // v0.18.8: the PIN (rider and admin views; taken out for the driver below and on his stream) and whether it was given.
+    ...(row.pin_required && row.pickup_pin ? { pickupPin: row.pickup_pin, pinVerified: row.pin_verified_at !== null, pinAttempts: Number(row.pin_attempts ?? 0) } : {}),
     ...(row.driver_summary ? { driver: row.driver_summary } : {}),
     // v0.18.7 (Q1): the rider as the driver sees him; never in the rider's own view.
     ...(row.rider_summary && viewer !== "rider" ? { rider: row.rider_summary } : {}),
@@ -122,5 +143,6 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (viewer !== "driver" && row.search_step && ["searching", "offered", "expired"].includes(row.status)) projection["searchStep"] = row.search_step;
   // Admins only: the driver sent no position for 30 minutes with the rider on board (owner decision 2026-10-26).
   if (viewer === "admin" && row.driver_silent_alert) projection["driverSilentAlert"] = row.driver_silent_alert;
+  if (viewer === "driver") return hidePinFromDriver(projection);
   return viewer === "rider" ? hideDriverMoney(projection) : projection;
 }

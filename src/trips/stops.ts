@@ -3,6 +3,7 @@ import type { TripRow } from "../db/tripLog.js";
 import { ApiError } from "../http/errors.js";
 import { expectVersion, lockOwnTrip, touchTrip } from "./commands.js";
 import { tripProjection } from "./projection.js";
+import { chargedStopSeconds } from "./waitingRules.js";
 
 /**
  * Waiting at a middle stop (contract v0.7.1 §3.8, contract.json#stopWaits; owner 2026-10-27): no free minutes. The
@@ -16,14 +17,19 @@ const ON_THE_WAY = new Set(["in_trip", "approaching_dropoff"]);
 
 export const visitsOf = (trip: Pick<TripRow, "stop_visits">): StopVisit[] => ((trip.stop_visits as StopVisit[] | null) ?? []).slice().sort((a, b) => a.stopIndex - b.stopIndex);
 
-/** Seconds waited at each extra stop, one entry per stop: arrival to leaving, an open stop until `end`. */
-export function stopWaitSeconds(trip: Pick<TripRow, "stop_visits" | "stops">, end: Date): number[] {
+/**
+ * Seconds charged at each extra stop, one entry per stop: arrival to leaving (an open stop until `end`), less the zone's
+ * free minutes at each stop kept on the trip (v0.18.8, contract.json#arrivedWaiting.rules.stops; 0 before v0.18.8).
+ */
+export function stopWaitSeconds(trip: Pick<TripRow, "stop_visits" | "stops"> & { booking_rules?: unknown }, end: Date): number[] {
   const visits = visitsOf(trip);
+  const kept = (trip.booking_rules as { stopFreeWaitMin?: unknown } | null | undefined)?.stopFreeWaitMin;
+  const free = typeof kept === "number" && kept > 0 ? kept : 0;
   return ((trip.stops as unknown[]) ?? []).map((_, index) => {
     const visit = visits.find((v) => v.stopIndex === index);
     if (!visit) return 0;
     const until = visit.leftAt ? Date.parse(visit.leftAt) : end.getTime();
-    return Math.max(0, Math.floor((until - Date.parse(visit.arrivedAt)) / 1000));
+    return chargedStopSeconds(Math.max(0, Math.floor((until - Date.parse(visit.arrivedAt)) / 1000)), free);
   });
 }
 

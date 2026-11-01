@@ -249,6 +249,9 @@ describe("prices from the server: served config and TripProjection.terms (contra
       cancelDriverSharePct: 100,
       cancelAfterArrivedIsNoShow: true,
       maxPickupMoveMeters: 200,
+      // v0.18.8 (G6, additive): the applied waiting rules (none before arrive) and the free minutes at each stop.
+      waitingRules: [],
+      stopFreeWaitMin: 0,
     };
     expect((await driverView(tripId)).terms).toEqual(terms);
     // Contract §2: the rider never sees the driver's shares.

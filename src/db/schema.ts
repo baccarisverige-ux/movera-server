@@ -257,6 +257,11 @@ export interface TripsTable {
   waiting: Json | null;
   cancellation: Json | null;
   pin_required: Generated<boolean>;
+  /** v0.18.8 (migration 0042, contract.json#arrivedWaiting.pin): the rider PIN, wrong tries in a row, lock and the right try. */
+  pickup_pin: ColumnType<string | null, string | null | undefined, string | null>;
+  pin_attempts: Generated<number>;
+  pin_locked_until: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  pin_verified_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   config_versions: JsonDefault;
   distance_meters: ColumnType<number | null, number | null | undefined, number | null>;
   duration_seconds: ColumnType<number | null, number | null | undefined, number | null>;
@@ -701,7 +706,7 @@ export interface RiderFeesTable {
   kind: "cancel" | "no_show";
   currency: string;
   amount_minor: ColumnType<string, number | string, number | string>;
-  status: "owed" | "paid" | "waived";
+  status: "owed" | "paid" | "waived" | "refunded";
   carried_by: string | null;
   created_at: Timestamp;
   settled_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
