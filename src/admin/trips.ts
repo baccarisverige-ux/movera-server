@@ -141,9 +141,13 @@ async function offerTo(trx: Trx, who: Principal, tripId: string, driverIds: stri
   // Locked once a driver accepted (contract.json#adminDispatch.lockedStatuses): the transition table says so.
   trip = await withBonus(trx, trip, body);
   trip = await applyCommand(trx, trip, { command: "assign", actor: "admin", now });
+  // Same path as "Add money": every open offer of the trip shows the new money / Priority badge at once (offer_updated).
+  if (body.driverBonus || body.priority !== undefined) await refreshOpenOffers(trx, trip, now);
   const sent = await sendAdminOffers(trx, trip, driverIds, kind, now, extra.seconds);
-  await audit(trx, { adminId: who.subjectId, action: kind === "assigned" ? "trip.assign" : "trip.radar_group", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { driverIds, note: body.note ?? null, driverBonus: body.driverBonus ?? null, priority: body.priority ?? null, groupId: sent.groupId, ...(extra.detail ?? {}) }, at: now });
-  return { trip, ...sent };
+  await audit(trx, { adminId: who.subjectId, action: kind === "assigned" ? "trip.assign" : "trip.radar_group", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { driverIds, note: body.note ?? null, driverBonus: body.driverBonus ?? null, priority: body.priority ?? null, groupId: sent.groupId, sentTo: sent.offers.map((o) => o["driverId"]), refreshed: sent.kept.map((o) => o["driverId"]), skipped: sent.skipped, ...(extra.detail ?? {}) }, at: now });
+  // A driver who already saw the trip keeps that offer: it is listed with the new ones (no shape change; the admin counts
+  // the offers outside groupId as refreshed).
+  return { trip, ...sent, offers: [...sent.offers, ...sent.kept] };
 }
 
 export async function adminAssign(trx: Trx, who: Principal, tripId: string, body: OfferBody & { driverId: string }, now: Date): Promise<TripRow> {
@@ -158,13 +162,13 @@ export async function adminRadarGroup(trx: Trx, who: Principal, tripId: string, 
     if (body.driverIds.length === 0) throw badRequest("Give at least one driver.", "invalid_body");
     if (new Set(body.driverIds).size !== body.driverIds.length) throw badRequest("Each driver once.", "duplicate_driver");
     const sent = await offerTo(trx, who, tripId, body.driverIds, "radar", body, now);
-    return { groupId: sent.groupId!, tripId, offers: sent.offers, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "drivers" };
+    return { groupId: sent.groupId!, tripId, offers: sent.offers, skipped: sent.skipped, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "drivers" };
   }
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   if (body.groupId !== undefined) {
     const ids = await pickGroup(trx, who, trip, body.groupId, now);
     const sent = await offerTo(trx, who, tripId, ids, "radar", body, now, { detail: { driverGroupId: body.groupId } });
-    return { groupId: sent.groupId!, tripId, offers: sent.offers, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "group" };
+    return { groupId: sent.groupId!, tripId, offers: sent.offers, skipped: sent.skipped, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "group" };
   }
   const picked = await pickRadarZone(trx, who, trip, body.radarZoneId!, body.ruleId!, now);
   if (picked.ids.length === 0) {
@@ -176,7 +180,7 @@ export async function adminRadarGroup(trx: Trx, who: Principal, tripId: string, 
   }
   const sent = await offerTo(trx, who, tripId, picked.ids, "radar", body, now, { seconds: picked.rule.seconds, detail: { radarZoneId: body.radarZoneId, ruleId: body.ruleId, repeat: picked.rule.repeat } });
   const send = await startRadarZoneSend(trx, who, sent.trip, picked, sent.expiresAt, now);
-  return { groupId: sent.groupId!, tripId, offers: sent.offers, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "radar_zone", radarZoneSend: send };
+  return { groupId: sent.groupId!, tripId, offers: sent.offers, skipped: sent.skipped, expiresAt: sent.expiresAt.toISOString(), projection: tripProjection(sent.trip, "admin"), pickedFrom: "radar_zone", radarZoneSend: send };
 }
 
 export async function adminStopRadarZone(trx: Trx, who: Principal, tripId: string, body: { note?: string }, now: Date) {

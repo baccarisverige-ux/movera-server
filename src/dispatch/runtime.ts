@@ -395,8 +395,11 @@ const ASSIGNED_TRIP = ["accepted", "driver_to_pickup", "arrived", "rider_onboard
  * Direct assign (kind assigned, one driver) or a radar group (kind radar, 1–10 drivers, one groupId), sent by an
  * admin. The caller holds the trip lock and has applied `assign`. Drivers must be active, online and free.
  * The search keeps running: its next round waits until these offers are answered or run out.
+ * A chosen driver who already has an open offer for the trip keeps it (`kept`, no duplicate; the caller refreshes it
+ * with the new money), and a chosen driver who cannot take a ride now is left out. Only when nobody gets or keeps an
+ * offer is it a 409 (driver_on_trip / driver_not_available).
  */
-export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string[], kind: "assigned" | "radar", now: Date, secondsOverride?: number): Promise<{ offers: Record<string, unknown>[]; expiresAt: Date; groupId: string | null }> {
+export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string[], kind: "assigned" | "radar", now: Date, secondsOverride?: number): Promise<{ offers: Record<string, unknown>[]; kept: Record<string, unknown>[]; skipped: { driverId: string; reason: string }[]; expiresAt: Date; groupId: string | null }> {
   const driverDoc = await liveDocument<{ offers?: { radarSeconds?: number; exclusiveSeconds?: number; assignAcceptSeconds?: number }; pickupPay?: { offers?: Record<string, boolean>; byCategory?: Record<string, PickupPayRate> } }>(trx, "driver_app_config", trip.zone_id);
   const dispatchDoc = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
   const offersDoc = driverDoc?.document.offers ?? {};
@@ -416,17 +419,29 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   const rows = await trx.selectFrom("drivers").selectAll().where("driver_id", "in", sorted).orderBy("driver_id").forUpdate().execute();
   const queue = new FeedQueue();
   const made: Record<string, unknown>[] = [];
+  const kept: Record<string, unknown>[] = [];
+  const skipped: { driverId: string; reason: string; name: string }[] = [];
   for (const driverId of driverIds) {
     const d = rows.find((r) => r.driver_id === driverId);
     if (!d) throw new ApiError("not_found", "No such driver.", { reason: "driver_not_found" });
     const busy = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", ASSIGNED_TRIP).executeTakeFirst();
     const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "received_at", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
     const fresh = fix && now.getTime() - fix.received_at.getTime() <= STALE_AFTER_SECONDS * 1000 && now.getTime() - fix.measured_at.getTime() <= DISPATCH_FIX_MAX_AGE_SECONDS * 1000;
-    if (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh) {
-      throw new ApiError("conflict", `${d.first_name || driverId} cannot take a ride now.`, { reason: busy ? "driver_on_trip" : "driver_not_available" });
+    const already = await trx.selectFrom("offers").select("offer_id").where("trip_id", "=", trip.trip_id).where("driver_id", "=", driverId).where("status", "=", "open").where("expires_at", ">", now).executeTakeFirst();
+    if (already && kind === "radar" && d.account_status === "active" && d.online_status === "online" && !busy) {
+      kept.push(offerView((await loadOffer(trx, already.offer_id))!, trip));
+      continue;
     }
-    const already = await trx.selectFrom("offers").select("offer_id").where("trip_id", "=", trip.trip_id).where("driver_id", "=", driverId).where("status", "=", "open").executeTakeFirst();
-    if (already) throw new ApiError("conflict", `${d.first_name || driverId} already has this ride.`, { reason: "offer_already_open" });
+    if (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh || (already && kind === "radar")) {
+      skipped.push({ driverId, name: d.first_name || driverId, reason: busy ? "driver_on_trip" : "driver_not_available" });
+      continue;
+    }
+    if (already) {
+      // An exclusive assign replaces the driver's open (automatic) offer: withdrawn, then the admin's exclusive one.
+      const old = (await loadOffer(trx, already.offer_id, true))!;
+      await trx.updateTable("offers").set({ status: "withdrawn", version: old.version + 1, answered_at: now }).where("offer_id", "=", old.offer_id).execute();
+      queue.push(driverId, "offer_withdrawn", offerView({ ...old, status: "withdrawn", version: old.version + 1 }, trip));
+    }
     const km = dispatchKm(fix!, trip.pickup as Place);
     const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600));
     const pickupPay = rate ? pickupPayMinor(rate, kinds, kind, km, etaSeconds / 60) : 0;
@@ -456,15 +471,19 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
     queue.push(driverId, "offer_created", view);
     made.push(view);
   }
+  if (made.length === 0 && kept.length === 0) {
+    const first = skipped[0]!;
+    throw new ApiError("conflict", `${first.name} cannot take a ride now.`, { reason: first.reason });
+  }
   await queue.flush(trx, now);
   // The round timer expires these offers (and lets the search go on) when they run out.
-  if (search) await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: expiresAt, payload: {} });
-  return { offers: made, expiresAt, groupId };
+  if (search && made.length > 0) await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: expiresAt, payload: {} });
+  return { offers: made, kept, skipped: skipped.map(({ driverId, reason }) => ({ driverId, reason })), expiresAt, groupId };
 }
 
 /** Open offers of a trip are sent again with the trip's new money (a bonus was added). */
 export async function refreshOpenOffers(trx: Trx, trip: TripRow, now: Date): Promise<void> {
-  const open = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip.trip_id).where("status", "=", "open").orderBy("offer_id").forUpdate().execute();
+  const open = await trx.selectFrom("offers").selectAll().where("trip_id", "=", trip.trip_id).where("status", "=", "open").where("expires_at", ">", now).orderBy("offer_id").forUpdate().execute();
   const queue = new FeedQueue();
   for (const offer of open) {
     await trx.updateTable("offers").set({ version: offer.version + 1 }).where("offer_id", "=", offer.offer_id).execute();
