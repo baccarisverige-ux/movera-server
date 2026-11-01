@@ -207,6 +207,22 @@ describe("G3-R1: no position for 5 minutes while online → set offline by the s
     expect((await row(SE)).online_status).toBe("online");
   });
 
+  it("G5 live re-test: a still phone re-sending its last OS fix (same measuredAt) every tick stays online and not stale", async () => {
+    await ensureMaintenanceTimers(database.db, clock.now);
+    const still = fix(SE.home);
+    expect((await goOnline(SE, still)).statusCode).toBe(200);
+    for (let i = 0; i < 36; i += 1) {
+      await advance(10);
+      const sent = await call(app, "POST", "/driver/location", await headersOf(SE.phone, "driver"), { fixes: [still] });
+      expect(sent.statusCode).toBe(200);
+    }
+    // 6 minutes on: the server heard him every 10 s.
+    expect((await row(SE)).online_status).toBe("online");
+    const stored = await database.db.selectFrom("driver_locations").selectAll().where("driver_id", "=", SE.id).executeTakeFirstOrThrow();
+    expect(clock.now.getTime() - stored.received_at.getTime()).toBeLessThan(120_000);
+    expect(stored.measured_at.toISOString()).toBe(still.measuredAt);
+  });
+
   it("noFixMinutes 0 = never", async () => {
     await ensureMaintenanceTimers(database.db, clock.now);
     await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify({ offers: { autoOffline: { noFixMinutes: 0 } } }), published_at: clock.now, published_by: null }).execute();

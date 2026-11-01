@@ -297,10 +297,12 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     zone_id: zone?.zoneId ?? null,
   };
   // Only a newer fix replaces the stored one (batches can arrive out of order on a bad connection).
+  // G5 live re-test: the same fix sent again (a phone standing still re-sends its last OS fix with the OS's own
+  // time) refreshes received_at, so the driver is neither stale (120 s) nor set offline while the app keeps sending.
   await trx
     .insertInto("driver_locations")
     .values(values)
-    .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<", latest.at))
+    .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<=", latest.at))
     .execute();
 
   // On a trip, the trip is the one the server knows, whatever tripId the app sent.
