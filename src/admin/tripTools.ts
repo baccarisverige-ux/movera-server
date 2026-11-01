@@ -102,6 +102,23 @@ export async function revealTripContact(trx: Trx, who: Principal, tripId: string
   return { who: body.who, phone, revealedAt: now.toISOString() };
 }
 
+function measuredOf(position: unknown): { measured?: { value: number; unit: string }; answerSeconds?: number } {
+  const p = (typeof position === "string" ? safeJson(position) : position) as { measured?: { value?: unknown; unit?: unknown }; answerSeconds?: unknown } | null;
+  if (!p || typeof p !== "object") return {};
+  const m = p.measured;
+  return {
+    ...(m && typeof m.value === "number" && typeof m.unit === "string" ? { measured: { value: m.value, unit: m.unit } } : {}),
+    ...(typeof p.answerSeconds === "number" ? { answerSeconds: p.answerSeconds } : {}),
+  };
+}
+const safeJson = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
 export type RideCheckQuery = { cursor?: string; limit: number; zoneId?: string; tripId?: string; trigger?: string; answer?: "ok" | "need_help" | "no_answer" | "waiting"; origin?: "server" | "app"; from?: string; to?: string };
 
 /** GET /admin/ride-checks: every check (server and app) in the admin's zones, newest first. */
@@ -146,6 +163,8 @@ export async function listRideChecks(ex: Executor, who: Principal, input: RideCh
       ...(iso(r.no_answer_at) ? { noAnswerAt: iso(r.no_answer_at)!.v } : {}),
       ...(r.incident_id ? { incidentId: r.incident_id } : {}),
       ...(r.position ? { position: r.position } : {}),
+      // G7 live fix: what the server measured and the zone's answer time when it asked (kept with the position).
+      ...measuredOf(r.position),
       createdAt: r.created_at.toISOString(),
     })),
     nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, `${last.trip_id}~${last.side}~${last.check_id}`) : null,

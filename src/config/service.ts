@@ -1,3 +1,4 @@
+import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
@@ -334,7 +335,21 @@ export async function withLivePricing(ex: Executor, doc: ConfigDoc, zoneId: stri
     if (own && isObject(own.rideCheck)) next = { ...next, rideCheck: own.rideCheck };
     if (own && isObject(own.routeChange)) next = { ...next, routeChange: own.routeChange };
   }
-  return next;
+  return withoutLegacyEndFar(next);
+}
+
+/**
+ * G7 live fix (owner item 6): the old RideCheck field finishFarFromDropoffKm (a shared km value from before v0.18.9)
+ * is not served any more; rideCheck.endFarMeters (per zone, metres) is the one setting, and the server's own check
+ * reads only it. A document without endFarMeters gets the value the server uses (the contract default), so the apps
+ * never fall back to the old km.
+ */
+export function withoutLegacyEndFar(document: Doc): Doc {
+  const rc = document["rideCheck"];
+  if (!isObject(rc) || !("finishFarFromDropoffKm" in rc)) return document;
+  const rest: Doc = { ...rc };
+  delete rest["finishFarFromDropoffKm"];
+  return { ...document, rideCheck: { ...rest, endFarMeters: rideCheckSettingsOf({ rideCheck: rest }).endFarMeters } };
 }
 const CANCEL_AFTER_ARRIVED_DEFAULT = (contract as unknown as { configDefaults: { cancelAfterArrivedIsNoShow: boolean } }).configDefaults.cancelAfterArrivedIsNoShow;
 
