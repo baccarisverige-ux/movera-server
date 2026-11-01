@@ -46,7 +46,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices };
 
 const READY_TIMEOUT_MS = 2000;
-const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
+const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
 export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
