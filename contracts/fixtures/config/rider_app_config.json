@@ -419,5 +419,14 @@
     "answerSeconds": 60,
     "beforePickup": true,
     "fixedPriceTrips": "block"
+  },
+  "tipRules": {
+    "cashAfterTrip": false,
+    "cashInCarMinutes": 5,
+    "customAmount": false,
+    "customMax": {
+      "amountMinor": 20000,
+      "currency": "SEK"
+    }
   }
 }

@@ -695,6 +695,7 @@ for _sec in ('paymentMethods', 'tips', 'earlyEnd', 'receipt', 'driverMoney', 'de
         if 'passagerare' in _t['sv'].lower(): bad += 1; print('FINISH sv says passagerare', _name)
 for _e in _fi['errors']:
     if not re.match(r'^[a-z][a-z0-9_]*$', _e): bad += 1; print('FINISH error code', _e)
+if rcfg['tipRules']['customMax'] != c['configDefaults']['tipRules']['customMax']['SE'] or c['configDefaults']['tipRules']['customMax']['FR'] != {'amountMinor': 2000, 'currency': 'EUR'}: bad += 1; print('TIP RULES defaults')
 for _sec in ('tips', 'receipt', 'driverMoney'):
     if not set(_fi[_sec]['errors']) <= set(_fi['errors']): bad += 1; print('FINISH errors listed', _sec)
 

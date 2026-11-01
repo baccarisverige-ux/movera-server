@@ -886,9 +886,11 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
 
   if (onboard) {
     // Ended on board: the rider pays for what was driven, in cash, like an early end (owner decision 8).
-    const money = await drivenColumns(trx, trip, await drivenFare(trx, trip, now), now);
+    // Builder question 4: one rule with the early complete — re-priced only over the admin's km / minutes.
+    const priced = await earlyEndPrice(trx, trip, now);
+    const money = { fare_minor: Number(trip.fare_minor), ...priced.money } as FrozenMoney & { fare_minor: number };
     const wallet = await spendWallet(trx, trip, money.fare_minor, now);
-    const info: EndInfo = { endedEarly: true, endedBy: "driver", reasonCode: body.reasonCode };
+    const info: EndInfo = { ...priced.info, reasonCode: body.reasonCode };
     const ended = await applyCommand(trx, trip, {
       command: "cancel",
       actor: "driver",
@@ -1011,6 +1013,17 @@ async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin"
   let info: EndInfo = { endedEarly: false };
   let money: FrozenMoney = adminFare ? scaledFare(trip, adminFare.amountMinor) : (stopped ?? {});
   if (early) {
+    ({ money, info } = await earlyEndPrice(ex, trip, now, stopped));
+  }
+  const fare = money.fare_minor ?? Number(trip.fare_minor);
+  return { early, fare, money: { ...money, end_info: JSON.stringify(info) } as FrozenMoney, info };
+}
+
+/** v0.18.10 (owner G8 Q2): the driver ended before the drop-off — driven price only over the admin's km / minutes, stop waiting kept. */
+async function earlyEndPrice(ex: Executor, trip: TripRow, now: Date, stoppedIn?: Awaited<ReturnType<typeof withStopWaiting>>): Promise<{ money: FrozenMoney; info: EndInfo }> {
+  const stopped = stoppedIn !== undefined ? stoppedIn : await withStopWaiting(ex, trip, now);
+  let money: FrozenMoney = stopped ?? {};
+  {
     const measured = await driven(ex, trip, now);
     const limits = await earlyEndOf(ex, trip);
     // How much shorter than booked (never negative): the booked road km and minutes against what was driven on board.
@@ -1020,10 +1033,8 @@ async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin"
     // (at the cap the booked fare and its lines stand as they are).
     const repriced = (shortKm > limits.repriceOverKm || shortMin > limits.repriceOverMin) && measured.fare.total.amountMinor < Number(trip.fare_minor);
     if (repriced) money = await drivenColumns(ex, trip, measured.fare, now);
-    info = { endedEarly: true, endedBy: "driver", reasonCode: "ended_before_dropoff", repriced, shortKm, shortMin };
+    return { money, info: { endedEarly: true, endedBy: "driver", reasonCode: "ended_before_dropoff", repriced, shortKm, shortMin } };
   }
-  const fare = money.fare_minor ?? Number(trip.fare_minor);
-  return { early, fare, money: { ...money, end_info: JSON.stringify(info) } as FrozenMoney, info };
 }
 
 /** contract v0.18.1 §26: how long a preview's price holds. */

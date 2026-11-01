@@ -12373,7 +12373,7 @@ paths:
         else payment_method_coming_soon / payment_method_off. 100 % to the driver (owner item 1): an earnings entry kind tip
         of the full amount; Movera keeps nothing. A cash tip is also counted as cash the driver already holds (cashCollected),
         so the weekly payout does not pay it a second time. Errors (reason): tips_not_available, tip_amount_not_allowed, tip_already_given,
-        tip_not_allowed, payment_method_off, payment_method_coming_soon.'
+        tip_not_allowed, tip_cash_after_trip_off, tip_above_max, payment_method_off, payment_method_coming_soon.'
       tags:
       - Rider · Booking
       x-actor:
@@ -12542,7 +12542,8 @@ paths:
       summary: Send the receipt to the rider again
       description: 'v0.18.10: POST /admin/trips/{tripId}/receipt/resend { reason } (trips.intervene) → 200 { tripId, notificationId,
         sentAt }: the rider gets a bell notice + push kind receipt (texts.resendTitle / resendBody in the rider''s language,
-        deep link movera-rider://trip/{tripId}/receipt); audit trip.receipt_resend with the reason. receipt_not_ready as above.'
+        deep link movera-rider://trip/{tripId}/receipt); audit trip.receipt_resend with the reason. receipt_not_ready as above.
+        E-mail receipts wait for the owner''s choice of an e-mail company.'
       tags:
       - Admin · Trips
       x-actor:
@@ -17771,6 +17772,8 @@ components:
             it never shows a method that is not listed. The server takes only the methods of its own list (today: cash only;
             card and Apple Pay need a payment company, owner ''Coming soon until a payment company is chosen''). It is not
             an admin setting: it changes when Movera connects a payment company.'
+        tipRules:
+          $ref: '#/components/schemas/TipRules'
     DriverAppConfig:
       type: object
       description: Per-zone driver document built by Admin exporters. Unknown keys are ignored; missing keys fall back to
@@ -19264,7 +19267,9 @@ components:
             plus the stop waiting; otherwise the booked price stands (plus the stop waiting) and the trip is still marked
             ended early. Distance short = booked distance − km on board (trip trace); time short = booked minutes − minutes
             on board. The numbers are kept on the trip at booking (bookingSnapshot earlyEnd), read from the zone''s live driver
-            document (or the country standard), out of range = default.'
+            document (or the country standard), out of range = default. The same rule applies when the driver cancels with
+            the rider on board (builder question 4, one rule): re-priced only over the limits, else the booked price (+ stop
+            waiting).'
         shortKm:
           type: number
           description: 'v0.18.10: booked km − km on board (early end only).'
@@ -25006,13 +25011,37 @@ components:
             plus the stop waiting; otherwise the booked price stands (plus the stop waiting) and the trip is still marked
             ended early. Distance short = booked distance − km on board (trip trace); time short = booked minutes − minutes
             on board. The numbers are kept on the trip at booking (bookingSnapshot earlyEnd), read from the zone''s live driver
-            document (or the country standard), out of range = default.'
+            document (or the country standard), out of range = default. The same rule applies when the driver cancels with
+            the rider on board (builder question 4, one rule): re-priced only over the limits, else the booked price (+ stop
+            waiting).'
           default: 2
         repriceOverMin:
           type: number
           minimum: 0
           maximum: 120
           default: 8
+    TipRules:
+      type: object
+      description: 'v0.18.10: RiderAppConfig.tipRules { cashAfterTrip (default false), cashInCarMinutes (default 5, 0–60),
+        customAmount (default false), customMax: Money (default SE 200 kr, FR 20 €) }, Admin › Tips & limits, per zone or
+        country standard; missing / out of range = default. cashAfterTrip false: a cash tip is only accepted while the rider
+        is still in the car = within cashInCarMinutes after the trip ended (the finish screen); later → 409 tip_cash_after_trip_off
+        (card / Apple Pay tips are not limited). customAmount true: besides the preset amounts the rider may type any whole
+        amount from 1 up to customMax (above → 400 tip_above_max); false: presets only (400 tip_amount_not_allowed).'
+      properties:
+        cashAfterTrip:
+          type: boolean
+          default: false
+        cashInCarMinutes:
+          type: integer
+          minimum: 0
+          maximum: 60
+          default: 5
+        customAmount:
+          type: boolean
+          default: false
+        customMax:
+          $ref: '#/components/schemas/Money'
     TipMethod:
       type: string
       enum:

@@ -53,6 +53,8 @@ export function sampleForZone(sample: Record<string, unknown>, zone: SampleZone)
     const amounts = own?.[key];
     if (key in document && amounts && amounts.every((a) => a.currency === zone.currency)) document[key] = amounts.map((amount) => ({ amount, enabled: true }));
   }
+  const max = (contract as unknown as { configDefaults: { tipRules: { customMax: Record<string, Money> } } }).configDefaults.tipRules.customMax[zone.country];
+  if (document["tipRules"] && max && max.currency === zone.currency) document["tipRules"] = { ...(document["tipRules"] as object), customMax: max };
   return {
     ...document,
     zoneId: zone.zoneId,

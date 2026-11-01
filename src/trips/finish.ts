@@ -22,7 +22,7 @@ type Money = { amountMinor: number; currency: string };
 
 const C = contract as unknown as {
   zonePaymentMethods: { values: string[] };
-  configDefaults: { countries: Record<string, { tips?: Money[] }> };
+  configDefaults: { countries: Record<string, { tips?: Money[] }>; tipRules: { cashAfterTrip: boolean; cashInCarMinutes: number; customAmount: boolean; customMax: Record<string, Money> } };
   finish: { receipt: { texts: Record<string, Record<string, string>> }; driverMoney: { texts: Record<string, Record<string, string>> } };
 };
 /** The methods a country may offer at all (cash, card, apple_pay; no google_pay). */
@@ -83,6 +83,21 @@ export async function tipAmountsFor(ex: Executor, zoneId: string, currency: stri
   return (C.configDefaults.countries[zone?.country ?? ""]?.tips ?? []).filter((t) => t.currency === currency).map((t) => t.amountMinor);
 }
 
+export type TipRules = { cashAfterTrip: boolean; cashInCarMinutes: number; customAmount: boolean; customMax: Money | null };
+/** RiderAppConfig.tipRules with the defaults (cash only in the car within 5 min, presets only, max SE 200 kr / FR 20 €). */
+export function tipRulesOf(doc: unknown, country: string, currency: string): TipRules {
+  const d = C.configDefaults.tipRules;
+  const r = (doc as { tipRules?: Record<string, unknown> } | null | undefined)?.tipRules ?? {};
+  const max = r["customMax"] as Money | undefined;
+  const fallback = d.customMax[country];
+  return {
+    cashAfterTrip: typeof r["cashAfterTrip"] === "boolean" ? r["cashAfterTrip"] : d.cashAfterTrip,
+    cashInCarMinutes: typeof r["cashInCarMinutes"] === "number" && Number.isInteger(r["cashInCarMinutes"]) && r["cashInCarMinutes"] >= 0 && r["cashInCarMinutes"] <= 60 ? r["cashInCarMinutes"] : d.cashInCarMinutes,
+    customAmount: typeof r["customAmount"] === "boolean" ? r["customAmount"] : d.customAmount,
+    customMax: max && max.currency === currency && Number.isInteger(max.amountMinor) && max.amountMinor > 0 ? max : fallback && fallback.currency === currency ? fallback : null,
+  };
+}
+
 const TIP_STATUSES = (trip: TripRow) => trip.status === "completed" || (trip.status === "cancelled_by_rider" && trip.ended_by_command === "end_early");
 
 /**
@@ -102,7 +117,17 @@ export async function giveTip(trx: Trx, riderId: string, tripId: string, body: u
   if (tip.amount.currency !== trip.currency) throw badRequest(`The tip is in ${trip.currency}.`, "currency_mismatch");
   const amounts = await tipAmountsFor(trx, trip.zone_id, trip.currency);
   if (amounts.length === 0) throw badRequest("Tips are not on here.", "tips_not_available");
-  if (!amounts.includes(tip.amount.amountMinor)) throw badRequest(`Choose one of the amounts: ${amounts.map((a) => a / 100).join(", ")} ${trip.currency}.`, "tip_amount_not_allowed");
+  const zone = await trx.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirst();
+  const rules = tipRulesOf((await liveDocument(trx, "rider_app_config", trip.zone_id))?.document, zone?.country ?? "", trip.currency);
+  if (!amounts.includes(tip.amount.amountMinor)) {
+    // Builder question 2 (admin tipRules.customAmount): any whole amount from 1 up to customMax, when on.
+    if (!rules.customAmount || tip.amount.amountMinor < 1) throw badRequest(`Choose one of the amounts: ${amounts.map((a) => a / 100).join(", ")} ${trip.currency}.`, "tip_amount_not_allowed");
+    if (rules.customMax && tip.amount.amountMinor > rules.customMax.amountMinor) throw badRequest(`At most ${rules.customMax.amountMinor / 100} ${trip.currency}.`, "tip_above_max");
+  }
+  // Builder question 1 (admin tipRules.cashAfterTrip, default off): a cash tip only while the rider is in the car.
+  if (tip.method === "cash" && !rules.cashAfterTrip && trip.ended_at && now.getTime() > trip.ended_at.getTime() + rules.cashInCarMinutes * 60_000) {
+    throw new ApiError("conflict", "A cash tip can only be given in the car.", { reason: "tip_cash_after_trip_off", projection: tripProjection(trip, "rider") });
+  }
   await checkPaymentMethod(trx, trip.zone_id, tip.method, supported);
   const value = { amount: { amountMinor: tip.amount.amountMinor, currency: trip.currency }, method: tip.method, driverShare: { amountMinor: tip.amount.amountMinor, currency: trip.currency }, at: now.toISOString() };
   await trx.updateTable("trips").set({ tip: JSON.stringify(value) }).where("trip_id", "=", tripId).execute();

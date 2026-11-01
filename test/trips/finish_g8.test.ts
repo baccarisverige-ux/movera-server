@@ -60,7 +60,7 @@ const merged = (base: Doc, change: Doc): Doc => {
   return base;
 };
 const driverDoc = (change: Doc = {}, paris = false): Doc => merged(paris ? inParis(sample("driver_app_config")) : sample("driver_app_config"), change);
-const riderDoc = (change: Doc = {}, paris = false): Doc => merged(paris ? { ...inParis(sample("rider_app_config")), tips: FR_TIPS } : sample("rider_app_config"), change);
+const riderDoc = (change: Doc = {}, paris = false): Doc => merged(paris ? { ...inParis(sample("rider_app_config")), tips: FR_TIPS, tipRules: { ...sample("rider_app_config").tipRules, customMax: { amountMinor: 2000, currency: "EUR" } } } : sample("rider_app_config"), change);
 
 beforeAll(async () => {
   database = await freshDatabase();
@@ -240,7 +240,43 @@ describe("tips per country, 100 % to the driver (owner item 1)", () => {
     expect((await view(trip.tripId, driverA.headers)).tip).toMatchObject({ amount: { amountMinor: 500, currency: "EUR" }, method: "cash" });
     // The seed writes the country's own amounts for a euro zone.
     const seeded = sampleForZone(sample("rider_app_config"), { zoneId: "standard-FR", currency: "EUR", country: "FR", timeZone: "Europe/Paris" });
+    expect((seeded["tipRules"] as Doc)["customMax"]).toEqual({ amountMinor: 2000, currency: "EUR" });
     expect((seeded["tips"] as Array<{ amount: { amountMinor: number } }>).map((t) => t.amount.amountMinor)).toEqual([100, 200, 500]);
+  });
+});
+
+describe("builder questions resolved: tip rules and one early-end rule", () => {
+  it("cash tip only in the car (5 min) unless the admin allows it after; custom amounts up to the country max (SE and FR)", async () => {
+    const { tripId } = await finished();
+    clock.now = new Date(clock.now.getTime() + 6 * 60_000);
+    rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+    driverA.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+    const late = await call(app, "POST", `/trips/${tripId}/tip`, rider, { amount: { amountMinor: 1000, currency: "SEK" }, method: "cash" });
+    expect([late.statusCode, late.json().reason]).toEqual([409, "tip_cash_after_trip_off"]);
+    await publish("rider_app_config", "Z001", riderDoc({ tipRules: { cashAfterTrip: true, customAmount: true } }));
+    const tooMuch = await call(app, "POST", `/trips/${tripId}/tip`, rider, { amount: { amountMinor: 20100, currency: "SEK" }, method: "cash" });
+    expect([tooMuch.statusCode, tooMuch.json().reason]).toEqual([400, "tip_above_max"]);
+    expect((await call(app, "POST", `/trips/${tripId}/tip`, rider, { amount: { amountMinor: 4500, currency: "SEK" }, method: "cash" })).statusCode).toBe(201);
+    const trip = await forcedParis();
+    const v = await onBoard(trip, PARIS);
+    await moveTo(PARIS_DROP, 600);
+    await complete(trip.tripId, v);
+    const custom = await call(app, "POST", `/trips/${trip.tripId}/tip`, rider, { amount: { amountMinor: 300, currency: "EUR" }, method: "cash" });
+    expect([custom.statusCode, custom.json().reason]).toEqual([400, "tip_amount_not_allowed"]);
+    await publish("rider_app_config", "FR-PC", riderDoc({ tipRules: { customAmount: true } }, true));
+    expect((await call(app, "POST", `/trips/${trip.tripId}/tip`, rider, { amount: { amountMinor: 2100, currency: "EUR" }, method: "cash" })).json().reason).toBe("tip_above_max");
+    expect((await call(app, "POST", `/trips/${trip.tripId}/tip`, rider, { amount: { amountMinor: 300, currency: "EUR" }, method: "cash" })).statusCode).toBe(201);
+  });
+
+  it("driver cancel with the rider on board, 450 m short after the booked time → booked price (same 2 km / 8 min rule)", async () => {
+    const trip = await accepted();
+    const booked = (await view(trip.tripId, rider)).fare.amountMinor;
+    const v = await onBoard(trip);
+    await moveTo(NEAR_SODER, 600);
+    const res = await call(app, "POST", `/trips/${trip.tripId}/cancel`, driverA.headers, { expectedVersion: v, reasonCode: "rider_behavior" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().fare.amountMinor).toBe(booked);
+    expect(res.json().finish).toMatchObject({ endedEarly: true, endedBy: "driver", repriced: false });
   });
 });
 

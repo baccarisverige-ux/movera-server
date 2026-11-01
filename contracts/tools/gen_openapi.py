@@ -2420,6 +2420,8 @@ S["EarlyEndSettings"] = obj(OrderedDict([
     ("repriceOverMin", {**n(minimum=_FE["settings"]["ranges"]["repriceOverMin"][0], maximum=_FE["settings"]["ranges"]["repriceOverMin"][1]), "default": _EED["repriceOverMin"]}),
 ]), desc="v0.18.10: " + _FE["settings"]["where"])
 S["CancelFees"]["properties"]["earlyEnd"] = {"allOf": [ref("EarlyEndSettings")], "description": "DriverAppConfig only. " + C["cancelFees"]["earlyEnd"]}
+S["TipRules"] = obj(OrderedDict([("cashAfterTrip", {**b(), "default": False}), ("cashInCarMinutes", {**i(minimum=0, maximum=60), "default": 5}), ("customAmount", {**b(), "default": False}), ("customMax", ref("Money"))]), desc="v0.18.10: " + _FT["settings"])
+S["RiderAppConfig"]["properties"]["tipRules"] = ref("TipRules")
 S["TipMethod"] = s("v0.18.10: " + _FT["rules"], enum=_FP["values"])
 S["TripTip"] = obj({"amount": ref("Money"), "method": ref("TipMethod"), "driverShare": {"allOf": [ref("Money")], "description": _FT["driverShare"]}, "at": ref("Timestamp")}, ["amount", "method", "at"], "v0.18.10: " + _FT["projection"])
 S["TipRequest"] = obj({"amount": ref("Money"), "method": ref("TipMethod")}, ["amount", "method"], "v0.18.10: " + _FT["endpoint"] + " " + _FT["rules"])

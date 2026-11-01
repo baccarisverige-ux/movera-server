@@ -2807,7 +2807,7 @@
     ]
   },
   "configDefaults": {
-    "note": "Defaults for the per-zone config fields (CONTRACT.md §6). Admin exports them where no setting exists yet; apps fall back to them when a document lacks a field or has a bad value. Money is in the country's currency. v0.5.0 adds offers, pickupPay and surge. v0.5.1 adds pricing (SE, the admin's Stockholm prices) and dispatch (the admin's zone defaults). v0.5.6: missedExclusiveBeforeOffline (DriverAppConfig.offers.autoOffline.missedExclusive) goes from 3 to 10 (owner decision 35, 2026-10-26). v0.18.6: raiseMaxFactor (DispatchDocument.raisePrice.maxFactor, RiderAppConfig.raisePrice.maxFactor) 2 and offerCardRiderRating (DriverAppConfig.offers.offerCard.riderRating) true. v0.18.7: maxPickupMoveMeters 500 → 200 (owner 2026-10-29 '200 m default, admin can change'; server migration moves published documents still on 500) and cancelAfterArrivedIsNoShow true (Q2). v0.18.8: pickupPin (off, 5 tries, 5 min lock), waitingRules (the admin's far pickup / airport / event / scheduled defaults) and stopFreeWaitMin 0 (contract.json#arrivedWaiting). v0.18.9: rideCheck (on, stopMinutes 2, offRouteKm 3 → 2, endFarMeters 500, noAnswerSeconds 120, repeatMinutes 10, noAnswerAlarm false) and routeChange (on, driverCanRefuse, answerSeconds 60) per zone in the driver document (contract.json#onTrip); maxStops 3 now enforced by the server. v0.18.9 (owner rule 16, 2026-11-01): routeChange.beforePickup true and routeChange.fixedPriceTrips \"block\". v0.18.10 (contract.json#finish): earlyEnd (DriverAppConfig.cancelFees.earlyEnd: repriceOverKm 2, repriceOverMin 8, owner G8 Q2), tips per country (countries.SE.tips 10 / 20 / 30 kr, countries.FR.tips 1 / 2 / 5 €; the sample documents no longer convert Swedish tips to euro), paymentMethods cash, card, apple_pay (no google_pay).",
+    "note": "Defaults for the per-zone config fields (CONTRACT.md §6). Admin exports them where no setting exists yet; apps fall back to them when a document lacks a field or has a bad value. Money is in the country's currency. v0.5.0 adds offers, pickupPay and surge. v0.5.1 adds pricing (SE, the admin's Stockholm prices) and dispatch (the admin's zone defaults). v0.5.6: missedExclusiveBeforeOffline (DriverAppConfig.offers.autoOffline.missedExclusive) goes from 3 to 10 (owner decision 35, 2026-10-26). v0.18.6: raiseMaxFactor (DispatchDocument.raisePrice.maxFactor, RiderAppConfig.raisePrice.maxFactor) 2 and offerCardRiderRating (DriverAppConfig.offers.offerCard.riderRating) true. v0.18.7: maxPickupMoveMeters 500 → 200 (owner 2026-10-29 '200 m default, admin can change'; server migration moves published documents still on 500) and cancelAfterArrivedIsNoShow true (Q2). v0.18.8: pickupPin (off, 5 tries, 5 min lock), waitingRules (the admin's far pickup / airport / event / scheduled defaults) and stopFreeWaitMin 0 (contract.json#arrivedWaiting). v0.18.9: rideCheck (on, stopMinutes 2, offRouteKm 3 → 2, endFarMeters 500, noAnswerSeconds 120, repeatMinutes 10, noAnswerAlarm false) and routeChange (on, driverCanRefuse, answerSeconds 60) per zone in the driver document (contract.json#onTrip); maxStops 3 now enforced by the server. v0.18.9 (owner rule 16, 2026-11-01): routeChange.beforePickup true and routeChange.fixedPriceTrips \"block\". v0.18.10 (contract.json#finish): earlyEnd (DriverAppConfig.cancelFees.earlyEnd: repriceOverKm 2, repriceOverMin 8, owner G8 Q2), tips per country (countries.SE.tips 10 / 20 / 30 kr, countries.FR.tips 1 / 2 / 5 €; the sample documents no longer convert Swedish tips to euro), paymentMethods cash, card, apple_pay (no google_pay). v0.18.10 (builder questions resolved 2026-11-01): tipRules (RiderAppConfig.tipRules: cashAfterTrip false, cashInCarMinutes 5, customAmount false, customMax SE 200 kr / FR 20 €).",
     "maxStops": 3,
     "maxPickupMoveMeters": 200,
     "freeWaitMin": {
@@ -3490,6 +3490,21 @@
     "earlyEnd": {
       "repriceOverKm": 2,
       "repriceOverMin": 8
+    },
+    "tipRules": {
+      "cashAfterTrip": false,
+      "cashInCarMinutes": 5,
+      "customAmount": false,
+      "customMax": {
+        "SE": {
+          "amountMinor": 20000,
+          "currency": "SEK"
+        },
+        "FR": {
+          "amountMinor": 2000,
+          "currency": "EUR"
+        }
+      }
     }
   },
   "realtime": {
@@ -5830,7 +5845,9 @@
         "tips_not_available",
         "tip_amount_not_allowed",
         "tip_already_given",
-        "tip_not_allowed"
+        "tip_not_allowed",
+        "tip_cash_after_trip_off",
+        "tip_above_max"
       ],
       "texts": {
         "title": {
@@ -5887,12 +5904,44 @@
           "sv": "Dricks går bara efter en avslutad resa.",
           "fr": "Le pourboire n’est possible qu’après une course terminée.",
           "en": "A tip is only possible after a finished trip."
+        },
+        "tip_cash_after_trip_off": {
+          "sv": "Kontant dricks går bara i bilen. Välj kort när det finns.",
+          "fr": "Le pourboire en espèces se donne seulement dans la voiture.",
+          "en": "A cash tip can only be given in the car."
+        },
+        "tip_above_max": {
+          "sv": "Beloppet är för högt.",
+          "fr": "Le montant est trop élevé.",
+          "en": "The amount is too high."
+        },
+        "customAmount": {
+          "sv": "Annat belopp",
+          "fr": "Autre montant",
+          "en": "Other amount"
+        },
+        "adminCashAfterTrip": {
+          "sv": "Tillåt kontant dricks efter resan",
+          "fr": "Autoriser le pourboire en espèces après la course",
+          "en": "Allow cash tips after the trip"
+        },
+        "adminCustomAmount": {
+          "sv": "Resenären får skriva eget belopp (max {max})",
+          "fr": "Le passager peut saisir un montant libre (max {max})",
+          "en": "Rider may type an amount (max {max})"
         }
+      },
+      "settings": "RiderAppConfig.tipRules { cashAfterTrip (default false), cashInCarMinutes (default 5, 0–60), customAmount (default false), customMax: Money (default SE 200 kr, FR 20 €) }, Admin › Tips & limits, per zone or country standard; missing / out of range = default. cashAfterTrip false: a cash tip is only accepted while the rider is still in the car = within cashInCarMinutes after the trip ended (the finish screen); later → 409 tip_cash_after_trip_off (card / Apple Pay tips are not limited). customAmount true: besides the preset amounts the rider may type any whole amount from 1 up to customMax (above → 400 tip_above_max); false: presets only (400 tip_amount_not_allowed).",
+      "settings_ranges": {
+        "cashInCarMinutes": [
+          0,
+          60
+        ]
       }
     },
     "earlyEnd": {
       "rider": "Owner G8 Q1 'Cash screen + rating (Recommended)': when the rider ends early (POST /trips/{tripId}/end-early) the driver gets the normal finish: TripProjection.finish (driver and admin views; rider view without the driver's money) with endedEarly true, endedBy rider, the amount for the distance driven (finish.total), the cash to collect (finish.cashToCollect), his money (finish.driverTotal + earningsBreakdown) and ratingAllowed true; driverRatingStatus is pending, so POST /driver/trips/{tripId}/rating works on a cancelled_by_rider trip ended by end_early. The driver app shows the cash sheet with this amount (texts.driverRiderEnded), then the rating, never straight Home. Stop waiting already charged is kept.",
-      "driver": "Owner G8 Q2: the driver completes farther than pricing.completeNearDropoffMeters (300 m) from the drop-off. Paid stop waiting (fee and minutes) is always kept. The price is worked out again only when the trip is shorter than booked by MORE than DriverAppConfig.cancelFees.earlyEnd.repriceOverKm km (default 2) OR MORE than repriceOverMin minutes (default 8): then the rider pays what was driven (never more than booked) plus the stop waiting; otherwise the booked price stands (plus the stop waiting) and the trip is still marked ended early. Distance short = booked distance − km on board (trip trace); time short = booked minutes − minutes on board. The numbers are kept on the trip at booking (bookingSnapshot earlyEnd), read from the zone's live driver document (or the country standard), out of range = default.",
+      "driver": "Owner G8 Q2: the driver completes farther than pricing.completeNearDropoffMeters (300 m) from the drop-off. Paid stop waiting (fee and minutes) is always kept. The price is worked out again only when the trip is shorter than booked by MORE than DriverAppConfig.cancelFees.earlyEnd.repriceOverKm km (default 2) OR MORE than repriceOverMin minutes (default 8): then the rider pays what was driven (never more than booked) plus the stop waiting; otherwise the booked price stands (plus the stop waiting) and the trip is still marked ended early. Distance short = booked distance − km on board (trip trace); time short = booked minutes − minutes on board. The numbers are kept on the trip at booking (bookingSnapshot earlyEnd), read from the zone's live driver document (or the country standard), out of range = default. The same rule applies when the driver cancels with the rider on board (builder question 4, one rule): re-priced only over the limits, else the booked price (+ stop waiting).",
       "settings": {
         "where": "DriverAppConfig.cancelFees.earlyEnd { repriceOverKm, repriceOverMin } — Admin › Cancellation, per zone or country standard.",
         "ranges": {
@@ -5949,7 +5998,7 @@
       "rider": "GET /trips/{tripId}/receipt (rider, own trip) → Receipt; the driver reads GET /driver/trips/{tripId}/receipt (own trip, without the rider's wallet), the admin GET /admin/trips/{tripId}/receipt (trips.read). Only for an ended trip that was paid (payment_status captured / partially_refunded / refunded) or a fee trip; else 409 invalid_transition, reason receipt_not_ready.",
       "fields": "Receipt { tripId, issuedAt, zoneId, country, currency, categoryId, pickup, dropoff, stops, paymentMethod, fareLines (the rider's lines), total, walletPaid, cashPaid, debtIncluded? (an old unpaid fee paid with this trip), tip?, refunds [{ refundId, amount, at }], refunded, endedEarly, endedBy?, endedEarlyReason? (reasonCode), distanceMeters? }.",
       "endedEarly": "endedEarly true when the rider ended early or the driver ended before the drop-off (finish.endedEarly); endedBy rider | driver and the reason code. Apps print texts.endedEarly + finish.earlyEnd.texts.riderEnded / driverEnded.",
-      "resend": "POST /admin/trips/{tripId}/receipt/resend { reason } (trips.intervene) → 200 { tripId, notificationId, sentAt }: the rider gets a bell notice + push kind receipt (texts.resendTitle / resendBody in the rider's language, deep link movera-rider://trip/{tripId}/receipt); audit trip.receipt_resend with the reason. receipt_not_ready as above.",
+      "resend": "POST /admin/trips/{tripId}/receipt/resend { reason } (trips.intervene) → 200 { tripId, notificationId, sentAt }: the rider gets a bell notice + push kind receipt (texts.resendTitle / resendBody in the rider's language, deep link movera-rider://trip/{tripId}/receipt); audit trip.receipt_resend with the reason. receipt_not_ready as above. E-mail receipts wait for the owner's choice of an e-mail company.",
       "errors": [
         "receipt_not_ready"
       ],
@@ -6077,7 +6126,9 @@
       "receipt_not_ready",
       "driver_pay_not_ended",
       "driver_pay_no_driver",
-      "driver_pay_below_zero"
+      "driver_pay_below_zero",
+      "tip_cash_after_trip_off",
+      "tip_above_max"
     ],
     "compat": "Additive for 0.18.9 apps except: google_pay is no longer a PaymentMethod / ZonePaymentMethod value (no trip ever had it: booking with it always failed); live apps that still offer Google Pay get 400 payment_method_not_available instead of a silent fail. Older driver apps ignore finish / driverTotal and keep driverEarnings.",
     "next": "Driver app: cash sheet + rating after the rider's early end, 'Din andel' = driverTotal everywhere, tip line. Rider app: payment list from paymentOptions (Pay in car, card / Apple Pay coming soon, no Google Pay, no logos), tip buttons from RiderAppConfig.tips → POST /trips/{tripId}/tip, receipt with ended early, SOS only when sosAvailable. Admin: finish.admin."
