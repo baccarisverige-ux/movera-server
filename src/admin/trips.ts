@@ -13,7 +13,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL, isTripStatus } from "../rules/transitions.js";
 import { applyCommand, expectVersion, touchTrip } from "../trips/commands.js";
-import { tripProjection } from "../trips/projection.js";
+import { driverTotalOf, tripProjection } from "../trips/projection.js";
 import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver, scaledFare } from "../trips/ride.js";
 import { audit } from "./audit.js";
 import { creditWallet } from "../riders/wallet.js";
@@ -378,7 +378,8 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
   // "Take from driver": the driver loses their share of the refunded money (owner decision 31).
   if (p.fromDriver && trip.driver_id && paid > 0) {
     const fare = Number(trip.fare_minor);
-    const share = fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0;
+    // Checker (7): never more than the driver still has on this trip (his one number never goes below 0).
+    const share = Math.min(driverTotalOf(trip), fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0);
     if (share > 0) {
       await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
       // v0.18.10 (contract.json#finish.driverMoney): the driver's one number on the trip moves with it.

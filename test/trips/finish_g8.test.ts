@@ -13,7 +13,7 @@ import { TimerWorker } from "../../src/jobs/timers.js";
 import { EstimateRouter } from "../../src/maps/routing.js";
 import { redactProjection } from "../../src/realtime/events.js";
 import { commissionOf } from "../../src/rules/commission.js";
-import { adminMethodsOf, paymentOptionsOf } from "../../src/trips/finish.js";
+import { adminMethodsOf, paymentOptionsOf, tipRulesOf } from "../../src/trips/finish.js";
 import { earlyEndSettingsOf, rideHandlers } from "../../src/trips/ride.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -440,7 +440,7 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
     expect(entries.map((e) => Number(e.amount_minor))).toEqual([5000]);
     expect(await database.db.selectFrom("admin_audit").select("action").where("action", "=", "trip.driver_pay").where("target_id", "=", tripId).executeTakeFirst()).toBeDefined();
     expect(await database.db.selectFrom("notifications").select("kind").where("kind", "=", "driver_pay_changed").where("trip_id", "=", tripId).executeTakeFirst()).toBeDefined();
-    const below = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: -10_000_000, currency: "SEK" }, reason: "x" });
+    const below = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: -90_000, currency: "SEK" }, reason: "x" });
     expect([below.statusCode, below.json().reason]).toEqual([400, "driver_pay_below_zero"]);
   });
 
@@ -476,6 +476,62 @@ describe("realtime: the stored admin projection never gives the rider the driver
     expect(forDriver["moneySplit"]).toBeUndefined();
     expect(forDriver["driverTotal"]).toBeDefined();
     expect((forDriver["finish"] as Doc)["ratingAllowed"]).toBe(true);
+  });
+});
+
+describe("checker fixes", () => {
+  it("(1) who gets what adds up after a tip, a refund Movera pays, a refund from the driver and a pay change (SE)", async () => {
+    const { tripId } = await finished();
+    expect((await call(app, "POST", `/trips/${tripId}/tip`, rider, { amount: { amountMinor: 2000, currency: "SEK" }, method: "cash" })).statusCode).toBe(201);
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const sums = async () => {
+      const a = (await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json();
+      const m = a.moneySplit;
+      expect(m.driverTotal.amountMinor + m.movera.amountMinor + m.debtCollected.amountMinor).toBe(m.riderPaid.amountMinor);
+      expect(m.riderPaid.amountMinor).toBe(a.fare.amountMinor + 2000 - m.refunded.amountMinor);
+      return a;
+    };
+    const start = await sums();
+    expect(start.moneySplit.tip).toEqual({ amountMinor: 2000, currency: "SEK" });
+    // The tip is the driver's, never Movera's.
+    expect(start.moneySplit.movera.amountMinor).toBe(start.fare.amountMinor - (start.driverTotal.amountMinor - 2000));
+    let a = start;
+    const refund = await call(app, "POST", `/admin/trips/${tripId}/refund`, admin.headers, { expectedVersion: a.version, amount: { amountMinor: 1000, currency: "SEK" }, reason: "Movera pays" });
+    expect(refund.statusCode, refund.body).toBe(201);
+    a = await sums();
+    expect(a.moneySplit.movera.amountMinor).toBe(start.moneySplit.movera.amountMinor - 1000);
+    expect((await call(app, "POST", `/admin/trips/${tripId}/refund`, admin.headers, { expectedVersion: a.version, amount: { amountMinor: 1000, currency: "SEK" }, reason: "Detour", fromDriver: true })).statusCode).toBe(201);
+    a = await sums();
+    expect((await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: 3000, currency: "SEK" }, reason: "Long wait" })).statusCode).toBe(200);
+    const end = await sums();
+    expect(end.moneySplit.movera.amountMinor).toBe(a.moneySplit.movera.amountMinor - 3000);
+  });
+
+  it("(2) one pay change is at most the country's max (SE 1000 kr default, set per zone); (7) a refund from the driver never takes him below 0", async () => {
+    const { tripId, done } = await finished();
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const big = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: 100_100, currency: "SEK" }, reason: "x" });
+    expect([big.statusCode, big.json().reason]).toEqual([400, "driver_pay_above_max"]);
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "Z001", version: 1, document: JSON.stringify({ country: "SE", currency: "SEK", tips: [], raiseSteps: [], driverBonus: { defaultLimit: { amountMinor: 20000, currency: "SEK" }, hardMax: { amountMinor: 100000, currency: "SEK" } }, driverPayChangeMax: { amountMinor: 5000, currency: "SEK" } }), published_at: clock.now, published_by: null }).onConflict((c) => c.doNothing()).execute();
+    const over = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: -5100, currency: "SEK" }, reason: "x" });
+    expect(over.json().reason).toBe("driver_pay_above_max");
+    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").where("zone_id", "=", "Z001").execute();
+    // Take the driver to 0 with a pay change, then a refund from him takes nothing more.
+    const total = done.driverTotal.amountMinor;
+    expect((await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: -total, currency: "SEK" }, reason: "Wrong trip" })).statusCode).toBe(200);
+    const v = (await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json().version;
+    expect((await call(app, "POST", `/admin/trips/${tripId}/refund`, admin.headers, { expectedVersion: v, amount: { amountMinor: 1000, currency: "SEK" }, reason: "x", fromDriver: true })).statusCode).toBe(201);
+    expect((await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json().driverTotal.amountMinor).toBe(0);
+  });
+
+  it("(3) a typed tip is never unlimited; (8) a refused tip keeps the stars", async () => {
+    expect(tipRulesOf({ tipRules: { customAmount: true } }, "TN", "TND", [1000, 3000]).customMax).toEqual({ amountMinor: 60000, currency: "TND" });
+    const { tripId } = await finished();
+    const rated = await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 5, tip: { amountMinor: 1500, currency: "SEK" } });
+    expect(rated.statusCode, rated.body).toBe(201);
+    expect(rated.json()).toMatchObject({ stars: 5, tipError: { code: "invalid_request", reason: "tip_amount_not_allowed" } });
+    expect((await view(tripId, rider)).ratingStatus).toBe("submitted");
+    expect((await view(tripId, rider)).tip).toBeUndefined();
   });
 });
 

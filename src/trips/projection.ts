@@ -232,10 +232,14 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (viewer === "admin") {
     const refunded = Number(row.refunded_minor ?? 0);
     const tip = tipMinor(row);
+    // Checker (1): the parts always add up to what the rider paid. Movera is the rest after the driver's one number (which
+    // holds the tip, pay changes and refunds taken from him) and the old fee; a refund Movera pays lowers Movera's part.
+    const riderPaid = Number(row.fare_minor) + tip - refunded;
+    const driverPart = row.driver_id ? driverTotalOf(row) : 0;
     projection["moneySplit"] = {
-      riderPaid: { amountMinor: Number(row.fare_minor) + tip - refunded, currency },
-      driverTotal: { amountMinor: row.driver_id ? driverTotalOf(row) : 0, currency },
-      movera: { amountMinor: Number(row.commission_minor ?? 0), currency },
+      riderPaid: { amountMinor: riderPaid, currency },
+      driverTotal: { amountMinor: driverPart, currency },
+      movera: { amountMinor: riderPaid - driverPart - debt, currency },
       debtCollected: { amountMinor: debt, currency },
       ...(tip > 0 ? { tip: { amountMinor: tip, currency } } : {}),
       refunded: { amountMinor: refunded, currency },

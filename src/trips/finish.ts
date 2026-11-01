@@ -22,7 +22,7 @@ type Money = { amountMinor: number; currency: string };
 
 const C = contract as unknown as {
   zonePaymentMethods: { values: string[] };
-  configDefaults: { countries: Record<string, { tips?: Money[] }>; tipRules: { cashAfterTrip: boolean; cashInCarMinutes: number; customAmount: boolean; customMax: Record<string, Money> } };
+  configDefaults: { driverPayChangeMax: Record<string, Money>; countries: Record<string, { tips?: Money[] }>; tipRules: { cashAfterTrip: boolean; cashInCarMinutes: number; customAmount: boolean; customMax: Record<string, Money> } };
   finish: { receipt: { texts: Record<string, Record<string, string>> }; driverMoney: { texts: Record<string, Record<string, string>> } };
 };
 /** The methods a country may offer at all (cash, card, apple_pay; no google_pay). */
@@ -83,9 +83,9 @@ export async function tipAmountsFor(ex: Executor, zoneId: string, currency: stri
   return (C.configDefaults.countries[zone?.country ?? ""]?.tips ?? []).filter((t) => t.currency === currency).map((t) => t.amountMinor);
 }
 
-export type TipRules = { cashAfterTrip: boolean; cashInCarMinutes: number; customAmount: boolean; customMax: Money | null };
+export type TipRules = { cashAfterTrip: boolean; cashInCarMinutes: number; customAmount: boolean; customMax: Money };
 /** RiderAppConfig.tipRules with the defaults (cash only in the car within 5 min, presets only, max SE 200 kr / FR 20 €). */
-export function tipRulesOf(doc: unknown, country: string, currency: string): TipRules {
+export function tipRulesOf(doc: unknown, country: string, currency: string, presets: readonly number[] = []): TipRules {
   const d = C.configDefaults.tipRules;
   const r = (doc as { tipRules?: Record<string, unknown> } | null | undefined)?.tipRules ?? {};
   const max = r["customMax"] as Money | undefined;
@@ -94,7 +94,8 @@ export function tipRulesOf(doc: unknown, country: string, currency: string): Tip
     cashAfterTrip: typeof r["cashAfterTrip"] === "boolean" ? r["cashAfterTrip"] : d.cashAfterTrip,
     cashInCarMinutes: typeof r["cashInCarMinutes"] === "number" && Number.isInteger(r["cashInCarMinutes"]) && r["cashInCarMinutes"] >= 0 && r["cashInCarMinutes"] <= 60 ? r["cashInCarMinutes"] : d.cashInCarMinutes,
     customAmount: typeof r["customAmount"] === "boolean" ? r["customAmount"] : d.customAmount,
-    customMax: max && max.currency === currency && Number.isInteger(max.amountMinor) && max.amountMinor > 0 ? max : fallback && fallback.currency === currency ? fallback : null,
+    // Checker (3): never unlimited — the document's, else the country default, else 20 × the highest preset (at least 1).
+    customMax: max && max.currency === currency && Number.isInteger(max.amountMinor) && max.amountMinor > 0 ? max : fallback && fallback.currency === currency ? fallback : { amountMinor: Math.max(1, 20 * Math.max(0, ...presets)), currency },
   };
 }
 
@@ -118,11 +119,11 @@ export async function giveTip(trx: Trx, riderId: string, tripId: string, body: u
   const amounts = await tipAmountsFor(trx, trip.zone_id, trip.currency);
   if (amounts.length === 0) throw badRequest("Tips are not on here.", "tips_not_available");
   const zone = await trx.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirst();
-  const rules = tipRulesOf((await liveDocument(trx, "rider_app_config", trip.zone_id))?.document, zone?.country ?? "", trip.currency);
+  const rules = tipRulesOf((await liveDocument(trx, "rider_app_config", trip.zone_id))?.document, zone?.country ?? "", trip.currency, amounts);
   if (!amounts.includes(tip.amount.amountMinor)) {
     // Builder question 2 (admin tipRules.customAmount): any whole amount from 1 up to customMax, when on.
     if (!rules.customAmount || tip.amount.amountMinor < 1) throw badRequest(`Choose one of the amounts: ${amounts.map((a) => a / 100).join(", ")} ${trip.currency}.`, "tip_amount_not_allowed");
-    if (rules.customMax && tip.amount.amountMinor > rules.customMax.amountMinor) throw badRequest(`At most ${rules.customMax.amountMinor / 100} ${trip.currency}.`, "tip_above_max");
+    if (tip.amount.amountMinor > rules.customMax.amountMinor) throw badRequest(`At most ${rules.customMax.amountMinor / 100} ${trip.currency}.`, "tip_above_max");
   }
   // Builder question 1 (admin tipRules.cashAfterTrip, default off): a cash tip only while the rider is in the car.
   if (tip.method === "cash" && !rules.cashAfterTrip && trip.ended_at && now.getTime() > trip.ended_at.getTime() + rules.cashInCarMinutes * 60_000) {
@@ -242,6 +243,16 @@ export async function resendReceipt(trx: Trx, who: Principal, tripId: string, bo
 
 /* ---------------------------------------------------------------- the admin changes the driver's pay */
 
+/** CountryRules.driverPayChangeMax of the zone (its own, else its country's Standard), else the country default. */
+export async function payChangeMaxOf(ex: Executor, zoneId: string, currency: string): Promise<number> {
+  const rules = await liveDocument<{ driverPayChangeMax?: Money }>(ex, "country_rules", zoneId);
+  const own = rules?.document.driverPayChangeMax;
+  if (own && own.currency === currency && Number.isInteger(own.amountMinor) && own.amountMinor > 0) return own.amountMinor;
+  const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", zoneId).executeTakeFirst();
+  const fallback = C.configDefaults.driverPayChangeMax[zone?.country ?? ""];
+  return fallback && fallback.currency === currency ? fallback.amountMinor : 100_000;
+}
+
 /**
  * POST /admin/trips/{tripId}/driver-pay { change, reason } (contract.json#finish.driverMoney.payChange): an earnings
  * adjustment on an ended trip, paid with the next payout; the driver's total never below 0; audited; a bell to the driver.
@@ -253,6 +264,9 @@ export async function adminDriverPay(trx: Trx, who: Principal, tripId: string, b
   if (trip.ended_at === null) throw new ApiError("invalid_transition", "Change the pay after the trip ended.", { reason: "driver_pay_not_ended", projection: tripProjection(trip, "admin") });
   if (body.change.currency !== trip.currency) throw badRequest(`The pay is in ${trip.currency}.`, "currency_mismatch");
   if (body.change.amountMinor === 0) throw badRequest("The change cannot be 0.", "invalid_amount");
+  // Checker (2): one change is at most the country's (or zone's) driverPayChangeMax (Admin › Tips & limits).
+  const max = await payChangeMaxOf(trx, trip.zone_id, trip.currency);
+  if (Math.abs(body.change.amountMinor) > max) throw badRequest(`One change is at most ${max / 100} ${trip.currency}.`, "driver_pay_above_max");
   const before = driverTotalOf(trip);
   const after = before + body.change.amountMinor;
   if (after < 0) throw badRequest(`The driver's pay on this trip is ${before / 100} ${trip.currency}; it cannot go below 0.`, "driver_pay_below_zero");

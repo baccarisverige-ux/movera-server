@@ -18,6 +18,8 @@ UPDATE trips t
  WHERE e.trip_id = t.trip_id AND t.status <> 'no_show' AND t.driver_adjustments_minor <> e.total;
 
 -- Owner G8 item 2: no Google Pay. No trip ever had it (booking always failed); the check no longer allows it.
+-- Checker (5): defensive, so the new check can never fail on an old row.
+UPDATE trips SET payment_method = 'cash' WHERE payment_method = 'google_pay';
 ALTER TABLE trips DROP CONSTRAINT IF EXISTS trips_payment_method_check;
 ALTER TABLE trips ADD CONSTRAINT trips_payment_method_check CHECK (payment_method IN ('card', 'apple_pay', 'cash', 'wallet'));
 UPDATE quotes SET payment_method = NULL WHERE payment_method = 'google_pay';
@@ -91,3 +93,5 @@ UPDATE trips t
          GROUP BY trip_id) d
  WHERE d.trip_id = t.trip_id
    AND t.commission_minor IS DISTINCT FROM t.fare_minor - d.debt - coalesce(t.driver_earnings_minor, 0) - coalesce(t.pickup_pay_minor, 0) - coalesce(t.driver_bonus_minor, 0);
+
+-- Older earnings_entries are not affected: the trip line already stored commission as fare − the old fee − earnings.

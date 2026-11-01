@@ -131,7 +131,17 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
       const rated = await rateTrip(trx, { actor, subjectId: who.subjectId }, id, request.body ?? {}, now());
       // v0.18.10 (contract.json#finish.tips): a tip sent with the rating, same rules as POST /trips/{tripId}/tip (default cash).
       const body = (request.body ?? {}) as { tip?: unknown; tipMethod?: unknown };
-      if (actor === "rider" && body.tip !== undefined) await giveTip(trx, who.subjectId, id, { amount: body.tip, method: body.tipMethod ?? "cash" }, supported, now());
+      // Checker (8): a tip that cannot be given never loses the stars: the rating stays, the answer carries tipError.
+      // giveTip checks everything before it writes, so a refused tip changed nothing.
+      if (actor === "rider" && body.tip !== undefined) {
+        try {
+          await giveTip(trx, who.subjectId, id, { amount: body.tip, method: body.tipMethod ?? "cash" }, supported, now());
+        } catch (error) {
+          if (!(error instanceof ApiError)) throw error;
+          const tipError = { code: error.code, ...(error.options.reason ? { reason: error.options.reason } : {}), message: error.message };
+          return rated.status === 204 ? { status: 200, body: { tipError } } : { status: rated.status, body: { ...(rated.body as object), tipError } };
+        }
+      }
       return rated;
     });
     return result.status === 204 ? reply.status(204).send() : reply.status(result.status).send(result.body);
