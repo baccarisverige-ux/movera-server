@@ -139,9 +139,13 @@ async function offerTo(trx: Trx, who: Principal, tripId: string, driverIds: stri
   // Locked once a driver accepted (contract.json#adminDispatch.lockedStatuses): the transition table says so.
   trip = await withBonus(trx, trip, body);
   trip = await applyCommand(trx, trip, { command: "assign", actor: "admin", now });
+  // Same path as "Add money": every open offer of the trip shows the new money / Priority badge at once (offer_updated).
+  if (body.driverBonus || body.priority !== undefined) await refreshOpenOffers(trx, trip, now);
   const sent = await sendAdminOffers(trx, trip, driverIds, kind, now, extra.seconds);
-  await audit(trx, { adminId: who.subjectId, action: kind === "assigned" ? "trip.assign" : "trip.radar_group", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { driverIds, note: body.note ?? null, driverBonus: body.driverBonus ?? null, priority: body.priority ?? null, groupId: sent.groupId, ...(extra.detail ?? {}) }, at: now });
-  return { trip, ...sent };
+  await audit(trx, { adminId: who.subjectId, action: kind === "assigned" ? "trip.assign" : "trip.radar_group", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { driverIds, note: body.note ?? null, driverBonus: body.driverBonus ?? null, priority: body.priority ?? null, groupId: sent.groupId, sentTo: sent.offers.map((o) => o["driverId"]), refreshed: sent.kept.map((o) => o["driverId"]), skipped: sent.skipped, ...(extra.detail ?? {}) }, at: now });
+  // A driver who already saw the trip keeps that offer: it is listed with the new ones (no shape change; the admin counts
+  // the offers outside groupId as refreshed).
+  return { trip, ...sent, offers: [...sent.offers, ...sent.kept] };
 }
 
 export async function adminAssign(trx: Trx, who: Principal, tripId: string, body: OfferBody & { driverId: string }, now: Date): Promise<TripRow> {
