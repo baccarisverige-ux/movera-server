@@ -155,4 +155,22 @@ describe.each(Object.entries(CASES))("admin raise + radar to a driver who alread
     const kinds = (await database.db.selectFrom("offer_events").select("kind").where("driver_id", "=", drivers.A.id).orderBy("sequence", "desc").limit(2).execute()).map((e) => e.kind);
     expect(kinds).toEqual(["offer_created", "offer_withdrawn"]);
   });
+
+  it("owner live test 2026-11-01: a driver document with 0 s never sends a 0 s offer (assign 30 s, radar 15 s)", async () => {
+    const { tripId } = await bookWithAutoOffer(c);
+    const zeroed = { ...sample("driver_app_config"), offers: { ...sample("driver_app_config").offers, radarSeconds: 0, exclusiveSeconds: 0, assignAcceptSeconds: 0 } };
+    const before = await database.db.selectFrom("config_live").select(["document"]).where("doc", "=", "driver_app_config").where("zone_id", "=", c.zone).executeTakeFirst();
+    await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", c.zone).execute();
+    await live("driver_app_config", c.zone, c.zone === "Z001" ? zeroed : inParis(zeroed));
+    try {
+      const res = await call(app, "POST", `/admin/trips/${tripId}/assign`, admin, { expectedVersion: (await adminView(tripId)).version, driverId: drivers.B.id });
+      expect(res.statusCode, res.body).toBe(200);
+      const [offer] = (await call(app, "GET", "/driver/offers", drivers.B.headers)).json().items;
+      expect(Date.parse(offer.expiresAt) - clock.now.getTime()).toBeGreaterThanOrEqual(15_000);
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", c.zone).execute();
+      if (before) await live("driver_app_config", c.zone, before.document);
+    }
+  });
 });
+

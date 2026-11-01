@@ -331,7 +331,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   const control = await controlOf(trx, trip.zone_id);
   if (control.paused) {
     // Paused: no new offers; look again later (the waiting steps and the end keep running).
-    await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(now.getTime() + doc.radar.seconds * 1000), payload: {} });
+    await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(now.getTime() + positiveSeconds(doc.radar.seconds, 15) * 1000), payload: {} });
     return;
   }
   let state = search.state as SearchState | null;
@@ -346,10 +346,12 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   await trx.updateTable("searches").set({ state: JSON.stringify(planned.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
   const round = planned.round;
   if (round.type === "wait") {
-    await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(Math.min(now.getTime() + round.seconds * 1000, search.end_at.getTime())), payload: {} });
+    // A wait is radar.seconds (exclusive.seconds with Radar off), contract.json ranges radar.seconds 5–120: 0 s is not a
+    // contract value and would spin the round timer, so the same guard applies (checker M2, 2026-11-01).
+    await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(Math.min(now.getTime() + positiveSeconds(round.seconds, 15) * 1000, search.end_at.getTime())), payload: {} });
     return;
   }
-  const expiresAt = new Date(Math.min(now.getTime() + doc[round.kind].seconds * 1000, search.end_at.getTime()));
+  const expiresAt = new Date(Math.min(now.getTime() + positiveSeconds(doc[round.kind].seconds, 15) * 1000, search.end_at.getTime()));
   const driverDoc = await liveDocument<{ pickupPay?: { offers?: Record<string, boolean>; byCategory?: Record<string, PickupPayRate> } }>(trx, "driver_app_config", trip.zone_id);
   const rate = driverDoc?.document.pickupPay?.byCategory?.[trip.category_id];
   const kinds = driverDoc?.document.pickupPay?.offers ?? {};
@@ -389,6 +391,12 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
 
 /* ---------------------------------------------------------------- admin offers (§3.1) */
 
+/** The first whole number of seconds above 0; an offer never runs on a 0 s timer. */
+export function positiveSeconds(...candidates: (number | null | undefined)[]): number {
+  for (const value of candidates) if (typeof value === "number" && Number.isFinite(value) && value >= 1) return Math.round(value);
+  return 15;
+}
+
 const ASSIGNED_TRIP = ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"];
 
 /**
@@ -404,9 +412,11 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   const dispatchDoc = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
   const offersDoc = driverDoc?.document.offers ?? {};
   // v0.18.6 (G4-F4): a radar zone rule gives its own seconds.
-  const seconds = secondsOverride !== undefined ? secondsOverride : kind === "radar"
-    ? offersDoc.radarSeconds ?? dispatchDoc?.document.radar.seconds ?? 15
-    : offersDoc.assignAcceptSeconds ?? offersDoc.exclusiveSeconds ?? dispatchDoc?.document.exclusive.seconds ?? 15;
+  // Owner live test 2026-11-01: a document with 0 s sent an offer that expired unseen. 0 / missing / not a number
+  // falls through to the next source, then the contract default (assign 30 s, radar 15 s).
+  const seconds = kind === "radar"
+    ? positiveSeconds(secondsOverride, offersDoc.radarSeconds, dispatchDoc?.document.radar.seconds, 15)
+    : positiveSeconds(secondsOverride, offersDoc.assignAcceptSeconds, offersDoc.exclusiveSeconds, dispatchDoc?.document.exclusive.seconds, 30);
   const search = await loadSearch(trx, trip.trip_id);
   const end = search && ["searching", "offered"].includes(trip.status) ? search.end_at.getTime() : Infinity;
   const expiresAt = new Date(Math.min(now.getTime() + seconds * 1000, end));
