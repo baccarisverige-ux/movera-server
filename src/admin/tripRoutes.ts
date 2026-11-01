@@ -131,7 +131,11 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   command("reverse-no-show", "trips.intervene", z.object({ expectedVersion: z.number().int().min(1), reason: z.string().trim().min(1).max(1000), takeBackDriverShare: z.boolean().optional() }), (trx, who, id, body) => view(adminReverseNoShow(trx, who, id, clean(body) as never, now())));
   command("pin/unlock", "trips.intervene", z.object({ expectedVersion: z.number().int().min(1), reason: z.string().trim().min(1).max(1000) }), (trx, who, id, body) => view(adminPinUnlock(trx, who, id, clean(body) as never, now())));
   command("complete", "trips.intervene", CompleteBody, (trx, who, id, body) => view(adminComplete(trx, who, id, clean(body) as never, now())));
-  command("driver-bonus", "trips.intervene", BonusBody, (trx, who, id, body) => view(adminDriverBonus(trx, who, id, clean(body) as never, now())));
+  command("driver-bonus", "trips.intervene", BonusBody, async (trx, who, id, body) => {
+    const trip = await adminDriverBonus(trx, who, id, clean(body) as never, now());
+    // Owner decision 2026-11-01: who got the money at once (exclusive to the nearest, radar to the others).
+    return { status: 200, body: { ...tripProjection(trip, "admin"), ...(trip.moneySend ? { moneySend: trip.moneySend } : {}) } };
+  });
   command("adjust", "trips.intervene", AdjustBody, (trx, who, id, body) => adminAdjust(trx, who, id, clean(body) as never, now()));
   command("refund", "payments.refund", RefundBody, (trx, who, id, body) => {
     const { paymentId: _p, ...rest } = clean(body);

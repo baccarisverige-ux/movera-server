@@ -1,12 +1,12 @@
 import { sql } from "kysely";
-import { pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
+import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { contract } from "../contract/contract.js";
 import { liveDocument } from "../config/service.js";
 import type { Executor, Trx } from "../db/db.js";
 import { lockTrip, type TripRow } from "../db/tripLog.js";
 import { dispatchKm } from "../dispatch/engine.js";
-import { addBonus, bonusFor, type BonusScope } from "../dispatch/bonusScope.js";
+import { addBonus, bonusFor, scopeCovers, sideOfKind, type BonusScope } from "../dispatch/bonusScope.js";
 import { refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
 import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { ApiError, badRequest } from "../http/errors.js";
@@ -195,7 +195,47 @@ export async function adminStopRadarZone(trx: Trx, who: Principal, tripId: strin
 }
 
 /** "Add money to trip": Movera pays it; open offers show the new money at once. */
-export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; amount: Money; priority?: boolean; note?: string; applyTo?: BonusScope }, now: Date): Promise<TripRow> {
+export type MoneySend = { exclusiveTo: string | null; radarTo: string[] };
+
+/**
+ * Owner decision 2026-11-01 (driver-g5.md): Add money with an explicit applyTo puts the money in front of drivers NOW.
+ * Exclusive: no exclusive offer out → an exclusive offer (with the money) to the nearest free driver. Radar: the trip's
+ * open exclusive offers become radar offers, and with no radar offer out the nearest free drivers (up to the radar
+ * group size) get one. Both: exclusive to the nearest, radar to the others, at the same time. Same rules and timers as
+ * the admin's own Exclusive / Radar sends (sendAdminOffers); a driver who cannot take it is skipped.
+ */
+async function sendWithMoney(trx: Trx, trip: TripRow, scope: BonusScope, now: Date): Promise<MoneySend> {
+  const done: MoneySend = { exclusiveTo: null, radarTo: [] };
+  const open = await trx.selectFrom("offers").select(["driver_id", "kind"]).where("trip_id", "=", trip.trip_id).where("status", "=", "open").where("expires_at", ">", now).execute();
+  const dispatch = await liveDocument<{ radius?: { steps?: number[] } }>(trx, "dispatch", trip.zone_id);
+  const reachKm = Math.max(5, ...(dispatch?.document.radius?.steps ?? []));
+  const near = (await nearbyDrivers(trx, trip, { scope: "radius", radiusKm: reachKm }, now)).items
+    .filter((d) => d.onlineStatus === "online" && (d.categoryIds as string[]).includes(trip.category_id))
+    .map((d) => d.driverId);
+  const send = async (ids: string[], kind: "assigned" | "radar") => {
+    if (!ids.length) return [] as string[];
+    try {
+      const sent = await sendAdminOffers(trx, trip, ids, kind, now);
+      return ids.filter((id) => !sent.skipped.some((x) => x.driverId === id));
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "conflict") return [];
+      throw error;
+    }
+  };
+  if (scopeCovers(scope, "exclusive") && !open.some((o) => sideOfKind(o.kind) === "exclusive")) {
+    const nearest = near[0];
+    if (nearest) done.exclusiveTo = (await send([nearest], "assigned"))[0] ?? null;
+  }
+  if (scopeCovers(scope, "radar")) {
+    const convert = scope === "radar" ? open.filter((o) => sideOfKind(o.kind) === "exclusive").map((o) => o.driver_id) : [];
+    const fresh = open.some((o) => sideOfKind(o.kind) === "radar") ? [] : near.filter((id) => id !== done.exclusiveTo && !open.some((o) => o.driver_id === id));
+    const ids = [...new Set([...convert, ...fresh])].slice(0, GROUP_MAX_DRIVERS);
+    done.radarTo = await send(ids, "radar");
+  }
+  return done;
+}
+
+export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; amount: Money; priority?: boolean; note?: string; applyTo?: BonusScope }, now: Date): Promise<TripRow & { moneySend?: MoneySend }> {
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   if (["cancelled_by_rider", "cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system", "expired", "failed", "no_show"].includes(trip.status)) {
     throw new ApiError("invalid_transition", "This trip is over; pay a lost driver with the cancel or reassign bonus.", { reason: "trip_over", projection: tripProjection(trip, "admin") });
@@ -212,8 +252,16 @@ export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string,
   // A completed trip's earnings are already written: the bonus is its own entry now.
   if (updated.status === "completed" && updated.driver_id) await credit(trx, { driverId: updated.driver_id, tripId, kind: "bonus", currency: trip.currency, amount: body.amount.amountMinor }, now);
   await refreshOpenOffers(trx, updated, now, scope);
-  await audit(trx, { adminId: who.subjectId, action: "trip.driver_bonus", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { amount: body.amount, applyTo: scope, total: bonus, note: body.note ?? null }, at: now });
-  return updated;
+  // Only a caller that chose a kind gets the immediate send (older callers: money only, as before).
+  let current = updated;
+  let moneySend: MoneySend | undefined;
+  if (!taken && body.applyTo && ["searching", "offered"].includes(updated.status)) {
+    current = await applyCommand(trx, updated, { command: "assign", actor: "admin", now });
+    moneySend = await sendWithMoney(trx, current, scope, now);
+    current = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+  }
+  await audit(trx, { adminId: who.subjectId, action: "trip.driver_bonus", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { amount: body.amount, applyTo: scope, total: bonus, note: body.note ?? null, ...(moneySend ? { sent: moneySend } : {}) }, at: now });
+  return moneySend ? Object.assign(current, { moneySend }) : current;
 }
 
 /* ---------------------------------------------------------------- no-show, complete */
