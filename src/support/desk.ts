@@ -208,6 +208,8 @@ type Row = { ticket_id: string; zone_id: string | null; trip_id: string | null; 
 const SOLVED = new Set(["resolved", "closed"]);
 
 export async function claim(trx: Trx, who: Principal, row: Row, now: Date) {
+  // Checker LOW: a solved or closed ticket is not claimed (it is reopened first).
+  if (SOLVED.has(row.status)) throw new ApiError("invalid_transition", "This ticket is not open.", { reason: "ticket_not_open" });
   // Owner 2026-11-02 "Never": a claim stays until the ticket is solved or handed over.
   const other = row.assigned_admin_id && row.assigned_admin_id !== who.subjectId;
   if (other) throw new ApiError("conflict", "Another admin works on this ticket.", { reason: "ticket_claimed" });

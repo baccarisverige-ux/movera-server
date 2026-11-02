@@ -5804,7 +5804,8 @@ paths:
       summary: Claim a ticket
       description: 'v0.18.15. POST /admin/tickets/{ticketId}/claim {} -> SupportTicket: assignedTo = the caller. Owner 2026-11-02
         ''Never'': a claim never runs out by itself; it stays until the ticket is solved or handed over (assign). Another
-        admin''s claim -> 409 conflict, reason ticket_claimed. Audited ticket.claim. The admin''s zones only (else 403 zone_out_of_scope).'
+        admin''s claim -> 409 conflict, reason ticket_claimed; a solved or closed ticket -> 409 invalid_transition, reason
+        ticket_not_open. Audited ticket.claim. The admin''s zones only (else 403 zone_out_of_scope).'
       tags:
       - Admin · Support
       x-actor:

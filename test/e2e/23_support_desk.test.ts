@@ -207,6 +207,9 @@ describe("owner \"Leave ticket\": the claiming admin gives the ticket back to th
     expect((await agent.post(`/admin/tickets/${id}/reply`, { text: "On it" })).status).toBe(200);
     await agent.post(`/admin/tickets/${id}/solve`, {});
     expect((await other.post(`/admin/tickets/${id}/reopen`, { reason: "x" })).body["reason"]).toBe("ticket_not_yours");
+    // Checker LOW: a solved ticket cannot be claimed.
+    await agent.post(`/admin/tickets/${id}/leave`, {});
+    expect((await other.post(`/admin/tickets/${id}/claim`, {})).body["reason"]).toBe("ticket_not_open");
   });
 });
 
