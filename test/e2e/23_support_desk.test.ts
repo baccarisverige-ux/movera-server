@@ -164,15 +164,18 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
 
 describe("Incidents settings and report (contract.json#incidentDesk)", () => {
   it("settings: safety.edit saves one revision at a time; every admin reads the same; a report download is audited", async () => {
-    const first = await owner.get("/admin/incidents/settings");
-    expect(first.body).toMatchObject({ rev: 1, settings: {} });
+    const first = await owner.get("/admin/incidents/settings?country=SE");
+    expect(first.body).toMatchObject({ country: "SE", rev: 1, settings: {} });
+    const france = await sim.admin("safety", ["FR-PC"]);
+    expect((await france.put("/admin/incidents/settings", { country: "SE", expectedRev: 1, settings: {} })).body["reason"]).toBe("zone_out_of_scope");
+    expect((await france.put("/admin/incidents/settings", { country: "FR", expectedRev: 1, settings: { lateAlerts: true } })).body["rev"]).toBe(2);
     const support = await sim.admin("support");
-    expect((await support.put("/admin/incidents/settings", { expectedRev: 1, settings: { lateAlerts: false } })).status).toBe(403);
+    expect((await support.put("/admin/incidents/settings", { country: "SE", expectedRev: 1, settings: { lateAlerts: false } })).status).toBe(403);
     const safety = await sim.admin("safety");
-    const saved = await safety.put("/admin/incidents/settings", { expectedRev: 1, settings: { lateAlerts: false, emergency: { FR: [{ label: "SAMU", number: "15" }] } } });
+    const saved = await safety.put("/admin/incidents/settings", { country: "SE", expectedRev: 1, settings: { lateAlerts: false, emergency: { FR: [{ label: "SAMU", number: "15" }] } } });
     expect(saved.body).toMatchObject({ rev: 2, updatedBy: safety.id, settings: { lateAlerts: false } });
-    expect((await safety.put("/admin/incidents/settings", { expectedRev: 1, settings: {} })).body["code"]).toBe("version_mismatch");
-    expect((await owner.get("/admin/incidents/settings")).body["settings"]).toMatchObject({ emergency: { FR: [{ number: "15" }] } });
+    expect((await safety.put("/admin/incidents/settings", { country: "SE", expectedRev: 1, settings: {} })).body["code"]).toBe("version_mismatch");
+    expect((await owner.get("/admin/incidents/settings?country=SE")).body["settings"]).toMatchObject({ emergency: { FR: [{ number: "15" }] } });
     const id = await open();
     const incidentId = (await agent.post(`/admin/tickets/${id}/case`, { reason: "report test" })).body["incidentId"];
     expect((await safety.post(`/admin/incidents/${incidentId}/report`, {})).status).toBe(204);

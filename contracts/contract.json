@@ -4059,17 +4059,17 @@
   },
   "alertDesk": {
     "note": "v0.18.15 (build-all A1, owner 2026-11-02 Q5 'Alerts = FULL FLOW': take — the others see who has it, pass on, snooze, mute types, quiet hours, done). The admin panel finds the alerts from the live data (its alert engine, admin settings + rules); the SERVER keeps who works on each alert, the history, the mutes, every admin's quiet hours and the shared alert settings and rules, so every admin sees the same state on live.",
-    "book": "GET /admin/alerts/book (overview.read) -> AlertBookState { rev, settings, rules, records [AlertRecord], mutes { kind: { until, by } }, quiet (the caller's own quiet hours), people [{ adminId, name }] (active admins the caller may pass to: same country scope; Super admins see all) }. records holds the open ones and those done in the last 30 days.",
+    "book": "GET /admin/alerts/book?country=SE (overview.read) -> AlertBookState { country, rev, settings, rules, records [AlertRecord], mutes { kind: { until, by } }, quiet (the caller's own quiet hours), people [{ adminId, name }] }. records: only alerts of the admin's zones in that country whose kind group the admin may see (kindGroups); an alert without zone only for a Super admin. people: active admins with a zone in the same country (Super admins included). records holds the open ones and those done in the last 30 days. country: SE | FR | TN; an admin outside the country -> 403 zone_out_of_scope.",
     "commands": {
-      "take": "POST /admin/alerts/{alertId}/take { kind, level, title, zoneId?, since } -> AlertBookState: owner = the caller. Another admin's live owner -> 409 conflict, reason alert_taken. Kinds sos, car_lost, ride_check -> 409 invalid_transition, reason alert_in_incidents (taken in Incidents).",
+      "take": "POST /admin/alerts/{alertId}/take { kind, level, title, zoneId?, since } -> AlertBookState of the alert's country: owner = the caller. The first command on an alert stores its zone; later commands use the stored zone, never the one sent. The zone must be the caller's (else 403 zone_out_of_scope); the kind must be in kindGroups (else 400 invalid_request, reason unknown_alert_kind) and the caller needs its act permission (else 403). Two admins taking at once: one wins, the other gets 409 conflict, reason alert_taken. Another admin's live owner -> 409 alert_taken. sos, car_lost, ride_check -> 409 invalid_transition, reason alert_in_incidents.",
       "done": "POST /admin/alerts/{alertId}/done { kind, level, title, zoneId?, since, note? } -> status done. Only the owner (or nobody owns it: the caller takes it and solves it) -> else 409 conflict, reason alert_taken.",
       "snooze": "POST /admin/alerts/{alertId}/snooze { kind, level, title, zoneId?, since, minutes 1-1440 } -> status snoozed until now + minutes; same owner rule; not for the incident kinds.",
-      "pass": "POST /admin/alerts/{alertId}/pass { kind, level, title, zoneId?, since, to } -> owner = to (an active admin in people, not the caller, else 400 invalid_request, reason assignee_not_allowed); same owner rule; not for the incident kinds.",
-      "mute": "PUT /admin/alerts/mutes/{kind} { minutes 1-1440 } / DELETE /admin/alerts/mutes/{kind} -> AlertBookState: the kind stays quiet (no sound, no bell) for everyone until then.",
+      "pass": "POST /admin/alerts/{alertId}/pass { kind, level, title, zoneId?, since, to } -> owner = to (an active admin of people who may act on the kind and covers the alert's zone; not the caller; else 400 invalid_request, reason assignee_not_allowed); same owner rule; the pass event carries toName.",
+      "mute": "PUT /admin/alerts/mutes/{kind}?country= { minutes 1-1440 } / DELETE ...?country= (alerts.manage) -> AlertBookState: the kind stays quiet for every admin of that country until then.",
       "quiet": "PUT /admin/alerts/quiet { on, from HH:MM, to HH:MM } -> AlertBookState: the caller's own quiet hours (no sound; critical still rings).",
-      "settings": "PUT /admin/alerts/settings { expectedRev, settings } (alerts.manage) -> AlertBookState rev + 1; a stale expectedRev -> 409 version_mismatch.",
-      "rules": "PUT /admin/alerts/rules { expectedRev, rules } (alerts.manage) -> AlertBookState rev + 1.",
-      "export": "GET /admin/alerts/history?from=&to= (overview.read) -> { items: AlertRecord[] } for the CSV export (the panel builds the file)."
+      "settings": "PUT /admin/alerts/settings { country, expectedRev, settings } (alerts.manage; an admin with a zone in that country or a Super admin) -> rev + 1; stale -> 409 version_mismatch.",
+      "rules": "PUT /admin/alerts/rules { country, expectedRev, rules } (alerts.manage; same country check) -> rev + 1.",
+      "export": "GET /admin/alerts/history?country=&from=&to= (overview.read) -> { items: AlertRecord[] } with the same filter as the book."
     },
     "shapes": "settings and rules are the admin panel's own alert-engine documents (JSON objects, at most 256 KB); the server stores and serves them unchanged so every admin uses the same ones. AlertRecord { alertId, kind, level, title, zoneId?, since, status taken | done | snoozed, owner?, ownerName?, snoozeUntil?, events [{ at, by, byName?, kind take | done | snooze | pass | reopen, text, to? }] }.",
     "audit": "Every command is audited: alert.take | done | snooze | pass | mute | unmute | quiet | settings | rules.",
@@ -4078,11 +4078,53 @@
       "car_lost",
       "ride_check"
     ],
-    "next": "Server-side detection (alerts found while no admin panel is open, push to admins) is a later job."
+    "next": "Server-side detection (alerts found while no admin panel is open, push to admins) is a later job.",
+    "kindGroups": {
+      "sos": "safety",
+      "car_lost": "safety",
+      "ride_check": "safety",
+      "sos_slow": "safety",
+      "long_wait": "dispatch",
+      "few_drivers": "dispatch",
+      "no_driver": "dispatch",
+      "late_reservation": "dispatch",
+      "doc_expiring": "drivers",
+      "low_rating": "drivers",
+      "auto_offline": "drivers",
+      "payment_failed": "money",
+      "refund_approval": "money",
+      "payout_big": "money",
+      "rider_fraud": "riders",
+      "rider_cancels": "riders",
+      "ticket_open": "riders",
+      "system_health": "system",
+      "rule": "rules"
+    },
+    "permissions": {
+      "note": "Seeing an alert needs its group's read permission; acting on it (take, done, snooze, pass) needs its group's act permission or alerts.manage. Mutes, settings and rules need alerts.manage. Quiet hours: the admin's own (overview.read).",
+      "see": {
+        "safety": "incidents.read",
+        "dispatch": "trips.read",
+        "drivers": "drivers.read",
+        "money": "finance.read",
+        "riders": "riders.read",
+        "system": "system.read",
+        "rules": "overview.read"
+      },
+      "act": {
+        "safety": "safety.edit",
+        "dispatch": "trips.intervene",
+        "drivers": "drivers.activate",
+        "money": "finance.edit",
+        "riders": "riders.block",
+        "system": "alerts.manage",
+        "rules": "alerts.manage"
+      }
+    }
   },
   "incidentDesk": {
     "note": "v0.18.15 (build-all A1, Incidents): the incident settings the admin keeps (time limits per level, case-page switches, emergency numbers per country) are stored on the server for every admin; a case report download is audited; calling the rider or driver from a case is 'Calls coming soon' until Movera has a call company (owner G9 Q6, decisions/driver-g9.md).",
-    "settings": "GET /admin/incidents/settings (incidents.read) -> IncidentSettingsDoc { rev, settings, updatedAt?, updatedBy? }; PUT /admin/incidents/settings { expectedRev, settings } (safety.edit) -> rev + 1; stale -> 409 version_mismatch. settings is the admin panel's document (JSON object, at most 64 KB); never saved = {} (the panel's defaults). Audited incident.settings.",
+    "settings": "GET /admin/incidents/settings?country=SE (incidents.read) -> IncidentSettingsDoc { country, rev, settings, updatedAt?, updatedBy? }; PUT /admin/incidents/settings { country, expectedRev, settings } (safety.edit) -> rev + 1; stale -> 409 version_mismatch. Per country (SE, FR, TN): a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope. settings is the admin panel's document (JSON object, at most 64 KB); never saved = {} (the panel's defaults). Audited incident.settings.",
     "report": "POST /admin/incidents/{incidentId}/report {} (incidents.read, the admin's zones) -> 204: the panel builds the text report from the case; the server records who downloaded it (audit incident.report).",
     "call": "No call endpoint: the admin panel shows 'Calls coming soon' on the rider / driver call buttons until a call company is added (then calls go through the Movera number, never the real numbers). Emergency numbers are dialled from the admin's own phone."
   },

@@ -841,7 +841,7 @@ export interface SupportSettingsTable {
 
 /** v0.18.15 alerts full flow (migration 0049). */
 export interface AdminAlertBookTable {
-  id: number;
+  country: string;
   rev: Generated<number>;
   settings: ColumnType<unknown, string | undefined, string>;
   rules: ColumnType<unknown, string | undefined, string>;
@@ -855,7 +855,7 @@ export interface AdminAlertRecordsTable {
   title: string;
   zone_id: string | null;
   since: Timestamp;
-  status: "taken" | "done" | "snoozed";
+  status: "new" | "taken" | "done" | "snoozed";
   owner: string | null;
   snooze_until: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   events: ColumnType<unknown, string, string>;
@@ -871,7 +871,7 @@ export interface AdminAlertQuietTable {
 
 /** v0.18.15 (migration 0049): Admin › Incidents › Settings. */
 export interface AdminIncidentSettingsTable {
-  id: number;
+  country: string;
   rev: Generated<number>;
   settings: ColumnType<unknown, string | undefined, string>;
   updated_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;

@@ -22,15 +22,15 @@ CREATE TABLE IF NOT EXISTS support_settings (
 
 -- Alerts full flow (contract v0.18.15 §38, contract.json#alertDesk; owner 2026-11-02 Q5 "FULL FLOW"): who works on
 -- each alert and its history, the shared mutes / settings / rules, and every admin's own quiet hours.
+-- Settings, rules and mutes per country (SE, FR, TN): a mute or a rule in one country never touches another.
 CREATE TABLE IF NOT EXISTS admin_alert_book (
-  id          integer PRIMARY KEY CHECK (id = 1),
+  country     text PRIMARY KEY CHECK (country ~ '^[A-Z]{2}$'),
   rev         integer NOT NULL DEFAULT 1,
   settings    jsonb NOT NULL DEFAULT '{}'::jsonb,
   rules       jsonb NOT NULL DEFAULT '[]'::jsonb,
   mutes       jsonb NOT NULL DEFAULT '{}'::jsonb,
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO admin_alert_book (id) VALUES (1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS admin_alert_records (
   alert_id      text PRIMARY KEY,
   kind          text NOT NULL,
@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS admin_alert_records (
   title         text NOT NULL,
   zone_id       text,
   since         timestamptz NOT NULL,
-  status        text NOT NULL CHECK (status IN ('taken', 'done', 'snoozed')),
+  -- new = nobody acted yet (the row exists so two admins taking at once queue on its lock).
+  status        text NOT NULL CHECK (status IN ('new', 'taken', 'done', 'snoozed')),
   owner         text REFERENCES admins (admin_id),
   snooze_until  timestamptz,
   events        jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -55,13 +56,12 @@ CREATE TABLE IF NOT EXISTS admin_alert_quiet (
 
 -- Incidents settings (contract v0.18.15, contract.json#incidentDesk): the panel's incident settings document.
 CREATE TABLE IF NOT EXISTS admin_incident_settings (
-  id          integer PRIMARY KEY CHECK (id = 1),
+  country     text PRIMARY KEY CHECK (country ~ '^[A-Z]{2}$'),
   rev         integer NOT NULL DEFAULT 1,
   settings    jsonb NOT NULL DEFAULT '{}'::jsonb,
   updated_at  timestamptz,
   updated_by  text
 );
-INSERT INTO admin_incident_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 -- Review rules (contract v0.18.15 §40, contract.json#reviewRules; owner G14 Q6 "Make them real").
 CREATE TABLE IF NOT EXISTS review_rules (

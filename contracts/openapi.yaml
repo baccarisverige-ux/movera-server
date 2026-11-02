@@ -6189,16 +6189,27 @@ paths:
     get:
       operationId: adminAlertBook
       summary: Who works on each alert, mutes, quiet hours, settings and rules
-      description: 'v0.18.15. GET /admin/alerts/book (overview.read) -> AlertBookState { rev, settings, rules, records [AlertRecord],
-        mutes { kind: { until, by } }, quiet (the caller''s own quiet hours), people [{ adminId, name }] (active admins the
-        caller may pass to: same country scope; Super admins see all) }. records holds the open ones and those done in the
-        last 30 days.'
+      description: 'v0.18.15. GET /admin/alerts/book?country=SE (overview.read) -> AlertBookState { country, rev, settings,
+        rules, records [AlertRecord], mutes { kind: { until, by } }, quiet (the caller''s own quiet hours), people [{ adminId,
+        name }] }. records: only alerts of the admin''s zones in that country whose kind group the admin may see (kindGroups);
+        an alert without zone only for a Super admin. people: active admins with a zone in the same country (Super admins
+        included). records holds the open ones and those done in the last 30 days. country: SE | FR | TN; an admin outside
+        the country -> 403 zone_out_of_scope.'
       tags:
       - Admin · Alerts
       x-actor:
       - admin
       x-permission: overview.read
       parameters:
+      - name: country
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
       responses:
@@ -6229,9 +6240,14 @@ paths:
     post:
       operationId: adminAlertTake
       summary: 'Alert: take'
-      description: 'v0.18.15. POST /admin/alerts/{alertId}/take { kind, level, title, zoneId?, since } -> AlertBookState:
-        owner = the caller. Another admin''s live owner -> 409 conflict, reason alert_taken. Kinds sos, car_lost, ride_check
-        -> 409 invalid_transition, reason alert_in_incidents (taken in Incidents).'
+      description: 'v0.18.15. POST /admin/alerts/{alertId}/take { kind, level, title, zoneId?, since } -> AlertBookState of
+        the alert''s country: owner = the caller. The first command on an alert stores its zone; later commands use the stored
+        zone, never the one sent. The zone must be the caller''s (else 403 zone_out_of_scope); the kind must be in kindGroups
+        (else 400 invalid_request, reason unknown_alert_kind) and the caller needs its act permission (else 403). Two admins
+        taking at once: one wins, the other gets 409 conflict, reason alert_taken. Another admin''s live owner -> 409 alert_taken.
+        sos, car_lost, ride_check -> 409 invalid_transition, reason alert_in_incidents. Seeing an alert needs its group''s
+        read permission; acting on it (take, done, snooze, pass) needs its group''s act permission or alerts.manage. Mutes,
+        settings and rules need alerts.manage. Quiet hours: the admin''s own (overview.read).'
       tags:
       - Admin · Alerts
       x-actor:
@@ -6284,7 +6300,9 @@ paths:
       operationId: adminAlertDone
       summary: 'Alert: done'
       description: 'v0.18.15. POST /admin/alerts/{alertId}/done { kind, level, title, zoneId?, since, note? } -> status done.
-        Only the owner (or nobody owns it: the caller takes it and solves it) -> else 409 conflict, reason alert_taken.'
+        Only the owner (or nobody owns it: the caller takes it and solves it) -> else 409 conflict, reason alert_taken. Seeing
+        an alert needs its group''s read permission; acting on it (take, done, snooze, pass) needs its group''s act permission
+        or alerts.manage. Mutes, settings and rules need alerts.manage. Quiet hours: the admin''s own (overview.read).'
       tags:
       - Admin · Alerts
       x-actor:
@@ -6336,8 +6354,10 @@ paths:
     post:
       operationId: adminAlertSnooze
       summary: 'Alert: snooze'
-      description: v0.18.15. POST /admin/alerts/{alertId}/snooze { kind, level, title, zoneId?, since, minutes 1-1440 } ->
-        status snoozed until now + minutes; same owner rule; not for the incident kinds.
+      description: 'v0.18.15. POST /admin/alerts/{alertId}/snooze { kind, level, title, zoneId?, since, minutes 1-1440 } ->
+        status snoozed until now + minutes; same owner rule; not for the incident kinds. Seeing an alert needs its group''s
+        read permission; acting on it (take, done, snooze, pass) needs its group''s act permission or alerts.manage. Mutes,
+        settings and rules need alerts.manage. Quiet hours: the admin''s own (overview.read).'
       tags:
       - Admin · Alerts
       x-actor:
@@ -6389,9 +6409,11 @@ paths:
     post:
       operationId: adminAlertPass
       summary: 'Alert: pass'
-      description: v0.18.15. POST /admin/alerts/{alertId}/pass { kind, level, title, zoneId?, since, to } -> owner = to (an
-        active admin in people, not the caller, else 400 invalid_request, reason assignee_not_allowed); same owner rule; not
-        for the incident kinds.
+      description: 'v0.18.15. POST /admin/alerts/{alertId}/pass { kind, level, title, zoneId?, since, to } -> owner = to (an
+        active admin of people who may act on the kind and covers the alert''s zone; not the caller; else 400 invalid_request,
+        reason assignee_not_allowed); same owner rule; the pass event carries toName. Seeing an alert needs its group''s read
+        permission; acting on it (take, done, snooze, pass) needs its group''s act permission or alerts.manage. Mutes, settings
+        and rules need alerts.manage. Quiet hours: the admin''s own (overview.read).'
       tags:
       - Admin · Alerts
       x-actor:
@@ -6443,13 +6465,13 @@ paths:
     put:
       operationId: adminAlertMute
       summary: Mute a kind of alert
-      description: 'v0.18.15. PUT /admin/alerts/mutes/{kind} { minutes 1-1440 } / DELETE /admin/alerts/mutes/{kind} -> AlertBookState:
-        the kind stays quiet (no sound, no bell) for everyone until then.'
+      description: 'v0.18.15. PUT /admin/alerts/mutes/{kind}?country= { minutes 1-1440 } / DELETE ...?country= (alerts.manage)
+        -> AlertBookState: the kind stays quiet for every admin of that country until then.'
       tags:
       - Admin · Alerts
       x-actor:
       - admin
-      x-permission: overview.read
+      x-permission: alerts.manage
       parameters:
       - name: kind
         in: path
@@ -6457,6 +6479,15 @@ paths:
         schema:
           type: string
           pattern: ^[a-z][a-z0-9_]{0,63}$
+      - name: country
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
       - $ref: '#/components/parameters/IdempotencyKey'
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
@@ -6500,7 +6531,7 @@ paths:
       - Admin · Alerts
       x-actor:
       - admin
-      x-permission: overview.read
+      x-permission: alerts.manage
       parameters:
       - name: kind
         in: path
@@ -6508,6 +6539,15 @@ paths:
         schema:
           type: string
           pattern: ^[a-z][a-z0-9_]{0,63}$
+      - name: country
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
       - $ref: '#/components/parameters/IdempotencyKey'
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
@@ -6549,6 +6589,15 @@ paths:
       - admin
       x-permission: overview.read
       parameters:
+      - name: country
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
       - $ref: '#/components/parameters/IdempotencyKey'
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
@@ -6588,8 +6637,8 @@ paths:
     put:
       operationId: adminAlertSettings
       summary: Save the alert settings
-      description: v0.18.15. PUT /admin/alerts/settings { expectedRev, settings } (alerts.manage) -> AlertBookState rev +
-        1; a stale expectedRev -> 409 version_mismatch.
+      description: v0.18.15. PUT /admin/alerts/settings { country, expectedRev, settings } (alerts.manage; an admin with a
+        zone in that country or a Super admin) -> rev + 1; stale -> 409 version_mismatch.
       tags:
       - Admin · Alerts
       x-actor:
@@ -6635,7 +6684,8 @@ paths:
     put:
       operationId: adminAlertRules
       summary: Save the alert rules
-      description: v0.18.15. PUT /admin/alerts/rules { expectedRev, rules } (alerts.manage) -> AlertBookState rev + 1.
+      description: v0.18.15. PUT /admin/alerts/rules { country, expectedRev, rules } (alerts.manage; same country check) ->
+        rev + 1.
       tags:
       - Admin · Alerts
       x-actor:
@@ -6681,14 +6731,23 @@ paths:
     get:
       operationId: adminAlertHistory
       summary: Alert history for the export
-      description: 'v0.18.15. GET /admin/alerts/history?from=&to= (overview.read) -> { items: AlertRecord[] } for the CSV
-        export (the panel builds the file).'
+      description: 'v0.18.15. GET /admin/alerts/history?country=&from=&to= (overview.read) -> { items: AlertRecord[] } with
+        the same filter as the book.'
       tags:
       - Admin · Alerts
       x-actor:
       - admin
       x-permission: overview.read
       parameters:
+      - name: country
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
       - $ref: '#/components/parameters/From'
       - $ref: '#/components/parameters/To'
       - $ref: '#/components/parameters/RequestId'
@@ -6721,16 +6780,26 @@ paths:
     get:
       operationId: adminIncidentSettings
       summary: Incident settings
-      description: v0.18.15. GET /admin/incidents/settings (incidents.read) -> IncidentSettingsDoc { rev, settings, updatedAt?,
-        updatedBy? }; PUT /admin/incidents/settings { expectedRev, settings } (safety.edit) -> rev + 1; stale -> 409 version_mismatch.
-        settings is the admin panel's document (JSON object, at most 64 KB); never saved = {} (the panel's defaults). Audited
-        incident.settings.
+      description: 'v0.18.15. GET /admin/incidents/settings?country=SE (incidents.read) -> IncidentSettingsDoc { country,
+        rev, settings, updatedAt?, updatedBy? }; PUT /admin/incidents/settings { country, expectedRev, settings } (safety.edit)
+        -> rev + 1; stale -> 409 version_mismatch. Per country (SE, FR, TN): a Super admin or an admin with a zone in that
+        country, else 403 zone_out_of_scope. settings is the admin panel''s document (JSON object, at most 64 KB); never saved
+        = {} (the panel''s defaults). Audited incident.settings.'
       tags:
       - Admin · Safety
       x-actor:
       - admin
       x-permission: incidents.read
       parameters:
+      - name: country
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
       responses:
@@ -17697,6 +17766,8 @@ components:
           $ref: '#/components/schemas/Id'
         byName:
           type: string
+        toName:
+          type: string
         kind:
           type: string
           enum:
@@ -17759,11 +17830,14 @@ components:
             $ref: '#/components/schemas/AlertEvent'
     AlertBookState:
       type: object
-      description: 'v0.18.15: GET /admin/alerts/book (overview.read) -> AlertBookState { rev, settings, rules, records [AlertRecord],
-        mutes { kind: { until, by } }, quiet (the caller''s own quiet hours), people [{ adminId, name }] (active admins the
-        caller may pass to: same country scope; Super admins see all) }. records holds the open ones and those done in the
-        last 30 days.'
+      description: 'v0.18.15: GET /admin/alerts/book?country=SE (overview.read) -> AlertBookState { country, rev, settings,
+        rules, records [AlertRecord], mutes { kind: { until, by } }, quiet (the caller''s own quiet hours), people [{ adminId,
+        name }] }. records: only alerts of the admin''s zones in that country whose kind group the admin may see (kindGroups);
+        an alert without zone only for a Super admin. people: active admins with a zone in the same country (Super admins
+        included). records holds the open ones and those done in the last 30 days. country: SE | FR | TN; an admin outside
+        the country -> 403 zone_out_of_scope.'
       required:
+      - country
       - rev
       - settings
       - rules
@@ -17772,6 +17846,12 @@ components:
       - quiet
       - people
       properties:
+        country:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
         rev:
           type: integer
           minimum: 1
@@ -17968,9 +18048,16 @@ components:
       type: object
       description: v0.18.15.
       required:
+      - country
       - expectedRev
       - settings
       properties:
+        country:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
         expectedRev:
           type: integer
           minimum: 1
@@ -17980,9 +18067,16 @@ components:
       type: object
       description: v0.18.15.
       required:
+      - country
       - expectedRev
       - rules
       properties:
+        country:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
         expectedRev:
           type: integer
           minimum: 1
@@ -18003,14 +18097,22 @@ components:
             $ref: '#/components/schemas/AlertRecord'
     IncidentSettingsDoc:
       type: object
-      description: 'v0.18.15: GET /admin/incidents/settings (incidents.read) -> IncidentSettingsDoc { rev, settings, updatedAt?,
-        updatedBy? }; PUT /admin/incidents/settings { expectedRev, settings } (safety.edit) -> rev + 1; stale -> 409 version_mismatch.
-        settings is the admin panel''s document (JSON object, at most 64 KB); never saved = {} (the panel''s defaults). Audited
-        incident.settings.'
+      description: 'v0.18.15: GET /admin/incidents/settings?country=SE (incidents.read) -> IncidentSettingsDoc { country,
+        rev, settings, updatedAt?, updatedBy? }; PUT /admin/incidents/settings { country, expectedRev, settings } (safety.edit)
+        -> rev + 1; stale -> 409 version_mismatch. Per country (SE, FR, TN): a Super admin or an admin with a zone in that
+        country, else 403 zone_out_of_scope. settings is the admin panel''s document (JSON object, at most 64 KB); never saved
+        = {} (the panel''s defaults). Audited incident.settings.'
       required:
+      - country
       - rev
       - settings
       properties:
+        country:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
         rev:
           type: integer
           minimum: 1
@@ -18024,9 +18126,16 @@ components:
       type: object
       description: v0.18.15.
       required:
+      - country
       - expectedRev
       - settings
       properties:
+        country:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
         expectedRev:
           type: integer
           minimum: 1

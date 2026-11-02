@@ -223,17 +223,20 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   });
 
   /* ---- alerts full flow (v0.18.15, contract.json#alertDesk) */
+  const CountryQuery = z.object({ country: SupportCountry });
   app.get(`${API_PREFIX}/admin/alerts/book`, async (request) => {
     const who = await authenticateAdmin(request, guard, "overview.read");
-    return alertBook(deps.db, who, now());
+    const { country } = parseBody(CountryQuery, request.query);
+    return alertBook(deps.db, who, country, now());
   });
   app.get(`${API_PREFIX}/admin/alerts/history`, async (request) => {
-    await authenticateAdmin(request, guard, "overview.read");
-    const q = parseBody(z.object({ from: ISO.optional(), to: ISO.optional() }), request.query);
-    return alertHistory(deps.db, q);
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    const q = parseBody(z.object({ country: SupportCountry, from: ISO.optional(), to: ISO.optional() }), request.query);
+    return alertHistory(deps.db, who, q);
   });
   for (const verb of Object.keys(ALERT_BODIES) as (keyof typeof ALERT_BODIES)[]) {
     app.post(`${API_PREFIX}/admin/alerts/:alertId/${verb}`, async (request) => {
+      // The act permission depends on the alert's kind (contract.json#alertDesk.permissions), checked in alertCommand.
       const who = await authenticateAdmin(request, guard, "overview.read");
       const alertId = parseBody(z.object({ alertId: ALERT_ID }), request.params).alertId;
       const body = parseBody(ALERT_BODIES[verb], request.body) as Record<string, unknown> & { kind: string; level: "critical" | "important" | "info"; title: string; since: string; zoneId?: string };
@@ -244,45 +247,46 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     });
   }
   app.put(`${API_PREFIX}/admin/alerts/mutes/:kind`, async (request) => {
-    const who = await authenticateAdmin(request, guard, "overview.read");
+    const who = await authenticateAdmin(request, guard, "alerts.manage");
     const { kind } = parseBody(z.object({ kind: KIND }), request.params);
+    const { country } = parseBody(CountryQuery, request.query);
     const { minutes } = parseBody(z.object({ minutes: z.number().int().min(1).max(1440) }), request.body);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setMute(trx, who, kind, minutes, now()) }));
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setMute(trx, who, country, kind, minutes, now()) }));
     return result.body;
   });
   app.delete(`${API_PREFIX}/admin/alerts/mutes/:kind`, async (request) => {
-    const who = await authenticateAdmin(request, guard, "overview.read");
+    const who = await authenticateAdmin(request, guard, "alerts.manage");
     const { kind } = parseBody(z.object({ kind: KIND }), request.params);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setMute(trx, who, kind, null, now()) }));
+    const { country } = parseBody(CountryQuery, request.query);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setMute(trx, who, country, kind, null, now()) }));
     return result.body;
   });
   app.put(`${API_PREFIX}/admin/alerts/quiet`, async (request) => {
     const who = await authenticateAdmin(request, guard, "overview.read");
+    const { country } = parseBody(CountryQuery, request.query);
     const body = parseBody(z.object({ on: z.boolean(), from: HM, to: HM }), request.body);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setQuiet(trx, who, body, now()) }));
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setQuiet(trx, who, country, body, now()) }));
     return result.body;
   });
-  app.put(`${API_PREFIX}/admin/alerts/settings`, async (request) => {
-    const who = await authenticateAdmin(request, guard, "alerts.manage");
-    const body = parseBody(z.object({ expectedRev: z.number().int().min(1), settings: z.record(z.string(), z.unknown()) }), request.body);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveDoc(trx, who, "settings", body.expectedRev, body.settings, now()) }));
-    return result.body;
-  });
-  app.put(`${API_PREFIX}/admin/alerts/rules`, async (request) => {
-    const who = await authenticateAdmin(request, guard, "alerts.manage");
-    const body = parseBody(z.object({ expectedRev: z.number().int().min(1), rules: z.array(z.record(z.string(), z.unknown())).max(200) }), request.body);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveDoc(trx, who, "rules", body.expectedRev, body.rules, now()) }));
-    return result.body;
-  });
+  for (const which of ["settings", "rules"] as const) {
+    app.put(`${API_PREFIX}/admin/alerts/${which}`, async (request) => {
+      const who = await authenticateAdmin(request, guard, "alerts.manage");
+      const body = parseBody(which === "settings" ? z.object({ country: SupportCountry, expectedRev: z.number().int().min(1), settings: z.record(z.string(), z.unknown()) }) : z.object({ country: SupportCountry, expectedRev: z.number().int().min(1), rules: z.array(z.record(z.string(), z.unknown())).max(200) }), request.body) as { country: string; expectedRev: number; settings?: unknown; rules?: unknown };
+      const doc = which === "settings" ? body.settings : body.rules;
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveDoc(trx, who, body.country, which, body.expectedRev, doc, now()) }));
+      return result.body;
+    });
+  }
 
   /* ---- incidents settings and report (v0.18.15, contract.json#incidentDesk) */
   app.get(`${API_PREFIX}/admin/incidents/settings`, async (request) => {
-    await authenticateAdmin(request, guard, "incidents.read");
-    return incidentSettings(deps.db);
+    const who = await authenticateAdmin(request, guard, "incidents.read");
+    const { country } = parseBody(z.object({ country: SupportCountry }), request.query);
+    return incidentSettings(deps.db, who, country);
   });
   app.put(`${API_PREFIX}/admin/incidents/settings`, async (request) => {
     const who = await authenticateAdmin(request, guard, "safety.edit");
-    const body = parseBody(z.object({ expectedRev: z.number().int().min(1), settings: z.record(z.string(), z.unknown()) }), request.body);
+    const body = parseBody(z.object({ country: SupportCountry, expectedRev: z.number().int().min(1), settings: z.record(z.string(), z.unknown()) }), request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveIncidentSettings(trx, who, body, now()) }));
     return result.body;
   });
