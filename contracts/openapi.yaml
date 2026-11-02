@@ -1,11 +1,11 @@
-# Movera API v0.18.14 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.16 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.14
+  version: 0.18.16
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.14 in this folder; this file must agree with them.
+    v0.18.16 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -82,7 +82,7 @@ tags:
 - name: Driver · Home
 x-contract:
   name: movera
-  version: 0.18.14
+  version: 0.18.16
   source: contract.json
 paths:
   /auth/otp/request:
@@ -13106,6 +13106,111 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /admin/drivers/{driverId}/payout-hold:
+    post:
+      operationId: adminHoldDriverPayouts
+      summary: Pause or release one driver's payouts
+      description: 'v0.18.16 A2 (owner build-spec Q4 2026-11-02: ''can pause any one payment from his profile''): POST /admin/drivers/{driverId}/payout-hold
+        { held, reason } (finance.edit, Idempotency-Key, audit payout.hold / payout.release) pauses or releases that driver''s
+        payouts from the driver''s profile. While held no scheduled payout is made for him; his earnings stay unpaid. On release
+        the next run pays every ended period he missed. Driver.payoutHold { reason, at, by } on the admin view (absent = not
+        held). The driver app is not told the reason.'
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: finance.edit
+      x-permission-v050: finance.edit
+      parameters:
+      - $ref: '#/components/parameters/DriverId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayoutHoldCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Driver'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/riders/{riderId}/moderation:
+    post:
+      operationId: adminModerateRider
+      summary: Warn, pause, ban or clear a rider
+      description: 'v0.18.16 (A2, owner G16 Q16-1 + Q16-2 ''Warn → Pause → Ban''): the admin sets a rider''s level with POST
+        /admin/riders/{riderId}/moderation (permission riders.block, Idempotency-Key, expectedVersion, written in the audit).
+        Every level carries a reason; the admin can undo (level none). for pauseDays (1..365) set by the admin; Rider.status
+        suspended until moderation.until, then active again by itself; sign-in and booking answer 403 account_suspended (projection
+        = Rider.moderation). POST /admin/riders/{riderId}/status stays: active = level none, suspended = level banned with
+        the note as reason.'
+      tags:
+      - Admin · People
+      x-actor:
+      - admin
+      x-permission: riders.block
+      x-permission-v050: riders.edit
+      parameters:
+      - $ref: '#/components/parameters/RiderId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RiderModerationCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Rider'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     bearerAuth:
@@ -14905,6 +15010,10 @@ components:
           description: 'v0.18.7 (Q3): Rider.outstanding = the owed fees in the rider''s oldest owed currency (Money, null
             when nothing is owed); Rider.outstandingByCurrency = every currency with an owed amount (Money[], one per currency,
             ascending by first debt). The admin rider view shows all of them.'
+        moderation:
+          allOf:
+          - $ref: '#/components/schemas/RiderModeration'
+          description: 'v0.18.16: the rider''s moderation level (rider and admin views).'
     DocumentStatus:
       type: string
       enum:
@@ -15184,6 +15293,10 @@ components:
           $ref: '#/components/schemas/Timestamp'
         drivingTime:
           $ref: '#/components/schemas/DrivingTime'
+        payoutHold:
+          allOf:
+          - $ref: '#/components/schemas/PayoutHold'
+          description: 'v0.18.16: admin view only; absent = payouts not held.'
     DriverScheduledRides:
       type: object
       description: 'Owner decision 2 (v0.4.2): an admin''s reservations on/off for this one driver (CONTRACT.md §6.1). Missing
@@ -26582,3 +26695,88 @@ components:
       properties:
         phone:
           $ref: '#/components/schemas/PhoneE164'
+    PayoutHold:
+      type: object
+      description: 'v0.18.16 A2 (owner build-spec Q4 2026-11-02: ''can pause any one payment from his profile''): POST /admin/drivers/{driverId}/payout-hold
+        { held, reason } (finance.edit, Idempotency-Key, audit payout.hold / payout.release) pauses or releases that driver''s
+        payouts from the driver''s profile. While held no scheduled payout is made for him; his earnings stay unpaid. On release
+        the next run pays every ended period he missed. Driver.payoutHold { reason, at, by } on the admin view (absent = not
+        held). The driver app is not told the reason.'
+      required:
+      - reason
+      - at
+      properties:
+        reason:
+          type: string
+          maxLength: 300
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        by:
+          $ref: '#/components/schemas/Id'
+    PayoutHoldCommand:
+      type: object
+      required:
+      - held
+      - reason
+      properties:
+        held:
+          type: boolean
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 300
+    RiderModerationLevel:
+      type: string
+      enum:
+      - none
+      - warning
+      - paused
+      - banned
+      description: none = no moderation; Rider.status active; warning = the rider can ride and sees the notice (Rider.moderation
+        on GET /rider/profile); Rider.status active; paused = for pauseDays (1..365) set by the admin; Rider.status suspended
+        until moderation.until, then active again by itself; sign-in and booking answer 403 account_suspended (projection
+        = Rider.moderation); banned = until the admin undoes it; Rider.status suspended; 403 account_suspended
+    RiderModeration:
+      type: object
+      description: 'v0.18.16 (A2, owner G16 Q16-1 + Q16-2 ''Warn → Pause → Ban''): the admin sets a rider''s level with POST
+        /admin/riders/{riderId}/moderation (permission riders.block, Idempotency-Key, expectedVersion, written in the audit).
+        Every level carries a reason; the admin can undo (level none).'
+      required:
+      - level
+      properties:
+        level:
+          $ref: '#/components/schemas/RiderModerationLevel'
+        reason:
+          type: string
+          maxLength: 300
+        until:
+          oneOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+          description: 'paused: when the pause ends by itself; otherwise null.'
+        setAt:
+          $ref: '#/components/schemas/Timestamp'
+    RiderModerationCommand:
+      type: object
+      description: the admin picks one of these suggested reasons or writes their own (1..300 characters); the rider sees
+        the reason text as written.
+      required:
+      - expectedVersion
+      - level
+      - reason
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 1
+          description: Version the caller last saw; stale → 409 version_mismatch.
+        level:
+          $ref: '#/components/schemas/RiderModerationLevel'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 300
+        pauseDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: required when level is paused

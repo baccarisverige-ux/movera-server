@@ -8,6 +8,7 @@ import { schemaProblem } from "../contract/schemas.js";
 import type { Executor, Trx } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
+import { riderBlocked, suspendedError } from "../riders/moderation.js";
 import { newId } from "../ids.js";
 import { nextStatus, TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { sameExtras, asksSeatOutsideChildSeat } from "../rules/priceExtras.js";
@@ -89,8 +90,9 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   // v0.11.0 §20: a zone closed since the quote takes no new rides ("Movera isn't here yet").
   const zoneRow = await trx.selectFrom("zones").select("open").where("zone_id", "=", quote.zone_id).executeTakeFirst();
   if (zoneRow?.open !== true) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
-  const rider = await trx.selectFrom("riders").select(["status"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
-  if (rider.status !== "active") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
+  const rider = await trx.selectFrom("riders").select(["status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
+  // v0.18.16 A2: a pause that ended lets the rider book before the hourly sweep clears it.
+  if (riderBlocked(rider, now)) throw suspendedError(rider);
   // v0.10.0 §19 Legal: new terms published with reaccept must be accepted before booking.
   if (!(await termsAccepted(trx, "rider", riderId, [quote.zone_id]))) throw new ApiError("conflict", "Accept the new terms first.", { reason: TERMS_REASON });
 

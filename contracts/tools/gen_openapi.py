@@ -2579,6 +2579,28 @@ op("post", "/account/phone/change", "startPhoneChange", "Change my phone number:
 op("post", "/account/phone/verify", "verifyPhoneChange", "Save the new phone number with its code", ["rider", "driver"], "Account", body="AccountPhoneVerify", ok=(200, None), desc="v0.18.14: " + _D1["accountChange"])
 op("post", "/account/email/change", "startEmailChange", "Change my e-mail: send a code to the new one", ["rider", "driver"], "Account", body="AccountEmailChange", ok=(200, "AccountEmailChallenge"), desc="v0.18.14: " + _D1["accountChange"])
 op("post", "/account/email/verify", "verifyEmailChange", "Save the new e-mail with its code", ["rider", "driver"], "Account", body="AccountEmailVerify", ok=(200, None), desc="v0.18.14: " + _D1["accountChange"])
+# ---- v0.18.16 A2: hold one driver's payouts (owner build-spec Q4; contract.json#payoutHold)
+PH = C["payoutHold"]
+S["PayoutHold"] = obj({"reason": s(maxLength=PH["reasonMax"]), "at": ref("Timestamp"), "by": ref("Id")}, ["reason", "at"], PH["note"])
+S["PayoutHoldCommand"] = obj({"held": b(), "reason": s(minLength=1, maxLength=PH["reasonMax"])}, ["held", "reason"])
+S["Driver"]["properties"]["payoutHold"] = {"allOf": [ref("PayoutHold")], "description": "v0.18.16: admin view only; absent = payouts not held."}
+op("post", "/admin/drivers/{driverId}/payout-hold", "adminHoldDriverPayouts", "Pause or release one driver's payouts", ["admin"], "Admin · People",
+   params=[pref("DriverId")], body="PayoutHoldCommand", ok=(200, "Driver"), mutation=True, permission="finance.edit", permission_v050="finance.edit", desc=PH["note"])
+
+# ---- v0.18.16 A2: rider moderation (Warn → Pause → Ban, owner G16 Q16-1/Q16-2; contract.json#riderModeration)
+RM = C["riderModeration"]
+S["RiderModerationLevel"] = s(enum=list(RM["levels"].keys()), description="; ".join(f"{k} = {v}" for k, v in RM["levels"].items()))
+S["RiderModeration"] = obj({"level": ref("RiderModerationLevel"), "reason": s(maxLength=300), "until": {"oneOf": [ref("Timestamp"), {"type": "null"}], "description": "paused: when the pause ends by itself; otherwise null."},
+                            "setAt": ref("Timestamp")}, ["level"], RM["note"])
+S["RiderModerationCommand"] = obj(dict(EV, level=ref("RiderModerationLevel"), reason=s(minLength=1, maxLength=300),
+                                       pauseDays=i(minimum=RM["pauseDays"]["min"], maximum=RM["pauseDays"]["max"], description="required when level is paused")),
+                                  ["expectedVersion", "level", "reason"], RM["reasons"]["note"])
+S["Rider"]["properties"]["moderation"] = {"allOf": [ref("RiderModeration")], "description": "v0.18.16: the rider's moderation level (rider and admin views)."}
+op("post", "/admin/riders/{riderId}/moderation", "adminModerateRider", "Warn, pause, ban or clear a rider", ["admin"], "Admin · People",
+   params=[pref("RiderId")], body="RiderModerationCommand", ok=(200, "Rider"), mutation=True, permission="riders.block", permission_v050="riders.edit",
+   desc=RM["note"] + " " + RM["levels"]["paused"] + ". " + RM["statusCommand"])
+
+
 doc = OrderedDict()
 doc["openapi"] = "3.1.0"
 doc["info"] = {

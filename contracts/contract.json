@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.14",
+  "version": "0.18.16",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -955,7 +955,8 @@
       "otp_resend_too_soon": "429 rate_limited: a new code within otp.retryAfterSeconds of the last one",
       "otp_too_many": "429 rate_limited: auth.limits reached (decision 4, wait in minutes)",
       "sign_in_restricted": "403 forbidden: the number is not on the test list while no SMS provider is chosen (decision 5): the app offers \"Join the waiting list\" (POST /auth/waitlist)",
-      "otp_locked_today": "429 rate_limited (v0.18.14): too many wrong codes for this number today (countryLimits.wrongCodesPerDay, admin setting per country, default 15); the app says \"Too many wrong codes today. Try again later.\" with the wait from retryAfterSeconds and disables Send code"
+      "otp_locked_today": "429 rate_limited (v0.18.14): too many wrong codes for this number today (countryLimits.wrongCodesPerDay, admin setting per country, default 15); the app says \"Too many wrong codes today. Try again later.\" with the wait from retryAfterSeconds and disables Send code",
+      "account_suspended": "403 forbidden (v0.18.16 A2, owner Q16-1): the rider is paused (until a time) or banned; projection = { level, reason, until, setAt } (riderModeration). The rider app shows 'Your account is paused' with the admin's reason, Contact support and Sign out."
     },
     "slowStart": {
       "note": "v0.15.0 (owner 2026-10-29, decision 1): the server can sleep (Render free plan) and answer its first request after about 50 s. The rider and driver apps wait up to waitSeconds for the sign-in calls (POST /auth/otp/request, /auth/otp/verify, /auth/provider, /auth/waitlist) and, while waiting, show the line \"Starting the server…\" after showAfterSeconds. v0.18.4 (owner, driver group 3 'Already decided' + G3-R5): the same wait and line also cover POST /driver/availability (going online): the driver app waits up to waitSeconds and shows the line after showAfterSeconds.",
@@ -6429,5 +6430,76 @@
     "addMoney": "Owner 2026-11-02 (driver-g5): admin Add money (Exclusive / Radar) goes to the simply nearest free drivers, same-country neighbour-zone drivers included when neighbours are on; reach limits, busy and declined filters stay. The in-zone-first rule is gone.",
     "rideUpdates": "Owner 2026-11-02 (driver-g13): Rider.consents.rideUpdates false stops only 'driver found' and 'arriving'; 'driver arrived', 'a new driver' and 'trip cancelled' are always sent.",
     "arrivePosition": "arrivedWaiting.positionMaxAge applies to driver apps sending X-Contract-Version ≥ 0.18.14; older apps keep the old arrive check."
+  },
+  "riderModeration": {
+    "note": "v0.18.16 (A2, owner G16 Q16-1 + Q16-2 'Warn → Pause → Ban'): the admin sets a rider's level with POST /admin/riders/{riderId}/moderation (permission riders.block, Idempotency-Key, expectedVersion, written in the audit). Every level carries a reason; the admin can undo (level none).",
+    "levels": {
+      "none": "no moderation; Rider.status active",
+      "warning": "the rider can ride and sees the notice (Rider.moderation on GET /rider/profile); Rider.status active",
+      "paused": "for pauseDays (1..365) set by the admin; Rider.status suspended until moderation.until, then active again by itself; sign-in and booking answer 403 account_suspended (projection = Rider.moderation)",
+      "banned": "until the admin undoes it; Rider.status suspended; 403 account_suspended"
+    },
+    "pauseDays": {
+      "min": 1,
+      "max": 365
+    },
+    "reasons": {
+      "note": "the admin picks one of these suggested reasons or writes their own (1..300 characters); the rider sees the reason text as written.",
+      "suggested": {
+        "sv": [
+          "Upprepade avbokningar",
+          "Obetalda avgifter",
+          "Olämpligt beteende mot förare",
+          "Falsk information",
+          "Bedrägerimisstanke"
+        ],
+        "fr": [
+          "Annulations répétées",
+          "Frais impayés",
+          "Comportement inapproprié envers le chauffeur",
+          "Fausses informations",
+          "Suspicion de fraude"
+        ],
+        "en": [
+          "Repeated cancellations",
+          "Unpaid fees",
+          "Inappropriate behaviour towards the driver",
+          "False information",
+          "Suspected fraud"
+        ]
+      }
+    },
+    "riderText": {
+      "pausedTitle": {
+        "sv": "Ditt konto är pausat",
+        "fr": "Votre compte est suspendu",
+        "en": "Your account is paused"
+      },
+      "bannedTitle": {
+        "sv": "Ditt konto är spärrat",
+        "fr": "Votre compte est bloqué",
+        "en": "Your account is blocked"
+      },
+      "warningTitle": {
+        "sv": "Varning från Movera",
+        "fr": "Avertissement de Movera",
+        "en": "Warning from Movera"
+      },
+      "contactSupport": {
+        "sv": "Kontakta support",
+        "fr": "Contacter le support",
+        "en": "Contact support"
+      },
+      "signOut": {
+        "sv": "Logga ut",
+        "fr": "Se déconnecter",
+        "en": "Sign out"
+      }
+    },
+    "statusCommand": "POST /admin/riders/{riderId}/status stays: active = level none, suspended = level banned with the note as reason."
+  },
+  "payoutHold": {
+    "note": "v0.18.16 A2 (owner build-spec Q4 2026-11-02: 'can pause any one payment from his profile'): POST /admin/drivers/{driverId}/payout-hold { held, reason } (finance.edit, Idempotency-Key, audit payout.hold / payout.release) pauses or releases that driver's payouts from the driver's profile. While held no scheduled payout is made for him; his earnings stay unpaid. On release the next run pays every ended period he missed. Driver.payoutHold { reason, at, by } on the admin view (absent = not held). The driver app is not told the reason.",
+    "reasonMax": 300
   }
 }

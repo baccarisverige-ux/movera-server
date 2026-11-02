@@ -1,5 +1,6 @@
 import { addTripNote, flagTrip, openTripCase, revealTripContact, tripNotes } from "./tripTools.js";
 import { adminDriverPay, adminReceipt, resendReceipt } from "../trips/finish.js";
+import { ModerationBody } from "../riders/moderation.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -12,7 +13,7 @@ import { chooseRefundDestination, getWallet, payoutsToMake, riderRefunds, wallet
 import { tripProjection } from "../trips/projection.js";
 import { withDriverPosition } from "../trips/service.js";
 import { activeSendOf } from "../dispatch/radarSends.js";
-import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus } from "./lists.js";
+import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus, moderateRider } from "./lists.js";
 import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminReverseNoShow, adminPinUnlock, adminRadarGroup, adminReassign, adminStopRadarZone, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
 
 /** contract §3.1, §7: the admin's trip tools, lists, account status, audit; the rider's wallet and refunds. */
@@ -201,6 +202,14 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
     const body = parseBody(RiderStatusBody, request.body);
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setRiderStatus(trx, who, riderId, body, deps.currency, now()) }))).body;
+  });
+
+  // v0.18.16 A2 (owner G16 Q16-2): Warn → Pause → Ban with a reason; level none undoes it.
+  app.post(`${API_PREFIX}/admin/riders/:riderId/moderation`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "riders.block");
+    const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
+    const body = parseBody(ModerationBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await moderateRider(trx, who, riderId, body, deps.currency, now()) }))).body;
   });
 
   /* ---- the rider's wallet and refunds */

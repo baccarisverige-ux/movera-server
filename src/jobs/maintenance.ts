@@ -8,6 +8,7 @@ import { purgeOfferPushes } from "../dispatch/offerPush.js";
 import { sweepDocumentExpiry, sweepSignUpReminders } from "../drivers/reminders.js";
 import { NO_FIX_OFFLINE, ensureNoFixTimer, noFixOfflineHandler } from "../drivers/presence.js";
 import type { TimerHandler } from "./timers.js";
+import { liftEndedPauses } from "../riders/moderation.js";
 
 /** Housekeeping that runs on the timer worker, so only one instance does it at a time. */
 
@@ -62,6 +63,8 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   // day warnings, and accounts that wait on themselves get 'Finish your sign-up' every few days.
   await sweepDocumentExpiry(trx, now);
   await sweepSignUpReminders(trx, now);
+  // v0.18.16 A2 (G16 Q16-2): a rider pause that ended lifts by itself.
+  await liftEndedPauses(trx, now);
   // v0.18.13 (owner G10-2): payouts at the country's day and time (default Monday 08:00 local), within the hour.
   await closeWeeks(trx, now);
   await trx

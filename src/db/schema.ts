@@ -26,6 +26,11 @@ export interface RidersTable {
   rating_sum: Generated<number>;
   rating_count: Generated<number>;
   wallet_minor: ColumnType<string, number | string | undefined, number | string>;
+  /** v0.18.16 A2 (G16 Q16-2): Warn → Pause → Ban; paused / banned = status suspended. */
+  moderation_level: Generated<"none" | "warning" | "paused" | "banned">;
+  moderation_reason: string | null;
+  moderation_until: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  moderation_set_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   version: Generated<number>;
   created_at: Timestamp;
   updated_at: Timestamp;

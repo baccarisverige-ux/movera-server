@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import { createDb, createPool, type Db } from "../../src/db/db.js";
-import { TEMPLATE_DB, adminUrl, urlFor } from "./globalSetup.js";
+import { TEMPLATE_DB, TEST_DB_PREFIX, adminUrl, urlFor } from "./globalSetup.js";
 
 export type TestDatabase = { name: string; url: string; pool: pg.Pool; db: Db; drop: () => Promise<void> };
 
@@ -17,7 +17,7 @@ async function admin<T>(run: (client: pg.Client) => Promise<T>): Promise<T> {
 
 /** A new database for one test file. `migrated: false` gives an empty one (for testing migrations themselves). */
 export async function freshDatabase({ migrated = true }: { migrated?: boolean } = {}): Promise<TestDatabase> {
-  const name = `movera_t_${randomBytes(6).toString("hex")}`;
+  const name = `${TEST_DB_PREFIX}_t_${randomBytes(6).toString("hex")}`;
   await admin((client) => client.query(migrated ? `CREATE DATABASE ${name} TEMPLATE ${TEMPLATE_DB}` : `CREATE DATABASE ${name}`));
   const url = urlFor(name);
   const pool = createPool(url, 10);

@@ -10,6 +10,7 @@ import { rideHandlers } from "../../src/trips/ride.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 import { adminSession } from "../support/admin.js";
+import { liftEndedPauses } from "../../src/riders/moderation.js";
 
 let database: TestDatabase;
 let app: FastifyInstance;
@@ -443,5 +444,56 @@ describe("account status", () => {
     expect(trip.json()).toMatchObject({ reason: "account_suspended" });
     await adminPost(`/riders/${riderId}/status`, { expectedVersion: blocked.json().version, status: "active", note: "Cleared" });
     expect(await audits(riderId)).toEqual(["rider.status", "rider.status"]);
+  });
+
+  it("v0.18.16 A2 (G16 Q16-2): Warn → Pause → Ban with reasons; the pause ends by itself; none undoes it", async () => {
+    const book = async () => {
+      const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+      return call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash" });
+    };
+    let r = (await call(app, "GET", `/admin/riders?q=${riderId}`, admin)).json().items[0];
+    expect(r.moderation).toEqual({ level: "none", until: null });
+    // Only riders.block; a pause needs its days, other levels none.
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "warning", reason: "x" }, finance)).statusCode).toBe(403);
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "paused", reason: "Unpaid fees" })).json()).toMatchObject({ reason: "pause_days_required" });
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "banned", reason: "x", pauseDays: 3 })).json()).toMatchObject({ reason: "pause_days_not_allowed" });
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "paused", reason: "x", pauseDays: 366 })).statusCode).toBe(400);
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "warning", reason: " " })).statusCode).toBe(400);
+
+    // Warning: the rider still rides and sees the notice.
+    r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "warning", reason: "Repeated cancellations" })).json();
+    expect(r).toMatchObject({ status: "active", moderation: { level: "warning", reason: "Repeated cancellations", until: null } });
+    expect((await call(app, "GET", "/rider/profile", rider)).json().moderation).toMatchObject({ level: "warning", reason: "Repeated cancellations" });
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version - 1, level: "none", reason: "x" })).json()).toMatchObject({ code: "version_mismatch" });
+
+    // Pause for 2 days: no booking and no sign-in, with the reason and the end.
+    r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "paused", reason: "Unpaid fees", pauseDays: 2 })).json();
+    const until = new Date(clock.now.getTime() + 2 * 86_400_000).toISOString();
+    expect(r).toMatchObject({ status: "suspended", moderation: { level: "paused", reason: "Unpaid fees", until } });
+    expect((await book()).json()).toMatchObject({ reason: "account_suspended", projection: { level: "paused", reason: "Unpaid fees", until } });
+    clock.now = new Date(clock.now.getTime() + 5 * 60_000);
+    const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone: TEST_PHONES[0]!, app: "rider" }, remoteAddress: "10.9.9.9" });
+    expect(challenge.statusCode, challenge.body).toBe(200);
+    const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone: TEST_PHONES[0]!, sessionId: challenge.json().sessionId, code: "1234" } });
+    expect(verify.statusCode, verify.body).toBe(403);
+    expect(verify.json()).toMatchObject({ reason: "account_suspended", projection: { level: "paused" } });
+
+    // After the end the rider can book again at once; the hourly sweep clears the row.
+    clock.now = new Date(clock.now.getTime() + 2 * 86_400_000 + 1000);
+    expect(await liftEndedPauses(database.db, clock.now)).toBe(1);
+    // Tokens ran out over the two days: the rider signs in again (allowed now), the admin too.
+    rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+    expect((await call(app, "GET", "/rider/profile", rider)).json()).toMatchObject({ riderId, status: "active" });
+    admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    r = (await call(app, "GET", `/admin/riders?q=${riderId}`, admin)).json().items[0];
+    expect(r).toMatchObject({ status: "active", moderation: { level: "none", until: null } });
+
+    // Ban until undone; none undoes it.
+    r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "banned", reason: "Suspected fraud" })).json();
+    expect(r).toMatchObject({ status: "suspended", moderation: { level: "banned", reason: "Suspected fraud", until: null } });
+    expect((await book()).json()).toMatchObject({ reason: "account_suspended", projection: { level: "banned" } });
+    r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "none", reason: "Cleared after call" })).json();
+    expect(r).toMatchObject({ status: "active", moderation: { level: "none" } });
+    expect((await audits(riderId)).filter((a: string) => a === "rider.moderation")).toHaveLength(4);
   });
 });
