@@ -67,6 +67,15 @@ export function kmFromRoute(at: LatLng, route: readonly LatLng[]): number {
   return best;
 }
 
+/** How long (minutes) the car has stood within 50 m of the newest fix, from the fixes given. */
+export function stoppedMinutes(fixes: readonly Fix[]): number {
+  const newest = fixes[fixes.length - 1];
+  if (!newest) return 0;
+  let since = newest.measured_at.getTime();
+  for (let i = fixes.length - 1; i >= 0 && haversineKm(fixes[i]!, newest) * 1000 <= STILL_METERS; i--) since = fixes[i]!.measured_at.getTime();
+  return (newest.measured_at.getTime() - since) / 60_000;
+}
+
 /** Long stop: the fixes cover the last stopMinutes and all stay within 50 m of the newest one. */
 export function isLongStop(fixes: readonly Fix[], stopMinutes: number): boolean {
   if (fixes.length < 2) return false;
@@ -103,7 +112,7 @@ async function routeOf(trx: Trx, trip: TripRow, router: Router | undefined): Pro
  * TripProjection.rideCheck, and one event without a version change (trip_projection; payment_updated once the trip
  * ended, so the apps' after-terminal gate lets it through).
  */
-export async function askRideCheck(trx: Trx, trip: TripRow, trigger: string, settings: RideCheckSettings, now: Date, position?: LatLng): Promise<ServerRideCheck> {
+export async function askRideCheck(trx: Trx, trip: TripRow, trigger: string, settings: RideCheckSettings, now: Date, position?: LatLng, measured?: number): Promise<ServerRideCheck> {
   const checkId = `srv_${trigger}_${now.getTime().toString(36)}`;
   const answerBy = new Date(now.getTime() + settings.noAnswerSeconds * 1000);
   const sides: Array<[Side, string | null]> = [["rider", trip.rider_id], ["driver", trip.driver_id]];
@@ -111,7 +120,7 @@ export async function askRideCheck(trx: Trx, trip: TripRow, trigger: string, set
     if (!subject) continue;
     await trx
       .insertInto("ride_checks")
-      .values({ trip_id: trip.trip_id, side, check_id: checkId, trigger, subject_id: subject, shown_at: now, origin: "server", position: position ? JSON.stringify({ ...position, at: now.toISOString() }) : null, created_at: now })
+      .values({ trip_id: trip.trip_id, side, check_id: checkId, trigger, subject_id: subject, shown_at: now, origin: "server", position: position ? JSON.stringify({ ...position, at: now.toISOString(), ...measuredFields(trigger, measured), answerSeconds: settings.noAnswerSeconds }) : null, created_at: now })
       .onConflict((c) => c.doNothing())
       .execute();
     await scheduleTimer(trx, { kind: NO_ANSWER_KIND, refId: `${trip.trip_id}|${side}|${checkId}`, dueAt: answerBy });
@@ -123,6 +132,18 @@ export async function askRideCheck(trx: Trx, trip: TripRow, trigger: string, set
   await trx.updateTable("trips").set({ ride_check: JSON.stringify(check), ride_check_log: JSON.stringify(log) }).where("trip_id", "=", trip.trip_id).execute();
   await sendRideCheckEvent(trx, trip.trip_id, now);
   return check;
+}
+
+/**
+ * G7 live fix (contract.json#onTrip.rideCheck.adminList): what the trigger measured, kept with the position so the admin
+ * shows the real numbers: long_stop minutes stopped, off_route km from the route, dropped_far metres from the drop-off.
+ */
+export function measuredFields(trigger: string, measured: number | undefined): { measured?: { value: number; unit: "min" | "km" | "m" } } {
+  if (measured === undefined || !Number.isFinite(measured)) return {};
+  if (trigger === "long_stop") return { measured: { value: Math.max(1, Math.round(measured)), unit: "min" } };
+  if (trigger === "off_route") return { measured: { value: Math.round(measured * 10) / 10, unit: "km" } };
+  if (trigger === "dropped_far") return { measured: { value: Math.round(measured), unit: "m" } };
+  return {};
 }
 
 /** One event with the trip as it is now, without a version change. */
@@ -138,7 +159,7 @@ const recentlyAsked = (trip: TripRow, trigger: string, settings: RideCheckSettin
 };
 
 /** What the latest fixes say: long_stop, off_route or nothing. Exported for the tests. */
-export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSettings, now: Date, router?: Router): Promise<{ trigger: string; at: LatLng } | null> {
+export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSettings, now: Date, router?: Router): Promise<{ trigger: string; at: LatLng; measured: number } | null> {
   const since = new Date(now.getTime() - (settings.stopMinutes * 60 + 120) * 1000);
   const fixes = (await trx
     .selectFrom("trip_locations")
@@ -153,9 +174,10 @@ export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSetting
   const boardedLongEnough = trip.boarded_at !== null && now.getTime() - trip.boarded_at.getTime() >= settings.stopMinutes * 60_000;
   const atStop = ((trip.stop_visits as StopVisit[] | null) ?? []).some((v) => !v.leftAt);
   const nearDropoff = haversineKm(newest, pointOf(trip.dropoff)) <= NEAR_DROPOFF_KM;
-  if (boardedLongEnough && !atStop && !nearDropoff && isLongStop(fixes, settings.stopMinutes)) return { trigger: "long_stop", at: newest };
+  if (boardedLongEnough && !atStop && !nearDropoff && isLongStop(fixes, settings.stopMinutes)) return { trigger: "long_stop", at: newest, measured: Math.max(settings.stopMinutes, stoppedMinutes(fixes)) };
   const route = await routeOf(trx, trip, router);
-  if (kmFromRoute(newest, route) > settings.offRouteKm) return { trigger: "off_route", at: newest };
+  const offKm = kmFromRoute(newest, route);
+  if (offKm > settings.offRouteKm) return { trigger: "off_route", at: newest, measured: offKm };
   return null;
 }
 
@@ -169,7 +191,7 @@ export const rideCheckScanHandler = (router?: Router): TimerHandler => async (tr
   if (!settings.on) return;
   const found = await detect(trx, trip, settings, now, router);
   if (!found || recentlyAsked(trip, found.trigger, settings, now)) return;
-  await askRideCheck(trx, trip, found.trigger, settings, now, found.at);
+  await askRideCheck(trx, trip, found.trigger, settings, now, found.at, found.measured);
 };
 
 /**
@@ -182,6 +204,7 @@ export async function askUnexpectedEnd(trx: Trx, ended: TripRow, now: Date): Pro
   if (!settings.on || recentlyAsked(ended, "dropped_far", settings, now)) return;
   const fix = await trx.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", ended.driver_id).executeTakeFirst();
   if (!fix) return;
-  if (haversineKm(fix, pointOf(ended.dropoff)) * 1000 <= settings.endFarMeters) return;
-  await askRideCheck(trx, ended, "dropped_far", settings, now, { lat: fix.lat, lng: fix.lng });
+  const farMeters = haversineKm(fix, pointOf(ended.dropoff)) * 1000;
+  if (farMeters <= settings.endFarMeters) return;
+  await askRideCheck(trx, ended, "dropped_far", settings, now, { lat: fix.lat, lng: fix.lng }, farMeters);
 }

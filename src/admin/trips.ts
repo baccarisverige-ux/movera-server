@@ -1,18 +1,20 @@
 import { sql } from "kysely";
-import { pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
+import { commissionOf } from "../rules/commission.js";
+import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { contract } from "../contract/contract.js";
 import { liveDocument } from "../config/service.js";
 import type { Executor, Trx } from "../db/db.js";
 import { lockTrip, type TripRow } from "../db/tripLog.js";
 import { dispatchKm } from "../dispatch/engine.js";
-import { refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
+import { addBonus, bonusFor, scopeCovers, sideOfKind, type BonusScope } from "../dispatch/bonusScope.js";
+import { freeCandidatesByDistance, refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
 import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL, isTripStatus } from "../rules/transitions.js";
 import { applyCommand, expectVersion, touchTrip } from "../trips/commands.js";
-import { tripProjection } from "../trips/projection.js";
+import { driverTotalOf, tripProjection } from "../trips/projection.js";
 import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver, scaledFare } from "../trips/ride.js";
 import { audit } from "./audit.js";
 import { creditWallet } from "../riders/wallet.js";
@@ -70,9 +72,11 @@ async function bonusLimit(ex: Executor, trip: TripRow): Promise<number> {
  * Every bonus on a trip counts toward its limit: the bonus waiting on the trip plus what was already paid out on
  * it (lost drivers, or the bonus paid at completion, which is the same money then).
  */
-async function bonusSoFar(ex: Executor, trip: TripRow): Promise<number> {
+async function bonusSoFar(ex: Executor, trip: TripRow, scope: BonusScope = "both"): Promise<number> {
+  // Owner bug 2026-11-01: money waiting for one kind of offer counts only against that kind (the driver gets one of them).
+  const waiting = scope === "both" ? Number(trip.driver_bonus_minor ?? 0) : bonusFor(trip, scope);
   const paid = await ex.selectFrom("earnings_entries").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("kind", "=", "bonus").executeTakeFirstOrThrow();
-  return (trip.status === "completed" ? 0 : Number(trip.driver_bonus_minor ?? 0)) + Number(paid.n);
+  return (trip.status === "completed" ? 0 : waiting) + Number(paid.n);
 }
 
 /** A trip's fare is never below 0 (audit Phase 4, P4-3: a negative fare made negative driver earnings). */
@@ -80,11 +84,11 @@ function notBelowZero(fare: Money | undefined) {
   if (fare !== undefined && fare.amountMinor < 0) throw badRequest("The fare cannot be below 0.", "invalid_amount");
 }
 
-async function checkBonus(ex: Executor, trip: TripRow, amount: Money) {
+async function checkBonus(ex: Executor, trip: TripRow, amount: Money, scope: BonusScope = "both") {
   sameCurrency(trip, amount, "The bonus");
   if (amount.amountMinor <= 0) throw badRequest("The bonus must be more than 0.", "invalid_amount");
   const limit = await bonusLimit(ex, trip);
-  if ((await bonusSoFar(ex, trip)) + amount.amountMinor > limit) {
+  if ((await bonusSoFar(ex, trip, scope)) + amount.amountMinor > limit) {
     throw badRequest(`A trip can carry at most ${limit / 100} ${trip.currency} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
   }
 }
@@ -125,26 +129,28 @@ export async function adminReassign(trx: Trx, who: Principal, tripId: string, bo
 
 /* ---------------------------------------------------------------- assign, radar group, bonus */
 
-type OfferBody = { expectedVersion: number; note?: string; driverBonus?: Money; priority?: boolean };
+type OfferBody = { expectedVersion: number; note?: string; driverBonus?: Money; priority?: boolean; applyTo?: BonusScope };
 
-async function withBonus(trx: Trx, trip: TripRow, body: OfferBody): Promise<TripRow> {
+/** The kinds a send's money is for: what the admin chose, else the kind of this send (exclusive or radar). */
+const sendScope = (body: OfferBody, kind: "assigned" | "radar"): BonusScope => body.applyTo ?? (kind === "radar" ? "radar" : "exclusive");
+
+async function withBonus(trx: Trx, trip: TripRow, body: OfferBody, scope: BonusScope): Promise<TripRow> {
   if (!body.driverBonus && body.priority === undefined) return trip;
-  const already = Number(trip.driver_bonus_minor ?? 0);
-  if (body.driverBonus) await checkBonus(trx, trip, body.driverBonus);
-  const bonus = already + (body.driverBonus?.amountMinor ?? 0);
-  await trx.updateTable("trips").set({ driver_bonus_minor: bonus, commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus, ...(body.priority !== undefined ? { priority: body.priority } : {}) }).where("trip_id", "=", trip.trip_id).execute();
+  if (body.driverBonus) await checkBonus(trx, trip, body.driverBonus, scope);
+  await trx.updateTable("trips").set(addBonus(trip, body.driverBonus?.amountMinor ?? 0, scope, body.priority)).where("trip_id", "=", trip.trip_id).execute();
   return trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
 }
 
 async function offerTo(trx: Trx, who: Principal, tripId: string, driverIds: string[], kind: "assigned" | "radar", body: OfferBody, now: Date, extra: { seconds?: number; detail?: Record<string, unknown> } = {}) {
   let trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   // Locked once a driver accepted (contract.json#adminDispatch.lockedStatuses): the transition table says so.
-  trip = await withBonus(trx, trip, body);
+  const scope = sendScope(body, kind);
+  trip = await withBonus(trx, trip, body, scope);
   trip = await applyCommand(trx, trip, { command: "assign", actor: "admin", now });
   // Same path as "Add money": every open offer of the trip shows the new money / Priority badge at once (offer_updated).
-  if (body.driverBonus || body.priority !== undefined) await refreshOpenOffers(trx, trip, now);
+  if (body.driverBonus || body.priority !== undefined) await refreshOpenOffers(trx, trip, now, scope);
   const sent = await sendAdminOffers(trx, trip, driverIds, kind, now, extra.seconds);
-  await audit(trx, { adminId: who.subjectId, action: kind === "assigned" ? "trip.assign" : "trip.radar_group", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { driverIds, note: body.note ?? null, driverBonus: body.driverBonus ?? null, priority: body.priority ?? null, groupId: sent.groupId, sentTo: sent.offers.map((o) => o["driverId"]), refreshed: sent.kept.map((o) => o["driverId"]), skipped: sent.skipped, ...(extra.detail ?? {}) }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: kind === "assigned" ? "trip.assign" : "trip.radar_group", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { driverIds, note: body.note ?? null, driverBonus: body.driverBonus ?? null, ...(body.driverBonus || body.priority !== undefined ? { applyTo: scope } : {}), priority: body.priority ?? null, groupId: sent.groupId, sentTo: sent.offers.map((o) => o["driverId"]), refreshed: sent.kept.map((o) => o["driverId"]), skipped: sent.skipped, ...(extra.detail ?? {}) }, at: now });
   // A driver who already saw the trip keeps that offer: it is listed with the new ones (no shape change; the admin counts
   // the offers outside groupId as refreshed).
   return { trip, ...sent, offers: [...sent.offers, ...sent.kept] };
@@ -190,19 +196,77 @@ export async function adminStopRadarZone(trx: Trx, who: Principal, tripId: strin
 }
 
 /** "Add money to trip": Movera pays it; open offers show the new money at once. */
-export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; amount: Money; priority?: boolean; note?: string }, now: Date): Promise<TripRow> {
+export type MoneySend = { exclusiveTo: string | null; radarTo: string[] };
+
+/**
+ * Owner decision 2026-11-01 (driver-g5.md): Add money with an explicit applyTo puts the money in front of drivers NOW.
+ * Exclusive: no exclusive offer out → an exclusive offer (with the money) to the nearest free driver. Radar: the trip's
+ * open exclusive offers become radar offers, and with no radar offer out the nearest free drivers (up to the radar
+ * group size) get one. Both: exclusive to the nearest, radar to the others, at the same time. Same rules and timers as
+ * the admin's own Exclusive / Radar sends (sendAdminOffers); a driver who cannot take it is skipped.
+ */
+async function sendWithMoney(trx: Trx, trip: TripRow, scope: BonusScope, now: Date): Promise<MoneySend> {
+  const done: MoneySend = { exclusiveTo: null, radarTo: [] };
+  const open = await trx.selectFrom("offers").select(["driver_id", "kind"]).where("trip_id", "=", trip.trip_id).where("status", "=", "open").where("expires_at", ">", now).execute();
+  const dispatch = await liveDocument<{ radius?: { steps?: number[] } }>(trx, "dispatch", trip.zone_id);
+  const reachKm = Math.max(5, ...(dispatch?.document.radius?.steps ?? []));
+  // Same drivers the automatic dispatch would ask (checker 2026-11-01), nearest first.
+  const near = await freeCandidatesByDistance(trx, trip, now, reachKm);
+  const send = async (ids: string[], kind: "assigned" | "radar") => {
+    if (!ids.length) return [] as string[];
+    try {
+      const sent = await sendAdminOffers(trx, trip, ids, kind, now);
+      return ids.filter((id) => !sent.skipped.some((x) => x.driverId === id));
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "conflict") return [];
+      throw error;
+    }
+  };
+  if (scopeCovers(scope, "exclusive") && !open.some((o) => sideOfKind(o.kind) === "exclusive")) {
+    // The nearest free one; if he is refused (skipped), the next one by distance.
+    for (const id of near) {
+      done.exclusiveTo = (await send([id], "assigned"))[0] ?? null;
+      if (done.exclusiveTo) break;
+    }
+  }
+  if (scopeCovers(scope, "radar")) {
+    const convert = scope === "radar" ? open.filter((o) => sideOfKind(o.kind) === "exclusive").map((o) => o.driver_id) : [];
+    const fresh = open.some((o) => sideOfKind(o.kind) === "radar") ? [] : near.filter((id) => id !== done.exclusiveTo && !open.some((o) => o.driver_id === id));
+    const ids = [...new Set([...convert, ...fresh])].slice(0, GROUP_MAX_DRIVERS);
+    done.radarTo = await send(ids, "radar");
+  }
+  return done;
+}
+
+export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; amount: Money; priority?: boolean; note?: string; applyTo?: BonusScope }, now: Date): Promise<TripRow & { moneySend?: MoneySend }> {
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   if (["cancelled_by_rider", "cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system", "expired", "failed", "no_show"].includes(trip.status)) {
     throw new ApiError("invalid_transition", "This trip is over; pay a lost driver with the cancel or reassign bonus.", { reason: "trip_over", projection: tripProjection(trip, "admin") });
   }
-  await checkBonus(trx, trip, body.amount);
-  const bonus = Number(trip.driver_bonus_minor ?? 0) + body.amount.amountMinor;
-  const updated = await touchTrip(trx, trip, { driver_bonus_minor: bonus, commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus, ...(body.priority !== undefined ? { priority: body.priority } : {}) }, now);
+  // Owner bug 2026-11-01: "Apply to: Exclusive" is for exclusive offers only (radar offers keep their money); a trip
+  // a driver already took gets it whatever the scope (it is his trip now). Old callers without applyTo: both.
+  const taken = Boolean(trip.driver_id) && !["requested", "searching", "offered"].includes(trip.status);
+  const scope: BonusScope = taken ? "both" : body.applyTo ?? "both";
+  await checkBonus(trx, trip, body.amount, scope);
+  const columns = addBonus(trip, body.amount.amountMinor, scope, body.priority);
+  // On a taken trip the money is his: driver_bonus_minor grows by the amount (not the max of the two kinds).
+  const bonus = taken ? Number(trip.driver_bonus_minor ?? 0) + body.amount.amountMinor : columns.driver_bonus_minor;
+  const updated = await touchTrip(trx, trip, { ...columns, driver_bonus_minor: bonus, commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, Number(trip.driver_earnings_minor ?? 0), Number(trip.pickup_pay_minor ?? 0), bonus) }, now);
   // A completed trip's earnings are already written: the bonus is its own entry now.
   if (updated.status === "completed" && updated.driver_id) await credit(trx, { driverId: updated.driver_id, tripId, kind: "bonus", currency: trip.currency, amount: body.amount.amountMinor }, now);
-  await refreshOpenOffers(trx, updated, now);
-  await audit(trx, { adminId: who.subjectId, action: "trip.driver_bonus", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { amount: body.amount, total: bonus, note: body.note ?? null }, at: now });
-  return updated;
+  await refreshOpenOffers(trx, updated, now, scope);
+  // Only a caller that chose a kind gets the immediate send (older callers: money only, as before).
+  let current = updated;
+  let moneySend: MoneySend | undefined;
+  if (!taken && body.applyTo && ["searching", "offered"].includes(updated.status)) {
+    // Live test 2026-11-01: nobody free → no offer went out, so the trip keeps its waiting status (searching) for the
+    // automatic dispatch; it becomes offered only when an offer was really sent.
+    moneySend = await sendWithMoney(trx, updated, scope, now);
+    current = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    if (moneySend.exclusiveTo || moneySend.radarTo.length) current = await applyCommand(trx, current, { command: "assign", actor: "admin", now });
+  }
+  await audit(trx, { adminId: who.subjectId, action: "trip.driver_bonus", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { amount: body.amount, applyTo: scope, total: bonus, note: body.note ?? null, ...(moneySend ? { sent: moneySend } : {}) }, at: now });
+  return moneySend ? Object.assign(current, { moneySend }) : current;
 }
 
 /* ---------------------------------------------------------------- no-show, complete */
@@ -313,7 +377,7 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
         fare_minor: fare.total.amountMinor,
         fare_lines: JSON.stringify(fare.fareLines),
         driver_earnings_minor: fare.driverEarnings.amountMinor,
-        commission_minor: fare.total.amountMinor - fare.driverEarnings.amountMinor - pickupPay - Number(trip.driver_bonus_minor ?? 0),
+        commission_minor: commissionOf(fare.total.amountMinor, fare.fareLines, fare.driverEarnings.amountMinor, pickupPay, Number(trip.driver_bonus_minor ?? 0)),
       });
       row = { ...trip, fare_minor: String(fare.total.amountMinor), fare_lines: fare.fareLines, driver_earnings_minor: String(fare.driverEarnings.amountMinor) };
     }
@@ -377,12 +441,19 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
   // "Take from driver": the driver loses their share of the refunded money (owner decision 31).
   if (p.fromDriver && trip.driver_id && paid > 0) {
     const fare = Number(trip.fare_minor);
-    const share = fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0;
-    if (share > 0) await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
+    // Checker (7): never more than the driver still has on this trip (his one number never goes below 0).
+    const share = Math.min(driverTotalOf(trip), fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0);
+    if (share > 0) {
+      await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
+      // v0.18.10 (contract.json#finish.driverMoney): the driver's one number on the trip moves with it.
+      await trx.updateTable("trips").set({ driver_adjustments_minor: sql`driver_adjustments_minor - ${share}` }).where("trip_id", "=", trip.trip_id).execute();
+    }
   }
+  await trx.updateTable("trips").set({ refunded_minor: sql`refunded_minor + ${p.amount.amountMinor}` }).where("trip_id", "=", trip.trip_id).execute();
   // v0.10.3: refunds count on the trip's day; an earlier day's summary is re-summed now.
   await resumTripDay(trx, trip.trip_id, now);
   const all = p.amount.amountMinor === left;
+  // touchTrip re-reads the row, so the projection event carries the new refunded / adjustments numbers.
   await touchTrip(trx, trip, { payment_status: all ? "refunded" : "partially_refunded" }, now);
   const row = await trx.selectFrom("refunds").selectAll().where("refund_id", "=", refundId).executeTakeFirstOrThrow();
   return refundView(row);

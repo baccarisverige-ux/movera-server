@@ -250,6 +250,11 @@ export interface TripsTable {
   pickup_pay_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   driver_bonus_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   priority: Generated<boolean>;
+  /** Owner bug 2026-11-01: the admin's money per kind of offer (NULL = driver_bonus_minor / priority for both). */
+  bonus_exclusive_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  bonus_radar_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  priority_exclusive: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
+  priority_radar: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
   payment_method: string;
   payment_method_id: string | null;
   payment_status: string | null;
@@ -270,6 +275,11 @@ export interface TripsTable {
   planned_route: ColumnType<unknown, string | null | undefined, string | null>;
   route_change: ColumnType<unknown, string | null | undefined, string | null>;
   admin_flag: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.10 (migration 0045, contract.json#finish): the rider's tip, what ended the trip early, Movera's changes to the driver's pay, refunded money. */
+  tip: ColumnType<unknown, string | null | undefined, string | null>;
+  end_info: ColumnType<unknown, string | null | undefined, string | null>;
+  driver_adjustments_minor: ColumnType<string, number | string | undefined, number | string>;
+  refunded_minor: ColumnType<string, number | string | undefined, number | string>;
   config_versions: JsonDefault;
   distance_meters: ColumnType<number | null, number | null | undefined, number | null>;
   duration_seconds: ColumnType<number | null, number | null | undefined, number | null>;

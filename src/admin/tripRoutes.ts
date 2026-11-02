@@ -1,4 +1,5 @@
 import { addTripNote, flagTrip, openTripCase, revealTripContact, tripNotes } from "./tripTools.js";
+import { adminDriverPay, adminReceipt, resendReceipt } from "../trips/finish.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -26,14 +27,16 @@ const many = <T extends z.ZodTypeAny>(item: T) => z.union([item, z.array(item)])
 const Page = { cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) };
 const When = { from: z.string().datetime().optional(), to: z.string().datetime().optional() };
 
+// Owner bug 2026-11-01: which kind of offer the admin's money is for (default: the send's kind; Add money: both).
+const ApplyTo = z.enum(["exclusive", "radar", "both"]);
 const ReasonBody = z.object({ ...Version, reasonCode: z.string(), note: Note, driverBonus: Money.optional() });
-const AssignBody = z.object({ ...Version, driverId: ID, note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
-const RadarBody = z.object({ ...Version, driverIds: z.array(ID).min(1).max(10).optional(), groupId: ID.optional(), radarZoneId: ID.optional(), ruleId: ID.optional(), note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional() });
+const AssignBody = z.object({ ...Version, driverId: ID, note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional(), applyTo: ApplyTo.optional() });
+const RadarBody = z.object({ ...Version, driverIds: z.array(ID).min(1).max(10).optional(), groupId: ID.optional(), radarZoneId: ID.optional(), ruleId: ID.optional(), note: z.string().max(1000).optional(), driverBonus: Money.optional(), priority: z.boolean().optional(), applyTo: ApplyTo.optional() });
 const NoShowBody = z.object({ ...Version, note: Note, waiveFee: z.boolean().optional() });
 const CompleteBody = z.object({ ...Version, note: Note, fare: Money.optional() });
 const AdjustBody = z.object({ ...Version, fare: Money.optional(), waitingSeconds: z.number().int().min(0).optional(), waiveCancelFee: z.boolean().optional(), reason: Note });
 const RefundBody = z.object({ ...Version, amount: Money, paymentId: z.string().optional(), reason: Note, fromDriver: z.boolean().optional() });
-const BonusBody = z.object({ ...Version, amount: Money, priority: z.boolean().optional(), note: z.string().max(1000).optional() });
+const BonusBody = z.object({ ...Version, amount: Money, priority: z.boolean().optional(), note: z.string().max(1000).optional(), applyTo: ApplyTo.optional() });
 const DriverStatusBody = z.object({ ...Version, accountStatus: z.enum(["pending", "active", "on_hold", "suspended"]), note: Note });
 const RiderStatusBody = z.object({ ...Version, status: z.enum(["active", "suspended"]), note: Note });
 
@@ -129,7 +132,11 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   command("reverse-no-show", "trips.intervene", z.object({ expectedVersion: z.number().int().min(1), reason: z.string().trim().min(1).max(1000), takeBackDriverShare: z.boolean().optional() }), (trx, who, id, body) => view(adminReverseNoShow(trx, who, id, clean(body) as never, now())));
   command("pin/unlock", "trips.intervene", z.object({ expectedVersion: z.number().int().min(1), reason: z.string().trim().min(1).max(1000) }), (trx, who, id, body) => view(adminPinUnlock(trx, who, id, clean(body) as never, now())));
   command("complete", "trips.intervene", CompleteBody, (trx, who, id, body) => view(adminComplete(trx, who, id, clean(body) as never, now())));
-  command("driver-bonus", "trips.intervene", BonusBody, (trx, who, id, body) => view(adminDriverBonus(trx, who, id, clean(body) as never, now())));
+  command("driver-bonus", "trips.intervene", BonusBody, async (trx, who, id, body) => {
+    const trip = await adminDriverBonus(trx, who, id, clean(body) as never, now());
+    // Owner decision 2026-11-01: who got the money at once (exclusive to the nearest, radar to the others).
+    return { status: 200, body: { ...tripProjection(trip, "admin"), ...(trip.moneySend ? { moneySend: trip.moneySend } : {}) } };
+  });
   command("adjust", "trips.intervene", AdjustBody, (trx, who, id, body) => adminAdjust(trx, who, id, clean(body) as never, now()));
   command("refund", "payments.refund", RefundBody, (trx, who, id, body) => {
     const { paymentId: _p, ...rest } = clean(body);
@@ -157,6 +164,18 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     const tripId = tripParam(request);
     const body = parseBody(z.object({ who: z.enum(["rider", "driver"]), reason: z.string().trim().min(1).max(500) }), request.body);
     return reply.status(200).send(await deps.db.transaction().execute((trx) => revealTripContact(trx, who, tripId, body, now())));
+  });
+  // v0.18.10 (contract.json#finish.receipt, finish.driverMoney): receipt, resend it, change the driver's pay.
+  app.get(`${API_PREFIX}/admin/trips/:tripId/receipt`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    return adminReceipt(deps.db, who, tripParam(request));
+  });
+  tool("receipt/resend", "trips.intervene", z.object({ reason: z.string().trim().min(1).max(1000) }), 200, (trx, who, id, body) => resendReceipt(trx, who, id, body, now()));
+  // The trip's zone is checked before the body (another zone's admin gets 403, never a body error).
+  tool("driver-pay", "finance.edit", z.unknown(), 200, async (trx, who, id, raw) => {
+    await adminTrip(trx, who, id);
+    const body = parseBody(z.object({ change: Money, reason: z.string().trim().min(1).max(1000) }), raw);
+    return tripProjection(await adminDriverPay(trx, who, id, body, now()), "admin");
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId/notes`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");

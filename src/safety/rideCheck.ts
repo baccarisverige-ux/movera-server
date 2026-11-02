@@ -51,8 +51,10 @@ function mayReport(trip: TripRow, side: Side, now: Date, checkId?: string): bool
   return trip.ended_at !== null && now.getTime() - trip.ended_at.getTime() <= RULES.completedWithinMinutes * 60_000;
 }
 
-function rideCheckOf(check: CheckRow, answer: "need_help" | "no_answer") {
+function rideCheckOf(check: CheckRow, answer: "need_help" | "no_answer", answerSeconds?: number) {
   const out: Record<string, unknown> = { checkId: check.check_id, trigger: check.trigger, by: check.side, answer };
+  // G7 live fix: the time the person had to answer (the zone's noAnswerSeconds when asked), for the admin's case text.
+  if (answer === "no_answer" && answerSeconds !== undefined) out["answerSeconds"] = answerSeconds;
   if (check.shown_at) out["shownAt"] = check.shown_at.toISOString();
   if (answer === "need_help" && check.answered_at) out["answeredAt"] = check.answered_at.toISOString();
   return out;
@@ -179,10 +181,13 @@ export const noAnswerHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
   const open = await openOf(trx, tripId, KIND);
   // v0.18.9 (contract.json#onTrip.rideCheck): the zone's noAnswerAlarm (default false = the safety list without sound, as v0.12.0).
-  const alarm = (await rideCheckSettings(trx, trip.zone_id)).noAnswerAlarm;
+  const zoneRules = await rideCheckSettings(trx, trip.zone_id);
+  const alarm = zoneRules.noAnswerAlarm;
+  const pos = (typeof check.position === "string" ? JSON.parse(check.position) : check.position) as { answerSeconds?: unknown } | null;
+  const answerSeconds = typeof pos?.answerSeconds === "number" ? pos.answerSeconds : zoneRules.noAnswerSeconds;
   let incidentId = open?.incident_id;
   if (!incidentId) {
-    incidentId = (await openIncident(trx, trip, { kind: KIND, raisedBy: "system", position: (check.position as Position | null) ?? undefined, alarm, rideCheck: rideCheckOf(check, "no_answer") }, now)).incident_id;
+    incidentId = (await openIncident(trx, trip, { kind: KIND, raisedBy: "system", position: (check.position as Position | null) ?? undefined, alarm, rideCheck: rideCheckOf(check, "no_answer", answerSeconds) }, now)).incident_id;
     if (alarm) await scheduleTimer(trx, { kind: INCIDENT_ESCALATE, refId: incidentId, dueAt: new Date(now.getTime() + ESCALATE_MS) });
   }
   await trx.updateTable("ride_checks").set({ no_answer_at: now, incident_id: incidentId }).where("trip_id", "=", tripId).where("side", "=", side).where("check_id", "=", checkId).execute();

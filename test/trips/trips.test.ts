@@ -87,7 +87,7 @@ describe("booking a ride", () => {
     const mine = await economyQuote();
     expect((await book(mine, other)).json()).toMatchObject({ code: "not_found", reason: "quote_not_found" });
     expect((await book(mine, rider, { dropoff: NORRMALM })).json()).toMatchObject({ code: "invalid_request", reason: "quote_mismatch" });
-    expect((await book(mine, rider, { paymentMethod: "card" })).json()).toMatchObject({ reason: "payment_method_not_available" });
+    expect((await book(mine, rider, { paymentMethod: "card" })).json()).toMatchObject({ reason: "payment_method_coming_soon" });
   });
 
   it("one live ride at a time", async () => {

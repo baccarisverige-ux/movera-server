@@ -190,7 +190,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // v0.18.5 (G1-B2): terms and privacy per country.
     await legalRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await zoneRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, paymentMethods: env.PAYMENT_METHODS, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??
       (env.OSRM_URL !== undefined ? new OsrmRouter(env.OSRM_URL, 2500, (error) => app.log.warn({ err: error }, "OSRM unavailable; distance estimated")) : new EstimateRouter());
@@ -200,7 +200,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
     await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: env.PAYMENT_METHODS, currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
-    await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", ...(clock ? { clock } : {}) });
+    await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", paymentMethods: env.PAYMENT_METHODS, ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
     await driverRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
