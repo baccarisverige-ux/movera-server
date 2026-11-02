@@ -6968,13 +6968,14 @@ paths:
     get:
       operationId: adminReviewRules
       summary: Review rules of a country
-      description: 'v0.18.15. After each rating (POST .../rate) the server: (1) a comment with a listed word (case-insensitive,
-        part of a word counts) is hidden at once like an admin hide (hiddenBy system, reason bad_word; its stars do not count;
-        an admin can restore it); (2) the rated person''s average over counted ratings, once they have minReviews: below block
-        -> the account is suspended (driver account_status suspended and offline; rider status suspended) and the person is
-        in the review list; below review -> in the review list; below warn -> one bell + push notice review_warning in the
-        person''s language. Each step happens once when the person crosses the line; back above every line clears it, so a
-        later fall acts again.'
+      description: 'v0.18.15. After each rating (POST .../rating) and each admin hide or restore, the server: (1) a comment
+        with a listed word as a whole word (case-insensitive; ''scam'' matches ''Scam!'' but not ''scampi'') is hidden at
+        once like an admin hide (hiddenBy system, reason bad_word; its stars do not count; an admin can restore it); (2) the
+        rated person''s average over counted ratings, once they have minReviews: below review -> on the admin review list;
+        below warn -> one bell + push notice review_warning with the country''s warningText in the person''s language. Owner
+        2026-11-02 ''No automatic pause'': the rules never pause or suspend an account; an admin pauses by hand on the Drivers
+        / Riders page. Each step happens once when the person crosses the line; back above every line clears it, so a later
+        fall acts again.'
       tags:
       - Admin · Reviews
       x-actor:
@@ -7020,9 +7021,10 @@ paths:
       operationId: adminPutReviewRules
       summary: Save the review rules of a country
       description: 'v0.18.15. GET /admin/reviews/rules?country= (settings.read) -> ReviewRules { country, warn { on, below
-        }, review { on, below }, block { on, below }, minReviews, badWords { on, words } }; PUT /admin/reviews/rules ReviewRules
-        (settings.edit; a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope). Lines: 1-5, block
-        <= review <= warn when on; words at most 200, each 1-40 letters. Audited reviews.rules. The rating tags stay contract.json#ratings.tags.'
+        }, review { on, below }, minReviews, badWords { on, words }, warningText { sv, fr, en } }; PUT /admin/reviews/rules
+        ReviewRules (settings.edit; a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope). Lines:
+        1-5, review <= warn when both on; words at most 200, each 1-40 letters; warningText each 1-500 chars ({average} is
+        replaced by the person''s average). Audited reviews.rules. The rating tags stay contract.json#ratings.tags.'
       tags:
       - Admin · Reviews
       x-actor:
@@ -18242,14 +18244,14 @@ components:
     ReviewRules:
       type: object
       description: 'v0.18.15: GET /admin/reviews/rules?country= (settings.read) -> ReviewRules { country, warn { on, below
-        }, review { on, below }, block { on, below }, minReviews, badWords { on, words } }; PUT /admin/reviews/rules ReviewRules
-        (settings.edit; a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope). Lines: 1-5, block
-        <= review <= warn when on; words at most 200, each 1-40 letters. Audited reviews.rules. The rating tags stay contract.json#ratings.tags.'
+        }, review { on, below }, minReviews, badWords { on, words }, warningText { sv, fr, en } }; PUT /admin/reviews/rules
+        ReviewRules (settings.edit; a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope). Lines:
+        1-5, review <= warn when both on; words at most 200, each 1-40 letters; warningText each 1-500 chars ({average} is
+        replaced by the person''s average). Audited reviews.rules. The rating tags stay contract.json#ratings.tags.'
       required:
       - country
       - warn
       - review
-      - block
       - minReviews
       - badWords
       properties:
@@ -18283,22 +18285,30 @@ components:
               type: number
               minimum: 1
               maximum: 5
-        block:
-          type: object
-          required:
-          - 'on'
-          - below
-          properties:
-            'on':
-              type: boolean
-            below:
-              type: number
-              minimum: 1
-              maximum: 5
         minReviews:
           type: integer
           minimum: 1
           maximum: 1000
+        warningText:
+          type: object
+          description: 'Owner ''Softer'': the warning notice per language; {average} = the person''s average.'
+          required:
+          - sv
+          - fr
+          - en
+          properties:
+            sv:
+              type: string
+              minLength: 1
+              maxLength: 500
+            fr:
+              type: string
+              minLength: 1
+              maxLength: 500
+            en:
+              type: string
+              minLength: 1
+              maxLength: 500
         badWords:
           type: object
           required:
@@ -18343,7 +18353,6 @@ components:
           type: string
           enum:
           - review
-          - block
         average:
           type: number
         count:
@@ -18354,9 +18363,8 @@ components:
     ReviewQueue:
       type: object
       description: 'v0.18.15: GET /admin/reviews/queue (riders.read) -> { items: [{ who: driver | rider, personId, name, country,
-        level: review | block, average, count, since }] } of the admin''s countries; POST /admin/reviews/queue/{who}/{personId}/done
-        { note } (riders.block) removes the row (an admin looked at it; a blocked account is let back in the Drivers / Riders
-        page). Audited reviews.done.'
+        level: review, average, count, since }] } of the admin''s countries; POST /admin/reviews/queue/{who}/{personId}/done
+        { note } (riders.block) removes the row (an admin looked at it). Audited reviews.done.'
       required:
       - items
       properties:

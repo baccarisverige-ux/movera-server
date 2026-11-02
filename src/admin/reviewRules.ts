@@ -5,20 +5,19 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { audit } from "./audit.js";
 import { notify } from "../notifications/service.js";
-import { scheduleTimer } from "../jobs/timers.js";
-import { markSetOffline } from "../drivers/offlineReason.js";
 
 /**
  * Review rules applied by the server (contract v0.18.15 §40, contract.json#reviewRules; owner 2026-11-02 G14 Q6
- * "Make them real"): bad words hide a comment at once; a person's average crossing the warning, review or block line
- * sends a warning, puts them on the admin review list, or (block on) suspends the account — once per crossing.
+ * "Make them real", and the A1 answers): a listed whole word hides a comment at once; a person's average crossing the
+ * warning or review line sends a warning or puts them on the admin review list — once per crossing. Never an
+ * automatic pause (owner "No automatic pause"): an admin pauses by hand.
  */
 
 type Line = { on: boolean; below: number };
-export type ReviewRules = { country: string; warn: Line; review: Line; block: Line; minReviews: number; badWords: { on: boolean; words: string[] }; updatedAt?: string; updatedBy?: string };
+export type ReviewRules = { country: string; warn: Line; review: Line; minReviews: number; badWords: { on: boolean; words: string[] }; warningText: Record<Lang, string>; updatedAt?: string; updatedBy?: string };
 type Lang = "sv" | "fr" | "en";
 const RR = (contract as unknown as {
-  reviewRules: { defaults: Omit<ReviewRules, "country">; warningTexts: { title: Record<Lang, string>; body: Record<Lang, string> } };
+  reviewRules: { defaults: Omit<ReviewRules, "country"> };
 }).reviewRules;
 
 export function defaultReviewRules(country: string): ReviewRules {
@@ -32,15 +31,15 @@ export async function reviewRulesOf(ex: Executor, country: string | null): Promi
   return { ...defaultReviewRules(c), ...(row.doc as object), country: c, updatedAt: row.updated_at.toISOString(), ...(row.updated_by ? { updatedBy: row.updated_by } : {}) };
 }
 
-export async function saveReviewRules(trx: Trx, who: Principal, body: ReviewRules, now: Date): Promise<ReviewRules> {
+export async function saveReviewRules(trx: Trx, who: Principal, body: Omit<ReviewRules, "warningText"> & { warningText?: ReviewRules["warningText"] | undefined }, now: Date): Promise<ReviewRules> {
   if (!who.zones.includes("*")) {
     const hit = who.zones.length ? await trx.selectFrom("zones").select("zone_id").where("country", "=", body.country).where("zone_id", "in", who.zones).executeTakeFirst() : undefined;
     if (!hit) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
   }
-  const { warn, review, block } = body;
+  const { warn, review } = body;
   if (warn.on && review.on && review.below > warn.below) throw badRequest("Review must be below the warning line.", "invalid_body");
-  if (review.on && block.on && block.below > review.below) throw badRequest("Block must be below the review line.", "invalid_body");
-  const doc = { warn, review, block, minReviews: body.minReviews, badWords: { on: body.badWords.on, words: [...new Set(body.badWords.words.map((w) => w.trim().toLowerCase()).filter(Boolean))] } };
+  const warningText = body.warningText ?? (await reviewRulesOf(trx, body.country)).warningText;
+  const doc = { warn, review, minReviews: body.minReviews, warningText, badWords: { on: body.badWords.on, words: [...new Set(body.badWords.words.map((w) => w.trim().toLowerCase()).filter(Boolean))] } };
   await trx
     .insertInto("review_rules")
     .values({ country: body.country, doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId })
@@ -50,17 +49,18 @@ export async function saveReviewRules(trx: Trx, who: Principal, body: ReviewRule
   return reviewRulesOf(trx, body.country);
 }
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Owner 2026-11-02 "whole words": "scam" matches "Scam!" but not "scampi" (letters and digits of any language). */
 export function hasBadWord(text: string | null | undefined, rules: ReviewRules): boolean {
   if (!text || !rules.badWords.on) return false;
-  const lower = text.toLowerCase();
-  return rules.badWords.words.some((word) => word && lower.includes(word.toLowerCase()));
+  return rules.badWords.words.some((word) => word.trim() !== "" && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(word.trim())}(?![\\p{L}\\p{N}])`, "iu").test(text));
 }
 
-const SEVERITY = { warn: 1, review: 2, block: 3 } as const;
+const SEVERITY = { warn: 1, review: 2 } as const;
 
-function levelOf(average: number, count: number, rules: ReviewRules): "warn" | "review" | "block" | null {
+function levelOf(average: number, count: number, rules: ReviewRules): "warn" | "review" | null {
   if (count < rules.minReviews) return null;
-  if (rules.block.on && average < rules.block.below) return "block";
   if (rules.review.on && average < rules.review.below) return "review";
   if (rules.warn.on && average < rules.warn.below) return "warn";
   return null;
@@ -69,8 +69,8 @@ function levelOf(average: number, count: number, rules: ReviewRules): "warn" | "
 /** After a rating: where the rated person stands now, and the one action for a newly crossed line. */
 export async function applyPersonRules(trx: Trx, who: "driver" | "rider", personId: string, country: string | null, rules: ReviewRules, now: Date): Promise<void> {
   const person = who === "driver"
-    ? await trx.selectFrom("drivers").select(["rating_sum", "rating_count", "language", "account_status", "online_status", "version", "zone_ids"]).where("driver_id", "=", personId).executeTakeFirst()
-    : await trx.selectFrom("riders").select(["rating_sum", "rating_count", "language", "status", "version"]).where("rider_id", "=", personId).executeTakeFirst();
+    ? await trx.selectFrom("drivers").select(["rating_sum", "rating_count", "language"]).where("driver_id", "=", personId).executeTakeFirst()
+    : await trx.selectFrom("riders").select(["rating_sum", "rating_count", "language"]).where("rider_id", "=", personId).executeTakeFirst();
   if (!person) return;
   const count = Number(person.rating_count);
   const average = count > 0 ? Math.round((Number(person.rating_sum) / count) * 100) / 100 : 5;
@@ -90,18 +90,11 @@ export async function applyPersonRules(trx: Trx, who: "driver" | "rider", person
   if (!worse) return;
   if (level === "warn") {
     const lang: Lang = person.language === "sv" || person.language === "fr" ? person.language : "en";
-    await notify(trx, { audience: who, subjectId: personId, kind: "review_warning", title: RR.warningTexts.title[lang], body: RR.warningTexts.body[lang].replace("{average}", average.toFixed(2).replace(".", lang === "en" ? "." : ",")), data: { average, count } }, now);
+    const avg = average.toFixed(2).replace(".", lang === "en" ? "." : ",");
+    // Owner 2026-11-02 "Softer": the country's text, the admin can edit it per language.
+    await notify(trx, { audience: who, subjectId: personId, kind: "review_warning", title: rules.warningText[lang].split(".")[0] ?? "", body: rules.warningText[lang].replace("{average}", avg), data: { average, count } }, now);
   }
-  if (level === "block") {
-    if (who === "driver" && "account_status" in person && person.account_status !== "suspended") {
-      const offline = ["online", "going_online"].includes(person.online_status) ? { online_status: "offline" as const, online_since: null } : {};
-      await trx.updateTable("drivers").set({ account_status: "suspended", ...offline, version: person.version + 1, updated_at: now }).where("driver_id", "=", personId).execute();
-      await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: personId, dueAt: now, payload: {} });
-      if ("online_status" in offline) await markSetOffline(trx, personId, "account_status", {}, now);
-    } else if (who === "rider" && "status" in person && person.status !== "suspended") {
-      await trx.updateTable("riders").set({ status: "suspended", version: person.version + 1, updated_at: now }).where("rider_id", "=", personId).execute();
-    }
-  }
+  // Owner 2026-11-02 "No automatic pause": the rules never pause or suspend an account.
   await audit(trx, { adminId: null, action: `reviews.${level}`, targetType: who, targetId: personId, detail: { average, count, country }, at: now });
 }
 
@@ -128,7 +121,7 @@ export async function reviewQueue(ex: Executor, who: Principal) {
   return {
     items: rows.map((r) => ({
       who: r.who, personId: r.person_id, ...(names.get(`${r.who}:${r.person_id}`) ? { name: names.get(`${r.who}:${r.person_id}`) } : {}), ...(r.country ? { country: r.country } : {}),
-      level: r.level === "block" ? "block" : "review", average: Number(r.average), count: r.count, since: r.since.toISOString(),
+      level: "review" as const, average: Number(r.average), count: r.count, since: r.since.toISOString(),
     })),
   };
 }

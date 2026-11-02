@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS review_people (
   who         text NOT NULL CHECK (who IN ('driver', 'rider')),
   person_id   text NOT NULL,
   country     text,
-  level       text NOT NULL CHECK (level IN ('warn', 'review', 'block')),
+  level       text NOT NULL CHECK (level IN ('warn', 'review')),
   average     numeric(4, 2) NOT NULL,
   count       integer NOT NULL,
   since       timestamptz NOT NULL,

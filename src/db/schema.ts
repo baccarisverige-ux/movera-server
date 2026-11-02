@@ -890,7 +890,7 @@ export interface ReviewPeopleTable {
   who: "driver" | "rider";
   person_id: string;
   country: string | null;
-  level: "warn" | "review" | "block";
+  level: "warn" | "review";
   average: ColumnType<string, number, number>;
   count: number;
   since: Timestamp;

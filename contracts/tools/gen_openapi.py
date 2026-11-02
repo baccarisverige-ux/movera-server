@@ -438,10 +438,11 @@ S["IncidentSettingsDoc"] = obj({"country": s(enum=C["supportDesk"]["settings"]["
 S["IncidentSettingsCommand"] = obj({"country": s(enum=C["supportDesk"]["settings"]["countries"]), "expectedRev": i(minimum=1), "settings": {"type": "object"}}, ["country", "expectedRev", "settings"], "v0.18.15.")
 RR = C["reviewRules"]
 _LINE = obj({"on": b(), "below": n(minimum=1, maximum=5)}, ["on", "below"])
-S["ReviewRules"] = obj({"country": s(enum=C["supportDesk"]["settings"]["countries"]), "warn": _LINE, "review": _LINE, "block": _LINE, "minReviews": i(minimum=1, maximum=1000),
+S["ReviewRules"] = obj({"country": s(enum=C["supportDesk"]["settings"]["countries"]), "warn": _LINE, "review": _LINE, "minReviews": i(minimum=1, maximum=1000),
+                        "warningText": obj({"sv": s(minLength=1, maxLength=500), "fr": s(minLength=1, maxLength=500), "en": s(minLength=1, maxLength=500)}, ["sv", "fr", "en"], "Owner 'Softer': the warning notice per language; {average} = the person's average."),
                         "badWords": obj({"on": b(), "words": arr(s(minLength=1, maxLength=40), maxItems=200)}, ["on", "words"]), "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")},
-                       ["country", "warn", "review", "block", "minReviews", "badWords"], "v0.18.15: " + RR["rules"])
-S["ReviewQueueRow"] = obj({"who": s(enum=["driver", "rider"]), "personId": ref("Id"), "name": s(), "country": s(), "level": s(enum=["review", "block"]), "average": n(), "count": i(minimum=0), "since": ref("Timestamp")},
+                       ["country", "warn", "review", "minReviews", "badWords"], "v0.18.15: " + RR["rules"])
+S["ReviewQueueRow"] = obj({"who": s(enum=["driver", "rider"]), "personId": ref("Id"), "name": s(), "country": s(), "level": s(enum=["review"]), "average": n(), "count": i(minimum=0), "since": ref("Timestamp")},
                           ["who", "personId", "level", "average", "count", "since"])
 S["ReviewQueue"] = obj({"items": arr(ref("ReviewQueueRow"))}, ["items"], "v0.18.15: " + RR["queue"])
 S["ReviewDoneCommand"] = obj({"note": s(minLength=1, maxLength=500)}, ["note"], "v0.18.15.")

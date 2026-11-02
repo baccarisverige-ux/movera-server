@@ -307,7 +307,7 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
 
   /* ---- review rules (v0.18.15, contract.json#reviewRules) */
   const LineBody = z.object({ on: z.boolean(), below: z.number().min(1).max(5) });
-  const ReviewRulesBody = z.object({ country: SupportCountry, warn: LineBody, review: LineBody, block: LineBody, minReviews: z.number().int().min(1).max(1000), badWords: z.object({ on: z.boolean(), words: z.array(z.string().trim().min(1).max(40)).max(200) }) }).passthrough();
+  const ReviewRulesBody = z.object({ country: SupportCountry, warn: LineBody, review: LineBody, minReviews: z.number().int().min(1).max(1000), badWords: z.object({ on: z.boolean(), words: z.array(z.string().trim().min(1).max(40)).max(200) }), warningText: z.object({ sv: z.string().trim().min(1).max(500), fr: z.string().trim().min(1).max(500), en: z.string().trim().min(1).max(500) }).optional() }).passthrough();
   app.get(`${API_PREFIX}/admin/reviews/rules`, async (request) => {
     await authenticateAdmin(request, guard, "settings.read");
     const { country } = parseBody(z.object({ country: SupportCountry }), request.query);
@@ -316,7 +316,7 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   app.put(`${API_PREFIX}/admin/reviews/rules`, async (request) => {
     const who = await authenticateAdmin(request, guard, "settings.edit");
     const body = parseBody(ReviewRulesBody, request.body);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveReviewRules(trx, who, { country: body.country, warn: body.warn, review: body.review, block: body.block, minReviews: body.minReviews, badWords: body.badWords }, now()) }));
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveReviewRules(trx, who, { country: body.country, warn: body.warn, review: body.review, minReviews: body.minReviews, badWords: body.badWords, ...(body.warningText ? { warningText: body.warningText } : {}) }, now()) }));
     return result.body;
   });
   app.get(`${API_PREFIX}/admin/reviews/queue`, async (request) => {
