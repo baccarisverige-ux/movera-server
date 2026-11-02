@@ -136,18 +136,31 @@ export async function deskExtras(ex: Executor, rows: readonly DeskRow[], now: Da
 }
 
 /** GET /support/topics: the topics that are on for the person's country. */
-export async function topicsFor(ex: Executor, who: { actor: "rider" | "driver"; subjectId: string }) {
-  let zoneId: string | null = null;
-  let country: string | null = null;
+/** Owner 2026-11-02: a person without a country gets it from the phone prefix (+46 SE, +33 FR, +216 TN). */
+export function countryOfPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  if (phone.startsWith("+46")) return "SE";
+  if (phone.startsWith("+33")) return "FR";
+  if (phone.startsWith("+216")) return "TN";
+  return null;
+}
+
+/** The person's country: the zone of the last trip (rider) or first zone (driver), else the driver's country, else the phone prefix. */
+export async function personCountry(ex: Executor, who: { actor: "rider" | "driver"; subjectId: string }): Promise<string | null> {
   if (who.actor === "driver") {
-    const d = await ex.selectFrom("drivers").select(["zone_ids", "country"]).where("driver_id", "=", who.subjectId).executeTakeFirst();
-    zoneId = d?.zone_ids[0] ?? null;
-    country = d?.country ?? null;
-  } else {
-    const last = await ex.selectFrom("trips").select("zone_id").where("rider_id", "=", who.subjectId).orderBy("created_at", "desc").limit(1).executeTakeFirst();
-    zoneId = last?.zone_id ?? null;
+    const d = await ex.selectFrom("drivers").select(["zone_ids", "country", "phone"]).where("driver_id", "=", who.subjectId).executeTakeFirst();
+    return (await countryOfZone(ex, d?.zone_ids[0] ?? null)) ?? d?.country ?? countryOfPhone(d?.phone);
   }
-  country = (await countryOfZone(ex, zoneId)) ?? country;
+  const last = await ex.selectFrom("trips").select("zone_id").where("rider_id", "=", who.subjectId).orderBy("created_at", "desc").limit(1).executeTakeFirst();
+  const fromTrip = await countryOfZone(ex, last?.zone_id ?? null);
+  if (fromTrip) return fromTrip;
+  const rider = await ex.selectFrom("riders").select("phone").where("rider_id", "=", who.subjectId).executeTakeFirst();
+  return countryOfPhone(rider?.phone);
+}
+
+/** GET /support/topics: the topics that are on for the person's country. */
+export async function topicsFor(ex: Executor, who: { actor: "rider" | "driver"; subjectId: string }) {
+  const country = await personCountry(ex, who);
   const s = await settingsOf(ex, country);
   return { ...(country ? { country } : {}), topics: s.topics.filter((t) => t.on).map((t) => t.code) };
 }

@@ -100,7 +100,7 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
     const last = await trx.selectFrom("trips").select("zone_id").where("rider_id", "=", who.subjectId).orderBy("created_at", "desc").limit(1).executeTakeFirst();
     zoneId = last?.zone_id ?? null;
   }
-  await desk.assertTopicOn(trx, zoneId, body.category, who.actor === "driver" ? ((await trx.selectFrom("drivers").select("country").where("driver_id", "=", who.subjectId).executeTakeFirst())?.country ?? null) : null);
+  await desk.assertTopicOn(trx, zoneId, body.category, await desk.personCountry(trx, who));
   const ticketId = newId("tkt", now.getTime());
   const row = await trx
     .insertInto("support_tickets")

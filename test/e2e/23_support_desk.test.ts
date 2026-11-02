@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bookAndAccept, drive, fakeOsrm, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
+import { countryOfPhone } from "../../src/support/desk.js";
 
 /**
  * Build-all A1 "Support desk" (contract v0.18.15 §37, contract.json#supportDesk; owner 2026-11-02
@@ -159,6 +160,21 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
     expect((await owner.put("/admin/support/settings", { ...se.body, topics: topics.slice(1) })).status).toBe(400);
     expect(await audited()).toBe(auditBefore + 1);
     await owner.put("/admin/support/settings", se.body);
+  });
+});
+
+describe("owner: a person without a country gets it from the phone prefix", () => {
+  it("+33 without a trip reads the French topics; +216 Tunisia; unknown prefixes nothing", async () => {
+    expect([countryOfPhone("+46701740605"), countryOfPhone("+33612345678"), countryOfPhone("+21620123456"), countryOfPhone("+4930123"), countryOfPhone(null)]).toEqual(["SE", "FR", "TN", null, null]);
+    const newcomer = await sim.rider(1);
+    await sim.db.updateTable("riders").set({ phone: "+33612345678" }).where("rider_id", "=", newcomer.id).execute();
+    const fr = (await owner.get("/admin/support/settings?country=FR")).body;
+    await owner.put("/admin/support/settings", { ...fr, topics: fr["topics"].map((x: Json) => (x["code"] === "payment" ? { ...x, on: false } : x)) });
+    const topics = (await newcomer.get("/support/topics")).body;
+    expect(topics["country"]).toBe("FR");
+    expect(topics["topics"]).not.toContain("payment");
+    expect((await newcomer.post("/support/tickets", { category: "payment", subject: "x", text: "x" })).body["reason"]).toBe("topic_off");
+    await owner.put("/admin/support/settings", fr);
   });
 });
 
