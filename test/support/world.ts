@@ -25,10 +25,26 @@ export async function testWorld(db: Db, url: string, clock: { now: Date }) {
 let keys = 0;
 export const newKey = () => `world-key-${String(++keys).padStart(10, "0")}`;
 
+/**
+ * v0.18.14 (one phone at a time): signing a driver in again would be "another phone" (the first goes offline). The test
+ * world plays the SAME phone: it refreshes the session it already has (as the app does), and signs in only the first
+ * time or when that session is gone.
+ */
+const held = new Map<string, string>();
 export async function signIn(app: FastifyInstance, phone: string, appName: "rider" | "driver") {
+  const key = `${appName}:${phone}`;
+  const refresh = appName === "driver" ? held.get(key) : undefined;
+  if (refresh) {
+    const res = await app.inject({ method: "POST", url: "/api/v1/auth/refresh", payload: { refreshToken: refresh } });
+    if (res.statusCode === 200) {
+      held.set(key, res.json().refreshToken);
+      return { headers: { authorization: `Bearer ${res.json().accessToken}` } as Record<string, string>, token: res.json().accessToken as string };
+    }
+  }
   const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone, app: appName } });
   const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: TEST_CODE } });
   const body = verify.json();
+  if (appName === "driver" && body.refreshToken) held.set(key, body.refreshToken);
   return { headers: { authorization: `Bearer ${body.accessToken}` } as Record<string, string>, token: body.accessToken as string };
 }
 

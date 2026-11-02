@@ -119,7 +119,10 @@ describe("one phone at a time (owner 2026-11-02, driver)", () => {
       return (await post("/auth/otp/verify", { phone, sessionId: c.sessionId, code: TEST_CODE })).json();
     };
     const first = await signIn(TEST_PHONES[1]!, "driver");
+    await database.db.updateTable("drivers").set({ online_status: "online" }).where("phone", "=", TEST_PHONES[1]!).execute();
     const second = await signIn(TEST_PHONES[1]!, "driver");
+    // Decision driver-g1: the old phone goes offline; he goes online again from the new phone.
+    expect((await database.db.selectFrom("drivers").select("online_status").where("phone", "=", TEST_PHONES[1]!).executeTakeFirstOrThrow()).online_status).toBe("offline");
     const old = await app.inject({ method: "GET", url: "/api/v1/driver/profile", headers: { authorization: `Bearer ${first.accessToken}` } });
     expect(old.statusCode).toBe(401);
     expect(old.json()).toMatchObject({ reason: "signed_in_elsewhere" });
@@ -132,37 +135,57 @@ describe("one phone at a time (owner 2026-11-02, driver)", () => {
   });
 });
 
-describe("phone and e-mail change by code (owner 2026-11-02)", () => {
+describe("phone and e-mail change by code (owner 2026-11-02, checker round)", () => {
   const auth = (t: string) => ({ authorization: `Bearer ${t}`, "content-type": "application/json" });
   const signed = async (phone: string, appName: "rider" | "driver") => {
     advance(60);
     const c = (await post("/auth/otp/request", { phone, app: appName })).json();
     return (await post("/auth/otp/verify", { phone, sessionId: c.sessionId, code: TEST_CODE })).json();
   };
-  it("rider: a code to the new number saves it; a number with an account is refused; the account keeps its id", async () => {
+  const change = (t: string, path: string, payload: unknown) => app.inject({ method: "POST", url: `/api/v1/account/${path}`, headers: auth(t), payload: payload as object });
+
+  it("rider: a code to the new number saves it; the old number gets a pending notice; his other sessions end", async () => {
+    const other = await signed(TEST_PHONES[4]!, "rider");
     const me = await signed(TEST_PHONES[4]!, "rider");
-    const taken = await app.inject({ method: "POST", url: "/api/v1/account/phone/change", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[0]! } });
-    if ((await database.db.selectFrom("riders").select("rider_id").where("phone", "=", TEST_PHONES[0]!).executeTakeFirst())) expect(taken.json()).toMatchObject({ reason: "phone_taken" });
-    advance(60);
-    const start = await app.inject({ method: "POST", url: "/api/v1/account/phone/change", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]! } });
+    const start = await change(me.accessToken, "phone/change", { phone: TEST_PHONES[5]! });
     expect(start.statusCode, start.body).toBe(200);
-    const wrong = await app.inject({ method: "POST", url: "/api/v1/account/phone/verify", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: "0000" } });
-    expect(wrong.json()).toMatchObject({ reason: "invalid_otp_code" });
-    const ok = await app.inject({ method: "POST", url: "/api/v1/account/phone/verify", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: TEST_CODE } });
+    expect((await change(me.accessToken, "phone/verify", { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: "0000" })).json()).toMatchObject({ reason: "invalid_otp_code" });
+    const ok = await change(me.accessToken, "phone/verify", { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: TEST_CODE });
     expect(ok.statusCode, ok.body).toBe(200);
     expect((await app.inject({ method: "GET", url: "/api/v1/rider/profile", headers: auth(me.accessToken) })).json().phone).toBe(TEST_PHONES[5]!);
+    expect(await database.db.selectFrom("outbound_notices").select(["channel", "to_address", "status"]).where("kind", "=", "phone_changed").execute()).toEqual([{ channel: "sms", to_address: TEST_PHONES[4]!, status: "pending_provider" }]);
+    expect((await app.inject({ method: "GET", url: "/api/v1/rider/profile", headers: auth(other.accessToken) })).statusCode).toBe(401);
   });
-  it("driver: e-mail change needs the code sent to the new address; a wrong code changes nothing", async () => {
-    const me = await signed(TEST_PHONES[2]!, "driver");
-    const start = await app.inject({ method: "POST", url: "/api/v1/account/email/change", headers: auth(me.accessToken), payload: { email: "New@Example.se" } });
-    expect(start.statusCode, start.body).toBe(200);
-    const { challengeId } = start.json();
-    expect((await app.inject({ method: "POST", url: "/api/v1/account/email/verify", headers: auth(me.accessToken), payload: { challengeId, code: "9999" } })).json()).toMatchObject({ reason: "invalid_otp_code" });
-    // The test reads the code the way the e-mail would carry it: set a known one.
+
+  it("a number with any account (rider or driver) gets the same 'code sent' answer and no code; the verify fails like a wrong session", async () => {
+    const me = await signed(TEST_PHONES[3]!, "rider");
+    await signed(TEST_PHONES[2]!, "driver"); // a driver account on that number
+    const start = await change(me.accessToken, "phone/change", { phone: TEST_PHONES[2]! });
+    expect(start.statusCode).toBe(200);
+    expect(Object.keys(start.json()).sort()).toEqual(["expiresAt", "requestId", "retryAfterSeconds", "sessionId"]);
+    expect((await change(me.accessToken, "phone/verify", { phone: TEST_PHONES[2]!, sessionId: start.json().sessionId, code: TEST_CODE })).json()).toMatchObject({ reason: "invalid_otp_session" });
+  });
+
+  it("only within 10 minutes of signing in; at most 3 starts per hour", async () => {
+    const me = await signed(TEST_PHONES[3]!, "rider");
+    advance(11 * 60);
+    expect((await change(me.accessToken, "email/change", { email: "late@example.se" })).json()).toMatchObject({ reason: "reauth_required" });
+    const fresh = await signed(TEST_PHONES[3]!, "rider");
+    for (let i = 0; i < 3; i++) expect((await change(fresh.accessToken, "email/change", { email: `x${i}@example.se` })).statusCode).toBe(200);
+    expect((await change(fresh.accessToken, "email/change", { email: "x9@example.se" })).json()).toMatchObject({ reason: "change_too_many" });
+  });
+
+  it("driver: e-mail change needs the code sent to the new address; wrong tries carry over a restart; the old address gets a pending notice", async () => {
+    const me = await signed(TEST_PHONES[0]!, "driver");
+    await database.db.updateTable("drivers").set({ email: "old@example.se" }).where("phone", "=", TEST_PHONES[0]!).execute();
+    const first = (await change(me.accessToken, "email/change", { email: "New@Example.se" })).json();
+    for (let i = 0; i < 3; i++) await change(me.accessToken, "email/verify", { challengeId: first.challengeId, code: "9999" });
+    const { challengeId } = (await change(me.accessToken, "email/change", { email: "New@Example.se" })).json();
+    expect((await database.db.selectFrom("email_changes").select("attempts").where("challenge_id", "=", challengeId).executeTakeFirstOrThrow()).attempts).toBe(3);
     const { createHash } = await import("node:crypto");
     await database.db.updateTable("email_changes").set({ code_sha256: createHash("sha256").update(`${challengeId}:4242`).digest("hex") }).where("challenge_id", "=", challengeId).execute();
-    const ok = await app.inject({ method: "POST", url: "/api/v1/account/email/verify", headers: auth(me.accessToken), payload: { challengeId, code: "4242" } });
+    const ok = await change(me.accessToken, "email/verify", { challengeId, code: "4242" });
     expect(ok.json()).toEqual({ email: "new@example.se" });
-    expect((await database.db.selectFrom("notifications").select("kind").where("kind", "=", "email_changed").execute()).length).toBe(1);
+    expect(await database.db.selectFrom("outbound_notices").select(["channel", "to_address"]).where("kind", "=", "email_changed").execute()).toEqual([{ channel: "email", to_address: "old@example.se" }]);
   });
 });

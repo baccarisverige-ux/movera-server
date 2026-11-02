@@ -430,6 +430,10 @@ export interface EmailChangesTable {
   created_at: Timestamp;
 }
 
+/** Checker round: account change starts (rate limit) and notices waiting for an SMS / e-mail provider. */
+export interface AccountChangeStartsTable { actor: "rider" | "driver"; subject_id: string; kind: "phone" | "email"; at: Timestamp }
+export interface OutboundNoticesTable { notice_id: Generated<number>; channel: "sms" | "email"; to_address: string; kind: string; language: string; status: "pending_provider" | "sent"; created_at: Timestamp }
+
 export interface AuthSessionsTable {
   session_id: string;
   actor: "rider" | "driver" | "admin";
@@ -1135,6 +1139,8 @@ export interface Database {
   test_phones: TestPhonesTable;
   otp_sessions: OtpSessionsTable;
   email_changes: EmailChangesTable;
+  account_change_starts: AccountChangeStartsTable;
+  outbound_notices: OutboundNoticesTable;
   sign_in_waitlist: SignInWaitlistTable;
   complete_previews: CompletePreviewsTable;
   sign_in_waitlist_asks: SignInWaitlistAsksTable;

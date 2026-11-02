@@ -462,14 +462,15 @@ describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTr
     await database.db.updateTable("riders").set({ language: null }).execute();
   });
 
-  it("the rider's setting: rideUpdates off → no trip pushes", async () => {
+  it("owner G13: rideUpdates off stops only 'driver found' and 'arriving'; 'driver arrived' is always sent (fail-before: none)", async () => {
     await database.db.updateTable("riders").set({ consents: JSON.stringify({ rideUpdates: false }) }).execute();
     try {
       const { tripId, version } = await accepted();
       await step(tripId, "head-to-pickup", version);
       await moveTo("A", NORRMALM);
       await step(tripId, "arrive", version + 1);
-      expect(await pushes(tripId)).toEqual([]);
+      const sent = await database.db.selectFrom("notifications").select("data").where("trip_id", "=", tripId).where("kind", "=", "trip_update").execute();
+      expect(sent.map((r) => (r.data as { moment: string }).moment)).toEqual(["driver_arrived"]);
     } finally {
       await database.db.updateTable("riders").set({ consents: JSON.stringify({}) }).execute();
     }

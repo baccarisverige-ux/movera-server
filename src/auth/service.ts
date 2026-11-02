@@ -416,7 +416,7 @@ export async function startSession(
 ): Promise<{ accessToken: string; refreshToken: string; expiresIn: number; sessionId: string }> {
   const sessionId = newId("sid", now.getTime());
   // v0.18.14 (owner 2026-11-02 "New sign-in signs the old phone out"): a driver is signed in on one phone only. A new
-  // sign-in ends his other sessions (reason signed_in_elsewhere), and tells him (bell + push to every phone).
+  // sign-in ends his other sessions (reason signed_in_elsewhere), sets the old phone offline (a free driver goes offline) and tells him (bell + push).
   if (subject.actor === "driver") await signOutOtherPhones(trx, subject.subjectId, now);
   const expiresAt = new Date(now.getTime() + ttlMs);
   await trx
@@ -548,8 +548,13 @@ const ELSEWHERE = { sv: { title: "Inloggad på en annan telefon", body: "Ditt ko
 async function signOutOtherPhones(trx: Trx, driverId: string, now: Date): Promise<void> {
   const ended = await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "signed_in_elsewhere" }).where("actor", "=", "driver").where("subject_id", "=", driverId).where("revoked_at", "is", null).where("expires_at", ">", now).returning("session_id").execute();
   if (ended.length === 0) return;
-  // He stays online: the new phone is now the one that sends positions and gets offers.
-  const driver = await trx.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
+  // Decision (driver-g1.md): the OLD phone goes offline — a free driver is set offline (offers withdrawn) and goes
+  // online again from the new phone; one on a trip keeps it (the new phone carries on with it).
+  const driver = await trx.selectFrom("drivers").select(["language", "online_status", "version"]).where("driver_id", "=", driverId).executeTakeFirst();
+  if (driver?.online_status === "online") {
+    await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
+    await trx.insertInto("timers").values({ kind: "withdraw_driver_offers", ref_id: driverId, due_at: now, payload: JSON.stringify({}) }).onConflict((c) => c.columns(["kind", "ref_id"]).doUpdateSet({ due_at: now })).execute();
+  }
   const lang = driver?.language === "sv" || driver?.language === "fr" ? driver.language : "en";
   await notify(trx, { audience: "driver", subjectId: driverId, kind: "signed_in_elsewhere", title: ELSEWHERE[lang].title, body: ELSEWHERE[lang].body, data: { texts: { title: { sv: ELSEWHERE.sv.title, fr: ELSEWHERE.fr.title, en: ELSEWHERE.en.title }, body: { sv: ELSEWHERE.sv.body, fr: ELSEWHERE.fr.body, en: ELSEWHERE.en.body } } } }, now);
 }

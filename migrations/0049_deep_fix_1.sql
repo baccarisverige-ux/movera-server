@@ -11,3 +11,7 @@ CREATE TABLE IF NOT EXISTS email_changes (challenge_id text PRIMARY KEY, actor t
 CREATE INDEX IF NOT EXISTS email_changes_subject ON email_changes (actor, subject_id);
 -- Checker MED 3: an admin lifts a sign-in lock; the lock counts per number and address.
 ALTER TABLE otp_sessions ADD COLUMN IF NOT EXISTS unlocked_at timestamptz;
+-- Checker round: phone / e-mail change starts (rate limit) and the notice to the old number / address.
+CREATE TABLE IF NOT EXISTS account_change_starts (actor text NOT NULL, subject_id text NOT NULL, kind text NOT NULL CHECK (kind IN ('phone', 'email')), at timestamptz NOT NULL);
+CREATE INDEX IF NOT EXISTS account_change_starts_subject ON account_change_starts (actor, subject_id, kind, at DESC);
+CREATE TABLE IF NOT EXISTS outbound_notices (notice_id bigserial PRIMARY KEY, channel text NOT NULL CHECK (channel IN ('sms', 'email')), to_address text NOT NULL, kind text NOT NULL, language text NOT NULL, status text NOT NULL DEFAULT 'pending_provider' CHECK (status IN ('pending_provider', 'sent')), created_at timestamptz NOT NULL);

@@ -84,7 +84,7 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
   app.post(`${API_PREFIX}/account/phone/change`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);
     const body = parseBody(z.object({ phone: z.string() }), request.body);
-    return startPhoneChange(deps, who as never, body.phone, client(request));
+    return startPhoneChange(deps, who as never, body.phone, client(request), deps.clock?.() ?? new Date());
   });
   app.post(`${API_PREFIX}/account/phone/verify`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);
