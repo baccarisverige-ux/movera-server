@@ -234,8 +234,14 @@ export type DeskCommand =
   | { verb: "reopen"; reason: string }
   | { verb: "case"; reason: string };
 
+/** Owner 2026-11-02 "Never" + "Leave ticket": a claimed ticket is the claimer's alone until he leaves or solves it. */
+function assertMine(who: Principal, row: TicketRow): void {
+  if (row.assigned_admin_id && row.assigned_admin_id !== who.subjectId) throw new ApiError("conflict", "Another admin works on this ticket.", { reason: "ticket_not_yours" });
+}
+
 export async function adminDeskCommand(trx: Trx, who: Principal, ticketId: string, command: DeskCommand, now: Date) {
   const row = await ticketForAdmin(trx, who, ticketId, true);
+  if (command.verb !== "claim" && command.verb !== "leave") assertMine(who, row);
   const r = { ...row, assigned_admin_id: row.assigned_admin_id ?? null, incident_id: row.incident_id ?? null };
   switch (command.verb) {
     case "claim": await desk.claim(trx, who, r, now); break;
@@ -253,6 +259,7 @@ export async function adminDeskCommand(trx: Trx, who: Principal, ticketId: strin
 /** POST /admin/tickets/{ticketId}/reply: the answer goes on the ticket; the status is pending unless said otherwise. */
 export async function adminReply(trx: Trx, who: Principal, ticketId: string, body: { text: string; status?: "pending" | "resolved" | "closed" }, now: Date) {
   const row = await ticketForAdmin(trx, who, ticketId, true);
+  assertMine(who, row);
   if (row.status === "closed") throw new ApiError("invalid_transition", "This ticket is closed.", { reason: "ticket_closed" });
   const status = body.status ?? "pending";
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: "support", admin_id: who.subjectId, text: body.text, at: now }).execute();

@@ -189,6 +189,24 @@ describe("owner \"Leave ticket\": the claiming admin gives the ticket back to th
     const audit = await sim.db.selectFrom("admin_audit").select("action").where("target_id", "=", id).where("action", "=", "ticket.leave").execute();
     expect(audit).toHaveLength(1);
   });
+
+  it("checker MED1: only the claiming admin acts on a claimed ticket (no override)", async () => {
+    const id = await open();
+    await agent.post(`/admin/tickets/${id}/claim`, {});
+    const other = await sim.admin("support");
+    const tries = [
+      other.post(`/admin/tickets/${id}/reply`, { text: "Hi" }),
+      other.post(`/admin/tickets/${id}/assign`, { adminId: other.id, reason: "mine now" }),
+      other.post(`/admin/tickets/${id}/solve`, {}),
+      other.post(`/admin/tickets/${id}/topic`, { category: "payment" }),
+      other.post(`/admin/tickets/${id}/waiting`, { waiting: true }),
+      owner.post(`/admin/tickets/${id}/solve`, {}),
+    ];
+    for (const res of await Promise.all(tries)) expect([res.status, res.body["reason"]]).toEqual([409, "ticket_not_yours"]);
+    expect((await agent.post(`/admin/tickets/${id}/reply`, { text: "On it" })).status).toBe(200);
+    await agent.post(`/admin/tickets/${id}/solve`, {});
+    expect((await other.post(`/admin/tickets/${id}/reopen`, { reason: "x" })).body["reason"]).toBe("ticket_not_yours");
+  });
 });
 
 describe("owner \"Yes\": ready replies per language in Support settings", () => {
