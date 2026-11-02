@@ -328,6 +328,30 @@ describe("the rider's cancel after accept", () => {
       await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
     }
   });
+
+  it("the admin turns the heading check off during the pickup: the kept answer is cleared and the trip stays his", async () => {
+    const { tripId } = await accepted();
+    const FAR = { lat: SPOTS.A.lat + 0.018, lng: SPOTS.A.lng };
+    await moveTo("A", FAR);
+    await advance(30);
+    expect((await database.db.selectFrom("trips").select("heading_check").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).heading_check).not.toBeNull();
+    const off = JSON.stringify({ ...sample("driver_app_config"), headingCheck: { on: false, headingPct: 80, notHeadingMinutes: 2, reassign: true } });
+    await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: off, published_at: clock.now, published_by: null }).execute();
+    try {
+      for (let i = 0; i < 6; i++) {
+        await moveTo("A", FAR);
+        await advance(30);
+      }
+      expect((await database.db.selectFrom("trips").select("heading_check").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).heading_check).toBeNull();
+      const view = await riderView(tripId);
+      expect(view.status).toBe("accepted");
+      expect(view.driverId).toBe(drivers.A.id);
+      expect(view.headingCheck ?? null).toBeNull();
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    }
+  });
 });
 
 describe("the driver's cancel", () => {

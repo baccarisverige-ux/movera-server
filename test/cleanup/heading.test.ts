@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { headingSettingsOf, headingView, isFreeCancel, nextHeading, type HeadingState } from "../../src/trips/headingCheck.js";
+import { headingSettingsOf, headingTick, headingView, isFreeCancel, nextHeading, type HeadingState } from "../../src/trips/headingCheck.js";
 
 /**
  * Owner G5-8 (decisions/driver-g5.md item 8 + notes; contract v0.18.13 pickupWaiting.headingCheck): "heading to pickup"
@@ -59,5 +59,25 @@ describe("heading to pickup = 80 % of what normal road speed allows (G5-8)", () 
     expect(again.heading).toBe(true);
     expect(isFreeCancel(again, SE, at(180))).toBe(false);
     expect(headingView({ status: "arrived", heading_check: again }, at(180))).toBeNull();
+  });
+
+  it("a second tick at the same moment (no time passed, nothing possible) keeps the previous answer", () => {
+    const first = start();
+    const not = nextHeading(first, { now: at(30), settings: SE, meters: 5000, speedMps: speed, atPickup: false })!;
+    expect(not.heading).toBe(false);
+    const same = nextHeading(not, { now: at(30), settings: SE, meters: 5000, speedMps: speed, atPickup: false })!;
+    expect(same.heading).toBe(false);
+    expect(same.notHeadingSince).toBe(not.notHeadingSince);
+    expect(nextHeading(first, { now: t0, settings: SE, meters: 5000, speedMps: speed, atPickup: false })!.heading).toBe(true);
+  });
+
+  it("the tick does nothing (no settings read, no write, no reassign) without a driver, after arrival or for a booked trip", async () => {
+    const untouched = new Proxy({}, { get: () => { throw new Error("the transaction must not be used"); } }) as never;
+    const reassign = async () => { throw new Error("must not reassign"); };
+    const input = { fix: { lat: 59.33, lng: 18.06 }, leg: { distanceMeters: 5000, durationSeconds: 500 }, now: t0 };
+    const base = { driver_id: "d1", status: "driver_to_pickup", kind: "live", zone_id: "z", trip_id: "t", heading_check: null, pickup: { lat: 59.3, lng: 18.0 } };
+    for (const trip of [{ ...base, driver_id: null }, { ...base, status: "arrived" }, { ...base, kind: "booked" }]) {
+      expect(await headingTick(untouched, trip as never, input, reassign)).toBe(false);
+    }
   });
 });
