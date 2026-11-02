@@ -197,7 +197,9 @@ export async function adminStopRadarZone(trx: Trx, who: Principal, tripId: strin
 
 /** "Add money to trip": Movera pays it; open offers show the new money at once. */
 /** Live fix 2026-11-02: skipped counts free drivers left out (expired = let an offer of this trip go / declined;
- * busy = refused when sent; far = beyond reachKm, the widest reach used, null = no limit). */
+ * busy = refused when sent; far = beyond reachKm, the widest reach used, null = no limit). Counts are drivers, each
+ * once: expired/far = the larger of the kinds looked at (same nearby drivers), busy = the sum over the sends (Both sends
+ * Exclusive and Radar to different drivers). */
 export type MoneySend = { exclusiveTo: string | null; radarTo: string[]; skipped: { expired: number; busy: number; far: number }; reachKm: number | null };
 
 /**
