@@ -17889,6 +17889,14 @@ components:
           - SE
           - FR
           - TN
+        rev:
+          type: integer
+          minimum: 1
+          description: Read only.
+        expectedRev:
+          type: integer
+          minimum: 1
+          description: 'PUT only: the rev read.'
         replies:
           type: array
           items:

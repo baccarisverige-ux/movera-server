@@ -33,6 +33,12 @@ afterAll(async () => {
   await osrm.close();
 });
 
+/** Checker LOW: a save carries the rev it read (the owner's read, so another admin's refusal still shows). */
+async function putSettings(who: Admin, body: Json) {
+  const current = await owner.get(`/admin/support/settings?country=${String(body["country"] ?? "SE")}`);
+  return who.put("/admin/support/settings", { ...body, expectedRev: current.body["rev"] });
+}
+
 const open = async (body: Json = {}) => {
   const res = await rider.post("/support/tickets", { tripId, category: "ride_dispute", subject: "Charged too much", text: "Long way.", ...body });
   expect(res.status).toBe(201);
@@ -157,11 +163,11 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
     expect((await rider.get("/support/topics")).body).toEqual({ country: "SE", topics: ["ride_dispute", "help", "lost_item", "payment", "account", "safety", "other"] });
     const topics = se.body["topics"].map((t: Json) => (t["code"] === "lost_item" ? { ...t, on: false } : t));
     const support = await sim.admin("support");
-    expect((await support.put("/admin/support/settings", { ...se.body, topics })).status).toBe(403);
+    expect((await putSettings(support, { ...se.body, topics })).status).toBe(403);
     const france = await sim.admin("config", ["FR-PC"]);
-    expect((await france.put("/admin/support/settings", { ...se.body, topics })).body["reason"]).toBe("zone_out_of_scope");
+    expect((await putSettings(france, { ...se.body, topics })).body["reason"]).toBe("zone_out_of_scope");
     expect((await (await sim.admin("support", ["FR-PC"])).get("/admin/support/settings?country=SE")).body["reason"]).toBe("zone_out_of_scope");
-    const saved = await owner.put("/admin/support/settings", { ...se.body, topics });
+    const saved = await putSettings(owner, { ...se.body, topics });
     expect(saved.status).toBe(200);
     expect(saved.body).toMatchObject({ updatedBy: owner.id });
     expect((await rider.get("/support/topics")).body["topics"]).not.toContain("lost_item");
@@ -169,10 +175,12 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
     const off = await rider.post("/support/tickets", { category: "lost_item", subject: "Bag", text: "Left my bag" });
     expect(off.status).toBe(400);
     expect(off.body["reason"]).toBe("topic_off");
-    expect((await owner.put("/admin/support/settings", { ...se.body, topics: topics.map((t: Json) => ({ ...t, on: false })) })).body["reason"]).toBe("topics_required");
-    expect((await owner.put("/admin/support/settings", { ...se.body, topics: topics.slice(1) })).status).toBe(400);
+    expect((await putSettings(owner, { ...se.body, topics: topics.map((t: Json) => ({ ...t, on: false })) })).body["reason"]).toBe("topics_required");
+    expect((await putSettings(owner, { ...se.body, topics: topics.slice(1) })).status).toBe(400);
+    // Checker LOW: a stale revision is refused.
+    expect((await owner.put("/admin/support/settings", { ...se.body, expectedRev: 1 })).body["code"]).toBe("version_mismatch");
     expect(await audited()).toBe(auditBefore + 1);
-    await owner.put("/admin/support/settings", se.body);
+    await putSettings(owner, se.body);
   });
 });
 
@@ -218,14 +226,14 @@ describe("owner \"Yes\": ready replies per language in Support settings", () => 
     const se = (await owner.get("/admin/support/settings?country=SE")).body;
     expect(se["replies"]).toEqual([]);
     const replies = [{ id: "hello-sv", lang: "sv", title: "Första svar", text: " Hej! Vi tittar på det nu. " }, { id: "hello-en", lang: "en", title: "First answer", text: "Hi! We are looking at it now." }];
-    const saved = await owner.put("/admin/support/settings", { ...se, replies });
+    const saved = await putSettings(owner, { ...se, replies });
     expect(saved.body["replies"]).toEqual([{ ...replies[0], text: "Hej! Vi tittar på det nu." }, replies[1]]);
     const { replies: _left, ...withoutReplies } = saved.body;
-    expect((await owner.put("/admin/support/settings", withoutReplies)).body["replies"]).toHaveLength(2);
-    expect((await owner.put("/admin/support/settings", { ...se, replies: [replies[0], replies[0]] })).status).toBe(400);
-    expect((await owner.put("/admin/support/settings", { ...se, replies: [{ ...replies[0], lang: "de" }] })).status).toBe(400);
+    expect((await putSettings(owner, withoutReplies)).body["replies"]).toHaveLength(2);
+    expect((await putSettings(owner, { ...se, replies: [replies[0], replies[0]] })).status).toBe(400);
+    expect((await putSettings(owner, { ...se, replies: [{ ...replies[0], lang: "de" }] })).status).toBe(400);
     expect((await owner.get("/admin/support/settings?country=FR")).body["replies"]).toEqual([]);
-    await owner.put("/admin/support/settings", { ...se, replies: [] });
+    await putSettings(owner, { ...se, replies: [] });
   });
 });
 
@@ -235,19 +243,19 @@ describe("owner \"Yes, by topic\": new tickets land with the admin set for their
     const lostAgent = await sim.admin("support", ["Z001"]);
     const withAssign = (adminId: string) => se["topics"].map((x: Json) => (x["code"] === "lost_item" ? { ...x, assignTo: adminId } : x));
     const viewer = await sim.admin("viewer");
-    expect((await owner.put("/admin/support/settings", { ...se, topics: withAssign(viewer.id) })).body["reason"]).toBe("assignee_not_allowed");
-    expect((await owner.put("/admin/support/settings", { ...se, topics: withAssign(lostAgent.id) })).status).toBe(200);
+    expect((await putSettings(owner, { ...se, topics: withAssign(viewer.id) })).body["reason"]).toBe("assignee_not_allowed");
+    expect((await putSettings(owner, { ...se, topics: withAssign(lostAgent.id) })).status).toBe(200);
     const sorted = await open({ category: "lost_item" });
     expect((await owner.get(`/admin/tickets/${sorted}`)).body["assignedTo"]).toMatchObject({ adminId: lostAgent.id });
     const other = await open({ category: "payment" });
     expect((await owner.get(`/admin/tickets/${other}`)).body["assignedTo"]).toBeUndefined();
     const france = await sim.admin("support", ["FR-PC"]);
-    expect((await owner.put("/admin/support/settings", { ...se, topics: withAssign(france.id) })).body["reason"]).toBe("assignee_not_allowed");
+    expect((await putSettings(owner, { ...se, topics: withAssign(france.id) })).body["reason"]).toBe("assignee_not_allowed");
     const elsewhere = await sim.admin("support", ["Z002"]);
-    await owner.put("/admin/support/settings", { ...se, topics: withAssign(elsewhere.id) });
+    await putSettings(owner, { ...se, topics: withAssign(elsewhere.id) });
     const notCovered = await open({ category: "lost_item" });
     expect((await owner.get(`/admin/tickets/${notCovered}`)).body["assignedTo"]).toBeUndefined();
-    await owner.put("/admin/support/settings", se);
+    await putSettings(owner, se);
   });
 });
 
@@ -257,12 +265,12 @@ describe("owner: a person without a country gets it from the phone prefix", () =
     const newcomer = await sim.rider(1);
     await sim.db.updateTable("riders").set({ phone: "+33612345678" }).where("rider_id", "=", newcomer.id).execute();
     const fr = (await owner.get("/admin/support/settings?country=FR")).body;
-    await owner.put("/admin/support/settings", { ...fr, topics: fr["topics"].map((x: Json) => (x["code"] === "payment" ? { ...x, on: false } : x)) });
+    await putSettings(owner, { ...fr, topics: fr["topics"].map((x: Json) => (x["code"] === "payment" ? { ...x, on: false } : x)) });
     const topics = (await newcomer.get("/support/topics")).body;
     expect(topics["country"]).toBe("FR");
     expect(topics["topics"]).not.toContain("payment");
     expect((await newcomer.post("/support/tickets", { category: "payment", subject: "x", text: "x" })).body["reason"]).toBe("topic_off");
-    await owner.put("/admin/support/settings", fr);
+    await putSettings(owner, fr);
   });
 });
 

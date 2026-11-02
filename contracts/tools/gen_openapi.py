@@ -408,7 +408,7 @@ S["SupportTopicSetting"] = obj({"code": s(enum=C["support"]["categories"]), "on"
                                ["code", "on", "firstReplyMin", "solveHours"])
 S["SupportReply"] = obj({"id": s(pattern="^[A-Za-z0-9_-]{1,40}$"), "lang": s(enum=["sv", "fr", "en"]), "title": s(minLength=1, maxLength=80), "text": s(minLength=1, maxLength=2000)},
                        ["id", "lang", "title", "text"], "v0.18.15: " + SD["settings"]["replies"])
-S["SupportSettings"] = obj({"country": s(enum=SD["settings"]["countries"]), "replies": arr(ref("SupportReply"), maxItems=100), "topics": arr(ref("SupportTopicSetting"), minItems=1),
+S["SupportSettings"] = obj({"country": s(enum=SD["settings"]["countries"]), "rev": i(minimum=1, description="Read only."), "expectedRev": i(minimum=1, description="PUT only: the rev read."), "replies": arr(ref("SupportReply"), maxItems=100), "topics": arr(ref("SupportTopicSetting"), minItems=1),
                             "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")},
                            ["country", "topics"], "v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).")
 AD = C["alertDesk"]

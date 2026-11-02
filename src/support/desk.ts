@@ -16,7 +16,7 @@ import { isAdminRole, permissionsOf } from "../admin/permissions.js";
 type TopicSetting = { code: string; on: boolean; firstReplyMin: number; solveHours: number; assignTo?: string | undefined };
 /** v0.18.15 (owner "Yes"): a ready reply in one language. */
 export type ReadyReply = { id: string; lang: "sv" | "fr" | "en"; title: string; text: string };
-export type SupportSettings = { country: string; replies: ReadyReply[]; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
+export type SupportSettings = { country: string; rev: number; replies: ReadyReply[]; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
 
 const DESK = (contract as unknown as {
   supportDesk: { settings: { countries: string[]; defaults: { replies: ReadyReply[]; topics: TopicSetting[] } }; caseIncidentKind: string };
@@ -26,16 +26,17 @@ const CATEGORIES: readonly string[] = (contract as unknown as { support: { categ
 
 export function defaultSettings(country: string): SupportSettings {
   const d = DESK.settings.defaults;
-  return { country, replies: d.replies.map((r) => ({ ...r })), topics: d.topics.map((t) => ({ ...t })) };
+  return { country, rev: 1, replies: d.replies.map((r) => ({ ...r })), topics: d.topics.map((t) => ({ ...t })) };
 }
 
 /** A saved document over the defaults: every contract topic once, in the contract order. */
-function merged(country: string, doc: unknown, updatedAt?: Date, updatedBy?: string | null): SupportSettings {
+function merged(country: string, doc: unknown, rev: number, updatedAt?: Date, updatedBy?: string | null): SupportSettings {
   const base = defaultSettings(country);
   const raw = (doc && typeof doc === "object" ? doc : {}) as Partial<SupportSettings>;
   const saved = new Map((Array.isArray(raw.topics) ? raw.topics : []).map((t) => [t.code, t]));
   return {
     country,
+    rev,
     replies: Array.isArray(raw.replies) ? raw.replies : base.replies,
     topics: base.topics.map((t) => ({ ...t, ...(saved.get(t.code) ?? {}), code: t.code })),
     ...(updatedAt ? { updatedAt: updatedAt.toISOString() } : {}),
@@ -46,7 +47,7 @@ function merged(country: string, doc: unknown, updatedAt?: Date, updatedBy?: str
 export async function settingsOf(ex: Executor, country: string | null): Promise<SupportSettings> {
   const c = country ?? "SE";
   const row = await ex.selectFrom("support_settings").selectAll().where("country", "=", c).executeTakeFirst();
-  return row ? merged(c, row.doc, row.updated_at, row.updated_by) : defaultSettings(c);
+  return row ? merged(c, row.doc, row.rev, row.updated_at, row.updated_by) : defaultSettings(c);
 }
 
 export async function countryOfZone(ex: Executor, zoneId: string | null): Promise<string | null> {
@@ -69,7 +70,7 @@ export async function adminGetSettings(ex: Executor, who: Principal, country: st
   return settingsOf(ex, country);
 }
 
-export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; topics: TopicSetting[]; replies?: ReadyReply[] | undefined }, now: Date): Promise<SupportSettings> {
+export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; expectedRev: number; topics: TopicSetting[]; replies?: ReadyReply[] | undefined }, now: Date): Promise<SupportSettings> {
   if (!(await coversCountry(trx, who, body.country))) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
   const codes = body.topics.map((t) => t.code);
   if (new Set(codes).size !== codes.length || codes.some((c) => !CATEGORIES.includes(c)) || codes.length !== CATEGORIES.length) {
@@ -84,6 +85,9 @@ export async function adminPutSettings(trx: Trx, who: Principal, body: { country
     const inCountry = zones.includes("*") || (zones.length > 0 && (await trx.selectFrom("zones").select("zone_id").where("country", "=", body.country).where("zone_id", "in", zones).executeTakeFirst()) !== undefined);
     if (!admin || !admin.active || !inCountry || !(isAdminRole(admin.role) ? permissionsOf(admin.role) : []).includes("support.reply")) throw badRequest("That admin cannot get support tickets in this country.", "assignee_not_allowed");
   }
+  await trx.insertInto("support_settings").values({ country: body.country, doc: JSON.stringify({}), updated_at: now, updated_by: null }).onConflict((oc) => oc.column("country").doNothing()).execute();
+  const locked = await trx.selectFrom("support_settings").select("rev").where("country", "=", body.country).forUpdate().executeTakeFirstOrThrow();
+  if (locked.rev !== body.expectedRev) throw new ApiError("version_mismatch", "Someone saved the support settings first. Load them again.");
   const before = await settingsOf(trx, body.country);
   const replies = body.replies ?? before.replies;
   if (new Set(replies.map((r) => r.id)).size !== replies.length) throw badRequest("Every ready reply needs its own id.", "invalid_body");
@@ -91,7 +95,7 @@ export async function adminPutSettings(trx: Trx, who: Principal, body: { country
   await trx
     .insertInto("support_settings")
     .values({ country: body.country, doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId })
-    .onConflict((oc) => oc.column("country").doUpdateSet({ doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId }))
+    .onConflict((oc) => oc.column("country").doUpdateSet({ doc: JSON.stringify(doc), rev: locked.rev + 1, updated_at: now, updated_by: who.subjectId }))
     .execute();
   await audit(trx, { adminId: who.subjectId, action: "support.settings", targetType: "support_settings", targetId: body.country, detail: { before: { replies: before.replies, topics: before.topics }, after: doc }, at: now });
   return settingsOf(trx, body.country);

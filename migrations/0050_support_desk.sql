@@ -17,6 +17,7 @@ CREATE INDEX IF NOT EXISTS support_tickets_assigned ON support_tickets (assigned
 -- Admin › Support › Settings per country (never saved = contract.json#supportDesk.settings.defaults).
 CREATE TABLE IF NOT EXISTS support_settings (
   country     text PRIMARY KEY CHECK (country ~ '^[A-Z]{2}$'),
+  rev         integer NOT NULL DEFAULT 1,
   doc         jsonb NOT NULL,
   updated_at  timestamptz NOT NULL,
   updated_by  text

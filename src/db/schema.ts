@@ -835,6 +835,7 @@ export interface SupportTicketsTable {
 /** v0.18.15 (migration 0049): Admin › Support › Settings per country. */
 export interface SupportSettingsTable {
   country: string;
+  rev: Generated<number>;
   doc: ColumnType<unknown, string, string>;
   updated_at: Timestamp;
   updated_by: string | null;
