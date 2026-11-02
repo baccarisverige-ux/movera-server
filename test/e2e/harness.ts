@@ -1,3 +1,4 @@
+import { TEST_CODE } from "../../src/auth/service.js";
 import { DISPATCH_EVENTS_CHANNEL } from "../../src/dispatch/feed.js";
 import { pricingHandlers } from "../../src/pricing/surge.js";
 import { randomBytes } from "node:crypto";
@@ -156,7 +157,7 @@ export class Sim {
   async signIn(phone: string, appName: "rider" | "driver"): Promise<Session> {
     const challenge = await this.request("POST", "/auth/otp/request", undefined, { phone, app: appName }, { key: null });
     if (challenge.status !== 200 && challenge.status !== 201) throw new Error(`otp request ${challenge.status} ${JSON.stringify(challenge.body)}`);
-    const verify = await this.request("POST", "/auth/otp/verify", undefined, { phone, sessionId: challenge.body["sessionId"], code: "1234" }, { key: null });
+    const verify = await this.request("POST", "/auth/otp/verify", undefined, { phone, sessionId: challenge.body["sessionId"], code: TEST_CODE }, { key: null });
     if (verify.status !== 200) throw new Error(`otp verify ${verify.status} ${JSON.stringify(verify.body)}`);
     return { accessToken: verify.body["accessToken"], refreshToken: verify.body["refreshToken"] };
   }

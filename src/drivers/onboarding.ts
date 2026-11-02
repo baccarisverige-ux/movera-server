@@ -113,7 +113,10 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
   if (country === undefined || !country.open) throw badRequest(`Movera is not open in ${d.country} yet.`, "country_not_open");
   const city = cityOf(d.country, d.cityId);
   if (city === undefined) throw badRequest("Choose a city of your country.", "invalid_city");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(d.dateOfBirth) || Number.isNaN(new Date(d.dateOfBirth).getTime())) throw badRequest("The date of birth is not a date.", "invalid_date_of_birth");
+  // Deep fix 2026-11-02 (g1-g3 M7): a day that does not exist (2001-02-31 rolled to 3 March) or a year before 1900 is
+  // 400 invalid_date_of_birth, never a server error.
+  const born = new Date(`${d.dateOfBirth}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d.dateOfBirth) || Number.isNaN(born.getTime()) || born.toISOString().slice(0, 10) !== d.dateOfBirth || born.getUTCFullYear() < 1900) throw badRequest("The date of birth is not a date.", "invalid_date_of_birth");
   if (ageAt(d.dateOfBirth, now) < ONBOARDING.minAge) throw badRequest(`Drivers must be at least ${ONBOARDING.minAge}.`, "under_age");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email)) throw badRequest("The e-mail is not valid.", "invalid_email");
   if (d.accountType === "fleet" && d.company === undefined) throw badRequest("A fleet account names its company.", "company_required");

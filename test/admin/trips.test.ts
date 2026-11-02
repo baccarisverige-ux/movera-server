@@ -358,6 +358,17 @@ describe("admin trip commands", () => {
 describe("refunds and the wallet", () => {
   beforeEach(clearFees);
 
+  it("deep fix (g7-g9 M1): with an old debt on the fare, the driver's share is min(refund, fare − debt) × earnings ÷ (fare − debt); the rider gets a refund notice", async () => {
+    const { tripId, version } = await completedTrip();
+    // 318 kr = 78 kr ride + 240 kr old fee collected; driver earnings 57 kr.
+    await database.db.updateTable("trips").set({ fare_minor: 31800, cash_collected_minor: 31800, driver_earnings_minor: 5700, fare_lines: JSON.stringify([{ code: "base", amount: { amountMinor: 7800, currency: "SEK" } }, { code: "outstanding_fee", amount: { amountMinor: 24000, currency: "SEK" } }]) }).where("trip_id", "=", tripId).execute();
+    const res = await adminPost(`/trips/${tripId}/refund`, { expectedVersion: version, amount: { amountMinor: 7800, currency: "SEK" }, reason: "Ride refunded", fromDriver: true });
+    expect(res.statusCode, res.body).toBe(201);
+    // Fail-before: 7800 × 5700 / 31800 = 1398.
+    expect((await entries(tripId)).find((e) => e.kind === "adjustment")?.amount_minor).toBe("-5700");
+    expect(await database.db.selectFrom("notifications").select("kind").where("trip_id", "=", tripId).where("kind", "=", "refund").execute()).toHaveLength(1);
+  });
+
   it("refund taken from the driver; the rider keeps it in the wallet; the next ride uses the wallet first", async () => {
     const { tripId, version } = await completedTrip();
     const res = await adminPost(`/trips/${tripId}/refund`, { expectedVersion: version, amount: { amountMinor: 5000, currency: "SEK" }, reason: "Long detour", fromDriver: true });

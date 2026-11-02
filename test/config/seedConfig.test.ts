@@ -29,14 +29,17 @@ describe("sample settings", () => {
     const open = await database.db.selectFrom("zones").select(["zone_id", "country"]).where("open", "=", true).execute();
     const countries = [...new Set(open.map((z) => z.country))].sort();
     const first = await database.db.transaction().execute((trx) => seedSampleConfig(trx, now));
-    expect(first).toHaveLength(countries.length * 4);
+    expect(first).toHaveLength(countries.length * 5);
     for (const country of countries) {
       const docs = first.filter((p) => p.zoneId === `standard-${country}`).map((p) => p.doc).sort();
-      expect(docs).toEqual(["dispatch", "driver_app_config", "pricing", "rider_app_config"]);
+      // Deep fix 2026-11-02: the country rules are seeded too (admin GET was 404 for SE / FR).
+      expect(docs).toEqual(["country_rules", "dispatch", "driver_app_config", "pricing", "rider_app_config"]);
     }
-    const live = await database.db.selectFrom("config_live").select(["zone_id", "document"]).execute();
+    const fr = await database.db.selectFrom("config_live").select("document").where("doc", "=", "country_rules").where("zone_id", "=", "standard-FR").executeTakeFirstOrThrow();
+    expect(fr.document).toMatchObject({ country: "FR", currency: "EUR", tips: [{ amount: { amountMinor: 100, currency: "EUR" } }, { amount: { amountMinor: 200, currency: "EUR" } }, { amount: { amountMinor: 500, currency: "EUR" } }] });
+    const live = await database.db.selectFrom("config_live").select(["doc", "zone_id", "document"]).execute();
     expect(live.every((row) => row.zone_id.startsWith("standard-"))).toBe(true);
-    for (const row of live) expect((row.document as { zoneId: string }).zoneId).toBe(row.zone_id);
+    for (const row of live) if (row.doc !== "country_rules") expect((row.document as { zoneId: string }).zoneId).toBe(row.zone_id);
     expect(await database.db.transaction().execute((trx) => seedSampleConfig(trx, now))).toEqual([]);
   });
 

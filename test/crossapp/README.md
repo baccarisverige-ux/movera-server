@@ -11,7 +11,7 @@ the audit run: `docs/audit/phase-3-crossapp.md`.
 pg_ctlcluster 16 main start
 psql -U postgres -c 'create database movera_crossapp owner movera'
 
-# 2. The server (staging: test accounts, code 1234, sample settings, bootstrap admin)
+# 2. The server (staging: test accounts, the fixed test code (contract.json#auth.testSignIn), sample settings, bootstrap admin)
 MOVERA_ENV=staging HOST=127.0.0.1 PORT=8080 \
 DATABASE_URL=postgres://movera:movera@127.0.0.1:5432/movera_crossapp \
 JWT_SECRET=$(openssl rand -hex 32) SEED_TEST_ON_START=true \

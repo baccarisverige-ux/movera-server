@@ -139,12 +139,28 @@ export function priceFare(doc: PricingDocument, input: FareInput): Fare {
   let waitLines = 0n;
 
   if (ee) {
-    // Never above the booked fare: lower the ride part so ride + app fee + pickup fee is exactly the booked fare.
-    const cap = amt(ee.bookedFare).sub(fee).div(Frac.ONE.add(pct));
+    // Deep fix 2026-11-02 (P2-H1): what was earned before the early end stays — the paid pickup waiting, the child seat,
+    // the pickup airport fee and the reservation fee. The drop-off airport fee is not earned (the drop-off was not reached).
+    const w = Frac.of(input.waitingChargedSeconds ?? 0).div(Frac.of(60)).mul(amt(input.waitingPerMin ?? cat.waiting.perMin));
+    const airportPickup = input.pickupInAirportZone ? amt(doc.fees.airportPickup) : Frac.ZERO;
+    const airportDropoff = input.dropoffInAirportZone ? amt(doc.fees.airportDropoff) : Frac.ZERO;
+    const reservation = input.kind === "scheduled" ? amt(doc.fees.reservationFee) : Frac.ZERO;
+    // The booked fare carried the seat, both airport fees and the reservation fee: the ride part's cap leaves them out.
+    const bookedExtras = seat.add(airportPickup).add(airportDropoff).add(reservation);
+    // Never above the booked fare: lower the ride part so ride + booked extras + app fee + pickup fee is the booked fare.
+    const cap = Frac.max(Frac.ZERO, amt(ee.bookedFare).sub(fee).div(Frac.ONE.add(pct)).sub(bookedExtras));
     if (ride.cmp(cap) > 0) {
       add("maximum_adjust", cap.sub(ride));
       ride = cap;
     }
+    for (const [code, value] of [["waiting", w], ["extras", seat], ["airport", airportPickup], ["reservation_fee", reservation]] as Array<[string, Frac]>) {
+      if (value.cmp(Frac.ZERO) > 0) {
+        add(code, value);
+        extras = extras.add(value);
+      }
+    }
+    waiting = w;
+    waitLines = w.halfUp();
   } else {
     const stops = input.stopWaitSeconds ?? [];
     const w = Frac.of(input.waitingChargedSeconds ?? 0).div(Frac.of(60)).mul(amt(input.waitingPerMin ?? cat.waiting.perMin));

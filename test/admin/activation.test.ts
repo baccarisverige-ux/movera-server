@@ -123,3 +123,13 @@ describe("a car's documents", () => {
     expect(after instanceof ApiError ? after.options.reason : "passed").not.toBe("vehicle_documents_not_approved");
   });
 });
+
+describe("deep fix 2026-11-02 (g1-g3 M4)", () => {
+  it("a driver who never sent his details (no country) cannot be activated: 409 details_missing (fail-before: activated)", async () => {
+    const id = await insertDriver(database.db);
+    await database.db.updateTable("drivers").set({ country: null, zone_ids: ["Z001"], account_status: "pending" }).where("driver_id", "=", id).execute();
+    const res = await setStatus(id, "active");
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ reason: "details_missing" });
+  });
+});

@@ -18,12 +18,13 @@ import { driverDocumentFile, listDocuments, uploadDocument, type Upload } from "
 import type { DocumentKey } from "../documents/files.js";
 import { ONBOARDING } from "./onboardingRules.js";
 import { riderDriverPhoto } from "../trips/driverPhoto.js";
+import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
 export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date };
 
-/** Document uploads a driver may start per hour (every required document of a fleet with several cars, plus retries). */
+/** Document uploads a driver may start per hour by default (deep fix 2026-11-02: admin CountryRules.limits.uploadsPerHour). */
 export const UPLOADS_PER_HOUR = 30;
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
@@ -170,8 +171,10 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     // Audit Phase 4 (P4-2): at most UPLOADS_PER_HOUR uploads per driver, counted before the file is read.
     const since = new Date(now().getTime() - 3600_000);
     const recent = await deps.db.selectFrom("document_upload_attempts").select("at").where("driver_id", "=", who.subjectId).where("at", ">", since).orderBy("at").execute();
-    if (recent.length >= UPLOADS_PER_HOUR) {
-      const retry = Math.max(1, Math.ceil((recent[recent.length - UPLOADS_PER_HOUR]!.at.getTime() + 3600_000 - now().getTime()) / 1000));
+    const driver = await deps.db.selectFrom("drivers").select(["country", "phone"]).where("driver_id", "=", who.subjectId).executeTakeFirst();
+    const perHour = (await countryLimitsFor(deps.db, driver?.country ?? (driver ? countryOfPhone(driver.phone) : null))).uploadsPerHour;
+    if (recent.length >= perHour) {
+      const retry = Math.max(1, Math.ceil((recent[recent.length - perHour]!.at.getTime() + 3600_000 - now().getTime()) / 1000));
       throw new ApiError("rate_limited", "Too many uploads; try again later.", { reason: "upload_limit", retryAfterSeconds: retry });
     }
     await deps.db.insertInto("document_upload_attempts").values({ driver_id: who.subjectId, at: now() }).execute();

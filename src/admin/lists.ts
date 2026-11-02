@@ -1,3 +1,4 @@
+import { isTestDriver } from "../drivers/readiness.js";
 import { sql } from "kysely";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import type { Executor, Trx } from "../db/db.js";
@@ -212,6 +213,10 @@ export async function setDriverStatus(trx: Trx, who: Principal, driverId: string
   if (!row.zone_ids.some((z) => adminCoversZone(who, z)) && !who.zones.includes("*")) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin", now) });
   if (body.accountStatus === "active" && row.account_status !== "active") {
+    // Deep fix 2026-11-02 (g1-g3 M4): a driver who never sent his details (no country, no name) cannot be activated.
+    if (row.country === null && !(await isTestDriver(trx, driverId))) {
+      throw new ApiError("invalid_transition", "The driver has not sent his details yet.", { reason: "details_missing", projection: await driverView(trx, row, "admin", now) });
+    }
     const missing = await activationBlockers(trx, row, now);
     if (missing.length > 0) throw new ApiError("documents_not_approved", "The driver's required documents are not all approved.", { details: missing });
   }

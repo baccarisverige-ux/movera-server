@@ -109,6 +109,8 @@ export async function legalForApps(ex: Executor, country: string, zoneId?: strin
     reacceptFrom: await reacceptFrom(ex, country),
     terms: fillDoc(live.terms, live.company, waiting),
     privacy: fillDoc(live.privacy, live.company),
+    // v0.18.14 (g1-g3 M3, "Need help?" on sign-in): the company and support details the admin set in Content › Legal.
+    company: live.company,
   };
 }
 

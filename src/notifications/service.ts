@@ -25,13 +25,22 @@ type NotificationRow = {
   created_at: Date;
 };
 
-export function notificationView(row: NotificationRow) {
+/**
+ * Deep fix 2026-11-02 (live sweep: "old texts stay Swedish"): a notice that carries data.texts { title, body } in every
+ * language is shown in the reader's language now; others as written.
+ */
+export function notificationView(row: NotificationRow, language?: string | null) {
+  const texts = (row.data as { texts?: { title?: Record<string, string>; body?: Record<string, string> } }).texts;
+  const lang = language && texts?.title?.[language] ? language : null;
+  const { texts: _t, ...data } = row.data as Record<string, unknown>;
+  void _t;
+  row = { ...row, data };
   return {
     notificationId: row.notification_id,
     audience: row.audience,
     kind: row.kind,
-    title: row.title,
-    body: row.body,
+    title: lang ? texts!.title![lang]! : row.title,
+    body: lang && texts?.body?.[lang] ? texts.body[lang]! : row.body,
     at: row.created_at.toISOString(),
     read: row.read_at !== null,
     ...(row.trip_id ? { tripId: row.trip_id } : {}),
@@ -109,8 +118,11 @@ export async function listNotifications(ex: Executor, who: { audience: Audience;
   const rows = await q.orderBy("created_at", "desc").orderBy("notification_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit) as unknown as NotificationRow[];
   const last = page[page.length - 1];
+  const person = who.audience === "rider"
+    ? await ex.selectFrom("riders").select("language").where("rider_id", "=", who.subjectId).executeTakeFirst()
+    : await ex.selectFrom("drivers").select("language").where("driver_id", "=", who.subjectId).executeTakeFirst();
   return {
-    items: page.map(notificationView),
+    items: page.map((r) => notificationView(r, person?.language)),
     nextCursor: rows.length > input.limit && last ? Buffer.from(`${last.created_at.toISOString()}|${last.notification_id}`).toString("base64url") : null,
   };
 }

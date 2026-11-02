@@ -1,3 +1,4 @@
+import { TEST_CODE } from "../../src/auth/service.js";
 import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -28,7 +29,7 @@ const quote = (payload: unknown, headers: Record<string, string> = rider, key = 
 
 async function signIn(phone: string, appName: "rider" | "driver") {
   const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone, app: appName } });
-  const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: "1234" } });
+  const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: TEST_CODE } });
   return { authorization: `Bearer ${verify.json().accessToken}` };
 }
 

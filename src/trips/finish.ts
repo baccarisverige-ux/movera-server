@@ -91,7 +91,9 @@ export async function checkPaymentMethod(ex: Executor, zoneId: string, method: s
 export async function tipAmountsFor(ex: Executor, zoneId: string, currency: string): Promise<number[]> {
   const doc = await liveDocument<{ tips?: Array<{ amount?: Money; enabled?: boolean }> }>(ex, "rider_app_config", zoneId);
   const tips = doc?.document.tips;
-  if (Array.isArray(tips)) return tips.filter((t) => t.enabled !== false && t.amount?.currency === currency).map((t) => Number(t.amount!.amountMinor));
+  // Deep fix 2026-11-02 (live sweep H-4, Paris tip not saved): a zone document whose tips are all in another currency
+  // (a Swedish copy) is not the zone's tips; the country's own amounts apply then.
+  if (Array.isArray(tips) && tips.some((t) => t.amount?.currency === currency)) return tips.filter((t) => t.enabled !== false && t.amount?.currency === currency).map((t) => Number(t.amount!.amountMinor));
   const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", zoneId).executeTakeFirst();
   return (C.configDefaults.countries[zone?.country ?? ""]?.tips ?? []).filter((t) => t.currency === currency).map((t) => t.amountMinor);
 }

@@ -400,11 +400,16 @@ describe("item 2: rider PIN before Start (per-zone admin switch, default off)", 
     void arrived;
   });
 
-  it("checker M4: a driver app before contract 0.18.8 (no X-Contract-Version) is not asked for the PIN", async () => {
+  it("deep fix 2026-11-02 (g4-g6 M1): leaving out or lowering X-Contract-Version never skips the PIN (fail-before: 200)", async () => {
     await publish("driver_app_config", "Z001", driverDoc({ pickupPin: { required: true } }));
     const { tripId, version } = await accepted();
     const arrived = await arriveAt(tripId, version);
-    expect((await step(tripId, "board", arrived.version, {}, { "x-contract-version": "0.18.7" })).statusCode).toBe(200);
+    const old = await step(tripId, "board", arrived.version, {}, { "x-contract-version": "0.18.7" });
+    expect(old.statusCode).toBe(409);
+    expect(old.json()).toMatchObject({ reason: "pin_required" });
+    const pin = (await riderView(tripId)).pickupPin as string;
+    const right = await step(tripId, "board", arrived.version, { pin }, { "x-contract-version": "0.18.7" });
+    expect(right.statusCode, right.body).toBe(200);
   });
 
   it("checker L8: the rider's PIN is gone once the trip is over", async () => {

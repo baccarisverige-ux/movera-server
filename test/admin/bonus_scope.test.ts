@@ -278,9 +278,8 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
 });
 
 /**
- * Owner rule 16 (checker 2026-11-02): Add money's immediate send follows the zone's own dispatch settings — drivers of
- * the zone first (a closer neighbour-zone driver never beats a free in-zone one), a same-country neighbour only when no
- * in-zone driver is free, and never beyond limits.maxPickupKm. SE and FR.
+ * Owner 2026-11-02 (decisions/driver-g5.md, last entry): Add money's immediate send goes to the simply NEAREST free
+ * driver, a same-country neighbour-zone driver too when neighbours are on; never beyond limits.maxPickupKm. SE and FR.
  */
 describe.each(Object.entries(CASES))("admin money follows the zone's start/order limits (%s)", (name, c) => {
   const money = (amountMinor: number) => ({ amountMinor, currency: c.currency });
@@ -313,19 +312,19 @@ describe.each(Object.entries(CASES))("admin money follows the zone's start/order
     return tripId;
   }
 
-  it("a closer neighbour-zone driver vs a farther free in-zone driver: the in-zone driver gets the Exclusive", async () => {
+  it("a closer neighbour-zone driver vs a farther free in-zone driver: the closer neighbour gets the Exclusive (fail-before: the in-zone one)", async () => {
     const tripId = await withNeighbourA();
     const res = await bonusPost(tripId, { amount: money(700), applyTo: "exclusive" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.B.id, radarTo: [], skipped: { expired: 0, busy: 0, far: 0 }, reachKm: 8 });
-    expect(await offersOf("A")).toHaveLength(0);
+    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.A.id, radarTo: [], skipped: { expired: 0, busy: 0, far: 0 }, reachKm: 8 });
+    expect(await offersOf("B")).toHaveLength(0);
   });
 
-  it("Radar list: in-zone drivers only while one is free", async () => {
+  it("Radar list: every free driver nearest first, the neighbour too", async () => {
     const tripId = await withNeighbourA();
     const res = await bonusPost(tripId, { amount: money(700), applyTo: "radar" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [drivers.B.id], skipped: { expired: 0, busy: 0, far: 0 }, reachKm: 8 });
+    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [drivers.A.id, drivers.B.id], skipped: { expired: 0, busy: 0, far: 0 }, reachKm: 8 });
   });
 
   it("no in-zone driver free: the neighbour-zone driver gets the Exclusive", async () => {

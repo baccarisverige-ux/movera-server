@@ -142,6 +142,9 @@ describe("scenario 8: duplicates, races, delayed and out-of-order events, reconn
     await sim.advance(31);
     const riderAgain = await sim.rider(0);
     const driverAgain = await sim.driver(1, null);
+    // v0.18.14 (one phone at a time): the new sign-in ended the old phone's session; the old one says why.
+    expect((await a.get("/driver/profile")).body).toMatchObject({ reason: "signed_in_elsewhere" });
+    a.session = driverAgain.session;
     const active = await riderAgain.get("/rider/trips/active");
     expect(active.status).toBe(200);
     expect(active.body).toMatchObject({ tripId, status: "arrived" });

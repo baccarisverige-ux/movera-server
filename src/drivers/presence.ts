@@ -27,7 +27,9 @@ const lang = (language: string | null | undefined) => (language === "sv" || lang
 
 /** The zone's noFixMinutes (0 = never); the contract default when the document has none or a bad value. */
 export async function noFixMinutes(ex: Executor, zoneId: string): Promise<number> {
-  const doc = await liveDocument<{ offers?: { autoOffline?: { noFixMinutes?: unknown } } }>(ex, "driver_app_config", zoneId);
+  const doc = await liveDocument<{ offers?: { autoOffline?: { noFixMinutes?: unknown; on?: unknown } } }>(ex, "driver_app_config", zoneId);
+  // v0.18.14 (g1-g3 M8): autoOffline.on false switches the no-position rule off too.
+  if (doc?.document.offers?.autoOffline?.on === false) return 0;
   const value = doc?.document.offers?.autoOffline?.noFixMinutes;
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : DEFAULT_NO_FIX_MINUTES;
 }
@@ -64,7 +66,8 @@ export async function setOfflineWithoutPosition(trx: Trx, now: Date): Promise<st
     .execute();
   const done: string[] = [];
   for (const r of rows) {
-    const zoneId = r.zone_ids[0] ?? r.fixZone ?? null;
+    // v0.18.14 (g1-g3 M9): the zone he is in now (his latest position's) decides, else his first home zone.
+    const zoneId = r.fixZone ?? r.zone_ids[0] ?? null;
     const minutes = zoneId ? await noFixMinutes(trx, zoneId) : DEFAULT_NO_FIX_MINUTES;
     if (minutes === 0) continue;
     const last = r.received_at ?? r.online_since;

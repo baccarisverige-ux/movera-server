@@ -444,7 +444,7 @@ describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTr
     await step(tripId, "arrive", version + 1);
     expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
     const rows = await database.db.selectFrom("notifications").select(["title", "bell", "audience", "body"]).where("trip_id", "=", tripId).where("kind", "=", "trip_update").orderBy("created_at").execute();
-    expect(rows[0]).toMatchObject({ title: "Chauffeur trouvé", bell: false, audience: "rider", body: "Driver A est en route vers vous." });
+    expect(rows[0]).toMatchObject({ title: "Chauffeur trouvé", bell: true, audience: "rider", body: "Driver A est en route vers vous." });
     const trip = await riderView(tripId);
     await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
     expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
@@ -462,14 +462,15 @@ describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTr
     await database.db.updateTable("riders").set({ language: null }).execute();
   });
 
-  it("the rider's setting: rideUpdates off → no trip pushes", async () => {
+  it("owner G13: rideUpdates off stops only 'driver found' and 'arriving'; 'driver arrived' is always sent (fail-before: none)", async () => {
     await database.db.updateTable("riders").set({ consents: JSON.stringify({ rideUpdates: false }) }).execute();
     try {
       const { tripId, version } = await accepted();
       await step(tripId, "head-to-pickup", version);
       await moveTo("A", NORRMALM);
       await step(tripId, "arrive", version + 1);
-      expect(await pushes(tripId)).toEqual([]);
+      const sent = await database.db.selectFrom("notifications").select("data").where("trip_id", "=", tripId).where("kind", "=", "trip_update").execute();
+      expect(sent.map((r) => (r.data as { moment: string }).moment)).toEqual(["driver_arrived"]);
     } finally {
       await database.db.updateTable("riders").set({ consents: JSON.stringify({}) }).execute();
     }
