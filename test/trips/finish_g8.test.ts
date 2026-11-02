@@ -268,6 +268,17 @@ describe("builder questions resolved: tip rules and one early-end rule", () => {
     expect((await call(app, "POST", `/trips/${trip.tripId}/tip`, rider, { amount: { amountMinor: 300, currency: "EUR" }, method: "cash" })).statusCode).toBe(201);
   });
 
+  it("live G8 5a: tip rules saved without a max are served whole with the country max, so Other amount shows (SE and FR)", async () => {
+    await publish("rider_app_config", "Z001", { ...sample("rider_app_config"), tipRules: { customAmount: true } });
+    const se = (await call(app, "GET", "/rider/config?zoneId=Z001", rider)).json();
+    expect(se.tipRules).toEqual({ cashAfterTrip: false, cashInCarMinutes: 5, customAmount: true, customMax: { amountMinor: 20000, currency: "SEK" } });
+    await publish("rider_app_config", "FR-PC", { ...inParis(sample("rider_app_config")), tips: FR_TIPS, tipRules: { customAmount: true } });
+    const fr = (await call(app, "GET", "/rider/config?zoneId=FR-PC", rider)).json();
+    expect(fr.tipRules).toEqual({ cashAfterTrip: false, cashInCarMinutes: 5, customAmount: true, customMax: { amountMinor: 2000, currency: "EUR" } });
+    await publish("rider_app_config", "Z001", riderDoc());
+    await publish("rider_app_config", "FR-PC", riderDoc({}, true));
+  });
+
   it("driver cancel with the rider on board, 450 m short after the booked time → booked price (same 2 km / 8 min rule)", async () => {
     const trip = await accepted();
     const booked = (await view(trip.tripId, rider)).fare.amountMinor;
