@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
+import { markSetOffline } from "../../src/drivers/offlineReason.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -145,5 +146,23 @@ describe("profile and cars", () => {
     expect(car.json()).toMatchObject({ status: "pending", plate: "XYZ 789" });
     const taken = await call(app, "POST", "/driver/vehicles", driver, { make: "Kia", model: "Niro", year: 2022, color: "White", plate: "XYZ789", seats: 4 });
     expect(taken.json()).toMatchObject({ reason: "plate_taken" });
+  });
+});
+
+describe("the driver's app language (contract v0.18.12, G9 live 2026-11-02)", () => {
+  it("is saved to the account by PATCH /driver/profile and server notices follow it", async () => {
+    const me = await profile();
+    const bad = await call(app, "PATCH", "/driver/profile", driver, { expectedVersion: me.version, language: "de" });
+    expect(bad.statusCode).toBe(400);
+    const ok = await call(app, "PATCH", "/driver/profile", driver, { expectedVersion: me.version, language: "fr" });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ language: "fr" });
+    expect(await profile()).toMatchObject({ language: "fr" });
+    await database.db.transaction().execute((trx) => markSetOffline(trx, driverId, "no_position", {}, clock.now));
+    const notices = (await call(app, "GET", "/notifications", driver)).json() as { items: { kind: string; title: string }[] };
+    const offline = notices.items.find((n) => n.kind === "set_offline");
+    expect(offline?.title).toMatch(/hors ligne/i);
+    const back = await call(app, "PATCH", "/driver/profile", driver, { expectedVersion: (await profile()).version, language: "sv" });
+    expect(back.json()).toMatchObject({ language: "sv" });
   });
 });
