@@ -52,3 +52,13 @@ CREATE TABLE IF NOT EXISTS admin_alert_quiet (
   to_hm      text NOT NULL,
   updated_at timestamptz NOT NULL
 );
+
+-- Incidents settings (contract v0.18.15, contract.json#incidentDesk): the panel's incident settings document.
+CREATE TABLE IF NOT EXISTS admin_incident_settings (
+  id          integer PRIMARY KEY CHECK (id = 1),
+  rev         integer NOT NULL DEFAULT 1,
+  settings    jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at  timestamptz,
+  updated_by  text
+);
+INSERT INTO admin_incident_settings (id) VALUES (1) ON CONFLICT DO NOTHING;

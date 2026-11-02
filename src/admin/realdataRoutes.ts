@@ -12,6 +12,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearDispatch } from "../dispatch/feed.js";
 import { adminDeskCommand, adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets, writeOwnTicket, type DeskCommand } from "../support/tickets.js";
+import { incidentSettings, recordReport, saveIncidentSettings } from "../safety/incidentDesk.js";
 import { alertBook, alertCommand, alertHistory, saveDoc, setMute, setQuiet, type AlertCommand } from "./alerts.js";
 import { adminGetSettings, adminPutSettings, SUPPORT_COUNTRIES, topicsFor } from "../support/desk.js";
 import { kpis } from "./kpis.js";
@@ -271,6 +272,24 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const body = parseBody(z.object({ expectedRev: z.number().int().min(1), rules: z.array(z.record(z.string(), z.unknown())).max(200) }), request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveDoc(trx, who, "rules", body.expectedRev, body.rules, now()) }));
     return result.body;
+  });
+
+  /* ---- incidents settings and report (v0.18.15, contract.json#incidentDesk) */
+  app.get(`${API_PREFIX}/admin/incidents/settings`, async (request) => {
+    await authenticateAdmin(request, guard, "incidents.read");
+    return incidentSettings(deps.db);
+  });
+  app.put(`${API_PREFIX}/admin/incidents/settings`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "safety.edit");
+    const body = parseBody(z.object({ expectedRev: z.number().int().min(1), settings: z.record(z.string(), z.unknown()) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveIncidentSettings(trx, who, body, now()) }));
+    return result.body;
+  });
+  app.post(`${API_PREFIX}/admin/incidents/:incidentId/report`, async (request, reply) => {
+    const who = await authenticateAdmin(request, guard, "incidents.read");
+    const incidentId = param(request, "incidentId");
+    await runIdempotent(deps.db, idem(request, who), async (trx) => { await recordReport(trx, who, incidentId, now()); return { status: 204, body: null }; });
+    return reply.status(204).send();
   });
 
   /* ---- ratings */

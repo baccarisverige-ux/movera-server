@@ -847,6 +847,15 @@ export interface AdminAlertQuietTable {
   updated_at: Timestamp;
 }
 
+/** v0.18.15 (migration 0049): Admin › Incidents › Settings. */
+export interface AdminIncidentSettingsTable {
+  id: number;
+  rev: Generated<number>;
+  settings: ColumnType<unknown, string | undefined, string>;
+  updated_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  updated_by: string | null;
+}
+
 export interface TicketMessagesTable {
   /** Write order (two messages can share a timestamp). */
   n: Generated<string>;
@@ -1218,6 +1227,7 @@ export interface Database {
   admin_alert_book: AdminAlertBookTable;
   admin_alert_records: AdminAlertRecordsTable;
   admin_alert_quiet: AdminAlertQuietTable;
+  admin_incident_settings: AdminIncidentSettingsTable;
   dispatch_events: DispatchEventsTable;
   dispatch_presets: DispatchPresetsTable;
   driver_groups: DriverGroupsTable;

@@ -4071,6 +4071,12 @@
     ],
     "next": "Server-side detection (alerts found while no admin panel is open, push to admins) is a later job."
   },
+  "incidentDesk": {
+    "note": "v0.18.15 (build-all A1, Incidents): the incident settings the admin keeps (time limits per level, case-page switches, emergency numbers per country) are stored on the server for every admin; a case report download is audited; calling the rider or driver from a case is 'Calls coming soon' until Movera has a call company (owner G9 Q6, decisions/driver-g9.md).",
+    "settings": "GET /admin/incidents/settings (incidents.read) -> IncidentSettingsDoc { rev, settings, updatedAt?, updatedBy? }; PUT /admin/incidents/settings { expectedRev, settings } (safety.edit) -> rev + 1; stale -> 409 version_mismatch. settings is the admin panel's document (JSON object, at most 64 KB); never saved = {} (the panel's defaults). Audited incident.settings.",
+    "report": "POST /admin/incidents/{incidentId}/report {} (incidents.read, the admin's zones) -> 204: the panel builds the text report from the case; the server records who downloaded it (audit incident.report).",
+    "call": "No call endpoint: the admin panel shows 'Calls coming soon' on the rider / driver call buttons until a call company is added (then calls go through the Movera number, never the real numbers). Emergency numbers are dialled from the admin's own phone."
+  },
   "payouts": {
     "note": "v0.9.0 (owner real-data decision, part 3): every payout period (v0.18.13: the country's schedule, default weekly from Monday 08:00 to Monday 08:00 local time) a nightly job makes one payout per driver with earnings; an admin can also make one by hand for a driver and a date range. Same calculation both ways; a trip already in a payout is never counted again. amount = trips + waiting + pickup pay + bonus + tips + fees − cash collected; it may be negative (the driver owes Movera). An admin marks a payout paid. The admin sees the lines; the driver app shows only the total.",
     "period": "week",

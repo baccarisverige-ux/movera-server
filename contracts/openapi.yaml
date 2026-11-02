@@ -60,8 +60,8 @@ tags:
 - name: Admin · Money
 - name: Admin · Support
 - name: Admin · Alerts
-- name: Admin · Reviews
 - name: Admin · Safety
+- name: Admin · Reviews
 - name: Admin · Reports
 - name: Safety
 - name: Admin · People
@@ -6692,6 +6692,135 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/incidents/settings:
+    get:
+      operationId: adminIncidentSettings
+      summary: Incident settings
+      description: v0.18.15. GET /admin/incidents/settings (incidents.read) -> IncidentSettingsDoc { rev, settings, updatedAt?,
+        updatedBy? }; PUT /admin/incidents/settings { expectedRev, settings } (safety.edit) -> rev + 1; stale -> 409 version_mismatch.
+        settings is the admin panel's document (JSON object, at most 64 KB); never saved = {} (the panel's defaults). Audited
+        incident.settings.
+      tags:
+      - Admin · Safety
+      x-actor:
+      - admin
+      x-permission: incidents.read
+      parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentSettingsDoc'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: adminPutIncidentSettings
+      summary: Save the incident settings
+      description: v0.18.15.
+      tags:
+      - Admin · Safety
+      x-actor:
+      - admin
+      x-permission: safety.edit
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IncidentSettingsCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentSettingsDoc'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/incidents/{incidentId}/report:
+    post:
+      operationId: adminIncidentReport
+      summary: Record a case report download
+      description: 'v0.18.15. POST /admin/incidents/{incidentId}/report {} (incidents.read, the admin''s zones) -> 204: the
+        panel builds the text report from the case; the server records who downloaded it (audit incident.report).'
+      tags:
+      - Admin · Safety
+      x-actor:
+      - admin
+      x-permission: incidents.read
+      parameters:
+      - $ref: '#/components/parameters/IncidentId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyCommand'
+      responses:
+        '204':
+          description: No content
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -17403,6 +17532,37 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AlertRecord'
+    IncidentSettingsDoc:
+      type: object
+      description: 'v0.18.15: GET /admin/incidents/settings (incidents.read) -> IncidentSettingsDoc { rev, settings, updatedAt?,
+        updatedBy? }; PUT /admin/incidents/settings { expectedRev, settings } (safety.edit) -> rev + 1; stale -> 409 version_mismatch.
+        settings is the admin panel''s document (JSON object, at most 64 KB); never saved = {} (the panel''s defaults). Audited
+        incident.settings.'
+      required:
+      - rev
+      - settings
+      properties:
+        rev:
+          type: integer
+          minimum: 1
+        settings:
+          type: object
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedBy:
+          $ref: '#/components/schemas/Id'
+    IncidentSettingsCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - expectedRev
+      - settings
+      properties:
+        expectedRev:
+          type: integer
+          minimum: 1
+        settings:
+          type: object
     IncidentPosition:
       type: object
       description: 'v0.7.0: a phone''s GPS position, measured once (CONTRACT.md §15).'

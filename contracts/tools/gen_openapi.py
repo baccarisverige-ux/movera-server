@@ -430,6 +430,9 @@ S["AlertQuietCommand"] = S["AlertBookState"]["properties"]["quiet"]
 S["AlertSettingsCommand"] = obj({"expectedRev": i(minimum=1), "settings": {"type": "object"}}, ["expectedRev", "settings"], "v0.18.15.")
 S["AlertRulesCommand"] = obj({"expectedRev": i(minimum=1), "rules": {"type": "array", "items": {"type": "object"}, "maxItems": 200}}, ["expectedRev", "rules"], "v0.18.15.")
 S["AlertHistory"] = obj({"items": arr(ref("AlertRecord"))}, ["items"], "v0.18.15.")
+ID_ = C["incidentDesk"]
+S["IncidentSettingsDoc"] = obj({"rev": i(minimum=1), "settings": {"type": "object"}, "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")}, ["rev", "settings"], "v0.18.15: " + ID_["settings"])
+S["IncidentSettingsCommand"] = obj({"expectedRev": i(minimum=1), "settings": {"type": "object"}}, ["expectedRev", "settings"], "v0.18.15.")
 SF = C["safety"]
 S["IncidentPosition"] = obj({"lat": n(minimum=-90, maximum=90), "lng": n(minimum=-180, maximum=180),
                              "accuracyM": n("Horizontal accuracy, metres.", minimum=0), "at": ref("Timestamp")},
@@ -1701,6 +1704,11 @@ op("put", "/admin/alerts/quiet", "adminAlertQuiet", "My quiet hours", ["admin"],
 op("put", "/admin/alerts/settings", "adminAlertSettings", "Save the alert settings", ["admin"], "Admin · Alerts", body="AlertSettingsCommand", ok=(200, "AlertBookState"), mutation=True, permission="alerts.manage", desc="v0.18.15. " + AD["commands"]["settings"])
 op("put", "/admin/alerts/rules", "adminAlertRules", "Save the alert rules", ["admin"], "Admin · Alerts", body="AlertRulesCommand", ok=(200, "AlertBookState"), mutation=True, permission="alerts.manage", desc="v0.18.15. " + AD["commands"]["rules"])
 op("get", "/admin/alerts/history", "adminAlertHistory", "Alert history for the export", ["admin"], "Admin · Alerts", params=[pref("From"), pref("To")], ok=(200, "AlertHistory"), permission="overview.read", desc="v0.18.15. " + AD["commands"]["export"])
+
+# v0.18.15 incidents (contract.json#incidentDesk)
+op("get", "/admin/incidents/settings", "adminIncidentSettings", "Incident settings", ["admin"], "Admin · Safety", ok=(200, "IncidentSettingsDoc"), permission="incidents.read", desc="v0.18.15. " + ID_["settings"])
+op("put", "/admin/incidents/settings", "adminPutIncidentSettings", "Save the incident settings", ["admin"], "Admin · Safety", body="IncidentSettingsCommand", ok=(200, "IncidentSettingsDoc"), mutation=True, permission="safety.edit", desc="v0.18.15.")
+op("post", "/admin/incidents/{incidentId}/report", "adminIncidentReport", "Record a case report download", ["admin"], "Admin · Safety", params=[pref("IncidentId")], body="EmptyCommand", ok=(204, None), mutation=True, permission="incidents.read", desc="v0.18.15. " + ID_["report"])
 
 op("get", "/admin/ratings", "adminListRatings", "Ratings riders and drivers gave each other", ["admin"], "Admin · Reviews",
    params=AL + [q("rater", {"type": "string", "enum": ["rider", "driver"]}, "Who gave the rating."), q("hidden", {"type": "boolean"}), q("maxStars", {"type": "integer", "minimum": 1, "maximum": 5}),

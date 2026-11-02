@@ -162,6 +162,27 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
   });
 });
 
+describe("Incidents settings and report (contract.json#incidentDesk)", () => {
+  it("settings: safety.edit saves one revision at a time; every admin reads the same; a report download is audited", async () => {
+    const first = await owner.get("/admin/incidents/settings");
+    expect(first.body).toMatchObject({ rev: 1, settings: {} });
+    const support = await sim.admin("support");
+    expect((await support.put("/admin/incidents/settings", { expectedRev: 1, settings: { lateAlerts: false } })).status).toBe(403);
+    const safety = await sim.admin("safety");
+    const saved = await safety.put("/admin/incidents/settings", { expectedRev: 1, settings: { lateAlerts: false, emergency: { FR: [{ label: "SAMU", number: "15" }] } } });
+    expect(saved.body).toMatchObject({ rev: 2, updatedBy: safety.id, settings: { lateAlerts: false } });
+    expect((await safety.put("/admin/incidents/settings", { expectedRev: 1, settings: {} })).body["code"]).toBe("version_mismatch");
+    expect((await owner.get("/admin/incidents/settings")).body["settings"]).toMatchObject({ emergency: { FR: [{ number: "15" }] } });
+    const id = await open();
+    const incidentId = (await agent.post(`/admin/tickets/${id}/case`, { reason: "report test" })).body["incidentId"];
+    expect((await safety.post(`/admin/incidents/${incidentId}/report`, {})).status).toBe(204);
+    const z002 = await sim.admin("super", ["Z002"]);
+    expect((await z002.post(`/admin/incidents/${incidentId}/report`, {})).status).toBe(403);
+    const audit = await sim.db.selectFrom("admin_audit").select(["action", "admin_id"]).where("target_id", "=", incidentId).where("action", "=", "incident.report").execute();
+    expect(audit).toEqual([{ action: "incident.report", admin_id: safety.id }]);
+  });
+});
+
 // Last: the clock jumps days ahead (sign-ins run out after this).
 describe("time limits", () => {
   it("a claim runs out after claimDays; time limits and late flags follow the topic", async () => {
