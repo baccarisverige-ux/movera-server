@@ -247,10 +247,9 @@ export async function freeCandidatesDetailed(trx: Trx, trip: TripRow, now: Date,
   const free = pool.candidates
     .filter((c) => !gone.has(c.driverId) && c.km <= maxKm)
     .sort((a, b) => a.km - b.km || a.driverId.localeCompare(b.driverId));
-  // Owner rule 16 (checker 2026-11-02): the zone's own drivers first; a neighbour-zone driver only when no driver of
-  // the zone is free (even a closer neighbour never beats a free in-zone driver).
-  const inZone = free.filter((c) => !c.neighbour);
-  return { ids: (inZone.length ? inZone : free).map((c) => c.driverId), expired, far };
+  // Owner 2026-11-02 (decisions/driver-g5.md, last entry): simply the nearest free driver, a same-country neighbour-zone
+  // driver too when neighbours are on (the in-zone-first rule is gone); the reach limits and filters above stay.
+  return { ids: free.map((c) => c.driverId), expired, far };
 }
 
 /* ---------------------------------------------------------------- offers */
