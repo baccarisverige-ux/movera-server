@@ -89,7 +89,9 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     tips: Number(m["tips"]),
     refunds: Number(m["refunds"]),
     fees,
-    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(t["pickup"]) - Number(t["bonus"]),
+    // v0.18.13 (audit 2026-11-02 H2): commission_minor already has pickup pay and the driver bonus taken off
+    // (rules/commission.ts), so they are not taken off again; refunds Movera paid back are taken off.
+    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["refunds"]),
   };
 }
 

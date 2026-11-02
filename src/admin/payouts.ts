@@ -7,6 +7,7 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "./audit.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
+import { standardKey } from "../config/service.js";
 
 /**
  * Payouts (contract v0.9.0 §16, contract.json#payouts, fixtures/payouts.json; owner decisions of 2026-10-27).
@@ -114,10 +115,11 @@ export function payoutView(row: PayoutRow, viewer: "admin" | "driver") {
 }
 
 /**
- * Makes one payout for a driver from the unpaid entries in [from, to). Returns null when there is none.
- * The entries are locked, so two runs (the job and an admin, or two admins) never take the same entry.
+ * Makes the payouts for a driver from the unpaid entries in [from, to): one per currency (v0.18.13, audit M1: kr and
+ * € are never added). Returns the payouts made (none when there is nothing to pay). The entries are locked, so two
+ * runs (the job and an admin, or two admins) never take the same entry.
  */
-export async function makePayout(trx: Trx, input: { driverId: string; from: Date; to: Date; source: "weekly" | "manual"; by: string | null; note?: string }, now: Date): Promise<PayoutRow | null> {
+export async function makePayouts(trx: Trx, input: { driverId: string; from: Date; to: Date; source: "weekly" | "manual"; by: string | null; note?: string }, now: Date): Promise<PayoutRow[]> {
   const entries = await trx
     .selectFrom("earnings_entries as e")
     .leftJoin("trips as t", "t.trip_id", "e.trip_id")
@@ -129,33 +131,45 @@ export async function makePayout(trx: Trx, input: { driverId: string; from: Date
     .orderBy("e.at")
     .forUpdate("e")
     .execute();
-  if (entries.length === 0) return null;
-  const calc = payoutLines(entries.map((e) => ({ kind: e.kind, amountMinor: Number(e.amount_minor), cashMinor: Number(e.cash_minor ?? 0), waitingMinor: e.kind === "trip" ? waitingOf(e.fare_lines) : 0 })));
+  if (entries.length === 0) return [];
   const driver = await trx.selectFrom("drivers").select(["zone_ids"]).where("driver_id", "=", input.driverId).executeTakeFirst();
-  const payoutId = newId("pyt", now.getTime());
-  const row = await trx
-    .insertInto("payouts")
-    .values({
-      payout_id: payoutId,
-      driver_id: input.driverId,
-      zone_id: driver?.zone_ids[0] ?? null,
-      currency: entries[0]!.currency,
-      amount_minor: calc.amountMinor,
-      lines: JSON.stringify(calc.lines),
-      trip_count: calc.tripCount,
-      source: input.source,
-      period_start: input.from,
-      period_end: input.to,
-      note: input.note ?? null,
-      created_by: input.by,
-      created_at: now,
-    })
-    .onConflict((c) => c.columns(["driver_id", "period_start"]).where("source", "=", "weekly").doNothing())
-    .returningAll()
-    .executeTakeFirst();
-  if (row === undefined) return null;
-  await trx.updateTable("earnings_entries").set({ payout_id: payoutId }).where("entry_id", "in", entries.map((e) => e.entry_id)).execute();
-  return row as PayoutRow;
+  const byCurrency = new Map<string, typeof entries>();
+  for (const e of entries) byCurrency.set(e.currency, [...(byCurrency.get(e.currency) ?? []), e]);
+  const made: PayoutRow[] = [];
+  let n = 0;
+  for (const [currency, list] of byCurrency) {
+    const calc = payoutLines(list.map((e) => ({ kind: e.kind, amountMinor: Number(e.amount_minor), cashMinor: Number(e.cash_minor ?? 0), waitingMinor: e.kind === "trip" ? waitingOf(e.fare_lines) : 0 })));
+    const payoutId = newId("pyt", now.getTime() + n++);
+    const row = await trx
+      .insertInto("payouts")
+      .values({
+        payout_id: payoutId,
+        driver_id: input.driverId,
+        zone_id: driver?.zone_ids[0] ?? null,
+        currency,
+        amount_minor: calc.amountMinor,
+        lines: JSON.stringify(calc.lines),
+        trip_count: calc.tripCount,
+        source: input.source,
+        period_start: input.from,
+        period_end: input.to,
+        note: input.note ?? null,
+        created_by: input.by,
+        created_at: now,
+      })
+      .onConflict((c) => c.columns(["driver_id", "period_start", "currency"]).where("source", "=", "weekly").doNothing())
+      .returningAll()
+      .executeTakeFirst();
+    if (row === undefined) continue;
+    await trx.updateTable("earnings_entries").set({ payout_id: payoutId }).where("entry_id", "in", list.map((e) => e.entry_id)).execute();
+    made.push(row as PayoutRow);
+  }
+  return made;
+}
+
+/** The first payout of makePayouts (kept for callers that make one period of one currency). */
+export async function makePayout(trx: Trx, input: Parameters<typeof makePayouts>[1], now: Date): Promise<PayoutRow | null> {
+  return (await makePayouts(trx, input, now))[0] ?? null;
 }
 
 /** Monday 00:00 of the week that holds `at`, in the time zone. */
@@ -164,27 +178,81 @@ export async function weekStart(ex: Executor, at: Date, timeZone: string): Promi
   return row.rows[0]!.start;
 }
 
+/* ---------------------------------------------------------------- the payout schedule (v0.18.13, owner G10-2) */
+
+export type PayoutSchedule = { frequency: "weekly" | "every_2_weeks"; day: string; time: string };
+type ScheduleSpec = { default: PayoutSchedule; countryTimeZones: Record<string, string>; anchorWeek: string };
+const SCHEDULE = (contract as unknown as { payouts: { schedule: ScheduleSpec } }).payouts.schedule;
+const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+/** CountryRules.payoutSchedule of a country standard, with the default (weekly, Monday, 08:00). */
+export function payoutScheduleOf(doc: { payoutSchedule?: Partial<PayoutSchedule> } | null | undefined): PayoutSchedule {
+  const p = doc?.payoutSchedule ?? {};
+  return {
+    frequency: p.frequency === "weekly" || p.frequency === "every_2_weeks" ? p.frequency : SCHEDULE.default.frequency,
+    day: typeof p.day === "string" && DAYS.includes(p.day) ? p.day : SCHEDULE.default.day,
+    time: typeof p.time === "string" && TIME.test(p.time) ? p.time : SCHEDULE.default.time,
+  };
+}
+
+/** The time zone of a payout: the driver's first zone, else his country's (never Sweden's for a French driver). */
+export const countryTimeZone = (country: string | null | undefined): string | null => (country ? SCHEDULE.countryTimeZones[country] ?? null : null);
+
 /**
- * The weekly job: for every driver with unpaid entries in a week that has ended (Monday to Monday in the driver's
- * first zone's time), one payout. Safe to run again: a week already paid has no entries left.
+ * The period [start, end) that holds `at` for a schedule, in the time zone: periods start on the schedule's day and
+ * time; every_2_weeks periods start on even weeks counted from the anchor week (2026-01-05).
  */
-export async function closeWeeks(trx: Trx, now: Date): Promise<number> {
-  const rows = await sql<{ driver_id: string; time_zone: string; week: Date }>`
-    SELECT DISTINCT e.driver_id, coalesce(z.time_zone, 'Europe/Stockholm') AS time_zone,
-           (date_trunc('week', e.at AT TIME ZONE coalesce(z.time_zone, 'Europe/Stockholm')) AT TIME ZONE coalesce(z.time_zone, 'Europe/Stockholm')) AS week
+export async function periodOf(ex: Executor, at: Date, timeZone: string, schedule: PayoutSchedule): Promise<{ start: Date; end: Date }> {
+  const [hh, mm] = schedule.time.split(":").map(Number) as [number, number];
+  const offset = `${DAYS.indexOf(schedule.day)} days ${hh} hours ${mm} minutes`;
+  const weeks = schedule.frequency === "every_2_weeks" ? 2 : 1;
+  const row = await sql<{ start: Date; end: Date }>`
+    WITH b AS (
+      SELECT date_trunc('week', (${at}::timestamptz AT TIME ZONE ${timeZone}) - ${offset}::interval) AS wk),
+    p AS (
+      SELECT CASE WHEN ${weeks}::int = 2 AND mod(((extract(epoch FROM (wk - ${SCHEDULE.anchorWeek}::timestamp)) / 604800)::bigint % 2 + 2), 2) = 1
+                  THEN wk - interval '1 week' ELSE wk END + ${offset}::interval AS local_start FROM b)
+    SELECT (local_start AT TIME ZONE ${timeZone}) AS start, ((local_start + make_interval(weeks => ${weeks}::int)) AT TIME ZONE ${timeZone}) AS end FROM p`.execute(ex);
+  return { start: new Date(row.rows[0]!.start), end: new Date(row.rows[0]!.end) };
+}
+
+/**
+ * The payout job (each night and every hour, so the admin's payout time is kept within the hour): for every driver
+ * with unpaid entries in a period that has ended (the country's schedule, the local time of his first zone or his
+ * country), the payouts of that period, one per currency. Safe to run again: paid entries are never taken twice.
+ */
+export async function closePeriods(trx: Trx, now: Date): Promise<number> {
+  const rows = await sql<{ driver_id: string; time_zone: string | null; country: string | null; first_at: Date }>`
+    SELECT e.driver_id, z.time_zone, coalesce(z.country, d.country) AS country, min(e.at) AS first_at
       FROM earnings_entries e
       JOIN drivers d ON d.driver_id = e.driver_id
       LEFT JOIN zones z ON z.zone_id = d.zone_ids[1]
      WHERE e.payout_id IS NULL
-     ORDER BY 1, 3`.execute(trx);
+     GROUP BY e.driver_id, z.time_zone, coalesce(z.country, d.country)
+     ORDER BY 1`.execute(trx);
+  const schedules = new Map<string, PayoutSchedule>();
   let made = 0;
   for (const row of rows.rows) {
-    const end = new Date((await sql<{ end: Date }>`SELECT ((${row.week}::timestamptz AT TIME ZONE ${row.time_zone} + interval '1 week') AT TIME ZONE ${row.time_zone}) AS end`.execute(trx)).rows[0]!.end);
-    if (end.getTime() > now.getTime()) continue;
-    if (await makePayout(trx, { driverId: row.driver_id, from: row.week, to: end, source: "weekly", by: null }, now)) made += 1;
+    const timeZone = row.time_zone ?? countryTimeZone(row.country) ?? SCHEDULE.countryTimeZones["SE"]!;
+    const key = row.country ?? "";
+    if (!schedules.has(key)) {
+      const live = row.country ? await trx.selectFrom("config_live").select("document").where("doc", "=", "country_rules").where("zone_id", "=", standardKey(row.country)).executeTakeFirst() : undefined;
+      schedules.set(key, payoutScheduleOf(live?.document as { payoutSchedule?: Partial<PayoutSchedule> } | undefined));
+    }
+    const schedule = schedules.get(key)!;
+    // Every ended period from the oldest unpaid entry on.
+    let period = await periodOf(trx, new Date(row.first_at), timeZone, schedule);
+    while (period.end.getTime() <= now.getTime()) {
+      made += (await makePayouts(trx, { driverId: row.driver_id, from: period.start, to: period.end, source: "weekly", by: null }, now)).length;
+      period = await periodOf(trx, period.end, timeZone, schedule);
+    }
   }
   return made;
 }
+
+/** Kept name for the jobs (v0.9.0): the schedule now comes from the country (closePeriods). */
+export const closeWeeks = closePeriods;
 
 const SELECT_PAYOUT = ["payouts.payout_id", "payouts.driver_id", "payouts.zone_id", "payouts.currency", "payouts.amount_minor", "payouts.lines", "payouts.trip_count", "payouts.source", "payouts.status", "payouts.period_start", "payouts.period_end", "payouts.note", "payouts.created_at", "payouts.paid_at", "payouts.paid_by", "drivers.first_name", "drivers.last_name"] as const;
 
@@ -242,9 +310,11 @@ export async function createPayout(trx: Trx, who: Principal, body: { driverId: s
   if (driver === undefined) throw notFound("No such driver.", "driver_not_found");
   const zone = driver.zone_ids[0];
   if (zone && !adminCoversZone(who, zone)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
-  const made = await makePayout(trx, { driverId: body.driverId, from, to, source: "manual", by: who.subjectId, ...(body.note ? { note: body.note } : {}) }, now);
-  if (made === null) throw new ApiError("invalid_transition", "Nothing to pay in this period: every trip is already in a payout.", { reason: "nothing_to_pay" });
-  await audit(trx, { adminId: who.subjectId, action: "payout.create", targetType: "payout", targetId: made.payout_id, zoneId: made.zone_id, detail: { driverId: body.driverId, from: body.from, to: body.to, amountMinor: Number(made.amount_minor), ...(body.note ? { note: body.note } : {}) }, at: now });
+  // v0.18.13 (audit M1): one payout per currency; the answer is the first, every one is in the audit.
+  const all = await makePayouts(trx, { driverId: body.driverId, from, to, source: "manual", by: who.subjectId, ...(body.note ? { note: body.note } : {}) }, now);
+  const made = all[0];
+  if (made === undefined) throw new ApiError("invalid_transition", "Nothing to pay in this period: every trip is already in a payout.", { reason: "nothing_to_pay" });
+  for (const p of all) await audit(trx, { adminId: who.subjectId, action: "payout.create", targetType: "payout", targetId: p.payout_id, zoneId: p.zone_id, detail: { driverId: body.driverId, from: body.from, to: body.to, currency: p.currency, amountMinor: Number(p.amount_minor), ...(body.note ? { note: body.note } : {}) }, at: now });
   return payoutView(await payoutForAdmin(trx, who, made.payout_id), "admin");
 }
 

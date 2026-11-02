@@ -7,7 +7,6 @@ import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { rideHandlers } from "../../src/trips/ride.js";
-import { haversineKm } from "../../src/maps/routing.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -268,20 +267,21 @@ describe("the rider's cancel after accept", () => {
     expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toEqual({ amountMinor: 3500, currency: "SEK" });
   });
 
-  it("far pickup: after 3 minutes the driver must have come 600 m closer (half of 400 m a minute)", async () => {
-    const away = Math.round(haversineKm(SPOTS.B, NORRMALM) * 1.25 * 1000);
-    for (const [gained, fee] of [[300, null], [800, 3500]] as const) {
-      await advance(1);
-      const { tripId } = await accepted();
-      // As if A had accepted from further away and drove to where B stands now.
-      await database.db.updateTable("trips").set({ accept_pickup_meters: away + gained }).where("trip_id", "=", tripId).execute();
-      await advance(180);
-      await moveTo("A", SPOTS.B);
-      const res = await cancel(tripId);
-      expect(res.json().cancellation.fee?.amountMinor ?? null).toBe(fee);
-      await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
-      await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
+  it("v0.18.13 (G5-8): standing still for 2 minutes after the free minutes → free cancel; the trip is taken back from him", async () => {
+    const { tripId } = await accepted();
+    // The server's check runs with every 30 s ETA tick; a car that does not move is not heading to the pickup.
+    // 2 km away (not within the arrive radius, which counts as heading).
+    const FAR = { lat: SPOTS.A.lat + 0.018, lng: SPOTS.A.lng };
+    for (let i = 0; i < 6; i++) {
+      await moveTo("A", FAR);
+      await advance(30);
     }
+    const seen = await riderView(tripId);
+    expect(["searching", "offered", "accepted"]).toContain(seen.status);
+    expect(seen.driverId === undefined || seen.driverId !== drivers.A.id).toBe(true);
+    const counted = await database.db.selectFrom("driver_cancels").select("reason_code").where("trip_id", "=", tripId).where("driver_id", "=", drivers.A.id).execute();
+    expect(counted.map((r) => r.reason_code)).toEqual(["not_heading_to_pickup"]);
+    if (seen.status !== "accepted") expect((await cancel(tripId)).json().cancellation.fee).toBeNull();
   });
 
   it("no rider settings published: 65 kr after 2 minutes; an admin share setting applies", async () => {
@@ -300,12 +300,24 @@ describe("the rider's cancel after accept", () => {
     }
   });
 
-  it("after 2 minutes but the driver drove away from the pickup: no fee", async () => {
-    const { tripId } = await accepted();
-    await advance(150);
-    await moveTo("A", SPOTS.B);
-    const res = await cancel(tripId);
-    expect(res.json().cancellation.fee).toBeNull();
+  it("after 2 minutes but the driver keeps driving away from the pickup for 2 minutes: no fee (reassign off)", async () => {
+    await database.db.updateTable("config_live").set({ document: JSON.stringify({ ...sample("driver_app_config"), headingCheck: { on: true, headingPct: 80, notHeadingMinutes: 2, reassign: false } }) }).where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
+    const inserted = (await database.db.selectFrom("config_live").select("doc").where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute()).length === 0;
+    if (inserted) await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify({ ...sample("driver_app_config"), headingCheck: { on: true, headingPct: 80, notHeadingMinutes: 2, reassign: false } }), published_at: clock.now, published_by: null }).execute();
+    try {
+      const { tripId } = await accepted();
+      for (let i = 0; i < 6; i++) {
+        await moveTo("A", { lat: SPOTS.A.lat + 0.002 * i, lng: SPOTS.A.lng + 0.002 * i });
+        await advance(30);
+      }
+      const view = await riderView(tripId);
+      expect(view.status).toBe("accepted");
+      expect(view.headingCheck).toMatchObject({ heading: false, freeCancel: true });
+      const res = await cancel(tripId);
+      expect(res.json().cancellation.fee).toBeNull();
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    }
   });
 });
 
@@ -379,5 +391,125 @@ describe("the rider ends early", () => {
     await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
     expect((await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 5 })).json()).toMatchObject({ code: "invalid_transition" });
     expect((await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 5, tip: { amountMinor: 2000, currency: "SEK" } })).json()).toMatchObject({ reason: "rating_not_allowed" });
+  });
+});
+
+/* ---------------------------------------------------------------- live clean-up 1 (contract v0.18.13) */
+
+const pushes = async (tripId: string) =>
+  (await database.db.selectFrom("notifications").select(["data", "title", "bell", "audience"]).where("trip_id", "=", tripId).where("kind", "=", "trip_update").orderBy("created_at").orderBy("notification_id").execute())
+    .map((r) => (r.data as { moment: string }).moment);
+
+describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTripPush)", () => {
+  it("driver found, almost there, arrived — push only, in the rider's language; nothing for the rider's own cancel", async () => {
+    await database.db.updateTable("riders").set({ language: "fr", consents: JSON.stringify({}) }).execute();
+    const { tripId, version } = await accepted();
+    await step(tripId, "head-to-pickup", version);
+    await moveTo("A", NORRMALM);
+    await advance(30);
+    await advance(30);
+    await step(tripId, "arrive", version + 1);
+    expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
+    const rows = await database.db.selectFrom("notifications").select(["title", "bell", "audience", "body"]).where("trip_id", "=", tripId).where("kind", "=", "trip_update").orderBy("created_at").execute();
+    expect(rows[0]).toMatchObject({ title: "Chauffeur trouvé", bell: false, audience: "rider", body: "Driver A est en route vers vous." });
+    const trip = await riderView(tripId);
+    await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
+    expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
+    await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+    await database.db.updateTable("riders").set({ language: null, outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
+  });
+
+  it("the driver cancels: 'finding you a new driver' (Swedish); an admin cancel: trip cancelled", async () => {
+    await database.db.updateTable("riders").set({ language: "sv" }).execute();
+    const { tripId, version } = await accepted();
+    await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: version, reasonCode: "vehicle_issue_before_start" });
+    expect((await pushes(tripId)).sort()).toEqual(["driver_changed", "driver_found"]);
+    const titles = (await database.db.selectFrom("notifications").select("title").where("trip_id", "=", tripId).where("kind", "=", "trip_update").execute()).map((r) => r.title).sort();
+    expect(titles).toEqual(["Förare hittad", "Vi söker en ny förare"]);
+    await database.db.updateTable("riders").set({ language: null }).execute();
+  });
+
+  it("the rider's setting: rideUpdates off → no trip pushes", async () => {
+    await database.db.updateTable("riders").set({ consents: JSON.stringify({ rideUpdates: false }) }).execute();
+    try {
+      const { tripId, version } = await accepted();
+      await step(tripId, "head-to-pickup", version);
+      await moveTo("A", NORRMALM);
+      await step(tripId, "arrive", version + 1);
+      expect(await pushes(tripId)).toEqual([]);
+    } finally {
+      await database.db.updateTable("riders").set({ consents: JSON.stringify({}) }).execute();
+    }
+  });
+});
+
+describe("v0.18.13 driving-time limits on the server (decisions/driving-time-limits.md)", () => {
+  /** A finished trip of driver A: `toPickup` minutes to the pickup, 10 waiting (never counted), `onTrip` on board. */
+  async function drove(toPickup: number, onTrip: number, endedMinutesAgo = 0) {
+    const end = new Date(clock.now.getTime() - endedMinutesAgo * 60_000);
+    const boarded = new Date(end.getTime() - onTrip * 60_000);
+    const arrived = new Date(boarded.getTime() - 10 * 60_000);
+    const accepted = new Date(arrived.getTime() - toPickup * 60_000);
+    const { tripId } = await book();
+    await database.db.updateTable("trips").set({ status: "completed", driver_id: drivers.A.id, accepted_at: accepted, arrived_at: arrived, boarded_at: boarded, ended_at: end, updated_at: end }).where("trip_id", "=", tripId).execute();
+    await database.db.deleteFrom("offers").where("trip_id", "=", tripId).execute();
+  }
+  const goOnline = async () => {
+    const me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+    return call(app, "POST", "/driver/availability", drivers.A.headers, { expectedVersion: me.version, onlineStatus: "online" });
+  };
+  const goOffline = async () => {
+    const me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+    return call(app, "POST", "/driver/availability", drivers.A.headers, { expectedVersion: me.version, onlineStatus: "offline" });
+  };
+
+  it("counts driving to pickup + on trip only (not waiting); at 12 h: no offers and going online is refused; 6 h offline resets", async () => {
+    // Only this test's driving counts (the file's earlier trips of A are taken out of his history).
+    await database.db.updateTable("trips").set({ accepted_at: null, boarded_at: null }).where("driver_id", "=", drivers.A.id).execute();
+    await moveTo("A", SPOTS.A);
+    await goOffline();
+    // 11 h 50 min of counted driving (lots of waiting in between does not count), ended an hour ago.
+    await drove(60, 650, 60);
+    let me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+    expect(me.drivingTime).toMatchObject({ drivenMinutes: 710, maxMinutes: 720, reached: false, resetAfterOfflineHours: 6 });
+    await drove(5, 10, 5);
+    me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+    expect(me.drivingTime).toMatchObject({ drivenMinutes: 725, reached: true });
+    await moveTo("A", SPOTS.A);
+    const refused = await goOnline();
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ code: "conflict", reason: "driving_limit_reached" });
+    // Online anyway (an old app): dispatch does not offer him trips.
+    await database.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", drivers.A.id).execute();
+    await moveTo("A", SPOTS.A);
+    await moveTo("B", SPOTS.B);
+    const { tripId } = await book();
+    expect((await call(app, "GET", "/driver/offers", drivers.A.headers)).json().items.map((o: { tripId: string }) => o.tripId)).not.toContain(tripId);
+    await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", tripId).execute();
+    // 6 hours offline in a row: the counter starts again.
+    await goOffline();
+    clock.now = new Date(clock.now.getTime() + 6 * 3600_000 + 60_000);
+    drivers.A.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+    await moveTo("A", SPOTS.A);
+    const back = await goOnline();
+    expect(back.statusCode, back.body).toBe(200);
+    expect(back.json().drivingTime).toMatchObject({ drivenMinutes: 0, reached: false });
+  });
+});
+
+describe("v0.18.13 driver cancel reasons from the admin (G5-9)", () => {
+  it("only the codes the zone's admin list turns on; an unset sheet uses the contract list", async () => {
+    const doc = { ...sample("driver_app_config"), cancelReasons: { driverBeforeTrip: ["rider_requested_cancel", "unsafe_pickup"] } };
+    await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify(doc), published_at: clock.now, published_by: null }).execute();
+    try {
+      const { tripId, version } = await accepted();
+      const off = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: version, reasonCode: "vehicle_issue_before_start" });
+      expect(off.json()).toMatchObject({ code: "invalid_request", reason: "invalid_reason_code" });
+      const on = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: version, reasonCode: "unsafe_pickup" });
+      expect(on.statusCode, on.body).toBe(200);
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    }
   });
 });

@@ -6,6 +6,7 @@ import { ApiError } from "../http/errors.js";
 import { nextStatus, isTripStatus, TERMINAL, type Actor } from "../rules/transitions.js";
 import { tripProjection, type Viewer } from "./projection.js";
 import type { Updateable } from "kysely";
+import { momentOf, pushTripMoment } from "../notifications/tripPush.js";
 
 /**
  * Every lifecycle change goes through here (contract §3): the transition table decides (else 409
@@ -38,6 +39,9 @@ export async function applyCommand(
   // The stored event carries the full projection; each stream redacts it for its viewer (§4).
   const sequence = Number(updated.sequence) + 1;
   await appendTripEvent(trx, { tripId: trip.trip_id, kind: "trip_projection", version, occurredAt: input.now, projection: tripProjection(updated, "admin", { sequence }) });
+  // v0.18.13 (contract.json#riderTripPush): the rider's push for the key moments (never for his own cancel).
+  const moment = momentOf(trip, updated);
+  if (moment !== null) await pushTripMoment(trx, moment === "driver_changed" ? trip : updated, moment, input.now);
   return { ...updated, sequence: String(sequence) };
 }
 

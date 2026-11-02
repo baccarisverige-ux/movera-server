@@ -14,7 +14,7 @@ import { completePreview, completeTrip, PriceChanged, driverCancel, driverEarnin
 
 /** contract §3: the driver's trip commands, the rider's early end, ratings and the driver's earnings. */
 
-/** paymentMethods: what the server takes today (env PAYMENT_METHODS, default cash), for the tip method (v0.18.10). */
+/** paymentMethods: what the server takes today (SERVER_PAYMENT_METHODS less PAYMENT_METHODS_PAUSED, v0.18.13), for the tip method (v0.18.10). */
 export type RideDeps = { db: Db; jwtSecret: string; currency: string; timeZone: string; paymentMethods?: readonly string[]; clock?: () => Date };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);

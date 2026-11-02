@@ -27,6 +27,7 @@ import { nextStatus, RIDER_ONBOARD, type TripStatus } from "../rules/transitions
 import { driverTotalOf, earningsLinesOf, tripProjection, type EndInfo } from "./projection.js";
 import { effectiveWaiting, waitingExtrasOf, type WaitingExtras, type WaitingRuleId } from "./waitingRules.js";
 import { inPolygon, type Polygon } from "../zones/geometry.js";
+import { headingSettingsFor, isFreeCancel as headingFreeCancel, NOT_HEADING_REASON, noticeTakenBack, type HeadingState } from "./headingCheck.js";
 
 /**
  * The ride after a driver accepted (contract §3, §3.5, §3.7): the driver's steps, the waiting clock and no-show,
@@ -61,13 +62,7 @@ export const validPickupMoveMeters = (value: unknown): number | null =>
 /** Within this distance of the drop-off the trip shows "Almost there" (near_dropoff). */
 export const NEAR_DROPOFF_METERS = 500;
 export const NEAR_DROPOFF = "near_dropoff";
-/**
- * The rider-cancel "was the driver really coming?" check (owner decision 25, 2026-10-24): after the free minutes the
- * rider pays only when the driver came closer to the pickup by at least half of what a normal car covers in the
- * minutes since accepting (24 km/h = 400 m a minute, the dispatch pickup speed). A driver at the pickup counts.
- */
-export const NORMAL_PICKUP_METERS_PER_MIN = 400;
-export const CAME_CLOSER_SHARE = 0.5;
+/* v0.18.13: the old came-closer check (400 m/min × 50 %, once at the cancel) is replaced by the heading check (headingCheck.ts). */
 /** "Arrived" is accepted within this distance of the pickup (the driver's latest fix). */
 export const ARRIVE_MAX_METERS = 300;
 /** A trip completed farther than this from the drop-off (the driver's latest fix) ended early: the rider pays what was driven. */
@@ -808,8 +803,7 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
 
 /**
  * The rider's cancel fee (contract §3, §5 "Live cancel fees per category"): nothing before a driver accepted or
- * inside the free minutes; a live trip is charged only when the driver was really coming (see
- * NORMAL_PICKUP_METERS_PER_MIN). The fee is on the booked fare without an outstanding fee.
+ * inside the free minutes; a live trip is charged only while the driver is heading to the pickup (headingCheck.ts). The fee is on the booked fare without an outstanding fee.
  */
 export type RiderFee = { fee: Money; kind: "cancel" | "no_show" };
 
@@ -836,14 +830,15 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   }
   const amount = cancelFee({ kind, rule, fare: fare as Parameters<typeof cancelFee>[0]["fare"], minutesSinceAccept, minutesBeforePickup });
   if (amount.amountMinor <= 0) return null;
-  if (trip.kind === "live" && trip.status !== "arrived" && trip.accept_pickup_meters !== null) {
-    // No position from the driver means no proof they were coming: no fee.
-    const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", trip.driver_id).executeTakeFirst();
-    if (!fix) return null;
-    const nowMeters = haversineKm(fix, trip.pickup as Place) * 1.25 * 1000;
-    const atPickup = haversineKm(fix, trip.pickup as Place) * 1000 <= ARRIVE_MAX_METERS;
-    const needed = minutesSinceAccept * NORMAL_PICKUP_METERS_PER_MIN * CAME_CLOSER_SHARE;
-    if (!atPickup && trip.accept_pickup_meters - nowMeters < needed) return null;
+  if (trip.kind === "live" && trip.status !== "arrived") {
+    // v0.18.13 (owner G5-8, contract.json#pickupWaiting.headingCheck.riderCancel): after the free minutes the rider pays
+    // only while the driver is heading to the pickup (checked with every ETA tick). Never checked (no position at all)
+    // = no proof he was coming; not heading for notHeadingMinutes in a row = free.
+    const settings = await headingSettingsFor(ex, trip.zone_id);
+    if (settings.on) {
+      const state = trip.heading_check as HeadingState | null;
+      if (state === null || headingFreeCancel(state, settings, now)) return null;
+    }
   }
   return { fee: amount, kind: "cancel" };
 }
@@ -870,6 +865,22 @@ export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: Tri
 
 /* ---------------------------------------------------------------- the driver's cancel */
 
+/**
+ * v0.18.13 (G5-9): the driver cancel codes the zone's live DriverAppConfig.cancelReasons turns on, per sheet; a sheet the
+ * admin did not set or left empty uses contract.json#cancelReasons; a code the contract does not know is dropped.
+ */
+export async function driverCancelReasonsOf(ex: Executor, zoneId: string): Promise<Record<"driverBeforeTrip" | "driverDuringTrip" | "scheduled", string[]>> {
+  const doc = await liveDocument<{ cancelReasons?: Record<string, unknown> }>(ex, "driver_app_config", zoneId);
+  const listed = doc?.document.cancelReasons ?? {};
+  const sheet = (name: "driverBeforeTrip" | "driverDuringTrip" | "scheduled") => {
+    const value = listed[name];
+    const codes = Array.isArray(value) ? value.filter((code): code is string => typeof code === "string" && REASONS[name]!.includes(code)) : [];
+    // An empty sheet would leave a driver unable to cancel at all (safety): the built-in list then.
+    return codes.length > 0 ? codes : [...REASONS[name]!];
+  };
+  return { driverBeforeTrip: sheet("driverBeforeTrip"), driverDuringTrip: sheet("driverDuringTrip"), scheduled: sheet("scheduled") };
+}
+
 export async function driverCancel(trx: Trx, driverId: string, tripId: string, body: { expectedVersion: number; reasonCode: string; note?: string }, now: Date): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, body.expectedVersion, "driver");
@@ -877,7 +888,9 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
     throw new ApiError("invalid_transition", `A driver cannot cancel a trip that is ${trip.status}.`, { projection: tripProjection(trip, "driver") });
   }
   const onboard = ONBOARD.includes(trip.status);
-  const allowed = onboard ? REASONS["driverDuringTrip"]! : trip.kind === "scheduled" ? [...REASONS["scheduled"]!, ...REASONS["driverBeforeTrip"]!] : REASONS["driverBeforeTrip"]!;
+  // v0.18.13 (owner G5-9 "Load from admin", contract.json#pickupWaiting.cancelReasons): the zone's admin list per sheet.
+  const reasons = await driverCancelReasonsOf(trx, trip.zone_id);
+  const allowed = onboard ? reasons["driverDuringTrip"]! : trip.kind === "scheduled" ? [...reasons["scheduled"]!, ...reasons["driverBeforeTrip"]!] : reasons["driverBeforeTrip"]!;
   if (!allowed.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a reason for a driver cancel now.`, "invalid_reason_code");
   // The driver's note is for Movera only (driver_cancels); the rider sees the reason code.
   const cancellation = { actor: "driver", reasonCode: body.reasonCode, at: now.toISOString(), fee: null };
@@ -941,6 +954,8 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
       pin_blocked: false,
       ...(trip.pin_required ? { pickup_pin: newPin() } : {}),
       accept_pickup_meters: null,
+      // v0.18.13 (G5-8): the heading check starts again with the next driver.
+      heading_check: null,
       pickup_pay_minor: 0,
       driver_earnings_minor: earnings,
       commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, earnings, 0, Number(trip.driver_bonus_minor ?? 0)),
@@ -954,6 +969,19 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
   await releaseDriver(trx, trip.driver_id, now);
   if (back.status === "searching") await startSearch(trx, back, now);
   return back;
+}
+
+/**
+ * v0.18.13 (owner G5-8, contract.json#pickupWaiting.headingCheck.reassign): the driver was not heading to the pickup for
+ * notHeadingMinutes in a row: the trip goes back to dispatch without him, it counts as his cancel (driver_cancels,
+ * reason not_heading_to_pickup) and he gets a notice. The rider gets the driver_changed push (applyCommand).
+ */
+export async function takeBackNotHeading(trx: Trx, trip: TripRow, now: Date): Promise<void> {
+  const driverId = trip.driver_id;
+  if (!driverId) return;
+  await trx.insertInto("driver_cancels").values({ trip_id: trip.trip_id, driver_id: driverId, at: now, from_status: trip.status, reason_code: NOT_HEADING_REASON, note: null }).execute();
+  await backToDispatch(trx, trip, { command: "cancel", actor: "driver", now, exclude: driverId });
+  await noticeTakenBack(trx, driverId, trip.trip_id, now);
 }
 
 /* ---------------------------------------------------------------- the rider ends early */

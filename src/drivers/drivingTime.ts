@@ -1,0 +1,82 @@
+import { sql } from "kysely";
+import { contract } from "../contract/contract.js";
+import { liveDocument } from "../config/service.js";
+import type { Executor } from "../db/db.js";
+
+/**
+ * v0.18.13 (owner 2026-11-02, decisions/driving-time-limits.md, contract.json#drivingLimits): the server enforces the
+ * driving-time limit. Counted time = driving to the pickup (accept → arrived) + on trip (rider on board → end); online,
+ * waiting at the pickup and idle time never count. Default 12 h (DriverAppConfig.drivingLimits.maxHoursPerDay of the
+ * driver's first zone or its country standard; 0 = no limit). The counter starts again once the driver was offline
+ * resetAfterOfflineHours (default 6) in a row; otherwise it covers at most the last 24 hours. After the limit: no new
+ * offers and no going online; a running trip is always finished.
+ */
+
+export type DrivingLimits = { maxHoursPerDay: number; resetAfterOfflineHours: number };
+export type DrivingTime = { drivenMinutes: number; maxMinutes: number; reached: boolean; resetAfterOfflineHours: number; canDriveAt?: string };
+
+const DEFAULTS = (contract as unknown as { configDefaults: { drivingLimits: DrivingLimits } }).configDefaults.drivingLimits;
+const DAY_MS = 24 * 3600_000;
+const TERMINAL = ["completed", "cancelled_by_rider", "cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system", "no_show", "expired", "failed"];
+
+const num = (value: unknown, min: number, max: number, fallback: number) => (typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : fallback);
+
+export function drivingLimitsOf(doc: { drivingLimits?: Partial<DrivingLimits> } | null | undefined): DrivingLimits {
+  const d = doc?.drivingLimits ?? {};
+  return { maxHoursPerDay: num(d.maxHoursPerDay, 0, 24, DEFAULTS.maxHoursPerDay), resetAfterOfflineHours: num(d.resetAfterOfflineHours, 1, 24, DEFAULTS.resetAfterOfflineHours) };
+}
+
+export async function drivingLimitsFor(ex: Executor, zoneId: string | undefined): Promise<DrivingLimits> {
+  if (!zoneId) return drivingLimitsOf(null);
+  const live = await liveDocument<{ drivingLimits?: Partial<DrivingLimits> }>(ex, "driver_app_config", zoneId);
+  return drivingLimitsOf(live?.document);
+}
+
+/** Seconds of counted driving of a driver in [from, now). */
+export async function countedSeconds(ex: Executor, driverId: string, from: Date, now: Date): Promise<number> {
+  // A trip that is over without an end time stops at its last change; a running one counts until now.
+  const open = sql`CASE WHEN status IN (${sql.join(TERMINAL)}) THEN updated_at ELSE ${now}::timestamptz END`;
+  // To the pickup: accept → arrived (else boarded / end / now). On trip: on board → end (else now). Clipped to [from, now).
+  const row = await sql<{ s: string | null }>`
+    WITH legs AS (
+      SELECT accepted_at AS a, coalesce(arrived_at, boarded_at, ended_at, ${open}) AS b FROM trips
+       WHERE driver_id = ${driverId} AND accepted_at IS NOT NULL
+      UNION ALL
+      SELECT boarded_at AS a, coalesce(ended_at, ${open}) AS b FROM trips
+       WHERE driver_id = ${driverId} AND boarded_at IS NOT NULL)
+    SELECT sum(extract(epoch FROM (least(b, ${now}::timestamptz) - greatest(a, ${from}::timestamptz)))) AS s
+      FROM legs WHERE b > ${from}::timestamptz AND a < ${now}::timestamptz AND b > a`.execute(ex);
+  return Math.max(0, Math.round(Number(row.rows[0]?.s ?? 0)));
+}
+
+/** Driver.drivingTime now. */
+export async function drivingTimeOf(ex: Executor, driver: { driver_id: string; zone_ids: string[]; driving_since: Date | null }, now: Date): Promise<DrivingTime> {
+  const limits = await drivingLimitsFor(ex, driver.zone_ids[0]);
+  const from = new Date(Math.max(now.getTime() - DAY_MS, driver.driving_since?.getTime() ?? 0));
+  const seconds = await countedSeconds(ex, driver.driver_id, from, now);
+  const maxMinutes = Math.round(limits.maxHoursPerDay * 60);
+  const reached = maxMinutes > 0 && seconds >= maxMinutes * 60;
+  return {
+    drivenMinutes: Math.floor(seconds / 60),
+    maxMinutes,
+    reached,
+    resetAfterOfflineHours: limits.resetAfterOfflineHours,
+    ...(reached ? { canDriveAt: new Date(now.getTime() + limits.resetAfterOfflineHours * 3600_000).toISOString() } : {}),
+  };
+}
+
+/** Going online: the counter starts again after resetAfterOfflineHours offline in a row. Returns the new driving_since. */
+export async function resetOnOnline(ex: Executor, driver: { driver_id: string; zone_ids: string[]; went_offline_at: Date | null; driving_since: Date | null }, now: Date): Promise<Date | null> {
+  if (driver.went_offline_at === null) return driver.driving_since;
+  const limits = await drivingLimitsFor(ex, driver.zone_ids[0]);
+  if (now.getTime() - driver.went_offline_at.getTime() < limits.resetAfterOfflineHours * 3600_000) return driver.driving_since;
+  await ex.updateTable("drivers").set({ driving_since: now }).where("driver_id", "=", driver.driver_id).execute();
+  return now;
+}
+
+/** Dispatch: no new offers once the limit is reached. */
+export async function drivingLimitReached(ex: Executor, driverId: string, now: Date): Promise<boolean> {
+  const driver = await ex.selectFrom("drivers").select(["driver_id", "zone_ids", "driving_since"]).where("driver_id", "=", driverId).executeTakeFirst();
+  if (!driver) return false;
+  return (await drivingTimeOf(ex, driver, now)).reached;
+}

@@ -17,7 +17,7 @@ import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, ge
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
-/** paymentMethods (v0.18.10): what the server takes today (env PAYMENT_METHODS), for the served paymentOptions. */
+/** paymentMethods (v0.18.10): what the server takes today (SERVER_PAYMENT_METHODS less PAYMENT_METHODS_PAUSED, v0.18.13), for the served paymentOptions. */
 export type ConfigDeps = { db: Db; jwtSecret: string; defaultZoneId: string; paymentMethods?: readonly string[]; hub?: NotificationHub; clock?: () => Date };
 
 const ZONE_ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);

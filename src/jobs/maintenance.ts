@@ -62,6 +62,8 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   // day warnings, and accounts that wait on themselves get 'Finish your sign-up' every few days.
   await sweepDocumentExpiry(trx, now);
   await sweepSignUpReminders(trx, now);
+  // v0.18.13 (owner G10-2): payouts at the country's day and time (default Monday 08:00 local), within the hour.
+  await closeWeeks(trx, now);
   await trx
     .insertInto("timers")
     .values({ kind: SWEEP_IDEMPOTENCY_KEYS, ref_id: "all", due_at: new Date(now.getTime() + HOUR_MS) })
