@@ -115,3 +115,38 @@ describe("one phone at a time (owner 2026-11-02, driver)", () => {
     expect((await app.inject({ method: "GET", url: "/api/v1/rider/profile", headers: { authorization: `Bearer ${r1.accessToken}` } })).statusCode).toBe(200);
   });
 });
+
+describe("phone and e-mail change by code (owner 2026-11-02)", () => {
+  const auth = (t: string) => ({ authorization: `Bearer ${t}`, "content-type": "application/json" });
+  const signed = async (phone: string, appName: "rider" | "driver") => {
+    advance(60);
+    const c = (await post("/auth/otp/request", { phone, app: appName })).json();
+    return (await post("/auth/otp/verify", { phone, sessionId: c.sessionId, code: "123456" })).json();
+  };
+  it("rider: a code to the new number saves it; a number with an account is refused; the account keeps its id", async () => {
+    const me = await signed(TEST_PHONES[4]!, "rider");
+    const taken = await app.inject({ method: "POST", url: "/api/v1/account/phone/change", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[0]! } });
+    if ((await database.db.selectFrom("riders").select("rider_id").where("phone", "=", TEST_PHONES[0]!).executeTakeFirst())) expect(taken.json()).toMatchObject({ reason: "phone_taken" });
+    advance(60);
+    const start = await app.inject({ method: "POST", url: "/api/v1/account/phone/change", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]! } });
+    expect(start.statusCode, start.body).toBe(200);
+    const wrong = await app.inject({ method: "POST", url: "/api/v1/account/phone/verify", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: "000000" } });
+    expect(wrong.json()).toMatchObject({ reason: "invalid_otp_code" });
+    const ok = await app.inject({ method: "POST", url: "/api/v1/account/phone/verify", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: "123456" } });
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/v1/rider/profile", headers: auth(me.accessToken) })).json().phone).toBe(TEST_PHONES[5]!);
+  });
+  it("driver: e-mail change needs the code sent to the new address; a wrong code changes nothing", async () => {
+    const me = await signed(TEST_PHONES[2]!, "driver");
+    const start = await app.inject({ method: "POST", url: "/api/v1/account/email/change", headers: auth(me.accessToken), payload: { email: "New@Example.se" } });
+    expect(start.statusCode, start.body).toBe(200);
+    const { challengeId } = start.json();
+    expect((await app.inject({ method: "POST", url: "/api/v1/account/email/verify", headers: auth(me.accessToken), payload: { challengeId, code: "999999" } })).json()).toMatchObject({ reason: "invalid_otp_code" });
+    // The test reads the code the way the e-mail would carry it: set a known one.
+    const { createHash } = await import("node:crypto");
+    await database.db.updateTable("email_changes").set({ code_sha256: createHash("sha256").update(`${challengeId}:424242`).digest("hex") }).where("challenge_id", "=", challengeId).execute();
+    const ok = await app.inject({ method: "POST", url: "/api/v1/account/email/verify", headers: auth(me.accessToken), payload: { challengeId, code: "424242" } });
+    expect(ok.json()).toEqual({ email: "new@example.se" });
+    expect((await database.db.selectFrom("notifications").select("kind").where("kind", "=", "email_changed").execute()).length).toBe(1);
+  });
+});

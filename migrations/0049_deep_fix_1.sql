@@ -6,3 +6,6 @@ ALTER TABLE otp_sessions ADD COLUMN IF NOT EXISTS verified boolean NOT NULL DEFA
 -- g1-g3 H1: a driver set offline because a document expired during his shift.
 ALTER TABLE drivers DROP CONSTRAINT IF EXISTS drivers_offline_reason_check;
 ALTER TABLE drivers ADD CONSTRAINT drivers_offline_reason_check CHECK (offline_reason IS NULL OR offline_reason IN ('no_position', 'missed_offers', 'vehicle_blocked', 'fleet_removed', 'account_status', 'admin', 'documents_expired'));
+-- One phone / e-mail change by code (owner 2026-11-02): a pending e-mail change.
+CREATE TABLE IF NOT EXISTS email_changes (challenge_id text PRIMARY KEY, actor text NOT NULL CHECK (actor IN ('rider', 'driver')), subject_id text NOT NULL, email text NOT NULL, code_sha256 text NOT NULL, attempts integer NOT NULL DEFAULT 0, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL);
+CREATE INDEX IF NOT EXISTS email_changes_subject ON email_changes (actor, subject_id);

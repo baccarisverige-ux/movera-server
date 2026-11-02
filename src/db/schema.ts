@@ -416,6 +416,18 @@ export interface OtpSessionsTable {
   verified: Generated<boolean>;
 }
 
+/** v0.18.14: a pending e-mail change (code sent to the new address). */
+export interface EmailChangesTable {
+  challenge_id: string;
+  actor: "rider" | "driver";
+  subject_id: string;
+  email: string;
+  code_sha256: string;
+  attempts: number;
+  expires_at: Timestamp;
+  created_at: Timestamp;
+}
+
 export interface AuthSessionsTable {
   session_id: string;
   actor: "rider" | "driver" | "admin";
@@ -1120,6 +1132,7 @@ export interface Database {
   timers: TimersTable;
   test_phones: TestPhonesTable;
   otp_sessions: OtpSessionsTable;
+  email_changes: EmailChangesTable;
   sign_in_waitlist: SignInWaitlistTable;
   complete_previews: CompletePreviewsTable;
   sign_in_waitlist_asks: SignInWaitlistAsksTable;
