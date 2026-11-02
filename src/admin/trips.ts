@@ -1,4 +1,5 @@
 import { sql } from "kysely";
+import { commissionOf } from "../rules/commission.js";
 import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { contract } from "../contract/contract.js";
@@ -13,7 +14,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL, isTripStatus } from "../rules/transitions.js";
 import { applyCommand, expectVersion, touchTrip } from "../trips/commands.js";
-import { tripProjection } from "../trips/projection.js";
+import { driverTotalOf, tripProjection } from "../trips/projection.js";
 import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver, scaledFare } from "../trips/ride.js";
 import { audit } from "./audit.js";
 import { creditWallet } from "../riders/wallet.js";
@@ -250,7 +251,7 @@ export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string,
   const columns = addBonus(trip, body.amount.amountMinor, scope, body.priority);
   // On a taken trip the money is his: driver_bonus_minor grows by the amount (not the max of the two kinds).
   const bonus = taken ? Number(trip.driver_bonus_minor ?? 0) + body.amount.amountMinor : columns.driver_bonus_minor;
-  const updated = await touchTrip(trx, trip, { ...columns, driver_bonus_minor: bonus, commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus }, now);
+  const updated = await touchTrip(trx, trip, { ...columns, driver_bonus_minor: bonus, commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, Number(trip.driver_earnings_minor ?? 0), Number(trip.pickup_pay_minor ?? 0), bonus) }, now);
   // A completed trip's earnings are already written: the bonus is its own entry now.
   if (updated.status === "completed" && updated.driver_id) await credit(trx, { driverId: updated.driver_id, tripId, kind: "bonus", currency: trip.currency, amount: body.amount.amountMinor }, now);
   await refreshOpenOffers(trx, updated, now, scope);
@@ -376,7 +377,7 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
         fare_minor: fare.total.amountMinor,
         fare_lines: JSON.stringify(fare.fareLines),
         driver_earnings_minor: fare.driverEarnings.amountMinor,
-        commission_minor: fare.total.amountMinor - fare.driverEarnings.amountMinor - pickupPay - Number(trip.driver_bonus_minor ?? 0),
+        commission_minor: commissionOf(fare.total.amountMinor, fare.fareLines, fare.driverEarnings.amountMinor, pickupPay, Number(trip.driver_bonus_minor ?? 0)),
       });
       row = { ...trip, fare_minor: String(fare.total.amountMinor), fare_lines: fare.fareLines, driver_earnings_minor: String(fare.driverEarnings.amountMinor) };
     }
@@ -440,12 +441,19 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
   // "Take from driver": the driver loses their share of the refunded money (owner decision 31).
   if (p.fromDriver && trip.driver_id && paid > 0) {
     const fare = Number(trip.fare_minor);
-    const share = fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0;
-    if (share > 0) await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
+    // Checker (7): never more than the driver still has on this trip (his one number never goes below 0).
+    const share = Math.min(driverTotalOf(trip), fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0);
+    if (share > 0) {
+      await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
+      // v0.18.10 (contract.json#finish.driverMoney): the driver's one number on the trip moves with it.
+      await trx.updateTable("trips").set({ driver_adjustments_minor: sql`driver_adjustments_minor - ${share}` }).where("trip_id", "=", trip.trip_id).execute();
+    }
   }
+  await trx.updateTable("trips").set({ refunded_minor: sql`refunded_minor + ${p.amount.amountMinor}` }).where("trip_id", "=", trip.trip_id).execute();
   // v0.10.3: refunds count on the trip's day; an earlier day's summary is re-summed now.
   await resumTripDay(trx, trip.trip_id, now);
   const all = p.amount.amountMinor === left;
+  // touchTrip re-reads the row, so the projection event carries the new refunded / adjustments numbers.
   await touchTrip(trx, trip, { payment_status: all ? "refunded" : "partially_refunded" }, now);
   const row = await trx.selectFrom("refunds").selectAll().where("refund_id", "=", refundId).executeTakeFirstOrThrow();
   return refundView(row);

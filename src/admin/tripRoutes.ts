@@ -1,4 +1,5 @@
 import { addTripNote, flagTrip, openTripCase, revealTripContact, tripNotes } from "./tripTools.js";
+import { adminDriverPay, adminReceipt, resendReceipt } from "../trips/finish.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -163,6 +164,18 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     const tripId = tripParam(request);
     const body = parseBody(z.object({ who: z.enum(["rider", "driver"]), reason: z.string().trim().min(1).max(500) }), request.body);
     return reply.status(200).send(await deps.db.transaction().execute((trx) => revealTripContact(trx, who, tripId, body, now())));
+  });
+  // v0.18.10 (contract.json#finish.receipt, finish.driverMoney): receipt, resend it, change the driver's pay.
+  app.get(`${API_PREFIX}/admin/trips/:tripId/receipt`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    return adminReceipt(deps.db, who, tripParam(request));
+  });
+  tool("receipt/resend", "trips.intervene", z.object({ reason: z.string().trim().min(1).max(1000) }), 200, (trx, who, id, body) => resendReceipt(trx, who, id, body, now()));
+  // The trip's zone is checked before the body (another zone's admin gets 403, never a body error).
+  tool("driver-pay", "finance.edit", z.unknown(), 200, async (trx, who, id, raw) => {
+    await adminTrip(trx, who, id);
+    const body = parseBody(z.object({ change: Money, reason: z.string().trim().min(1).max(1000) }), raw);
+    return tripProjection(await adminDriverPay(trx, who, id, body, now()), "admin");
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId/notes`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");

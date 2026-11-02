@@ -54,6 +54,8 @@ export function payoutLines(entries: readonly PayoutEntry[]): { lines: { code: P
         break;
       case "tip":
         sums.tips += entry.amountMinor;
+        // v0.18.10 (contract.json#finish.tips): a cash tip is already in the driver's hand.
+        sums.cash_collected -= entry.cashMinor;
         break;
       case "fee_share":
         sums.fees += entry.amountMinor;

@@ -1,3 +1,4 @@
+import { commissionOf } from "../rules/commission.js";
 import type { TripRow } from "../db/tripLog.js";
 
 /**
@@ -29,7 +30,7 @@ export function priorityFor(trip: BonusCols, kind: string): boolean {
  * The columns after adding `addMinor` (and the badge) for `scope`. driver_bonus_minor is the larger of the two until a
  * driver accepts (the limit and Movera's commission count the most it may pay); accept sets it to the kind he took.
  */
-export function addBonus(trip: BonusCols & Pick<TripRow, "fare_minor" | "driver_earnings_minor" | "pickup_pay_minor">, addMinor: number, scope: BonusScope, priority?: boolean) {
+export function addBonus(trip: BonusCols & Pick<TripRow, "fare_minor" | "fare_lines" | "driver_earnings_minor" | "pickup_pay_minor">, addMinor: number, scope: BonusScope, priority?: boolean) {
   const exclusive = bonusFor(trip, "exclusive") + (scopeCovers(scope, "exclusive") ? addMinor : 0);
   const radar = bonusFor(trip, "radar") + (scopeCovers(scope, "radar") ? addMinor : 0);
   const pick = (side: OfferSide) => (priority !== undefined && scopeCovers(scope, side) ? priority : priorityFor(trip, side));
@@ -43,6 +44,6 @@ export function addBonus(trip: BonusCols & Pick<TripRow, "fare_minor" | "driver_
     priority_radar: priorityRadar,
     priority: priorityExclusive || priorityRadar,
     driver_bonus_minor: bonus,
-    commission_minor: Number(trip.fare_minor) - Number(trip.driver_earnings_minor ?? 0) - Number(trip.pickup_pay_minor ?? 0) - bonus,
+    commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, Number(trip.driver_earnings_minor ?? 0), Number(trip.pickup_pay_minor ?? 0), bonus),
   };
 }

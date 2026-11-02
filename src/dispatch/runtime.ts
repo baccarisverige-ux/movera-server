@@ -1,4 +1,5 @@
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
+import { commissionOf } from "../rules/commission.js";
 import { bonusFor, priorityFor, scopeCovers, sideOfKind, type BonusScope } from "./bonusScope.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { etaHandler, startEta } from "../trips/eta.js";
@@ -594,7 +595,7 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       // The money the admin added for the kind of offer he took (owner bug 2026-11-01), not the other kind's.
       driver_bonus_minor: bonusFor(trip, offer.kind),
       priority: priorityFor(trip, offer.kind),
-      commission_minor: Number(trip.fare_minor) - earnings - pickupPay - bonusFor(trip, offer.kind),
+      commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, earnings, pickupPay, bonusFor(trip, offer.kind)),
       driver_summary: JSON.stringify(summary),
       rider_summary: JSON.stringify(riderSummary),
       eta: null,

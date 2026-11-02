@@ -1,4 +1,5 @@
 import { schemaProblem } from "../contract/schemas.js";
+import { commissionOf } from "../rules/commission.js";
 import type { Trx } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
@@ -182,7 +183,7 @@ async function applyChange(trx: Trx, trip: TripRow, change: RouteChange, answere
     fare_minor: total,
     fare_lines: JSON.stringify(quote.fare_lines),
     driver_earnings_minor: earnings,
-    commission_minor: total - earnings - Number(trip.pickup_pay_minor ?? 0) - Number(trip.driver_bonus_minor ?? 0),
+    commission_minor: commissionOf(total, quote.fare_lines, earnings, Number(trip.pickup_pay_minor ?? 0), Number(trip.driver_bonus_minor ?? 0)),
     distance_meters: quote.distance_meters,
     duration_seconds: quote.duration_seconds,
     planned_route: null,

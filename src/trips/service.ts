@@ -1,4 +1,6 @@
 import { appendTripEvent } from "../db/tripLog.js";
+import { checkPaymentMethod } from "./finish.js";
+import { commissionOf } from "../rules/commission.js";
 import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
@@ -51,7 +53,13 @@ async function quotedPricing(ex: Executor, quote: { zone_id: string; pricing_ver
  * live trip takes `start_search` at once (a scheduled one stays `requested` until its time, §6.1). Dispatch starts
  * from the search started in the same transaction (dispatch/runtime.ts).
  */
+const PAYMENT_METHODS = (contract as unknown as { paymentMethods: string[] }).paymentMethods;
+
 export async function createTrip(trx: Trx, riderId: string, request: unknown, options: { paymentMethods: readonly string[]; now: Date }): Promise<TripRow> {
+  // v0.18.10 (contract.json#finish.paymentMethods.booking): a method that no longer exists (google_pay) gets its clear
+  // reason, not a schema error.
+  const asked = (request as { paymentMethod?: unknown } | null)?.paymentMethod;
+  if (typeof asked === "string" && !PAYMENT_METHODS.includes(asked)) throw badRequest("This payment method cannot be used. Choose another one.", "payment_method_not_available");
   const problem = schemaProblem("CreateTripRequest", request);
   if (problem !== null) throw badRequest(`The trip request is not valid: ${problem}.`, "invalid_body");
   const body = request as CreateTrip;
@@ -75,9 +83,9 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   if (!matches) throw badRequest("The ride does not match its price. Ask for a new one.", "quote_mismatch");
   // v0.18.9 (contract.json#onTrip.maxStops): the zone's max now (an admin may have lowered it since the quote).
   await checkMaxStops(trx, quote.zone_id, body.stops.length);
-  if (!options.paymentMethods.includes(body.paymentMethod)) {
-    throw badRequest(`${body.paymentMethod} is not available; pay with ${options.paymentMethods.join(" or ")}.`, "payment_method_not_available");
-  }
+  // v0.18.10 (contract.json#finish.paymentMethods.booking): off in the zone's admin settings, coming soon (the server does
+  // not take it yet) or not a method at all, each with its own reason; never a silent fail.
+  await checkPaymentMethod(trx, quote.zone_id, body.paymentMethod, options.paymentMethods);
   // v0.11.0 §20: a zone closed since the quote takes no new rides ("Movera isn't here yet").
   const zoneRow = await trx.selectFrom("zones").select("open").where("zone_id", "=", quote.zone_id).executeTakeFirst();
   if (zoneRow?.open !== true) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
@@ -116,7 +124,7 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
         fare_lines: JSON.stringify(quote.fare_lines),
         booked_fare_minor: quote.total_minor,
         driver_earnings_minor: driverEarnings,
-        commission_minor: Number(quote.total_minor) - driverEarnings,
+        commission_minor: commissionOf(Number(quote.total_minor), quote.fare_lines, driverEarnings, 0, 0),
         payment_method: body.paymentMethod,
         payment_method_id: body.paymentMethodId ?? null,
         payment_status: null,

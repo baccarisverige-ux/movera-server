@@ -103,7 +103,8 @@ describe("publish", () => {
 
     const served = await send("GET", "/rider/config?zoneId=Z004", rider);
     expect(served.statusCode).toBe(200);
-    expect(served.json()).toEqual({ ...doc, version: 1, publishedAt: clock.now.toISOString() });
+    // v0.18.10 (contract.json#finish.paymentMethods.served): the server adds what it takes today (cash).
+    expect(served.json()).toEqual({ ...doc, version: 1, publishedAt: clock.now.toISOString(), paymentOptions: ((doc as { paymentMethods?: string[] }).paymentMethods ?? []).map((method: string) => ({ method, status: method === "cash" ? "available" : "coming_soon" })) });
 
     advance(60);
     const draft = (await send("GET", "/admin/config/rider_app_config?zoneId=Z004", owner.headers)).json();

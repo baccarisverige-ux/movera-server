@@ -275,6 +275,11 @@ export interface TripsTable {
   planned_route: ColumnType<unknown, string | null | undefined, string | null>;
   route_change: ColumnType<unknown, string | null | undefined, string | null>;
   admin_flag: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.10 (migration 0045, contract.json#finish): the rider's tip, what ended the trip early, Movera's changes to the driver's pay, refunded money. */
+  tip: ColumnType<unknown, string | null | undefined, string | null>;
+  end_info: ColumnType<unknown, string | null | undefined, string | null>;
+  driver_adjustments_minor: ColumnType<string, number | string | undefined, number | string>;
+  refunded_minor: ColumnType<string, number | string | undefined, number | string>;
   config_versions: JsonDefault;
   distance_meters: ColumnType<number | null, number | null | undefined, number | null>;
   duration_seconds: ColumnType<number | null, number | null | undefined, number | null>;

@@ -1,5 +1,7 @@
 import type { Trx } from "../db/db.js";
-import { contractJson } from "../contract/contract.js";
+import { contract, contractJson } from "../contract/contract.js";
+
+type Money = { amountMinor: number; currency: string };
 import type { ConfigDoc } from "../db/schema.js";
 import { liveDocument, publishDraft, putDraft, standardKey } from "./service.js";
 
@@ -44,6 +46,15 @@ export function sampleForZone(sample: Record<string, unknown>, zone: SampleZone)
     return Object.fromEntries(Object.entries(record).map(([k, v]) => [k, convert(v)]));
   };
   const document = (zone.currency === "SEK" ? sample : convert(sample)) as Record<string, unknown>;
+  // v0.18.10 (contract.json#finish.tips): the country's own tip amounts and raise steps (France 1 / 2 / 5 €), never
+  // Swedish kronor converted into 0,90 / 1,80 / 2,70 €.
+  const own = (contract as unknown as { configDefaults: { countries: Record<string, { tips?: Money[]; raiseSteps?: Money[] }> } }).configDefaults.countries[zone.country];
+  for (const key of ["tips", "raiseSteps"] as const) {
+    const amounts = own?.[key];
+    if (key in document && amounts && amounts.every((a) => a.currency === zone.currency)) document[key] = amounts.map((amount) => ({ amount, enabled: true }));
+  }
+  const max = (contract as unknown as { configDefaults: { tipRules: { customMax: Record<string, Money> } } }).configDefaults.tipRules.customMax[zone.country];
+  if (document["tipRules"] && max && max.currency === zone.currency) document["tipRules"] = { ...(document["tipRules"] as object), customMax: max };
   return {
     ...document,
     zoneId: zone.zoneId,
