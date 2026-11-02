@@ -805,7 +805,10 @@ export interface PayoutsTable {
   lines: ColumnType<unknown, string, string>;
   trip_count: number;
   source: "weekly" | "manual";
-  status: ColumnType<"pending" | "paid", "pending" | "paid" | undefined, "pending" | "paid">;
+  /** v0.18.16 A2 (owner Q4): pending_approval = a manual country's run waiting for an admin. */
+  status: ColumnType<"pending" | "pending_approval" | "paid", "pending" | "pending_approval" | "paid" | undefined, "pending" | "pending_approval" | "paid">;
+  approved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  approved_by: ColumnType<string | null, string | null | undefined, string | null>;
   period_start: Timestamp;
   period_end: Timestamp;
   note: string | null;

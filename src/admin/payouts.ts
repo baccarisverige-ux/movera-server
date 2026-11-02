@@ -76,7 +76,7 @@ type PayoutRow = {
   lines: unknown;
   trip_count: number;
   source: "weekly" | "manual";
-  status: "pending" | "paid";
+  status: "pending" | "pending_approval" | "paid";
   period_start: Date;
   period_end: Date;
   note: string | null;
@@ -95,7 +95,8 @@ export function payoutView(row: PayoutRow, viewer: "admin" | "driver") {
     payoutId: row.payout_id,
     driverId: row.driver_id,
     amount: money(row.amount_minor),
-    status: row.status,
+    // v0.18.16 A2 (owner Q4): the driver app shows a run waiting for approval as pending.
+    status: viewer === "driver" && row.status === "pending_approval" ? "pending" : row.status,
     periodStart: row.period_start.toISOString(),
     periodEnd: row.period_end.toISOString(),
     createdAt: row.created_at.toISOString(),
@@ -119,7 +120,7 @@ export function payoutView(row: PayoutRow, viewer: "admin" | "driver") {
  * € are never added). Returns the payouts made (none when there is nothing to pay). The entries are locked, so two
  * runs (the job and an admin, or two admins) never take the same entry.
  */
-export async function makePayouts(trx: Trx, input: { driverId: string; from: Date; to: Date; source: "weekly" | "manual"; by: string | null; note?: string; entriesFrom?: Date }, now: Date): Promise<PayoutRow[]> {
+export async function makePayouts(trx: Trx, input: { driverId: string; from: Date; to: Date; source: "weekly" | "manual"; by: string | null; note?: string; entriesFrom?: Date; waitForApproval?: boolean }, now: Date): Promise<PayoutRow[]> {
   const entries = await trx
     .selectFrom("earnings_entries as e")
     .leftJoin("trips as t", "t.trip_id", "e.trip_id")
@@ -156,6 +157,8 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
         note: input.note ?? null,
         created_by: input.by,
         created_at: now,
+        // v0.18.16 A2 (owner Q4, contract.json#payoutMode): a manual country's scheduled run waits for an admin.
+        ...(input.waitForApproval ? { status: "pending_approval" as const } : {}),
       })
       .onConflict((c) => c.columns(["driver_id", "period_start", "currency"]).where("source", "=", "weekly").doNothing())
       .returningAll()
@@ -233,6 +236,7 @@ export async function closePeriods(trx: Trx, now: Date): Promise<number> {
      GROUP BY e.driver_id, z.time_zone, coalesce(z.country, d.country)
      ORDER BY 1`.execute(trx);
   const schedules = new Map<string, PayoutSchedule>();
+  const manual = new Map<string, boolean>();
   let made = 0;
   for (const row of rows.rows) {
     const timeZone = row.time_zone ?? countryTimeZone(row.country) ?? SCHEDULE.countryTimeZones["SE"]!;
@@ -240,6 +244,7 @@ export async function closePeriods(trx: Trx, now: Date): Promise<number> {
     if (!schedules.has(key)) {
       const live = row.country ? await trx.selectFrom("config_live").select("document").where("doc", "=", "country_rules").where("zone_id", "=", standardKey(row.country)).executeTakeFirst() : undefined;
       schedules.set(key, payoutScheduleOf(live?.document as { payoutSchedule?: Partial<PayoutSchedule> } | undefined));
+      manual.set(key, (live?.document as { payoutMode?: unknown } | undefined)?.payoutMode === "manual");
     }
     const schedule = schedules.get(key)!;
     // Every ended period from the oldest unpaid entry on. Checker 4: an entry that came in late for a period already
@@ -250,7 +255,7 @@ export async function closePeriods(trx: Trx, now: Date): Promise<number> {
     let period = await periodOf(trx, lastEnd && lastEnd > firstAt ? lastEnd : firstAt, timeZone, schedule);
     let entriesFrom: Date | undefined = lastEnd && lastEnd > firstAt ? new Date(0) : undefined;
     while (period.end.getTime() <= now.getTime()) {
-      made += (await makePayouts(trx, { driverId: row.driver_id, from: period.start, to: period.end, source: "weekly", by: null, ...(entriesFrom ? { entriesFrom } : {}) }, now)).length;
+      made += (await makePayouts(trx, { driverId: row.driver_id, from: period.start, to: period.end, source: "weekly", by: null, ...(entriesFrom ? { entriesFrom } : {}), ...(manual.get(key) ? { waitForApproval: true } : {}) }, now)).length;
       entriesFrom = undefined;
       period = await periodOf(trx, period.end, timeZone, schedule);
     }
@@ -267,8 +272,8 @@ export async function listPayouts(ex: Executor, who: Principal, input: { cursor?
   let q = ex.selectFrom("payouts").innerJoin("drivers", "drivers.driver_id", "payouts.driver_id").select(SELECT_PAYOUT);
   const zones = zonesOf(who);
   if (zones) q = q.where("payouts.zone_id", "in", zones.length ? zones : ["-"]);
-  const statuses = (input.status ?? []).filter((s) => s === "pending" || s === "paid") as ("pending" | "paid")[];
-  // A status the server never gives (pending_approval, failed, held) matches nothing.
+  const statuses = (input.status ?? []).filter((s) => s === "pending" || s === "pending_approval" || s === "paid") as ("pending" | "pending_approval" | "paid")[];
+  // A status the server never gives (failed, held) matches nothing.
   if (input.status?.length) q = statuses.length ? q.where("payouts.status", "in", statuses) : q.where(sql<boolean>`false`);
   if (input.driverId) q = q.where("payouts.driver_id", "=", input.driverId);
   if (input.from) q = q.where("payouts.period_end", ">", new Date(input.from));
@@ -329,6 +334,7 @@ export async function createPayout(trx: Trx, who: Principal, body: { driverId: s
 export async function markPayoutPaid(trx: Trx, who: Principal, payoutId: string, body: { note?: string }, now: Date) {
   const row = await payoutForAdmin(trx, who, payoutId, true);
   if (row.status === "paid") throw new ApiError("invalid_transition", "This payout is already paid.", { reason: "already_paid" });
+  if (row.status === "pending_approval") throw new ApiError("conflict", "This payout's run is not approved yet.", { reason: "run_not_approved" });
   await trx.updateTable("payouts").set({ status: "paid", paid_at: now, paid_by: who.subjectId, ...(body.note ? { note: body.note } : {}) }).where("payout_id", "=", payoutId).execute();
   await audit(trx, { adminId: who.subjectId, action: "payout.paid", targetType: "payout", targetId: payoutId, zoneId: row.zone_id, detail: body.note ? { note: body.note } : {}, at: now });
   return payoutView(await payoutForAdmin(trx, who, payoutId), "admin");
@@ -346,4 +352,31 @@ export async function holdDriverPayouts(trx: Trx, who: Principal, driverId: stri
   if (body.held === (driver.payout_hold_at !== null)) throw new ApiError("invalid_transition", body.held ? "This driver's payouts are already paused." : "This driver's payouts are not paused.", { reason: body.held ? "payout_already_held" : "payout_not_held" });
   await trx.updateTable("drivers").set(body.held ? { payout_hold_at: now, payout_hold_reason: body.reason, payout_hold_by: who.subjectId } : { payout_hold_at: null, payout_hold_reason: null, payout_hold_by: null }).where("driver_id", "=", driverId).execute();
   await audit(trx, { adminId: who.subjectId, action: body.held ? "payout.hold" : "payout.release", targetType: "driver", targetId: driverId, zoneId: zone ?? null, detail: { reason: body.reason }, at: now });
+}
+
+/**
+ * v0.18.16 A2 (owner build-spec Q4, contract.json#payoutMode): POST /admin/payouts/runs/approve { country, periodEnd }.
+ * Every pending_approval payout of that country and period inside the admin's zones becomes pending (to pay).
+ */
+export async function approvePayoutRun(trx: Trx, who: Principal, body: { country: string; periodEnd: string }, now: Date) {
+  const periodEnd = new Date(body.periodEnd);
+  const rows = await trx
+    .selectFrom("payouts as p")
+    .innerJoin("drivers as d", "d.driver_id", "p.driver_id")
+    .leftJoin("zones as z", "z.zone_id", "p.zone_id")
+    .select(["p.payout_id", "p.zone_id", "p.currency", "p.amount_minor"])
+    .where("p.status", "=", "pending_approval")
+    .where("p.period_end", "=", periodEnd)
+    .where(sql<boolean>`coalesce(z.country, d.country) = ${body.country}`)
+    .forUpdate("p")
+    .execute();
+  const mine = rows.filter((r) => r.zone_id === null ? who.zones.includes("*") : adminCoversZone(who, r.zone_id));
+  if (rows.length === 0) throw new ApiError("invalid_transition", "No payout of this run waits for approval.", { reason: "nothing_to_approve" });
+  if (mine.length === 0) throw new ApiError("forbidden", "This run is outside your zones.", { reason: "zone_out_of_scope" });
+  await trx.updateTable("payouts").set({ status: "pending", approved_at: now, approved_by: who.subjectId }).where("payout_id", "in", mine.map((r) => r.payout_id)).execute();
+  const totals = new Map<string, number>();
+  for (const r of mine) totals.set(r.currency, (totals.get(r.currency) ?? 0) + Number(r.amount_minor));
+  const total = [...totals].map(([currency, amountMinor]) => ({ amountMinor, currency }));
+  await audit(trx, { adminId: who.subjectId, action: "payout.run_approve", targetType: "payout_run", targetId: `${body.country}:${periodEnd.toISOString()}`, detail: { approved: mine.length, total }, at: now });
+  return { country: body.country, periodEnd: periodEnd.toISOString(), approved: mine.length, total };
 }

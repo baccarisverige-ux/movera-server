@@ -14,7 +14,7 @@ import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearD
 import { adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets } from "../support/tickets.js";
 import { kpis } from "./kpis.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
-import { createPayout, driverPayouts, holdDriverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
+import { approvePayoutRun, createPayout, driverPayouts, holdDriverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
 import { driverView, loadDriver } from "../drivers/service.js";
 import { listRatings, moderateRating } from "./ratings.js";
 import { riskSignals } from "./risk.js";
@@ -105,6 +105,12 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const body = parseBody(CreatePayoutBody, request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await createPayout(trx, who, clean(body), now()) }));
     return reply.status(result.status).send(result.body);
+  });
+  // v0.18.16 A2 (owner Q4): approve a manual country's payout run.
+  app.post(`${API_PREFIX}/admin/payouts/runs/approve`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const body = parseBody(z.object({ country: z.string().regex(/^[A-Z]{2}$/), periodEnd: z.string().datetime() }), request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await approvePayoutRun(trx, who, body, now()) }))).body;
   });
   app.post(`${API_PREFIX}/admin/payouts/:payoutId/paid`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.edit");

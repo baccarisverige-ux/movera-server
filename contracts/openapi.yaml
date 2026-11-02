@@ -80,6 +80,7 @@ tags:
   description: 'Zones from the server: list, create, outline, open and close (v0.11.0)'
 - name: Rider · Trip
 - name: Driver · Home
+- name: Admin · Finance
 x-contract:
   name: movera
   version: 0.18.16
@@ -13268,6 +13269,61 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /admin/payouts/runs/approve:
+    post:
+      operationId: adminApprovePayoutRun
+      summary: Approve a manual payout run
+      description: 'v0.18.16 A2 (owner build-spec Q4 ''Admin can set automatic or manual''): CountryRules.payoutMode of the
+        country standard (Pricing › Tips & limits on the Standard; a zone''s own value is ignored), automatic (default) or
+        manual. automatic: the scheduled run makes payouts pending (to pay) at the country''s payoutSchedule, as before. manual:
+        the run makes them pending_approval; nothing is paid until an admin approves the run with POST /admin/payouts/runs/approve
+        { country, periodEnd } (finance.edit, Idempotency-Key, audit payout.run_approve): every pending_approval payout of
+        that country and period inside the admin''s zones becomes pending; the answer is { country, periodEnd, approved, total:
+        Money[] (one per currency) }. A pending_approval payout cannot be marked paid (409 run_not_approved). The driver app
+        shows pending_approval as pending (GET /driver/payouts never returns pending_approval). Changing the mode changes
+        only later runs. One admin is enough (Q1); a single driver can still be held (payoutHold).'
+      tags:
+      - Admin · Finance
+      x-actor:
+      - admin
+      x-permission: finance.edit
+      x-permission-v050: finance.edit
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayoutRunApproveCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutRunApproved'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     bearerAuth:
@@ -17255,6 +17311,20 @@ components:
           - $ref: '#/components/schemas/Money'
           description: 'v0.18.16: the largest single Add money to wallet for riders of this zone (or country Standard). Default
             SE 290000 SEK, FR 25000 EUR, TN 800000 TND (minor units).'
+        payoutMode:
+          type: string
+          enum:
+          - automatic
+          - manual
+          description: 'v0.18.16 A2 (owner build-spec Q4 ''Admin can set automatic or manual''): CountryRules.payoutMode of
+            the country standard (Pricing › Tips & limits on the Standard; a zone''s own value is ignored), automatic (default)
+            or manual. automatic: the scheduled run makes payouts pending (to pay) at the country''s payoutSchedule, as before.
+            manual: the run makes them pending_approval; nothing is paid until an admin approves the run with POST /admin/payouts/runs/approve
+            { country, periodEnd } (finance.edit, Idempotency-Key, audit payout.run_approve): every pending_approval payout
+            of that country and period inside the admin''s zones becomes pending; the answer is { country, periodEnd, approved,
+            total: Money[] (one per currency) }. A pending_approval payout cannot be marked paid (409 run_not_approved). The
+            driver app shows pending_approval as pending (GET /driver/payouts never returns pending_approval). Changing the
+            mode changes only later runs. One admin is enough (Q1); a single driver can still be held (payoutHold).'
       x-server-only: true
     FeeRule:
       type: object
@@ -26864,3 +26934,33 @@ components:
           type: string
           minLength: 1
           maxLength: 300
+    PayoutRunApproveCommand:
+      type: object
+      required:
+      - country
+      - periodEnd
+      properties:
+        country:
+          type: string
+          pattern: ^[A-Z]{2}$
+        periodEnd:
+          $ref: '#/components/schemas/Timestamp'
+    PayoutRunApproved:
+      type: object
+      required:
+      - country
+      - periodEnd
+      - approved
+      - total
+      properties:
+        country:
+          type: string
+        periodEnd:
+          $ref: '#/components/schemas/Timestamp'
+        approved:
+          type: integer
+          minimum: 0
+        total:
+          type: array
+          items:
+            $ref: '#/components/schemas/Money'

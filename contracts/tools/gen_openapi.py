@@ -2608,6 +2608,14 @@ S["CountryRules"]["properties"]["walletCreditMax"] = {"allOf": [ref("Money")], "
 op("post", "/admin/riders/{riderId}/wallet-credit", "adminCreditRiderWallet", "Add money to a rider's wallet", ["admin"], "Admin · People",
    params=[pref("RiderId")], body="WalletCreditCommand", ok=(200, "Rider"), mutation=True, permission="finance.edit", permission_v050="finance.edit", desc=WC["note"])
 
+# ---- v0.18.16 A2: payouts Automatic / Manual per country + approve a run (owner build-spec Q4; contract.json#payoutMode)
+PM = C["payoutMode"]
+S["CountryRules"]["properties"]["payoutMode"] = s(PM["note"], enum=PM["values"])
+S["PayoutRunApproveCommand"] = obj({"country": s(pattern="^[A-Z]{2}$"), "periodEnd": ref("Timestamp")}, ["country", "periodEnd"])
+S["PayoutRunApproved"] = obj({"country": s(), "periodEnd": ref("Timestamp"), "approved": i(minimum=0), "total": arr(ref("Money"))}, ["country", "periodEnd", "approved", "total"])
+op("post", "/admin/payouts/runs/approve", "adminApprovePayoutRun", "Approve a manual payout run", ["admin"], "Admin · Finance",
+   body="PayoutRunApproveCommand", ok=(200, "PayoutRunApproved"), mutation=True, permission="finance.edit", permission_v050="finance.edit", desc=PM["note"])
+
 doc = OrderedDict()
 doc["openapi"] = "3.1.0"
 doc["info"] = {
