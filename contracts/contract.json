@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.13",
+  "version": "0.18.15",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -3700,7 +3700,8 @@
     "kindSeverity": {
       "sos": "critical",
       "driver_silent": "critical",
-      "ride_check": "critical"
+      "ride_check": "critical",
+      "support_case": "medium"
     },
     "raisedBy": [
       "rider",
@@ -3971,6 +3972,81 @@
     ],
     "adminScope": "v0.13.0: GET /admin/tickets, GET /admin/tickets/{ticketId} and POST /admin/tickets/{ticketId}/reply need support.reply (reading too) and see only tickets of the admin's zones (super admin: all; a ticket without zone: super admin only). Outside the zones: 403 forbidden, reason zone_out_of_scope. Every reply is audited.",
     "ownScope": "v0.13.0: a rider or driver sees only the tickets they opened; another person's ticket is 404 not_found. A ticket with tripId must be the caller's own trip (else 404)."
+  },
+  "supportDesk": {
+    "note": "v0.18.15 (build-all A1, owner 2026-11-02 decisions/other-support-promos.md QO-1/QO-2/QO-4/QO-5 + rule 16): the support desk works on the server. Riders and drivers keep writing on their ticket chat-style; Admin › Support claims, assigns, changes the topic, marks waiting / solved, reopens and opens a safety case from a ticket; the topics and time limits are an admin setting per country (SE, FR, TN-ready) with the defaults below. Additive: older apps keep working.",
+    "personReply": "POST /support/tickets/{ticketId}/messages { text } (rider / driver, own ticket only, else 404) -> 201 SupportTicket with messages. The status becomes open (the desk sees a new answer). A closed ticket -> 409 invalid_transition, reason ticket_closed. A solved (resolved) ticket: SupportSettings.replyAfterSolved = reopen (default) opens it again; blocked -> 409 invalid_transition, reason ticket_solved.",
+    "supportName": "Owner QO-2 'Agent first name': on the person's own views (GET /support/tickets/{ticketId}, POST .../messages) a support message carries supportName = the answering admin's first name (first word of the admin's name; never an e-mail, never the last name; absent when the name is empty or looks like an e-mail) and adminName = the same first name (older apps). The apps show '<supportName> · Movera Support', or 'Movera Support' without it. Admin views keep the full adminName.",
+    "topics": "GET /support/topics (rider / driver) -> SupportTopics { country, topics: [code] }: the ticket topics that are on for the caller's country (the zone of the last trip or the driver's first zone, else the driver's country), in the contract order; both apps show the same list (owner QO-4). POST /support/tickets with a topic that is off -> 400 invalid_request, reason topic_off. Labels are the apps' own (sv / fr / en) per code.",
+    "adminCommands": {
+      "claim": "POST /admin/tickets/{ticketId}/claim {} -> SupportTicket: assignedTo = the caller until claimedUntil = now + claimDays days. Another admin's claim that has not run out -> 409 conflict, reason ticket_claimed. Audited ticket.claim.",
+      "assign": "POST /admin/tickets/{ticketId}/assign { adminId | null, reason } -> SupportTicket: hands the ticket to an active admin who has support.reply and covers the ticket's zone (else 400 invalid_request, reason assignee_not_allowed); null = nobody. Audited ticket.assign.",
+      "topic": "POST /admin/tickets/{ticketId}/topic { category } -> SupportTicket (any contract topic; the ticket's time limits follow it). Audited ticket.topic.",
+      "waiting": "POST /admin/tickets/{ticketId}/waiting { waiting } -> SupportTicket: true = pending (waiting for the person), false = open. Closed or solved -> 409 invalid_transition, reason ticket_not_open. Audited ticket.waiting.",
+      "solve": "POST /admin/tickets/{ticketId}/solve { note? } -> SupportTicket: status resolved, solvedBy / solvedAt; the note is private (never sent to the app). Closed -> 409 ticket_closed. Audited ticket.solve.",
+      "reopen": "POST /admin/tickets/{ticketId}/reopen { reason } -> SupportTicket: resolved or closed -> open; solvedBy / solvedAt cleared. Already open or pending -> 409 invalid_transition, reason ticket_not_solved. Audited ticket.reopen.",
+      "case": "POST /admin/tickets/{ticketId}/case { reason } -> SupportTicket with incidentId: opens a support_case incident on the ticket's trip for the safety team (Incidents; severity medium, no alarm; the safety team changes the level). A ticket without trip -> 409 invalid_transition, reason ticket_without_trip; one open support_case per trip (the open one is linked). Audited ticket.case."
+    },
+    "adminView": "Admin views of SupportTicket add assignedTo { adminId, name }, claimedUntil, solvedBy, solvedAt, incidentId, firstReplyAt, firstReplyDueAt and solveDueAt (created + the topic's firstReplyMin / solveHours of the ticket's country), late { reply, solve }. GET /admin/tickets?assignedTo=me|none|<adminId>.",
+    "settings": {
+      "endpoints": "GET /admin/support/settings?country=SE (support.reply) -> SupportSettings; PUT /admin/support/settings SupportSettings (settings.edit; a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope). Audited support.settings. Never saved = the defaults.",
+      "countries": [
+        "SE",
+        "FR",
+        "TN"
+      ],
+      "defaults": {
+        "claimDays": 3,
+        "replyAfterSolved": "reopen",
+        "topics": [
+          {
+            "code": "ride_dispute",
+            "on": true,
+            "firstReplyMin": 60,
+            "solveHours": 24
+          },
+          {
+            "code": "help",
+            "on": true,
+            "firstReplyMin": 120,
+            "solveHours": 48
+          },
+          {
+            "code": "lost_item",
+            "on": true,
+            "firstReplyMin": 30,
+            "solveHours": 48
+          },
+          {
+            "code": "payment",
+            "on": true,
+            "firstReplyMin": 60,
+            "solveHours": 24
+          },
+          {
+            "code": "account",
+            "on": true,
+            "firstReplyMin": 120,
+            "solveHours": 24
+          },
+          {
+            "code": "safety",
+            "on": true,
+            "firstReplyMin": 5,
+            "solveHours": 4
+          },
+          {
+            "code": "other",
+            "on": true,
+            "firstReplyMin": 240,
+            "solveHours": 72
+          }
+        ]
+      },
+      "limits": "claimDays 1-30; firstReplyMin 1-10080; solveHours 1-720; every contract topic once; at least one topic on."
+    },
+    "caseIncidentKind": "support_case",
+    "next": "Rider and driver apps: reply box on the ticket, '<first name> · Movera Support', topics from GET /support/topics."
   },
   "payouts": {
     "note": "v0.9.0 (owner real-data decision, part 3): every payout period (v0.18.13: the country's schedule, default weekly from Monday 08:00 to Monday 08:00 local time) a nightly job makes one payout per driver with earnings; an admin can also make one by hand for a driver and a date range. Same calculation both ways; a trip already in a payout is never counted again. amount = trips + waiting + pickup pay + bonus + tips + fees − cash collected; it may be negative (the driver owes Movera). An admin marks a payout paid. The admin sees the lines; the driver app shows only the total.",

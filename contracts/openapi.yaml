@@ -1,11 +1,11 @@
-# Movera API v0.18.13 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.15 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.13
+  version: 0.18.15
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.13 in this folder; this file must agree with them.
+    v0.18.15 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -82,7 +82,7 @@ tags:
 - name: Driver · Home
 x-contract:
   name: movera
-  version: 0.18.13
+  version: 0.18.15
   source: contract.json
 paths:
   /auth/otp/request:
@@ -4562,6 +4562,12 @@ paths:
       - $ref: '#/components/parameters/ListZoneId'
       - $ref: '#/components/parameters/ListZoneIds'
       - $ref: '#/components/parameters/ListCountry'
+      - name: assignedTo
+        in: query
+        required: false
+        schema:
+          type: string
+          description: 'v0.18.15: me, none or an admin id.'
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
       responses:
@@ -5621,6 +5627,528 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /support/tickets/{ticketId}/messages:
+    post:
+      operationId: writeOwnTicket
+      summary: Write on an own support ticket
+      description: 'v0.18.15 (owner QO-1, chat-style): the status becomes open. 409 invalid_transition, reason ticket_closed;
+        reason ticket_solved when SupportSettings.replyAfterSolved is blocked.'
+      tags:
+      - Support
+      x-actor:
+      - rider
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketPersonMessage'
+      responses:
+        '201':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /support/topics:
+    get:
+      operationId: listSupportTopics
+      summary: Ticket topics that are on
+      description: v0.18.15 (owner QO-4).
+      tags:
+      - Support
+      x-actor:
+      - rider
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTopics'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/tickets/{ticketId}/claim:
+    post:
+      operationId: adminTicketClaim
+      summary: Claim a ticket
+      description: 'v0.18.15. POST /admin/tickets/{ticketId}/claim {} -> SupportTicket: assignedTo = the caller until claimedUntil
+        = now + claimDays days. Another admin''s claim that has not run out -> 409 conflict, reason ticket_claimed. Audited
+        ticket.claim. The admin''s zones only (else 403 zone_out_of_scope).'
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/tickets/{ticketId}/assign:
+    post:
+      operationId: adminTicketAssign
+      summary: Assign a ticket
+      description: 'v0.18.15. POST /admin/tickets/{ticketId}/assign { adminId | null, reason } -> SupportTicket: hands the
+        ticket to an active admin who has support.reply and covers the ticket''s zone (else 400 invalid_request, reason assignee_not_allowed);
+        null = nobody. Audited ticket.assign. The admin''s zones only (else 403 zone_out_of_scope).'
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketAssignCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/tickets/{ticketId}/topic:
+    post:
+      operationId: adminTicketTopic
+      summary: Change a ticket's topic
+      description: v0.18.15. POST /admin/tickets/{ticketId}/topic { category } -> SupportTicket (any contract topic; the ticket's
+        time limits follow it). Audited ticket.topic. The admin's zones only (else 403 zone_out_of_scope).
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketTopicCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/tickets/{ticketId}/waiting:
+    post:
+      operationId: adminTicketWaiting
+      summary: Mark waiting for the person
+      description: 'v0.18.15. POST /admin/tickets/{ticketId}/waiting { waiting } -> SupportTicket: true = pending (waiting
+        for the person), false = open. Closed or solved -> 409 invalid_transition, reason ticket_not_open. Audited ticket.waiting.
+        The admin''s zones only (else 403 zone_out_of_scope).'
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketWaitingCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/tickets/{ticketId}/solve:
+    post:
+      operationId: adminTicketSolve
+      summary: Solve a ticket
+      description: 'v0.18.15. POST /admin/tickets/{ticketId}/solve { note? } -> SupportTicket: status resolved, solvedBy /
+        solvedAt; the note is private (never sent to the app). Closed -> 409 ticket_closed. Audited ticket.solve. The admin''s
+        zones only (else 403 zone_out_of_scope).'
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketSolveCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/tickets/{ticketId}/reopen:
+    post:
+      operationId: adminTicketReopen
+      summary: Reopen a ticket
+      description: 'v0.18.15. POST /admin/tickets/{ticketId}/reopen { reason } -> SupportTicket: resolved or closed -> open;
+        solvedBy / solvedAt cleared. Already open or pending -> 409 invalid_transition, reason ticket_not_solved. Audited
+        ticket.reopen. The admin''s zones only (else 403 zone_out_of_scope).'
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketReasonCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/tickets/{ticketId}/case:
+    post:
+      operationId: adminTicketCase
+      summary: Open a safety case from a ticket
+      description: 'v0.18.15. POST /admin/tickets/{ticketId}/case { reason } -> SupportTicket with incidentId: opens a support_case
+        incident on the ticket''s trip for the safety team (Incidents; severity medium, no alarm; the safety team changes
+        the level). A ticket without trip -> 409 invalid_transition, reason ticket_without_trip; one open support_case per
+        trip (the open one is linked). Audited ticket.case. The admin''s zones only (else 403 zone_out_of_scope).'
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketReasonCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/support/settings:
+    get:
+      operationId: adminGetSupportSettings
+      summary: Support settings of a country
+      description: v0.18.15. GET /admin/support/settings?country=SE (support.reply) -> SupportSettings; PUT /admin/support/settings
+        SupportSettings (settings.edit; a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope).
+        Audited support.settings. Never saved = the defaults.
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - name: country
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    put:
+      operationId: adminPutSupportSettings
+      summary: Save the support settings of a country
+      description: v0.18.15. claimDays 1-30; firstReplyMin 1-10080; solveHours 1-720; every contract topic once; at least
+        one topic on.
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: settings.edit
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportSettings'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportSettings'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -15786,6 +16314,43 @@ components:
           items:
             $ref: '#/components/schemas/TicketMessage'
           description: 'v0.9.0: only on GET /support/tickets/{ticketId} and GET /admin/tickets/{ticketId}, oldest first.'
+        assignedTo:
+          type: object
+          description: 'v0.18.15: the admin who works on the ticket (claim or assign); admin views only.'
+          required:
+          - adminId
+          properties:
+            adminId:
+              $ref: '#/components/schemas/Id'
+            name:
+              type: string
+        claimedUntil:
+          $ref: '#/components/schemas/Timestamp'
+        solvedBy:
+          $ref: '#/components/schemas/Id'
+        solvedAt:
+          $ref: '#/components/schemas/Timestamp'
+        incidentId:
+          allOf:
+          - $ref: '#/components/schemas/Id'
+          description: 'v0.18.15: the support_case incident opened from this ticket (admin views only).'
+        firstReplyAt:
+          $ref: '#/components/schemas/Timestamp'
+        firstReplyDueAt:
+          $ref: '#/components/schemas/Timestamp'
+        solveDueAt:
+          $ref: '#/components/schemas/Timestamp'
+        late:
+          type: object
+          description: 'v0.18.15: past the topic''s time limits of the ticket''s country (admin views only).'
+          required:
+          - reply
+          - solve
+          properties:
+            reply:
+              type: boolean
+            solve:
+              type: boolean
     TicketMessage:
       type: object
       description: 'v0.9.0: one message on a support ticket.'
@@ -15811,7 +16376,12 @@ components:
           $ref: '#/components/schemas/Timestamp'
         adminName:
           type: string
-          description: The answering admin's name (from = support).
+          description: 'The answering admin''s name (from = support). v0.18.15: on the person''s own views only the first
+            name (contract.json#supportDesk.supportName).'
+        supportName:
+          type: string
+          description: 'v0.18.15: the person''s views only: the answering admin''s first name; the apps show ''<supportName>
+            · Movera Support''.'
     TicketReplyCommand:
       type: object
       description: 'v0.9.0: Admin › Support answers a ticket.'
@@ -15829,6 +16399,159 @@ components:
           - resolved
           - closed
           description: 'The ticket''s status after the answer (default pending: waiting for the person).'
+    TicketPersonMessage:
+      type: object
+      description: 'v0.18.15: the rider or driver writes on their own ticket (contract.json#supportDesk.personReply).'
+      required:
+      - text
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 5000
+    SupportTopics:
+      type: object
+      description: 'v0.18.15: the ticket topics that are on for the caller''s country (contract.json#supportDesk.topics).'
+      required:
+      - topics
+      properties:
+        country:
+          type: string
+          pattern: ^[A-Z]{2}$
+        topics:
+          type: array
+          items:
+            type: string
+            enum:
+            - ride_dispute
+            - help
+            - lost_item
+            - payment
+            - account
+            - safety
+            - other
+    TicketAssignCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - adminId
+      - reason
+      properties:
+        adminId:
+          oneOf:
+          - $ref: '#/components/schemas/Id'
+          - type: 'null'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    TicketTopicCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - category
+      properties:
+        category:
+          type: string
+          enum:
+          - ride_dispute
+          - help
+          - lost_item
+          - payment
+          - account
+          - safety
+          - other
+    TicketWaitingCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - waiting
+      properties:
+        waiting:
+          type: boolean
+    TicketSolveCommand:
+      type: object
+      description: v0.18.15.
+      properties:
+        note:
+          type: string
+          maxLength: 2000
+          description: Private; never sent to the app.
+    TicketReasonCommand:
+      type: object
+      description: 'v0.18.15: reopen or open a case.'
+      required:
+      - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    EmptyCommand:
+      type: object
+      description: No fields.
+      properties: {}
+    SupportTopicSetting:
+      type: object
+      required:
+      - code
+      - 'on'
+      - firstReplyMin
+      - solveHours
+      properties:
+        code:
+          type: string
+          enum:
+          - ride_dispute
+          - help
+          - lost_item
+          - payment
+          - account
+          - safety
+          - other
+        'on':
+          type: boolean
+        firstReplyMin:
+          type: integer
+          minimum: 1
+          maximum: 10080
+        solveHours:
+          type: integer
+          minimum: 1
+          maximum: 720
+    SupportSettings:
+      type: object
+      description: 'v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).'
+      required:
+      - country
+      - claimDays
+      - replyAfterSolved
+      - topics
+      properties:
+        country:
+          type: string
+          enum:
+          - SE
+          - FR
+          - TN
+        claimDays:
+          type: integer
+          minimum: 1
+          maximum: 30
+        replyAfterSolved:
+          type: string
+          enum:
+          - reopen
+          - blocked
+        topics:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupportTopicSetting'
+          minItems: 1
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedBy:
+          $ref: '#/components/schemas/Id'
     IncidentPosition:
       type: object
       description: 'v0.7.0: a phone''s GPS position, measured once (CONTRACT.md §15).'

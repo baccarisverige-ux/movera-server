@@ -800,6 +800,21 @@ export interface SupportTicketsTable {
   created_at: Timestamp;
   updated_at: Timestamp;
   last_message_at: Timestamp;
+  /** v0.18.15 support desk (migration 0049). */
+  assigned_admin_id: ColumnType<string | null, string | null | undefined, string | null>;
+  claimed_until: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  solved_by: ColumnType<string | null, string | null | undefined, string | null>;
+  solved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  incident_id: ColumnType<string | null, string | null | undefined, string | null>;
+  first_reply_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+}
+
+/** v0.18.15 (migration 0049): Admin › Support › Settings per country. */
+export interface SupportSettingsTable {
+  country: string;
+  doc: ColumnType<unknown, string, string>;
+  updated_at: Timestamp;
+  updated_by: string | null;
 }
 
 export interface TicketMessagesTable {
@@ -1169,6 +1184,7 @@ export interface Database {
   payouts: PayoutsTable;
   support_tickets: SupportTicketsTable;
   ticket_messages: TicketMessagesTable;
+  support_settings: SupportSettingsTable;
   dispatch_events: DispatchEventsTable;
   dispatch_presets: DispatchPresetsTable;
   driver_groups: DriverGroupsTable;

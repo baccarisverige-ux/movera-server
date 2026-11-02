@@ -11,7 +11,8 @@ import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from ".
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearDispatch } from "../dispatch/feed.js";
-import { adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets } from "../support/tickets.js";
+import { adminDeskCommand, adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets, writeOwnTicket, type DeskCommand } from "../support/tickets.js";
+import { adminGetSettings, adminPutSettings, SUPPORT_COUNTRIES, topicsFor } from "../support/desk.js";
 import { kpis } from "./kpis.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
 import { createPayout, driverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
@@ -37,9 +38,24 @@ const CreatePayoutBody = z.object({ driverId: ID, from: z.string().datetime(), t
 const PaidBody = z.object({ note: z.string().max(1000).optional() }).default({});
 const RefundsQuery = { ...Page, ...When, status: many(z.enum(["pending_approval", "done", "rejected"])), paymentId: z.string().max(80).optional(), tripId: ID.optional(), ...ZoneFilterQuery };
 const TicketStatus = z.enum(["open", "pending", "resolved", "closed"]);
-const TicketsQuery = { ...Page, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), ...ZoneFilterQuery };
+const TicketsQuery = { ...Page, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), assignedTo: z.union([z.literal("me"), z.literal("none"), ID]).optional(), ...ZoneFilterQuery };
 const OwnTicketsQuery = z.object({ ...Page, status: TicketStatus.optional() });
 const TicketBody = z.object({ tripId: ID.optional(), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().min(1).max(200), text: z.string().min(1).max(5000) });
+/* v0.18.15 support desk (contract.json#supportDesk) */
+const PersonMessageBody = z.object({ text: z.string().min(1).max(5000) });
+const REASON = z.string().min(1).max(500);
+const DESK_BODIES = {
+  claim: z.object({}).passthrough(),
+  assign: z.object({ adminId: ID.nullable(), reason: REASON }),
+  topic: z.object({ category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/) }),
+  waiting: z.object({ waiting: z.boolean() }),
+  solve: z.object({ note: z.string().max(2000).optional() }),
+  reopen: z.object({ reason: REASON }),
+  case: z.object({ reason: REASON }),
+} as const;
+const SupportCountry = z.enum(SUPPORT_COUNTRIES as [string, ...string[]]);
+const TopicSettingBody = z.object({ code: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), on: z.boolean(), firstReplyMin: z.number().int().min(1).max(10080), solveHours: z.number().int().min(1).max(720) });
+const SupportSettingsBody = z.object({ country: SupportCountry, claimDays: z.number().int().min(1).max(30), replyAfterSolved: z.enum(["reopen", "blocked"]), topics: z.array(TopicSettingBody).min(1).max(20) }).passthrough();
 const ReplyBody = z.object({ text: z.string().min(1).max(5000), status: z.enum(["pending", "resolved", "closed"]).optional() });
 const RatingsQuery = { ...Page, ...When, rater: z.enum(["rider", "driver"]).optional(), hidden: Bool.optional(), maxStars: z.coerce.number().int().min(1).max(5).optional(), driverId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
 const ModerationBody = z.object({ reason: z.string().min(1).max(500) });
@@ -143,17 +159,51 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   app.get(`${API_PREFIX}/admin/tickets`, async (request) => {
     const who = await authenticateAdmin(request, guard, "support.reply");
     const query = parseQuery(TicketsQuery, request.query);
-    return adminTickets(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)));
+    return adminTickets(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)), now());
   });
   app.get(`${API_PREFIX}/admin/tickets/:ticketId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "support.reply");
-    return adminTicket(deps.db, who, param(request, "ticketId"));
+    return adminTicket(deps.db, who, param(request, "ticketId"), now());
   });
   app.post(`${API_PREFIX}/admin/tickets/:ticketId/reply`, async (request) => {
     const who = await authenticateAdmin(request, guard, "support.reply");
     const ticketId = param(request, "ticketId");
     const body = parseBody(ReplyBody, request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminReply(trx, who, ticketId, clean(body), now()) }));
+    return result.body;
+  });
+
+  /* ---- support desk (v0.18.15, contract.json#supportDesk) */
+  app.post(`${API_PREFIX}/support/tickets/:ticketId/messages`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    const ticketId = param(request, "ticketId");
+    const body = parseBody(PersonMessageBody, request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await writeOwnTicket(trx, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, ticketId, body.text, now()) }));
+    return reply.status(result.status).send(result.body);
+  });
+  app.get(`${API_PREFIX}/support/topics`, async (request) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    return topicsFor(deps.db, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId });
+  });
+  for (const verb of Object.keys(DESK_BODIES) as (keyof typeof DESK_BODIES)[]) {
+    app.post(`${API_PREFIX}/admin/tickets/:ticketId/${verb}`, async (request) => {
+      const who = await authenticateAdmin(request, guard, "support.reply");
+      const ticketId = param(request, "ticketId");
+      const body = parseBody(DESK_BODIES[verb], request.body ?? {}) as Record<string, unknown>;
+      const command = { ...clean(body), verb } as DeskCommand;
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminDeskCommand(trx, who, ticketId, command, now()) }));
+      return result.body;
+    });
+  }
+  app.get(`${API_PREFIX}/admin/support/settings`, async (request) => {
+    await authenticateAdmin(request, guard, "support.reply");
+    const { country } = parseBody(z.object({ country: SupportCountry }), request.query);
+    return adminGetSettings(deps.db, country);
+  });
+  app.put(`${API_PREFIX}/admin/support/settings`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "settings.edit");
+    const body = parseBody(SupportSettingsBody, request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminPutSettings(trx, who, body, now()) }));
     return result.body;
   });
 

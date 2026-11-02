@@ -377,14 +377,37 @@ S["SupportTicket"] = obj({"ticketId": ref("Id"), "tripId": ref("Id"), "openedBy"
                           "zoneId": {"allOf": [ref("Id")], "description": "v0.9.0: the trip's zone, else the person's first zone; admins see tickets of their zones."},
                           "lastMessageAt": ref("Timestamp"),
                           "visibleToPerson": b("v0.18.9: admin views only; a case opened by support that the rider / driver sees in their own list (contract.json#onTrip.adminTrip.new.case)."),
-                          "messages": arr(ref("TicketMessage"), description="v0.9.0: only on GET /support/tickets/{ticketId} and GET /admin/tickets/{ticketId}, oldest first.")},
+                          "messages": arr(ref("TicketMessage"), description="v0.9.0: only on GET /support/tickets/{ticketId} and GET /admin/tickets/{ticketId}, oldest first."),
+                          # v0.18.15 (contract.json#supportDesk.adminView): admin views only.
+                          "assignedTo": obj({"adminId": ref("Id"), "name": s()}, ["adminId"], "v0.18.15: the admin who works on the ticket (claim or assign); admin views only."),
+                          "claimedUntil": ref("Timestamp"), "solvedBy": ref("Id"), "solvedAt": ref("Timestamp"),
+                          "incidentId": {"allOf": [ref("Id")], "description": "v0.18.15: the support_case incident opened from this ticket (admin views only)."},
+                          "firstReplyAt": ref("Timestamp"), "firstReplyDueAt": ref("Timestamp"), "solveDueAt": ref("Timestamp"),
+                          "late": obj({"reply": b(), "solve": b()}, ["reply", "solve"], "v0.18.15: past the topic's time limits of the ticket's country (admin views only).")},
                          ["ticketId", "openedBy", "category", "subject", "status", "createdAt", "updatedAt"])
 S["TicketMessage"] = obj({"messageId": ref("Id"), "from": s(enum=["rider", "driver", "support"]), "text": s(minLength=1, maxLength=5000),
-                          "at": ref("Timestamp"), "adminName": s("The answering admin's name (from = support).")},
+                          "at": ref("Timestamp"), "adminName": s("The answering admin's name (from = support). v0.18.15: on the person's own views only the first name (contract.json#supportDesk.supportName)."),
+                          "supportName": s("v0.18.15: the person's views only: the answering admin's first name; the apps show '<supportName> · Movera Support'.")},
                          ["messageId", "from", "text", "at"], "v0.9.0: one message on a support ticket.")
 S["TicketReplyCommand"] = obj({"text": s(minLength=1, maxLength=5000), "status": s("The ticket's status after the answer (default pending: waiting for the person).",
                                                                                   enum=C["support"]["replyStatuses"])},
                               ["text"], "v0.9.0: Admin › Support answers a ticket.")
+SD = C["supportDesk"]
+S["TicketPersonMessage"] = obj({"text": s(minLength=1, maxLength=5000)}, ["text"], "v0.18.15: the rider or driver writes on their own ticket (contract.json#supportDesk.personReply).")
+S["SupportTopics"] = obj({"country": s(pattern="^[A-Z]{2}$"), "topics": arr(s(enum=C["support"]["categories"]))}, ["topics"],
+                         "v0.18.15: the ticket topics that are on for the caller's country (contract.json#supportDesk.topics).")
+S["TicketAssignCommand"] = obj({"adminId": {"oneOf": [ref("Id"), {"type": "null"}]}, "reason": s(minLength=1, maxLength=500)}, ["adminId", "reason"], "v0.18.15.")
+S["TicketTopicCommand"] = obj({"category": s(enum=C["support"]["categories"])}, ["category"], "v0.18.15.")
+S["TicketWaitingCommand"] = obj({"waiting": b()}, ["waiting"], "v0.18.15.")
+S["TicketSolveCommand"] = obj({"note": s("Private; never sent to the app.", maxLength=2000)}, (), "v0.18.15.")
+S["TicketReasonCommand"] = obj({"reason": s(minLength=1, maxLength=500)}, ["reason"], "v0.18.15: reopen or open a case.")
+S["EmptyCommand"] = S.get("EmptyCommand") or obj({}, (), "No fields.")
+S["SupportTopicSetting"] = obj({"code": s(enum=C["support"]["categories"]), "on": b(), "firstReplyMin": i(minimum=1, maximum=10080), "solveHours": i(minimum=1, maximum=720)},
+                               ["code", "on", "firstReplyMin", "solveHours"])
+S["SupportSettings"] = obj({"country": s(enum=SD["settings"]["countries"]), "claimDays": i(minimum=1, maximum=30),
+                            "replyAfterSolved": s(enum=["reopen", "blocked"]), "topics": arr(ref("SupportTopicSetting"), minItems=1),
+                            "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")},
+                           ["country", "claimDays", "replyAfterSolved", "topics"], "v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).")
 SF = C["safety"]
 S["IncidentPosition"] = obj({"lat": n(minimum=-90, maximum=90), "lng": n(minimum=-180, maximum=180),
                              "accuracyM": n("Horizontal accuracy, metres.", minimum=0), "at": ref("Timestamp")},
@@ -1562,7 +1585,8 @@ lists = {
                 q("driverId", ref("Id")), pref("From"), pref("To"), *ZF]),
     "tickets": ("SupportTicketPage", "support.reply", [q("status", {"type": "string", "enum": ["open", "pending", "resolved", "closed"]}, multi=True),
                 q("priority", {"type": "string", "enum": ["low", "normal", "high", "urgent"]}), q("tripId", ref("Id")),
-                q("riderId", ref("Id")), q("driverId", ref("Id")), pref("Q"), *ZF]),
+                q("riderId", ref("Id")), q("driverId", ref("Id")), pref("Q"), *ZF,
+                q("assignedTo", s("v0.18.15: me, none or an admin id."))]),
     "incidents": ("IncidentPage", "incidents.read", [q("status", {"type": "string", "enum": ["open", "investigating", "resolved", "dismissed"]}, multi=True),
                   q("severity", {"type": "string", "enum": ["low", "medium", "high", "critical"]}), q("kind", {"type": "string"}),
                   q("tripId", ref("Id")), *ZF, pref("From"), pref("To")]),
@@ -1627,6 +1651,22 @@ op("get", "/admin/tickets/{ticketId}", "adminGetTicket", "A support ticket with 
 op("post", "/admin/tickets/{ticketId}/reply", "adminReplyTicket", "Answer a support ticket", ["admin"], "Admin · Support",
    params=[pref("TicketId")], body="TicketReplyCommand", ok=(200, "SupportTicket"), mutation=True, permission="support.reply",
    desc="v0.9.0. The person sees the answer in the app (GET /support/tickets/{ticketId}). v0.13.0: the admin's zones only (else 403 zone_out_of_scope); audited.")
+# v0.18.15 support desk (contract.json#supportDesk)
+op("post", "/support/tickets/{ticketId}/messages", "writeOwnTicket", "Write on an own support ticket", ["rider", "driver"], "Support",
+   params=[pref("TicketId")], body="TicketPersonMessage", ok=(201, "SupportTicket"), mutation=True,
+   desc="v0.18.15 (owner QO-1, chat-style): the status becomes open. 409 invalid_transition, reason ticket_closed; reason ticket_solved when SupportSettings.replyAfterSolved is blocked.")
+op("get", "/support/topics", "listSupportTopics", "Ticket topics that are on", ["rider", "driver"], "Support", ok=(200, "SupportTopics"), desc="v0.18.15 (owner QO-4).")
+for verb, body, summary, d in [("claim", "EmptyCommand", "Claim a ticket", SD["adminCommands"]["claim"]), ("assign", "TicketAssignCommand", "Assign a ticket", SD["adminCommands"]["assign"]),
+                               ("topic", "TicketTopicCommand", "Change a ticket's topic", SD["adminCommands"]["topic"]), ("waiting", "TicketWaitingCommand", "Mark waiting for the person", SD["adminCommands"]["waiting"]),
+                               ("solve", "TicketSolveCommand", "Solve a ticket", SD["adminCommands"]["solve"]), ("reopen", "TicketReasonCommand", "Reopen a ticket", SD["adminCommands"]["reopen"]),
+                               ("case", "TicketReasonCommand", "Open a safety case from a ticket", SD["adminCommands"]["case"])]:
+    op("post", f"/admin/tickets/{{ticketId}}/{verb}", f"adminTicket{verb.capitalize()}", summary, ["admin"], "Admin · Support",
+       params=[pref("TicketId")], body=body, ok=(200, "SupportTicket"), mutation=True, permission="support.reply", desc="v0.18.15. " + d + " The admin's zones only (else 403 zone_out_of_scope).")
+op("get", "/admin/support/settings", "adminGetSupportSettings", "Support settings of a country", ["admin"], "Admin · Support",
+   params=[q("country", s(enum=SD["settings"]["countries"]))], ok=(200, "SupportSettings"), permission="support.reply", desc="v0.18.15. " + SD["settings"]["endpoints"])
+op("put", "/admin/support/settings", "adminPutSupportSettings", "Save the support settings of a country", ["admin"], "Admin · Support",
+   body="SupportSettings", ok=(200, "SupportSettings"), mutation=True, permission="settings.edit", desc="v0.18.15. " + SD["settings"]["limits"])
+
 op("get", "/admin/ratings", "adminListRatings", "Ratings riders and drivers gave each other", ["admin"], "Admin · Reviews",
    params=AL + [q("rater", {"type": "string", "enum": ["rider", "driver"]}, "Who gave the rating."), q("hidden", {"type": "boolean"}), q("maxStars", {"type": "integer", "minimum": 1, "maximum": 5}),
                 q("driverId", ref("Id")), q("riderId", ref("Id")), *ZF, pref("From"), pref("To")],

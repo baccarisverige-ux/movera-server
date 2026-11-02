@@ -6,6 +6,8 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "../admin/audit.js";
 import { cursorOf, readCursor } from "../admin/lists.js";
+import { permissionsOf, isAdminRole } from "../admin/permissions.js";
+import * as desk from "./desk.js";
 
 /**
  * Support tickets (contract v0.9.0 §16, contract.json#support; owner, 2026-10-27): the rider and driver apps open
@@ -33,10 +35,19 @@ type TicketRow = {
   created_at: Date;
   updated_at: Date;
   last_message_at: Date;
+  /** v0.18.15 support desk (migration 0049). */
+  assigned_admin_id?: string | null;
+  claimed_until?: Date | null;
+  solved_by?: string | null;
+  solved_at?: Date | null;
+  incident_id?: string | null;
+  first_reply_at?: Date | null;
 };
 type MessageRow = { message_id: string; sender: "rider" | "driver" | "support"; text: string; at: Date; admin_name?: string | null };
 
-export function ticketView(row: TicketRow, messages?: readonly MessageRow[]) {
+/** v0.18.15: `person` = the rider's / driver's own view (support names = first name only, QO-2); `extra` = admin desk fields. */
+export function ticketView(row: TicketRow, messages?: readonly MessageRow[], opts: { person?: boolean; extra?: Record<string, unknown> | undefined } = {}) {
+  const nameOf = (m: MessageRow) => (opts.person ? desk.firstNameOf(m.admin_name) : m.admin_name || undefined);
   return {
     ticketId: row.ticket_id,
     ...(row.trip_id ? { tripId: row.trip_id } : {}),
@@ -53,8 +64,14 @@ export function ticketView(row: TicketRow, messages?: readonly MessageRow[]) {
     lastMessageAt: row.last_message_at.toISOString(),
     ...(row.opened_by === "admin" ? { visibleToPerson: row.visible_to_person === true } : {}),
     ...(messages
-      ? { messages: messages.map((m) => ({ messageId: m.message_id, from: m.sender, text: m.text, at: m.at.toISOString(), ...(m.sender === "support" && m.admin_name ? { adminName: m.admin_name } : {}) })) }
+      ? {
+          messages: messages.map((m) => {
+            const name = m.sender === "support" ? nameOf(m) : undefined;
+            return { messageId: m.message_id, from: m.sender, text: m.text, at: m.at.toISOString(), ...(name ? { adminName: name, ...(opts.person ? { supportName: name } : {}) } : {}) };
+          }),
+        }
       : {}),
+    ...(opts.extra ?? {}),
   };
 }
 
@@ -84,6 +101,7 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
     const last = await trx.selectFrom("trips").select("zone_id").where("rider_id", "=", who.subjectId).orderBy("created_at", "desc").limit(1).executeTakeFirst();
     zoneId = last?.zone_id ?? null;
   }
+  await desk.assertTopicOn(trx, zoneId, body.category, who.actor === "driver" ? ((await trx.selectFrom("drivers").select("country").where("driver_id", "=", who.subjectId).executeTakeFirst())?.country ?? null) : null);
   const ticketId = newId("tkt", now.getTime());
   const row = await trx
     .insertInto("support_tickets")
@@ -105,7 +123,7 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
     .returningAll()
     .executeTakeFirstOrThrow();
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text: body.text, at: now }).execute();
-  return ticketView(row as TicketRow, await messagesOf(trx, ticketId));
+  return ticketView(row as TicketRow, await messagesOf(trx, ticketId), { person: true });
 }
 
 const ownColumn = (who: Who) => (who.actor === "rider" ? "rider_id" : "driver_id");
@@ -129,7 +147,21 @@ export async function ownTickets(ex: Executor, who: Who, input: { cursor?: strin
 export async function ownTicket(ex: Executor, who: Who, ticketId: string) {
   const row = await ex.selectFrom("support_tickets").selectAll().where("ticket_id", "=", ticketId).where(ownColumn(who), "=", who.subjectId).where((eb) => eb.or([eb("opened_by", "!=", "admin"), eb("visible_to_person", "=", true)])).executeTakeFirst();
   if (row === undefined) throw notFound("No such ticket.", "ticket_not_found");
-  return ticketView(row as TicketRow, await messagesOf(ex, ticketId));
+  return ticketView(row as TicketRow, await messagesOf(ex, ticketId), { person: true });
+}
+
+/** v0.18.15 (owner QO-1, chat-style): the person writes on their own ticket; it is open again for the desk. */
+export async function writeOwnTicket(trx: Trx, who: Who, ticketId: string, text: string, now: Date) {
+  const row = await trx.selectFrom("support_tickets").selectAll().where("ticket_id", "=", ticketId).where(ownColumn(who), "=", who.subjectId).where((eb) => eb.or([eb("opened_by", "!=", "admin"), eb("visible_to_person", "=", true)])).forUpdate().executeTakeFirst();
+  if (row === undefined) throw notFound("No such ticket.", "ticket_not_found");
+  if (row.status === "closed") throw new ApiError("invalid_transition", "This ticket is closed.", { reason: "ticket_closed" });
+  if (row.status === "resolved") {
+    const s = await desk.settingsOf(trx, await desk.countryOfZone(trx, row.zone_id));
+    if (s.replyAfterSolved === "blocked") throw new ApiError("invalid_transition", "This ticket is solved.", { reason: "ticket_solved" });
+  }
+  await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text, at: now }).execute();
+  await trx.updateTable("support_tickets").set({ status: "open", ...(row.status === "resolved" ? { solved_by: null, solved_at: null } : {}), updated_at: now, last_message_at: now }).where("ticket_id", "=", ticketId).execute();
+  return ownTicket(trx, who, ticketId);
 }
 
 /** contract v0.13.0 §22: an admin sees tickets of their zones; a ticket without a zone only a Super admin ("*"). */
@@ -137,8 +169,11 @@ function inScope(who: Principal, zoneId: string | null): boolean {
   return zoneId === null ? who.zones.includes("*") : adminCoversZone(who, zoneId);
 }
 
-export async function adminTickets(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; priority?: string; tripId?: string; riderId?: string; driverId?: string; q?: string }) {
+export async function adminTickets(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; priority?: string; tripId?: string; riderId?: string; driverId?: string; q?: string; assignedTo?: string }, now: Date = new Date()) {
   let q = ex.selectFrom("support_tickets").selectAll();
+  // v0.18.15: me | none | an admin id; a claim that ran out counts as nobody.
+  if (input.assignedTo === "none") q = q.where((eb) => eb.or([eb("assigned_admin_id", "is", null), eb("claimed_until", "<=", now)]));
+  else if (input.assignedTo) q = q.where("assigned_admin_id", "=", input.assignedTo === "me" ? who.subjectId : input.assignedTo).where((eb) => eb.or([eb("claimed_until", "is", null), eb("claimed_until", ">", now)]));
   if (!who.zones.includes("*")) q = q.where("zone_id", "in", who.zones.length ? who.zones : ["-"]);
   if (input.status?.length) q = q.where("status", "in", input.status as TicketRow["status"][]);
   if (input.priority) q = q.where("priority", "=", input.priority as TicketRow["priority"]);
@@ -156,7 +191,8 @@ export async function adminTickets(ex: Executor, who: Principal, input: { cursor
   const rows = await q.orderBy("updated_at", "desc").orderBy("ticket_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
-  return { items: page.map((r) => ticketView(r as TicketRow)), nextCursor: rows.length > input.limit && last ? cursorOf(last.updated_at, last.ticket_id) : null };
+  const extras = await desk.deskExtras(ex, page as TicketRow[], now);
+  return { items: page.map((r) => ticketView(r as TicketRow, undefined, { extra: extras.get(r.ticket_id) })), nextCursor: rows.length > input.limit && last ? cursorOf(last.updated_at, last.ticket_id) : null };
 }
 
 async function ticketForAdmin(ex: Executor, who: Principal, ticketId: string, lock = false): Promise<TicketRow> {
@@ -168,9 +204,35 @@ async function ticketForAdmin(ex: Executor, who: Principal, ticketId: string, lo
   return row as TicketRow;
 }
 
-export async function adminTicket(ex: Executor, who: Principal, ticketId: string) {
+export async function adminTicket(ex: Executor, who: Principal, ticketId: string, now: Date = new Date()) {
   const row = await ticketForAdmin(ex, who, ticketId);
-  return ticketView(row, await messagesOf(ex, ticketId));
+  const extras = await desk.deskExtras(ex, [row], now);
+  return ticketView(row, await messagesOf(ex, ticketId), { extra: extras.get(ticketId) });
+}
+
+/** v0.18.15: Admin › Support claim | assign | topic | waiting | solve | reopen | case (contract.json#supportDesk.adminCommands). */
+export type DeskCommand =
+  | { verb: "claim" }
+  | { verb: "assign"; adminId: string | null; reason: string }
+  | { verb: "topic"; category: string }
+  | { verb: "waiting"; waiting: boolean }
+  | { verb: "solve"; note?: string | undefined }
+  | { verb: "reopen"; reason: string }
+  | { verb: "case"; reason: string };
+
+export async function adminDeskCommand(trx: Trx, who: Principal, ticketId: string, command: DeskCommand, now: Date) {
+  const row = await ticketForAdmin(trx, who, ticketId, true);
+  const r = { ...row, assigned_admin_id: row.assigned_admin_id ?? null, claimed_until: row.claimed_until ?? null, incident_id: row.incident_id ?? null };
+  switch (command.verb) {
+    case "claim": await desk.claim(trx, who, r, now); break;
+    case "assign": await desk.assign(trx, who, r, command, now, (role) => (isAdminRole(role) ? permissionsOf(role) : [])); break;
+    case "topic": await desk.setTopic(trx, who, r, command.category, now); break;
+    case "waiting": await desk.setWaiting(trx, who, r, command.waiting, now); break;
+    case "solve": await desk.solve(trx, who, r, command.note, now); break;
+    case "reopen": await desk.reopen(trx, who, r, command.reason, now); break;
+    case "case": await desk.openCase(trx, who, r, command.reason, now); break;
+  }
+  return adminTicket(trx, who, ticketId, now);
 }
 
 /** POST /admin/tickets/{ticketId}/reply: the answer goes on the ticket; the status is pending unless said otherwise. */
@@ -179,7 +241,7 @@ export async function adminReply(trx: Trx, who: Principal, ticketId: string, bod
   if (row.status === "closed") throw new ApiError("invalid_transition", "This ticket is closed.", { reason: "ticket_closed" });
   const status = body.status ?? "pending";
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: "support", admin_id: who.subjectId, text: body.text, at: now }).execute();
-  await trx.updateTable("support_tickets").set({ status, updated_at: now, last_message_at: now }).where("ticket_id", "=", ticketId).execute();
+  await trx.updateTable("support_tickets").set({ status, updated_at: now, last_message_at: now, ...(row.first_reply_at ? {} : { first_reply_at: now }), ...(status === "resolved" ? { solved_by: who.subjectId, solved_at: now } : {}) }).where("ticket_id", "=", ticketId).execute();
   await audit(trx, { adminId: who.subjectId, action: "ticket.reply", targetType: "ticket", targetId: ticketId, zoneId: row.zone_id, detail: { status }, at: now });
-  return adminTicket(trx, who, ticketId);
+  return adminTicket(trx, who, ticketId, now);
 }
