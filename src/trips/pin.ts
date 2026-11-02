@@ -15,20 +15,7 @@ import { rulesOf } from "./ride.js";
 
 /** Total wrong tries per trip before an admin must unlock: TOTAL_FACTOR × maxAttempts. */
 export const PIN_TOTAL_FACTOR = 3;
-/** The first contract whose driver apps know the PIN step (checker round 1 M4). */
-export const PIN_MIN_CONTRACT = "0.18.8";
-
 const sameCode = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-
-/** True when an X-Contract-Version header is at least `min` (missing or bad: false = an older app). */
-export function contractAtLeast(header: unknown, min: string = PIN_MIN_CONTRACT): boolean {
-  const value = Array.isArray(header) ? header[0] : header;
-  if (typeof value !== "string" || !/^\d+\.\d+\.\d+$/.test(value.trim())) return false;
-  const a = value.trim().split(".").map(Number);
-  const b = min.split(".").map(Number);
-  for (let i = 0; i < 3; i++) if (a[i]! !== b[i]!) return a[i]! > b[i]!;
-  return true;
-}
 
 type Outcome = { ok: true; token: string; expiresAt: Date; version: number; bumped: boolean } | { ok: false; error: ApiError };
 

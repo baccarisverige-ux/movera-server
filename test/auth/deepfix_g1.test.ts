@@ -1,3 +1,4 @@
+import { TEST_CODE } from "../../src/auth/service.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
@@ -51,13 +52,13 @@ describe("G1-B3: the 5th wrong code itself answers 'too many wrong tries'", () =
       const fifth = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
       expect(fifth.statusCode).toBe(429);
       expect(fifth.json()).toMatchObject({ code: "rate_limited", reason: "otp_too_many_attempts" });
-      const right = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "1234" });
+      const right = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: TEST_CODE });
       expect(right.statusCode).toBe(429);
       expect(right.json()).toMatchObject({ reason: "otp_too_many_attempts" });
       // A new code starts a new session that works.
       advance(60);
       const again = (await post("/auth/otp/request", { phone, app: appName })).json();
-      expect((await post("/auth/otp/verify", { phone, sessionId: again.sessionId, code: "1234" })).statusCode).toBe(200);
+      expect((await post("/auth/otp/verify", { phone, sessionId: again.sessionId, code: TEST_CODE })).statusCode).toBe(200);
     });
   }
 
@@ -65,26 +66,32 @@ describe("G1-B3: the 5th wrong code itself answers 'too many wrong tries'", () =
     const phone = TEST_PHONES[5]!;
     const challenge = (await post("/auth/otp/request", { phone, app: "rider" })).json();
     for (let i = 0; i < 4; i++) await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
-    expect((await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "1234" })).statusCode).toBe(200);
+    expect((await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: TEST_CODE })).statusCode).toBe(200);
   });
 });
 
 describe("G1-D3 / G1-B6: why the app was signed out, and the retry window", () => {
   it("every reason a refused refresh answers is named in auth.signedOut (expired vs revoked), with sv/fr/en texts", async () => {
-    expect(AUTH.signedOut.reasons).toEqual({ session_expired: "expired", session_ended: "revoked", refresh_token_reused: "revoked", refresh_token_unknown: "revoked" });
+    expect(AUTH.signedOut.reasons).toEqual({ session_expired: "expired", session_ended: "revoked", refresh_token_reused: "revoked", refresh_token_unknown: "revoked", signed_in_elsewhere: "revoked" });
     for (const kind of ["expired", "revoked"]) expect(Object.keys(AUTH.signedOut.texts[kind]!).sort()).toEqual(["en", "fr", "sv"]);
     const seen = new Set<string>();
     seen.add((await post("/auth/refresh", { refreshToken: "rt_unknown" })).json().reason);
     const phone = TEST_PHONES[0]!;
     const challenge = (await post("/auth/otp/request", { phone, app: "rider" })).json();
-    const tokens = (await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "1234" })).json();
+    const tokens = (await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: TEST_CODE })).json();
     const next = (await post("/auth/refresh", { refreshToken: tokens.refreshToken })).json();
     advance(REFRESH_RETRY_WINDOW_MS / 1000 + 1);
     seen.add((await post("/auth/refresh", { refreshToken: tokens.refreshToken })).json().reason);
     seen.add((await post("/auth/refresh", { refreshToken: next.refreshToken })).json().reason);
-    const other = (await post("/auth/otp/verify", { phone, sessionId: (await post("/auth/otp/request", { phone, app: "rider" })).json().sessionId, code: "1234" })).json();
+    const other = (await post("/auth/otp/verify", { phone, sessionId: (await post("/auth/otp/request", { phone, app: "rider" })).json().sessionId, code: TEST_CODE })).json();
     advance((AUTH.tokens.refreshExpiresDays + 1) * 86400);
     seen.add((await post("/auth/refresh", { refreshToken: other.refreshToken })).json().reason);
+    // v0.18.14: a driver's second phone ends the first one's session.
+    const dPhone = TEST_PHONES[1]!;
+    const d1 = (await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: TEST_CODE })).json();
+    advance(60);
+    await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: TEST_CODE });
+    seen.add((await post("/auth/refresh", { refreshToken: d1.refreshToken })).json().reason);
     expect([...seen].sort()).toEqual(Object.keys(AUTH.signedOut.reasons).sort());
   });
 
@@ -134,6 +141,8 @@ describe("G1-B2: terms and privacy per country (SE and FR), sv/fr/en, from the a
     expect(publish.json()).toMatchObject({ country: "SE", version: 1, source: "admin", reaccept: true, company: { companyName: "Movera Sverige AB" } });
     const read = (await app.inject({ method: "GET", url: "/api/v1/legal/SE" })).json();
     expect(read).toMatchObject({ version: 1, source: "admin", reaccept: true });
+    // v0.18.14 (g1-g3 M3): the public read carries the company / support details for "Need help?" (fail-before: absent).
+    expect(read.company).toEqual({ companyName: "Movera Sverige AB", supportPhone: "+46812345678" });
     expect(read.terms.text.sv).toContain("Movera drivs av Movera Sverige AB.");
     expect(read.terms.text.en).toContain("Phone: +46812345678.");
     expect(read.terms.text.en).not.toMatch(/\{|Company number|E-mail:/);

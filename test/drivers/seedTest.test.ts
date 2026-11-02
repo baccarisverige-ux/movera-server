@@ -1,3 +1,4 @@
+import { TEST_CODE } from "../../src/auth/service.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_TEST_ACCOUNTS, TEST_FLEET_CODE, seedTestAccounts } from "../../src/drivers/seedTest.js";
@@ -59,7 +60,7 @@ describe("the seeded test accounts", () => {
   it("every rider signs in as an existing active rider with a name", async () => {
     for (const r of DEFAULT_TEST_ACCOUNTS.riders) {
       const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone: r.phone, app: "rider" } });
-      const tokens = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone: r.phone, sessionId: verify.json().sessionId, code: "1234" } });
+      const tokens = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone: r.phone, sessionId: verify.json().sessionId, code: TEST_CODE } });
       expect(tokens.json().isNewRider).toBe(false);
       const me = await app.inject({ method: "GET", url: "/api/v1/rider/profile", headers: { authorization: `Bearer ${tokens.json().accessToken}` } });
       expect(me.json()).toMatchObject({ firstName: r.firstName, status: "active" });

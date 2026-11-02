@@ -36,7 +36,9 @@ export function momentOf(before: Pick<TripRow, "status" | "driver_id">, after: P
 export async function pushTripMoment(ex: Executor, trip: Pick<TripRow, "trip_id" | "rider_id" | "zone_id" | "driver_summary">, moment: TripMoment, now: Date): Promise<boolean> {
   const rider = await ex.selectFrom("riders").select(["language", "consents"]).where("rider_id", "=", trip.rider_id).executeTakeFirst();
   if (!rider) return false;
-  if ((rider.consents as { rideUpdates?: unknown } | null)?.rideUpdates === false) return false;
+  // Owner 2026-11-02 (decisions/driver-g13.md, last line): "ride updates" off stops only "driver found" and "arriving";
+  // "driver arrived", "a new driver" and "trip cancelled" are always sent.
+  if ((rider.consents as { rideUpdates?: unknown } | null)?.rideUpdates === false && (moment === "driver_found" || moment === "driver_arriving")) return false;
   let language: Lang | undefined = isLang(rider.language) ? rider.language : undefined;
   if (language === undefined) {
     const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirst();
@@ -52,8 +54,9 @@ export async function pushTripMoment(ex: Executor, trip: Pick<TripRow, "trip_id"
     body: text.body[language].replace("{driver}", name),
     deepLink: RIDER_TRIP_PUSH.deepLink.replace("{tripId}", trip.trip_id),
     tripId: trip.trip_id,
-    data: { tripId: trip.trip_id, moment },
-    bell: false,
+    // Deep fix 2026-11-02 (live sweep M-8): kept in the rider's Notifications list too (bell), with every language so
+    // the list shows the rider's language of the moment he reads it.
+    data: { tripId: trip.trip_id, moment, texts: { title: text.title, body: Object.fromEntries(Object.entries(text.body).map(([l, b]) => [l, b.replace("{driver}", (trip.driver_summary as { firstName?: string } | null)?.firstName?.trim() || RIDER_TRIP_PUSH.driverFallback[l as Lang])])) } },
   }, now);
   return true;
 }

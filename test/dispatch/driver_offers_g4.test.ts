@@ -121,7 +121,7 @@ describe("G4 decision 1 + E6: a push with sound and vibration for a new offer", 
     const sender = new FakeSender();
     const pusher = new PushDispatcher(database.db, sender, { clock: () => clock.now, sleep: async () => {} });
     await pusher.sweep();
-    const mine = sender.sent.filter((m) => m.token === "g4-a-android");
+    const mine = sender.sent.filter((m) => m.token === "g4-a-android" && m.data?.["kind"] !== "signed_in_elsewhere");
     expect(mine).toHaveLength(1);
     expect(mine[0]).toMatchObject({ title: "Nouvelle course pour vous", body: "Appuyez pour voir la course", sound: "offer", data: { kind: "new_offer", offerKind: "exclusive", sound: "offer", vibrate: "true" } });
     expect(mine[0]!.ttlSeconds).toBeGreaterThan(0);
@@ -138,7 +138,7 @@ describe("G4 decision 1 + E6: a push with sound and vibration for a new offer", 
     clock.now = new Date(clock.now.getTime() + 16_000);
     const sender = new FakeSender();
     await new PushDispatcher(database.db, sender, { clock: () => clock.now, sleep: async () => {} }).sweep();
-    expect(sender.sent.filter((m) => m.token === "g4-late")).toEqual([]);
+    expect(sender.sent.filter((m) => m.token === "g4-late" && m.data?.["kind"] !== "signed_in_elsewhere")).toEqual([]);
     await database.db.deleteFrom("push_devices").where("token", "=", "g4-late").execute();
   });
 

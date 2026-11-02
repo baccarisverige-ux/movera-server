@@ -573,3 +573,194 @@ describe("migration 0045: stored documents lose google_pay; French converted tip
     expect(Number(row.commission_minor)).toBe(1795);
   });
 });
+
+describe("deep fix 2026-11-02: what was earned before an early end stays; the cap follows a route change", () => {
+  const KUNGSHOLMEN = { lat: 59.3326, lng: 18.0296 };
+  const NEAR_BROMMA = { lat: 59.3375, lng: 17.948 };
+  /** To in_trip after `waitMinutes` at the pickup (paid waiting after the free minutes). */
+  async function onBoardAfterWait(trip: { tripId: string; version: number }, pickup: { lat: number; lng: number }, waitMinutes: number) {
+    let v = trip.version;
+    for (const [path, at, wait] of [["head-to-pickup", null, 0], ["arrive", pickup, 0], ["board", null, waitMinutes * 60], ["start", null, 0]] as const) {
+      if (at) await moveTo(at);
+      if (wait) await moveTo(pickup, wait);
+      const res = await step(trip.tripId, path, v);
+      expect(res.statusCode, `${path}: ${res.body}`).toBe(200);
+      v = res.json().version;
+    }
+    return v;
+  }
+  const line = (p: { fareLines: Array<{ code: string; amount: { amountMinor: number } }> }, code: string) => p.fareLines.find((l) => l.code === code)?.amount.amountMinor ?? 0;
+
+  it("Stockholm: the rider ends early after paid pickup waiting → the waiting line and the driver's 100 % stay (fail-before: lost)", async () => {
+    const trip = await accepted();
+    const v = await onBoardAfterWait(trip, NORRMALM, 8);
+    const boarded = await view(trip.tripId, driverA.headers);
+    const paidWait = line(boarded, "waiting");
+    expect(paidWait).toBeGreaterThan(0);
+    await moveTo({ lat: 59.329, lng: 18.068 }, 120);
+    const ended = await call(app, "POST", `/trips/${trip.tripId}/end-early`, rider, { expectedVersion: v, reasonCode: "plans_changed" });
+    expect(ended.statusCode, ended.body).toBe(200);
+    const d = await view(trip.tripId, driverA.headers);
+    expect(line(d, "waiting")).toBe(paidWait);
+    expect(d.fareLines.reduce((s: number, l: { amount: { amountMinor: number } }) => s + l.amount.amountMinor, 0)).toBe(d.fare.amountMinor);
+    // The driver keeps all of the waiting (contract: waiting is 100 % the driver's).
+    expect(d.driverEarnings.amountMinor).toBeGreaterThanOrEqual(paidWait);
+  });
+
+  it("Paris: the same in euros, and the tip is saved even when the zone's tips are still in kronor (fail-before: tip_not_available)", async () => {
+    await publish("rider_app_config", "FR-PC", { ...riderDoc({}, true), tips: [1000, 2000, 3000].map((amountMinor) => ({ amount: { amountMinor, currency: "SEK" }, enabled: true })) });
+    const trip = await forcedParis();
+    const v = await onBoardAfterWait(trip, PARIS, 8);
+    const paidWait = line(await view(trip.tripId, driverA.headers), "waiting");
+    expect(paidWait).toBeGreaterThan(0);
+    await moveTo({ lat: 48.8556, lng: 2.352 }, 120);
+    const ended = await call(app, "POST", `/trips/${trip.tripId}/end-early`, rider, { expectedVersion: v, reasonCode: "plans_changed" });
+    expect(ended.statusCode, ended.body).toBe(200);
+    expect(ended.json().fare.currency).toBe("EUR");
+    expect(line(ended.json(), "waiting")).toBe(paidWait);
+    const tip = await call(app, "POST", `/trips/${trip.tripId}/rating`, rider, { stars: 5, tip: { amountMinor: 200, currency: "EUR" } });
+    expect(tip.statusCode, tip.body).toBe(201);
+    expect(tip.json().tipError).toBeUndefined();
+    expect((await view(trip.tripId, rider)).tip).toMatchObject({ amount: { amountMinor: 200, currency: "EUR" } });
+    // Live sweep M-5: one currency per earnings report; the euros never land in the kronor total (fail-before: mixed).
+    const sek = (await call(app, "GET", "/driver/earnings?period=day", driverA.headers)).json();
+    expect(sek).toMatchObject({ currency: "SEK" });
+    expect(sek.currencies).toEqual(expect.arrayContaining(["EUR", "SEK"]));
+    for (const p of sek.periods) expect(p.net.currency).toBe("SEK");
+    const eur = (await call(app, "GET", "/driver/earnings?period=day&currency=EUR", driverA.headers)).json();
+    const today = eur.periods[eur.periods.length - 1];
+    expect(today.net.currency).toBe("EUR");
+    expect(today.tips.amountMinor).toBe(200);
+    expect(today.tripCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("route change accepted, then the rider ends early near the new drop-off → the driven price may pass the old booked fare (fail-before: capped at it)", async () => {
+    const trip = await accepted();
+    const v = await onBoard(trip);
+    const booked = (await view(trip.tripId, rider)).fare.amountMinor;
+    const quote = (await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: v, dropoff: BROMMA, stops: [] })).json();
+    expect(quote.total.amountMinor).toBeGreaterThan(booked);
+    const asked = (await call(app, "PATCH", `/trips/${trip.tripId}`, rider, { expectedVersion: v, routeQuoteId: quote.routeQuoteId })).json();
+    const acc = await step(trip.tripId, "route-change/accept", asked.version, { changeId: asked.routeChange.changeId });
+    expect(acc.statusCode, acc.body).toBe(200);
+    await moveTo(KUNGSHOLMEN, 240);
+    await moveTo(NEAR_BROMMA, 300);
+    const ended = await call(app, "POST", `/trips/${trip.tripId}/end-early`, rider, { expectedVersion: acc.json().version, reasonCode: "plans_changed" });
+    expect(ended.statusCode, ended.body).toBe(200);
+    expect(ended.json().fare.amountMinor).toBeGreaterThan(booked);
+    expect(ended.json().fare.amountMinor).toBeLessThanOrEqual(quote.total.amountMinor);
+  });
+
+  it("the pending route change is pushed to the driver in his language with his new earnings, not after answerBy", async () => {
+    const trip = await accepted();
+    const v = await onBoard(trip);
+    const quote = (await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: v, dropoff: BROMMA, stops: [] })).json();
+    await call(app, "PATCH", `/trips/${trip.tripId}`, rider, { expectedVersion: v, routeQuoteId: quote.routeQuoteId });
+    const push = await database.db.selectFrom("notifications").selectAll().where("trip_id", "=", trip.tripId).where("kind", "=", "route_change").executeTakeFirstOrThrow();
+    expect(push).toMatchObject({ audience: "driver", subject_id: driverA.id, bell: false });
+    expect(push.body).toMatch(/kr/);
+    expect(push.push_until?.getTime()).toBe(Date.parse((await view(trip.tripId, driverA.headers)).routeChange.answerBy));
+  });
+});
+
+describe("deep fix 2026-11-02: dispatch checks the driver's papers and his car's ride types; his list shows his car", () => {
+  it("a REQUIRED document past its end date (sweep not run yet) → no offer; an optional one does not block (fail-before: offered)", async () => {
+    const was = await database.db.selectFrom("drivers").select("country").where("driver_id", "=", driverA.id).executeTakeFirstOrThrow();
+    await database.db.updateTable("drivers").set({ country: "SE" }).where("driver_id", "=", driverA.id).execute();
+    await database.db.insertInto("documents").values({ document_id: "doc_deep_opt", driver_id: driverA.id, owner_kind: "driver", owner_id: driverA.id, type: "not_a_required_type", status: "approved", expires_at: new Date(clock.now.getTime() - 60_000), created_at: clock.now, updated_at: clock.now }).execute();
+    const free = await book(NORRMALM, SODERMALM);
+    await worker.runDue();
+    expect((await call(app, "GET", "/driver/offers", driverA.headers)).json().items.length).toBeGreaterThan(0);
+    await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", free.json().tripId).execute();
+    await database.db.deleteFrom("offers").execute();
+    await database.db.deleteFrom("documents").where("document_id", "=", "doc_deep_opt").execute();
+    await database.db.insertInto("documents").values({ document_id: "doc_deep_exp", driver_id: driverA.id, owner_kind: "driver", owner_id: driverA.id, type: "driving_license", status: "approved", expires_at: new Date(clock.now.getTime() - 60_000), created_at: clock.now, updated_at: clock.now }).execute();
+    try {
+      const res = await book(NORRMALM, SODERMALM);
+      expect(res.statusCode).toBe(201);
+      await worker.runDue();
+      expect((await call(app, "GET", "/driver/offers", driverA.headers)).json().items).toHaveLength(0);
+    } finally {
+      await database.db.deleteFrom("documents").where("document_id", "=", "doc_deep_exp").execute();
+      await database.db.updateTable("drivers").set({ country: was.country }).where("driver_id", "=", driverA.id).execute();
+    }
+  });
+
+  it("the driver chose Komfort but his car is economy only → no Komfort offer; his car is listed and marked active (live sweep H-2)", async () => {
+    const before = await database.db.selectFrom("drivers").select(["category_ids", "vehicle_id"]).where("driver_id", "=", driverA.id).executeTakeFirstOrThrow();
+    await database.db.updateTable("drivers").set({ category_ids: [...before.category_ids, "comfort"] }).where("driver_id", "=", driverA.id).execute();
+    // The car is given to nobody's list (an old fleet / seed mismatch): still his active car.
+    await database.db.updateTable("vehicles").set({ driver_id: null }).where("vehicle_id", "=", before.vehicle_id!).execute();
+    try {
+      const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["comfort"] })).json().quotes?.[0];
+      if (quote) {
+        const res = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "comfort", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash" });
+        expect(res.statusCode, res.body).toBe(201);
+        await worker.runDue();
+        expect((await call(app, "GET", "/driver/offers", driverA.headers)).json().items).toHaveLength(0);
+      }
+      const cars = (await call(app, "GET", "/driver/vehicles", driverA.headers)).json().items as Array<{ vehicleId: string; active: boolean }>;
+      expect(cars.find((c) => c.vehicleId === before.vehicle_id)).toMatchObject({ active: true });
+    } finally {
+      await database.db.updateTable("drivers").set({ category_ids: before.category_ids }).where("driver_id", "=", driverA.id).execute();
+      await database.db.updateTable("vehicles").set({ driver_id: driverA.id }).where("vehicle_id", "=", before.vehicle_id!).execute();
+    }
+  });
+});
+
+describe("deep fix 2026-11-02: notices in the reader's current language; rider trip moments in the list; refund notice", () => {
+  it("the rider's 'driver found' is in his list and follows his language when he switches (fail-before: push only, fixed text)", async () => {
+    const lang = async (language: string) => {
+      const me = (await call(app, "GET", "/rider/profile", rider)).json();
+      expect((await call(app, "PATCH", "/rider/profile", rider, { expectedVersion: me.version, language })).statusCode).toBe(200);
+    };
+    await lang("sv");
+    const trip = await accepted();
+    const sv = (await call(app, "GET", "/notifications?limit=50", rider)).json().items.find((n: { kind: string; tripId?: string }) => n.tripId === trip.tripId);
+    expect(sv).toBeDefined();
+    expect(sv.data?.texts).toBeUndefined();
+    await lang("fr");
+    const fr = (await call(app, "GET", "/notifications?limit=50", rider)).json().items.find((n: { notificationId: string }) => n.notificationId === sv.notificationId);
+    expect(fr.title).not.toBe(sv.title);
+  });
+});
+
+describe("deep fix 2026-11-02: arrive needs a fresh position; Paris route-change push", () => {
+  it("an old server fix → 409 position_stale (apps ≥ 0.18.14); positionMaxAgeSeconds per zone; an older app keeps the old check", async () => {
+    const NEW = { ...driverA.headers, "x-contract-version": "0.18.14" };
+    const stepNew = (tripId: string, path: string, version: number, body: Doc = {}) => call(app, "POST", `/trips/${tripId}/${path}`, NEW, { expectedVersion: version, ...body });
+    const trip = await accepted();
+    const go = await step(trip.tripId, "head-to-pickup", trip.version);
+    await moveTo(NORRMALM);
+    clock.now = new Date(clock.now.getTime() + 120_000);
+    const stale = await stepNew(trip.tripId, "arrive", go.json().version);
+    expect(stale.json()).toMatchObject({ reason: "position_stale" });
+    const oldSent = await stepNew(trip.tripId, "arrive", go.json().version, { location: { ...NORRMALM, accuracy: 5, measuredAt: new Date(clock.now.getTime() - 120_000).toISOString() } });
+    expect(oldSent.json()).toMatchObject({ reason: "position_stale" });
+    // Fail-before for old apps (checker MED 11): no header → the old check, the same stale fix is fine.
+    const legacy = await step(trip.tripId, "arrive", go.json().version);
+    expect(legacy.statusCode, legacy.body).toBe(200);
+    const trip2 = await (async () => { await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", trip.tripId).execute(); await database.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", driverA.id).execute(); await moveTo(SPOT_A); return accepted(); })();
+    const go2 = await step(trip2.tripId, "head-to-pickup", trip2.version);
+    await moveTo(NORRMALM);
+    clock.now = new Date(clock.now.getTime() + 120_000);
+    await publish("driver_app_config", "Z001", driverDoc({ waiting: { positionMaxAgeSeconds: 300 } }));
+    const longer = await stepNew(trip2.tripId, "arrive", go2.json().version);
+    expect(longer.statusCode, longer.body).toBe(200);
+  });
+
+  it("Paris: the driver's push is in French with euros", async () => {
+    await database.db.updateTable("drivers").set({ language: "fr" }).where("driver_id", "=", driverA.id).execute();
+    try {
+      const trip = await forcedParis();
+      const v = await onBoard(trip, PARIS);
+      const q = (await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: v, dropoff: { address: "Bastille", lat: 48.8532, lng: 2.3692 }, stops: [] })).json();
+      await call(app, "PATCH", `/trips/${trip.tripId}`, rider, { expectedVersion: v, routeQuoteId: q.routeQuoteId });
+      const push = await database.db.selectFrom("notifications").selectAll().where("trip_id", "=", trip.tripId).where("kind", "=", "route_change").executeTakeFirstOrThrow();
+      expect(push.title).toBe("Le passager veut changer d’itinéraire");
+      expect(push.body).toMatch(/€/);
+    } finally {
+      await database.db.updateTable("drivers").set({ language: null }).where("driver_id", "=", driverA.id).execute();
+    }
+  });
+});

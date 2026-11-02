@@ -5,7 +5,7 @@ import { migrate } from "../../src/db/migrate.js";
  * Builds the template database once per test run: every migration applied to movera_test_template. Each test
  * file then clones it (test/support/db.ts), which takes milliseconds and keeps files from seeing each other.
  */
-// TEST_TEMPLATE_DB: a separate template name lets several checkouts share one Postgres without dropping each other's.
+/** Several test runs on one server (parallel worktrees) each set their own TEST_TEMPLATE_DB. */
 export const TEMPLATE_DB = process.env.TEST_TEMPLATE_DB ?? "movera_test_template";
 
 export function adminUrl(): string {

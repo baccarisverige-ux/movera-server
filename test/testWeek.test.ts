@@ -35,7 +35,7 @@ describe("test week at start", () => {
     const log = logger();
     await prepareTestWeek(database.db, env, log, { now });
     expect(log.lines.map((l) => l.message)).toEqual([
-      "test accounts made (sign in with code 1234)",
+      "test accounts made (sign in with the fixed code of contract.json#auth.testSignIn)",
       "sample settings published",
       "admin password link (open it to choose the password)",
     ]);

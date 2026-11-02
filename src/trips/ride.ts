@@ -9,6 +9,7 @@ import { routeChangeExpireHandler } from "./routeChange.js";
 import { sql, type Updateable } from "kysely";
 import type { OfflineReason, TripsTable } from "../db/schema.js";
 import { markSetOffline } from "../drivers/offlineReason.js";
+import { offlineIfDocumentsExpired } from "../drivers/reminders.js";
 import { contract } from "../contract/contract.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { liveDocument } from "../config/service.js";
@@ -66,6 +67,14 @@ export const NEAR_DROPOFF = "near_dropoff";
 /* v0.18.13: the old came-closer check (400 m/min × 50 %, once at the cancel) is replaced by the heading check (headingCheck.ts). */
 /** "Arrived" is accepted within this distance of the pickup (the driver's latest fix). */
 export const ARRIVE_MAX_METERS = 300;
+const POSITION_MAX_AGE = (contract as unknown as { arrivedWaiting: { positionMaxAge: { default: number; range: [number, number] } } }).arrivedWaiting.positionMaxAge;
+
+/** v0.18.14: DriverAppConfig.waiting.positionMaxAgeSeconds of the zone (default 60, range 15–600). */
+export async function positionMaxAge(ex: Executor, zoneId: string): Promise<number> {
+  const doc = await liveDocument<{ waiting?: { positionMaxAgeSeconds?: unknown } }>(ex, "driver_app_config", zoneId);
+  const v = doc?.document.waiting?.positionMaxAgeSeconds;
+  return typeof v === "number" && Number.isInteger(v) && v >= POSITION_MAX_AGE.range[0] && v <= POSITION_MAX_AGE.range[1] ? v : POSITION_MAX_AGE.default;
+}
 /** A trip completed farther than this from the drop-off (the driver's latest fix) ended early: the rider pays what was driven. */
 export const COMPLETE_NEAR_DROPOFF_METERS = 300;
 
@@ -317,13 +326,19 @@ async function driven(ex: Executor, trip: TripRow, now: Date): Promise<{ fare: F
   const km = Math.round((await kmOnBoard(ex, trip, since)) * 1000) / 1000;
   const minutes = Math.round(Math.max(0, now.getTime() - since.getTime()) / 600) / 100;
   const owed = outstandingLine(trip);
-  const booked = Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0);
+  // Deep fix 2026-11-02 (g7-g9 H1): the cap is the booked fare moved by every accepted route change.
+  const booked = Number(trip.booked_fare_minor) + Number(trip.route_delta_minor ?? 0) - (owed ? owed.amount.amountMinor : 0);
+  const waiting = trip.waiting as Waiting | null;
   const fare = priceFare(doc, {
     categoryId: trip.category_id,
     km,
     minutes,
     kind: trip.kind,
     surgeMultiplier: Number(trip.surge_multiplier),
+    // P2-H1: the paid pickup waiting and the booking's extras (seat, airport, reservation fee) are kept on an early end.
+    waitingChargedSeconds: waiting?.chargedSeconds ?? 0,
+    ...(waiting?.perMin ? { waitingPerMin: waiting.perMin } : {}),
+    ...extrasOf(trip.price_extras),
     endEarly: { kmDriven: km, minutesOnBoard: minutes, bookedFare: { amountMinor: booked, currency: trip.currency } },
   });
   return { fare, km, minutes };
@@ -443,6 +458,8 @@ export async function releaseDriver(trx: Trx, driverId: string | null, now: Date
     .where("driver_id", "=", driverId)
     .execute();
   if (blockedBy !== null) await markSetOffline(trx, driverId, blockedBy, {}, now);
+  // Deep fix 2026-11-02 (g1-g3 H1): a document that expired during the trip takes him offline at its end.
+  else await offlineIfDocumentsExpired(trx, now, driverId);
 }
 
 export async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share" | "bonus" | "adjustment" | "tip"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
@@ -561,12 +578,20 @@ type StepCommand = "head_to_pickup" | "arrive" | "board" | "start_trip";
 /** A fresh 4-digit rider PIN (contract.json#arrivedWaiting.pin). */
 export const newPin = () => String(randomInt(0, 10_000)).padStart(4, "0");
 
-export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place, options: { skipPin?: boolean } = {}): Promise<TripRow> {
+export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place, options: { legacyPosition?: boolean } = {}): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, expectedVersion, "driver");
   if (command === "arrive") {
     if (trip.status === "driver_to_pickup") {
-      const here = location ?? (await trx.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driverId).executeTakeFirst());
+      // Deep fix 2026-11-02 (MED stale / fake GPS for arrive): a position counts only while it is at most the zone's
+      // DriverAppConfig.waiting.positionMaxAgeSeconds old (default 60): the one sent with the step when it says when it
+      // was measured, else the server's latest fix. An old one is 409 position_stale (turn on location).
+      const maxAge = options.legacyPosition ? Number.POSITIVE_INFINITY : await positionMaxAge(trx, trip.zone_id);
+      const fresh = (at: unknown) => options.legacyPosition || (typeof at === "string" || at instanceof Date ? Math.abs(now.getTime() - new Date(at).getTime()) <= maxAge * 1000 : false);
+      const sent = location && fresh((location as Place & { measuredAt?: string }).measuredAt) ? location : null;
+      const stored = sent ? undefined : await trx.selectFrom("driver_locations").select(["lat", "lng", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
+      const here = sent ?? (stored && fresh(stored.measured_at) ? stored : null);
+      if (!here && (location || stored)) throw new ApiError("invalid_transition", "Your position is too old. Turn on location and try again.", { reason: "position_stale", projection: tripProjection(trip, "driver") });
       if (!here || haversineKm(here, trip.pickup as Place) * 1000 > ARRIVE_MAX_METERS) {
         throw new ApiError("invalid_transition", "You are not at the pickup yet.", { reason: "not_at_pickup", projection: tripProjection(trip, "driver") });
       }
@@ -605,7 +630,7 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     await scheduleTimer(trx, { kind: WAITING_NO_SHOW, refId: tripId, dueAt: new Date(waiting.noShowAt), payload: { arrivedAt: waiting.arrivedAt } });
     return applyCommand(trx, trip, { command, actor: "driver", now, set: { arrived_at: now, waiting: JSON.stringify(waiting) } });
   }
-  if ((command === "board" || command === "start_trip") && !options.skipPin && trip.pin_required && trip.pin_verified_at === null && ["arrived", "driver_to_pickup", "accepted"].includes(trip.status)) {
+  if ((command === "board" || command === "start_trip") && trip.pin_required && trip.pin_verified_at === null && ["arrived", "driver_to_pickup", "accepted"].includes(trip.status)) {
     // v0.18.8 (contract.json#arrivedWaiting.pin): the rider's PIN first (checked by checkPin before this transaction).
     throw new ApiError("invalid_transition", "Ask the rider for the 4-digit code first.", { reason: "pin_required", projection: tripProjection(trip, "driver") });
   }
@@ -1236,8 +1261,10 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
            coalesce(sum(amount_minor) FILTER (WHERE kind = 'adjustment'), 0) AS adjustments,
            coalesce(sum(cash_minor) FILTER (WHERE kind IN ('trip', 'tip')), 0) AS cash
       FROM earnings_entries
-     WHERE driver_id = ${driverId} AND at >= ${from} AND at < ${to}
+     WHERE driver_id = ${driverId} AND at >= ${from} AND at < ${to} AND currency = ${input.currency}
      GROUP BY 1 ORDER BY 1`.execute(ex);
+  // The other currencies he earned in over the same time (the app offers a switch: kr / €).
+  const others = await ex.selectFrom("earnings_entries").select("currency").distinct().where("driver_id", "=", driverId).where("at", ">=", from).where("at", "<", to).orderBy("currency").execute();
   const money = (v: string | number) => ({ amountMinor: Number(v), currency: input.currency });
   const periods = [];
   for (const r of rows.rows) {
@@ -1257,7 +1284,7 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
       net: money(net),
     });
   }
-  return { driverId, period: input.period, timeZone: tz, periods };
+  return { driverId, period: input.period, timeZone: tz, currency: input.currency, currencies: [...new Set([input.currency, ...others.map((o) => o.currency)])].sort(), periods };
 }
 
 /* ---------------------------------------------------------------- waiting rules and island alerts (v0.18.8) */

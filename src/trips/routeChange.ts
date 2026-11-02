@@ -14,6 +14,7 @@ import { expectVersion, lockOwnTrip, touchTrip } from "./commands.js";
 import { checkMaxStops, routeChangeSettings, type RouteChangeSettings } from "./onTripSettings.js";
 import { tripProjection } from "./projection.js";
 import { pricingOf } from "./ride.js";
+import { notify } from "../notifications/service.js";
 
 /**
  * v0.18.9 (contract.json#onTrip.routeChange, owner G7 decision 3 "Rider changes, driver accepts"): the rider changes
@@ -181,6 +182,8 @@ async function applyChange(trx: Trx, trip: TripRow, change: RouteChange, answere
     dropoff: JSON.stringify(quote.dropoff),
     stops: JSON.stringify(quote.stops),
     fare_minor: total,
+    // Deep fix 2026-11-02 (g7-g9 H1): an early end after this change is capped by the new price, not the old booked one.
+    route_delta_minor: Number(trip.route_delta_minor ?? 0) + Number(quote.difference_minor),
     fare_lines: JSON.stringify(quote.fare_lines),
     driver_earnings_minor: earnings,
     commission_minor: commissionOf(total, quote.fare_lines, earnings, Number(trip.pickup_pay_minor ?? 0), Number(trip.driver_bonus_minor ?? 0)),
@@ -227,7 +230,9 @@ export async function requestRouteChange(trx: Trx, riderId: string, tripId: stri
   // Admin "Driver can refuse" off: the change applies now and the driver is told.
   if (!settings.driverCanRefuse) return applyChange(trx, trip, { ...change, answerBy: change.askedAt }, "system", now);
   await scheduleTimer(trx, { kind: ROUTE_CHANGE_EXPIRE, refId: `${tripId}|${change.changeId}`, dueAt: new Date(change.answerBy) });
-  return touchTrip(trx, trip, { route_change: JSON.stringify(change) }, now);
+  const updated = await touchTrip(trx, trip, { route_change: JSON.stringify(change) }, now);
+  await pushRouteChange(trx, trip, change, settings.answerSeconds, now);
+  return updated;
 }
 
 /** POST /trips/{tripId}/route-change/accept | refuse (driver) | withdraw (rider). */
@@ -258,3 +263,32 @@ export const routeChangeExpireHandler: TimerHandler = async (trx, timer) => {
   if (!change || change.changeId !== changeId) return;
   await touchTrip(trx, trip, { route_change: JSON.stringify({ ...change, status: "expired", answeredAt: timer.firedAt.toISOString(), answeredBy: "system" }) }, timer.firedAt);
 };
+
+type Lang = "sv" | "fr" | "en";
+type DriverPush = { kind: string; deepLink: string; title: Record<Lang, string>; body: Record<Lang, string> };
+const DRIVER_PUSH = (contract as unknown as { onTrip: { routeChange: { driverPush: DriverPush } } }).onTrip.routeChange.driverPush;
+
+/**
+ * v0.18.14 (live sweep H-1, contract.json#onTrip.routeChange.driverPush): the pending change is pushed to the driver too
+ * (push only, not after answerBy), in his language, with his new earnings, so it reaches him with the app in the
+ * background; the trip stream still carries it (trip_projection, version + 1).
+ */
+async function pushRouteChange(trx: Trx, trip: TripRow, change: RouteChange, seconds: number, now: Date): Promise<void> {
+  if (!trip.driver_id) return;
+  const driver = await trx.selectFrom("drivers").select("language").where("driver_id", "=", trip.driver_id).executeTakeFirst();
+  const lang: Lang = driver?.language === "sv" || driver?.language === "fr" ? driver.language : "en";
+  const amount = change.driverEarnings.amountMinor / 100;
+  const earnings = change.driverEarnings.currency === "SEK" ? `${amount.toFixed(2).replace(".", ",")} kr` : `${amount.toFixed(2).replace(".", ",")} €`;
+  await notify(trx, {
+    audience: "driver",
+    subjectId: trip.driver_id,
+    kind: DRIVER_PUSH.kind,
+    title: DRIVER_PUSH.title[lang],
+    body: DRIVER_PUSH.body[lang].replace("{seconds}", String(seconds)).replace("{earnings}", earnings),
+    deepLink: DRIVER_PUSH.deepLink.replace("{tripId}", trip.trip_id),
+    tripId: trip.trip_id,
+    data: { tripId: trip.trip_id, changeId: change.changeId, answerBy: change.answerBy },
+    bell: false,
+    pushUntil: new Date(change.answerBy),
+  }, now);
+}

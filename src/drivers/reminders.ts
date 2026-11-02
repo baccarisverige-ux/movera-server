@@ -3,7 +3,9 @@ import { contract } from "../contract/contract.js";
 import { notify } from "../notifications/service.js";
 import { ONBOARDING } from "./onboardingRules.js";
 import { PHOTO_TYPES, daysLeft, onboardingSettings, requiredOf, typeInfo, type OnboardingSettings } from "./onboardingSettings.js";
-import { isTestDriver, pickableCars } from "./readiness.js";
+import { expiredBlockers, isTestDriver, pickableCars, vehicleDocumentBlockers } from "./readiness.js";
+import { markSetOffline } from "./offlineReason.js";
+import { scheduleTimer } from "../jobs/timers.js";
 
 /**
  * Contract v0.18.0 §27 (owner decisions of 2026-10-29, driver group 2, items 1, 2, 3, 8, 9 and the note check):
@@ -206,6 +208,7 @@ export async function sweepDocumentExpiry(ex: Executor, now: Date): Promise<void
       data: { documentId: doc.document_id, type: doc.type, scope, ...(vehicleId ? { vehicleId } : {}), daysLeft: left, expiresAt: expiresAt.toISOString() },
     }, now);
   }
+  await offlineIfDocumentsExpired(ex, now);
 }
 
 /** The account waits on itself: details not sent, or a required file document missing or rejected. */
@@ -251,4 +254,38 @@ export async function signUpView(ex: Executor, d: { driver_id: string; account_s
       ...(sent[0] ? { lastReminderAt: sent[0].sent_at.toISOString() } : {}),
     },
   };
+}
+
+/**
+ * Deep fix 2026-11-02 (g1-g3 H1, decision G2-1 "can't go online after expiry"): a driver who is online when one of his
+ * required documents (or his car's) passes its end date is set offline at once with reason documents_expired (bell +
+ * push, the offline card says why); one on a trip finishes it and goes offline at its end (releaseDriver). Returns the
+ * drivers set offline.
+ */
+export async function offlineIfDocumentsExpired(ex: Executor, now: Date, onlyDriverId?: string): Promise<string[]> {
+  let q = ex.selectFrom("drivers").select(["driver_id", "country", "account_type", "vehicle_id", "version"]).where("online_status", "=", "online");
+  if (onlyDriverId) q = q.where("driver_id", "=", onlyDriverId);
+  const out: string[] = [];
+  for (const d of await q.execute()) {
+    if (!(await documentsExpiredFor(ex, d, now))) continue;
+    await ex.updateTable("drivers").set({ online_status: "offline", online_since: null, version: d.version + 1, updated_at: now }).where("driver_id", "=", d.driver_id).where("online_status", "=", "online").execute();
+    await markSetOffline(ex, d.driver_id, "documents_expired", {}, now);
+    await scheduleTimer(ex, { kind: "withdraw_driver_offers", refId: d.driver_id, dueAt: now, payload: {} });
+    out.push(d.driver_id);
+  }
+  return out;
+}
+
+/** His own required documents (expiredBlockers) or his car's (vehicleDocumentBlockers) block driving now. */
+export async function documentsExpiredFor(ex: Executor, d: { driver_id: string; country: string | null; account_type: string | null; vehicle_id: string | null }, now: Date): Promise<boolean> {
+  if ((await expiredBlockers(ex, d, now)).length > 0) return true;
+  if (d.vehicle_id === null) return false;
+  const car = await ex.selectFrom("vehicles").select(["vehicle_id", "fleet_id", "driver_id"]).where("vehicle_id", "=", d.vehicle_id).executeTakeFirst();
+  if (!car) return false;
+  const blockers = await vehicleDocumentBlockers(ex, car, now, d.driver_id);
+  if (blockers.length === 0) return false;
+  // Only a car paper that EXPIRED takes him offline here (a car that never had a paper is the going-online check's).
+  const expired = await ex.selectFrom("documents").select("type").where("owner_kind", "=", "vehicle").where("owner_id", "=", car.vehicle_id)
+    .where((eb) => eb.or([eb("status", "=", "expired"), eb.and([eb("status", "=", "approved"), eb("expires_at", "<=", now)])])).execute();
+  return blockers.some((b) => expired.some((e) => b === `vehicle:${e.type}`));
 }
