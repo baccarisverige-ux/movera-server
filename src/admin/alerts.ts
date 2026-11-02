@@ -151,7 +151,8 @@ export async function alertCommand(trx: Trx, who: Principal, alertId: string, in
   const owner = live ? row.owner : null;
   // Someone else works on it: only they act, or they pass it on.
   if (owner && owner !== me) throw new ApiError("conflict", "Another admin works on this alert.", { reason: "alert_taken" });
-  const events = live ? ((Array.isArray(row.events) ? row.events : []) as Event[]) : [];
+  // Checker MED4: a done alert that comes back keeps its whole history; the new steps are added after it.
+  const events = (Array.isArray(row.events) ? row.events : []) as Event[];
   let next: { status: RecordRow["status"]; owner: string | null; snooze_until: Date | null };
   switch (command.verb) {
     case "take":

@@ -54,8 +54,10 @@ describe("take / pass / snooze / done: every admin sees who has it", () => {
     expect((r["events"] as Json[]).at(-1)).toMatchObject({ text: "Sent a driver", by: erik.id, byName: "ops admin" });
     const audit = await sim.db.selectFrom("admin_audit").select("action").where("target_id", "=", "long_wait:Z001").execute();
     expect(audit.map((a) => a.action).sort()).toEqual(["alert.done", "alert.pass", "alert.snooze", "alert.take"]);
-    // A new alert with the same id after done starts fresh (nobody owns it).
-    expect(record((await nora.post("/admin/alerts/long_wait:Z001/take", ALERT)).body, "long_wait:Z001")!["events"]).toHaveLength(1);
+    // Checker MED4: the same alert taken again after done keeps its history (nobody owned it, so Nora can take it).
+    const again = record((await nora.post("/admin/alerts/long_wait:Z001/take", ALERT)).body, "long_wait:Z001")!;
+    expect((again["events"] as Json[]).map((e) => e["kind"])).toEqual(["take", "pass", "snooze", "done", "take"]);
+    expect(again).toMatchObject({ status: "taken", owner: nora.id });
   });
 
   it("solving an alert nobody took takes and solves it at once; SOS / ride check stay in Incidents", async () => {
