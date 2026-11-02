@@ -410,6 +410,15 @@ describe("item 3: route change during the trip (rider proposes, driver accepts o
     await moveTo(GAMLA_STAN, 30);
     const at = await call(app, "POST", `/driver/trips/${trip.tripId}/stops/0/arrive`, driverA.headers, { expectedVersion: applied.version });
     expect(at.statusCode, at.body).toBe(200);
+    // contract.json#stopWaits: the arrival is on stops[i].arrivedAt (every view, and on reopen), stopVisits kept too.
+    const arrivedAt = at.json().stopVisits[0].arrivedAt;
+    expect(at.json().stops[0]).toMatchObject({ ...GAMLA_STAN, arrivedAt });
+    for (const headers of [driverA.headers, rider]) {
+      const reopened = await view(trip.tripId, headers);
+      expect(reopened.stops[0]).toMatchObject({ arrivedAt });
+      expect(reopened.stops[0].leftAt).toBeUndefined();
+      expect(reopened.stopVisits).toEqual([{ stopIndex: 0, arrivedAt }]);
+    }
     const removed = await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: at.json().version, stops: [] });
     expect(removed.json()).toMatchObject({ code: "invalid_request", reason: "visited_stop_changed" });
     const tooMany = await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: at.json().version, stops: [GAMLA_STAN, KUNGSHOLMEN, NORRMALM, SODERMALM] });
