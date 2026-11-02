@@ -149,6 +149,22 @@ function finishOf(row: TripRow, viewer: Viewer): Record<string, unknown> | null 
   };
 }
 
+/** stops[i] with the arrivedAt / leftAt of the matching stop visit (contract.json#stopWaits.projection). */
+export function stopsWithVisits(stops: unknown, visits: unknown): unknown[] {
+  const list = Array.isArray(stops) ? stops : [];
+  const byIndex = new Map<number, { arrivedAt?: string; leftAt?: string }>();
+  for (const v of Array.isArray(visits) ? (visits as Array<{ stopIndex?: unknown; arrivedAt?: string; leftAt?: string }>) : []) {
+    if (typeof v?.stopIndex === "number") byIndex.set(v.stopIndex, v);
+  }
+  return list.map((stop, i) => {
+    if (!stop || typeof stop !== "object") return stop;
+    // Only the server's visits say arrived / left (a client echo of these keys in a stored stop never counts).
+    const { arrivedAt: _a, leftAt: _l, ...place } = stop as Record<string, unknown>;
+    const v = byIndex.get(i);
+    return { ...place, ...(v?.arrivedAt ? { arrivedAt: v.arrivedAt } : {}), ...(v?.leftAt ? { leftAt: v.leftAt } : {}) };
+  });
+}
+
 export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number; now?: Date } = {}): Record<string, unknown> {
   const currency = row.currency;
   const lines = (row.fare_lines as Array<{ code: string; amount: Money }>) ?? [];
@@ -173,8 +189,9 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     categoryId: row.category_id,
     pickup: row.pickup,
     dropoff: row.dropoff,
-    stops: row.stops ?? [],
-    // v0.7.1 (§3.8): the driver's arrived-at-stop / leaving-stop taps.
+    // contract.json#stopWaits.projection: TripProjection.stops[i] gains arrivedAt? / leftAt? from the driver's taps.
+    stops: stopsWithVisits(row.stops, row.stop_visits),
+    // v0.7.1 (§3.8): the same taps, also as stopVisits (kept for older readers).
     ...(((row.stop_visits as unknown[] | null) ?? []).length ? { stopVisits: row.stop_visits } : {}),
     fare: money(row.fare_minor, currency),
     fareLines: viewer === "rider" ? lines.filter((l) => !DRIVER_ONLY_LINES.has(l.code)) : lines,
