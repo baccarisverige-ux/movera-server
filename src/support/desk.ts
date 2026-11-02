@@ -78,8 +78,11 @@ export async function adminPutSettings(trx: Trx, who: Principal, body: { country
   if (!body.topics.some((t) => t.on)) throw badRequest("At least one topic must be on.", "topics_required");
   for (const topic of body.topics) {
     if (!topic.assignTo) continue;
-    const admin = await trx.selectFrom("admins").select(["role", "active"]).where("admin_id", "=", topic.assignTo).executeTakeFirst();
-    if (!admin || !admin.active || !(isAdminRole(admin.role) ? permissionsOf(admin.role) : []).includes("support.reply")) throw badRequest("That admin cannot get support tickets.", "assignee_not_allowed");
+    const admin = await trx.selectFrom("admins").select(["role", "active", "zone_ids"]).where("admin_id", "=", topic.assignTo).executeTakeFirst();
+    // Checker LOW: the admin needs support.reply and a zone in this country (or all zones).
+    const zones = admin?.zone_ids ?? ["*"];
+    const inCountry = zones.includes("*") || (zones.length > 0 && (await trx.selectFrom("zones").select("zone_id").where("country", "=", body.country).where("zone_id", "in", zones).executeTakeFirst()) !== undefined);
+    if (!admin || !admin.active || !inCountry || !(isAdminRole(admin.role) ? permissionsOf(admin.role) : []).includes("support.reply")) throw badRequest("That admin cannot get support tickets in this country.", "assignee_not_allowed");
   }
   const before = await settingsOf(trx, body.country);
   const replies = body.replies ?? before.replies;

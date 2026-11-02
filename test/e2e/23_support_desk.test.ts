@@ -238,6 +238,8 @@ describe("owner \"Yes, by topic\": new tickets land with the admin set for their
     expect((await owner.get(`/admin/tickets/${sorted}`)).body["assignedTo"]).toMatchObject({ adminId: lostAgent.id });
     const other = await open({ category: "payment" });
     expect((await owner.get(`/admin/tickets/${other}`)).body["assignedTo"]).toBeUndefined();
+    const france = await sim.admin("support", ["FR-PC"]);
+    expect((await owner.put("/admin/support/settings", { ...se, topics: withAssign(france.id) })).body["reason"]).toBe("assignee_not_allowed");
     const elsewhere = await sim.admin("support", ["Z002"]);
     await owner.put("/admin/support/settings", { ...se, topics: withAssign(elsewhere.id) });
     const notCovered = await open({ category: "lost_item" });

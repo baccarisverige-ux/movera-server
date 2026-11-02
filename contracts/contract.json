@@ -4055,7 +4055,7 @@
       },
       "limits": "firstReplyMin 1-10080; solveHours 1-720; every contract topic once; at least one topic on.",
       "replies": "Owner 2026-11-02 'Yes': ready replies the admin manages per language (sv, fr, en): replies [{ id, lang, title, text }] in SupportSettings (at most 100; title 1-80, text 1-2000 chars; id unique). Agents pick one in Admin › Support, change it and send it as an ordinary answer. Never saved = no ready replies.",
-      "autoSort": "Owner 2026-11-02 'Yes, by topic': each topic may name the admin who gets its new tickets: topics[].assignTo (an admin id; absent = nobody). When a rider or driver opens a ticket on that topic, the server sets assignedTo to that admin if he is active, has support.reply and covers the ticket's zone (else nobody). A team (several admins) is not in this version."
+      "autoSort": "Owner 2026-11-02 'Yes, by topic': each topic may name the admin who gets its new tickets: topics[].assignTo (an admin id; absent = nobody; saving needs an active admin with support.reply and a zone in that country, else 400 assignee_not_allowed). When a rider or driver opens a ticket on that topic, the server sets assignedTo to that admin if he is active, has support.reply and covers the ticket's zone (else nobody). A team (several admins) is not in this version."
     },
     "caseIncidentKind": "support_case",
     "next": "Rider and driver apps: reply box on the ticket, '<first name> · Movera Support', topics from GET /support/topics.",
