@@ -1,4 +1,5 @@
 import { sql } from "kysely";
+import { applyPersonRules, ratingRules } from "./reviewRules.js";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
@@ -122,6 +123,10 @@ export async function moderateRating(trx: Trx, who: Principal, tripId: string, r
   } else if (rater === "driver") {
     await trx.updateTable("riders").set({ rating_sum: sql`rating_sum + ${sign * row.stars}`, rating_count: sql`rating_count + ${sign}` }).where("rider_id", "=", row.rider_id).execute();
   }
+  // v0.18.15 (contract.json#reviewRules): the person's new average is checked against the review lines.
+  const { rules, country } = await ratingRules(trx, { zone_id: row.zone_id });
+  if (rater === "rider" && row.driver_id) await applyPersonRules(trx, "driver", row.driver_id, country, rules, now);
+  else if (rater === "driver") await applyPersonRules(trx, "rider", row.rider_id, country, rules, now);
   await audit(trx, { adminId: who.subjectId, action: hide ? "rating.hide" : "rating.restore", targetType: "rating", targetId: `${tripId}:${rater}`, zoneId: row.zone_id, detail: { reason }, at: now });
   const after = await base(trx).where("ratings.trip_id", "=", tripId).where("ratings.rater", "=", rater).executeTakeFirstOrThrow();
   return ratingView(after as RatingRow);

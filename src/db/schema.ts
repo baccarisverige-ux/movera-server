@@ -856,6 +856,24 @@ export interface AdminIncidentSettingsTable {
   updated_by: string | null;
 }
 
+/** v0.18.15 (migration 0049): review rules per country and where each rated person stands. */
+export interface ReviewRulesTable {
+  country: string;
+  doc: ColumnType<unknown, string, string>;
+  updated_at: Timestamp;
+  updated_by: string | null;
+}
+export interface ReviewPeopleTable {
+  who: "driver" | "rider";
+  person_id: string;
+  country: string | null;
+  level: "warn" | "review" | "block";
+  average: ColumnType<string, number, number>;
+  count: number;
+  since: Timestamp;
+  queued: ColumnType<boolean, boolean | undefined, boolean>;
+}
+
 export interface TicketMessagesTable {
   /** Write order (two messages can share a timestamp). */
   n: Generated<string>;
@@ -1228,6 +1246,8 @@ export interface Database {
   admin_alert_records: AdminAlertRecordsTable;
   admin_alert_quiet: AdminAlertQuietTable;
   admin_incident_settings: AdminIncidentSettingsTable;
+  review_rules: ReviewRulesTable;
+  review_people: ReviewPeopleTable;
   dispatch_events: DispatchEventsTable;
   dispatch_presets: DispatchPresetsTable;
   driver_groups: DriverGroupsTable;

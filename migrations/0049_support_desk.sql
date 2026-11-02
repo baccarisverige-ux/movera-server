@@ -62,3 +62,23 @@ CREATE TABLE IF NOT EXISTS admin_incident_settings (
   updated_by  text
 );
 INSERT INTO admin_incident_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- Review rules (contract v0.18.15 §40, contract.json#reviewRules; owner G14 Q6 "Make them real").
+CREATE TABLE IF NOT EXISTS review_rules (
+  country     text PRIMARY KEY CHECK (country ~ '^[A-Z]{2}$'),
+  doc         jsonb NOT NULL,
+  updated_at  timestamptz NOT NULL,
+  updated_by  text
+);
+-- Where each rated person stands against the lines (one action per crossing) and the admin review list.
+CREATE TABLE IF NOT EXISTS review_people (
+  who         text NOT NULL CHECK (who IN ('driver', 'rider')),
+  person_id   text NOT NULL,
+  country     text,
+  level       text NOT NULL CHECK (level IN ('warn', 'review', 'block')),
+  average     numeric(4, 2) NOT NULL,
+  count       integer NOT NULL,
+  since       timestamptz NOT NULL,
+  queued      boolean NOT NULL DEFAULT false,
+  PRIMARY KEY (who, person_id)
+);

@@ -12,6 +12,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearDispatch } from "../dispatch/feed.js";
 import { adminDeskCommand, adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets, writeOwnTicket, type DeskCommand } from "../support/tickets.js";
+import { reviewDone, reviewQueue, reviewRulesOf, saveReviewRules } from "./reviewRules.js";
 import { incidentSettings, recordReport, saveIncidentSettings } from "../safety/incidentDesk.js";
 import { alertBook, alertCommand, alertHistory, saveDoc, setMute, setQuiet, type AlertCommand } from "./alerts.js";
 import { adminGetSettings, adminPutSettings, SUPPORT_COUNTRIES, topicsFor } from "../support/desk.js";
@@ -290,6 +291,32 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const incidentId = param(request, "incidentId");
     await runIdempotent(deps.db, idem(request, who), async (trx) => { await recordReport(trx, who, incidentId, now()); return { status: 204, body: null }; });
     return reply.status(204).send();
+  });
+
+  /* ---- review rules (v0.18.15, contract.json#reviewRules) */
+  const LineBody = z.object({ on: z.boolean(), below: z.number().min(1).max(5) });
+  const ReviewRulesBody = z.object({ country: SupportCountry, warn: LineBody, review: LineBody, block: LineBody, minReviews: z.number().int().min(1).max(1000), badWords: z.object({ on: z.boolean(), words: z.array(z.string().trim().min(1).max(40)).max(200) }) }).passthrough();
+  app.get(`${API_PREFIX}/admin/reviews/rules`, async (request) => {
+    await authenticateAdmin(request, guard, "settings.read");
+    const { country } = parseBody(z.object({ country: SupportCountry }), request.query);
+    return reviewRulesOf(deps.db, country);
+  });
+  app.put(`${API_PREFIX}/admin/reviews/rules`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "settings.edit");
+    const body = parseBody(ReviewRulesBody, request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveReviewRules(trx, who, { country: body.country, warn: body.warn, review: body.review, block: body.block, minReviews: body.minReviews, badWords: body.badWords }, now()) }));
+    return result.body;
+  });
+  app.get(`${API_PREFIX}/admin/reviews/queue`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "riders.read");
+    return reviewQueue(deps.db, who);
+  });
+  app.post(`${API_PREFIX}/admin/reviews/queue/:who/:personId/done`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "riders.block");
+    const person = parseBody(z.object({ who: z.enum(["driver", "rider"]), personId: ID }), request.params);
+    const { note } = parseBody(z.object({ note: z.string().min(1).max(500) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await reviewDone(trx, who, person, note, now()) }));
+    return result.body;
   });
 
   /* ---- ratings */

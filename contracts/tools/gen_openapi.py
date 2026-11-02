@@ -433,6 +433,15 @@ S["AlertHistory"] = obj({"items": arr(ref("AlertRecord"))}, ["items"], "v0.18.15
 ID_ = C["incidentDesk"]
 S["IncidentSettingsDoc"] = obj({"rev": i(minimum=1), "settings": {"type": "object"}, "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")}, ["rev", "settings"], "v0.18.15: " + ID_["settings"])
 S["IncidentSettingsCommand"] = obj({"expectedRev": i(minimum=1), "settings": {"type": "object"}}, ["expectedRev", "settings"], "v0.18.15.")
+RR = C["reviewRules"]
+_LINE = obj({"on": b(), "below": n(minimum=1, maximum=5)}, ["on", "below"])
+S["ReviewRules"] = obj({"country": s(enum=C["supportDesk"]["settings"]["countries"]), "warn": _LINE, "review": _LINE, "block": _LINE, "minReviews": i(minimum=1, maximum=1000),
+                        "badWords": obj({"on": b(), "words": arr(s(minLength=1, maxLength=40), maxItems=200)}, ["on", "words"]), "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")},
+                       ["country", "warn", "review", "block", "minReviews", "badWords"], "v0.18.15: " + RR["rules"])
+S["ReviewQueueRow"] = obj({"who": s(enum=["driver", "rider"]), "personId": ref("Id"), "name": s(), "country": s(), "level": s(enum=["review", "block"]), "average": n(), "count": i(minimum=0), "since": ref("Timestamp")},
+                          ["who", "personId", "level", "average", "count", "since"])
+S["ReviewQueue"] = obj({"items": arr(ref("ReviewQueueRow"))}, ["items"], "v0.18.15: " + RR["queue"])
+S["ReviewDoneCommand"] = obj({"note": s(minLength=1, maxLength=500)}, ["note"], "v0.18.15.")
 SF = C["safety"]
 S["IncidentPosition"] = obj({"lat": n(minimum=-90, maximum=90), "lng": n(minimum=-180, maximum=180),
                              "accuracyM": n("Horizontal accuracy, metres.", minimum=0), "at": ref("Timestamp")},
@@ -1709,6 +1718,14 @@ op("get", "/admin/alerts/history", "adminAlertHistory", "Alert history for the e
 op("get", "/admin/incidents/settings", "adminIncidentSettings", "Incident settings", ["admin"], "Admin · Safety", ok=(200, "IncidentSettingsDoc"), permission="incidents.read", desc="v0.18.15. " + ID_["settings"])
 op("put", "/admin/incidents/settings", "adminPutIncidentSettings", "Save the incident settings", ["admin"], "Admin · Safety", body="IncidentSettingsCommand", ok=(200, "IncidentSettingsDoc"), mutation=True, permission="safety.edit", desc="v0.18.15.")
 op("post", "/admin/incidents/{incidentId}/report", "adminIncidentReport", "Record a case report download", ["admin"], "Admin · Safety", params=[pref("IncidentId")], body="EmptyCommand", ok=(204, None), mutation=True, permission="incidents.read", desc="v0.18.15. " + ID_["report"])
+
+# v0.18.15 review rules (contract.json#reviewRules)
+op("get", "/admin/reviews/rules", "adminReviewRules", "Review rules of a country", ["admin"], "Admin · Reviews", params=[q("country", s(enum=C["supportDesk"]["settings"]["countries"]))], ok=(200, "ReviewRules"), permission="settings.read", desc="v0.18.15. " + RR["applied"])
+op("put", "/admin/reviews/rules", "adminPutReviewRules", "Save the review rules of a country", ["admin"], "Admin · Reviews", body="ReviewRules", ok=(200, "ReviewRules"), mutation=True, permission="settings.edit", desc="v0.18.15. " + RR["rules"])
+op("get", "/admin/reviews/queue", "adminReviewQueue", "People the review rules put up for an admin", ["admin"], "Admin · Reviews", ok=(200, "ReviewQueue"), permission="riders.read", desc="v0.18.15.")
+op("post", "/admin/reviews/queue/{who}/{personId}/done", "adminReviewDone", "An admin looked at a person", ["admin"], "Admin · Reviews",
+   params=[{"name": "who", "in": "path", "required": True, "schema": s(enum=["driver", "rider"])}, {"name": "personId", "in": "path", "required": True, "schema": ref("Id")}],
+   body="ReviewDoneCommand", ok=(200, "ReviewQueue"), mutation=True, permission="riders.block", desc="v0.18.15.")
 
 op("get", "/admin/ratings", "adminListRatings", "Ratings riders and drivers gave each other", ["admin"], "Admin · Reviews",
    params=AL + [q("rater", {"type": "string", "enum": ["rider", "driver"]}, "Who gave the rating."), q("hidden", {"type": "boolean"}), q("maxStars", {"type": "integer", "minimum": 1, "maximum": 5}),
