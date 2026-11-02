@@ -21,7 +21,7 @@ export type DispatchDoc = {
   start?: { mode: StartChoice; nearKm?: number };
   /** v0.18.9: farthest pickup (km, missing = widest step) and longest pickup ETA (min, 0 / missing = off). */
   limits?: { maxPickupKm?: number; maxPickupEtaMin?: number };
-  /** v0.18.9: drivers of these zones are candidates too from search step afterStep (1-based, missing = last step). */
+  /** v0.18.11: drivers of these zones are candidates too from search step afterStep (1-based, missing = last step). */
   neighbours?: { on: boolean; zoneIds: string[]; afterStep?: number };
   choose: { how: "auto" | "manual"; radarAbove: number; main: Mode; backup?: string; times: Array<{ id: string; on: boolean; from: string; to: string; mode: Mode }> };
   radius: { steps: number[]; maxWaitMin: number };
@@ -107,7 +107,7 @@ export type Candidate = {
   favourite?: boolean;
   finishing?: { inMin: number; dropKm: number };
   categoryIds?: string[];
-  /** v0.18.9: a driver of a neighbour zone (doc.neighbours), asked only from neighbours.afterStep. */
+  /** v0.18.11: a driver of a neighbour zone (doc.neighbours), asked only from neighbours.afterStep. */
   neighbour?: boolean;
 };
 
@@ -134,6 +134,22 @@ function maxPickupKm(doc: DispatchDoc): number {
   const widest = Math.max(...stepsOf(doc, "radar"), ...stepsOf(doc, "exclusive"));
   const limit = doc.limits?.maxPickupKm;
   return typeof limit === "number" && limit > 0 ? Math.min(limit, widest) : widest;
+}
+
+/**
+ * Admin Add money (owner rule 16): the farthest pickup an immediate send of `mode` may go to — the widest of the
+ * mode's own steps (radar.steps / exclusive.steps, else radius.steps), capped by limits.maxPickupKm and by
+ * limits.maxPickupEtaMin (km at the dispatch's pickup speed, same approximation as rank).
+ */
+export function addMoneyReachKm(doc: DispatchDoc | null | undefined, mode: Mode): number {
+  if (!doc) return 5;
+  const steps = stepsOf(doc, mode) ?? [];
+  let km = steps.length ? Math.max(...steps) : 5;
+  const limit = doc.limits?.maxPickupKm;
+  if (typeof limit === "number" && limit > 0) km = Math.min(km, limit);
+  const eta = doc.limits?.maxPickupEtaMin;
+  if (typeof eta === "number" && eta > 0) km = Math.min(km, (eta * DISPATCH.score.pickupKmh) / 60);
+  return km;
 }
 
 /** rankDrivers: score high to low, then km, then driverId. `out` = may not take this trip at all. */

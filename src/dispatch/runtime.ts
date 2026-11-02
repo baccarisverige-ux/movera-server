@@ -218,10 +218,13 @@ export async function freeCandidatesByDistance(trx: Trx, trip: TripRow, now: Dat
   const pool = await candidatesFor(trx, trip, live?.document ?? null, now);
   const missed = await trx.selectFrom("offers").select("driver_id").where("trip_id", "=", trip.trip_id).where("status", "in", ["declined", "expired"]).execute();
   const gone = new Set(missed.map((m) => m.driver_id));
-  return pool.candidates
+  const free = pool.candidates
     .filter((c) => !gone.has(c.driverId) && c.km <= maxKm)
-    .sort((a, b) => a.km - b.km || a.driverId.localeCompare(b.driverId))
-    .map((c) => c.driverId);
+    .sort((a, b) => a.km - b.km || a.driverId.localeCompare(b.driverId));
+  // Owner rule 16 (checker 2026-11-02): the zone's own drivers first; a neighbour-zone driver only when no driver of
+  // the zone is free (even a closer neighbour never beats a free in-zone driver).
+  const inZone = free.filter((c) => !c.neighbour);
+  return (inZone.length ? inZone : free).map((c) => c.driverId);
 }
 
 /* ---------------------------------------------------------------- offers */
