@@ -1,3 +1,4 @@
+import { headingView } from "./headingCheck.js";
 import type { TripRow } from "../db/tripLog.js";
 import { bonusFor, priorityFor } from "../dispatch/bonusScope.js";
 import { tripTerms } from "./ride.js";
@@ -165,6 +166,11 @@ export function stopsWithVisits(stops: unknown, visits: unknown): unknown[] {
   });
 }
 
+function headingField(row: TripRow, now: Date): Record<string, unknown> {
+  const view = row.heading_check ? headingView(row, now) : null;
+  return view ? { headingCheck: view } : {};
+}
+
 export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number; now?: Date } = {}): Record<string, unknown> {
   const currency = row.currency;
   const lines = (row.fare_lines as Array<{ code: string; amount: Money }>) ?? [];
@@ -210,6 +216,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     // v0.18.7: the rules this trip is charged by, and the server's road-route ETA (TripEta) while it has one.
     ...(terms ? { terms } : {}),
     ...(eta ? { eta, etaSeconds: eta.etaSeconds } : {}),
+    // v0.18.13 (G5-8, contract.json#pickupWaiting.headingCheck.projection): the latest heading-to-pickup check.
+    ...headingField(row, overrides.now ?? new Date()),
     ...(row.waiting ? { waiting: waitingNow(row, row.waiting as WaitingRow, overrides.now ?? new Date()) } : {}),
     ...(row.cancellation ? { cancellation: row.cancellation } : {}),
     // v0.18.9 (contract.json#onTrip): the server's ride check (every viewer) and the latest route change.

@@ -16,13 +16,11 @@ import { bookAndAccept, PLACES, Sim, type Admin, type Driver, type Json, type Ri
 
 type Op = { actors: string[]; permission?: string; public?: boolean; optionalAuth?: boolean };
 
-/** Routes the server serves that the contract does not (yet) list, with who may call them. */
-const EXTRA: Record<string, Op> = {
-  "GET /admin/refunds/payouts": { actors: ["admin"], permission: "finance.read" },
-  "POST /admin/refunds/:refundId/paid": { actors: ["admin"], permission: "finance.edit" },
-  "GET /rider/refunds": { actors: ["rider"] },
-  "POST /rider/refunds/:refundId/destination": { actors: ["rider"] },
-};
+/**
+ * Routes the server serves that the contract does not (yet) list, with who may call them. v0.18.13 (audit M4): the four
+ * refund routes are in openapi.yaml now, so nothing is left here.
+ */
+const EXTRA: Record<string, Op> = {};
 
 function contractOps(): Map<string, Op> {
   const doc = parse(readFileSync(new URL("../../contracts/openapi.yaml", import.meta.url), "utf8")) as Json;

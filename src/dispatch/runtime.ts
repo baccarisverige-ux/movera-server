@@ -1,3 +1,4 @@
+import { drivingLimitReached } from "../drivers/drivingTime.js";
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
 import { commissionOf } from "../rules/commission.js";
 import { bonusFor, priorityFor, scopeCovers, sideOfKind, type BonusScope } from "./bonusScope.js";
@@ -187,6 +188,8 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, n
     if (Number(open.n) >= 1) continue;
     const radarOpen = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "=", "radar").executeTakeFirstOrThrow();
     if (Number(radarOpen.n) >= RADAR_LIST_MAX) continue;
+    // v0.18.13 (contract.json#drivingLimits.enforced): no new offers after the driving-time limit.
+    if (await drivingLimitReached(trx, d.driver_id, now)) continue;
     const here = { lat: d.lat, lng: d.lng };
     const km = dispatchKm(here, pickup);
     const candidate: Candidate = {

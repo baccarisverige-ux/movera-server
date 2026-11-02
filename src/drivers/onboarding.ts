@@ -106,7 +106,7 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
   const d = body as OnboardingBody;
   const row = await loadDriver(trx, driverId, true);
   if (row.account_status !== "pending" && row.account_status !== "on_hold") {
-    throw new ApiError("invalid_transition", "Your details are already approved; ask support to change them.", { reason: "details_locked", projection: await driverView(trx, row, "driver") });
+    throw new ApiError("invalid_transition", "Your details are already approved; ask support to change them.", { reason: "details_locked", projection: await driverView(trx, row, "driver", now) });
   }
   if (d.termsAccepted !== true) throw badRequest("Accept the terms to continue.", "terms_required");
   const country = ONBOARDING.countries[d.country];
@@ -156,7 +156,7 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
     // A request the owner must accept (an owner's earlier invite of this number links at once).
     await requestJoin(trx, deps, driverId, d.fleetJoin, now, { quietIfPending: true });
   }
-  return driverView(trx, await loadDriver(trx, driverId), "driver");
+  return driverView(trx, await loadDriver(trx, driverId), "driver", now);
 }
 
 /* ---------------------------------------------------------------- joining and leaving */
@@ -169,7 +169,7 @@ export async function recordJoinTry(ex: Executor, driverId: string, now: Date): 
 /** Takes a driver out of his fleet: car released, offline, open offers withdrawn. Not during a trip. */
 export async function unlinkFromFleet(trx: Trx, row: DriverRow, now: Date, reason: "left" | "removed_by_owner" | "removed_by_admin" | "fleet_blocked"): Promise<void> {
   const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", row.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
-  if (active) throw new ApiError("invalid_transition", "Finish the trip first.", { reason: "on_trip", projection: await driverView(trx, row, "driver") });
+  if (active) throw new ApiError("invalid_transition", "Finish the trip first.", { reason: "on_trip", projection: await driverView(trx, row, "driver", now) });
   await releaseCar(trx, row.driver_id);
   const online = ["online", "going_online"].includes(row.online_status);
   await trx
@@ -193,16 +193,16 @@ export async function startOwnCompany(trx: Trx, driverId: string, body: unknown,
   if (problem !== null) throw badRequest(`The company is not valid: ${problem}.`, "invalid_body");
   const { expectedVersion, company } = body as { expectedVersion: number; company: { name: string; orgNumber: string; address: string } };
   let row = await loadDriver(trx, driverId, true);
-  if (row.version !== expectedVersion) throw new ApiError("version_mismatch", "Your account changed since you last saw it.", { projection: await driverView(trx, row, "driver") });
+  if (row.version !== expectedVersion) throw new ApiError("version_mismatch", "Your account changed since you last saw it.", { projection: await driverView(trx, row, "driver", now) });
   if (row.account_type !== "driver" || row.country === null || row.city_id === null) {
-    throw new ApiError("invalid_transition", row.account_type === "fleet" ? "Your account is already a company." : "Send your details first.", { reason: row.account_type === "fleet" ? "already_fleet" : "details_required", projection: await driverView(trx, row, "driver") });
+    throw new ApiError("invalid_transition", row.account_type === "fleet" ? "Your account is already a company." : "Send your details first.", { reason: row.account_type === "fleet" ? "already_fleet" : "details_required", projection: await driverView(trx, row, "driver", now) });
   }
   if (row.fleet_id !== null) {
     await unlinkFromFleet(trx, row, now, "left");
     row = await loadDriver(trx, driverId, true);
   } else {
     const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
-    if (active) throw new ApiError("invalid_transition", "Finish the trip first.", { reason: "on_trip", projection: await driverView(trx, row, "driver") });
+    if (active) throw new ApiError("invalid_transition", "Finish the trip first.", { reason: "on_trip", projection: await driverView(trx, row, "driver", now) });
   }
   const city = cityOf(row.country!, row.city_id!);
   const fleetId = newId("flt", now.getTime());
@@ -215,19 +215,19 @@ export async function startOwnCompany(trx: Trx, driverId: string, body: unknown,
     .execute();
   // Requests to join other fleets are his no more.
   await trx.updateTable("fleet_invitations").set((eb) => ({ status: "cancelled", decided_at: now, decided_by: "system", updated_at: now, version: eb("version", "+", 1) })).where("driver_id", "=", driverId).where("status", "=", "pending").execute();
-  return driverView(trx, await loadDriver(trx, driverId), "driver");
+  return driverView(trx, await loadDriver(trx, driverId), "driver", now);
 }
 
 /** POST /driver/fleet/leave. */
 export async function leaveFleet(trx: Trx, driverId: string, now: Date) {
   const row = await loadDriver(trx, driverId, true);
-  if (row.fleet_id === null) throw new ApiError("invalid_transition", "You are not in a fleet.", { reason: "no_fleet", projection: await driverView(trx, row, "driver") });
-  if (row.account_type === "fleet") throw new ApiError("invalid_transition", "The owner cannot leave his own fleet.", { reason: "fleet_owner", projection: await driverView(trx, row, "driver") });
+  if (row.fleet_id === null) throw new ApiError("invalid_transition", "You are not in a fleet.", { reason: "no_fleet", projection: await driverView(trx, row, "driver", now) });
+  if (row.account_type === "fleet") throw new ApiError("invalid_transition", "The owner cannot leave his own fleet.", { reason: "fleet_owner", projection: await driverView(trx, row, "driver", now) });
   const fleet = await loadFleet(trx, row.fleet_id);
   await unlinkFromFleet(trx, row, now, "left");
   // v0.18.5 (G2-D4): the owner is told.
   await noticeMembership(trx, fleet, row, "left", now);
-  return driverView(trx, await loadDriver(trx, driverId), "driver");
+  return driverView(trx, await loadDriver(trx, driverId), "driver", now);
 }
 
 type MembershipTexts = Record<"removed" | "left", { title: Record<string, string>; body: Record<string, string> }>;

@@ -32,6 +32,19 @@ const TEXTS_MONEY = C.finish.driverMoney.texts;
 
 /* ---------------------------------------------------------------- payment methods */
 
+/**
+ * v0.18.13 (audit M5): the methods this server has a payment company for. It grows when Movera connects one (card,
+ * Apple Pay); it is not a deployment setting, so an admin switch is never silently overruled by the host's env.
+ */
+export const SERVER_PAYMENT_METHODS: readonly string[] = ["cash"];
+
+/** What the server takes now: its own methods less the ones paused by the PAYMENT_METHODS_PAUSED kill-switch. */
+export function supportedPaymentMethods(paused: readonly string[], warn: (message: string) => void = (m) => console.warn(m)): string[] {
+  // Checker 2: cash ("Pay in car") can never be paused — riders would have no way to pay at all.
+  if (paused.includes("cash")) warn("PAYMENT_METHODS_PAUSED lists cash; ignored (cash can never be paused).");
+  return SERVER_PAYMENT_METHODS.filter((m) => m === "cash" || !paused.includes(m));
+}
+
 /** The admin's on list of a rider document (default: every method), in the admin's order, known methods only. */
 export function adminMethodsOf(doc: unknown): string[] {
   const listed = (doc as { paymentMethods?: unknown } | null | undefined)?.paymentMethods;

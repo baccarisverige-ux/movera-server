@@ -210,7 +210,7 @@ export async function listAudit(ex: Executor, who: Principal, input: { cursor?: 
 export async function setDriverStatus(trx: Trx, who: Principal, driverId: string, body: { expectedVersion: number; accountStatus: "pending" | "active" | "on_hold" | "suspended"; note: string }, now: Date) {
   const row = await loadDriver(trx, driverId, true);
   if (!row.zone_ids.some((z) => adminCoversZone(who, z)) && !who.zones.includes("*")) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
-  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin") });
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin", now) });
   if (body.accountStatus === "active" && row.account_status !== "active") {
     const missing = await activationBlockers(trx, row, now);
     if (missing.length > 0) throw new ApiError("documents_not_approved", "The driver's required documents are not all approved.", { details: missing });
@@ -223,7 +223,7 @@ export async function setDriverStatus(trx: Trx, who: Principal, driverId: string
   // v0.18.6 (owner "Send the real reason"): account_status.
   if ("online_status" in online) await markSetOffline(trx, driverId, "account_status", {}, now);
   await audit(trx, { adminId: who.subjectId, action: "driver.status", targetType: "driver", targetId: driverId, zoneId: row.zone_ids[0] ?? null, detail: { from: row.account_status, to: body.accountStatus, note: body.note }, at: now });
-  return driverView(trx, await loadDriver(trx, driverId), "admin");
+  return driverView(trx, await loadDriver(trx, driverId), "admin", now);
 }
 
 export async function setRiderStatus(trx: Trx, who: Principal, riderId: string, body: { expectedVersion: number; status: "active" | "suspended"; note: string }, currency: string, now: Date) {

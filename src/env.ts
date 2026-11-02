@@ -47,10 +47,15 @@ const schema = z.object({
   GOOGLE_CLIENT_IDS: ids(),
   /** Where a phone without an account is sent to install the driver app (the SMS of an owner's invitation). */
   DRIVER_APP_LINK: z.string().url().optional(),
-  /** Payment methods riders may book with (test week: cash only). Comma-separated. */
-  PAYMENT_METHODS: z
+  /**
+   * v0.18.13 (audit M5, contract.json#finish.paymentMethods.serverSupport): emergency kill-switch only. The admin's
+   * per-zone switches decide which methods riders get; the methods the server can take are in code
+   * (SERVER_PAYMENT_METHODS). A method listed here (comma-separated, default none; cash is ignored and logged) is served as coming_soon and refused
+   * with payment_method_coming_soon until it is taken off the list. The old PAYMENT_METHODS list is no longer read.
+   */
+  PAYMENT_METHODS_PAUSED: z
     .string()
-    .default("cash")
+    .default("")
     .transform((value) => value.split(",").map((m) => m.trim()).filter(Boolean)),
   /** The zone an app gets when it asks for settings without naming one. */
   DEFAULT_ZONE_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).default("Z001"),

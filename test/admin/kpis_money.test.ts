@@ -5,8 +5,8 @@ import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
 
 /**
  * Reports › Money (contract v0.10.3, contract.json#kpis.money, owner 2026-10-28): bookings = ride price + cancel/no-show
- * fees; tips apart; refunds on the trip's day (a later refund re-sums that day); Movera earnings = commission + Movera's
- * fee share − pickup pay − driver bonuses (may be negative); each currency apart; a day is the zone's local day.
+ * fees; tips apart; refunds on the trip's day (a later refund re-sums that day); Movera earnings = commission (already net of
+ * pickup pay + bonus) + Movera's fee share − refunds (v0.18.13, may be negative); each currency apart; a day is the zone's local day.
  */
 
 let database: TestDatabase;
@@ -38,7 +38,7 @@ beforeAll(async () => {
   riderId = await insertRider(database.db);
   driverId = await insertDriver(database.db);
   // 2026-10-26 in Stockholm (UTC+1).
-  rideA = await trip("Z001", "completed", "2026-10-26T09:00:00Z", { fare: 25_000, commission: 5_000, earnings: 20_000, pickup: 1_500, bonus: 1_000 });
+  rideA = await trip("Z001", "completed", "2026-10-26T09:00:00Z", { fare: 25_000, commission: 5_000, earnings: 17_500, pickup: 1_500, bonus: 1_000 });
   await entry(rideA, "tip", 2_000);
   const noShow = await trip("Z001", "no_show", "2026-10-26T10:00:00Z", { fare: 25_000 });
   await fee(noShow, "no_show", 4_000, "owed");
@@ -46,7 +46,7 @@ beforeAll(async () => {
   const waived = await trip("Z001", "cancelled_by_rider", "2026-10-26T11:00:00Z", { fare: 25_000 });
   await fee(waived, "cancel", 3_000, "waived");
   // 23:30 UTC on the 26th is 00:30 on the 27th in Stockholm: the 27th's trip. Big bonus: Movera loses money.
-  await trip("Z001", "completed", "2026-10-26T23:30:00Z", { fare: 10_000, commission: 2_000, earnings: 8_000, pickup: 500, bonus: 3_000 });
+  await trip("Z001", "completed", "2026-10-26T23:30:00Z", { fare: 10_000, commission: -1_500, earnings: 8_000, pickup: 500, bonus: 3_000 });
   // Paris, in euros: never added to the kronor.
   await trip("FR-PC", "completed", "2026-10-26T12:00:00Z", { fare: 3_000, commission: 600, earnings: 2_400, currency: "EUR" });
 });
@@ -54,8 +54,14 @@ afterAll(async () => database.drop());
 
 describe("KPI money (contract v0.10.3)", () => {
   it("bookings, fees, tips and Movera earnings of a zone-local day, exact in minor units", async () => {
-    expect(await countDay(database.db, SE, "2026-10-26")).toMatchObject({ completedTrips: 1, noShows: 1, cancelledTrips: 1, gross: 29_000, fees: 4_000, tips: 2_000, refunds: 0, commission: 5_000, pickupPay: 1_500, driverBonus: 1_000, moveraEarnings: 4_000 });
+    expect(await countDay(database.db, SE, "2026-10-26")).toMatchObject({ completedTrips: 1, noShows: 1, cancelledTrips: 1, gross: 29_000, fees: 4_000, tips: 2_000, refunds: 0, commission: 5_000, pickupPay: 1_500, driverBonus: 1_000, moveraEarnings: 6_500 });
     expect(await countDay(database.db, SE, "2026-10-27")).toMatchObject({ completedTrips: 1, gross: 10_000, fees: 0, tips: 0, moveraEarnings: -1_500 });
+  });
+
+  it("Movera earnings = commission (already net of pickup pay + bonus, rules/commission.ts) + fee share − refunds (audit H2)", async () => {
+    const { commissionOf } = await import("../../src/rules/commission.js");
+    expect(commissionOf(25_000, [], 17_500, 1_500, 1_000)).toBe(5_000);
+    expect(commissionOf(10_000, [], 8_000, 500, 3_000)).toBe(-1_500);
   });
 
   it("the summary keeps each currency apart; a later refund re-sums its trip's (older) day", async () => {
@@ -64,11 +70,11 @@ describe("KPI money (contract v0.10.3)", () => {
     const before = (await kpis(database.db, owner, range, now)).days;
     expect(before.filter((d) => d.zoneId === "Z001" || d.zoneId === "FR-PC").map((d) => [d.zoneId, d.date, d.currency, d.gross, d.moveraEarnings])).toEqual([
       ["FR-PC", "2026-10-26", "EUR", 3_000, 600], ["FR-PC", "2026-10-27", "EUR", 0, 0],
-      ["Z001", "2026-10-26", "SEK", 29_000, 4_000], ["Z001", "2026-10-27", "SEK", 10_000, -1_500],
+      ["Z001", "2026-10-26", "SEK", 29_000, 6_500], ["Z001", "2026-10-27", "SEK", 10_000, -1_500],
     ]);
     await refund(rideA, 3_000);
     await database.db.transaction().execute((trx) => resumTripDay(trx, rideA, now));
     const after = (await kpis(database.db, owner, { zoneId: "Z001", ...range }, now)).days;
-    expect(after.map((d) => [d.date, d.source, d.refunds, d.gross])).toEqual([["2026-10-26", "summary", 3_000, 29_000], ["2026-10-27", "summary", 0, 10_000]]);
+    expect(after.map((d) => [d.date, d.source, d.refunds, d.gross, d.moveraEarnings])).toEqual([["2026-10-26", "summary", 3_000, 29_000, 3_500], ["2026-10-27", "summary", 0, 10_000, -1_500]]);
   });
 });

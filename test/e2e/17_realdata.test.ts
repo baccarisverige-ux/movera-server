@@ -219,7 +219,7 @@ describe("the dispatch feed as server-sent events", () => {
 });
 
 describe("the nightly job (last: it moves the clock a week on)", () => {
-  it("the nightly job pays each ended week once (Monday to Monday in the zone's time) and is safe to run again", async () => {
+  it("the nightly job pays each ended week once (v0.18.13 default: Monday 08:00 to Monday 08:00 in the zone's time) and is safe to run again", async () => {
     const second = await completedTrip();
     // A week later (the tokens have run out by then, so the check reads the database).
     sim.clock.now = new Date("2026-11-03T02:00:00Z");
@@ -227,7 +227,7 @@ describe("the nightly job (last: it moves the clock a week on)", () => {
     await run();
     await run();
     const weekly = await sim.database.db.selectFrom("payouts").selectAll().where("driver_id", "=", driver.id).where("source", "=", "weekly").execute();
-    expect(weekly.map((p) => [p.trip_count, p.period_start.toISOString(), p.period_end.toISOString(), p.status])).toEqual([[1, "2026-10-25T23:00:00.000Z", "2026-11-01T23:00:00.000Z", "pending"]]);
+    expect(weekly.map((p) => [p.trip_count, p.period_start.toISOString(), p.period_end.toISOString(), p.status])).toEqual([[1, "2026-10-26T07:00:00.000Z", "2026-11-02T07:00:00.000Z", "pending"]]);
     const linked = await sim.database.db.selectFrom("earnings_entries").select("payout_id").where("trip_id", "=", second).where("kind", "=", "trip").executeTakeFirstOrThrow();
     expect(linked.payout_id).toBe(weekly[0]!.payout_id);
     expect(nextNightly(new Date("2026-11-03T02:00:00Z")).toISOString()).toBe("2026-11-04T01:00:00.000Z");

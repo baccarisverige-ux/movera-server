@@ -45,7 +45,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   app.get(`${API_PREFIX}/driver/profile`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     // v0.18.4 (G3-D2): his own acceptance %, cancellation % and rating.
-    return { ...(await getDriverProfile(deps.db, who.subjectId)), performance: await driverPerformance(deps.db, who.subjectId, now()) };
+    return { ...(await getDriverProfile(deps.db, who.subjectId, now())), performance: await driverPerformance(deps.db, who.subjectId, now()) };
   });
 
   app.patch(`${API_PREFIX}/driver/profile`, async (request) => {

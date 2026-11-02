@@ -38,6 +38,9 @@ export interface DriversTable {
   account_status: Generated<"pending" | "active" | "on_hold" | "suspended">;
   online_status: Generated<"offline" | "going_online" | "online" | "on_trip" | "suspended">;
   online_since: Timestamp | null;
+  /** v0.18.13 (driving-time limits): when the driver last went offline (any way); when his counted driving time started. */
+  went_offline_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  driving_since: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   zone_ids: Generated<string[]>;
   category_ids: Generated<string[]>;
   vehicle_id: string | null;
@@ -301,6 +304,8 @@ export interface TripsTable {
   rider_summary: ColumnType<unknown, string | null | undefined, string | null>;
   /** v0.18.7 (Q4): TripEta, the server's road-route ETA, refreshed by the eta timer (trips/eta.ts). */
   eta: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.13 (G5-8): the latest heading-to-pickup check. */
+  heading_check: ColumnType<unknown, string | null | undefined, string | null>;
   /** v0.18.7 (status item 4): the pickup as booked, set on the first move; the move limit is measured from it. */
   booked_pickup: ColumnType<unknown, string | null | undefined, string | null>;
   arrived_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;

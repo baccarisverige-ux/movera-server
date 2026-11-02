@@ -1,5 +1,5 @@
+import { drivingTimeOf, resetOnOnline } from "./drivingTime.js";
 import { scheduleRideCheckScan } from "../safety/rideCheckServer.js";
-import { sql } from "kysely";
 import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { schemaProblem } from "../contract/schemas.js";
 import type { Executor, Trx } from "../db/db.js";
@@ -67,6 +67,9 @@ export type DriverRow = {
   offline_reason?: string | null;
   offline_note?: string | null;
   offline_at?: Date | null;
+  // v0.18.13 (driving-time limits)
+  went_offline_at?: Date | null;
+  driving_since?: Date | null;
 };
 
 type Fix = { lat: number; lng: number; accuracy: number; heading?: number; speedMps?: number; moving?: boolean; measuredAt: string };
@@ -83,7 +86,7 @@ async function activeTripOf(ex: Executor, driverId: string) {
   return ex.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
 }
 
-export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin"): Promise<Record<string, unknown>> {
+export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin", now: Date = new Date()): Promise<Record<string, unknown>> {
   const location = await ex.selectFrom("driver_locations").selectAll().where("driver_id", "=", row.driver_id).executeTakeFirst();
   const active = await activeTripOf(ex, row.driver_id);
   const fleet = row.fleet_id ? await ex.selectFrom("fleets").select(["fleet_id", "name", "status", "owner_driver_id", "created_at"]).where("fleet_id", "=", row.fleet_id).executeTakeFirst() : undefined;
@@ -113,8 +116,10 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     ...(fleet
       ? { fleet: { fleetId: fleet.fleet_id, name: fleet.name, role: fleet.owner_driver_id === row.driver_id ? "owner" : "member", status: fleet.status, linkedAt: (row.fleet_linked_at ?? fleet.created_at).toISOString() } }
       : {}),
+    // v0.18.13 (contract.json#drivingLimits.projection): counted driving time against the limit.
+    ...(viewer === "driver" ? { drivingTime: await drivingTimeOf(ex, { driver_id: row.driver_id, zone_ids: row.zone_ids, driving_since: row.driving_since ?? null }, now) } : {}),
     ...(row.account_type === "fleet" ? { payoutTo: "self" } : row.account_type === "driver" && fleet ? { payoutTo: "fleet" } : {}),
-    ...(row.account_type ? { pendingFleetInvitations: await pendingInvitations(ex, row) } : {}),
+    ...(row.account_type ? { pendingFleetInvitations: await pendingInvitations(ex, row, now) } : {}),
     // v0.18.0 (§27): the lists of the country's onboarding settings (the admin's), else the contract defaults.
     requiredDocuments: await liveRequiredDocuments(ex, row.country, "driver"),
     ...(row.account_type === "fleet" ? { requiredFleetDocuments: await liveRequiredDocuments(ex, row.country, "fleet") } : {}),
@@ -134,7 +139,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
 }
 
 /** v0.5.3: invitations waiting for this account's answer (a driver's incoming invites, an owner's incoming requests). */
-async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id" | "account_type">): Promise<number> {
+async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id" | "account_type">, now: Date): Promise<number> {
   const q =
     row.account_type === "fleet"
       ? ex
@@ -146,7 +151,8 @@ async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id"
   const n = await q
     .select((eb) => eb.fn.countAll<string>().as("n"))
     .where("fleet_invitations.status", "=", "pending")
-    .where("fleet_invitations.expires_at", ">", sql<Date>`now()`)
+    // The command's clock, not the database's (a test clock or a slow request must not change the answer).
+    .where("fleet_invitations.expires_at", ">", now)
     .executeTakeFirstOrThrow();
   return Number(n.n);
 }
@@ -163,12 +169,12 @@ export function fixView(row: { lat: number; lng: number; accuracy: number; headi
   };
 }
 
-export async function getDriverProfile(ex: Executor, driverId: string) {
-  return driverView(ex, await loadDriver(ex, driverId), "driver");
+export async function getDriverProfile(ex: Executor, driverId: string, now: Date = new Date()) {
+  return driverView(ex, await loadDriver(ex, driverId), "driver", now);
 }
 
 function stale(row: DriverRow, ex: Executor) {
-  return async () => driverView(ex, await loadDriver(ex, row.driver_id), "driver");
+  return async () => driverView(ex, await loadDriver(ex, row.driver_id), "driver", new Date());
 }
 
 export async function updateDriverProfile(trx: Trx, driverId: string, body: unknown, now: Date) {
@@ -221,7 +227,7 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
     })
     .where("driver_id", "=", driverId)
     .execute();
-  return driverView(trx, await loadDriver(trx, driverId), "driver");
+  return driverView(trx, await loadDriver(trx, driverId), "driver", now);
 }
 
 /** POST /driver/availability: online or offline (contract: 409 with the Driver when it cannot be). */
@@ -232,7 +238,7 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
   const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await stale(row, trx)() });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "Your status changed since you last saw it.", { projection: await stale(row, trx)() });
   // On a trip the driver already counts as online; "online" must not turn on_trip into free.
-  if (body.onlineStatus === row.online_status || (body.onlineStatus === "online" && row.online_status === "on_trip")) return driverView(trx, row, "driver");
+  if (body.onlineStatus === row.online_status || (body.onlineStatus === "online" && row.online_status === "on_trip")) return driverView(trx, row, "driver", now);
   if (body.onlineStatus === "online") {
     if (row.account_status !== "active") throw await refuse("Your account is not active yet.", "account_not_active");
     // v0.5.3: a driver account works for a fleet; the fleet must be approved (not blocked).
@@ -262,6 +268,16 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     // v0.18.4 (decision 2, G3-R5): a fresh position, last, so the reason card shows the first thing to fix. Outside
     // his zones he still goes online (G3-R2); the answer says outsideArea.
     if (!(await hasFreshPosition(trx, driverId, now))) throw await refuse("Turn on location to go online.", DRIVER_HOME.locationRequired.reason);
+    // v0.18.13 (contract.json#drivingLimits): the counter starts again after the offline rest; over the limit → refused.
+    const since = await resetOnOnline(trx, { driver_id: row.driver_id, zone_ids: row.zone_ids, went_offline_at: row.went_offline_at ?? null, driving_since: row.driving_since ?? null }, now);
+    const time = await drivingTimeOf(trx, { driver_id: row.driver_id, zone_ids: row.zone_ids, driving_since: since }, now);
+    if (time.reached) {
+      throw new ApiError("conflict", "You reached the driving-time limit. Rest offline before driving again.", {
+        reason: "driving_limit_reached",
+        details: [`drivenMinutes:${time.drivenMinutes}`, `maxMinutes:${time.maxMinutes}`, ...(time.canDriveAt ? [`canDriveAt:${time.canDriveAt}`] : [])],
+        projection: await stale(row, trx)(),
+      });
+    }
   } else if (await activeTripOf(trx, driverId)) {
     throw await refuse("Finish or hand back your trip before going offline.", "on_trip");
   }
@@ -273,7 +289,7 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     .execute();
   // Going offline withdraws the driver's open offers (a job locks each trip in turn).
   if (!online) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
-  return driverView(trx, await loadDriver(trx, driverId), "driver");
+  return driverView(trx, await loadDriver(trx, driverId), "driver", now);
 }
 
 /** POST /driver/location: up to 50 fixes; answers how many were taken. */

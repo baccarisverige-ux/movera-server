@@ -160,7 +160,7 @@ async function insertInvitation(trx: Trx, values: { fleetId: string; direction: 
  */
 export async function requestJoin(trx: Trx, deps: InviteDeps, driverId: string, body: { code: string; ownerName: string; ownerEmail: string }, now: Date, options: { quietIfPending?: boolean } = {}) {
   const row = await loadDriver(trx, driverId, true);
-  const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await driverView(trx, row, "driver") });
+  const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await driverView(trx, row, "driver", now) });
   if (row.account_type === "fleet") throw await refuse("A fleet account has its own fleet.", "fleet_account");
   if (row.fleet_id !== null) throw await refuse("You are already in a fleet; leave it first.", "already_in_fleet");
   const fleet = await matchFleet(trx, driverId, body, now);
