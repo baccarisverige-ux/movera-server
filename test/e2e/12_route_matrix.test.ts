@@ -137,6 +137,7 @@ function bodyFor(route: string): Json | undefined {
     "POST /admin/drivers/:driverId/status": { ...v, accountStatus: "suspended" },
     "POST /admin/riders/:riderId/status": { ...v, status: "suspended" },
     "POST /admin/riders/:riderId/moderation": { ...v, level: "warning", reason: "Matrix check" },
+    "POST /admin/drivers/:driverId/payout-hold": { held: true, reason: "Matrix check" },
     "POST /admin/documents/:documentId/review": { decision: "rejected" },
     "POST /admin/fleets/:fleetId/review": { ...v, decision: "blocked" },
     "POST /admin/vehicles/:vehicleId/review": { ...v, decision: "blocked" },

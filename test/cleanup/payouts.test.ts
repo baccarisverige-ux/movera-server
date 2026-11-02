@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { closePeriods, payoutScheduleOf, periodOf } from "../../src/admin/payouts.js";
+import { closePeriods, holdDriverPayouts, payoutScheduleOf, periodOf } from "../../src/admin/payouts.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver } from "../support/seed.js";
 
@@ -94,3 +94,27 @@ describe("checker 4: a late entry for a week already paid goes to the next open 
   });
 });
 
+
+describe("v0.18.16 A2 (owner Q4): pause one driver's payouts from his profile", () => {
+  const finance = { actor: "admin" as const, subjectId: "adm_f", sessionId: "s", zones: ["*"] };
+  const other = { actor: "admin" as const, subjectId: "adm_o", sessionId: "s", zones: ["FR-PC"] };
+  const hold = (driverId: string, held: boolean, who = finance) => database.db.transaction().execute((trx) => holdDriverPayouts(trx, who, driverId, { held, reason: held ? "Bank check" : "Checked" }, new Date("2026-11-01T10:00:00Z")));
+  it("held: no scheduled payout, others still paid; released: the missed weeks are paid at the next run (SE)", async () => {
+    const held = await driverIn(["Z001"], "SE");
+    const paid = await driverIn(["Z001"], "SE");
+    await entry(held, "2026-10-20T10:00:00Z", "SEK", 7_000);
+    await entry(held, "2026-10-27T10:00:00Z", "SEK", 3_000);
+    await entry(paid, "2026-10-27T10:00:00Z", "SEK", 1_000);
+    await expect(hold(held, true, other)).rejects.toMatchObject({ options: { reason: "zone_out_of_scope" } });
+    await hold(held, true);
+    await expect(hold(held, true)).rejects.toMatchObject({ options: { reason: "payout_already_held" } });
+    expect(await run("2026-11-02T08:00:00Z")).toBe(1);
+    expect(await payoutsOf(held)).toEqual([]);
+    await hold(held, false);
+    await expect(hold(held, false)).rejects.toMatchObject({ options: { reason: "payout_not_held" } });
+    expect(await run("2026-11-02T09:00:00Z")).toBe(2);
+    expect((await payoutsOf(held)).map((p) => p[1])).toEqual([7_000, 3_000]);
+    const actions = await database.db.selectFrom("admin_audit").select("action").where("target_id", "=", held).orderBy("at").execute();
+    expect(actions.map((a) => a.action)).toEqual(["payout.hold", "payout.release"]);
+  });
+});

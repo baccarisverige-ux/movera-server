@@ -38,6 +38,10 @@ export interface RidersTable {
 
 export interface DriversTable {
   driver_id: string;
+  /** v0.18.16 A2 (owner Q4): this driver's scheduled payouts are paused. */
+  payout_hold_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  payout_hold_reason: string | null;
+  payout_hold_by: string | null;
   phone: string;
   first_name: Generated<string>;
   account_status: Generated<"pending" | "active" | "on_hold" | "suspended">;

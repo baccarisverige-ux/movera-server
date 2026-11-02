@@ -229,6 +229,7 @@ export async function closePeriods(trx: Trx, now: Date): Promise<number> {
       JOIN drivers d ON d.driver_id = e.driver_id
       LEFT JOIN zones z ON z.zone_id = d.zone_ids[1]
      WHERE e.payout_id IS NULL
+       AND d.payout_hold_at IS NULL -- v0.18.16 A2 (owner Q4): a held driver is paid after release
      GROUP BY e.driver_id, z.time_zone, coalesce(z.country, d.country)
      ORDER BY 1`.execute(trx);
   const schedules = new Map<string, PayoutSchedule>();
@@ -331,4 +332,18 @@ export async function markPayoutPaid(trx: Trx, who: Principal, payoutId: string,
   await trx.updateTable("payouts").set({ status: "paid", paid_at: now, paid_by: who.subjectId, ...(body.note ? { note: body.note } : {}) }).where("payout_id", "=", payoutId).execute();
   await audit(trx, { adminId: who.subjectId, action: "payout.paid", targetType: "payout", targetId: payoutId, zoneId: row.zone_id, detail: body.note ? { note: body.note } : {}, at: now });
   return payoutView(await payoutForAdmin(trx, who, payoutId), "admin");
+}
+
+/**
+ * v0.18.16 A2 (owner build-spec Q4, contract.json#payoutHold): POST /admin/drivers/{driverId}/payout-hold. Pauses or
+ * releases one driver's scheduled payouts; on release the next run pays every ended period he missed.
+ */
+export async function holdDriverPayouts(trx: Trx, who: Principal, driverId: string, body: { held: boolean; reason: string }, now: Date) {
+  const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids", "payout_hold_at"]).where("driver_id", "=", driverId).forUpdate().executeTakeFirst();
+  if (driver === undefined) throw notFound("No such driver.", "driver_not_found");
+  const zone = driver.zone_ids[0];
+  if (zone && !adminCoversZone(who, zone)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
+  if (body.held === (driver.payout_hold_at !== null)) throw new ApiError("invalid_transition", body.held ? "This driver's payouts are already paused." : "This driver's payouts are not paused.", { reason: body.held ? "payout_already_held" : "payout_not_held" });
+  await trx.updateTable("drivers").set(body.held ? { payout_hold_at: now, payout_hold_reason: body.reason, payout_hold_by: who.subjectId } : { payout_hold_at: null, payout_hold_reason: null, payout_hold_by: null }).where("driver_id", "=", driverId).execute();
+  await audit(trx, { adminId: who.subjectId, action: body.held ? "payout.hold" : "payout.release", targetType: "driver", targetId: driverId, zoneId: zone ?? null, detail: { reason: body.reason }, at: now });
 }
