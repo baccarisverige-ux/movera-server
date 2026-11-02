@@ -4000,7 +4000,7 @@
     },
     "adminView": "Admin views of SupportTicket add assignedTo { adminId, name }, solvedBy, solvedAt, incidentId, firstReplyAt, firstReplyDueAt and solveDueAt (created + the topic's firstReplyMin / solveHours of the ticket's country), late { reply, solve }. GET /admin/tickets?assignedTo=me|none|<adminId>.",
     "settings": {
-      "endpoints": "GET /admin/support/settings?country=SE (support.reply) -> SupportSettings; PUT /admin/support/settings SupportSettings (settings.edit; a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope). Audited support.settings. Never saved = the defaults.",
+      "endpoints": "GET /admin/support/settings?country=SE (support.reply) -> SupportSettings; PUT /admin/support/settings SupportSettings (settings.edit). Both: a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope. Audited support.settings. Never saved = the defaults.",
       "countries": [
         "SE",
         "FR",

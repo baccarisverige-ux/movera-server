@@ -6195,9 +6195,9 @@ paths:
     get:
       operationId: adminGetSupportSettings
       summary: Support settings of a country
-      description: v0.18.15. GET /admin/support/settings?country=SE (support.reply) -> SupportSettings; PUT /admin/support/settings
-        SupportSettings (settings.edit; a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope).
-        Audited support.settings. Never saved = the defaults.
+      description: 'v0.18.15. GET /admin/support/settings?country=SE (support.reply) -> SupportSettings; PUT /admin/support/settings
+        SupportSettings (settings.edit). Both: a Super admin or an admin with a zone in that country, else 403 zone_out_of_scope.
+        Audited support.settings. Never saved = the defaults.'
       tags:
       - Admin · Support
       x-actor:

@@ -220,9 +220,9 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     });
   }
   app.get(`${API_PREFIX}/admin/support/settings`, async (request) => {
-    await authenticateAdmin(request, guard, "support.reply");
+    const who = await authenticateAdmin(request, guard, "support.reply");
     const { country } = parseBody(z.object({ country: SupportCountry }), request.query);
-    return adminGetSettings(deps.db, country);
+    return adminGetSettings(deps.db, who, country);
   });
   app.put(`${API_PREFIX}/admin/support/settings`, async (request) => {
     const who = await authenticateAdmin(request, guard, "settings.edit");

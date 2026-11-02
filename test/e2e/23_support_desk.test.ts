@@ -160,6 +160,7 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
     expect((await support.put("/admin/support/settings", { ...se.body, topics })).status).toBe(403);
     const france = await sim.admin("config", ["FR-PC"]);
     expect((await france.put("/admin/support/settings", { ...se.body, topics })).body["reason"]).toBe("zone_out_of_scope");
+    expect((await (await sim.admin("support", ["FR-PC"])).get("/admin/support/settings?country=SE")).body["reason"]).toBe("zone_out_of_scope");
     const saved = await owner.put("/admin/support/settings", { ...se.body, topics });
     expect(saved.status).toBe(200);
     expect(saved.body).toMatchObject({ updatedBy: owner.id });

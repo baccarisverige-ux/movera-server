@@ -63,7 +63,9 @@ async function coversCountry(ex: Executor, who: Principal, country: string): Pro
   return hit !== undefined;
 }
 
-export async function adminGetSettings(ex: Executor, country: string): Promise<SupportSettings> {
+export async function adminGetSettings(ex: Executor, who: Principal, country: string): Promise<SupportSettings> {
+  // Checker LOW: reading a country's settings needs the same country as saving them.
+  if (!(await coversCountry(ex, who, country))) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
   return settingsOf(ex, country);
 }
 
