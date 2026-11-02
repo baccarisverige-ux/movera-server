@@ -69,7 +69,7 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery, 
 }
 
 /** Riders have no zone: a zone-limited admin sees only riders with a trip in their zones (P4-6). */
-function riderInZones(zones: string[]) {
+export function riderInZones(zones: string[]) {
   return sql<boolean>`exists (select 1 from trips t where t.rider_id = riders.rider_id and t.zone_id = any(${sql.val(zones.length ? zones : ["-"])}::text[]))`;
 }
 

@@ -1,6 +1,7 @@
 import { addTripNote, flagTrip, openTripCase, revealTripContact, tripNotes } from "./tripTools.js";
 import { adminDriverPay, adminReceipt, resendReceipt } from "../trips/finish.js";
 import { ModerationBody } from "../riders/moderation.js";
+import { WalletCreditBody, creditRiderWallet } from "../riders/walletCredit.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -210,6 +211,14 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
     const body = parseBody(ModerationBody, request.body);
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await moderateRider(trx, who, riderId, body, deps.currency, now()) }))).body;
+  });
+
+  // v0.18.16 A2 (owner G12 Q5, build-spec Q2): Add money to wallet, the one way to give a rider money.
+  app.post(`${API_PREFIX}/admin/riders/:riderId/wallet-credit`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
+    const body = parseBody(WalletCreditBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await creditRiderWallet(trx, who, riderId, body, now()) }))).body;
   });
 
   /* ---- the rider's wallet and refunds */

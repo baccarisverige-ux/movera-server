@@ -6501,5 +6501,40 @@
   "payoutHold": {
     "note": "v0.18.16 A2 (owner build-spec Q4 2026-11-02: 'can pause any one payment from his profile'): POST /admin/drivers/{driverId}/payout-hold { held, reason } (finance.edit, Idempotency-Key, audit payout.hold / payout.release) pauses or releases that driver's payouts from the driver's profile. While held no scheduled payout is made for him; his earnings stay unpaid. On release the next run pays every ended period he missed. Driver.payoutHold { reason, at, by } on the admin view (absent = not held). The driver app is not told the reason.",
     "reasonMax": 300
+  },
+  "walletCredit": {
+    "note": "v0.18.16 A2 (owner G12 Q5 'Real credit + limit', Q-D 'Max 250 euro and equivalent', build-spec Q2 'One button on rider page', Q1 'One admin always'): the one way an admin gives a rider money is Add money to wallet on the rider's page. POST /admin/riders/{riderId}/wallet-credit { amount, reason } (finance.edit, Idempotency-Key, audit rider.wallet_credit). The amount is in the rider's currency: the country of the rider's latest trip (else of his last seen zone); a rider with no known country is refused 409 rider_country_unknown, an amount in another currency 400 wallet_currency_mismatch. One credit is at most the country's CountryRules.walletCreditMax (country standard; default below), above it 400 wallet_credit_too_large (no second admin). The wallet gets a WalletEntry kind adjustment; the rider gets a bell + push kind wallet_credit (texts below) and sees it in the wallet history as 'Credit from Movera'. The balance never goes below 0 (credits are positive).",
+    "defaultMax": {
+      "SE": {
+        "amountMinor": 290000,
+        "currency": "SEK"
+      },
+      "FR": {
+        "amountMinor": 25000,
+        "currency": "EUR"
+      },
+      "TN": {
+        "amountMinor": 800000,
+        "currency": "TND"
+      }
+    },
+    "reasonMax": 300,
+    "riderText": {
+      "historyLabel": {
+        "sv": "Kredit från Movera",
+        "fr": "Crédit de Movera",
+        "en": "Credit from Movera"
+      },
+      "pushTitle": {
+        "sv": "Pengar i din plånbok",
+        "fr": "Argent dans votre portefeuille",
+        "en": "Money in your wallet"
+      },
+      "pushBody": {
+        "sv": "Movera har lagt till {amount} i din plånbok.",
+        "fr": "Movera a ajouté {amount} à votre portefeuille.",
+        "en": "Movera added {amount} to your wallet."
+      }
+    }
   }
 }
