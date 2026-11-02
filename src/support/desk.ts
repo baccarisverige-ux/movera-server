@@ -210,6 +210,13 @@ export async function claim(trx: Trx, who: Principal, row: Row, now: Date) {
   await audit(trx, { adminId: who.subjectId, action: "ticket.claim", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: {}, at: now });
 }
 
+/** Owner 2026-11-02 "Leave ticket": the admin who works on it gives it back to the queue (no automatic timeout). */
+export async function leave(trx: Trx, who: Principal, row: Row, now: Date) {
+  if (row.assigned_admin_id !== who.subjectId) throw new ApiError("conflict", "Only the admin who works on this ticket can leave it.", { reason: "ticket_not_yours" });
+  await trx.updateTable("support_tickets").set({ assigned_admin_id: null, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
+  await audit(trx, { adminId: who.subjectId, action: "ticket.leave", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: {}, at: now });
+}
+
 export async function assign(trx: Trx, who: Principal, row: Row, body: { adminId: string | null; reason: string }, now: Date, permissionsOf: (role: string) => string[]) {
   if (body.adminId !== null) {
     const target = await trx.selectFrom("admins").select(["admin_id", "role", "zone_ids", "active"]).where("admin_id", "=", body.adminId).executeTakeFirst();

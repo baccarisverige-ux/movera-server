@@ -49,6 +49,7 @@ const PersonMessageBody = z.object({ text: z.string().min(1).max(5000) });
 const REASON = z.string().min(1).max(500);
 const DESK_BODIES = {
   claim: z.object({}).passthrough(),
+  leave: z.object({}).passthrough(),
   assign: z.object({ adminId: ID.nullable(), reason: REASON }),
   topic: z.object({ category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/) }),
   waiting: z.object({ waiting: z.boolean() }),

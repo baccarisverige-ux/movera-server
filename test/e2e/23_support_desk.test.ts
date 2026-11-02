@@ -175,6 +175,22 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
   });
 });
 
+describe("owner \"Leave ticket\": the claiming admin gives the ticket back to the queue", () => {
+  it("only the admin who works on it can leave it; then any admin can claim it", async () => {
+    const id = await open();
+    await agent.post(`/admin/tickets/${id}/claim`, {});
+    const other = await sim.admin("support");
+    expect((await other.post(`/admin/tickets/${id}/leave`, {})).body["reason"]).toBe("ticket_not_yours");
+    const left = await agent.post(`/admin/tickets/${id}/leave`, {});
+    expect(left.status).toBe(200);
+    expect(left.body["assignedTo"]).toBeUndefined();
+    expect((await other.get("/admin/tickets?assignedTo=none")).body["items"].map((x: Json) => x["ticketId"])).toContain(id);
+    expect((await other.post(`/admin/tickets/${id}/claim`, {})).body["assignedTo"]).toMatchObject({ adminId: other.id });
+    const audit = await sim.db.selectFrom("admin_audit").select("action").where("target_id", "=", id).where("action", "=", "ticket.leave").execute();
+    expect(audit).toHaveLength(1);
+  });
+});
+
 describe("owner \"Yes\": ready replies per language in Support settings", () => {
   it("none by default; saved per country; kept when a save leaves them out; ids unique; sv/fr/en only", async () => {
     const se = (await owner.get("/admin/support/settings?country=SE")).body;

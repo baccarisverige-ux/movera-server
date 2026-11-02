@@ -1696,7 +1696,7 @@ op("post", "/support/tickets/{ticketId}/messages", "writeOwnTicket", "Write on a
 op("post", "/support/tickets/{ticketId}/feedback", "giveTicketFeedback", "Comment on a solved ticket", ["rider", "driver"], "Support",
    params=[pref("TicketId")], body="TicketFeedback", ok=(201, "SupportTicket"), mutation=True, desc="v0.18.15. " + SD["feedback"])
 op("get", "/support/topics", "listSupportTopics", "Ticket topics that are on", ["rider", "driver"], "Support", ok=(200, "SupportTopics"), desc="v0.18.15 (owner QO-4).")
-for verb, body, summary, d in [("claim", "EmptyCommand", "Claim a ticket", SD["adminCommands"]["claim"]), ("assign", "TicketAssignCommand", "Assign a ticket", SD["adminCommands"]["assign"]),
+for verb, body, summary, d in [("claim", "EmptyCommand", "Claim a ticket", SD["adminCommands"]["claim"]), ("leave", "EmptyCommand", "Leave a claimed ticket", SD["adminCommands"]["leave"]), ("assign", "TicketAssignCommand", "Assign a ticket", SD["adminCommands"]["assign"]),
                                ("topic", "TicketTopicCommand", "Change a ticket's topic", SD["adminCommands"]["topic"]), ("waiting", "TicketWaitingCommand", "Mark waiting for the person", SD["adminCommands"]["waiting"]),
                                ("solve", "TicketSolveCommand", "Solve a ticket", SD["adminCommands"]["solve"]), ("reopen", "TicketReasonCommand", "Reopen a ticket", SD["adminCommands"]["reopen"]),
                                ("case", "TicketReasonCommand", "Open a safety case from a ticket", SD["adminCommands"]["case"])]:

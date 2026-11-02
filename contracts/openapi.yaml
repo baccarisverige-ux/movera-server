@@ -5847,6 +5847,56 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /admin/tickets/{ticketId}/leave:
+    post:
+      operationId: adminTicketLeave
+      summary: Leave a claimed ticket
+      description: 'v0.18.15. POST /admin/tickets/{ticketId}/leave {} -> SupportTicket: owner 2026-11-02 ''Leave ticket'':
+        the admin who works on the ticket gives it back; assignedTo is cleared and the ticket waits in the queue for any admin.
+        Only that admin (else 409 conflict, reason ticket_not_yours). No automatic timeout. Audited ticket.leave. The admin''s
+        zones only (else 403 zone_out_of_scope).'
+      tags:
+      - Admin · Support
+      x-actor:
+      - admin
+      x-permission: support.reply
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /admin/tickets/{ticketId}/assign:
     post:
       operationId: adminTicketAssign

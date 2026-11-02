@@ -226,6 +226,7 @@ export async function adminTicket(ex: Executor, who: Principal, ticketId: string
 /** v0.18.15: Admin › Support claim | assign | topic | waiting | solve | reopen | case (contract.json#supportDesk.adminCommands). */
 export type DeskCommand =
   | { verb: "claim" }
+  | { verb: "leave" }
   | { verb: "assign"; adminId: string | null; reason: string }
   | { verb: "topic"; category: string }
   | { verb: "waiting"; waiting: boolean }
@@ -238,6 +239,7 @@ export async function adminDeskCommand(trx: Trx, who: Principal, ticketId: strin
   const r = { ...row, assigned_admin_id: row.assigned_admin_id ?? null, incident_id: row.incident_id ?? null };
   switch (command.verb) {
     case "claim": await desk.claim(trx, who, r, now); break;
+    case "leave": await desk.leave(trx, who, r, now); break;
     case "assign": await desk.assign(trx, who, r, command, now, (role) => (isAdminRole(role) ? permissionsOf(role) : [])); break;
     case "topic": await desk.setTopic(trx, who, r, command.category, now); break;
     case "waiting": await desk.setWaiting(trx, who, r, command.waiting, now); break;
