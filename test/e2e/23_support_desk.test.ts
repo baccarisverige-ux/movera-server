@@ -175,6 +175,22 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
   });
 });
 
+describe("owner \"Yes\": ready replies per language in Support settings", () => {
+  it("none by default; saved per country; kept when a save leaves them out; ids unique; sv/fr/en only", async () => {
+    const se = (await owner.get("/admin/support/settings?country=SE")).body;
+    expect(se["replies"]).toEqual([]);
+    const replies = [{ id: "hello-sv", lang: "sv", title: "Första svar", text: " Hej! Vi tittar på det nu. " }, { id: "hello-en", lang: "en", title: "First answer", text: "Hi! We are looking at it now." }];
+    const saved = await owner.put("/admin/support/settings", { ...se, replies });
+    expect(saved.body["replies"]).toEqual([{ ...replies[0], text: "Hej! Vi tittar på det nu." }, replies[1]]);
+    const { replies: _left, ...withoutReplies } = saved.body;
+    expect((await owner.put("/admin/support/settings", withoutReplies)).body["replies"]).toHaveLength(2);
+    expect((await owner.put("/admin/support/settings", { ...se, replies: [replies[0], replies[0]] })).status).toBe(400);
+    expect((await owner.put("/admin/support/settings", { ...se, replies: [{ ...replies[0], lang: "de" }] })).status).toBe(400);
+    expect((await owner.get("/admin/support/settings?country=FR")).body["replies"]).toEqual([]);
+    await owner.put("/admin/support/settings", { ...se, replies: [] });
+  });
+});
+
 describe("owner: a person without a country gets it from the phone prefix", () => {
   it("+33 without a trip reads the French topics; +216 Tunisia; unknown prefixes nothing", async () => {
     expect([countryOfPhone("+46701740605"), countryOfPhone("+33612345678"), countryOfPhone("+21620123456"), countryOfPhone("+4930123"), countryOfPhone(null)]).toEqual(["SE", "FR", "TN", null, null]);

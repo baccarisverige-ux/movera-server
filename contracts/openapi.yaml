@@ -17791,6 +17791,34 @@ components:
           type: integer
           minimum: 1
           maximum: 720
+    SupportReply:
+      type: object
+      description: 'v0.18.15: Owner 2026-11-02 ''Yes'': ready replies the admin manages per language (sv, fr, en): replies
+        [{ id, lang, title, text }] in SupportSettings (at most 100; title 1-80, text 1-2000 chars; id unique). Agents pick
+        one in Admin › Support, change it and send it as an ordinary answer. Never saved = no ready replies.'
+      required:
+      - id
+      - lang
+      - title
+      - text
+      properties:
+        id:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{1,40}$
+        lang:
+          type: string
+          enum:
+          - sv
+          - fr
+          - en
+        title:
+          type: string
+          minLength: 1
+          maxLength: 80
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
     SupportSettings:
       type: object
       description: 'v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).'
@@ -17804,6 +17832,11 @@ components:
           - SE
           - FR
           - TN
+        replies:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupportReply'
+          maxItems: 100
         topics:
           type: array
           items:

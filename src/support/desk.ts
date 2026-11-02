@@ -13,17 +13,19 @@ import { openIncident, openOf } from "../safety/incidents.js";
  */
 
 type TopicSetting = { code: string; on: boolean; firstReplyMin: number; solveHours: number };
-export type SupportSettings = { country: string; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
+/** v0.18.15 (owner "Yes"): a ready reply in one language. */
+export type ReadyReply = { id: string; lang: "sv" | "fr" | "en"; title: string; text: string };
+export type SupportSettings = { country: string; replies: ReadyReply[]; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
 
 const DESK = (contract as unknown as {
-  supportDesk: { settings: { countries: string[]; defaults: { topics: TopicSetting[] } }; caseIncidentKind: string };
+  supportDesk: { settings: { countries: string[]; defaults: { replies: ReadyReply[]; topics: TopicSetting[] } }; caseIncidentKind: string };
 }).supportDesk;
 export const SUPPORT_COUNTRIES: readonly string[] = DESK.settings.countries;
 const CATEGORIES: readonly string[] = (contract as unknown as { support: { categories: string[] } }).support.categories;
 
 export function defaultSettings(country: string): SupportSettings {
   const d = DESK.settings.defaults;
-  return { country, topics: d.topics.map((t) => ({ ...t })) };
+  return { country, replies: d.replies.map((r) => ({ ...r })), topics: d.topics.map((t) => ({ ...t })) };
 }
 
 /** A saved document over the defaults: every contract topic once, in the contract order. */
@@ -33,6 +35,7 @@ function merged(country: string, doc: unknown, updatedAt?: Date, updatedBy?: str
   const saved = new Map((Array.isArray(raw.topics) ? raw.topics : []).map((t) => [t.code, t]));
   return {
     country,
+    replies: Array.isArray(raw.replies) ? raw.replies : base.replies,
     topics: base.topics.map((t) => ({ ...t, ...(saved.get(t.code) ?? {}), code: t.code })),
     ...(updatedAt ? { updatedAt: updatedAt.toISOString() } : {}),
     ...(updatedBy ? { updatedBy } : {}),
@@ -63,7 +66,7 @@ export async function adminGetSettings(ex: Executor, country: string): Promise<S
   return settingsOf(ex, country);
 }
 
-export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; topics: TopicSetting[] }, now: Date): Promise<SupportSettings> {
+export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; topics: TopicSetting[]; replies?: ReadyReply[] | undefined }, now: Date): Promise<SupportSettings> {
   if (!(await coversCountry(trx, who, body.country))) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
   const codes = body.topics.map((t) => t.code);
   if (new Set(codes).size !== codes.length || codes.some((c) => !CATEGORIES.includes(c)) || codes.length !== CATEGORIES.length) {
@@ -71,13 +74,15 @@ export async function adminPutSettings(trx: Trx, who: Principal, body: { country
   }
   if (!body.topics.some((t) => t.on)) throw badRequest("At least one topic must be on.", "topics_required");
   const before = await settingsOf(trx, body.country);
-  const doc = { topics: body.topics.map(({ code, on, firstReplyMin, solveHours }) => ({ code, on, firstReplyMin, solveHours })) };
+  const replies = body.replies ?? before.replies;
+  if (new Set(replies.map((r) => r.id)).size !== replies.length) throw badRequest("Every ready reply needs its own id.", "invalid_body");
+  const doc = { replies: replies.map(({ id, lang, title, text }) => ({ id, lang, title: title.trim(), text: text.trim() })), topics: body.topics.map(({ code, on, firstReplyMin, solveHours }) => ({ code, on, firstReplyMin, solveHours })) };
   await trx
     .insertInto("support_settings")
     .values({ country: body.country, doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId })
     .onConflict((oc) => oc.column("country").doUpdateSet({ doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId }))
     .execute();
-  await audit(trx, { adminId: who.subjectId, action: "support.settings", targetType: "support_settings", targetId: body.country, detail: { before: { topics: before.topics }, after: doc }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "support.settings", targetType: "support_settings", targetId: body.country, detail: { before: { replies: before.replies, topics: before.topics }, after: doc }, at: now });
   return settingsOf(trx, body.country);
 }
 

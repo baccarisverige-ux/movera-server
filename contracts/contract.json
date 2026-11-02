@@ -4049,9 +4049,11 @@
             "firstReplyMin": 240,
             "solveHours": 72
           }
-        ]
+        ],
+        "replies": []
       },
-      "limits": "firstReplyMin 1-10080; solveHours 1-720; every contract topic once; at least one topic on."
+      "limits": "firstReplyMin 1-10080; solveHours 1-720; every contract topic once; at least one topic on.",
+      "replies": "Owner 2026-11-02 'Yes': ready replies the admin manages per language (sv, fr, en): replies [{ id, lang, title, text }] in SupportSettings (at most 100; title 1-80, text 1-2000 chars; id unique). Agents pick one in Admin › Support, change it and send it as an ordinary answer. Never saved = no ready replies."
     },
     "caseIncidentKind": "support_case",
     "next": "Rider and driver apps: reply box on the ticket, '<first name> · Movera Support', topics from GET /support/topics."
