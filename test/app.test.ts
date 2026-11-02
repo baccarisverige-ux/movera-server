@@ -30,11 +30,7 @@ describe("health", () => {
   it("answers outside /api/v1 with the contract version", async () => {
     const res = await app.inject({ method: "GET", url: "/healthz" });
     expect(res.statusCode).toBe(200);
-<<<<<<< HEAD
-    expect(res.json()).toEqual({ status: "ok", contract: "0.18.14", apiVersion: "0.5", env: "development" });
-=======
     expect(res.json()).toEqual({ status: "ok", contract: "0.18.16", apiVersion: "0.5", env: "development" });
->>>>>>> 8f82eeb (A2: rider moderation — Warn → Pause → Ban with reasons (G16 Q16-1/Q16-2), contract 0.18.16)
     expect((await app.inject({ method: "GET", url: "/readyz" })).statusCode).toBe(200);
   });
 });
