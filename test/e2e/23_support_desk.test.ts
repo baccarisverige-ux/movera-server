@@ -78,6 +78,18 @@ describe("person replies chat-style (QO-1) and sees only the agent's first name 
     expect((await rider.get(`/support/tickets/${id}`)).body["status"]).toBe("resolved");
     expect((await open()).length).toBeGreaterThan(0);
   });
+
+  it("owner: no stars after solve, an optional comment once; admins see it", async () => {
+    const id = await open();
+    expect((await rider.post(`/support/tickets/${id}/feedback`, { text: "x" })).body["reason"]).toBe("ticket_not_solved");
+    await agent.post(`/admin/tickets/${id}/solve`, {});
+    const given = await rider.post(`/support/tickets/${id}/feedback`, { text: " Quick help, thanks! " });
+    expect(given.status).toBe(201);
+    expect(given.body["feedback"]).toMatchObject({ text: "Quick help, thanks!" });
+    expect((await rider.post(`/support/tickets/${id}/feedback`, { text: "again" })).body["reason"]).toBe("feedback_given");
+    expect((await agent.get(`/admin/tickets/${id}`)).body["feedback"]).toMatchObject({ text: "Quick help, thanks!" });
+    expect((await driver.post(`/support/tickets/${id}/feedback`, { text: "x" })).status).toBe(404);
+  });
 });
 
 describe("Admin › Support desk commands (QO-5)", () => {

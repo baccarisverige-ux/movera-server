@@ -11,7 +11,7 @@ import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from ".
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearDispatch } from "../dispatch/feed.js";
-import { adminDeskCommand, adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets, writeOwnTicket, type DeskCommand } from "../support/tickets.js";
+import { adminDeskCommand, adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets, writeOwnTicket, giveFeedback, type DeskCommand } from "../support/tickets.js";
 import { reviewDone, reviewQueue, reviewRulesOf, saveReviewRules } from "./reviewRules.js";
 import { incidentSettings, recordReport, saveIncidentSettings } from "../safety/incidentDesk.js";
 import { alertBook, alertCommand, alertHistory, saveDoc, setMute, setQuiet, type AlertCommand } from "./alerts.js";
@@ -194,6 +194,13 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const ticketId = param(request, "ticketId");
     const body = parseBody(PersonMessageBody, request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await writeOwnTicket(trx, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, ticketId, body.text, now()) }));
+    return reply.status(result.status).send(result.body);
+  });
+  app.post(`${API_PREFIX}/support/tickets/:ticketId/feedback`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    const ticketId = param(request, "ticketId");
+    const body = parseBody(z.object({ text: z.string().trim().min(1).max(2000) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await giveFeedback(trx, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, ticketId, body.text, now()) }));
     return reply.status(result.status).send(result.body);
   });
   app.get(`${API_PREFIX}/support/topics`, async (request) => {

@@ -828,6 +828,8 @@ export interface SupportTicketsTable {
   solved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   incident_id: ColumnType<string | null, string | null | undefined, string | null>;
   first_reply_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  feedback_text: ColumnType<string | null, string | null | undefined, string | null>;
+  feedback_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
 /** v0.18.15 (migration 0049): Admin › Support › Settings per country. */

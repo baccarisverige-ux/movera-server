@@ -5711,6 +5711,56 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /support/tickets/{ticketId}/feedback:
+    post:
+      operationId: giveTicketFeedback
+      summary: Comment on a solved ticket
+      description: 'v0.18.15. Owner 2026-11-02 ''Not rating only comment suggestions'': no stars after a solved ticket. POST
+        /support/tickets/{ticketId}/feedback { text } (rider / driver, own ticket, 1-2000 chars) -> 201 SupportTicket with
+        feedback { text, at }: only on a solved or closed ticket (else 409 invalid_transition, reason ticket_not_solved),
+        once (else 409, reason feedback_given). Optional for the person; admin views show it.'
+      tags:
+      - Support
+      x-actor:
+      - rider
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/TicketId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketFeedback'
+      responses:
+        '201':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /support/topics:
     get:
       operationId: listSupportTopics
@@ -17537,6 +17587,18 @@ components:
           $ref: '#/components/schemas/Timestamp'
         solveDueAt:
           $ref: '#/components/schemas/Timestamp'
+        feedback:
+          type: object
+          description: 'v0.18.15: the person''s optional comment after the ticket was solved (contract.json#supportDesk.feedback).'
+          required:
+          - text
+          - at
+          properties:
+            text:
+              type: string
+              maxLength: 2000
+            at:
+              $ref: '#/components/schemas/Timestamp'
         late:
           type: object
           description: 'v0.18.15: past the topic''s time limits of the ticket''s country (admin views only).'
@@ -17606,6 +17668,19 @@ components:
           type: string
           minLength: 1
           maxLength: 5000
+    TicketFeedback:
+      type: object
+      description: 'v0.18.15: Owner 2026-11-02 ''Not rating only comment suggestions'': no stars after a solved ticket. POST
+        /support/tickets/{ticketId}/feedback { text } (rider / driver, own ticket, 1-2000 chars) -> 201 SupportTicket with
+        feedback { text, at }: only on a solved or closed ticket (else 409 invalid_transition, reason ticket_not_solved),
+        once (else 409, reason feedback_given). Optional for the person; admin views show it.'
+      required:
+      - text
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
     SupportTopics:
       type: object
       description: 'v0.18.15: the ticket topics that are on for the caller''s country (contract.json#supportDesk.topics).'

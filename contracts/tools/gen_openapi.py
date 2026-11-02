@@ -383,6 +383,7 @@ S["SupportTicket"] = obj({"ticketId": ref("Id"), "tripId": ref("Id"), "openedBy"
                           "solvedBy": ref("Id"), "solvedAt": ref("Timestamp"),
                           "incidentId": {"allOf": [ref("Id")], "description": "v0.18.15: the support_case incident opened from this ticket (admin views only)."},
                           "firstReplyAt": ref("Timestamp"), "firstReplyDueAt": ref("Timestamp"), "solveDueAt": ref("Timestamp"),
+                          "feedback": obj({"text": s(maxLength=2000), "at": ref("Timestamp")}, ["text", "at"], "v0.18.15: the person's optional comment after the ticket was solved (contract.json#supportDesk.feedback)."),
                           "late": obj({"reply": b(), "solve": b()}, ["reply", "solve"], "v0.18.15: past the topic's time limits of the ticket's country (admin views only).")},
                          ["ticketId", "openedBy", "category", "subject", "status", "createdAt", "updatedAt"])
 S["TicketMessage"] = obj({"messageId": ref("Id"), "from": s(enum=["rider", "driver", "support"]), "text": s(minLength=1, maxLength=5000),
@@ -394,6 +395,7 @@ S["TicketReplyCommand"] = obj({"text": s(minLength=1, maxLength=5000), "status":
                               ["text"], "v0.9.0: Admin › Support answers a ticket.")
 SD = C["supportDesk"]
 S["TicketPersonMessage"] = obj({"text": s(minLength=1, maxLength=5000)}, ["text"], "v0.18.15: the rider or driver writes on their own ticket (contract.json#supportDesk.personReply).")
+S["TicketFeedback"] = obj({"text": s(minLength=1, maxLength=2000)}, ["text"], "v0.18.15: " + SD["feedback"])
 S["SupportTopics"] = obj({"country": s(pattern="^[A-Z]{2}$"), "topics": arr(s(enum=C["support"]["categories"]))}, ["topics"],
                          "v0.18.15: the ticket topics that are on for the caller's country (contract.json#supportDesk.topics).")
 S["TicketAssignCommand"] = obj({"adminId": {"oneOf": [ref("Id"), {"type": "null"}]}, "reason": s(minLength=1, maxLength=500)}, ["adminId", "reason"], "v0.18.15.")
@@ -1688,6 +1690,8 @@ op("post", "/admin/tickets/{ticketId}/reply", "adminReplyTicket", "Answer a supp
 op("post", "/support/tickets/{ticketId}/messages", "writeOwnTicket", "Write on an own support ticket", ["rider", "driver"], "Support",
    params=[pref("TicketId")], body="TicketPersonMessage", ok=(201, "SupportTicket"), mutation=True,
    desc="v0.18.15 (owner QO-1, chat-style): the status becomes open. A solved or closed ticket takes no more messages (owner: \"Can't write\"): 409 invalid_transition, reason ticket_solved or ticket_closed.")
+op("post", "/support/tickets/{ticketId}/feedback", "giveTicketFeedback", "Comment on a solved ticket", ["rider", "driver"], "Support",
+   params=[pref("TicketId")], body="TicketFeedback", ok=(201, "SupportTicket"), mutation=True, desc="v0.18.15. " + SD["feedback"])
 op("get", "/support/topics", "listSupportTopics", "Ticket topics that are on", ["rider", "driver"], "Support", ok=(200, "SupportTopics"), desc="v0.18.15 (owner QO-4).")
 for verb, body, summary, d in [("claim", "EmptyCommand", "Claim a ticket", SD["adminCommands"]["claim"]), ("assign", "TicketAssignCommand", "Assign a ticket", SD["adminCommands"]["assign"]),
                                ("topic", "TicketTopicCommand", "Change a ticket's topic", SD["adminCommands"]["topic"]), ("waiting", "TicketWaitingCommand", "Mark waiting for the person", SD["adminCommands"]["waiting"]),

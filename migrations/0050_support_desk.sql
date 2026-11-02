@@ -6,6 +6,9 @@ ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS solved_by text;
 ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS solved_at timestamptz;
 ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS incident_id text REFERENCES incidents (incident_id);
 ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS first_reply_at timestamptz;
+-- Owner "Not rating only comment suggestions": the person's optional comment after the ticket was solved.
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS feedback_text text;
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS feedback_at timestamptz;
 UPDATE support_tickets t SET first_reply_at = m.at
   FROM (SELECT ticket_id, min(at) AS at FROM ticket_messages WHERE sender = 'support' GROUP BY ticket_id) m
   WHERE m.ticket_id = t.ticket_id AND t.first_reply_at IS NULL;

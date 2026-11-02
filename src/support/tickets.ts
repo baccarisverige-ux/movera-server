@@ -41,6 +41,8 @@ type TicketRow = {
   solved_at?: Date | null;
   incident_id?: string | null;
   first_reply_at?: Date | null;
+  feedback_text?: string | null;
+  feedback_at?: Date | null;
 };
 type MessageRow = { message_id: string; sender: "rider" | "driver" | "support"; text: string; at: Date; admin_name?: string | null };
 
@@ -70,6 +72,7 @@ export function ticketView(row: TicketRow, messages?: readonly MessageRow[], opt
           }),
         }
       : {}),
+    ...(row.feedback_text && row.feedback_at ? { feedback: { text: row.feedback_text, at: row.feedback_at.toISOString() } } : {}),
     ...(opts.extra ?? {}),
   };
 }
@@ -158,6 +161,16 @@ export async function writeOwnTicket(trx: Trx, who: Who, ticketId: string, text:
   if (row.status === "resolved") throw new ApiError("invalid_transition", "This ticket is solved. Open a new ticket.", { reason: "ticket_solved" });
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text, at: now }).execute();
   await trx.updateTable("support_tickets").set({ status: "open", updated_at: now, last_message_at: now }).where("ticket_id", "=", ticketId).execute();
+  return ownTicket(trx, who, ticketId);
+}
+
+/** v0.18.15 (owner "Not rating only comment suggestions"): an optional comment once the ticket is solved; no stars. */
+export async function giveFeedback(trx: Trx, who: Who, ticketId: string, text: string, now: Date) {
+  const row = await trx.selectFrom("support_tickets").selectAll().where("ticket_id", "=", ticketId).where(ownColumn(who), "=", who.subjectId).where((eb) => eb.or([eb("opened_by", "!=", "admin"), eb("visible_to_person", "=", true)])).forUpdate().executeTakeFirst();
+  if (row === undefined) throw notFound("No such ticket.", "ticket_not_found");
+  if (row.status !== "resolved" && row.status !== "closed") throw new ApiError("invalid_transition", "This ticket is not solved yet.", { reason: "ticket_not_solved" });
+  if (row.feedback_text) throw new ApiError("invalid_transition", "You already left a comment.", { reason: "feedback_given" });
+  await trx.updateTable("support_tickets").set({ feedback_text: text.trim(), feedback_at: now }).where("ticket_id", "=", ticketId).execute();
   return ownTicket(trx, who, ticketId);
 }
 
