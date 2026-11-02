@@ -13220,10 +13220,11 @@ paths:
         on the rider''s page. POST /admin/riders/{riderId}/wallet-credit { amount, reason } (finance.edit, Idempotency-Key,
         audit rider.wallet_credit). The amount is in the rider''s currency: the country of the rider''s latest trip (else
         of his last seen zone); a rider with no known country is refused 409 rider_country_unknown, an amount in another currency
-        400 wallet_currency_mismatch. One credit is at most the country''s CountryRules.walletCreditMax (country standard;
-        default below), above it 400 wallet_credit_too_large (no second admin). The wallet gets a WalletEntry kind adjustment;
-        the rider gets a bell + push kind wallet_credit (texts below) and sees it in the wallet history as ''Credit from Movera''.
-        The balance never goes below 0 (credits are positive).'
+        400 wallet_currency_mismatch. One credit is at most CountryRules.walletCreditMax of the rider''s zone (that same latest-trip
+        / last-seen zone; its own rules, else its country''s Standard; default below), set in Pricing › Tips & limits, above
+        it 400 wallet_credit_too_large (no second admin). The wallet gets a WalletEntry kind adjustment; the rider gets a
+        bell + push kind wallet_credit (texts below) and sees it in the wallet history as ''Credit from Movera''. The balance
+        never goes below 0 (credits are positive).'
       tags:
       - Admin · People
       x-actor:
@@ -17252,8 +17253,8 @@ components:
         walletCreditMax:
           allOf:
           - $ref: '#/components/schemas/Money'
-          description: 'v0.18.16: the largest single Add money to wallet (country standard). Default SE 290000 SEK, FR 25000
-            EUR, TN 800000 TND (minor units).'
+          description: 'v0.18.16: the largest single Add money to wallet for riders of this zone (or country Standard). Default
+            SE 290000 SEK, FR 25000 EUR, TN 800000 TND (minor units).'
       x-server-only: true
     FeeRule:
       type: object
@@ -26848,10 +26849,11 @@ components:
         on the rider''s page. POST /admin/riders/{riderId}/wallet-credit { amount, reason } (finance.edit, Idempotency-Key,
         audit rider.wallet_credit). The amount is in the rider''s currency: the country of the rider''s latest trip (else
         of his last seen zone); a rider with no known country is refused 409 rider_country_unknown, an amount in another currency
-        400 wallet_currency_mismatch. One credit is at most the country''s CountryRules.walletCreditMax (country standard;
-        default below), above it 400 wallet_credit_too_large (no second admin). The wallet gets a WalletEntry kind adjustment;
-        the rider gets a bell + push kind wallet_credit (texts below) and sees it in the wallet history as ''Credit from Movera''.
-        The balance never goes below 0 (credits are positive).'
+        400 wallet_currency_mismatch. One credit is at most CountryRules.walletCreditMax of the rider''s zone (that same latest-trip
+        / last-seen zone; its own rules, else its country''s Standard; default below), set in Pricing › Tips & limits, above
+        it 400 wallet_credit_too_large (no second admin). The wallet gets a WalletEntry kind adjustment; the rider gets a
+        bell + push kind wallet_credit (texts below) and sees it in the wallet history as ''Credit from Movera''. The balance
+        never goes below 0 (credits are positive).'
       required:
       - amount
       - reason

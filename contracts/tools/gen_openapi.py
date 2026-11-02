@@ -2604,7 +2604,7 @@ op("post", "/admin/riders/{riderId}/moderation", "adminModerateRider", "Warn, pa
 # ---- v0.18.16 A2: Add money to wallet (owner G12 Q5 + Q-D, build-spec Q1/Q2; contract.json#walletCredit)
 WC = C["walletCredit"]
 S["WalletCreditCommand"] = obj({"amount": ref("Money"), "reason": s(minLength=1, maxLength=WC["reasonMax"])}, ["amount", "reason"], WC["note"])
-S["CountryRules"]["properties"]["walletCreditMax"] = {"allOf": [ref("Money")], "description": "v0.18.16: the largest single Add money to wallet (country standard). Default " + ", ".join(f"{k} {v['amountMinor']} {v['currency']}" for k, v in WC["defaultMax"].items()) + " (minor units)."}
+S["CountryRules"]["properties"]["walletCreditMax"] = {"allOf": [ref("Money")], "description": "v0.18.16: the largest single Add money to wallet for riders of this zone (or country Standard). Default " + ", ".join(f"{k} {v['amountMinor']} {v['currency']}" for k, v in WC["defaultMax"].items()) + " (minor units)."}
 op("post", "/admin/riders/{riderId}/wallet-credit", "adminCreditRiderWallet", "Add money to a rider's wallet", ["admin"], "Admin · People",
    params=[pref("RiderId")], body="WalletCreditCommand", ok=(200, "Rider"), mutation=True, permission="finance.edit", permission_v050="finance.edit", desc=WC["note"])
 

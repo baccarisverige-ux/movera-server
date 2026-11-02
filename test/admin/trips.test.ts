@@ -452,7 +452,11 @@ describe("v0.18.16 A2: Add money to wallet (owner G12 Q5, Q-D, build-spec Q1/Q2)
       .onConflict((c) => c.columns(["doc", "zone_id"]).doUpdateSet({ document: JSON.stringify({ country: "SE", walletCreditMax: { amountMinor: 10_000, currency: "SEK" } }) })).execute();
     expect((await credit({ amount: { amountMinor: 10_001, currency: "SEK" }, reason: "x" })).json()).toMatchObject({ reason: "wallet_credit_too_large" });
     expect((await credit({ amount: { amountMinor: 10_000, currency: "SEK" }, reason: "Sorry" })).statusCode).toBe(200);
-    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").where("zone_id", "=", "standard-SE").execute();
+    // A zone with its own rules (the rider's latest trip was there) uses its own limit.
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "Z001", version: 9, document: JSON.stringify({ country: "SE", walletCreditMax: { amountMinor: 5_000, currency: "SEK" } }), published_at: clock.now, published_by: null }).execute();
+    expect((await credit({ amount: { amountMinor: 5_001, currency: "SEK" }, reason: "x" })).json()).toMatchObject({ reason: "wallet_credit_too_large" });
+    expect((await credit({ amount: { amountMinor: 5_000, currency: "SEK" }, reason: "Sorry" })).statusCode).toBe(200);
+    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").where("zone_id", "in", ["standard-SE", "Z001"]).execute();
     await clearFees();
   });
 

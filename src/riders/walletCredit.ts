@@ -6,6 +6,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { notify } from "../notifications/service.js";
+import { liveDocument } from "../config/service.js";
 import { audit } from "../admin/audit.js";
 import { adminRiderView, riderInZones, zonesOf } from "../admin/lists.js";
 
@@ -24,18 +25,18 @@ export const WalletCreditBody = z.object({
   reason: z.string().trim().min(1).max(WC.reasonMax),
 });
 
-/** The rider's country: the zone of his latest trip, else his last seen zone; null when unknown. */
-export async function riderCountry(ex: Executor, riderId: string): Promise<string | null> {
-  const trip = await ex.selectFrom("trips").innerJoin("zones", "zones.zone_id", "trips.zone_id").select("zones.country").where("trips.rider_id", "=", riderId).orderBy("trips.created_at", "desc").limit(1).executeTakeFirst();
-  if (trip) return trip.country;
-  const seen = await ex.selectFrom("riders").innerJoin("zones", "zones.zone_id", "riders.last_seen_zone_id").select("zones.country").where("riders.rider_id", "=", riderId).executeTakeFirst();
-  return seen?.country ?? null;
+/** The rider's zone and country: the zone of his latest trip, else his last seen zone; null when unknown. */
+export async function riderPlace(ex: Executor, riderId: string): Promise<{ zoneId: string; country: string } | null> {
+  const trip = await ex.selectFrom("trips").innerJoin("zones", "zones.zone_id", "trips.zone_id").select(["zones.zone_id", "zones.country"]).where("trips.rider_id", "=", riderId).orderBy("trips.created_at", "desc").limit(1).executeTakeFirst();
+  if (trip) return { zoneId: trip.zone_id, country: trip.country };
+  const seen = await ex.selectFrom("riders").innerJoin("zones", "zones.zone_id", "riders.last_seen_zone_id").select(["zones.zone_id", "zones.country"]).where("riders.rider_id", "=", riderId).executeTakeFirst();
+  return seen ? { zoneId: seen.zone_id, country: seen.country } : null;
 }
 
-/** CountryRules.walletCreditMax of the country standard, else the contract default for the country. */
-export async function walletCreditMax(ex: Executor, country: string): Promise<Money | null> {
-  const row = await ex.selectFrom("config_live").select("document").where("doc", "=", "country_rules").where("zone_id", "=", `standard-${country}`).executeTakeFirst();
-  const own = (row?.document as { walletCreditMax?: Money } | undefined)?.walletCreditMax;
+/** CountryRules.walletCreditMax of the zone (its own, else its country's Standard), else the contract default. */
+export async function walletCreditMax(ex: Executor, zoneId: string, country: string): Promise<Money | null> {
+  const rules = await liveDocument<{ walletCreditMax?: Money }>(ex, "country_rules", zoneId);
+  const own = rules?.document.walletCreditMax;
   if (own && own.currency === CURRENCY[country] && Number.isInteger(own.amountMinor) && own.amountMinor > 0) return own;
   return WC.defaultMax[country] ?? null;
 }
@@ -54,14 +55,15 @@ export async function creditRiderWallet(trx: Trx, who: Principal, riderId: strin
     const seen = await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).where(riderInZones(zones)).executeTakeFirst();
     if (!seen) throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
   }
-  const country = await riderCountry(trx, riderId);
+  const place = await riderPlace(trx, riderId);
+  const country = place?.country;
   const currency = country ? CURRENCY[country] : undefined;
-  if (!country || !currency) throw new ApiError("conflict", "The rider's country is not known yet (no trip and no zone).", { reason: "rider_country_unknown" });
+  if (!place || !country || !currency) throw new ApiError("conflict", "The rider's country is not known yet (no trip and no zone).", { reason: "rider_country_unknown" });
   if (body.amount.currency !== currency) throw badRequest(`This rider pays in ${currency}.`, "wallet_currency_mismatch");
   // One balance per rider: money already there in another currency is never mixed with this one.
   const last = await trx.selectFrom("wallet_entries").select("currency").where("rider_id", "=", riderId).orderBy("at", "desc").orderBy("entry_id", "desc").limit(1).executeTakeFirst();
   if (Number(row.wallet_minor) > 0 && last && last.currency !== currency) throw badRequest(`The rider's wallet already holds ${last.currency}.`, "wallet_currency_mismatch");
-  const max = await walletCreditMax(trx, country);
+  const max = await walletCreditMax(trx, place.zoneId, country);
   if (max && body.amount.amountMinor > max.amountMinor) {
     throw new ApiError("invalid_request", "That is more than one credit may be in this country.", { reason: "wallet_credit_too_large", details: [`max ${max.amountMinor} ${max.currency}`] });
   }
@@ -78,6 +80,6 @@ export async function creditRiderWallet(trx: Trx, who: Principal, riderId: strin
     deepLink: "movera-rider://wallet",
     data: { entryId },
   }, now);
-  await audit(trx, { adminId: who.subjectId, action: "rider.wallet_credit", targetType: "rider", targetId: riderId, detail: { amountMinor: body.amount.amountMinor, currency, reason: body.reason, entryId, notificationId }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "rider.wallet_credit", targetType: "rider", targetId: riderId, zoneId: place.zoneId, detail: { amountMinor: body.amount.amountMinor, currency, reason: body.reason, entryId, notificationId }, at: now });
   return adminRiderView(await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow(), currency);
 }
