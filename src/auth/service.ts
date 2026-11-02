@@ -7,6 +7,7 @@ import { newId } from "../ids.js";
 import { signAccessToken, type Actor } from "./jwt.js";
 import { splitName, type Provider, type ProviderIdentity, type ProviderVerifier } from "./provider.js";
 import { attachInvitesToNewDriver } from "../drivers/invitations.js";
+import { notify } from "../notifications/service.js";
 import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 
 /**
@@ -409,6 +410,9 @@ export async function startSession(
   ttlMs: number = REFRESH_TTL_MS,
 ): Promise<{ accessToken: string; refreshToken: string; expiresIn: number; sessionId: string }> {
   const sessionId = newId("sid", now.getTime());
+  // v0.18.14 (owner 2026-11-02 "New sign-in signs the old phone out"): a driver is signed in on one phone only. A new
+  // sign-in ends his other sessions (reason signed_in_elsewhere), and tells him (bell + push to every phone).
+  if (subject.actor === "driver") await signOutOtherPhones(trx, subject.subjectId, now);
   const expiresAt = new Date(now.getTime() + ttlMs);
   await trx
     .insertInto("auth_sessions")
@@ -458,7 +462,7 @@ export async function rotateRefresh(trx: Trx, refreshToken: string, now: Date, o
   const session = await trx.selectFrom("auth_sessions").selectAll().where("session_id", "=", owner.session_id).forUpdate().executeTakeFirstOrThrow();
   const token = await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", hash).forUpdate().executeTakeFirstOrThrow();
   if (!options.actors.includes(session.actor)) return { ok: false, error: unauthenticated("refresh_token_unknown") };
-  if (session.revoked_at !== null) return { ok: false, error: unauthenticated("session_ended") };
+  if (session.revoked_at !== null) return { ok: false, error: unauthenticated(session.revoked_reason === "signed_in_elsewhere" ? "signed_in_elsewhere" : "session_ended") };
   if (session.expires_at.getTime() <= now.getTime() || token.expires_at.getTime() <= now.getTime()) {
     return { ok: false, error: unauthenticated("session_expired") };
   }
@@ -532,4 +536,15 @@ export async function signOut(db: Db, sessionId: string, now: Date = new Date())
 export async function sessionIsActive(ex: Executor, sessionId: string, now: Date = new Date()): Promise<boolean> {
   const row = await ex.selectFrom("auth_sessions").select(["revoked_at", "expires_at"]).where("session_id", "=", sessionId).executeTakeFirst();
   return row !== undefined && row.revoked_at === null && row.expires_at.getTime() > now.getTime();
+}
+
+const ELSEWHERE = { sv: { title: "Inloggad på en annan telefon", body: "Ditt konto loggades in på en annan telefon. Den här telefonen loggades ut." }, fr: { title: "Connecté sur un autre téléphone", body: "Votre compte s’est connecté sur un autre téléphone. Ce téléphone a été déconnecté." }, en: { title: "Signed in on another phone", body: "Your account signed in on another phone. This phone was signed out." } } as const;
+
+async function signOutOtherPhones(trx: Trx, driverId: string, now: Date): Promise<void> {
+  const ended = await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "signed_in_elsewhere" }).where("actor", "=", "driver").where("subject_id", "=", driverId).where("revoked_at", "is", null).where("expires_at", ">", now).returning("session_id").execute();
+  if (ended.length === 0) return;
+  // He stays online: the new phone is now the one that sends positions and gets offers.
+  const driver = await trx.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
+  const lang = driver?.language === "sv" || driver?.language === "fr" ? driver.language : "en";
+  await notify(trx, { audience: "driver", subjectId: driverId, kind: "signed_in_elsewhere", title: ELSEWHERE[lang].title, body: ELSEWHERE[lang].body, data: { texts: { title: { sv: ELSEWHERE.sv.title, fr: ELSEWHERE.fr.title, en: ELSEWHERE.en.title }, body: { sv: ELSEWHERE.sv.body, fr: ELSEWHERE.fr.body, en: ELSEWHERE.en.body } } } }, now);
 }

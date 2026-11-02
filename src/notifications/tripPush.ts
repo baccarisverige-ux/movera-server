@@ -52,8 +52,9 @@ export async function pushTripMoment(ex: Executor, trip: Pick<TripRow, "trip_id"
     body: text.body[language].replace("{driver}", name),
     deepLink: RIDER_TRIP_PUSH.deepLink.replace("{tripId}", trip.trip_id),
     tripId: trip.trip_id,
-    data: { tripId: trip.trip_id, moment },
-    bell: false,
+    // Deep fix 2026-11-02 (live sweep M-8): kept in the rider's Notifications list too (bell), with every language so
+    // the list shows the rider's language of the moment he reads it.
+    data: { tripId: trip.trip_id, moment, texts: { title: text.title, body: Object.fromEntries(Object.entries(text.body).map(([l, b]) => [l, b.replace("{driver}", (trip.driver_summary as { firstName?: string } | null)?.firstName?.trim() || RIDER_TRIP_PUSH.driverFallback[l as Lang])])) } },
   }, now);
   return true;
 }

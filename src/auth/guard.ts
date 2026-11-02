@@ -36,7 +36,9 @@ export async function authenticate(
   const { claims } = result;
   if (!actors.includes(claims.actor)) throw new ApiError("forbidden", "This app cannot do that.", { reason: "wrong_actor" });
   if (options.allowEndedSession !== true && !(await sessionIsActive(deps.db, claims.sid, now))) {
-    throw new ApiError("unauthenticated", "Please sign in again.", { reason: "session_ended" });
+    // v0.18.14 (one phone at a time): the old phone hears why.
+    const ended = await deps.db.selectFrom("auth_sessions").select("revoked_reason").where("session_id", "=", claims.sid).executeTakeFirst();
+    throw new ApiError("unauthenticated", "Please sign in again.", { reason: ended?.revoked_reason === "signed_in_elsewhere" ? "signed_in_elsewhere" : "session_ended" });
   }
   return {
     actor: claims.actor,

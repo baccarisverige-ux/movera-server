@@ -444,7 +444,7 @@ describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTr
     await step(tripId, "arrive", version + 1);
     expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
     const rows = await database.db.selectFrom("notifications").select(["title", "bell", "audience", "body"]).where("trip_id", "=", tripId).where("kind", "=", "trip_update").orderBy("created_at").execute();
-    expect(rows[0]).toMatchObject({ title: "Chauffeur trouvé", bell: false, audience: "rider", body: "Driver A est en route vers vous." });
+    expect(rows[0]).toMatchObject({ title: "Chauffeur trouvé", bell: true, audience: "rider", body: "Driver A est en route vers vous." });
     const trip = await riderView(tripId);
     await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
     expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);

@@ -134,6 +134,8 @@ describe("G1-B2: terms and privacy per country (SE and FR), sv/fr/en, from the a
     expect(publish.json()).toMatchObject({ country: "SE", version: 1, source: "admin", reaccept: true, company: { companyName: "Movera Sverige AB" } });
     const read = (await app.inject({ method: "GET", url: "/api/v1/legal/SE" })).json();
     expect(read).toMatchObject({ version: 1, source: "admin", reaccept: true });
+    // v0.18.14 (g1-g3 M3): the public read carries the company / support details for "Need help?" (fail-before: absent).
+    expect(read.company).toEqual({ companyName: "Movera Sverige AB", supportPhone: "+46812345678" });
     expect(read.terms.text.sv).toContain("Movera drivs av Movera Sverige AB.");
     expect(read.terms.text.en).toContain("Phone: +46812345678.");
     expect(read.terms.text.en).not.toMatch(/\{|Company number|E-mail:/);

@@ -1,3 +1,4 @@
+import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
 import { commissionOf } from "../rules/commission.js";
 import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
@@ -449,15 +450,19 @@ async function refundRoom(ex: Executor, trip: TripRow, amount: Money) {
   return { paid, left };
 }
 
-async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: Date): Promise<Record<string, unknown>> {
+async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: Date, approved = false): Promise<Record<string, unknown>> {
   const trip = await lockTrip(trx, p.tripId);
-  expectVersion(trip, p.expectedVersion, "admin");
+  // Deep fix 2026-11-02 (g7-g9 M4): an approved refund reads the trip as it is at approval (a note or pay change since
+  // the request moved the version); the money rules (refundRoom) are checked again on that row.
+  if (!approved) expectVersion(trip, p.expectedVersion, "admin");
   const { paid, left } = await refundRoom(trx, trip, p.amount);
   const refundId = newId("rfd", now.getTime());
   await trx.insertInto("refunds").values({ refund_id: refundId, trip_id: trip.trip_id, rider_id: trip.rider_id, currency: trip.currency, amount_minor: p.amount.amountMinor, reason: p.reason, status: "done", approval_id: null, from_driver: p.fromDriver === true, destination: null, payout_to: null, payout_status: null, created_by: createdBy, created_at: now }).execute();
   // "Take from driver": the driver loses their share of the refunded money (owner decision 31).
   if (p.fromDriver && trip.driver_id && paid > 0) {
-    const fare = Number(trip.fare_minor);
+    // Deep fix 2026-11-02 (g7-g9 M1): the rider's old debt collected on this trip is not part of the ride the driver earned on.
+    const debt = trip.status === "completed" ? (((trip.fare_lines as Array<{ code: string; amount: Money }>) ?? []).filter((l) => l.code === "outstanding_fee").reduce((sum, l) => sum + l.amount.amountMinor, 0)) : 0;
+    const fare = Number(trip.fare_minor) - debt;
     // Checker (7): never more than the driver still has on this trip (his one number never goes below 0).
     const share = Math.min(driverTotalOf(trip), fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0);
     if (share > 0) {
@@ -473,10 +478,20 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
   // touchTrip re-reads the row, so the projection event carries the new refunded / adjustments numbers.
   await touchTrip(trx, trip, { payment_status: all ? "refunded" : "partially_refunded" }, now);
   const row = await trx.selectFrom("refunds").selectAll().where("refund_id", "=", refundId).executeTakeFirstOrThrow();
+  // Deep fix 2026-11-02 (g7-g9 P2-M5): the rider hears about it (bell + push, his language).
+  await noticeRefund(trx, trip, p.amount, now);
   return refundView(row);
 }
 
-registerApprovalHandler(REFUND_ACTION, async (trx, payload, _approvedBy, requestedBy, now) => createRefund(trx, payload as RefundPayload, requestedBy, now));
+const REFUND_TEXT = { sv: { title: "Återbetalning", body: "Du får tillbaka {amount} för din resa." }, fr: { title: "Remboursement", body: "Vous êtes remboursé de {amount} pour votre course." }, en: { title: "Refund", body: "You get {amount} back for your trip." } } as const;
+async function noticeRefund(trx: Trx, trip: TripRow, amount: Money, now: Date) {
+  const rider = await trx.selectFrom("riders").select("language").where("rider_id", "=", trip.rider_id).executeTakeFirst();
+  const lang = rider?.language === "sv" || rider?.language === "fr" ? rider.language : "en";
+  const text = (amount.amountMinor / 100).toFixed(2).replace(".", ",") + (amount.currency === "SEK" ? " kr" : amount.currency === "EUR" ? " €" : ` ${amount.currency}`);
+  await notify(trx, { audience: "rider", subjectId: trip.rider_id, kind: "refund", title: REFUND_TEXT[lang].title, body: REFUND_TEXT[lang].body.replace("{amount}", text), deepLink: `movera://trips/${trip.trip_id}/receipt`, tripId: trip.trip_id, data: { tripId: trip.trip_id, amount } }, now);
+}
+
+registerApprovalHandler(REFUND_ACTION, async (trx, payload, _approvedBy, requestedBy, now) => createRefund(trx, payload as RefundPayload, requestedBy, now, true));
 
 export async function adminRefund(trx: Trx, who: Principal, tripId: string, body: Omit<RefundPayload, "tripId">, now: Date): Promise<{ status: number; body: unknown }> {
   const trip = await adminTrip(trx, who, tripId);

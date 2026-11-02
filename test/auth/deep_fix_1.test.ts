@@ -94,3 +94,24 @@ describe("sign-in code: 6 digits, per-number daily lock, per-address limit as ad
     expect(res.json()).toMatchObject({ reason: "otp_too_many" });
   });
 });
+
+describe("one phone at a time (owner 2026-11-02, driver)", () => {
+  it("a new driver sign-in ends the old phone's session (401 signed_in_elsewhere on calls and refresh) and leaves a notice; riders keep both", async () => {
+    const signIn = async (phone: string, appName: "rider" | "driver") => {
+      advance(60);
+      const c = (await post("/auth/otp/request", { phone, app: appName })).json();
+      return (await post("/auth/otp/verify", { phone, sessionId: c.sessionId, code: "123456" })).json();
+    };
+    const first = await signIn(TEST_PHONES[1]!, "driver");
+    const second = await signIn(TEST_PHONES[1]!, "driver");
+    const old = await app.inject({ method: "GET", url: "/api/v1/driver/profile", headers: { authorization: `Bearer ${first.accessToken}` } });
+    expect(old.statusCode).toBe(401);
+    expect(old.json()).toMatchObject({ reason: "signed_in_elsewhere" });
+    expect((await post("/auth/refresh", { refreshToken: first.refreshToken })).json()).toMatchObject({ reason: "signed_in_elsewhere" });
+    const list = await app.inject({ method: "GET", url: "/api/v1/notifications", headers: { authorization: `Bearer ${second.accessToken}` } });
+    expect(list.json().items.some((n: { kind: string }) => n.kind === "signed_in_elsewhere")).toBe(true);
+    const r1 = await signIn(TEST_PHONES[0]!, "rider");
+    await signIn(TEST_PHONES[0]!, "rider");
+    expect((await app.inject({ method: "GET", url: "/api/v1/rider/profile", headers: { authorization: `Bearer ${r1.accessToken}` } })).statusCode).toBe(200);
+  });
+});

@@ -697,3 +697,20 @@ describe("deep fix 2026-11-02: dispatch checks the driver's papers and his car's
     }
   });
 });
+
+describe("deep fix 2026-11-02: notices in the reader's current language; rider trip moments in the list; refund notice", () => {
+  it("the rider's 'driver found' is in his list and follows his language when he switches (fail-before: push only, fixed text)", async () => {
+    const lang = async (language: string) => {
+      const me = (await call(app, "GET", "/rider/profile", rider)).json();
+      expect((await call(app, "PATCH", "/rider/profile", rider, { expectedVersion: me.version, language })).statusCode).toBe(200);
+    };
+    await lang("sv");
+    const trip = await accepted();
+    const sv = (await call(app, "GET", "/notifications?limit=50", rider)).json().items.find((n: { kind: string; tripId?: string }) => n.tripId === trip.tripId);
+    expect(sv).toBeDefined();
+    expect(sv.data?.texts).toBeUndefined();
+    await lang("fr");
+    const fr = (await call(app, "GET", "/notifications?limit=50", rider)).json().items.find((n: { notificationId: string }) => n.notificationId === sv.notificationId);
+    expect(fr.title).not.toBe(sv.title);
+  });
+});

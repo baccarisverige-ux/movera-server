@@ -34,7 +34,8 @@ export async function markSetOffline(ex: Executor, driverId: string, reason: Off
       title: SET_OFFLINE.text.title[language],
       body,
       deepLink: SET_OFFLINE.deepLink,
-      data: { reason, ...(note ? { note } : {}), ...values },
+      // Deep fix 2026-11-02: every language, so the Notifications list follows the app's language later.
+      data: { reason, ...(note ? { note } : {}), ...values, texts: { title: SET_OFFLINE.text.title, body: Object.fromEntries((["sv", "fr", "en"] as Lang[]).map((l) => [l, reason === "no_position" ? SET_OFFLINE.text.body[l] : fill(SET_OFFLINE.reasons[reason]![l], values)])) } },
     },
     now,
   );

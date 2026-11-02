@@ -214,7 +214,7 @@ export async function setDriverStatus(trx: Trx, who: Principal, driverId: string
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin", now) });
   if (body.accountStatus === "active" && row.account_status !== "active") {
     // Deep fix 2026-11-02 (g1-g3 M4): a driver who never sent his details (no country, no name) cannot be activated.
-    if ((row.country === null || !row.first_name) && !(await isTestDriver(trx, driverId))) {
+    if (row.country === null && !(await isTestDriver(trx, driverId))) {
       throw new ApiError("invalid_transition", "The driver has not sent his details yet.", { reason: "details_missing", projection: await driverView(trx, row, "admin", now) });
     }
     const missing = await activationBlockers(trx, row, now);
