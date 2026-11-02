@@ -4048,6 +4048,29 @@
     "caseIncidentKind": "support_case",
     "next": "Rider and driver apps: reply box on the ticket, '<first name> · Movera Support', topics from GET /support/topics."
   },
+  "alertDesk": {
+    "note": "v0.18.15 (build-all A1, owner 2026-11-02 Q5 'Alerts = FULL FLOW': take — the others see who has it, pass on, snooze, mute types, quiet hours, done). The admin panel finds the alerts from the live data (its alert engine, admin settings + rules); the SERVER keeps who works on each alert, the history, the mutes, every admin's quiet hours and the shared alert settings and rules, so every admin sees the same state on live.",
+    "book": "GET /admin/alerts/book (overview.read) -> AlertBookState { rev, settings, rules, records [AlertRecord], mutes { kind: { until, by } }, quiet (the caller's own quiet hours), people [{ adminId, name }] (active admins the caller may pass to: same country scope; Super admins see all) }. records holds the open ones and those done in the last 30 days.",
+    "commands": {
+      "take": "POST /admin/alerts/{alertId}/take { kind, level, title, zoneId?, since } -> AlertBookState: owner = the caller. Another admin's live owner -> 409 conflict, reason alert_taken. Kinds sos, car_lost, ride_check -> 409 invalid_transition, reason alert_in_incidents (taken in Incidents).",
+      "done": "POST /admin/alerts/{alertId}/done { kind, level, title, zoneId?, since, note? } -> status done. Only the owner (or nobody owns it: the caller takes it and solves it) -> else 409 conflict, reason alert_taken.",
+      "snooze": "POST /admin/alerts/{alertId}/snooze { kind, level, title, zoneId?, since, minutes 1-1440 } -> status snoozed until now + minutes; same owner rule; not for the incident kinds.",
+      "pass": "POST /admin/alerts/{alertId}/pass { kind, level, title, zoneId?, since, to } -> owner = to (an active admin in people, not the caller, else 400 invalid_request, reason assignee_not_allowed); same owner rule; not for the incident kinds.",
+      "mute": "PUT /admin/alerts/mutes/{kind} { minutes 1-1440 } / DELETE /admin/alerts/mutes/{kind} -> AlertBookState: the kind stays quiet (no sound, no bell) for everyone until then.",
+      "quiet": "PUT /admin/alerts/quiet { on, from HH:MM, to HH:MM } -> AlertBookState: the caller's own quiet hours (no sound; critical still rings).",
+      "settings": "PUT /admin/alerts/settings { expectedRev, settings } (alerts.manage) -> AlertBookState rev + 1; a stale expectedRev -> 409 version_mismatch.",
+      "rules": "PUT /admin/alerts/rules { expectedRev, rules } (alerts.manage) -> AlertBookState rev + 1.",
+      "export": "GET /admin/alerts/history?from=&to= (overview.read) -> { items: AlertRecord[] } for the CSV export (the panel builds the file)."
+    },
+    "shapes": "settings and rules are the admin panel's own alert-engine documents (JSON objects, at most 256 KB); the server stores and serves them unchanged so every admin uses the same ones. AlertRecord { alertId, kind, level, title, zoneId?, since, status taken | done | snoozed, owner?, ownerName?, snoozeUntil?, events [{ at, by, byName?, kind take | done | snooze | pass | reopen, text, to? }] }.",
+    "audit": "Every command is audited: alert.take | done | snooze | pass | mute | unmute | quiet | settings | rules.",
+    "incidentKinds": [
+      "sos",
+      "car_lost",
+      "ride_check"
+    ],
+    "next": "Server-side detection (alerts found while no admin panel is open, push to admins) is a later job."
+  },
   "payouts": {
     "note": "v0.9.0 (owner real-data decision, part 3): every payout period (v0.18.13: the country's schedule, default weekly from Monday 08:00 to Monday 08:00 local time) a nightly job makes one payout per driver with earnings; an admin can also make one by hand for a driver and a date range. Same calculation both ways; a trip already in a payout is never counted again. amount = trips + waiting + pickup pay + bonus + tips + fees − cash collected; it may be negative (the driver owes Movera). An admin marks a payout paid. The admin sees the lines; the driver app shows only the total.",
     "period": "week",

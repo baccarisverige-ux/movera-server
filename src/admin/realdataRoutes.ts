@@ -12,6 +12,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearDispatch } from "../dispatch/feed.js";
 import { adminDeskCommand, adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets, writeOwnTicket, type DeskCommand } from "../support/tickets.js";
+import { alertBook, alertCommand, alertHistory, saveDoc, setMute, setQuiet, type AlertCommand } from "./alerts.js";
 import { adminGetSettings, adminPutSettings, SUPPORT_COUNTRIES, topicsFor } from "../support/desk.js";
 import { kpis } from "./kpis.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
@@ -56,6 +57,18 @@ const DESK_BODIES = {
 const SupportCountry = z.enum(SUPPORT_COUNTRIES as [string, ...string[]]);
 const TopicSettingBody = z.object({ code: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), on: z.boolean(), firstReplyMin: z.number().int().min(1).max(10080), solveHours: z.number().int().min(1).max(720) });
 const SupportSettingsBody = z.object({ country: SupportCountry, claimDays: z.number().int().min(1).max(30), replyAfterSolved: z.enum(["reopen", "blocked"]), topics: z.array(TopicSettingBody).min(1).max(20) }).passthrough();
+/* v0.18.15 alerts full flow (contract.json#alertDesk) */
+const ALERT_ID = z.string().regex(/^[A-Za-z0-9_:.-]{1,200}$/);
+const KIND = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+const ISO = z.string().datetime({ offset: true });
+const AlertBase = { kind: KIND, level: z.enum(["critical", "important", "info"]), title: z.string().min(1).max(300), zoneId: ID.optional(), since: ISO };
+const ALERT_BODIES = {
+  take: z.object(AlertBase),
+  done: z.object({ ...AlertBase, note: z.string().max(500).optional() }),
+  snooze: z.object({ ...AlertBase, minutes: z.number().int().min(1).max(1440) }),
+  pass: z.object({ ...AlertBase, to: ID }),
+} as const;
+const HM = z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/);
 const ReplyBody = z.object({ text: z.string().min(1).max(5000), status: z.enum(["pending", "resolved", "closed"]).optional() });
 const RatingsQuery = { ...Page, ...When, rater: z.enum(["rider", "driver"]).optional(), hidden: Bool.optional(), maxStars: z.coerce.number().int().min(1).max(5).optional(), driverId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
 const ModerationBody = z.object({ reason: z.string().min(1).max(500) });
@@ -204,6 +217,59 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const who = await authenticateAdmin(request, guard, "settings.edit");
     const body = parseBody(SupportSettingsBody, request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminPutSettings(trx, who, body, now()) }));
+    return result.body;
+  });
+
+  /* ---- alerts full flow (v0.18.15, contract.json#alertDesk) */
+  app.get(`${API_PREFIX}/admin/alerts/book`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    return alertBook(deps.db, who, now());
+  });
+  app.get(`${API_PREFIX}/admin/alerts/history`, async (request) => {
+    await authenticateAdmin(request, guard, "overview.read");
+    const q = parseBody(z.object({ from: ISO.optional(), to: ISO.optional() }), request.query);
+    return alertHistory(deps.db, q);
+  });
+  for (const verb of Object.keys(ALERT_BODIES) as (keyof typeof ALERT_BODIES)[]) {
+    app.post(`${API_PREFIX}/admin/alerts/:alertId/${verb}`, async (request) => {
+      const who = await authenticateAdmin(request, guard, "overview.read");
+      const alertId = parseBody(z.object({ alertId: ALERT_ID }), request.params).alertId;
+      const body = parseBody(ALERT_BODIES[verb], request.body) as Record<string, unknown> & { kind: string; level: "critical" | "important" | "info"; title: string; since: string; zoneId?: string };
+      const command = { verb, ...(verb === "done" ? { note: body["note"] } : {}), ...(verb === "snooze" ? { minutes: body["minutes"] } : {}), ...(verb === "pass" ? { to: body["to"] } : {}) } as AlertCommand;
+      const input = { kind: body.kind, level: body.level, title: body.title, since: body.since, ...(body.zoneId ? { zoneId: body.zoneId } : {}) };
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await alertCommand(trx, who, alertId, input, command, now()) }));
+      return result.body;
+    });
+  }
+  app.put(`${API_PREFIX}/admin/alerts/mutes/:kind`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    const { kind } = parseBody(z.object({ kind: KIND }), request.params);
+    const { minutes } = parseBody(z.object({ minutes: z.number().int().min(1).max(1440) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setMute(trx, who, kind, minutes, now()) }));
+    return result.body;
+  });
+  app.delete(`${API_PREFIX}/admin/alerts/mutes/:kind`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    const { kind } = parseBody(z.object({ kind: KIND }), request.params);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setMute(trx, who, kind, null, now()) }));
+    return result.body;
+  });
+  app.put(`${API_PREFIX}/admin/alerts/quiet`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    const body = parseBody(z.object({ on: z.boolean(), from: HM, to: HM }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setQuiet(trx, who, body, now()) }));
+    return result.body;
+  });
+  app.put(`${API_PREFIX}/admin/alerts/settings`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "alerts.manage");
+    const body = parseBody(z.object({ expectedRev: z.number().int().min(1), settings: z.record(z.string(), z.unknown()) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveDoc(trx, who, "settings", body.expectedRev, body.settings, now()) }));
+    return result.body;
+  });
+  app.put(`${API_PREFIX}/admin/alerts/rules`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "alerts.manage");
+    const body = parseBody(z.object({ expectedRev: z.number().int().min(1), rules: z.array(z.record(z.string(), z.unknown())).max(200) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveDoc(trx, who, "rules", body.expectedRev, body.rules, now()) }));
     return result.body;
   });
 

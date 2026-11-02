@@ -59,6 +59,7 @@ tags:
 - name: Admin · Dispatch
 - name: Admin · Money
 - name: Admin · Support
+- name: Admin · Alerts
 - name: Admin · Reviews
 - name: Admin · Safety
 - name: Admin · Reports
@@ -6159,6 +6160,538 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/book:
+    get:
+      operationId: adminAlertBook
+      summary: Who works on each alert, mutes, quiet hours, settings and rules
+      description: 'v0.18.15. GET /admin/alerts/book (overview.read) -> AlertBookState { rev, settings, rules, records [AlertRecord],
+        mutes { kind: { until, by } }, quiet (the caller''s own quiet hours), people [{ adminId, name }] (active admins the
+        caller may pass to: same country scope; Super admins see all) }. records holds the open ones and those done in the
+        last 30 days.'
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/{alertId}/take:
+    post:
+      operationId: adminAlertTake
+      summary: 'Alert: take'
+      description: 'v0.18.15. POST /admin/alerts/{alertId}/take { kind, level, title, zoneId?, since } -> AlertBookState:
+        owner = the caller. Another admin''s live owner -> 409 conflict, reason alert_taken. Kinds sos, car_lost, ride_check
+        -> 409 invalid_transition, reason alert_in_incidents (taken in Incidents).'
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - name: alertId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_:.-]{1,200}$
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertTakeCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/{alertId}/done:
+    post:
+      operationId: adminAlertDone
+      summary: 'Alert: done'
+      description: 'v0.18.15. POST /admin/alerts/{alertId}/done { kind, level, title, zoneId?, since, note? } -> status done.
+        Only the owner (or nobody owns it: the caller takes it and solves it) -> else 409 conflict, reason alert_taken.'
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - name: alertId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_:.-]{1,200}$
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertDoneCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/{alertId}/snooze:
+    post:
+      operationId: adminAlertSnooze
+      summary: 'Alert: snooze'
+      description: v0.18.15. POST /admin/alerts/{alertId}/snooze { kind, level, title, zoneId?, since, minutes 1-1440 } ->
+        status snoozed until now + minutes; same owner rule; not for the incident kinds.
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - name: alertId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_:.-]{1,200}$
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertSnoozeCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/{alertId}/pass:
+    post:
+      operationId: adminAlertPass
+      summary: 'Alert: pass'
+      description: v0.18.15. POST /admin/alerts/{alertId}/pass { kind, level, title, zoneId?, since, to } -> owner = to (an
+        active admin in people, not the caller, else 400 invalid_request, reason assignee_not_allowed); same owner rule; not
+        for the incident kinds.
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - name: alertId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9_:.-]{1,200}$
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertPassCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/mutes/{kind}:
+    put:
+      operationId: adminAlertMute
+      summary: Mute a kind of alert
+      description: 'v0.18.15. PUT /admin/alerts/mutes/{kind} { minutes 1-1440 } / DELETE /admin/alerts/mutes/{kind} -> AlertBookState:
+        the kind stays quiet (no sound, no bell) for everyone until then.'
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertMuteCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: adminAlertUnmute
+      summary: Unmute a kind of alert
+      description: v0.18.15.
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/quiet:
+    put:
+      operationId: adminAlertQuiet
+      summary: My quiet hours
+      description: 'v0.18.15. PUT /admin/alerts/quiet { on, from HH:MM, to HH:MM } -> AlertBookState: the caller''s own quiet
+        hours (no sound; critical still rings).'
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertQuietCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/settings:
+    put:
+      operationId: adminAlertSettings
+      summary: Save the alert settings
+      description: v0.18.15. PUT /admin/alerts/settings { expectedRev, settings } (alerts.manage) -> AlertBookState rev +
+        1; a stale expectedRev -> 409 version_mismatch.
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: alerts.manage
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertSettingsCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/rules:
+    put:
+      operationId: adminAlertRules
+      summary: Save the alert rules
+      description: v0.18.15. PUT /admin/alerts/rules { expectedRev, rules } (alerts.manage) -> AlertBookState rev + 1.
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: alerts.manage
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertRulesCommand'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertBookState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/alerts/history:
+    get:
+      operationId: adminAlertHistory
+      summary: Alert history for the export
+      description: 'v0.18.15. GET /admin/alerts/history?from=&to= (overview.read) -> { items: AlertRecord[] } for the CSV
+        export (the panel builds the file).'
+      tags:
+      - Admin · Alerts
+      x-actor:
+      - admin
+      x-permission: overview.read
+      parameters:
+      - $ref: '#/components/parameters/From'
+      - $ref: '#/components/parameters/To'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertHistory'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -16552,6 +17085,324 @@ components:
           $ref: '#/components/schemas/Timestamp'
         updatedBy:
           $ref: '#/components/schemas/Id'
+    AlertEvent:
+      type: object
+      required:
+      - at
+      - by
+      - kind
+      - text
+      properties:
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        by:
+          $ref: '#/components/schemas/Id'
+        byName:
+          type: string
+        kind:
+          type: string
+          enum:
+          - take
+          - done
+          - snooze
+          - pass
+          - reopen
+        text:
+          type: string
+          maxLength: 500
+        to:
+          $ref: '#/components/schemas/Id'
+    AlertRecord:
+      type: object
+      description: v0.18.15 (contract.json#alertDesk.shapes).
+      required:
+      - alertId
+      - kind
+      - level
+      - title
+      - since
+      - status
+      - events
+      properties:
+        alertId:
+          type: string
+          pattern: ^[A-Za-z0-9_:.-]{1,200}$
+        kind:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+        level:
+          type: string
+          enum:
+          - critical
+          - important
+          - info
+        title:
+          type: string
+          maxLength: 300
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        since:
+          $ref: '#/components/schemas/Timestamp'
+        status:
+          type: string
+          enum:
+          - taken
+          - done
+          - snoozed
+        owner:
+          $ref: '#/components/schemas/Id'
+        ownerName:
+          type: string
+        snoozeUntil:
+          $ref: '#/components/schemas/Timestamp'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertEvent'
+    AlertBookState:
+      type: object
+      description: 'v0.18.15: GET /admin/alerts/book (overview.read) -> AlertBookState { rev, settings, rules, records [AlertRecord],
+        mutes { kind: { until, by } }, quiet (the caller''s own quiet hours), people [{ adminId, name }] (active admins the
+        caller may pass to: same country scope; Super admins see all) }. records holds the open ones and those done in the
+        last 30 days.'
+      required:
+      - rev
+      - settings
+      - rules
+      - records
+      - mutes
+      - quiet
+      - people
+      properties:
+        rev:
+          type: integer
+          minimum: 1
+        settings:
+          type: object
+        rules:
+          type: array
+          items:
+            type: object
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRecord'
+        mutes:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+            - until
+            - by
+            properties:
+              until:
+                $ref: '#/components/schemas/Timestamp'
+              by:
+                $ref: '#/components/schemas/Id'
+        quiet:
+          type: object
+          required:
+          - 'on'
+          - from
+          - to
+          properties:
+            'on':
+              type: boolean
+            from:
+              type: string
+              pattern: ^[0-2][0-9]:[0-5][0-9]$
+            to:
+              type: string
+              pattern: ^[0-2][0-9]:[0-5][0-9]$
+        people:
+          type: array
+          items:
+            type: object
+            required:
+            - adminId
+            - name
+            properties:
+              adminId:
+                $ref: '#/components/schemas/Id'
+              name:
+                type: string
+    AlertTakeCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - kind
+      - level
+      - title
+      - since
+      properties:
+        kind:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+        level:
+          type: string
+          enum:
+          - critical
+          - important
+          - info
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        since:
+          $ref: '#/components/schemas/Timestamp'
+    AlertDoneCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - kind
+      - level
+      - title
+      - since
+      properties:
+        kind:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+        level:
+          type: string
+          enum:
+          - critical
+          - important
+          - info
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        since:
+          $ref: '#/components/schemas/Timestamp'
+        note:
+          type: string
+          maxLength: 500
+    AlertSnoozeCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - kind
+      - level
+      - title
+      - since
+      - minutes
+      properties:
+        kind:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+        level:
+          type: string
+          enum:
+          - critical
+          - important
+          - info
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        since:
+          $ref: '#/components/schemas/Timestamp'
+        minutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+    AlertPassCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - kind
+      - level
+      - title
+      - since
+      - to
+      properties:
+        kind:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+        level:
+          type: string
+          enum:
+          - critical
+          - important
+          - info
+        title:
+          type: string
+          minLength: 1
+          maxLength: 300
+        zoneId:
+          $ref: '#/components/schemas/Id'
+        since:
+          $ref: '#/components/schemas/Timestamp'
+        to:
+          $ref: '#/components/schemas/Id'
+    AlertMuteCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - minutes
+      properties:
+        minutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+    AlertQuietCommand:
+      type: object
+      required:
+      - 'on'
+      - from
+      - to
+      properties:
+        'on':
+          type: boolean
+        from:
+          type: string
+          pattern: ^[0-2][0-9]:[0-5][0-9]$
+        to:
+          type: string
+          pattern: ^[0-2][0-9]:[0-5][0-9]$
+    AlertSettingsCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - expectedRev
+      - settings
+      properties:
+        expectedRev:
+          type: integer
+          minimum: 1
+        settings:
+          type: object
+    AlertRulesCommand:
+      type: object
+      description: v0.18.15.
+      required:
+      - expectedRev
+      - rules
+      properties:
+        expectedRev:
+          type: integer
+          minimum: 1
+        rules:
+          type: array
+          items:
+            type: object
+          maxItems: 200
+    AlertHistory:
+      type: object
+      description: v0.18.15.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRecord'
     IncidentPosition:
       type: object
       description: 'v0.7.0: a phone''s GPS position, measured once (CONTRACT.md §15).'

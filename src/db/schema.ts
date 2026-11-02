@@ -817,6 +817,36 @@ export interface SupportSettingsTable {
   updated_by: string | null;
 }
 
+/** v0.18.15 alerts full flow (migration 0049). */
+export interface AdminAlertBookTable {
+  id: number;
+  rev: Generated<number>;
+  settings: ColumnType<unknown, string | undefined, string>;
+  rules: ColumnType<unknown, string | undefined, string>;
+  mutes: ColumnType<unknown, string | undefined, string>;
+  updated_at: Generated<Date>;
+}
+export interface AdminAlertRecordsTable {
+  alert_id: string;
+  kind: string;
+  level: "critical" | "important" | "info";
+  title: string;
+  zone_id: string | null;
+  since: Timestamp;
+  status: "taken" | "done" | "snoozed";
+  owner: string | null;
+  snooze_until: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  events: ColumnType<unknown, string, string>;
+  updated_at: Timestamp;
+}
+export interface AdminAlertQuietTable {
+  admin_id: string;
+  quiet_on: boolean;
+  from_hm: string;
+  to_hm: string;
+  updated_at: Timestamp;
+}
+
 export interface TicketMessagesTable {
   /** Write order (two messages can share a timestamp). */
   n: Generated<string>;
@@ -1185,6 +1215,9 @@ export interface Database {
   support_tickets: SupportTicketsTable;
   ticket_messages: TicketMessagesTable;
   support_settings: SupportSettingsTable;
+  admin_alert_book: AdminAlertBookTable;
+  admin_alert_records: AdminAlertRecordsTable;
+  admin_alert_quiet: AdminAlertQuietTable;
   dispatch_events: DispatchEventsTable;
   dispatch_presets: DispatchPresetsTable;
   driver_groups: DriverGroupsTable;

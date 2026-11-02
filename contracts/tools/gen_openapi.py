@@ -408,6 +408,28 @@ S["SupportSettings"] = obj({"country": s(enum=SD["settings"]["countries"]), "cla
                             "replyAfterSolved": s(enum=["reopen", "blocked"]), "topics": arr(ref("SupportTopicSetting"), minItems=1),
                             "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")},
                            ["country", "claimDays", "replyAfterSolved", "topics"], "v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).")
+AD = C["alertDesk"]
+S["AlertEvent"] = obj({"at": ref("Timestamp"), "by": ref("Id"), "byName": s(), "kind": s(enum=["take", "done", "snooze", "pass", "reopen"]), "text": s(maxLength=500), "to": ref("Id")}, ["at", "by", "kind", "text"])
+S["AlertRecord"] = obj({"alertId": s(pattern="^[A-Za-z0-9_:.-]{1,200}$"), "kind": s(pattern="^[a-z][a-z0-9_]{0,63}$"), "level": s(enum=["critical", "important", "info"]),
+                        "title": s(maxLength=300), "zoneId": ref("Id"), "since": ref("Timestamp"), "status": s(enum=["taken", "done", "snoozed"]),
+                        "owner": ref("Id"), "ownerName": s(), "snoozeUntil": ref("Timestamp"), "events": arr(ref("AlertEvent"))},
+                       ["alertId", "kind", "level", "title", "since", "status", "events"], "v0.18.15 (contract.json#alertDesk.shapes).")
+S["AlertBookState"] = obj({"rev": i(minimum=1), "settings": {"type": "object"}, "rules": {"type": "array", "items": {"type": "object"}}, "records": arr(ref("AlertRecord")),
+                           "mutes": {"type": "object", "additionalProperties": obj({"until": ref("Timestamp"), "by": ref("Id")}, ["until", "by"])},
+                           "quiet": obj({"on": b(), "from": s(pattern="^[0-2][0-9]:[0-5][0-9]$"), "to": s(pattern="^[0-2][0-9]:[0-5][0-9]$")}, ["on", "from", "to"]),
+                           "people": arr(obj({"adminId": ref("Id"), "name": s()}, ["adminId", "name"]))},
+                          ["rev", "settings", "rules", "records", "mutes", "quiet", "people"], "v0.18.15: " + AD["book"])
+_AT = {"kind": s(pattern="^[a-z][a-z0-9_]{0,63}$"), "level": s(enum=["critical", "important", "info"]), "title": s(minLength=1, maxLength=300), "zoneId": ref("Id"), "since": ref("Timestamp")}
+_REQ = ["kind", "level", "title", "since"]
+S["AlertTakeCommand"] = obj(dict(_AT), _REQ, "v0.18.15.")
+S["AlertDoneCommand"] = obj(dict(_AT, note=s(maxLength=500)), _REQ, "v0.18.15.")
+S["AlertSnoozeCommand"] = obj(dict(_AT, minutes=i(minimum=1, maximum=1440)), _REQ + ["minutes"], "v0.18.15.")
+S["AlertPassCommand"] = obj(dict(_AT, to=ref("Id")), _REQ + ["to"], "v0.18.15.")
+S["AlertMuteCommand"] = obj({"minutes": i(minimum=1, maximum=1440)}, ["minutes"], "v0.18.15.")
+S["AlertQuietCommand"] = S["AlertBookState"]["properties"]["quiet"]
+S["AlertSettingsCommand"] = obj({"expectedRev": i(minimum=1), "settings": {"type": "object"}}, ["expectedRev", "settings"], "v0.18.15.")
+S["AlertRulesCommand"] = obj({"expectedRev": i(minimum=1), "rules": {"type": "array", "items": {"type": "object"}, "maxItems": 200}}, ["expectedRev", "rules"], "v0.18.15.")
+S["AlertHistory"] = obj({"items": arr(ref("AlertRecord"))}, ["items"], "v0.18.15.")
 SF = C["safety"]
 S["IncidentPosition"] = obj({"lat": n(minimum=-90, maximum=90), "lng": n(minimum=-180, maximum=180),
                              "accuracyM": n("Horizontal accuracy, metres.", minimum=0), "at": ref("Timestamp")},
@@ -1666,6 +1688,19 @@ op("get", "/admin/support/settings", "adminGetSupportSettings", "Support setting
    params=[q("country", s(enum=SD["settings"]["countries"]))], ok=(200, "SupportSettings"), permission="support.reply", desc="v0.18.15. " + SD["settings"]["endpoints"])
 op("put", "/admin/support/settings", "adminPutSupportSettings", "Save the support settings of a country", ["admin"], "Admin · Support",
    body="SupportSettings", ok=(200, "SupportSettings"), mutation=True, permission="settings.edit", desc="v0.18.15. " + SD["settings"]["limits"])
+
+# v0.18.15 alert desk (contract.json#alertDesk)
+AID = {"name": "alertId", "in": "path", "required": True, "schema": s(pattern="^[A-Za-z0-9_:.-]{1,200}$")}
+KIND = {"name": "kind", "in": "path", "required": True, "schema": s(pattern="^[a-z][a-z0-9_]{0,63}$")}
+op("get", "/admin/alerts/book", "adminAlertBook", "Who works on each alert, mutes, quiet hours, settings and rules", ["admin"], "Admin · Alerts", ok=(200, "AlertBookState"), permission="overview.read", desc="v0.18.15. " + AD["book"])
+for verb, body in [("take", "AlertTakeCommand"), ("done", "AlertDoneCommand"), ("snooze", "AlertSnoozeCommand"), ("pass", "AlertPassCommand")]:
+    op("post", f"/admin/alerts/{{alertId}}/{verb}", f"adminAlert{verb.capitalize()}", f"Alert: {verb}", ["admin"], "Admin · Alerts", params=[AID], body=body, ok=(200, "AlertBookState"), mutation=True, permission="overview.read", desc="v0.18.15. " + AD["commands"][verb])
+op("put", "/admin/alerts/mutes/{kind}", "adminAlertMute", "Mute a kind of alert", ["admin"], "Admin · Alerts", params=[KIND], body="AlertMuteCommand", ok=(200, "AlertBookState"), mutation=True, permission="overview.read", desc="v0.18.15. " + AD["commands"]["mute"])
+op("delete", "/admin/alerts/mutes/{kind}", "adminAlertUnmute", "Unmute a kind of alert", ["admin"], "Admin · Alerts", params=[KIND], ok=(200, "AlertBookState"), mutation=True, permission="overview.read", desc="v0.18.15.")
+op("put", "/admin/alerts/quiet", "adminAlertQuiet", "My quiet hours", ["admin"], "Admin · Alerts", body="AlertQuietCommand", ok=(200, "AlertBookState"), mutation=True, permission="overview.read", desc="v0.18.15. " + AD["commands"]["quiet"])
+op("put", "/admin/alerts/settings", "adminAlertSettings", "Save the alert settings", ["admin"], "Admin · Alerts", body="AlertSettingsCommand", ok=(200, "AlertBookState"), mutation=True, permission="alerts.manage", desc="v0.18.15. " + AD["commands"]["settings"])
+op("put", "/admin/alerts/rules", "adminAlertRules", "Save the alert rules", ["admin"], "Admin · Alerts", body="AlertRulesCommand", ok=(200, "AlertBookState"), mutation=True, permission="alerts.manage", desc="v0.18.15. " + AD["commands"]["rules"])
+op("get", "/admin/alerts/history", "adminAlertHistory", "Alert history for the export", ["admin"], "Admin · Alerts", params=[pref("From"), pref("To")], ok=(200, "AlertHistory"), permission="overview.read", desc="v0.18.15. " + AD["commands"]["export"])
 
 op("get", "/admin/ratings", "adminListRatings", "Ratings riders and drivers gave each other", ["admin"], "Admin · Reviews",
    params=AL + [q("rater", {"type": "string", "enum": ["rider", "driver"]}, "Who gave the rating."), q("hidden", {"type": "boolean"}), q("maxStars", {"type": "integer", "minimum": 1, "maximum": 5}),
