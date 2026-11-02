@@ -4,7 +4,7 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { authenticate, authenticateAdmin } from "./guard.js";
-import { refreshTokens, requestOtp, signInWithProvider, signOut, verifyOtp, type AuthDeps } from "./service.js";
+import { unlockSignIn, refreshTokens, requestOtp, signInWithProvider, signOut, verifyOtp, type AuthDeps } from "./service.js";
 import { startEmailChange, startPhoneChange, verifyEmailChange, verifyPhoneChange } from "./accountChange.js";
 import { joinWaitlist, listTestAccounts, listWaitlist } from "./waitlist.js";
 
@@ -100,6 +100,12 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
     const who = await authenticate(request, guard, ["rider", "driver"]);
     const body = parseBody(z.object({ challengeId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/), code: z.string().max(12) }), request.body);
     return verifyEmailChange(deps.db, who as never, body, deps.clock?.() ?? new Date());
+  });
+  // Checker MED 3: an admin lifts a number's wrong-code lock.
+  app.post(`${API_PREFIX}/admin/auth/sign-in-locks/unlock`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "settings.edit");
+    const body = parseBody(z.object({ phone: z.string() }), request.body);
+    return deps.db.transaction().execute((trx) => unlockSignIn(trx, who.subjectId, body.phone, deps.clock?.() ?? new Date()));
   });
   app.post(`${API_PREFIX}/auth/sign-out`, async (request, reply) => {
     // Works with an expired access token or an already-ended session, so signing out twice is fine (204).

@@ -414,6 +414,8 @@ export interface OtpSessionsTable {
   created_at: Timestamp;
   /** Deep fix 2026-11-02 (g1-g3 H2): the code was right (the per-number daily wrong-code lock counts the others). */
   verified: Generated<boolean>;
+  /** Checker MED 3: an admin lifted the wrong-code lock (the row no longer counts). */
+  unlocked_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 /** v0.18.14: a pending e-mail change (code sent to the new address). */

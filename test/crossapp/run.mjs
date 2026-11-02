@@ -16,6 +16,8 @@
 import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
+const TEST_CODE = JSON.parse(readFileSync(new URL("../../contracts/contract.json", import.meta.url), "utf8")).auth.testSignIn.code;
 
 // Playwright from the repo, else from the global install (`npm root -g`), e.g. PLAYWRIGHT_ROOT=$(npm root -g).
 const { chromium } = createRequire(process.env.PLAYWRIGHT_ROOT ? join(process.env.PLAYWRIGHT_ROOT, "x.js") : import.meta.url)("playwright");
@@ -126,7 +128,7 @@ await rider.context().route("**/api/v1/locations/**", (route) => {
   return route.continue();
 });
 
-// Phone sign-in shared by both apps (Sweden, code 123456 for the test numbers).
+// Phone sign-in shared by both apps (Sweden, the fixed test code (contract.json#auth.testSignIn) for the test numbers).
 async function phoneSignIn(page, url, phone) {
   // The first screen settles slowly (fonts, flags); a try that does not reach the code step starts again.
   for (let attempt = 1; ; attempt++) {
@@ -156,7 +158,7 @@ async function phoneSignInOnce(page, url, phone) {
   await tapLabel(page, /^(Continue|Fortsätt)$/);
   await waitFor("otp request", () => net[page === rider ? "rider" : "driver"].some((c) => /otp\/request/.test(c.call) && c.status === 200), 20000);
   await page.waitForTimeout(2500);
-  await page.mouse.click(54, 630); await page.keyboard.type("123456", { delay: 80 });
+  await page.mouse.click(54, 630); await page.keyboard.type(TEST_CODE, { delay: 80 });
   await page.waitForTimeout(800);
   await tapLabel(page, /^(Verify|Verifiera)$/);
   await waitFor("otp verify", () => net[page === rider ? "rider" : "driver"].some((c) => /otp\/verify/.test(c.call) && c.status === 200));

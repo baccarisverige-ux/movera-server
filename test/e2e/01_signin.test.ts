@@ -20,7 +20,7 @@ describe("scenario 1: sign-in for rider, driver and admin; expired session; refr
     // A wrong code is refused.
     await sim.advance(31);
     const challenge = await sim.request("POST", "/auth/otp/request", undefined, { phone: TEST_PHONES[5], app: "rider" }, { key: null });
-    const wrong = await sim.request("POST", "/auth/otp/verify", undefined, { phone: TEST_PHONES[5], sessionId: challenge.body["sessionId"], code: "999999" }, { key: null });
+    const wrong = await sim.request("POST", "/auth/otp/verify", undefined, { phone: TEST_PHONES[5], sessionId: challenge.body["sessionId"], code: "9999" }, { key: null });
     expect(wrong.status).toBe(400);
   });
 

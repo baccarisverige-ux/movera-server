@@ -1,3 +1,4 @@
+import { TEST_CODE } from "../../src/auth/service.js";
 import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
@@ -26,7 +27,7 @@ export const newKey = () => `world-key-${String(++keys).padStart(10, "0")}`;
 
 export async function signIn(app: FastifyInstance, phone: string, appName: "rider" | "driver") {
   const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone, app: appName } });
-  const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: "123456" } });
+  const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: TEST_CODE } });
   const body = verify.json();
   return { headers: { authorization: `Bearer ${body.accessToken}` } as Record<string, string>, token: body.accessToken as string };
 }

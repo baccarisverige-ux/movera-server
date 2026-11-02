@@ -1,3 +1,4 @@
+import { TEST_CODE } from "../../src/auth/service.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
@@ -44,28 +45,28 @@ describe("G1-B3: the 5th wrong code itself answers 'too many wrong tries'", () =
     it(`${label}: wrong codes 1–4 are 400, the 5th is 429 otp_too_many_attempts, and the right code after it too`, async () => {
       const challenge = (await post("/auth/otp/request", { phone, app: appName })).json();
       for (let i = 1; i < AUTH.otp.maxAttempts; i++) {
-        const wrong = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "000000" });
+        const wrong = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
         expect(wrong.statusCode, `wrong code ${i}`).toBe(400);
         expect(wrong.json()).toMatchObject({ reason: "invalid_otp_code" });
       }
-      const fifth = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "000000" });
+      const fifth = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
       expect(fifth.statusCode).toBe(429);
       expect(fifth.json()).toMatchObject({ code: "rate_limited", reason: "otp_too_many_attempts" });
-      const right = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "123456" });
+      const right = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: TEST_CODE });
       expect(right.statusCode).toBe(429);
       expect(right.json()).toMatchObject({ reason: "otp_too_many_attempts" });
       // A new code starts a new session that works.
       advance(60);
       const again = (await post("/auth/otp/request", { phone, app: appName })).json();
-      expect((await post("/auth/otp/verify", { phone, sessionId: again.sessionId, code: "123456" })).statusCode).toBe(200);
+      expect((await post("/auth/otp/verify", { phone, sessionId: again.sessionId, code: TEST_CODE })).statusCode).toBe(200);
     });
   }
 
   it("the 4th wrong code is still a normal 'wrong code' (no early lock)", async () => {
     const phone = TEST_PHONES[5]!;
     const challenge = (await post("/auth/otp/request", { phone, app: "rider" })).json();
-    for (let i = 0; i < 4; i++) await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "000000" });
-    expect((await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "123456" })).statusCode).toBe(200);
+    for (let i = 0; i < 4; i++) await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
+    expect((await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: TEST_CODE })).statusCode).toBe(200);
   });
 });
 
@@ -77,19 +78,19 @@ describe("G1-D3 / G1-B6: why the app was signed out, and the retry window", () =
     seen.add((await post("/auth/refresh", { refreshToken: "rt_unknown" })).json().reason);
     const phone = TEST_PHONES[0]!;
     const challenge = (await post("/auth/otp/request", { phone, app: "rider" })).json();
-    const tokens = (await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "123456" })).json();
+    const tokens = (await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: TEST_CODE })).json();
     const next = (await post("/auth/refresh", { refreshToken: tokens.refreshToken })).json();
     advance(REFRESH_RETRY_WINDOW_MS / 1000 + 1);
     seen.add((await post("/auth/refresh", { refreshToken: tokens.refreshToken })).json().reason);
     seen.add((await post("/auth/refresh", { refreshToken: next.refreshToken })).json().reason);
-    const other = (await post("/auth/otp/verify", { phone, sessionId: (await post("/auth/otp/request", { phone, app: "rider" })).json().sessionId, code: "123456" })).json();
+    const other = (await post("/auth/otp/verify", { phone, sessionId: (await post("/auth/otp/request", { phone, app: "rider" })).json().sessionId, code: TEST_CODE })).json();
     advance((AUTH.tokens.refreshExpiresDays + 1) * 86400);
     seen.add((await post("/auth/refresh", { refreshToken: other.refreshToken })).json().reason);
     // v0.18.14: a driver's second phone ends the first one's session.
     const dPhone = TEST_PHONES[1]!;
-    const d1 = (await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: "123456" })).json();
+    const d1 = (await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: TEST_CODE })).json();
     advance(60);
-    await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: "123456" });
+    await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: TEST_CODE });
     seen.add((await post("/auth/refresh", { refreshToken: d1.refreshToken })).json().reason);
     expect([...seen].sort()).toEqual(Object.keys(AUTH.signedOut.reasons).sort());
   });

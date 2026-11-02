@@ -8,6 +8,7 @@ import { signAccessToken, type Actor } from "./jwt.js";
 import { splitName, type Provider, type ProviderIdentity, type ProviderVerifier } from "./provider.js";
 import { attachInvitesToNewDriver } from "../drivers/invitations.js";
 import { notify } from "../notifications/service.js";
+import { audit } from "../admin/audit.js";
 import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 
 /**
@@ -35,17 +36,21 @@ export const OTP = {
   expiresSeconds: AUTH.otp.expiresSeconds,
   retryAfterSeconds: AUTH.otp.retryAfterSeconds,
   maxAttempts: AUTH.otp.maxAttempts,
-  /** Codes started per phone and app in one hour. */
-  perPhonePerHour: 10,
 } as const;
 
-/** Wrong codes for this number in the last 24 h (both apps), and when the oldest of them leaves the window. */
-async function wrongCodesToday(ex: Executor, phone: string, now: Date): Promise<{ wrong: number; oldest: Date | null }> {
+/**
+ * Wrong codes for this number from this client address in the last 24 h (both apps, codes not lifted by an admin), and
+ * when the oldest of them leaves the window. Checker MED 3: the lock is per number AND source, so a stranger guessing
+ * from his wifi never locks the owner out on his own phone.
+ */
+async function wrongCodesToday(ex: Executor, phone: string, ip: string | undefined, now: Date): Promise<{ wrong: number; oldest: Date | null }> {
   const dayAgo = new Date(now.getTime() - 24 * 3_600_000);
   const row = await ex
     .selectFrom("otp_sessions")
     .select([sql<string>`coalesce(sum(attempts - (CASE WHEN verified THEN 1 ELSE 0 END)), 0)`.as("wrong"), sql<Date | null>`min(created_at) FILTER (WHERE attempts > (CASE WHEN verified THEN 1 ELSE 0 END))`.as("oldest")])
     .where("phone", "=", phone)
+    .where((eb) => (ip === undefined ? eb("ip", "is", null) : eb("ip", "=", ip)))
+    .where("unlocked_at", "is", null)
     .where("created_at", ">", dayAgo)
     .executeTakeFirstOrThrow();
   return { wrong: Number(row.wrong), oldest: row.oldest ? new Date(row.oldest) : null };
@@ -133,12 +138,12 @@ export async function requestOtp(
         throw rateLimited("Wait a moment before asking for a new code.", OTP.retryAfterSeconds - waited, "otp_resend_too_soon");
       }
     }
-    if (recent.length >= OTP.perPhonePerHour) {
+    const limits = await countryLimitsFor(trx, countryOfPhone(input.phone));
+    if (recent.length >= limits.codesPerPhonePerHour) {
       const oldest = recent[recent.length - 1]!;
       throw rateLimited("Too many codes for this number. Try again later.", (oldest.created_at.getTime() + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
     }
-    const limits = await countryLimitsFor(trx, countryOfPhone(input.phone));
-    const today = await wrongCodesToday(trx, input.phone, now);
+    const today = await wrongCodesToday(trx, input.phone, client.ip, now);
     if (today.wrong >= limits.wrongCodesPerDay) throw lockedToday(today.oldest, now);
     if (client.ip !== undefined) {
       const fromIp = await trx
@@ -229,7 +234,7 @@ export async function verifyOtp(
     }
     // Deep fix 2026-11-02 (g1-g3 H2): a number with wrongCodesPerDay wrong codes in 24 h is locked, even with the right code.
     const limits = await countryLimitsFor(trx, countryOfPhone(session.phone));
-    const today = await wrongCodesToday(trx, session.phone, now);
+    const today = await wrongCodesToday(trx, session.phone, client.ip, now);
     if (today.wrong >= limits.wrongCodesPerDay) return { ok: false, error: lockedToday(today.oldest, now) };
     if (!sameHash(session.code_sha256, codeHash(session.session_id, input.code))) {
       const attempts = session.attempts + 1;
@@ -547,4 +552,12 @@ async function signOutOtherPhones(trx: Trx, driverId: string, now: Date): Promis
   const driver = await trx.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
   const lang = driver?.language === "sv" || driver?.language === "fr" ? driver.language : "en";
   await notify(trx, { audience: "driver", subjectId: driverId, kind: "signed_in_elsewhere", title: ELSEWHERE[lang].title, body: ELSEWHERE[lang].body, data: { texts: { title: { sv: ELSEWHERE.sv.title, fr: ELSEWHERE.fr.title, en: ELSEWHERE.en.title }, body: { sv: ELSEWHERE.sv.body, fr: ELSEWHERE.fr.body, en: ELSEWHERE.en.body } } } }, now);
+}
+
+/** POST /admin/auth/sign-in-locks/unlock { phone }: lifts every wrong-code lock of the number (all addresses), audited. */
+export async function unlockSignIn(trx: Trx, adminId: string, phone: string, now: Date): Promise<{ phone: string; lifted: number }> {
+  if (!PHONE.test(phone)) throw badRequest("Send the phone number in international form, e.g. +46701234567.", "invalid_phone");
+  const rows = await trx.updateTable("otp_sessions").set({ unlocked_at: now }).where("phone", "=", phone).where("unlocked_at", "is", null).where("created_at", ">", new Date(now.getTime() - 24 * 3_600_000)).returning("session_id").execute();
+  await audit(trx, { adminId, action: "auth.sign_in_unlock", targetType: "phone", targetId: phone.slice(0, -4) + "••••", detail: { lifted: rows.length }, at: now });
+  return { phone, lifted: rows.length };
 }

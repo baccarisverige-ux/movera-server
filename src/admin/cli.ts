@@ -68,7 +68,7 @@ if (command === "seed-test") {
     const settings = await db.transaction().execute((trx) => seedSampleConfig(trx));
     for (const s of settings) console.log(`${s.doc} v${s.version} published in ${s.zoneId} (contract sample)`);
     if (settings.length === 0) console.log("settings: every open zone already has its own");
-    console.log("sign in with the fixed code from contract.json#auth.testSignIn (123456)");
+    console.log("sign in with the fixed code from contract.json#auth.testSignIn");
   } finally {
     await db.destroy();
   }

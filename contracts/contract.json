@@ -837,12 +837,12 @@
   "auth": {
     "note": "v0.5.0 (CONTRACT.md §8). Token issuance for the rider and driver apps; the admin signs in with e-mail and password plus a second factor (out of this contract). Actor and ids come from the token.",
     "otp": {
-      "codeLength": 6,
+      "codeLength": 4,
       "expiresSeconds": 300,
       "retryAfterSeconds": 30,
       "maxAttempts": 5,
       "channel": "sms",
-      "note": "POST /auth/otp/request → { requestId, sessionId, expiresAt, retryAfterSeconds }; POST /auth/otp/verify { phone, sessionId, code } → tokens. A wrong code is 400 invalid_request (reason invalid_otp_code), an expired session 410 otp_expired, too many attempts 429 rate_limited (reason otp_too_many_attempts). v0.15.0: see auth.signInErrors. v0.18.5 (G1-B3): the wrong code that reaches maxAttempts is itself answered 429 otp_too_many_attempts (the server counts before it answers), so the 5th wrong code shows \"Too many wrong tries\". v0.18.14 (deep fix 2026-11-02, g1-g3 H2): the code is 6 digits; a number with countryLimits.wrongCodesPerDay wrong codes in 24 h (both apps, all its codes) is locked: 429 rate_limited reason otp_locked_today (Retry-After = until the oldest wrong code leaves the 24 h window), on request and on verify (even with the right code)."
+      "note": "POST /auth/otp/request → { requestId, sessionId, expiresAt, retryAfterSeconds }; POST /auth/otp/verify { phone, sessionId, code } → tokens. A wrong code is 400 invalid_request (reason invalid_otp_code), an expired session 410 otp_expired, too many attempts 429 rate_limited (reason otp_too_many_attempts). v0.15.0: see auth.signInErrors. v0.18.5 (G1-B3): the wrong code that reaches maxAttempts is itself answered 429 otp_too_many_attempts (the server counts before it answers), so the 5th wrong code shows \"Too many wrong tries\". v0.18.14 (deep fix 2026-11-02, g1-g3 H2; owner \"Keep 4 digits\"): wrong codes are locked per number AND source (client address): after countryLimits.wrongCodesPerDay wrong codes in 24 h from one address for one number, that address gets 429 rate_limited reason otp_locked_today for that number (Retry-After = until the oldest leaves the 24 h window), on request and verify; an admin can lift it (POST /admin/auth/sign-in-locks/unlock { phone }). Codes per number per hour and per address per hour are admin settings (countryLimits)."
     },
     "providers": [
       "apple",
@@ -860,7 +860,7 @@
     "testSignIn": {
       "note": "Outside production the server seed lists test phone numbers; an OTP request for one of them sends no SMS and the fixed code signs it in. Production has no test numbers. The code below is the placeholder until the owner sets one.",
       "enabled": "staging and development only",
-      "code": "123456"
+      "code": "1234"
     },
     "devices": {
       "note": "POST /push/devices { token, provider, platform, appVersion?, locale? } registers the device for push, keyed by token and actor; POST /push/devices/unregister { token } on sign-out. The same for rider and driver.",
@@ -6379,7 +6379,8 @@
     "defaults": {
       "wrongCodesPerDay": 15,
       "codesPerAddressPerHour": 60,
-      "uploadsPerHour": 30
+      "uploadsPerHour": 30,
+      "codesPerPhonePerHour": 10
     },
     "ranges": {
       "wrongCodesPerDay": [
@@ -6393,12 +6394,17 @@
       "uploadsPerHour": [
         10,
         500
+      ],
+      "codesPerPhonePerHour": [
+        3,
+        60
       ]
     },
     "fields": {
-      "wrongCodesPerDay": "Wrong sign-in codes per phone number in 24 h before the number is locked (429 otp_locked_today) until the oldest leaves the window.",
+      "wrongCodesPerDay": "Wrong sign-in codes for one phone number from one client address in 24 h before that address is locked for that number (429 otp_locked_today) until the oldest leaves the window; admins can unlock.",
       "codesPerAddressPerHour": "Sign-in codes per client address (one wifi) per hour (429 otp_too_many).",
-      "uploadsPerHour": "Document uploads per driver per hour (429 rate_limited reason upload_limit); the driver's country."
+      "uploadsPerHour": "Document uploads per driver per hour (429 rate_limited reason upload_limit); the driver's country.",
+      "codesPerPhonePerHour": "Sign-in codes per phone number and app per hour (429 otp_too_many)."
     }
   },
   "deepFix1": {
@@ -6409,7 +6415,7 @@
     "earnings": "GET /driver/earnings?currency=SEK|EUR: one currency per report (default the currency of the driver's first zone, in that zone's time zone). EarningsReport gains currency and currencies (every currency he earned in during the range, for a kr / € switch). Amounts of another currency are never added in.",
     "vehicles": "GET /driver/vehicles always lists the driver's active car (Driver.vehicleId) first even when it is not one of his fleet's cars; every item has active: true|false. Dispatch offers a trip only when the active car is approved and has the trip's category (a Komfort trip needs a Komfort car); re-approving a car without a ride type removes it from the chosen types of its drivers.",
     "documents": "A driver with a document past its end date gets no offer; online drivers are set offline by the expiry sweep (offlineReason documents_expired); one on a trip at its end.",
-    "signIn": "6-digit code (test code 123456); otp_locked_today; countryLimits; one phone at a time for drivers: a new driver sign-in ends his other sessions — their calls and POST /auth/refresh answer 401 reason signed_in_elsewhere (auth.signedOut.reasons) and a notice kind signed_in_elsewhere is sent. Riders keep several phones.",
+    "signIn": "Codes stay 4 digits (owner). otp_locked_today per number + address; admin unlock; countryLimits (wrongCodesPerDay, codesPerAddressPerHour, codesPerPhonePerHour, uploadsPerHour). One phone at a time for drivers: a new driver sign-in ends his other sessions — their calls and POST /auth/refresh answer 401 reason signed_in_elsewhere (auth.signedOut.reasons); the old phone is set offline (the driver goes online again from the new phone) and a notice kind signed_in_elsewhere is sent. Riders keep several phones.",
     "accountChange": "POST /account/phone/change { phone } → OtpChallenge (code to the new number; 409 phone_taken); POST /account/phone/verify { phone, sessionId, code } → { phone } and a notice phone_changed. POST /account/email/change { email } → { challengeId, expiresAt, delivery: pending_provider } (code to the new address once an e-mail provider is connected); POST /account/email/verify { challengeId, code } → { email } and a notice email_changed. Wrong code 400 invalid_otp_code, 5 tries, 5 minutes (auth.otp).",
     "notifications": "GET /notifications shows title and body in the account's current language when the notice was stored with every language (data.texts, taken out of the answer): set_offline, signed_in_elsewhere, phone/email changed, rider trip moments. Rider trip moments (riderTripPush) are now also kept in the list (bell true). A refund sends the rider a notice kind refund (bell + push).",
     "legal": "GET /legal/{country} carries company { companyName?, orgNumber?, address?, supportEmail?, supportPhone? } from admin Content › Legal (the sign-in 'Need help?' box).",

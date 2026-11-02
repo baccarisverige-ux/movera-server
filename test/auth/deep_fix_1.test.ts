@@ -1,3 +1,4 @@
+import { TEST_CODE } from "../../src/auth/service.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
@@ -40,22 +41,21 @@ async function wrongCodes(phone: string, count: number, appName: "rider" | "driv
   for (let sent = 0; sent < count; ) {
     advance(400); // past the resend wait and the hourly code limit (10 per hour)
     const challenge = (await post("/auth/otp/request", { phone, app: appName })).json();
-    for (let i = 0; i < 4 && sent < count; i++, sent++) last = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "000000" });
+    for (let i = 0; i < 4 && sent < count; i++, sent++) last = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
   }
   return last!;
 }
 
 describe("sign-in code: 6 digits, per-number daily lock, per-address limit as admin settings", () => {
-  it("the contract says 6 digits and the test code is 6 digits; a 4-digit code is refused", async () => {
-    expect((contract as unknown as { auth: { otp: { codeLength: number }; testSignIn: { code: string } } }).auth.otp.codeLength).toBe(6);
-    expect((contract as unknown as { auth: { testSignIn: { code: string } } }).auth.testSignIn.code).toMatch(/^\d{6}$/);
+  it("owner 'Keep 4 digits': the code stays 4 digits; a 6-digit code is refused", async () => {
+    expect((contract as unknown as { auth: { otp: { codeLength: number } } }).auth.otp.codeLength).toBe(4);
     const challenge = (await post("/auth/otp/request", { phone: TEST_PHONES[0]!, app: "rider" })).json();
-    expect((await post("/auth/otp/verify", { phone: TEST_PHONES[0]!, sessionId: challenge.sessionId, code: "1234" })).json()).toMatchObject({ reason: "invalid_otp_code" });
+    expect((await post("/auth/otp/verify", { phone: TEST_PHONES[0]!, sessionId: challenge.sessionId, code: "000000" })).json()).toMatchObject({ reason: "invalid_otp_code" });
   });
 
   it("defaults, ranges and the phone's country", () => {
-    expect(COUNTRY_LIMITS.defaults).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 60, uploadsPerHour: 30 });
-    expect(countryLimitsOf({ limits: { wrongCodesPerDay: 1, codesPerAddressPerHour: 200, uploadsPerHour: "x" } })).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 200, uploadsPerHour: 30 });
+    expect(COUNTRY_LIMITS.defaults).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 60, uploadsPerHour: 30, codesPerPhonePerHour: 10 });
+    expect(countryLimitsOf({ limits: { wrongCodesPerDay: 1, codesPerAddressPerHour: 200, uploadsPerHour: "x" } })).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 200, uploadsPerHour: 30, codesPerPhonePerHour: 10 });
     expect([countryOfPhone("+46701740600"), countryOfPhone("+33612345678"), countryOfPhone("+4930123456")]).toEqual(["SE", "FR", null]);
   });
 
@@ -71,7 +71,23 @@ describe("sign-in code: 6 digits, per-number daily lock, per-address limit as ad
     expect(Number(request.headers["retry-after"])).toBeGreaterThan(0);
     advance(86_400);
     const challenge = (await post("/auth/otp/request", { phone, app: "rider" })).json();
-    expect((await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "123456" })).statusCode).toBe(200);
+    expect((await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: TEST_CODE })).statusCode).toBe(200);
+  });
+
+  it("the lock is per number AND address: the owner on another wifi still signs in; an admin unlock lifts it", async () => {
+    const phone = TEST_PHONES[3]!;
+    expect((await wrongCodes(phone, 15)).json()).toMatchObject({ reason: "otp_locked_today" });
+    advance(400);
+    const other = (await post("/auth/otp/request", { phone, app: "rider" }, "198.51.100.200")).json();
+    expect((await post("/auth/otp/verify", { phone, sessionId: other.sessionId, code: TEST_CODE }, "198.51.100.200")).statusCode).toBe(200);
+    advance(400);
+    expect((await post("/auth/otp/request", { phone, app: "rider" })).json()).toMatchObject({ reason: "otp_locked_today" });
+    const { adminSession } = await import("../support/admin.js");
+    const sup = await adminSession(app, database.db, "super", { now: clock.now });
+    const unlock = await app.inject({ method: "POST", url: "/api/v1/admin/auth/sign-in-locks/unlock", headers: { ...sup.headers, "content-type": "application/json" }, payload: { phone } });
+    expect(unlock.statusCode, unlock.body).toBe(200);
+    advance(60);
+    expect((await post("/auth/otp/request", { phone, app: "rider" })).statusCode).toBe(200);
   });
 
   it("FR: the admin's own number (wrongCodesPerDay 5) applies to +33 numbers only", async () => {
@@ -81,7 +97,7 @@ describe("sign-in code: 6 digits, per-number daily lock, per-address limit as ad
     if (!fr) await database.db.insertInto("test_phones").values({ phone, app: "rider", created_at: clock.now }).execute();
     expect((await wrongCodes(phone, 5)).json()).toMatchObject({ reason: "otp_locked_today" });
     // A Swedish number still has the default 15.
-    expect((await wrongCodes(TEST_PHONES[3]!, 5)).json()).toMatchObject({ reason: "invalid_otp_code" });
+    expect((await wrongCodes(TEST_PHONES[5]!, 5)).json()).toMatchObject({ reason: "invalid_otp_code" });
   });
 
   it("the per-address limit is the admin's codesPerAddressPerHour (SE 10), not a fixed 60", async () => {
@@ -100,7 +116,7 @@ describe("one phone at a time (owner 2026-11-02, driver)", () => {
     const signIn = async (phone: string, appName: "rider" | "driver") => {
       advance(60);
       const c = (await post("/auth/otp/request", { phone, app: appName })).json();
-      return (await post("/auth/otp/verify", { phone, sessionId: c.sessionId, code: "123456" })).json();
+      return (await post("/auth/otp/verify", { phone, sessionId: c.sessionId, code: TEST_CODE })).json();
     };
     const first = await signIn(TEST_PHONES[1]!, "driver");
     const second = await signIn(TEST_PHONES[1]!, "driver");
@@ -121,7 +137,7 @@ describe("phone and e-mail change by code (owner 2026-11-02)", () => {
   const signed = async (phone: string, appName: "rider" | "driver") => {
     advance(60);
     const c = (await post("/auth/otp/request", { phone, app: appName })).json();
-    return (await post("/auth/otp/verify", { phone, sessionId: c.sessionId, code: "123456" })).json();
+    return (await post("/auth/otp/verify", { phone, sessionId: c.sessionId, code: TEST_CODE })).json();
   };
   it("rider: a code to the new number saves it; a number with an account is refused; the account keeps its id", async () => {
     const me = await signed(TEST_PHONES[4]!, "rider");
@@ -130,9 +146,9 @@ describe("phone and e-mail change by code (owner 2026-11-02)", () => {
     advance(60);
     const start = await app.inject({ method: "POST", url: "/api/v1/account/phone/change", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]! } });
     expect(start.statusCode, start.body).toBe(200);
-    const wrong = await app.inject({ method: "POST", url: "/api/v1/account/phone/verify", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: "000000" } });
+    const wrong = await app.inject({ method: "POST", url: "/api/v1/account/phone/verify", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: "0000" } });
     expect(wrong.json()).toMatchObject({ reason: "invalid_otp_code" });
-    const ok = await app.inject({ method: "POST", url: "/api/v1/account/phone/verify", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: "123456" } });
+    const ok = await app.inject({ method: "POST", url: "/api/v1/account/phone/verify", headers: auth(me.accessToken), payload: { phone: TEST_PHONES[5]!, sessionId: start.json().sessionId, code: TEST_CODE } });
     expect(ok.statusCode, ok.body).toBe(200);
     expect((await app.inject({ method: "GET", url: "/api/v1/rider/profile", headers: auth(me.accessToken) })).json().phone).toBe(TEST_PHONES[5]!);
   });
@@ -141,11 +157,11 @@ describe("phone and e-mail change by code (owner 2026-11-02)", () => {
     const start = await app.inject({ method: "POST", url: "/api/v1/account/email/change", headers: auth(me.accessToken), payload: { email: "New@Example.se" } });
     expect(start.statusCode, start.body).toBe(200);
     const { challengeId } = start.json();
-    expect((await app.inject({ method: "POST", url: "/api/v1/account/email/verify", headers: auth(me.accessToken), payload: { challengeId, code: "999999" } })).json()).toMatchObject({ reason: "invalid_otp_code" });
+    expect((await app.inject({ method: "POST", url: "/api/v1/account/email/verify", headers: auth(me.accessToken), payload: { challengeId, code: "9999" } })).json()).toMatchObject({ reason: "invalid_otp_code" });
     // The test reads the code the way the e-mail would carry it: set a known one.
     const { createHash } = await import("node:crypto");
-    await database.db.updateTable("email_changes").set({ code_sha256: createHash("sha256").update(`${challengeId}:424242`).digest("hex") }).where("challenge_id", "=", challengeId).execute();
-    const ok = await app.inject({ method: "POST", url: "/api/v1/account/email/verify", headers: auth(me.accessToken), payload: { challengeId, code: "424242" } });
+    await database.db.updateTable("email_changes").set({ code_sha256: createHash("sha256").update(`${challengeId}:4242`).digest("hex") }).where("challenge_id", "=", challengeId).execute();
+    const ok = await app.inject({ method: "POST", url: "/api/v1/account/email/verify", headers: auth(me.accessToken), payload: { challengeId, code: "4242" } });
     expect(ok.json()).toEqual({ email: "new@example.se" });
     expect((await database.db.selectFrom("notifications").select("kind").where("kind", "=", "email_changed").execute()).length).toBe(1);
   });

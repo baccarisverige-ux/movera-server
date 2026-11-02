@@ -9,3 +9,5 @@ ALTER TABLE drivers ADD CONSTRAINT drivers_offline_reason_check CHECK (offline_r
 -- One phone / e-mail change by code (owner 2026-11-02): a pending e-mail change.
 CREATE TABLE IF NOT EXISTS email_changes (challenge_id text PRIMARY KEY, actor text NOT NULL CHECK (actor IN ('rider', 'driver')), subject_id text NOT NULL, email text NOT NULL, code_sha256 text NOT NULL, attempts integer NOT NULL DEFAULT 0, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL);
 CREATE INDEX IF NOT EXISTS email_changes_subject ON email_changes (actor, subject_id);
+-- Checker MED 3: an admin lifts a sign-in lock; the lock counts per number and address.
+ALTER TABLE otp_sessions ADD COLUMN IF NOT EXISTS unlocked_at timestamptz;

@@ -1,3 +1,4 @@
+import { TEST_CODE } from "../../src/auth/service.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
@@ -39,7 +40,7 @@ function post(url: string, payload?: unknown, headers: Record<string, string> = 
 async function signIn(phone: string, appName: "rider" | "driver" = "rider") {
   const challenge = await post("/auth/otp/request", { phone, app: appName });
   expect(challenge.statusCode).toBe(200);
-  const verify = await post("/auth/otp/verify", { phone, sessionId: challenge.json().sessionId, code: "123456" });
+  const verify = await post("/auth/otp/verify", { phone, sessionId: challenge.json().sessionId, code: TEST_CODE });
   expect(verify.statusCode).toBe(200);
   return verify.json() as { accessToken: string; refreshToken: string; expiresIn: number; actor: string; isNewRider?: boolean; isNewDriver?: boolean };
 }
@@ -87,7 +88,7 @@ describe("requesting a code", () => {
     advance(20);
     const second = await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider" });
     expect(second.statusCode).toBe(200);
-    const old = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: first.json().sessionId, code: "123456" });
+    const old = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: first.json().sessionId, code: TEST_CODE });
     expect(old.json()).toMatchObject({ code: "invalid_request", reason: "invalid_otp_session" });
   });
 
@@ -150,14 +151,14 @@ describe("verifying the code", () => {
   it("a wrong code is 400 invalid_otp_code; the 5th wrong code is 429, and the right code after it too", async () => {
     const challenge = (await post("/auth/otp/request", { phone: TEST_PHONES[4]!, app: "rider" })).json();
     for (let i = 0; i < 4; i++) {
-      const wrong = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: "000000" });
+      const wrong = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: "0000" });
       expect(wrong.statusCode).toBe(400);
       expect(wrong.json()).toMatchObject({ code: "invalid_request", reason: "invalid_otp_code" });
     }
-    const fifth = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: "000000" });
+    const fifth = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: "0000" });
     expect(fifth.statusCode).toBe(429);
     expect(fifth.json()).toMatchObject({ code: "rate_limited", reason: "otp_too_many_attempts" });
-    const locked = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: "123456" });
+    const locked = await post("/auth/otp/verify", { phone: TEST_PHONES[4]!, sessionId: challenge.sessionId, code: TEST_CODE });
     expect(locked.statusCode).toBe(429);
     expect(locked.json()).toMatchObject({ code: "rate_limited", reason: "otp_too_many_attempts" });
   });
@@ -165,19 +166,19 @@ describe("verifying the code", () => {
   it("an expired code is 410 otp_expired", async () => {
     const challenge = (await post("/auth/otp/request", { phone: TEST_PHONES[5]!, app: "rider" })).json();
     advance(301);
-    const res = await post("/auth/otp/verify", { phone: TEST_PHONES[5]!, sessionId: challenge.sessionId, code: "123456" });
+    const res = await post("/auth/otp/verify", { phone: TEST_PHONES[5]!, sessionId: challenge.sessionId, code: TEST_CODE });
     expect(res.statusCode).toBe(410);
     expect(res.json()).toMatchObject({ code: "otp_expired", retryable: false });
   });
 
   it("a code works once; an unknown session or another phone is invalid_otp_session", async () => {
     const challenge = (await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider" })).json();
-    expect((await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: challenge.sessionId, code: "123456" })).statusCode).toBe(200);
-    const again = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: challenge.sessionId, code: "123456" });
+    expect((await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: challenge.sessionId, code: TEST_CODE })).statusCode).toBe(200);
+    const again = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: challenge.sessionId, code: TEST_CODE });
     expect(again.json()).toMatchObject({ reason: "invalid_otp_session" });
-    const other = await post("/auth/otp/verify", { phone: DRIVER_PHONE, sessionId: challenge.sessionId, code: "123456" });
+    const other = await post("/auth/otp/verify", { phone: DRIVER_PHONE, sessionId: challenge.sessionId, code: TEST_CODE });
     expect(other.json()).toMatchObject({ reason: "invalid_otp_session" });
-    const unknown = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: "otp_nope", code: "123456" });
+    const unknown = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: "otp_nope", code: TEST_CODE });
     expect(unknown.json()).toMatchObject({ reason: "invalid_otp_session" });
   });
 
