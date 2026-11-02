@@ -174,7 +174,7 @@ function stale(row: DriverRow, ex: Executor) {
 export async function updateDriverProfile(trx: Trx, driverId: string, body: unknown, now: Date) {
   const problem = schemaProblem("DriverProfileUpdate", body);
   if (problem !== null) throw badRequest(`The profile change is not valid: ${problem}.`, "invalid_body");
-  const update = body as { expectedVersion: number; firstName?: string; vehicleId?: string; categoryIds?: string[] };
+  const update = body as { expectedVersion: number; firstName?: string; vehicleId?: string; categoryIds?: string[]; language?: "sv" | "fr" | "en" };
   const row = await loadDriver(trx, driverId, true);
   if (row.version !== update.expectedVersion) throw new ApiError("version_mismatch", "Your profile changed since you last saw it.", { projection: await stale(row, trx)() });
   let categoryIds = update.categoryIds;
@@ -212,6 +212,8 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
     .updateTable("drivers")
     .set({
       ...(update.firstName !== undefined ? { first_name: update.firstName.trim() } : {}),
+      // v0.18.12: the app language, saved to the account so server notices follow it (G9 live 2026-11-02).
+      ...(update.language !== undefined ? { language: update.language } : {}),
       ...(update.vehicleId !== undefined ? { vehicle_id: update.vehicleId } : {}),
       ...(categoryIds !== undefined ? { category_ids: categoryIds } : {}),
       version: row.version + 1,
