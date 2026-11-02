@@ -103,7 +103,9 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
     const last = await trx.selectFrom("trips").select("zone_id").where("rider_id", "=", who.subjectId).orderBy("created_at", "desc").limit(1).executeTakeFirst();
     zoneId = last?.zone_id ?? null;
   }
-  await desk.assertTopicOn(trx, zoneId, body.category, await desk.personCountry(trx, who));
+  const country = await desk.personCountry(trx, who);
+  await desk.assertTopicOn(trx, zoneId, body.category, country);
+  const assignee = await desk.autoAssignee(trx, zoneId, body.category, country, (role) => (isAdminRole(role) ? permissionsOf(role) : []));
   const ticketId = newId("tkt", now.getTime());
   const row = await trx
     .insertInto("support_tickets")
@@ -118,6 +120,7 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
       subject: body.subject,
       // A ride dispute or a safety question is looked at first.
       priority: body.category === "safety" ? "high" : "normal",
+      ...(assignee ? { assigned_admin_id: assignee } : {}),
       created_at: now,
       updated_at: now,
       last_message_at: now,

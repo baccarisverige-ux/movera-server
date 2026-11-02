@@ -404,7 +404,7 @@ S["TicketWaitingCommand"] = obj({"waiting": b()}, ["waiting"], "v0.18.15.")
 S["TicketSolveCommand"] = obj({"note": s("Private; never sent to the app.", maxLength=2000)}, (), "v0.18.15.")
 S["TicketReasonCommand"] = obj({"reason": s(minLength=1, maxLength=500)}, ["reason"], "v0.18.15: reopen or open a case.")
 S["EmptyCommand"] = S.get("EmptyCommand") or obj({}, (), "No fields.")
-S["SupportTopicSetting"] = obj({"code": s(enum=C["support"]["categories"]), "on": b(), "firstReplyMin": i(minimum=1, maximum=10080), "solveHours": i(minimum=1, maximum=720)},
+S["SupportTopicSetting"] = obj({"code": s(enum=C["support"]["categories"]), "on": b(), "assignTo": {"allOf": [ref("Id")], "description": "v0.18.15 (owner auto-sort by topic): the admin who gets new tickets of this topic."}, "firstReplyMin": i(minimum=1, maximum=10080), "solveHours": i(minimum=1, maximum=720)},
                                ["code", "on", "firstReplyMin", "solveHours"])
 S["SupportReply"] = obj({"id": s(pattern="^[A-Za-z0-9_-]{1,40}$"), "lang": s(enum=["sv", "fr", "en"]), "title": s(minLength=1, maxLength=80), "text": s(minLength=1, maxLength=2000)},
                        ["id", "lang", "title", "text"], "v0.18.15: " + SD["settings"]["replies"])

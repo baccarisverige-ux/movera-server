@@ -191,6 +191,26 @@ describe("owner \"Yes\": ready replies per language in Support settings", () => 
   });
 });
 
+describe("owner \"Yes, by topic\": new tickets land with the admin set for their topic", () => {
+  it("lost items go to the chosen agent; nobody when he cannot work on the zone; a viewer cannot be chosen", async () => {
+    const se = (await owner.get("/admin/support/settings?country=SE")).body;
+    const lostAgent = await sim.admin("support", ["Z001"]);
+    const withAssign = (adminId: string) => se["topics"].map((x: Json) => (x["code"] === "lost_item" ? { ...x, assignTo: adminId } : x));
+    const viewer = await sim.admin("viewer");
+    expect((await owner.put("/admin/support/settings", { ...se, topics: withAssign(viewer.id) })).body["reason"]).toBe("assignee_not_allowed");
+    expect((await owner.put("/admin/support/settings", { ...se, topics: withAssign(lostAgent.id) })).status).toBe(200);
+    const sorted = await open({ category: "lost_item" });
+    expect((await owner.get(`/admin/tickets/${sorted}`)).body["assignedTo"]).toMatchObject({ adminId: lostAgent.id });
+    const other = await open({ category: "payment" });
+    expect((await owner.get(`/admin/tickets/${other}`)).body["assignedTo"]).toBeUndefined();
+    const elsewhere = await sim.admin("support", ["Z002"]);
+    await owner.put("/admin/support/settings", { ...se, topics: withAssign(elsewhere.id) });
+    const notCovered = await open({ category: "lost_item" });
+    expect((await owner.get(`/admin/tickets/${notCovered}`)).body["assignedTo"]).toBeUndefined();
+    await owner.put("/admin/support/settings", se);
+  });
+});
+
 describe("owner: a person without a country gets it from the phone prefix", () => {
   it("+33 without a trip reads the French topics; +216 Tunisia; unknown prefixes nothing", async () => {
     expect([countryOfPhone("+46701740605"), countryOfPhone("+33612345678"), countryOfPhone("+21620123456"), countryOfPhone("+4930123"), countryOfPhone(null)]).toEqual(["SE", "FR", "TN", null, null]);

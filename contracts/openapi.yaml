@@ -17783,6 +17783,10 @@ components:
           - other
         'on':
           type: boolean
+        assignTo:
+          allOf:
+          - $ref: '#/components/schemas/Id'
+          description: 'v0.18.15 (owner auto-sort by topic): the admin who gets new tickets of this topic.'
         firstReplyMin:
           type: integer
           minimum: 1

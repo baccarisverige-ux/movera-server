@@ -5,6 +5,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { audit } from "../admin/audit.js";
 import { lockTrip } from "../db/tripLog.js";
 import { openIncident, openOf } from "../safety/incidents.js";
+import { isAdminRole, permissionsOf } from "../admin/permissions.js";
 
 /**
  * Support desk (contract v0.18.15 §37, contract.json#supportDesk; owner 2026-11-02 decisions/other-support-promos.md
@@ -12,7 +13,7 @@ import { openIncident, openOf } from "../safety/incidents.js";
  * assign now; topics and time limits are an admin setting per country with defaults, owner rule 16).
  */
 
-type TopicSetting = { code: string; on: boolean; firstReplyMin: number; solveHours: number };
+type TopicSetting = { code: string; on: boolean; firstReplyMin: number; solveHours: number; assignTo?: string | undefined };
 /** v0.18.15 (owner "Yes"): a ready reply in one language. */
 export type ReadyReply = { id: string; lang: "sv" | "fr" | "en"; title: string; text: string };
 export type SupportSettings = { country: string; replies: ReadyReply[]; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
@@ -73,10 +74,15 @@ export async function adminPutSettings(trx: Trx, who: Principal, body: { country
     throw badRequest("Every topic once.", "invalid_body");
   }
   if (!body.topics.some((t) => t.on)) throw badRequest("At least one topic must be on.", "topics_required");
+  for (const topic of body.topics) {
+    if (!topic.assignTo) continue;
+    const admin = await trx.selectFrom("admins").select(["role", "active"]).where("admin_id", "=", topic.assignTo).executeTakeFirst();
+    if (!admin || !admin.active || !(isAdminRole(admin.role) ? permissionsOf(admin.role) : []).includes("support.reply")) throw badRequest("That admin cannot get support tickets.", "assignee_not_allowed");
+  }
   const before = await settingsOf(trx, body.country);
   const replies = body.replies ?? before.replies;
   if (new Set(replies.map((r) => r.id)).size !== replies.length) throw badRequest("Every ready reply needs its own id.", "invalid_body");
-  const doc = { replies: replies.map(({ id, lang, title, text }) => ({ id, lang, title: title.trim(), text: text.trim() })), topics: body.topics.map(({ code, on, firstReplyMin, solveHours }) => ({ code, on, firstReplyMin, solveHours })) };
+  const doc = { replies: replies.map(({ id, lang, title, text }) => ({ id, lang, title: title.trim(), text: text.trim() })), topics: body.topics.map(({ code, on, firstReplyMin, solveHours, assignTo }) => ({ code, on, firstReplyMin, solveHours, ...(assignTo ? { assignTo } : {}) })) };
   await trx
     .insertInto("support_settings")
     .values({ country: body.country, doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId })
@@ -168,6 +174,21 @@ export async function topicsFor(ex: Executor, who: { actor: "rider" | "driver"; 
   const country = await personCountry(ex, who);
   const s = await settingsOf(ex, country);
   return { ...(country ? { country } : {}), topics: s.topics.filter((t) => t.on).map((t) => t.code) };
+}
+
+/**
+ * Owner 2026-11-02 "Yes, by topic": the admin a new ticket of this topic goes to, if he may work on it (active,
+ * support.reply, covers the zone); else nobody.
+ */
+export async function autoAssignee(ex: Executor, zoneId: string | null, category: string, country: string | null, permissionsOf: (role: string) => string[]): Promise<string | null> {
+  const s = await settingsOf(ex, (await countryOfZone(ex, zoneId)) ?? country);
+  const adminId = s.topics.find((t) => t.code === category)?.assignTo;
+  if (!adminId) return null;
+  const admin = await ex.selectFrom("admins").select(["admin_id", "role", "zone_ids", "active"]).where("admin_id", "=", adminId).executeTakeFirst();
+  if (!admin || !admin.active || !permissionsOf(admin.role).includes("support.reply")) return null;
+  const zones = admin.zone_ids ?? ["*"];
+  const covers = zones.includes("*") || (zoneId !== null && zones.includes(zoneId));
+  return covers ? admin.admin_id : null;
 }
 
 /** POST /support/tickets with a topic that is off for the zone's country. */
