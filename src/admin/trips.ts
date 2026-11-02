@@ -8,7 +8,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { lockTrip, type TripRow } from "../db/tripLog.js";
 import { addMoneyReachKm, dispatchKm, type DispatchDoc } from "../dispatch/engine.js";
 import { addBonus, bonusFor, scopeCovers, sideOfKind, type BonusScope } from "../dispatch/bonusScope.js";
-import { freeCandidatesByDistance, refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
+import { freeCandidatesDetailed, refreshOpenOffers, sendAdminOffers, stopSearch, offerView } from "../dispatch/runtime.js";
 import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
@@ -196,7 +196,9 @@ export async function adminStopRadarZone(trx: Trx, who: Principal, tripId: strin
 }
 
 /** "Add money to trip": Movera pays it; open offers show the new money at once. */
-export type MoneySend = { exclusiveTo: string | null; radarTo: string[] };
+/** Live fix 2026-11-02: skipped counts free drivers left out (expired = let an offer of this trip go / declined;
+ * busy = refused when sent; far = beyond reachKm, the widest reach used, null = no limit). */
+export type MoneySend = { exclusiveTo: string | null; radarTo: string[]; skipped: { expired: number; busy: number; far: number }; reachKm: number | null };
 
 /**
  * Owner decision 2026-11-01 (driver-g5.md): Add money with an explicit applyTo puts the money in front of drivers NOW.
@@ -206,21 +208,32 @@ export type MoneySend = { exclusiveTo: string | null; radarTo: string[] };
  * the admin's own Exclusive / Radar sends (sendAdminOffers); a driver who cannot take it is skipped.
  */
 async function sendWithMoney(trx: Trx, trip: TripRow, scope: BonusScope, now: Date): Promise<MoneySend> {
-  const done: MoneySend = { exclusiveTo: null, radarTo: [] };
+  const done: MoneySend = { exclusiveTo: null, radarTo: [], skipped: { expired: 0, busy: 0, far: 0 }, reachKm: null };
   const open = await trx.selectFrom("offers").select(["driver_id", "kind"]).where("trip_id", "=", trip.trip_id).where("status", "=", "open").where("expires_at", ">", now).execute();
   const dispatch = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
   // Same drivers the automatic dispatch would ask (checker 2026-11-01), in-zone first then nearest, within the zone's
   // own reach for each kind (mode steps, limits.maxPickupKm / maxPickupEtaMin; owner rule 16).
-  const nearFor = (mode: "exclusive" | "radar") => freeCandidatesByDistance(trx, trip, now, addMoneyReachKm(dispatch?.document, mode));
+  const reaches: number[] = [];
+  const nearFor = async (mode: "exclusive" | "radar") => {
+    const reach = addMoneyReachKm(dispatch?.document, mode);
+    reaches.push(reach);
+    const found = await freeCandidatesDetailed(trx, trip, now, reach);
+    done.skipped.expired = Math.max(done.skipped.expired, found.expired);
+    done.skipped.far = Math.max(done.skipped.far, found.far);
+    return found.ids;
+  };
   const nearExclusive = scopeCovers(scope, "exclusive") ? await nearFor("exclusive") : [];
   const nearRadar = scopeCovers(scope, "radar") ? await nearFor("radar") : [];
+  const widest = reaches.length ? Math.max(...reaches) : Infinity;
+  done.reachKm = Number.isFinite(widest) ? widest : null;
   const send = async (ids: string[], kind: "assigned" | "radar") => {
     if (!ids.length) return [] as string[];
     try {
       const sent = await sendAdminOffers(trx, trip, ids, kind, now);
+      done.skipped.busy += sent.skipped.length;
       return ids.filter((id) => !sent.skipped.some((x) => x.driverId === id));
     } catch (error) {
-      if (error instanceof ApiError && error.code === "conflict") return [];
+      if (error instanceof ApiError && error.code === "conflict") { done.skipped.busy += ids.length; return []; }
       throw error;
     }
   };

@@ -212,19 +212,30 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, n
  * full, did not cancel it), less those who already declined or let an offer of this trip expire, nearest first.
  */
 export async function freeCandidatesByDistance(trx: Trx, trip: TripRow, now: Date, maxKm = Infinity): Promise<string[]> {
+  return (await freeCandidatesDetailed(trx, trip, now, maxKm)).ids;
+}
+
+/**
+ * Live fix 2026-11-02 (audits/live-dispatch-2026-11-02.md 3c): the same list plus why other free drivers were left
+ * out, so the admin can say honestly that nobody got the money offer. expired = declined or let an offer of this
+ * trip expire; far = beyond the zone's reach for this kind (maxKm).
+ */
+export async function freeCandidatesDetailed(trx: Trx, trip: TripRow, now: Date, maxKm = Infinity): Promise<{ ids: string[]; expired: number; far: number }> {
   // v0.18.11: the zone's live dispatch document, so drivers of same-country neighbour zones (neighbours on) are
   // candidates here too, through the very same busy / zone / category / declined filter.
   const live = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
   const pool = await candidatesFor(trx, trip, live?.document ?? null, now);
   const missed = await trx.selectFrom("offers").select("driver_id").where("trip_id", "=", trip.trip_id).where("status", "in", ["declined", "expired"]).execute();
   const gone = new Set(missed.map((m) => m.driver_id));
+  const expired = pool.candidates.filter((c) => gone.has(c.driverId)).length;
+  const far = pool.candidates.filter((c) => !gone.has(c.driverId) && c.km > maxKm).length;
   const free = pool.candidates
     .filter((c) => !gone.has(c.driverId) && c.km <= maxKm)
     .sort((a, b) => a.km - b.km || a.driverId.localeCompare(b.driverId));
   // Owner rule 16 (checker 2026-11-02): the zone's own drivers first; a neighbour-zone driver only when no driver of
   // the zone is free (even a closer neighbour never beats a free in-zone driver).
   const inZone = free.filter((c) => !c.neighbour);
-  return (inZone.length ? inZone : free).map((c) => c.driverId);
+  return { ids: (inZone.length ? inZone : free).map((c) => c.driverId), expired, far };
 }
 
 /* ---------------------------------------------------------------- offers */

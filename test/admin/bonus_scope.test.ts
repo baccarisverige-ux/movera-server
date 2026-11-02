@@ -105,7 +105,7 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     await database.db.updateTable("offers").set({ kind: "radar" }).where("offer_id", "=", auto.offerId).execute();
     const res = await bonusPost(tripId, { amount: money(2000), priority: true, applyTo: "exclusive" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.A.id, radarTo: [] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: drivers.A.id, radarTo: [] });
     expect(res.json().driverBonusByKind).toEqual({ exclusive: { ...money(2000), priority: true }, radar: { ...money(0), priority: false } });
     const items = await offersOf("A");
     expect(items).toHaveLength(1);
@@ -120,7 +120,7 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     const [before] = await offersOf("B");
     const res = await bonusPost(tripId, { amount: money(2000), priority: true, applyTo: "exclusive" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: null, radarTo: [] });
     const [after] = await offersOf("B");
     expect(after).toMatchObject({ offerId: before.offerId, kind: "assigned", version: before.version + 1, fare: money(before.fare.amountMinor + 2000), driverBonus: money(2000), priority: true });
   });
@@ -135,7 +135,7 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     expect((await offersOf("B"))[0]).toMatchObject({ kind: "radar", source: "admin", driverBonus: money(1000) });
     const both = await bonusPost(tripId, { amount: money(500), applyTo: "both" });
     expect(both.statusCode, both.body).toBe(200);
-    expect(both.json().moneySend).toEqual({ exclusiveTo: drivers.A.id, radarTo: [] });
+    expect(both.json().moneySend).toMatchObject({ exclusiveTo: drivers.A.id, radarTo: [] });
     const a = await offersOf("A");
     expect(a).toHaveLength(1);
     expect(a[0]).toMatchObject({ kind: "assigned", driverBonus: money(500) });
@@ -150,7 +150,7 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();
     const res = await bonusPost(tripId, { amount: money(800), applyTo: "both" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.A.id, radarTo: [drivers.B.id] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: drivers.A.id, radarTo: [drivers.B.id] });
     expect((await offersOf("A"))[0]).toMatchObject({ kind: "assigned", driverBonus: money(800) });
     expect((await offersOf("B"))[0]).toMatchObject({ kind: "radar", driverBonus: money(800) });
   });
@@ -163,7 +163,7 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     await database.db.updateTable("trips").set({ status: "searching" }).where("trip_id", "=", tripId).execute();
     const res = await bonusPost(tripId, { amount: money(800), applyTo: "exclusive" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [] });
+    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [], skipped: { expired: 0, busy: 0, far: 0 }, reachKm: 8 });
     expect(res.json().driverBonusByKind).toMatchObject({ exclusive: money(800) });
     // Live test 2026-11-01: no offer went out, so the trip keeps waiting (not offered) and no priority was asked.
     expect(res.json().status).toBe("searching");
@@ -183,7 +183,7 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     await database.db.updateTable("trips").set({ status: "searching" }).where("trip_id", "=", tripId).execute();
     const res = await bonusPost(tripId, { amount: money(800), priority: true, applyTo: "radar" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: null, radarTo: [] });
     // The admin sees where the money waits: on the radar side, with its badge, nothing on the exclusive side.
     expect(res.json().driverBonusByKind).toEqual({ exclusive: { ...money(0), priority: false }, radar: { ...money(800), priority: true } });
     // A driver comes online: the automatic first offer is exclusive (money per kind: the radar money is not on it).
@@ -235,7 +235,7 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();
     const res = await bonusPost(tripId, { amount: money(900), applyTo: "exclusive" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.B.id, radarTo: [] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: drivers.B.id, radarTo: [] });
     expect((await offersOf("B"))[0]).toMatchObject({ tripId, kind: "assigned", driverBonus: money(900) });
   });
 
@@ -246,11 +246,11 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     await database.db.updateTable("offers").set({ status: "withdrawn" }).where("trip_id", "=", tripId).where("status", "=", "open").execute();
     const radar = await bonusPost(tripId, { amount: money(400), applyTo: "radar" });
     expect(radar.statusCode, radar.body).toBe(200);
-    expect(radar.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [drivers.B.id] });
+    expect(radar.json().moneySend).toMatchObject({ exclusiveTo: null, radarTo: [drivers.B.id], skipped: { expired: 1 } });
     await database.db.updateTable("offers").set({ status: "withdrawn" }).where("trip_id", "=", tripId).where("status", "=", "open").execute();
     const both = await bonusPost(tripId, { amount: money(400), applyTo: "both" });
     expect(both.statusCode, both.body).toBe(200);
-    expect(both.json().moneySend).toEqual({ exclusiveTo: drivers.B.id, radarTo: [] });
+    expect(both.json().moneySend).toMatchObject({ exclusiveTo: drivers.B.id, radarTo: [] });
     expect(await offersOf("A")).toHaveLength(0);
   });
 
@@ -317,7 +317,7 @@ describe.each(Object.entries(CASES))("admin money follows the zone's start/order
     const tripId = await withNeighbourA();
     const res = await bonusPost(tripId, { amount: money(700), applyTo: "exclusive" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.B.id, radarTo: [] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: drivers.B.id, radarTo: [] });
     expect(await offersOf("A")).toHaveLength(0);
   });
 
@@ -325,7 +325,7 @@ describe.each(Object.entries(CASES))("admin money follows the zone's start/order
     const tripId = await withNeighbourA();
     const res = await bonusPost(tripId, { amount: money(700), applyTo: "radar" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [drivers.B.id] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: null, radarTo: [drivers.B.id] });
   });
 
   it("no in-zone driver free: the neighbour-zone driver gets the Exclusive", async () => {
@@ -333,7 +333,7 @@ describe.each(Object.entries(CASES))("admin money follows the zone's start/order
     await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", drivers.B.id).execute();
     const res = await bonusPost(tripId, { amount: money(700), applyTo: "exclusive" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.A.id, radarTo: [] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: drivers.A.id, radarTo: [] });
   });
 
   it("a driver beyond limits.maxPickupKm is not offered", async () => {
@@ -345,7 +345,7 @@ describe.each(Object.entries(CASES))("admin money follows the zone's start/order
     await setDoc({ ...base(), limits: { maxPickupKm: 0.2 } });
     const res = await bonusPost(tripId, { amount: money(700), applyTo: "both" });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [] });
+    expect(res.json().moneySend).toMatchObject({ exclusiveTo: null, radarTo: [], skipped: { expired: 0, busy: 0, far: 1 }, reachKm: 0.2 });
     expect(await offersOf("B")).toHaveLength(0);
   });
 });
