@@ -17893,6 +17893,21 @@ components:
           type: integer
           minimum: 1
           description: Read only.
+        agents:
+          type: array
+          items:
+            type: object
+            required:
+            - adminId
+            - name
+            properties:
+              adminId:
+                $ref: '#/components/schemas/Id'
+              name:
+                type: string
+          description: 'Read only: Checker LOW: GET /admin/support/settings also lists agents [{ adminId, name }]: the active
+            admins with support.reply and a zone in that country (or all zones) — the only ones a topic''s assignTo may name
+            (read only).'
         expectedRev:
           type: integer
           minimum: 1

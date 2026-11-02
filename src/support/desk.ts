@@ -64,10 +64,20 @@ async function coversCountry(ex: Executor, who: Principal, country: string): Pro
   return hit !== undefined;
 }
 
-export async function adminGetSettings(ex: Executor, who: Principal, country: string): Promise<SupportSettings> {
+/** Checker LOW: the admins a topic may send its tickets to (support.reply, a zone in the country or all zones). */
+export async function countryAgents(ex: Executor, country: string): Promise<{ adminId: string; name: string }[]> {
+  const zones = (await ex.selectFrom("zones").select("zone_id").where("country", "=", country).execute()).map((z) => z.zone_id);
+  const rows = await ex.selectFrom("admins").select(["admin_id", "name", "role", "zone_ids"]).where("active", "=", true).orderBy("name").execute();
+  return rows
+    .filter((r) => (isAdminRole(r.role) ? permissionsOf(r.role) : []).includes("support.reply"))
+    .filter((r) => r.zone_ids === null || r.zone_ids.includes("*") || r.zone_ids.some((z) => zones.includes(z)))
+    .map((r) => ({ adminId: r.admin_id, name: r.name }));
+}
+
+export async function adminGetSettings(ex: Executor, who: Principal, country: string): Promise<SupportSettings & { agents: { adminId: string; name: string }[] }> {
   // Checker LOW: reading a country's settings needs the same country as saving them.
   if (!(await coversCountry(ex, who, country))) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
-  return settingsOf(ex, country);
+  return { ...(await settingsOf(ex, country)), agents: await countryAgents(ex, country) };
 }
 
 export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; expectedRev: number; topics: TopicSetting[]; replies?: ReadyReply[] | undefined }, now: Date): Promise<SupportSettings> {

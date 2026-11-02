@@ -241,6 +241,11 @@ describe("owner \"Yes, by topic\": new tickets land with the admin set for their
   it("lost items go to the chosen agent; nobody when he cannot work on the zone; a viewer cannot be chosen", async () => {
     const se = (await owner.get("/admin/support/settings?country=SE")).body;
     const lostAgent = await sim.admin("support", ["Z001"]);
+    // Checker LOW: the settings list only admins who may get tickets in this country.
+    const agents = (await owner.get("/admin/support/settings?country=SE")).body["agents"].map((a: Json) => a["adminId"]);
+    expect(agents).toContain(lostAgent.id);
+    expect(agents).not.toContain((await sim.admin("viewer")).id);
+    expect(agents).not.toContain((await sim.admin("support", ["FR-PC"])).id);
     const withAssign = (adminId: string) => se["topics"].map((x: Json) => (x["code"] === "lost_item" ? { ...x, assignTo: adminId } : x));
     const viewer = await sim.admin("viewer");
     expect((await putSettings(owner, { ...se, topics: withAssign(viewer.id) })).body["reason"]).toBe("assignee_not_allowed");
