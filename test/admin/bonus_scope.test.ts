@@ -235,3 +235,76 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     expect(await offersOf("B")).toHaveLength(0);
   });
 });
+
+/**
+ * Owner rule 16 (checker 2026-11-02): Add money's immediate send follows the zone's own dispatch settings — drivers of
+ * the zone first (a closer neighbour-zone driver never beats a free in-zone one), a same-country neighbour only when no
+ * in-zone driver is free, and never beyond limits.maxPickupKm. SE and FR.
+ */
+describe.each(Object.entries(CASES))("admin money follows the zone's start/order limits (%s)", (name, c) => {
+  const money = (amountMinor: number) => ({ amountMinor, currency: c.currency });
+  const nb = `NB-${name}`;
+  const base = () => (name === "FR" ? inParis(sample("dispatch_document")) : sample("dispatch_document"));
+  const setDoc = (doc: unknown) => database.db.updateTable("config_live").set({ document: JSON.stringify(doc) }).where("doc", "=", "dispatch").where("zone_id", "=", c.zone).execute();
+  const box = name === "FR" ? { south: 48.7, west: 2.2, north: 49.0, east: 2.5 } : { south: 59.2, west: 17.9, north: 59.5, east: 18.3 };
+
+  beforeAll(async () => {
+    await database.db.deleteFrom("zones").where("zone_id", "=", nb).execute();
+    await database.db
+      .insertInto("zones")
+      .values({ zone_id: nb, name: "Neighbour", country: name, currency: c.currency, time_zone: name === "FR" ? "Europe/Paris" : "Europe/Stockholm", kind: "operating", center_lat: (box.south + box.north) / 2, center_lng: (box.west + box.east) / 2, open: false, ...box, names: JSON.stringify({ sv: "Granne", fr: "Voisin", en: "Neighbour" }), polygon: JSON.stringify([[box.south, box.west], [box.north, box.west], [box.north, box.east], [box.south, box.east]]) } as never)
+      .execute();
+  });
+  afterAll(async () => {
+    await database.db.updateTable("drivers").set({ zone_ids: ["Z001", "FR-PC"] }).where("driver_id", "in", [drivers.A.id, drivers.B.id]).execute();
+    await setDoc(base());
+    await database.db.deleteFrom("zones").where("zone_id", "=", nb).execute();
+  });
+
+  /** A (nearest) books the auto offer; then A is moved to the neighbour zone and the zone turns neighbours on. */
+  async function withNeighbourA() {
+    await database.db.updateTable("drivers").set({ zone_ids: ["Z001", "FR-PC"] }).where("driver_id", "in", [drivers.A.id, drivers.B.id]).execute();
+    await setDoc(base());
+    const { tripId, auto } = await bookWithAutoOffer(c);
+    await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();
+    await database.db.updateTable("drivers").set({ zone_ids: [nb] }).where("driver_id", "=", drivers.A.id).execute();
+    await setDoc({ ...base(), neighbours: { on: true, zoneIds: [nb], afterStep: 1 } });
+    return tripId;
+  }
+
+  it("a closer neighbour-zone driver vs a farther free in-zone driver: the in-zone driver gets the Exclusive", async () => {
+    const tripId = await withNeighbourA();
+    const res = await bonusPost(tripId, { amount: money(700), applyTo: "exclusive" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.B.id, radarTo: [] });
+    expect(await offersOf("A")).toHaveLength(0);
+  });
+
+  it("Radar list: in-zone drivers only while one is free", async () => {
+    const tripId = await withNeighbourA();
+    const res = await bonusPost(tripId, { amount: money(700), applyTo: "radar" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [drivers.B.id] });
+  });
+
+  it("no in-zone driver free: the neighbour-zone driver gets the Exclusive", async () => {
+    const tripId = await withNeighbourA();
+    await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", drivers.B.id).execute();
+    const res = await bonusPost(tripId, { amount: money(700), applyTo: "exclusive" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().moneySend).toEqual({ exclusiveTo: drivers.A.id, radarTo: [] });
+  });
+
+  it("a driver beyond limits.maxPickupKm is not offered", async () => {
+    await database.db.updateTable("drivers").set({ zone_ids: ["Z001", "FR-PC"] }).where("driver_id", "in", [drivers.A.id, drivers.B.id]).execute();
+    await setDoc(base());
+    const { tripId, auto } = await bookWithAutoOffer(c);
+    await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();
+    await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", drivers.A.id).execute();
+    await setDoc({ ...base(), limits: { maxPickupKm: 0.2 } });
+    const res = await bonusPost(tripId, { amount: money(700), applyTo: "both" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [] });
+    expect(await offersOf("B")).toHaveLength(0);
+  });
+});

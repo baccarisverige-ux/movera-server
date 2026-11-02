@@ -185,3 +185,85 @@ describe("automatic dispatch at run time", () => {
     expect(opsPause.json()).toMatchObject({ paused: true, version: 4 });
   });
 });
+
+describe("v0.18.9 dispatch start: both at the same time (owner 2026-11-01)", () => {
+  it("Exclusive to the best driver and Radar to the next ones at once; the first accept wins and the others are withdrawn", async () => {
+    // The test above leaves the zone paused: back to the rules.
+    await database.db.deleteFrom("dispatch_controls").where("zone_id", "=", "Z001").execute();
+    const both = { ...sample("dispatch_document"), start: { mode: "both", nearKm: 2 } };
+    await database.db.updateTable("config_live").set({ document: JSON.stringify(both) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
+    try {
+      const tripId = await book();
+      // Ranked by score (the earlier tests changed acceptance): one Exclusive to the best, Radar to the two others.
+      const all = { A: await openOffers("A"), B: await openOffers("B"), C: await openOffers("C") };
+      const keys = ["A", "B", "C"] as const;
+      const exKey = keys.find((k) => all[k][0]?.kind === "exclusive")!;
+      expect(exKey).toBeDefined();
+      const radarKeys = keys.filter((k) => k !== exKey);
+      for (const k of keys) expect(all[k]).toHaveLength(1);
+      const [rk, other] = radarKeys as ["A" | "B" | "C", "A" | "B" | "C"];
+      const rb = all[rk][0];
+      expect(rb).toMatchObject({ tripId, kind: "radar" });
+      expect(all[other][0]).toMatchObject({ tripId, kind: "radar", groupId: rb.groupId });
+      const accepted = await call(app, "POST", `/offers/${rb.offerId}/accept`, drivers[rk].headers, { expectedVersion: rb.version });
+      expect(accepted.statusCode).toBe(200);
+      expect(await openOffers(exKey)).toEqual([]);
+      expect(await openOffers(other)).toEqual([]);
+      const statuses = await database.db.selectFrom("offers").select(["driver_id", "status"]).where("trip_id", "=", tripId).execute();
+      expect(statuses.find((o) => o.driver_id === drivers[exKey].id)?.status).toBe("claimed_elsewhere");
+      expect(statuses.find((o) => o.driver_id === drivers[other].id)?.status).toBe("claimed_elsewhere");
+    } finally {
+      await database.db.updateTable("config_live").set({ document: JSON.stringify(sample("dispatch_document")) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
+    }
+  });
+
+  it("both: when the Exclusive driver accepts, the Radar offers are withdrawn (claimed_elsewhere)", async () => {
+    await database.db.deleteFrom("dispatch_controls").where("zone_id", "=", "Z001").execute();
+    const both = { ...sample("dispatch_document"), start: { mode: "both", nearKm: 2 } };
+    await database.db.updateTable("config_live").set({ document: JSON.stringify(both) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
+    try {
+      const tripId = await book();
+      const keys = ["A", "B", "C"] as const;
+      const all = { A: await openOffers("A"), B: await openOffers("B"), C: await openOffers("C") };
+      const exKey = keys.find((k) => all[k][0]?.kind === "exclusive")!;
+      expect(exKey).toBeDefined();
+      const radarKeys = keys.filter((k) => k !== exKey);
+      for (const k of radarKeys) expect(all[k][0]).toMatchObject({ tripId, kind: "radar" });
+      const ex = all[exKey][0];
+      const accepted = await call(app, "POST", `/offers/${ex.offerId}/accept`, drivers[exKey].headers, { expectedVersion: ex.version });
+      expect(accepted.statusCode).toBe(200);
+      for (const k of radarKeys) expect(await openOffers(k)).toEqual([]);
+      const statuses = await database.db.selectFrom("offers").select(["driver_id", "status"]).where("trip_id", "=", tripId).execute();
+      for (const k of radarKeys) expect(statuses.find((o) => o.driver_id === drivers[k].id)?.status).toBe("claimed_elsewhere");
+      expect((await tripOf(tripId)).status).not.toBe("searching");
+    } finally {
+      await database.db.updateTable("config_live").set({ document: JSON.stringify(sample("dispatch_document")) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
+    }
+  });
+});
+
+describe("v0.18.9 neighbour zones stay inside one country and currency", () => {
+  it.each([
+    ["SE", "SEK", true],
+    ["FR", "EUR", false],
+  ])("a SE zone borrows a %s/%s neighbour's driver: %s", async (country, currency, offered) => {
+    await database.db.deleteFrom("dispatch_controls").where("zone_id", "=", "Z001").execute();
+    await database.db.deleteFrom("zones").where("zone_id", "=", "ZNB").execute();
+    await database.db
+      .insertInto("zones")
+      .values({ zone_id: "ZNB", name: "Neighbour", country, currency, time_zone: country === "FR" ? "Europe/Paris" : "Europe/Stockholm", kind: "operating", center_lat: 59.33, center_lng: 18.06, open: false, south: 59.2, west: 17.9, north: 59.5, east: 18.3, names: JSON.stringify({ sv: "Granne", fr: "Voisin", en: "Neighbour" }), polygon: JSON.stringify([[59.2, 17.9], [59.5, 17.9], [59.5, 18.3], [59.2, 18.3]]) } as never)
+      .execute();
+    await database.db.updateTable("drivers").set({ zone_ids: ["ZNB"] }).where("driver_id", "=", drivers.C.id).execute();
+    const doc = { ...sample("dispatch_document"), start: { mode: "radar" }, neighbours: { on: true, zoneIds: ["ZNB"], afterStep: 1 } };
+    await database.db.updateTable("config_live").set({ document: JSON.stringify(doc) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
+    try {
+      const tripId = await book();
+      expect((await openOffers("A"))[0]).toMatchObject({ tripId, kind: "radar" });
+      expect((await openOffers("C")).length > 0).toBe(offered);
+    } finally {
+      await database.db.updateTable("drivers").set({ zone_ids: ["Z001", "Z002"] }).where("driver_id", "=", drivers.C.id).execute();
+      await database.db.updateTable("config_live").set({ document: JSON.stringify(sample("dispatch_document")) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
+      await database.db.deleteFrom("zones").where("zone_id", "=", "ZNB").execute();
+    }
+  });
+});
