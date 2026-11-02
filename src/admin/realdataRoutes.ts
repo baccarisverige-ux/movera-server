@@ -58,7 +58,7 @@ const DESK_BODIES = {
 } as const;
 const SupportCountry = z.enum(SUPPORT_COUNTRIES as [string, ...string[]]);
 const TopicSettingBody = z.object({ code: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), on: z.boolean(), firstReplyMin: z.number().int().min(1).max(10080), solveHours: z.number().int().min(1).max(720) });
-const SupportSettingsBody = z.object({ country: SupportCountry, claimDays: z.number().int().min(1).max(30), replyAfterSolved: z.enum(["reopen", "blocked"]), topics: z.array(TopicSettingBody).min(1).max(20) }).passthrough();
+const SupportSettingsBody = z.object({ country: SupportCountry, claimDays: z.number().int().min(1).max(30), topics: z.array(TopicSettingBody).min(1).max(20) }).passthrough();
 /* v0.18.15 alerts full flow (contract.json#alertDesk) */
 const ALERT_ID = z.string().regex(/^[A-Za-z0-9_:.-]{1,200}$/);
 const KIND = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);

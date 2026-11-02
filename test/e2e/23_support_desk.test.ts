@@ -68,16 +68,14 @@ describe("person replies chat-style (QO-1) and sees only the agent's first name 
     expect(JSON.stringify(seen)).not.toContain("@");
   });
 
-  it("a solved ticket reopens on a reply by default, and refuses when the setting says blocked", async () => {
+  it("owner: a solved ticket takes no more messages (ticket_solved); the person opens a new one", async () => {
     const id = await open();
     await agent.post(`/admin/tickets/${id}/solve`, { note: "private" });
-    expect((await rider.post(`/support/tickets/${id}/messages`, { text: "Still wrong" })).body["status"]).toBe("open");
-    const settings = (await owner.get("/admin/support/settings?country=SE")).body;
-    expect((await owner.put("/admin/support/settings", { ...settings, replyAfterSolved: "blocked" })).status).toBe(200);
-    await agent.post(`/admin/tickets/${id}/solve`, {});
-    const blocked = await rider.post(`/support/tickets/${id}/messages`, { text: "x" });
-    expect(blocked.body["reason"]).toBe("ticket_solved");
-    await owner.put("/admin/support/settings", { ...settings, replyAfterSolved: "reopen" });
+    const refused = await rider.post(`/support/tickets/${id}/messages`, { text: "Still wrong" });
+    expect(refused.status).toBe(409);
+    expect(refused.body["reason"]).toBe("ticket_solved");
+    expect((await rider.get(`/support/tickets/${id}`)).body["status"]).toBe("resolved");
+    expect((await open()).length).toBeGreaterThan(0);
   });
 });
 
@@ -137,7 +135,8 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
     const audited = async () => (await sim.db.selectFrom("admin_audit").select("action").where("action", "=", "support.settings").execute()).length;
     const auditBefore = await audited();
     const se = await owner.get("/admin/support/settings?country=SE");
-    expect(se.body).toMatchObject({ country: "SE", claimDays: 3, replyAfterSolved: "reopen" });
+    expect(se.body).toMatchObject({ country: "SE", claimDays: 3 });
+    expect(se.body).not.toHaveProperty("replyAfterSolved");
     expect(se.body["topics"].map((t: Json) => t["code"])).toEqual(["ride_dispute", "help", "lost_item", "payment", "account", "safety", "other"]);
     const fr = await owner.get("/admin/support/settings?country=FR");
     expect(fr.body["country"]).toBe("FR");

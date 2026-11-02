@@ -405,9 +405,9 @@ S["EmptyCommand"] = S.get("EmptyCommand") or obj({}, (), "No fields.")
 S["SupportTopicSetting"] = obj({"code": s(enum=C["support"]["categories"]), "on": b(), "firstReplyMin": i(minimum=1, maximum=10080), "solveHours": i(minimum=1, maximum=720)},
                                ["code", "on", "firstReplyMin", "solveHours"])
 S["SupportSettings"] = obj({"country": s(enum=SD["settings"]["countries"]), "claimDays": i(minimum=1, maximum=30),
-                            "replyAfterSolved": s(enum=["reopen", "blocked"]), "topics": arr(ref("SupportTopicSetting"), minItems=1),
+                            "topics": arr(ref("SupportTopicSetting"), minItems=1),
                             "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")},
-                           ["country", "claimDays", "replyAfterSolved", "topics"], "v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).")
+                           ["country", "claimDays", "topics"], "v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).")
 AD = C["alertDesk"]
 S["AlertEvent"] = obj({"at": ref("Timestamp"), "by": ref("Id"), "byName": s(), "toName": s(), "kind": s(enum=["take", "done", "snooze", "pass", "reopen"]), "text": s(maxLength=500), "to": ref("Id")}, ["at", "by", "kind", "text"])
 S["AlertRecord"] = obj({"alertId": s(pattern="^[A-Za-z0-9_:.-]{1,200}$"), "kind": s(pattern="^[a-z][a-z0-9_]{0,63}$"), "level": s(enum=["critical", "important", "info"]),
@@ -1688,7 +1688,7 @@ op("post", "/admin/tickets/{ticketId}/reply", "adminReplyTicket", "Answer a supp
 # v0.18.15 support desk (contract.json#supportDesk)
 op("post", "/support/tickets/{ticketId}/messages", "writeOwnTicket", "Write on an own support ticket", ["rider", "driver"], "Support",
    params=[pref("TicketId")], body="TicketPersonMessage", ok=(201, "SupportTicket"), mutation=True,
-   desc="v0.18.15 (owner QO-1, chat-style): the status becomes open. 409 invalid_transition, reason ticket_closed; reason ticket_solved when SupportSettings.replyAfterSolved is blocked.")
+   desc="v0.18.15 (owner QO-1, chat-style): the status becomes open. A solved or closed ticket takes no more messages (owner: \"Can't write\"): 409 invalid_transition, reason ticket_solved or ticket_closed.")
 op("get", "/support/topics", "listSupportTopics", "Ticket topics that are on", ["rider", "driver"], "Support", ok=(200, "SupportTopics"), desc="v0.18.15 (owner QO-4).")
 for verb, body, summary, d in [("claim", "EmptyCommand", "Claim a ticket", SD["adminCommands"]["claim"]), ("assign", "TicketAssignCommand", "Assign a ticket", SD["adminCommands"]["assign"]),
                                ("topic", "TicketTopicCommand", "Change a ticket's topic", SD["adminCommands"]["topic"]), ("waiting", "TicketWaitingCommand", "Mark waiting for the person", SD["adminCommands"]["waiting"]),

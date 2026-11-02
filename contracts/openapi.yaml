@@ -5667,8 +5667,8 @@ paths:
     post:
       operationId: writeOwnTicket
       summary: Write on an own support ticket
-      description: 'v0.18.15 (owner QO-1, chat-style): the status becomes open. 409 invalid_transition, reason ticket_closed;
-        reason ticket_solved when SupportSettings.replyAfterSolved is blocked.'
+      description: 'v0.18.15 (owner QO-1, chat-style): the status becomes open. A solved or closed ticket takes no more messages
+        (owner: "Can''t write"): 409 invalid_transition, reason ticket_solved or ticket_closed.'
       tags:
       - Support
       x-actor:
@@ -17725,7 +17725,6 @@ components:
       required:
       - country
       - claimDays
-      - replyAfterSolved
       - topics
       properties:
         country:
@@ -17738,11 +17737,6 @@ components:
           type: integer
           minimum: 1
           maximum: 30
-        replyAfterSolved:
-          type: string
-          enum:
-          - reopen
-          - blocked
         topics:
           type: array
           items:

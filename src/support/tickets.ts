@@ -155,12 +155,10 @@ export async function writeOwnTicket(trx: Trx, who: Who, ticketId: string, text:
   const row = await trx.selectFrom("support_tickets").selectAll().where("ticket_id", "=", ticketId).where(ownColumn(who), "=", who.subjectId).where((eb) => eb.or([eb("opened_by", "!=", "admin"), eb("visible_to_person", "=", true)])).forUpdate().executeTakeFirst();
   if (row === undefined) throw notFound("No such ticket.", "ticket_not_found");
   if (row.status === "closed") throw new ApiError("invalid_transition", "This ticket is closed.", { reason: "ticket_closed" });
-  if (row.status === "resolved") {
-    const s = await desk.settingsOf(trx, await desk.countryOfZone(trx, row.zone_id));
-    if (s.replyAfterSolved === "blocked") throw new ApiError("invalid_transition", "This ticket is solved.", { reason: "ticket_solved" });
-  }
+  // Owner 2026-11-02 "Can't write": a solved ticket takes no more messages; the person opens a new ticket.
+  if (row.status === "resolved") throw new ApiError("invalid_transition", "This ticket is solved. Open a new ticket.", { reason: "ticket_solved" });
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text, at: now }).execute();
-  await trx.updateTable("support_tickets").set({ status: "open", ...(row.status === "resolved" ? { solved_by: null, solved_at: null } : {}), updated_at: now, last_message_at: now }).where("ticket_id", "=", ticketId).execute();
+  await trx.updateTable("support_tickets").set({ status: "open", updated_at: now, last_message_at: now }).where("ticket_id", "=", ticketId).execute();
   return ownTicket(trx, who, ticketId);
 }
 

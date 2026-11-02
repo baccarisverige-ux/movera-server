@@ -13,17 +13,17 @@ import { openIncident, openOf } from "../safety/incidents.js";
  */
 
 type TopicSetting = { code: string; on: boolean; firstReplyMin: number; solveHours: number };
-export type SupportSettings = { country: string; claimDays: number; replyAfterSolved: "reopen" | "blocked"; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
+export type SupportSettings = { country: string; claimDays: number; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
 
 const DESK = (contract as unknown as {
-  supportDesk: { settings: { countries: string[]; defaults: { claimDays: number; replyAfterSolved: "reopen" | "blocked"; topics: TopicSetting[] } }; caseIncidentKind: string };
+  supportDesk: { settings: { countries: string[]; defaults: { claimDays: number; topics: TopicSetting[] } }; caseIncidentKind: string };
 }).supportDesk;
 export const SUPPORT_COUNTRIES: readonly string[] = DESK.settings.countries;
 const CATEGORIES: readonly string[] = (contract as unknown as { support: { categories: string[] } }).support.categories;
 
 export function defaultSettings(country: string): SupportSettings {
   const d = DESK.settings.defaults;
-  return { country, claimDays: d.claimDays, replyAfterSolved: d.replyAfterSolved, topics: d.topics.map((t) => ({ ...t })) };
+  return { country, claimDays: d.claimDays, topics: d.topics.map((t) => ({ ...t })) };
 }
 
 /** A saved document over the defaults: every contract topic once, in the contract order. */
@@ -34,7 +34,6 @@ function merged(country: string, doc: unknown, updatedAt?: Date, updatedBy?: str
   return {
     country,
     claimDays: typeof raw.claimDays === "number" ? raw.claimDays : base.claimDays,
-    replyAfterSolved: raw.replyAfterSolved === "blocked" ? "blocked" : base.replyAfterSolved,
     topics: base.topics.map((t) => ({ ...t, ...(saved.get(t.code) ?? {}), code: t.code })),
     ...(updatedAt ? { updatedAt: updatedAt.toISOString() } : {}),
     ...(updatedBy ? { updatedBy } : {}),
@@ -65,7 +64,7 @@ export async function adminGetSettings(ex: Executor, country: string): Promise<S
   return settingsOf(ex, country);
 }
 
-export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; claimDays: number; replyAfterSolved: "reopen" | "blocked"; topics: TopicSetting[] }, now: Date): Promise<SupportSettings> {
+export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; claimDays: number; topics: TopicSetting[] }, now: Date): Promise<SupportSettings> {
   if (!(await coversCountry(trx, who, body.country))) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
   const codes = body.topics.map((t) => t.code);
   if (new Set(codes).size !== codes.length || codes.some((c) => !CATEGORIES.includes(c)) || codes.length !== CATEGORIES.length) {
@@ -73,13 +72,13 @@ export async function adminPutSettings(trx: Trx, who: Principal, body: { country
   }
   if (!body.topics.some((t) => t.on)) throw badRequest("At least one topic must be on.", "topics_required");
   const before = await settingsOf(trx, body.country);
-  const doc = { claimDays: body.claimDays, replyAfterSolved: body.replyAfterSolved, topics: body.topics.map(({ code, on, firstReplyMin, solveHours }) => ({ code, on, firstReplyMin, solveHours })) };
+  const doc = { claimDays: body.claimDays, topics: body.topics.map(({ code, on, firstReplyMin, solveHours }) => ({ code, on, firstReplyMin, solveHours })) };
   await trx
     .insertInto("support_settings")
     .values({ country: body.country, doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId })
     .onConflict((oc) => oc.column("country").doUpdateSet({ doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId }))
     .execute();
-  await audit(trx, { adminId: who.subjectId, action: "support.settings", targetType: "support_settings", targetId: body.country, detail: { before: { claimDays: before.claimDays, replyAfterSolved: before.replyAfterSolved, topics: before.topics }, after: doc }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "support.settings", targetType: "support_settings", targetId: body.country, detail: { before: { claimDays: before.claimDays, topics: before.topics }, after: doc }, at: now });
   return settingsOf(trx, body.country);
 }
 
