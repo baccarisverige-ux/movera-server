@@ -176,6 +176,47 @@ describe.each(Object.entries(CASES))("admin money per kind of offer, sent at onc
     expect(next).toMatchObject({ tripId, driverBonus: money(800), priority: false });
   });
 
+  it("live G8 8: Radar money with nobody free waits on the ride; an automatic exclusive offer does not carry it, the next radar offer does", async () => {
+    const { tripId, auto } = await bookWithAutoOffer(c);
+    await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();
+    await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "in", [drivers.A.id, drivers.B.id]).execute();
+    await database.db.updateTable("trips").set({ status: "searching" }).where("trip_id", "=", tripId).execute();
+    const res = await bonusPost(tripId, { amount: money(800), priority: true, applyTo: "radar" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().moneySend).toEqual({ exclusiveTo: null, radarTo: [] });
+    // The admin sees where the money waits: on the radar side, with its badge, nothing on the exclusive side.
+    expect(res.json().driverBonusByKind).toEqual({ exclusive: { ...money(0), priority: false }, radar: { ...money(800), priority: true } });
+    // A driver comes online: the automatic first offer is exclusive (money per kind: the radar money is not on it).
+    await placeDrivers(c);
+    clock.now = new Date(clock.now.getTime() + 60_000);
+    await worker.runDue();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const seen: any[] = [];
+    for (let round = 0; round < 20 && !seen.some((o) => o.kind === "radar"); round++) {
+      for (const key of ["A", "B"] as const) {
+        for (const offer of await offersOf(key)) {
+          if (offer.tripId !== tripId || seen.some((o) => o.offerId === offer.offerId && o.version === offer.version)) continue;
+          seen.push(offer);
+          if (offer.kind !== "radar") {
+            expect(offer.driverBonus, `exclusive ${offer.offerId}`).toBeUndefined();
+            expect(offer.priority).toBe(false);
+            // He lets it go: the dispatch moves on.
+            expect((await call(app, "POST", `/offers/${offer.offerId}/decline`, drivers[key].headers, { expectedVersion: offer.version })).statusCode).toBe(200);
+          }
+        }
+      }
+      // Their phones keep sending positions while they wait.
+      await placeDrivers(c);
+      clock.now = new Date(clock.now.getTime() + 20_000);
+      await worker.runDue();
+    }
+    const radar = seen.find((o) => o.kind === "radar");
+    expect(radar, JSON.stringify(seen.map((o) => o.kind))).toBeDefined();
+    expect(radar).toMatchObject({ tripId, driverBonus: money(800), priority: true });
+    // Still waiting for the radar until someone takes it.
+    expect((await adminView(tripId)).driverBonusByKind.radar).toEqual({ ...money(800), priority: true });
+  });
+
   it("Add money without priority: the offer sent at once has no Priority badge", async () => {
     const { tripId, auto } = await bookWithAutoOffer(c);
     await database.db.updateTable("offers").set({ status: "withdrawn" }).where("offer_id", "=", auto.offerId).execute();

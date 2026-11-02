@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { withPaymentOptions } from "../trips/finish.js";
+import { tipAmountsFor, tipRulesOf, withPaymentOptions } from "../trips/finish.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { streamConfig } from "../realtime/streams.js";
 import { z } from "zod";
@@ -69,7 +69,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const who = await authenticate(request, guard, [actor]);
     const { zoneId: asked } = parseBody(OptionalZoneQuery, request.query);
     const zoneId = asked ?? (actor === "driver" ? who.zones[0] : undefined) ?? deps.defaultZoneId;
-    await getZone(deps.db, zoneId);
+    const zone = await getZone(deps.db, zoneId);
     const live = await liveDocument(deps.db, doc, zoneId);
     if (live === null) throw new ApiError("not_found", "No settings are published for this zone yet.", { reason: "config_not_published" });
     // v0.18.6 (owner G4-E4): the rider app always gets the raise limit the server checks (the zone's dispatch document).
@@ -80,6 +80,12 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     document = await withLivePricing(deps.db, doc, zoneId, document);
     // v0.18.10 (contract.json#finish.paymentMethods.served): the admin's methods (never google_pay) and what the server takes.
     document = withPaymentOptions(document, deps.paymentMethods ?? ["cash"]);
+    // Live G8 5a: tip rules saved without every field (no customMax) are served whole, with the defaults the server checks
+    // (SE 200 kr / FR 20 €), so the rider app shows "Other amount" when the admin allows it.
+    if (doc === "rider_app_config" && document["tipRules"] && typeof document["tipRules"] === "object") {
+      // The same rules (and presets) as POST /trips/{id}/tip checks.
+      document = { ...document, tipRules: tipRulesOf(document, zone.country, zone.currency, await tipAmountsFor(deps.db, zoneId, zone.currency)) };
+    }
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);
   };
