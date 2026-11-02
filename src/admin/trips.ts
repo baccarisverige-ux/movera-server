@@ -464,7 +464,7 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
     const debt = trip.status === "completed" ? (((trip.fare_lines as Array<{ code: string; amount: Money }>) ?? []).filter((l) => l.code === "outstanding_fee").reduce((sum, l) => sum + l.amount.amountMinor, 0)) : 0;
     const fare = Number(trip.fare_minor) - debt;
     // Checker (7): never more than the driver still has on this trip (his one number never goes below 0).
-    const share = Math.min(driverTotalOf(trip), fare > 0 ? Math.round((p.amount.amountMinor * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0);
+    const share = Math.min(driverTotalOf(trip), fare > 0 ? Math.round((Math.min(p.amount.amountMinor, fare) * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0);
     if (share > 0) {
       await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
       // v0.18.10 (contract.json#finish.driverMoney): the driver's one number on the trip moves with it.

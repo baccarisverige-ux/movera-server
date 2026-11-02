@@ -48,7 +48,17 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
     route: request.url.split("?")[0]!.replace(`${API_PREFIX}/rides/`, `${API_PREFIX}/trips/`),
     body: request.body ?? null,
   });
-  const tripId = (request: FastifyRequest) => parseBody(z.object({ tripId: ID }), request.params).tripId;
+  /** True when an X-Contract-Version header is at least `min` (missing or bad: false = an older app). */
+  function contractAtLeast(header: unknown, min: string): boolean {
+  const value = Array.isArray(header) ? header[0] : header;
+  if (typeof value !== "string" || !/^\d+\.\d+\.\d+$/.test(value.trim())) return false;
+  const a = value.trim().split(".").map(Number);
+  const b = min.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (a[i]! !== b[i]!) return a[i]! > b[i]!;
+  return true;
+}
+
+const tripId = (request: FastifyRequest) => parseBody(z.object({ tripId: ID }), request.params).tripId;
 
   for (const [path, command] of Object.entries(STEPS)) {
     app.post(`${API_PREFIX}/trips/:tripId/${path}`, async (request) => {
@@ -66,7 +76,9 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
         // A right PIN bumped the version (L5): the step goes on from the version the driver saw + that bump.
         if (checked?.bumped && checked.version === body.expectedVersion + 1) expected = checked.version;
       }
-      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, expected, now(), body.location), "driver") }))).body;
+      // Checker MED 11: a driver app before 0.18.14 (no measuredAt on its positions) keeps the old arrive check.
+      const legacy = !contractAtLeast(request.headers["x-contract-version"], "0.18.14");
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, expected, now(), body.location, { legacyPosition: legacy }), "driver") }))).body;
     });
   }
 

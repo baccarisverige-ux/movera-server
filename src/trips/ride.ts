@@ -577,7 +577,7 @@ type StepCommand = "head_to_pickup" | "arrive" | "board" | "start_trip";
 /** A fresh 4-digit rider PIN (contract.json#arrivedWaiting.pin). */
 export const newPin = () => String(randomInt(0, 10_000)).padStart(4, "0");
 
-export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place): Promise<TripRow> {
+export async function driverStep(trx: Trx, driverId: string, tripId: string, command: StepCommand, expectedVersion: number, now: Date, location?: Place, options: { legacyPosition?: boolean } = {}): Promise<TripRow> {
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, expectedVersion, "driver");
   if (command === "arrive") {
@@ -585,8 +585,8 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
       // Deep fix 2026-11-02 (MED stale / fake GPS for arrive): a position counts only while it is at most the zone's
       // DriverAppConfig.waiting.positionMaxAgeSeconds old (default 60): the one sent with the step when it says when it
       // was measured, else the server's latest fix. An old one is 409 position_stale (turn on location).
-      const maxAge = await positionMaxAge(trx, trip.zone_id);
-      const fresh = (at: unknown) => typeof at === "string" || at instanceof Date ? Math.abs(now.getTime() - new Date(at).getTime()) <= maxAge * 1000 : false;
+      const maxAge = options.legacyPosition ? Number.POSITIVE_INFINITY : await positionMaxAge(trx, trip.zone_id);
+      const fresh = (at: unknown) => options.legacyPosition || (typeof at === "string" || at instanceof Date ? Math.abs(now.getTime() - new Date(at).getTime()) <= maxAge * 1000 : false);
       const sent = location && fresh((location as Place & { measuredAt?: string }).measuredAt) ? location : null;
       const stored = sent ? undefined : await trx.selectFrom("driver_locations").select(["lat", "lng", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
       const here = sent ?? (stored && fresh(stored.measured_at) ? stored : null);

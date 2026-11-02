@@ -6,6 +6,7 @@ import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { etaHandler, startEta } from "../trips/eta.js";
 import { EstimateRouter } from "../maps/routing.js";
 import { sql } from "kysely";
+import { documentsExpiredFor } from "../drivers/reminders.js";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent, lockTrip, OFFER_EVENTS_CHANNEL, type TripRow } from "../db/tripLog.js";
 import { ApiError } from "../http/errors.js";
@@ -167,15 +168,12 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, n
     .selectFrom("drivers")
     .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
     .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
-    .select(["drivers.driver_id", "drivers.online_status", "drivers.category_ids", "drivers.zone_ids", "drivers.rating_sum", "drivers.rating_count", "drivers.last_free_at", "driver_locations.lat", "driver_locations.lng", "vehicles.category_ids as vehicle_category_ids", "vehicles.status as vehicle_status"])
+    .select(["drivers.driver_id", "drivers.online_status", "drivers.category_ids", "drivers.zone_ids", "drivers.rating_sum", "drivers.rating_count", "drivers.last_free_at", "driver_locations.lat", "driver_locations.lng", "vehicles.category_ids as vehicle_category_ids", "vehicles.status as vehicle_status", "drivers.country", "drivers.account_type", "drivers.vehicle_id"])
     .where("drivers.account_status", "=", "active")
     .where("drivers.online_status", "in", ["online", "on_trip"])
     .where(inZones)
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
     .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
-    // Deep fix 2026-11-02 (g1-g3 H1): a driver with a document past its end date gets no offer, even before the
-    // hourly sweep sets him offline (an approved document whose expires_at passed, or one already marked expired).
-    .where(({ not, exists, selectFrom }) => not(exists(selectFrom("documents").select("documents.document_id").whereRef("documents.driver_id", "=", "drivers.driver_id").where((eb) => eb.or([eb("documents.status", "=", "expired"), eb.and([eb("documents.status", "=", "approved"), eb("documents.expires_at", "<=", now)])])))))
     .execute();
   const pool: Pool = { candidates: [], meta: new Map() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
@@ -190,7 +188,9 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, n
     if (!d.category_ids.includes(trip.category_id)) continue;
     // Deep fix 2026-11-02 (live sweep H-2, g1-g3 M5): the car he drives must be approved for the trip's category too
     // (a Komfort trip needs a Komfort car; a car re-approved without Premium no longer gets Premium trips).
-    if (d.vehicle_status !== null && (d.vehicle_status !== "approved" || !(d.vehicle_category_ids ?? []).includes(trip.category_id))) continue;
+    // Checker MED 9: an approved car with no categories stored (older rows) does not narrow his own chosen types.
+    const carTypes = d.vehicle_category_ids ?? [];
+    if (d.vehicle_status !== null && (d.vehicle_status !== "approved" || (carTypes.length > 0 && !carTypes.includes(trip.category_id)))) continue;
     // A free driver holds at most one open Exclusive; one with a rider at most exclusiveWhileDriving.count (§3.6).
     const open = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).executeTakeFirstOrThrow();
     const active = await trx.selectFrom("trips").select(["trip_id", "status", "dropoff"]).where("driver_id", "=", d.driver_id).where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).executeTakeFirst();
@@ -200,6 +200,9 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, n
     if (Number(open.n) >= 1) continue;
     const radarOpen = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "=", "radar").executeTakeFirstOrThrow();
     if (Number(radarOpen.n) >= RADAR_LIST_MAX) continue;
+    // Deep fix 2026-11-02 (g1-g3 H1, checker MED 8): no offer while one of his REQUIRED papers, or of the car he drives,
+    // is past its end date — the very rule of the offline sweep (expiredBlockers + the car's expired papers).
+    if (await documentsExpiredFor(trx, d, now)) continue;
     // v0.18.13 (contract.json#drivingLimits.enforced): no new offers after the driving-time limit.
     if (await drivingLimitReached(trx, d.driver_id, now)) continue;
     const here = { lat: d.lat, lng: d.lng };

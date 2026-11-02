@@ -664,7 +664,16 @@ describe("deep fix 2026-11-02: what was earned before an early end stays; the ca
 });
 
 describe("deep fix 2026-11-02: dispatch checks the driver's papers and his car's ride types; his list shows his car", () => {
-  it("a document past its end date (sweep not run yet) → no offer (fail-before: offered)", async () => {
+  it("a REQUIRED document past its end date (sweep not run yet) → no offer; an optional one does not block (fail-before: offered)", async () => {
+    const was = await database.db.selectFrom("drivers").select("country").where("driver_id", "=", driverA.id).executeTakeFirstOrThrow();
+    await database.db.updateTable("drivers").set({ country: "SE" }).where("driver_id", "=", driverA.id).execute();
+    await database.db.insertInto("documents").values({ document_id: "doc_deep_opt", driver_id: driverA.id, owner_kind: "driver", owner_id: driverA.id, type: "not_a_required_type", status: "approved", expires_at: new Date(clock.now.getTime() - 60_000), created_at: clock.now, updated_at: clock.now }).execute();
+    const free = await book(NORRMALM, SODERMALM);
+    await worker.runDue();
+    expect((await call(app, "GET", "/driver/offers", driverA.headers)).json().items.length).toBeGreaterThan(0);
+    await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", free.json().tripId).execute();
+    await database.db.deleteFrom("offers").execute();
+    await database.db.deleteFrom("documents").where("document_id", "=", "doc_deep_opt").execute();
     await database.db.insertInto("documents").values({ document_id: "doc_deep_exp", driver_id: driverA.id, owner_kind: "driver", owner_id: driverA.id, type: "driving_license", status: "approved", expires_at: new Date(clock.now.getTime() - 60_000), created_at: clock.now, updated_at: clock.now }).execute();
     try {
       const res = await book(NORRMALM, SODERMALM);
@@ -673,6 +682,7 @@ describe("deep fix 2026-11-02: dispatch checks the driver's papers and his car's
       expect((await call(app, "GET", "/driver/offers", driverA.headers)).json().items).toHaveLength(0);
     } finally {
       await database.db.deleteFrom("documents").where("document_id", "=", "doc_deep_exp").execute();
+      await database.db.updateTable("drivers").set({ country: was.country }).where("driver_id", "=", driverA.id).execute();
     }
   });
 
@@ -716,17 +726,26 @@ describe("deep fix 2026-11-02: notices in the reader's current language; rider t
 });
 
 describe("deep fix 2026-11-02: arrive needs a fresh position; Paris route-change push", () => {
-  it("an old server fix → 409 position_stale; a fresh one sent with the step (measuredAt) works; positionMaxAgeSeconds per zone", async () => {
+  it("an old server fix → 409 position_stale (apps ≥ 0.18.14); positionMaxAgeSeconds per zone; an older app keeps the old check", async () => {
+    const NEW = { ...driverA.headers, "x-contract-version": "0.18.14" };
+    const stepNew = (tripId: string, path: string, version: number, body: Doc = {}) => call(app, "POST", `/trips/${tripId}/${path}`, NEW, { expectedVersion: version, ...body });
     const trip = await accepted();
     const go = await step(trip.tripId, "head-to-pickup", trip.version);
     await moveTo(NORRMALM);
     clock.now = new Date(clock.now.getTime() + 120_000);
-    const stale = await step(trip.tripId, "arrive", go.json().version);
+    const stale = await stepNew(trip.tripId, "arrive", go.json().version);
     expect(stale.json()).toMatchObject({ reason: "position_stale" });
-    const oldSent = await step(trip.tripId, "arrive", go.json().version, { location: { ...NORRMALM, accuracy: 5, measuredAt: new Date(clock.now.getTime() - 120_000).toISOString() } });
+    const oldSent = await stepNew(trip.tripId, "arrive", go.json().version, { location: { ...NORRMALM, accuracy: 5, measuredAt: new Date(clock.now.getTime() - 120_000).toISOString() } });
     expect(oldSent.json()).toMatchObject({ reason: "position_stale" });
+    // Fail-before for old apps (checker MED 11): no header → the old check, the same stale fix is fine.
+    const legacy = await step(trip.tripId, "arrive", go.json().version);
+    expect(legacy.statusCode, legacy.body).toBe(200);
+    const trip2 = await (async () => { await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", trip.tripId).execute(); await database.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", driverA.id).execute(); await moveTo(SPOT_A); return accepted(); })();
+    const go2 = await step(trip2.tripId, "head-to-pickup", trip2.version);
+    await moveTo(NORRMALM);
+    clock.now = new Date(clock.now.getTime() + 120_000);
     await publish("driver_app_config", "Z001", driverDoc({ waiting: { positionMaxAgeSeconds: 300 } }));
-    const longer = await step(trip.tripId, "arrive", go.json().version);
+    const longer = await stepNew(trip2.tripId, "arrive", go2.json().version);
     expect(longer.statusCode, longer.body).toBe(200);
   });
 
