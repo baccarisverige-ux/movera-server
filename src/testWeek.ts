@@ -37,7 +37,7 @@ export async function prepareTestWeek(
       const fleet = await trx.selectFrom("fleets").select("fleet_id").where("code", "=", TEST_FLEET_CODE).executeTakeFirst();
       if (fleet === undefined) {
         const made = await seedTestAccounts(trx, accounts, now);
-        log.info({ fleetId: made.fleetId, drivers: made.drivers.length, riders: made.riders.length }, "test accounts made (sign in with code 1234)");
+        log.info({ fleetId: made.fleetId, drivers: made.drivers.length, riders: made.riders.length }, "test accounts made (sign in with the fixed code of contract.json#auth.testSignIn)");
       } else if (await testDriversMissSomething(trx, accounts)) {
         // Accounts seeded by an earlier server worked one zone or a few categories only: give them every open zone
         // and every category (names, cars and documents are set again to the same values).

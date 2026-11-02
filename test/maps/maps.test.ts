@@ -21,7 +21,7 @@ let driver: Record<string, string>;
 
 async function signIn(server: FastifyInstance, phone: string, appName: "rider" | "driver") {
   const challenge = await server.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone, app: appName } });
-  const verify = await server.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: "1234" } });
+  const verify = await server.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: "123456" } });
   return { authorization: `Bearer ${verify.json().accessToken}` };
 }
 const post = (server: FastifyInstance, url: string, headers: Record<string, string>, payload: unknown) =>

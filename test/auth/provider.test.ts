@@ -60,7 +60,7 @@ describe("POST /auth/provider", () => {
     expect((await post(app, "/auth/otp/request", { phone: TEST_PHONES[1], app: "rider", linkToken })).json()).toMatchObject({ reason: "invalid_link_token" });
     const challenge = await post(app, "/auth/otp/request", { phone: TEST_PHONES[1], app: "driver", linkToken });
     expect(challenge.statusCode).toBe(200);
-    const verified = await post(app, "/auth/otp/verify", { phone: TEST_PHONES[1], sessionId: challenge.json().sessionId, code: "1234", linkToken });
+    const verified = await post(app, "/auth/otp/verify", { phone: TEST_PHONES[1], sessionId: challenge.json().sessionId, code: "123456", linkToken });
     expect(verified.statusCode).toBe(200);
     expect(verified.json()).toMatchObject({ actor: "driver", isNewDriver: true });
     // The new account carries the provider's names and e-mail for the details step.
@@ -84,7 +84,7 @@ describe("POST /auth/provider", () => {
     expect(first.json()).not.toHaveProperty("email");
     // TEST_PHONES[1] already has an account (Anna): linking g-2 to it keeps her name.
     const challenge = await post(app, "/auth/otp/request", { phone: TEST_PHONES[1], app: "driver", linkToken: first.json().linkToken });
-    const verified = await post(app, "/auth/otp/verify", { phone: TEST_PHONES[1], sessionId: challenge.json().sessionId, code: "1234", linkToken: first.json().linkToken });
+    const verified = await post(app, "/auth/otp/verify", { phone: TEST_PHONES[1], sessionId: challenge.json().sessionId, code: "123456", linkToken: first.json().linkToken });
     expect(verified.json()).toMatchObject({ isNewDriver: false });
     expect((await profile(verified.json().accessToken)).json()).toMatchObject({ firstName: "Anna", lastName: "Lind" });
     expect((await post(app, "/auth/provider", { provider: "google", idToken: "ok:g-2", app: "driver" })).json().accessToken).toBeDefined();

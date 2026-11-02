@@ -7,6 +7,7 @@ import { newId } from "../ids.js";
 import { signAccessToken, type Actor } from "./jwt.js";
 import { splitName, type Provider, type ProviderIdentity, type ProviderVerifier } from "./provider.js";
 import { attachInvitesToNewDriver } from "../drivers/invitations.js";
+import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -33,10 +34,26 @@ export const OTP = {
   expiresSeconds: AUTH.otp.expiresSeconds,
   retryAfterSeconds: AUTH.otp.retryAfterSeconds,
   maxAttempts: AUTH.otp.maxAttempts,
-  /** Codes started per phone and app in one hour, and per client address in one hour. */
+  /** Codes started per phone and app in one hour. */
   perPhonePerHour: 10,
-  perIpPerHour: 60,
 } as const;
+
+/** Wrong codes for this number in the last 24 h (both apps), and when the oldest of them leaves the window. */
+async function wrongCodesToday(ex: Executor, phone: string, now: Date): Promise<{ wrong: number; oldest: Date | null }> {
+  const dayAgo = new Date(now.getTime() - 24 * 3_600_000);
+  const row = await ex
+    .selectFrom("otp_sessions")
+    .select([sql<string>`coalesce(sum(attempts - (CASE WHEN verified THEN 1 ELSE 0 END)), 0)`.as("wrong"), sql<Date | null>`min(created_at) FILTER (WHERE attempts > (CASE WHEN verified THEN 1 ELSE 0 END))`.as("oldest")])
+    .where("phone", "=", phone)
+    .where("created_at", ">", dayAgo)
+    .executeTakeFirstOrThrow();
+  return { wrong: Number(row.wrong), oldest: row.oldest ? new Date(row.oldest) : null };
+}
+
+function lockedToday(oldest: Date | null, now: Date): ApiError {
+  const wait = oldest ? (oldest.getTime() + 24 * 3_600_000 - now.getTime()) / 1000 : 3600;
+  return rateLimited("Too many wrong codes for this number today. Try again later.", wait, "otp_locked_today");
+}
 export const ACCESS_TTL_SECONDS = AUTH.tokens.accessExpiresSeconds;
 export const REFRESH_TTL_MS = AUTH.tokens.refreshExpiresDays * 24 * 60 * 60 * 1000;
 export const TEST_CODE = AUTH.testSignIn.code;
@@ -119,6 +136,9 @@ export async function requestOtp(
       const oldest = recent[recent.length - 1]!;
       throw rateLimited("Too many codes for this number. Try again later.", (oldest.created_at.getTime() + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
     }
+    const limits = await countryLimitsFor(trx, countryOfPhone(input.phone));
+    const today = await wrongCodesToday(trx, input.phone, now);
+    if (today.wrong >= limits.wrongCodesPerDay) throw lockedToday(today.oldest, now);
     if (client.ip !== undefined) {
       const fromIp = await trx
         .selectFrom("otp_sessions")
@@ -126,7 +146,7 @@ export async function requestOtp(
         .where("ip", "=", client.ip)
         .where("created_at", ">", hourAgo)
         .executeTakeFirstOrThrow();
-      if (Number(fromIp.n) >= OTP.perIpPerHour) {
+      if (Number(fromIp.n) >= limits.codesPerAddressPerHour) {
         // The real wait: until the oldest code from this address leaves the hour window.
         const oldest = new Date(fromIp.oldest as Date | string).getTime();
         throw rateLimited("Too many sign-in attempts. Try again later.", (oldest + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
@@ -206,15 +226,20 @@ export async function verifyOtp(
     if (session.is_test && !deps.testSignInEnabled) {
       return { ok: false, error: badRequest("This sign-in is not active. Ask for a new code.", "invalid_otp_session") };
     }
+    // Deep fix 2026-11-02 (g1-g3 H2): a number with wrongCodesPerDay wrong codes in 24 h is locked, even with the right code.
+    const limits = await countryLimitsFor(trx, countryOfPhone(session.phone));
+    const today = await wrongCodesToday(trx, session.phone, now);
+    if (today.wrong >= limits.wrongCodesPerDay) return { ok: false, error: lockedToday(today.oldest, now) };
     if (!sameHash(session.code_sha256, codeHash(session.session_id, input.code))) {
       const attempts = session.attempts + 1;
       await trx.updateTable("otp_sessions").set({ attempts }).where("session_id", "=", session.session_id).execute();
+      if (today.wrong + 1 >= limits.wrongCodesPerDay) return { ok: false, error: lockedToday(today.oldest ?? session.created_at, now) };
       // v0.18.5 (G1-B3, owner "Fix it (Recommended)"): counted before the answer, so the wrong code that reaches
       // maxAttempts (the 5th) already says "Too many wrong tries".
       if (attempts >= session.max_attempts) return { ok: false, error: rateLimited("Too many wrong codes. Ask for a new code.", OTP.retryAfterSeconds, "otp_too_many_attempts") };
       return { ok: false, error: badRequest("That code is not right.", "invalid_otp_code") };
     }
-    await trx.updateTable("otp_sessions").set({ consumed_at: now, attempts: session.attempts + 1 }).where("session_id", "=", session.session_id).execute();
+    await trx.updateTable("otp_sessions").set({ consumed_at: now, attempts: session.attempts + 1, verified: true }).where("session_id", "=", session.session_id).execute();
 
     const link = input.linkToken !== undefined ? await loadLinkToken(trx, input.linkToken, session.app, now) : undefined;
     const account = await findOrCreateAccount(trx, session.app, session.phone, now);

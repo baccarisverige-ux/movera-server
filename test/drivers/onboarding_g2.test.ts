@@ -322,6 +322,21 @@ describe("items 1 and 3: expiry typed by the admin, warnings at 30 / 7 / 1 days,
   });
 });
 
+describe("deep fix 2026-11-02 (g1-g3 H1): a paper that expires during the shift takes the driver offline", () => {
+  it("SE: online with a valid licence; it expires → the sweep sets him offline with reason documents_expired and a notice (fail-before: stayed online)", async () => {
+    const who = "seMember" as const;
+    await database.db.updateTable("documents").set({ status: "approved", expires_at: new Date(clock.now.getTime() + 2 * DAY) }).where("owner_id", "=", ID[who]!).where("type", "=", "driving_license").execute();
+    const online = await goOnline(who);
+    expect(online.statusCode, online.body).toBe(200);
+    expect(online.json().onlineStatus).toBe("online");
+    await database.db.updateTable("documents").set({ expires_at: new Date(clock.now.getTime() - 1000) }).where("owner_id", "=", ID[who]!).where("type", "=", "driving_license").execute();
+    await sweepDocumentExpiry(database.db, clock.now);
+    expect(await me(who)).toMatchObject({ onlineStatus: "offline", offlineReason: "documents_expired" });
+    const notice = (await notices(who)).find((n) => n.kind === "set_offline");
+    expect(notice?.data).toMatchObject({ reason: "documents_expired" });
+  });
+});
+
 describe("decision 19: car documents are the fleet owner's; a member only picks a car", () => {
   for (const [country, owner, member, plate] of [["SE", "seOwner", "seMember", "SE 019"], ["FR", "frOwner", "frMember", "AA-019-FR"]] as const) {
     it(`${country}: the member gets 403 on car documents, sees none, and lists every car with whether he can pick it`, async () => {

@@ -44,28 +44,28 @@ describe("G1-B3: the 5th wrong code itself answers 'too many wrong tries'", () =
     it(`${label}: wrong codes 1–4 are 400, the 5th is 429 otp_too_many_attempts, and the right code after it too`, async () => {
       const challenge = (await post("/auth/otp/request", { phone, app: appName })).json();
       for (let i = 1; i < AUTH.otp.maxAttempts; i++) {
-        const wrong = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
+        const wrong = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "000000" });
         expect(wrong.statusCode, `wrong code ${i}`).toBe(400);
         expect(wrong.json()).toMatchObject({ reason: "invalid_otp_code" });
       }
-      const fifth = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
+      const fifth = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "000000" });
       expect(fifth.statusCode).toBe(429);
       expect(fifth.json()).toMatchObject({ code: "rate_limited", reason: "otp_too_many_attempts" });
-      const right = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "1234" });
+      const right = await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "123456" });
       expect(right.statusCode).toBe(429);
       expect(right.json()).toMatchObject({ reason: "otp_too_many_attempts" });
       // A new code starts a new session that works.
       advance(60);
       const again = (await post("/auth/otp/request", { phone, app: appName })).json();
-      expect((await post("/auth/otp/verify", { phone, sessionId: again.sessionId, code: "1234" })).statusCode).toBe(200);
+      expect((await post("/auth/otp/verify", { phone, sessionId: again.sessionId, code: "123456" })).statusCode).toBe(200);
     });
   }
 
   it("the 4th wrong code is still a normal 'wrong code' (no early lock)", async () => {
     const phone = TEST_PHONES[5]!;
     const challenge = (await post("/auth/otp/request", { phone, app: "rider" })).json();
-    for (let i = 0; i < 4; i++) await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "0000" });
-    expect((await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "1234" })).statusCode).toBe(200);
+    for (let i = 0; i < 4; i++) await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "000000" });
+    expect((await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "123456" })).statusCode).toBe(200);
   });
 });
 
@@ -77,12 +77,12 @@ describe("G1-D3 / G1-B6: why the app was signed out, and the retry window", () =
     seen.add((await post("/auth/refresh", { refreshToken: "rt_unknown" })).json().reason);
     const phone = TEST_PHONES[0]!;
     const challenge = (await post("/auth/otp/request", { phone, app: "rider" })).json();
-    const tokens = (await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "1234" })).json();
+    const tokens = (await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: "123456" })).json();
     const next = (await post("/auth/refresh", { refreshToken: tokens.refreshToken })).json();
     advance(REFRESH_RETRY_WINDOW_MS / 1000 + 1);
     seen.add((await post("/auth/refresh", { refreshToken: tokens.refreshToken })).json().reason);
     seen.add((await post("/auth/refresh", { refreshToken: next.refreshToken })).json().reason);
-    const other = (await post("/auth/otp/verify", { phone, sessionId: (await post("/auth/otp/request", { phone, app: "rider" })).json().sessionId, code: "1234" })).json();
+    const other = (await post("/auth/otp/verify", { phone, sessionId: (await post("/auth/otp/request", { phone, app: "rider" })).json().sessionId, code: "123456" })).json();
     advance((AUTH.tokens.refreshExpiresDays + 1) * 86400);
     seen.add((await post("/auth/refresh", { refreshToken: other.refreshToken })).json().reason);
     expect([...seen].sort()).toEqual(Object.keys(AUTH.signedOut.reasons).sort());

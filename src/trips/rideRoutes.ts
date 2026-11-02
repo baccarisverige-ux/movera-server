@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate } from "../auth/guard.js";
@@ -8,7 +9,7 @@ import { parseBody } from "../http/validate.js";
 import { ApiError } from "../http/errors.js";
 import { tripProjection } from "./projection.js";
 import { stopCommand } from "./stops.js";
-import { checkPin, contractAtLeast, riderPin, verifyPin } from "./pin.js";
+import { checkPin, riderPin, verifyPin } from "./pin.js";
 import { driverReceipt, giveTip, riderReceipt } from "./finish.js";
 import { completePreview, completeTrip, PriceChanged, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
 
@@ -26,7 +27,7 @@ const Money = z.object({ amountMinor: z.number().int().min(0), currency: z.strin
 const CompleteBody = Command.extend({ cashCollected: Money.optional(), previewId: ID.optional() });
 const NoShowBody = Command.extend({ reasonCode: z.string().optional() });
 const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional(), location: Fix.optional() });
-const EarningsQuery = z.object({ period: z.enum(["day", "week", "month"]).default("week"), from: z.string().datetime().optional(), to: z.string().datetime().optional() });
+const EarningsQuery = z.object({ period: z.enum(["day", "week", "month"]).default("week"), from: z.string().datetime().optional(), to: z.string().datetime().optional(), currency: z.string().regex(/^[A-Z]{3}$/).optional() });
 
 const STEPS = { "head-to-pickup": "head_to_pickup", arrive: "arrive", board: "board", start: "start_trip" } as const;
 
@@ -57,15 +58,15 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
       // v0.18.8: the PIN is checked (and a wrong try counted) in its own transaction before the step. Checker round 1 (M4):
       // a driver app older than contract 0.18.8 (no or a lower X-Contract-Version) has no PIN step: the check is skipped and logged.
       const pinStep = command === "board" || command === "start_trip";
-      const pinAware = contractAtLeast(request.headers["x-contract-version"]);
+      // Deep fix 2026-11-02 (g4-g6 M1): the PIN is never skipped by leaving out X-Contract-Version; a PIN trip without
+      // a verified PIN answers 409 pin_required whatever the client sends.
       let expected = body.expectedVersion;
-      if (pinStep && pinAware && body.pin !== undefined) {
+      if (pinStep && body.pin !== undefined) {
         const checked = await checkPin(deps.db, who.subjectId, id, body.pin, now());
         // A right PIN bumped the version (L5): the step goes on from the version the driver saw + that bump.
         if (checked?.bumped && checked.version === body.expectedVersion + 1) expected = checked.version;
       }
-      if (pinStep && !pinAware) request.log.info({ tripId: id, driverId: who.subjectId }, "pin check skipped: driver app before contract 0.18.8");
-      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, expected, now(), body.location, { skipPin: pinStep && !pinAware }), "driver") }))).body;
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, expected, now(), body.location), "driver") }))).body;
     });
   }
 
@@ -168,7 +169,10 @@ export async function rideRoutes(app: FastifyInstance, deps: RideDeps): Promise<
   app.get(`${API_PREFIX}/driver/earnings`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     const query = parseBody(EarningsQuery, request.query);
-    return driverEarnings(deps.db, who.subjectId, { period: query.period, ...(query.from ? { from: query.from } : {}), ...(query.to ? { to: query.to } : {}), timeZone: deps.timeZone, currency: deps.currency }, now());
+    // Deep fix 2026-11-02 (live sweep M-5 "€ mixed into kr"): one currency per report — the asked one, else the driver's
+    // own zone's — in that zone's clock.
+    const home = await deps.db.selectFrom("drivers").innerJoin("zones", (j) => j.on(sql<boolean>`zones.zone_id = drivers.zone_ids[1]`)).select(["zones.currency", "zones.time_zone"]).where("drivers.driver_id", "=", who.subjectId).executeTakeFirst();
+    return driverEarnings(deps.db, who.subjectId, { period: query.period, ...(query.from ? { from: query.from } : {}), ...(query.to ? { to: query.to } : {}), timeZone: home?.time_zone ?? deps.timeZone, currency: query.currency ?? home?.currency ?? deps.currency }, now());
   });
 }
 

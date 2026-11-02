@@ -154,23 +154,32 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, n
   const pickup = trip.pickup as Place;
   // Lock the online drivers in id order before counting their open offers, so two rounds at once (two server
   // instances) cannot both give one free driver an Exclusive (lock order: trip, offers, then drivers by id).
-  await trx.selectFrom("drivers").select("driver_id").where("account_status", "=", "active").where("online_status", "=", "online").orderBy("driver_id").forUpdate().execute();
-  const rows = await trx
-    .selectFrom("drivers")
-    .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
-    .select(["drivers.driver_id", "drivers.online_status", "drivers.category_ids", "drivers.zone_ids", "drivers.rating_sum", "drivers.rating_count", "drivers.last_free_at", "driver_locations.lat", "driver_locations.lng"])
-    .where("drivers.account_status", "=", "active")
-    .where("drivers.online_status", "in", ["online", "on_trip"])
-    .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
-    .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
-    .execute();
-  const pool: Pool = { candidates: [], meta: new Map() };
-  // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
-  const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
   // v0.18.11: with neighbours on, drivers of the listed zones are candidates too (the engine asks them from afterStep).
   // Only zones of the same country and currency as the trip zone may lend drivers (a SE zone never borrows FR).
   const listed = doc?.neighbours?.on ? doc.neighbours.zoneIds.filter((z) => z !== trip.zone_id) : [];
   const neighbourZones = listed.length ? await sameCountryZones(trx, trip.zone_id, listed) : [];
+  // Deep fix 2026-11-02 (perf): only the drivers of this trip's zone (and its neighbours) are locked and read — a
+  // Stockholm round never waits for Paris drivers.
+  const zones = [trip.zone_id, ...neighbourZones];
+  const inZones = sql<boolean>`drivers.zone_ids && ${sql.val(zones)}::text[]`;
+  await trx.selectFrom("drivers").select("driver_id").where("account_status", "=", "active").where("online_status", "=", "online").where(inZones).orderBy("driver_id").forUpdate().execute();
+  const rows = await trx
+    .selectFrom("drivers")
+    .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
+    .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
+    .select(["drivers.driver_id", "drivers.online_status", "drivers.category_ids", "drivers.zone_ids", "drivers.rating_sum", "drivers.rating_count", "drivers.last_free_at", "driver_locations.lat", "driver_locations.lng", "vehicles.category_ids as vehicle_category_ids", "vehicles.status as vehicle_status"])
+    .where("drivers.account_status", "=", "active")
+    .where("drivers.online_status", "in", ["online", "on_trip"])
+    .where(inZones)
+    .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
+    .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
+    // Deep fix 2026-11-02 (g1-g3 H1): a driver with a document past its end date gets no offer, even before the
+    // hourly sweep sets him offline (an approved document whose expires_at passed, or one already marked expired).
+    .where(({ not, exists, selectFrom }) => not(exists(selectFrom("documents").select("documents.document_id").whereRef("documents.driver_id", "=", "drivers.driver_id").where((eb) => eb.or([eb("documents.status", "=", "expired"), eb.and([eb("documents.status", "=", "approved"), eb("documents.expires_at", "<=", now)])])))))
+    .execute();
+  const pool: Pool = { candidates: [], meta: new Map() };
+  // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
+  const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
   for (const d of rows) {
     const own = d.zone_ids.includes(trip.zone_id);
     const neighbour = !own && d.zone_ids.some((z) => neighbourZones.includes(z));
@@ -179,6 +188,9 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, n
     // A driver who cancelled this trip is not offered it again.
     if (trip.cancelled_driver_ids.includes(d.driver_id)) continue;
     if (!d.category_ids.includes(trip.category_id)) continue;
+    // Deep fix 2026-11-02 (live sweep H-2, g1-g3 M5): the car he drives must be approved for the trip's category too
+    // (a Komfort trip needs a Komfort car; a car re-approved without Premium no longer gets Premium trips).
+    if (d.vehicle_status !== null && (d.vehicle_status !== "approved" || !(d.vehicle_category_ids ?? []).includes(trip.category_id))) continue;
     // A free driver holds at most one open Exclusive; one with a rider at most exclusiveWhileDriving.count (§3.6).
     const open = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).executeTakeFirstOrThrow();
     const active = await trx.selectFrom("trips").select(["trip_id", "status", "dropoff"]).where("driver_id", "=", d.driver_id).where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).executeTakeFirst();
@@ -663,8 +675,11 @@ export async function declineOffer(trx: Trx, driverId: string, offerId: string, 
   if (!head || head.driver_id !== driverId) throw new ApiError("not_found", "No such offer.", { reason: "offer_not_found" });
   const trip = await lockTrip(trx, head.trip_id);
   const offer = (await loadOffer(trx, offerId, true))!;
-  if (offer.version !== expectedVersion) throw staleOffer(offer, trip);
-  if (offer.status !== "open") throw new ApiError("invalid_transition", "This offer is no longer open.", { reason: `offer_${offer.status}`, projection: offerView(offer, trip) });
+  // Deep fix 2026-11-02 (live sweep M-4 "decline → 409"): a decline never needs the newest version (an Exclusive that
+  // became a Radar offer moved its version under the driver's card); and an offer that is no longer open answers 200
+  // with how it is now, so the card always closes.
+  void expectedVersion;
+  if (offer.status !== "open") return offerView(offer, trip);
   await trx.updateTable("offers").set({ status: "declined", version: offer.version + 1, answered_at: now, decline_reason: reasonCode ?? null }).where("offer_id", "=", offerId).execute();
   const declined = { ...offer, status: "declined" as const, version: offer.version + 1 };
   const queue = new FeedQueue();
@@ -730,7 +745,9 @@ async function expireSearch(trx: Trx, tripId: string, now: Date) {
   if (!locked || !OPEN_STATUSES.includes(locked.status)) return;
   let trip = locked;
   const queue = new FeedQueue();
-  await closeOpenOffers(trx, trip, "expired", now, queue);
+  // Deep fix 2026-11-02 (MED "search end counts as miss"): the search ending takes the offers back (withdrawn) — the
+  // driver did not let them run out, so they never count as missed offers for auto offline.
+  await closeOpenOffers(trx, trip, "withdrawn", now, queue);
   await queue.flush(trx, now);
   trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   await applyCommand(trx, trip, { command: "expire", actor: "system", now, set: { ended_by_command: "expire" } });

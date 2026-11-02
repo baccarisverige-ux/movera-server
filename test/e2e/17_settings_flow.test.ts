@@ -100,7 +100,8 @@ describe("country rules (§6.5)", () => {
     const driverBonus = { defaultLimit: sek(15000), hardMax: sek(80000) };
     const first = { version: 1, publishedAt: sim.clock.now.toISOString(), country: "SE", currency: "SEK", tips, raiseSteps, driverBonus };
     const before = (await rider.get("/rider/config?zoneId=Z003")).body;
-    await sim.publish(owner, "country_rules", "SE", (doc) => doc, first);
+    // Deep fix 2026-11-02: the sample settings already seed the country rules (no 404); the admin changes them.
+    await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips, raiseSteps, driverBonus }), first);
     const zoneOwn = (await rider.get("/rider/config?zoneId=Z003")).body;
     expect(zoneOwn).toMatchObject({ tips, raiseSteps, version: before.version + 1 });
     expect((await rider.get("/rider/config?zoneId=Z001")).body).toMatchObject({ tips, raiseSteps, usesStandard: true });

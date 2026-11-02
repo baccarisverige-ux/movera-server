@@ -126,7 +126,7 @@ await rider.context().route("**/api/v1/locations/**", (route) => {
   return route.continue();
 });
 
-// Phone sign-in shared by both apps (Sweden, code 1234 for the test numbers).
+// Phone sign-in shared by both apps (Sweden, code 123456 for the test numbers).
 async function phoneSignIn(page, url, phone) {
   // The first screen settles slowly (fonts, flags); a try that does not reach the code step starts again.
   for (let attempt = 1; ; attempt++) {
@@ -156,7 +156,7 @@ async function phoneSignInOnce(page, url, phone) {
   await tapLabel(page, /^(Continue|Fortsätt)$/);
   await waitFor("otp request", () => net[page === rider ? "rider" : "driver"].some((c) => /otp\/request/.test(c.call) && c.status === 200), 20000);
   await page.waitForTimeout(2500);
-  await page.mouse.click(54, 630); await page.keyboard.type("1234", { delay: 80 });
+  await page.mouse.click(54, 630); await page.keyboard.type("123456", { delay: 80 });
   await page.waitForTimeout(800);
   await tapLabel(page, /^(Verify|Verifiera)$/);
   await waitFor("otp verify", () => net[page === rider ? "rider" : "driver"].some((c) => /otp\/verify/.test(c.call) && c.status === 200));

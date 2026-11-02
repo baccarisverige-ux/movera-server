@@ -70,7 +70,7 @@ export interface DriversTable {
   offline_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
-export type OfflineReason = "no_position" | "missed_offers" | "vehicle_blocked" | "fleet_removed" | "account_status" | "admin";
+export type OfflineReason = "no_position" | "missed_offers" | "vehicle_blocked" | "fleet_removed" | "account_status" | "admin" | "documents_expired";
 
 export interface FleetsTable {
   fleet_id: string;
@@ -247,6 +247,8 @@ export interface TripsTable {
   fare_minor: ColumnType<string, number | string, number | string>;
   fare_lines: JsonDefault<unknown[]>;
   booked_fare_minor: ColumnType<string, number | string, number | string>;
+  /** Deep fix 2026-11-02: the sum of every accepted route change's price difference (the early-end cap moves with it). */
+  route_delta_minor: ColumnType<string, number | string | undefined, number | string>;
   offer_raised_minor: ColumnType<string, number | string | undefined, number | string>;
   driver_earnings_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   commission_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
@@ -410,6 +412,8 @@ export interface OtpSessionsTable {
   expires_at: Timestamp;
   consumed_at: Timestamp | null;
   created_at: Timestamp;
+  /** Deep fix 2026-11-02 (g1-g3 H2): the code was right (the per-number daily wrong-code lock counts the others). */
+  verified: Generated<boolean>;
 }
 
 export interface AuthSessionsTable {

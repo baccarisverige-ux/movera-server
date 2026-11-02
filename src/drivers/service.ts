@@ -443,9 +443,15 @@ export async function listVehicles(ex: Executor, driverId: string) {
     q = q.where("driver_id", "=", driverId).where("fleet_id", "is", null);
   }
   const rows = await q.orderBy("created_at").execute();
+  // Deep fix 2026-11-02 (live sweep H-2 "wrong car"): the car the server drives him with (drivers.vehicle_id) is always
+  // in his list, first, so the Vehicles page, the rider and the server show the same car.
+  if (me.vehicle_id !== null && !rows.some((r) => r.vehicle_id === me.vehicle_id)) {
+    const active = await ex.selectFrom("vehicles").selectAll().where("vehicle_id", "=", me.vehicle_id).executeTakeFirst();
+    if (active) rows.unshift(active);
+  }
   const items = [];
   const owner = me.account_type === "fleet" || me.fleet_id === null;
-  for (const r of rows) items.push(await vehicleFullView(ex, r as unknown as VehicleRow, { driverId, owner }));
+  for (const r of rows) items.push({ ...(await vehicleFullView(ex, r as unknown as VehicleRow, { driverId, owner })), active: r.vehicle_id === me.vehicle_id });
   return { items, nextCursor: null };
 }
 

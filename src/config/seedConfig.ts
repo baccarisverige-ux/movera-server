@@ -86,6 +86,17 @@ export async function seedSampleConfig(trx: Trx, now: Date = new Date()): Promis
       const made = await publishDraft(trx, { doc, zoneId: key, expectedVersion: saved.version, note: "sample settings (seed-test)", publishedBy: SEED_BY, approvedBy: null }, now);
       published.push({ doc, zoneId: key, version: made.version });
     }
+    // Deep fix 2026-11-02 (admin sweep: country_rules 404 for SE / FR): the country's tips, raise steps and driver bonus
+    // limits as its own country_rules standard, taken from the app documents just seeded (the same values).
+    if ((await liveDocument(trx, "country_rules", key)) === null) {
+      const rider = (await liveDocument<Record<string, unknown>>(trx, "rider_app_config", key))?.document ?? {};
+      const driver = (await liveDocument<Record<string, unknown>>(trx, "driver_app_config", key))?.document ?? {};
+      const document = { version: 1, publishedAt: now.toISOString(), country, currency: zone.currency, tips: rider["tips"] ?? [], raiseSteps: rider["raiseSteps"] ?? [], driverBonus: driver["driverBonus"] ?? {} };
+      const draft = await trx.selectFrom("config_drafts").select("version").where("doc", "=", "country_rules").where("zone_id", "=", key).executeTakeFirst();
+      const saved = await putDraft(trx, { doc: "country_rules", zoneId: key, expectedVersion: draft?.version ?? 1, document, adminId: SEED_BY }, now);
+      const made = await publishDraft(trx, { doc: "country_rules", zoneId: key, expectedVersion: saved.version, note: "country rules from the sample settings (seed-test)", publishedBy: SEED_BY, approvedBy: null }, now);
+      published.push({ doc: "country_rules", zoneId: key, version: made.version });
+    }
   }
   return published;
 }

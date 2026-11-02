@@ -2553,6 +2553,13 @@ op("post", "/admin/refunds/{refundId}/paid", "adminMarkRefundPaid", "Mark a Swis
    params=[{"name": "refundId", "in": "path", "required": True, "schema": ref("Id")}], body="RefundPaidCommand", ok=(200, "Refund"), mutation=True, permission="finance.edit",
    desc="v0.18.13 (audit M4: served since v0.18.10, now in the paths). 409 conflict reason already_paid or no_payout (the rider has not chosen Swish or bank). Written in the audit (refund.paid).")
 
+# ---------------------------------------------------------------- v0.18.14 (deep fix round 1, fix list 2026-11-02)
+_CL = C["countryLimits"]
+S["CountryLimits"] = obj(OrderedDict([(k, {**i(_CL["fields"][k] + f" Range {_CL['ranges'][k][0]}–{_CL['ranges'][k][1]}.", minimum=_CL["ranges"][k][0], maximum=_CL["ranges"][k][1]), "default": _CL["defaults"][k]}) for k in _CL["defaults"]]), (), "v0.18.14: " + _CL["note"])
+S["CountryRules"]["properties"]["limits"] = {"allOf": [ref("CountryLimits")], "description": "v0.18.14: read from the country standard only."}
+S["DriverAppConfig"]["properties"]["offers"]["properties"]["autoOffline"]["properties"]["on"] = {**b("v0.18.14 (g1-g3 M8): false = the server never sets a driver of this zone offline for missed offers nor for no position (missedExclusive and noFixMinutes are then ignored). Default true."), "default": True}
+_RCP = C["onTrip"]["routeChange"]["driverPush"]
+PATHS["/trips/{tripId}"]["patch"]["description"] = (PATHS["/trips/{tripId}"]["patch"].get("description", "") + " v0.18.14: " + _RCP["note"]).strip()
 doc = OrderedDict()
 doc["openapi"] = "3.1.0"
 doc["info"] = {

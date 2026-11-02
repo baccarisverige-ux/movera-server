@@ -29,7 +29,7 @@ const send = (method: "GET" | "PUT" | "POST", url: string, headers: Record<strin
 async function riderHeaders() {
   const phone = TEST_PHONES[0]!;
   const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone, app: "rider" } });
-  const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: "1234" } });
+  const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: "123456" } });
   return { authorization: `Bearer ${verify.json().accessToken}` };
 }
 
@@ -176,7 +176,7 @@ describe("driver config", () => {
     await send("POST", "/admin/config/driver_app_config/publish", owner.headers, { expectedVersion: 2, zoneId: "Z001" });
     const phone = TEST_PHONES[1]!;
     const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone, app: "driver" } });
-    const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: "1234" } });
+    const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone, sessionId: challenge.json().sessionId, code: "123456" } });
     const res = await send("GET", "/driver/config", { authorization: `Bearer ${verify.json().accessToken}` });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ zoneId: "Z001", version: 1 });

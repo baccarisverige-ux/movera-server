@@ -206,6 +206,18 @@ async function reviewVehicle(trx: Db extends never ? never : import("../db/db.js
     if (problems.length > 0) throw new ApiError("invalid_transition", "The car breaks the car rules of its country.", { reason: "vehicle_rules_not_met", details: problems });
   }
   await trx.updateTable("vehicles").set({ status: body.decision, category_ids: categoryIds, version: row.version + 1, updated_at: now }).where("vehicle_id", "=", vehicleId).execute();
+  // Deep fix 2026-11-02 (g1-g3 M5): a ride type the car no longer has leaves the chosen types of every driver who has
+  // this car as his car (extras stay as they are).
+  if (body.decision === "approved") {
+    const removed = row.category_ids.filter((c) => !categoryIds.includes(c));
+    if (removed.length > 0) {
+      const users = await trx.selectFrom("drivers").select(["driver_id", "category_ids", "version"]).where("vehicle_id", "=", vehicleId).execute();
+      for (const d of users) {
+        const kept = d.category_ids.filter((c) => !removed.includes(c));
+        if (kept.length !== d.category_ids.length) await trx.updateTable("drivers").set({ category_ids: kept, version: d.version + 1, updated_at: now }).where("driver_id", "=", d.driver_id).execute();
+      }
+    }
+  }
   if (body.decision !== "approved") {
     const drivers = await trx.selectFrom("drivers").select(["driver_id", "online_status", "version"]).where("vehicle_id", "=", vehicleId).where("online_status", "in", ["online", "going_online"]).execute();
     for (const d of drivers) {
