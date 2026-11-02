@@ -1043,7 +1043,8 @@
         "session_expired": "expired",
         "session_ended": "revoked",
         "refresh_token_reused": "revoked",
-        "refresh_token_unknown": "revoked"
+        "refresh_token_unknown": "revoked",
+        "signed_in_elsewhere": "revoked"
       },
       "kinds": {
         "expired": "not used for refreshExpiresDays (30 days)",
@@ -1073,7 +1074,12 @@
           "en": "Movera ended your session."
         }
       },
-      "ownSignOut": "After the person's own Sign out the app shows no message."
+      "ownSignOut": "After the person's own Sign out the app shows no message.",
+      "elsewhereTexts": {
+        "sv": "Inloggad på en annan telefon",
+        "fr": "Connecté sur un autre téléphone",
+        "en": "Signed in on another phone"
+      }
     }
   },
   "configVersion": {
@@ -6358,7 +6364,8 @@
       "sv": "Din förare",
       "fr": "Votre chauffeur",
       "en": "Your driver"
-    }
+    },
+    "bell": "v0.18.14: also kept in the rider's Notifications list (bell true), shown in his current language."
   },
   "fleetShareRemoved": "v0.18.13 (owner G10-1 'Movera dont care about what fleet owner take from drivers … if there is any % u delete that'): PricingDocument.fleetCommissionPct is removed (schema, defaults, fixtures). For a fleet driver Movera pays the whole driver earnings to the fleet owner (Driver.payoutTo fleet); the owner settles with his drivers outside Movera. A document that still carries the key is accepted and the key ignored.",
   "drivingLimits": {
@@ -6393,5 +6400,24 @@
       "codesPerAddressPerHour": "Sign-in codes per client address (one wifi) per hour (429 otp_too_many).",
       "uploadsPerHour": "Document uploads per driver per hour (429 rate_limited reason upload_limit); the driver's country."
     }
+  },
+  "deepFix1": {
+    "note": "v0.18.14 (deep fix round 1, Rules plan/FIX-LIST-2026-11-02.md). What the server does now; what the apps must follow.",
+    "earlyEnd": "An early end (rider end-early, driver cancel on board, driver completes before the drop-off) keeps what was earned before it: the paid pickup waiting (line waiting, 100 % the driver's), the child seat (extras), the pickup airport fee (airport) and the reservation fee; the drop-off airport fee is not charged. The driven price is capped by the booked fare moved by every accepted route change (not the first booked fare).",
+    "routeChange": "See onTrip.routeChange.driverPush (push to the driver + the driver-app 'own echo' rule).",
+    "tips": "A zone document whose tips are all in another currency than the trip's is ignored: the country's own amounts apply (a Paris trip ended early could not be tipped).",
+    "earnings": "GET /driver/earnings?currency=SEK|EUR: one currency per report (default the currency of the driver's first zone, in that zone's time zone). EarningsReport gains currency and currencies (every currency he earned in during the range, for a kr / € switch). Amounts of another currency are never added in.",
+    "vehicles": "GET /driver/vehicles always lists the driver's active car (Driver.vehicleId) first even when it is not one of his fleet's cars; every item has active: true|false. Dispatch offers a trip only when the active car is approved and has the trip's category (a Komfort trip needs a Komfort car); re-approving a car without a ride type removes it from the chosen types of its drivers.",
+    "documents": "A driver with a document past its end date gets no offer; online drivers are set offline by the expiry sweep (offlineReason documents_expired); one on a trip at its end.",
+    "signIn": "6-digit code (test code 123456); otp_locked_today; countryLimits; one phone at a time for drivers: a new driver sign-in ends his other sessions — their calls and POST /auth/refresh answer 401 reason signed_in_elsewhere (auth.signedOut.reasons) and a notice kind signed_in_elsewhere is sent. Riders keep several phones.",
+    "accountChange": "POST /account/phone/change { phone } → OtpChallenge (code to the new number; 409 phone_taken); POST /account/phone/verify { phone, sessionId, code } → { phone } and a notice phone_changed. POST /account/email/change { email } → { challengeId, expiresAt, delivery: pending_provider } (code to the new address once an e-mail provider is connected); POST /account/email/verify { challengeId, code } → { email } and a notice email_changed. Wrong code 400 invalid_otp_code, 5 tries, 5 minutes (auth.otp).",
+    "notifications": "GET /notifications shows title and body in the account's current language when the notice was stored with every language (data.texts, taken out of the answer): set_offline, signed_in_elsewhere, phone/email changed, rider trip moments. Rider trip moments (riderTripPush) are now also kept in the list (bell true). A refund sends the rider a notice kind refund (bell + push).",
+    "legal": "GET /legal/{country} carries company { companyName?, orgNumber?, address?, supportEmail?, supportPhone? } from admin Content › Legal (the sign-in 'Need help?' box).",
+    "pin": "board / start never skip the PIN: X-Contract-Version no longer matters; a PIN trip without a verified PIN is 409 pin_required.",
+    "refunds": "Take from driver: his share is refund × earnings ÷ (fare − old debt collected on the trip). An approved refund reads the trip as it is at approval (no version conflict). The rider gets a refund notice.",
+    "activation": "POST /admin/drivers/{id}/status active is 409 details_missing for a driver who never sent his details (no country).",
+    "countryRules": "The sample settings seed each country's country_rules standard (GET /admin/config/country_rules?country=SE|FR no longer 404).",
+    "dispatchLock": "A dispatch round locks and reads only the drivers of the trip's zone and its neighbour zones.",
+    "birthDate": "A date of birth that does not exist (2001-02-31) or before 1900 is 400 invalid_date_of_birth."
   }
 }

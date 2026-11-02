@@ -71,7 +71,7 @@ describe("G1-B3: the 5th wrong code itself answers 'too many wrong tries'", () =
 
 describe("G1-D3 / G1-B6: why the app was signed out, and the retry window", () => {
   it("every reason a refused refresh answers is named in auth.signedOut (expired vs revoked), with sv/fr/en texts", async () => {
-    expect(AUTH.signedOut.reasons).toEqual({ session_expired: "expired", session_ended: "revoked", refresh_token_reused: "revoked", refresh_token_unknown: "revoked" });
+    expect(AUTH.signedOut.reasons).toEqual({ session_expired: "expired", session_ended: "revoked", refresh_token_reused: "revoked", refresh_token_unknown: "revoked", signed_in_elsewhere: "revoked" });
     for (const kind of ["expired", "revoked"]) expect(Object.keys(AUTH.signedOut.texts[kind]!).sort()).toEqual(["en", "fr", "sv"]);
     const seen = new Set<string>();
     seen.add((await post("/auth/refresh", { refreshToken: "rt_unknown" })).json().reason);
@@ -85,6 +85,12 @@ describe("G1-D3 / G1-B6: why the app was signed out, and the retry window", () =
     const other = (await post("/auth/otp/verify", { phone, sessionId: (await post("/auth/otp/request", { phone, app: "rider" })).json().sessionId, code: "123456" })).json();
     advance((AUTH.tokens.refreshExpiresDays + 1) * 86400);
     seen.add((await post("/auth/refresh", { refreshToken: other.refreshToken })).json().reason);
+    // v0.18.14: a driver's second phone ends the first one's session.
+    const dPhone = TEST_PHONES[1]!;
+    const d1 = (await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: "123456" })).json();
+    advance(60);
+    await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: "123456" });
+    seen.add((await post("/auth/refresh", { refreshToken: d1.refreshToken })).json().reason);
     expect([...seen].sort()).toEqual(Object.keys(AUTH.signedOut.reasons).sort());
   });
 

@@ -714,3 +714,34 @@ describe("deep fix 2026-11-02: notices in the reader's current language; rider t
     expect(fr.title).not.toBe(sv.title);
   });
 });
+
+describe("deep fix 2026-11-02: arrive needs a fresh position; Paris route-change push", () => {
+  it("an old server fix → 409 position_stale; a fresh one sent with the step (measuredAt) works; positionMaxAgeSeconds per zone", async () => {
+    const trip = await accepted();
+    const go = await step(trip.tripId, "head-to-pickup", trip.version);
+    await moveTo(NORRMALM);
+    clock.now = new Date(clock.now.getTime() + 120_000);
+    const stale = await step(trip.tripId, "arrive", go.json().version);
+    expect(stale.json()).toMatchObject({ reason: "position_stale" });
+    const oldSent = await step(trip.tripId, "arrive", go.json().version, { location: { ...NORRMALM, accuracy: 5, measuredAt: new Date(clock.now.getTime() - 120_000).toISOString() } });
+    expect(oldSent.json()).toMatchObject({ reason: "position_stale" });
+    await publish("driver_app_config", "Z001", driverDoc({ waiting: { positionMaxAgeSeconds: 300 } }));
+    const longer = await step(trip.tripId, "arrive", go.json().version);
+    expect(longer.statusCode, longer.body).toBe(200);
+  });
+
+  it("Paris: the driver's push is in French with euros", async () => {
+    await database.db.updateTable("drivers").set({ language: "fr" }).where("driver_id", "=", driverA.id).execute();
+    try {
+      const trip = await forcedParis();
+      const v = await onBoard(trip, PARIS);
+      const q = (await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: v, dropoff: { address: "Bastille", lat: 48.8532, lng: 2.3692 }, stops: [] })).json();
+      await call(app, "PATCH", `/trips/${trip.tripId}`, rider, { expectedVersion: v, routeQuoteId: q.routeQuoteId });
+      const push = await database.db.selectFrom("notifications").selectAll().where("trip_id", "=", trip.tripId).where("kind", "=", "route_change").executeTakeFirstOrThrow();
+      expect(push.title).toBe("Le passager veut changer d’itinéraire");
+      expect(push.body).toMatch(/€/);
+    } finally {
+      await database.db.updateTable("drivers").set({ language: null }).where("driver_id", "=", driverA.id).execute();
+    }
+  });
+});
