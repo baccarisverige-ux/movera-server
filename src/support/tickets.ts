@@ -37,7 +37,6 @@ type TicketRow = {
   last_message_at: Date;
   /** v0.18.15 support desk (migration 0049). */
   assigned_admin_id?: string | null;
-  claimed_until?: Date | null;
   solved_by?: string | null;
   solved_at?: Date | null;
   incident_id?: string | null;
@@ -169,9 +168,9 @@ function inScope(who: Principal, zoneId: string | null): boolean {
 
 export async function adminTickets(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; priority?: string; tripId?: string; riderId?: string; driverId?: string; q?: string; assignedTo?: string }, now: Date = new Date()) {
   let q = ex.selectFrom("support_tickets").selectAll();
-  // v0.18.15: me | none | an admin id; a claim that ran out counts as nobody.
-  if (input.assignedTo === "none") q = q.where((eb) => eb.or([eb("assigned_admin_id", "is", null), eb("claimed_until", "<=", now)]));
-  else if (input.assignedTo) q = q.where("assigned_admin_id", "=", input.assignedTo === "me" ? who.subjectId : input.assignedTo).where((eb) => eb.or([eb("claimed_until", "is", null), eb("claimed_until", ">", now)]));
+  // v0.18.15: me | none | an admin id (a claim never runs out by itself, owner "Never").
+  if (input.assignedTo === "none") q = q.where("assigned_admin_id", "is", null);
+  else if (input.assignedTo) q = q.where("assigned_admin_id", "=", input.assignedTo === "me" ? who.subjectId : input.assignedTo);
   if (!who.zones.includes("*")) q = q.where("zone_id", "in", who.zones.length ? who.zones : ["-"]);
   if (input.status?.length) q = q.where("status", "in", input.status as TicketRow["status"][]);
   if (input.priority) q = q.where("priority", "=", input.priority as TicketRow["priority"]);
@@ -220,7 +219,7 @@ export type DeskCommand =
 
 export async function adminDeskCommand(trx: Trx, who: Principal, ticketId: string, command: DeskCommand, now: Date) {
   const row = await ticketForAdmin(trx, who, ticketId, true);
-  const r = { ...row, assigned_admin_id: row.assigned_admin_id ?? null, claimed_until: row.claimed_until ?? null, incident_id: row.incident_id ?? null };
+  const r = { ...row, assigned_admin_id: row.assigned_admin_id ?? null, incident_id: row.incident_id ?? null };
   switch (command.verb) {
     case "claim": await desk.claim(trx, who, r, now); break;
     case "assign": await desk.assign(trx, who, r, command, now, (role) => (isAdminRole(role) ? permissionsOf(role) : [])); break;

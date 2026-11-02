@@ -380,7 +380,7 @@ S["SupportTicket"] = obj({"ticketId": ref("Id"), "tripId": ref("Id"), "openedBy"
                           "messages": arr(ref("TicketMessage"), description="v0.9.0: only on GET /support/tickets/{ticketId} and GET /admin/tickets/{ticketId}, oldest first."),
                           # v0.18.15 (contract.json#supportDesk.adminView): admin views only.
                           "assignedTo": obj({"adminId": ref("Id"), "name": s()}, ["adminId"], "v0.18.15: the admin who works on the ticket (claim or assign); admin views only."),
-                          "claimedUntil": ref("Timestamp"), "solvedBy": ref("Id"), "solvedAt": ref("Timestamp"),
+                          "solvedBy": ref("Id"), "solvedAt": ref("Timestamp"),
                           "incidentId": {"allOf": [ref("Id")], "description": "v0.18.15: the support_case incident opened from this ticket (admin views only)."},
                           "firstReplyAt": ref("Timestamp"), "firstReplyDueAt": ref("Timestamp"), "solveDueAt": ref("Timestamp"),
                           "late": obj({"reply": b(), "solve": b()}, ["reply", "solve"], "v0.18.15: past the topic's time limits of the ticket's country (admin views only).")},
@@ -404,10 +404,9 @@ S["TicketReasonCommand"] = obj({"reason": s(minLength=1, maxLength=500)}, ["reas
 S["EmptyCommand"] = S.get("EmptyCommand") or obj({}, (), "No fields.")
 S["SupportTopicSetting"] = obj({"code": s(enum=C["support"]["categories"]), "on": b(), "firstReplyMin": i(minimum=1, maximum=10080), "solveHours": i(minimum=1, maximum=720)},
                                ["code", "on", "firstReplyMin", "solveHours"])
-S["SupportSettings"] = obj({"country": s(enum=SD["settings"]["countries"]), "claimDays": i(minimum=1, maximum=30),
-                            "topics": arr(ref("SupportTopicSetting"), minItems=1),
+S["SupportSettings"] = obj({"country": s(enum=SD["settings"]["countries"]), "topics": arr(ref("SupportTopicSetting"), minItems=1),
                             "updatedAt": ref("Timestamp"), "updatedBy": ref("Id")},
-                           ["country", "claimDays", "topics"], "v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).")
+                           ["country", "topics"], "v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).")
 AD = C["alertDesk"]
 S["AlertEvent"] = obj({"at": ref("Timestamp"), "by": ref("Id"), "byName": s(), "toName": s(), "kind": s(enum=["take", "done", "snooze", "pass", "reopen"]), "text": s(maxLength=500), "to": ref("Id")}, ["at", "by", "kind", "text"])
 S["AlertRecord"] = obj({"alertId": s(pattern="^[A-Za-z0-9_:.-]{1,200}$"), "kind": s(pattern="^[a-z][a-z0-9_]{0,63}$"), "level": s(enum=["critical", "important", "info"]),

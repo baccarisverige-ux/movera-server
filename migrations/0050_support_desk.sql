@@ -2,7 +2,6 @@
 -- decisions/other-support-promos.md QO-1 / QO-2 / QO-4 / QO-5 + rule 16).
 -- Who works on a ticket (claim / assign), who solved it, the safety case opened from it, the first support answer.
 ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS assigned_admin_id text REFERENCES admins (admin_id);
-ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS claimed_until timestamptz;
 ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS solved_by text;
 ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS solved_at timestamptz;
 ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS incident_id text REFERENCES incidents (incident_id);

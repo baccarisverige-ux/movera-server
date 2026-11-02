@@ -824,7 +824,6 @@ export interface SupportTicketsTable {
   last_message_at: Timestamp;
   /** v0.18.15 support desk (migration 0049). */
   assigned_admin_id: ColumnType<string | null, string | null | undefined, string | null>;
-  claimed_until: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   solved_by: ColumnType<string | null, string | null | undefined, string | null>;
   solved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   incident_id: ColumnType<string | null, string | null | undefined, string | null>;

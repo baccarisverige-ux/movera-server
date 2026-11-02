@@ -85,7 +85,7 @@ describe("Admin › Support desk commands (QO-5)", () => {
     const claimed = await agent.post(`/admin/tickets/${id}/claim`, {});
     expect(claimed.status).toBe(200);
     expect(claimed.body["assignedTo"]).toMatchObject({ adminId: agent.id, name: "support admin" });
-    expect(new Date(claimed.body["claimedUntil"]).getTime() - sim.clock.now.getTime()).toBe(3 * 86_400_000);
+    expect(claimed.body).not.toHaveProperty("claimedUntil");
     const other = await sim.admin("support");
     const taken = await other.post(`/admin/tickets/${id}/claim`, {});
     expect(taken.status).toBe(409);
@@ -135,7 +135,8 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
     const audited = async () => (await sim.db.selectFrom("admin_audit").select("action").where("action", "=", "support.settings").execute()).length;
     const auditBefore = await audited();
     const se = await owner.get("/admin/support/settings?country=SE");
-    expect(se.body).toMatchObject({ country: "SE", claimDays: 3 });
+    expect(se.body).toMatchObject({ country: "SE" });
+    expect(se.body).not.toHaveProperty("claimDays");
     expect(se.body).not.toHaveProperty("replyAfterSolved");
     expect(se.body["topics"].map((t: Json) => t["code"])).toEqual(["ride_dispute", "help", "lost_item", "payment", "account", "safety", "other"]);
     const fr = await owner.get("/admin/support/settings?country=FR");
@@ -146,9 +147,9 @@ describe("Support settings per country (rule 16 defaults, QO-4 same topics in bo
     expect((await support.put("/admin/support/settings", { ...se.body, topics })).status).toBe(403);
     const france = await sim.admin("config", ["FR-PC"]);
     expect((await france.put("/admin/support/settings", { ...se.body, topics })).body["reason"]).toBe("zone_out_of_scope");
-    const saved = await owner.put("/admin/support/settings", { ...se.body, claimDays: 2, topics });
+    const saved = await owner.put("/admin/support/settings", { ...se.body, topics });
     expect(saved.status).toBe(200);
-    expect(saved.body).toMatchObject({ claimDays: 2, updatedBy: owner.id });
+    expect(saved.body).toMatchObject({ updatedBy: owner.id });
     expect((await rider.get("/support/topics")).body["topics"]).not.toContain("lost_item");
     expect((await driver.get("/support/topics")).body["topics"]).not.toContain("lost_item");
     const off = await rider.post("/support/tickets", { category: "lost_item", subject: "Bag", text: "Left my bag" });
@@ -187,7 +188,7 @@ describe("Incidents settings and report (contract.json#incidentDesk)", () => {
 
 // Last: the clock jumps days ahead (sign-ins run out after this).
 describe("time limits", () => {
-  it("a claim runs out after claimDays; time limits and late flags follow the topic", async () => {
+  it("owner \"Never\": a claim does not run out after days; time limits and late flags follow the topic", async () => {
     const id = await open({ category: "safety" });
     await agent.post(`/admin/tickets/${id}/claim`, {});
     const view = (await agent.get(`/admin/tickets/${id}`)).body;
@@ -196,8 +197,8 @@ describe("time limits", () => {
     await sim.advance(6 * 60);
     expect((await agent.get(`/admin/tickets/${id}`)).body["late"]).toEqual({ reply: true, solve: false });
     sim.clock.now = new Date(sim.clock.now.getTime() + 3 * 86_400_000 + 1000);
-    const later = (await agent.get(`/admin/tickets/${id}`)).body;
-    expect(later["assignedTo"]).toBeUndefined();
-    expect((await (await sim.admin("support")).post(`/admin/tickets/${id}/claim`, {})).status).toBe(200);
+    const later = await sim.admin("support");
+    expect((await later.get(`/admin/tickets/${id}`)).body["assignedTo"]).toMatchObject({ adminId: agent.id });
+    expect((await later.post(`/admin/tickets/${id}/claim`, {})).body["reason"]).toBe("ticket_claimed");
   });
 });

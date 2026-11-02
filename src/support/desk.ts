@@ -13,17 +13,17 @@ import { openIncident, openOf } from "../safety/incidents.js";
  */
 
 type TopicSetting = { code: string; on: boolean; firstReplyMin: number; solveHours: number };
-export type SupportSettings = { country: string; claimDays: number; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
+export type SupportSettings = { country: string; topics: TopicSetting[]; updatedAt?: string; updatedBy?: string };
 
 const DESK = (contract as unknown as {
-  supportDesk: { settings: { countries: string[]; defaults: { claimDays: number; topics: TopicSetting[] } }; caseIncidentKind: string };
+  supportDesk: { settings: { countries: string[]; defaults: { topics: TopicSetting[] } }; caseIncidentKind: string };
 }).supportDesk;
 export const SUPPORT_COUNTRIES: readonly string[] = DESK.settings.countries;
 const CATEGORIES: readonly string[] = (contract as unknown as { support: { categories: string[] } }).support.categories;
 
 export function defaultSettings(country: string): SupportSettings {
   const d = DESK.settings.defaults;
-  return { country, claimDays: d.claimDays, topics: d.topics.map((t) => ({ ...t })) };
+  return { country, topics: d.topics.map((t) => ({ ...t })) };
 }
 
 /** A saved document over the defaults: every contract topic once, in the contract order. */
@@ -33,7 +33,6 @@ function merged(country: string, doc: unknown, updatedAt?: Date, updatedBy?: str
   const saved = new Map((Array.isArray(raw.topics) ? raw.topics : []).map((t) => [t.code, t]));
   return {
     country,
-    claimDays: typeof raw.claimDays === "number" ? raw.claimDays : base.claimDays,
     topics: base.topics.map((t) => ({ ...t, ...(saved.get(t.code) ?? {}), code: t.code })),
     ...(updatedAt ? { updatedAt: updatedAt.toISOString() } : {}),
     ...(updatedBy ? { updatedBy } : {}),
@@ -64,7 +63,7 @@ export async function adminGetSettings(ex: Executor, country: string): Promise<S
   return settingsOf(ex, country);
 }
 
-export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; claimDays: number; topics: TopicSetting[] }, now: Date): Promise<SupportSettings> {
+export async function adminPutSettings(trx: Trx, who: Principal, body: { country: string; topics: TopicSetting[] }, now: Date): Promise<SupportSettings> {
   if (!(await coversCountry(trx, who, body.country))) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
   const codes = body.topics.map((t) => t.code);
   if (new Set(codes).size !== codes.length || codes.some((c) => !CATEGORIES.includes(c)) || codes.length !== CATEGORIES.length) {
@@ -72,13 +71,13 @@ export async function adminPutSettings(trx: Trx, who: Principal, body: { country
   }
   if (!body.topics.some((t) => t.on)) throw badRequest("At least one topic must be on.", "topics_required");
   const before = await settingsOf(trx, body.country);
-  const doc = { claimDays: body.claimDays, topics: body.topics.map(({ code, on, firstReplyMin, solveHours }) => ({ code, on, firstReplyMin, solveHours })) };
+  const doc = { topics: body.topics.map(({ code, on, firstReplyMin, solveHours }) => ({ code, on, firstReplyMin, solveHours })) };
   await trx
     .insertInto("support_settings")
     .values({ country: body.country, doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId })
     .onConflict((oc) => oc.column("country").doUpdateSet({ doc: JSON.stringify(doc), updated_at: now, updated_by: who.subjectId }))
     .execute();
-  await audit(trx, { adminId: who.subjectId, action: "support.settings", targetType: "support_settings", targetId: body.country, detail: { before: { claimDays: before.claimDays, topics: before.topics }, after: doc }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "support.settings", targetType: "support_settings", targetId: body.country, detail: { before: { topics: before.topics }, after: doc }, at: now });
   return settingsOf(trx, body.country);
 }
 
@@ -97,7 +96,6 @@ export type DeskRow = {
   status: string;
   created_at: Date;
   assigned_admin_id?: string | null;
-  claimed_until?: Date | null;
   solved_by?: string | null;
   solved_at?: Date | null;
   incident_id?: string | null;
@@ -120,10 +118,8 @@ export async function deskExtras(ex: Executor, rows: readonly DeskRow[], now: Da
     const replyDue = new Date(r.created_at.getTime() + topic.firstReplyMin * 60_000);
     const solveDue = new Date(r.created_at.getTime() + topic.solveHours * 3_600_000);
     const done = r.status === "resolved" || r.status === "closed";
-    const claimLive = r.assigned_admin_id && (!r.claimed_until || r.claimed_until > now);
     out.set(r.ticket_id, {
-      ...(claimLive ? { assignedTo: { adminId: r.assigned_admin_id, ...(nameOf.get(r.assigned_admin_id!) ? { name: nameOf.get(r.assigned_admin_id!) } : {}) } } : {}),
-      ...(claimLive && r.claimed_until ? { claimedUntil: r.claimed_until.toISOString() } : {}),
+      ...(r.assigned_admin_id ? { assignedTo: { adminId: r.assigned_admin_id, ...(nameOf.get(r.assigned_admin_id!) ? { name: nameOf.get(r.assigned_admin_id!) } : {}) } } : {}),
       ...(r.solved_by ? { solvedBy: r.solved_by } : {}),
       ...(r.solved_at ? { solvedAt: r.solved_at.toISOString() } : {}),
       ...(r.incident_id ? { incidentId: r.incident_id } : {}),
@@ -164,16 +160,15 @@ export async function assertTopicOn(ex: Executor, zoneId: string | null, categor
 
 /* ---------------------------------------------------------------- admin commands */
 
-type Row = { ticket_id: string; zone_id: string | null; trip_id: string | null; status: "open" | "pending" | "resolved" | "closed"; category: string; assigned_admin_id: string | null; claimed_until: Date | null; incident_id: string | null };
+type Row = { ticket_id: string; zone_id: string | null; trip_id: string | null; status: "open" | "pending" | "resolved" | "closed"; category: string; assigned_admin_id: string | null; incident_id: string | null };
 const SOLVED = new Set(["resolved", "closed"]);
 
 export async function claim(trx: Trx, who: Principal, row: Row, now: Date) {
-  const other = row.assigned_admin_id && row.assigned_admin_id !== who.subjectId && (!row.claimed_until || row.claimed_until > now);
+  // Owner 2026-11-02 "Never": a claim stays until the ticket is solved or handed over.
+  const other = row.assigned_admin_id && row.assigned_admin_id !== who.subjectId;
   if (other) throw new ApiError("conflict", "Another admin works on this ticket.", { reason: "ticket_claimed" });
-  const s = await settingsOf(trx, await countryOfZone(trx, row.zone_id));
-  const until = new Date(now.getTime() + s.claimDays * 86_400_000);
-  await trx.updateTable("support_tickets").set({ assigned_admin_id: who.subjectId, claimed_until: until, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
-  await audit(trx, { adminId: who.subjectId, action: "ticket.claim", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: { until: until.toISOString() }, at: now });
+  await trx.updateTable("support_tickets").set({ assigned_admin_id: who.subjectId, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
+  await audit(trx, { adminId: who.subjectId, action: "ticket.claim", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: {}, at: now });
 }
 
 export async function assign(trx: Trx, who: Principal, row: Row, body: { adminId: string | null; reason: string }, now: Date, permissionsOf: (role: string) => string[]) {
@@ -185,9 +180,7 @@ export async function assign(trx: Trx, who: Principal, row: Row, body: { adminId
       throw badRequest("That admin cannot work on this ticket.", "assignee_not_allowed");
     }
   }
-  const s = await settingsOf(trx, await countryOfZone(trx, row.zone_id));
-  const until = body.adminId ? new Date(now.getTime() + s.claimDays * 86_400_000) : null;
-  await trx.updateTable("support_tickets").set({ assigned_admin_id: body.adminId, claimed_until: until, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
+  await trx.updateTable("support_tickets").set({ assigned_admin_id: body.adminId, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
   await audit(trx, { adminId: who.subjectId, action: "ticket.assign", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: { before: row.assigned_admin_id, after: body.adminId, reason: body.reason }, at: now });
 }
 

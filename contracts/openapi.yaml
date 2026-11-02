@@ -5752,9 +5752,9 @@ paths:
     post:
       operationId: adminTicketClaim
       summary: Claim a ticket
-      description: 'v0.18.15. POST /admin/tickets/{ticketId}/claim {} -> SupportTicket: assignedTo = the caller until claimedUntil
-        = now + claimDays days. Another admin''s claim that has not run out -> 409 conflict, reason ticket_claimed. Audited
-        ticket.claim. The admin''s zones only (else 403 zone_out_of_scope).'
+      description: 'v0.18.15. POST /admin/tickets/{ticketId}/claim {} -> SupportTicket: assignedTo = the caller. Owner 2026-11-02
+        ''Never'': a claim never runs out by itself; it stays until the ticket is solved or handed over (assign). Another
+        admin''s claim -> 409 conflict, reason ticket_claimed. Audited ticket.claim. The admin''s zones only (else 403 zone_out_of_scope).'
       tags:
       - Admin · Support
       x-actor:
@@ -6142,8 +6142,7 @@ paths:
     put:
       operationId: adminPutSupportSettings
       summary: Save the support settings of a country
-      description: v0.18.15. claimDays 1-30; firstReplyMin 1-10080; solveHours 1-720; every contract topic once; at least
-        one topic on.
+      description: v0.18.15. firstReplyMin 1-10080; solveHours 1-720; every contract topic once; at least one topic on.
       tags:
       - Admin · Support
       x-actor:
@@ -17524,8 +17523,6 @@ components:
               $ref: '#/components/schemas/Id'
             name:
               type: string
-        claimedUntil:
-          $ref: '#/components/schemas/Timestamp'
         solvedBy:
           $ref: '#/components/schemas/Id'
         solvedAt:
@@ -17724,7 +17721,6 @@ components:
       description: 'v0.18.15: Admin › Support › Settings per country (contract.json#supportDesk.settings).'
       required:
       - country
-      - claimDays
       - topics
       properties:
         country:
@@ -17733,10 +17729,6 @@ components:
           - SE
           - FR
           - TN
-        claimDays:
-          type: integer
-          minimum: 1
-          maximum: 30
         topics:
           type: array
           items:
