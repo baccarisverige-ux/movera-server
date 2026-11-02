@@ -39,7 +39,11 @@ export async function countedSeconds(ex: Executor, driverId: string, from: Date,
   // To the pickup: accept → arrived (else boarded / end / now). On trip: on board → end (else now). Clipped to [from, now).
   const row = await sql<{ s: string | null }>`
     WITH legs AS (
-      SELECT accepted_at AS a, coalesce(arrived_at, boarded_at, ended_at, ${open}) AS b FROM trips
+      -- Checker 5: a booked ride accepted early counts from when the driver must leave (pickup time − his ETA).
+      SELECT CASE WHEN kind = 'scheduled' AND scheduled_at IS NOT NULL
+                  THEN greatest(accepted_at, scheduled_at - make_interval(secs => coalesce((eta->>'etaSeconds')::numeric, 0)))
+                  ELSE accepted_at END AS a,
+             coalesce(arrived_at, boarded_at, ended_at, ${open}) AS b FROM trips
        WHERE driver_id = ${driverId} AND accepted_at IS NOT NULL
       UNION ALL
       SELECT boarded_at AS a, coalesce(ended_at, ${open}) AS b FROM trips

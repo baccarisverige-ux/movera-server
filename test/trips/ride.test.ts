@@ -6,7 +6,7 @@ import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
-import { rideHandlers } from "../../src/trips/ride.js";
+import { driverCancelReasonsOf, rideHandlers } from "../../src/trips/ride.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -284,6 +284,15 @@ describe("the rider's cancel after accept", () => {
     if (seen.status !== "accepted") expect((await cancel(tripId)).json().cancellation.fee).toBeNull();
   });
 
+  it("checker 1: no heading check yet (a trip accepted before the deploy) → the normal fee rules, not a free cancel", async () => {
+    const { tripId } = await accepted();
+    await advance(150);
+    await moveTo("A", NORRMALM);
+    await database.db.updateTable("trips").set({ heading_check: null }).where("trip_id", "=", tripId).execute();
+    const res = await cancel(tripId);
+    expect(res.json().cancellation.fee).toEqual({ amountMinor: 3500, currency: "SEK" });
+  });
+
   it("no rider settings published: 65 kr after 2 minutes; an admin share setting applies", async () => {
     await database.db.deleteFrom("config_live").where("doc", "=", "rider_app_config").execute();
     await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify({ cancelFees: { driverSharePct: 60 } }), published_at: clock.now, published_by: null }).execute();
@@ -498,16 +507,18 @@ describe("v0.18.13 driving-time limits on the server (decisions/driving-time-lim
 });
 
 describe("v0.18.13 driver cancel reasons from the admin (G5-9)", () => {
-  it("only the codes the zone's admin list turns on; an unset sheet uses the contract list", async () => {
+  it("the admin list is what the app shows; the server takes every contract code (old apps)", async () => {
     const doc = { ...sample("driver_app_config"), cancelReasons: { driverBeforeTrip: ["rider_requested_cancel", "unsafe_pickup"] } };
     await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
     await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify(doc), published_at: clock.now, published_by: null }).execute();
     try {
       const { tripId, version } = await accepted();
-      const off = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: version, reasonCode: "vehicle_issue_before_start" });
-      expect(off.json()).toMatchObject({ code: "invalid_request", reason: "invalid_reason_code" });
-      const on = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: version, reasonCode: "unsafe_pickup" });
-      expect(on.statusCode, on.body).toBe(200);
+      // Checker 3: an old app shows the built-in list; a contract code the admin turned off is still taken.
+      expect((await driverCancelReasonsOf(database.db, "Z001")).driverBeforeTrip).toEqual(["rider_requested_cancel", "unsafe_pickup"]);
+      const bad = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: version, reasonCode: "safety_concern_on_trip" });
+      expect(bad.json()).toMatchObject({ code: "invalid_request", reason: "invalid_reason_code" });
+      const old = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: version, reasonCode: "vehicle_issue_before_start" });
+      expect(old.statusCode, old.body).toBe(200);
     } finally {
       await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
     }

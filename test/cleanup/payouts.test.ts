@@ -76,3 +76,21 @@ describe("payout schedule from the admin (owner G10-2)", () => {
     expect([p.start.toISOString(), p.end.toISOString()]).toEqual(["2026-11-02T07:00:00.000Z", "2026-11-09T07:00:00.000Z"]);
   });
 });
+
+describe("checker 4: a late entry for a week already paid goes to the next open week", () => {
+  it("the entry is paid with the next week, never stuck (SE)", async () => {
+    const id = await driverIn(["Z001"], "SE");
+    await entry(id, "2026-10-27T10:00:00Z", "SEK", 10_000);
+    expect(await run("2026-11-02T07:00:00Z")).toBe(1);
+    // Booked late into the paid week (an admin adjustment dated in it).
+    await entry(id, "2026-10-28T10:00:00Z", "SEK", 700);
+    expect(await run("2026-11-09T07:00:00Z")).toBe(1);
+    expect(await payoutsOf(id)).toEqual([
+      ["SEK", 10_000, "2026-10-26T07:00:00.000Z", "2026-11-02T07:00:00.000Z"],
+      ["SEK", 700, "2026-11-02T07:00:00.000Z", "2026-11-09T07:00:00.000Z"],
+    ]);
+    const left = await database.db.selectFrom("earnings_entries").select("entry_id").where("driver_id", "=", id).where("payout_id", "is", null).execute();
+    expect(left).toEqual([]);
+  });
+});
+

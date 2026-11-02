@@ -50,7 +50,7 @@ const schema = z.object({
   /**
    * v0.18.13 (audit M5, contract.json#finish.paymentMethods.serverSupport): emergency kill-switch only. The admin's
    * per-zone switches decide which methods riders get; the methods the server can take are in code
-   * (SERVER_PAYMENT_METHODS). A method listed here (comma-separated, default none) is served as coming_soon and refused
+   * (SERVER_PAYMENT_METHODS). A method listed here (comma-separated, default none; cash is ignored and logged) is served as coming_soon and refused
    * with payment_method_coming_soon until it is taken off the list. The old PAYMENT_METHODS list is no longer read.
    */
   PAYMENT_METHODS_PAUSED: z

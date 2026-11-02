@@ -153,7 +153,7 @@ export async function adminLinkVehicleDriver(trx: Trx, who: Principal, vehicleId
 export async function adminSetDriverCategories(trx: Trx, who: Principal, driverId: string, rawBody: unknown, now: Date) {
   const row = await driverOfAdmin(trx, who, driverId, true);
   const body = parseBody(CategoriesBody, rawBody);
-  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin") });
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin", now) });
   if (row.vehicle_id === null) throw new ApiError("invalid_transition", "The driver has no car picked.", { reason: "no_vehicle" });
   const car = (await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", row.vehicle_id).executeTakeFirstOrThrow()) as unknown as Car;
   const ids = [...new Set(body.categoryIds)];
@@ -162,7 +162,7 @@ export async function adminSetDriverCategories(trx: Trx, who: Principal, driverI
   if (problems.length > 0) throw new ApiError("invalid_request", "The driver's car does not fit every category.", { reason: "category_not_allowed", details: problems });
   await trx.updateTable("drivers").set({ category_ids: ids, version: row.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
   await audit(trx, { adminId: who.subjectId, action: "driver.categories", targetType: "driver", targetId: driverId, zoneId: row.zone_ids[0] ?? null, detail: { from: row.category_ids, to: ids }, at: now });
-  return driverView(trx, await loadDriver(trx, driverId), "admin");
+  return driverView(trx, await loadDriver(trx, driverId), "admin", now);
 }
 
 /** POST /admin/drivers/{driverId}/bank/review (documents.approve): the bank details document's review. */

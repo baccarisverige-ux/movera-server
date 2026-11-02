@@ -19,9 +19,14 @@ describe("payment methods: admin wins, env only as a kill-switch (audit M5)", ()
   it("an admin's cash switch is available unless paused; a paused method is coming_soon, never silently off (SE + FR docs)", () => {
     const normal = supportedPaymentMethods(readEnv(base).PAYMENT_METHODS_PAUSED);
     expect(paymentOptionsOf({ paymentMethods: ["cash", "card"] }, normal)).toEqual([{ method: "cash", status: "available" }, { method: "card", status: "coming_soon" }]);
-    const paused = supportedPaymentMethods(readEnv({ ...base, PAYMENT_METHODS_PAUSED: "cash" }).PAYMENT_METHODS_PAUSED);
-    expect(paused).toEqual([]);
-    expect(paymentOptionsOf({ paymentMethods: ["cash"] }, paused)).toEqual([{ method: "cash", status: "coming_soon" }]);
+    // Checker 2: cash can never be paused (ignored, with a warning); another method can.
+    const warnings: string[] = [];
+    const paused = supportedPaymentMethods(readEnv({ ...base, PAYMENT_METHODS_PAUSED: "cash,card" }).PAYMENT_METHODS_PAUSED, (m) => warnings.push(m));
+    expect(paused).toEqual(["cash"]);
+    expect(warnings).toHaveLength(1);
+    expect(paymentOptionsOf({ paymentMethods: ["cash"] }, paused)).toEqual([{ method: "cash", status: "available" }]);
+    expect(supportedPaymentMethods(["card"], (m) => warnings.push(m))).toEqual(["cash"]);
+    expect(warnings).toHaveLength(1);
     // A method the admin turned off stays unlisted whatever the server takes.
     expect(paymentOptionsOf({ paymentMethods: ["card"] }, normal)).toEqual([{ method: "card", status: "coming_soon" }]);
   });

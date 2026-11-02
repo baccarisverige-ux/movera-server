@@ -769,13 +769,13 @@ paths:
         (v0.18.13 pickupWaiting.headingCheck), cancellation.feeKind cancel). The status stays cancelled_by_rider (the transition
         table is unchanged). Closes the gap where cancelling after arrival (35 kr) was cheaper than a no-show (65 kr). v0.18.13:
         Inside the cancel rule''s free minutes (default 2) the rider always cancels free. After them (live trip, driver not
-        yet arrived): the fee is charged only while the driver is heading to pickup; when the latest check says he has NOT
-        been heading for notHeadingMinutes in a row (or no check could be made: no position) the cancel is free (cancellation.fee
-        null). A driver within the arrive radius counts as heading. v0.18.13 (owner G5-9 ''Load from admin''): POST /trips/{tripId}/cancel
-        by a driver accepts only the codes the zone''s live DriverAppConfig.cancelReasons lists for the sheet (driverBeforeTrip,
-        driverDuringTrip, scheduled); a sheet the admin did not set uses contract.json#cancelReasons. A code not on the list
-        → 400 invalid_request, reason invalid_reason_code. Titles (sv/fr/en) come from DriverAppConfig.texts; the app keeps
-        the built-in list as the offline backup.'
+        yet arrived): the fee is charged unless the latest check says the driver has NOT been heading for notHeadingMinutes
+        in a row (then the cancel is free, cancellation.fee null). No check yet (a trip accepted before v0.18.13, no position
+        so far) = the normal fee rules. A check without a position changes nothing (the previous state and its clock stay).
+        A driver within the arrive radius counts as heading. v0.18.13 (owner G5-9 ''Load from admin''): DriverAppConfig.cancelReasons
+        (the zone''s admin list per sheet) decides which reasons the driver app SHOWS; titles (sv/fr/en) come from DriverAppConfig.texts
+        and the app keeps the built-in list as the offline backup. The server accepts every contract code of the sheet (contract.json#cancelReasons),
+        so an old app that shows the built-in list keeps working; a code of another sheet → 400 invalid_request, reason invalid_reason_code.'
       tags:
       - Trips
       x-actor:
@@ -18075,8 +18075,9 @@ components:
             v0.18.13 (audit M5, rule 2 ''admin settings must really work''): this list is in the server''s code, not a deployment
             setting, so the admin''s per-zone switches decide what riders see; the old PAYMENT_METHODS environment list is
             no longer read. The only server-side override is the emergency kill-switch environment variable PAYMENT_METHODS_PAUSED
-            (comma list, default empty): a method listed there is served as coming_soon and refused with payment_method_coming_soon
-            even if the admin turned it on, until it is taken off the list.'
+            (comma list, default empty): cash can never be paused (listed cash is ignored and logged); any other method listed
+            there is served as coming_soon and refused with payment_method_coming_soon even if the admin turned it on, until
+            it is taken off the list.'
         tipRules:
           $ref: '#/components/schemas/TipRules'
     DriverAppConfig:
@@ -18274,10 +18275,10 @@ components:
         cancelReasons:
           type: object
           description: 'Enabled codes per reason sheet; titles come from `texts`. v0.18.13: v0.18.13 (owner G5-9 ''Load from
-            admin''): POST /trips/{tripId}/cancel by a driver accepts only the codes the zone''s live DriverAppConfig.cancelReasons
-            lists for the sheet (driverBeforeTrip, driverDuringTrip, scheduled); a sheet the admin did not set uses contract.json#cancelReasons.
-            A code not on the list → 400 invalid_request, reason invalid_reason_code. Titles (sv/fr/en) come from DriverAppConfig.texts;
-            the app keeps the built-in list as the offline backup.'
+            admin''): DriverAppConfig.cancelReasons (the zone''s admin list per sheet) decides which reasons the driver app
+            SHOWS; titles (sv/fr/en) come from DriverAppConfig.texts and the app keeps the built-in list as the offline backup.
+            The server accepts every contract code of the sheet (contract.json#cancelReasons), so an old app that shows the
+            built-in list keeps working; a code of another sheet → 400 invalid_request, reason invalid_reason_code.'
           properties:
             driverBeforeTrip:
               type: array
@@ -18358,8 +18359,9 @@ components:
             v0.18.13 (audit M5, rule 2 ''admin settings must really work''): this list is in the server''s code, not a deployment
             setting, so the admin''s per-zone switches decide what riders see; the old PAYMENT_METHODS environment list is
             no longer read. The only server-side override is the emergency kill-switch environment variable PAYMENT_METHODS_PAUSED
-            (comma list, default empty): a method listed there is served as coming_soon and refused with payment_method_coming_soon
-            even if the admin turned it on, until it is taken off the list.'
+            (comma list, default empty): cash can never be paused (listed cash is ignored and logged); any other method listed
+            there is served as coming_soon and refused with payment_method_coming_soon even if the admin turned it on, until
+            it is taken off the list.'
         headingCheck:
           $ref: '#/components/schemas/HeadingCheckSettings'
     CategoryPricingWaiting:
@@ -25908,10 +25910,10 @@ components:
       description: 'v0.18.13: TripProjection.headingCheck { heading, checkedAt, notHeadingSince?, freeCancel } from accept
         until arrived (all views): heading = the latest check; freeCancel = a rider cancel now costs nothing because of this
         rule. The admin dispatch map flags trips with heading false. Inside the cancel rule''s free minutes (default 2) the
-        rider always cancels free. After them (live trip, driver not yet arrived): the fee is charged only while the driver
-        is heading to pickup; when the latest check says he has NOT been heading for notHeadingMinutes in a row (or no check
-        could be made: no position) the cancel is free (cancellation.fee null). A driver within the arrive radius counts as
-        heading.'
+        rider always cancels free. After them (live trip, driver not yet arrived): the fee is charged unless the latest check
+        says the driver has NOT been heading for notHeadingMinutes in a row (then the cancel is free, cancellation.fee null).
+        No check yet (a trip accepted before v0.18.13, no position so far) = the normal fee rules. A check without a position
+        changes nothing (the previous state and its clock stay). A driver within the arrive radius counts as heading.'
       required:
       - heading
       - checkedAt

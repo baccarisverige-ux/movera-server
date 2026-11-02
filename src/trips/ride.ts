@@ -832,12 +832,12 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   if (amount.amountMinor <= 0) return null;
   if (trip.kind === "live" && trip.status !== "arrived") {
     // v0.18.13 (owner G5-8, contract.json#pickupWaiting.headingCheck.riderCancel): after the free minutes the rider pays
-    // only while the driver is heading to the pickup (checked with every ETA tick). Never checked (no position at all)
-    // = no proof he was coming; not heading for notHeadingMinutes in a row = free.
+    // only while the driver is heading to the pickup (checked with every ETA tick); not heading for notHeadingMinutes in
+    // a row = free. Checker 1: no check yet (a trip accepted before the deploy, no position so far) = the normal fee rules.
     const settings = await headingSettingsFor(ex, trip.zone_id);
     if (settings.on) {
       const state = trip.heading_check as HeadingState | null;
-      if (state === null || headingFreeCancel(state, settings, now)) return null;
+      if (state !== null && headingFreeCancel(state, settings, now)) return null;
     }
   }
   return { fee: amount, kind: "cancel" };
@@ -888,9 +888,9 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
     throw new ApiError("invalid_transition", `A driver cannot cancel a trip that is ${trip.status}.`, { projection: tripProjection(trip, "driver") });
   }
   const onboard = ONBOARD.includes(trip.status);
-  // v0.18.13 (owner G5-9 "Load from admin", contract.json#pickupWaiting.cancelReasons): the zone's admin list per sheet.
-  const reasons = await driverCancelReasonsOf(trx, trip.zone_id);
-  const allowed = onboard ? reasons["driverDuringTrip"]! : trip.kind === "scheduled" ? [...reasons["scheduled"]!, ...reasons["driverBeforeTrip"]!] : reasons["driverBeforeTrip"]!;
+  // v0.18.13 checker 3: the admin list (DriverAppConfig.cancelReasons, driverCancelReasonsOf) only decides what the app
+  // shows; the server accepts every contract code of the sheet, so an old app showing the built-in list still works.
+  const allowed = onboard ? REASONS["driverDuringTrip"]! : trip.kind === "scheduled" ? [...REASONS["scheduled"]!, ...REASONS["driverBeforeTrip"]!] : REASONS["driverBeforeTrip"]!;
   if (!allowed.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a reason for a driver cancel now.`, "invalid_reason_code");
   // The driver's note is for Movera only (driver_cancels); the rider sees the reason code.
   const cancellation = { actor: "driver", reasonCode: body.reasonCode, at: now.toISOString(), fee: null };

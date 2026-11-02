@@ -55,7 +55,7 @@ export function isFreeCancel(state: HeadingState | null, settings: HeadingSettin
 export function nextHeading(
   previous: HeadingState | null,
   input: { now: Date; settings: HeadingSettings; meters: number | null; speedMps: number | null; atPickup: boolean },
-): HeadingState {
+): HeadingState | null {
   const checkedAt = input.now.toISOString();
   const keep = (heading: boolean): HeadingState => {
     const since = previous && !previous.heading && previous.notHeadingSince ? previous.notHeadingSince : checkedAt;
@@ -67,8 +67,8 @@ export function nextHeading(
     ...(input.speedMps !== null ? { speedMps: input.speedMps } : previous?.speedMps !== undefined ? { speedMps: previous.speedMps } : {}),
     };
   };
-  // No position: no proof the driver is coming.
-  if (input.meters === null) return keep(false);
+  // Checker 1: a tick without a position changes nothing — the previous state and its clock stay (none yet = none).
+  if (input.meters === null) return previous;
   if (input.atPickup) return keep(true);
   // The first check sets the start line.
   if (!previous || previous.meters === undefined) return keep(true);
@@ -113,8 +113,10 @@ export async function headingTick(
   const atPickup = input.fix ? haversineKm(input.fix, trip.pickup as Place) * 1000 <= AT_PICKUP_METERS : false;
   const meters = input.leg ? input.leg.distanceMeters : null;
   const speedMps = input.leg && input.leg.durationSeconds > 0 ? input.leg.distanceMeters / input.leg.durationSeconds : null;
-  const state = nextHeading(trip.heading_check as HeadingState | null, { now: input.now, settings, meters, speedMps, atPickup });
-  await trx.updateTable("trips").set({ heading_check: JSON.stringify(state) }).where("trip_id", "=", trip.trip_id).execute();
+  const previous = trip.heading_check as HeadingState | null;
+  const state = nextHeading(previous, { now: input.now, settings, meters, speedMps, atPickup });
+  if (state === null) return false;
+  if (state !== previous) await trx.updateTable("trips").set({ heading_check: JSON.stringify(state) }).where("trip_id", "=", trip.trip_id).execute();
   if (settings.reassign && isFreeCancel(state, settings, input.now)) {
     await reassign(trx, { ...trip, heading_check: state }, input.now);
     return true;

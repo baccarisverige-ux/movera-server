@@ -1,6 +1,5 @@
 import { drivingTimeOf, resetOnOnline } from "./drivingTime.js";
 import { scheduleRideCheckScan } from "../safety/rideCheckServer.js";
-import { sql } from "kysely";
 import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { schemaProblem } from "../contract/schemas.js";
 import type { Executor, Trx } from "../db/db.js";
@@ -120,7 +119,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     // v0.18.13 (contract.json#drivingLimits.projection): counted driving time against the limit.
     ...(viewer === "driver" ? { drivingTime: await drivingTimeOf(ex, { driver_id: row.driver_id, zone_ids: row.zone_ids, driving_since: row.driving_since ?? null }, now) } : {}),
     ...(row.account_type === "fleet" ? { payoutTo: "self" } : row.account_type === "driver" && fleet ? { payoutTo: "fleet" } : {}),
-    ...(row.account_type ? { pendingFleetInvitations: await pendingInvitations(ex, row) } : {}),
+    ...(row.account_type ? { pendingFleetInvitations: await pendingInvitations(ex, row, now) } : {}),
     // v0.18.0 (§27): the lists of the country's onboarding settings (the admin's), else the contract defaults.
     requiredDocuments: await liveRequiredDocuments(ex, row.country, "driver"),
     ...(row.account_type === "fleet" ? { requiredFleetDocuments: await liveRequiredDocuments(ex, row.country, "fleet") } : {}),
@@ -140,7 +139,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
 }
 
 /** v0.5.3: invitations waiting for this account's answer (a driver's incoming invites, an owner's incoming requests). */
-async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id" | "account_type">): Promise<number> {
+async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id" | "account_type">, now: Date): Promise<number> {
   const q =
     row.account_type === "fleet"
       ? ex
@@ -152,7 +151,8 @@ async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id"
   const n = await q
     .select((eb) => eb.fn.countAll<string>().as("n"))
     .where("fleet_invitations.status", "=", "pending")
-    .where("fleet_invitations.expires_at", ">", sql<Date>`now()`)
+    // The command's clock, not the database's (a test clock or a slow request must not change the answer).
+    .where("fleet_invitations.expires_at", ">", now)
     .executeTakeFirstOrThrow();
   return Number(n.n);
 }
@@ -227,7 +227,7 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
     })
     .where("driver_id", "=", driverId)
     .execute();
-  return driverView(trx, await loadDriver(trx, driverId), "driver");
+  return driverView(trx, await loadDriver(trx, driverId), "driver", now);
 }
 
 /** POST /driver/availability: online or offline (contract: 409 with the Driver when it cannot be). */
@@ -238,7 +238,7 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
   const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await stale(row, trx)() });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "Your status changed since you last saw it.", { projection: await stale(row, trx)() });
   // On a trip the driver already counts as online; "online" must not turn on_trip into free.
-  if (body.onlineStatus === row.online_status || (body.onlineStatus === "online" && row.online_status === "on_trip")) return driverView(trx, row, "driver");
+  if (body.onlineStatus === row.online_status || (body.onlineStatus === "online" && row.online_status === "on_trip")) return driverView(trx, row, "driver", now);
   if (body.onlineStatus === "online") {
     if (row.account_status !== "active") throw await refuse("Your account is not active yet.", "account_not_active");
     // v0.5.3: a driver account works for a fleet; the fleet must be approved (not blocked).

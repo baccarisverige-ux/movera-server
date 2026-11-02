@@ -119,14 +119,14 @@ export function payoutView(row: PayoutRow, viewer: "admin" | "driver") {
  * € are never added). Returns the payouts made (none when there is nothing to pay). The entries are locked, so two
  * runs (the job and an admin, or two admins) never take the same entry.
  */
-export async function makePayouts(trx: Trx, input: { driverId: string; from: Date; to: Date; source: "weekly" | "manual"; by: string | null; note?: string }, now: Date): Promise<PayoutRow[]> {
+export async function makePayouts(trx: Trx, input: { driverId: string; from: Date; to: Date; source: "weekly" | "manual"; by: string | null; note?: string; entriesFrom?: Date }, now: Date): Promise<PayoutRow[]> {
   const entries = await trx
     .selectFrom("earnings_entries as e")
     .leftJoin("trips as t", "t.trip_id", "e.trip_id")
     .select(["e.entry_id", "e.kind", "e.currency", "e.amount_minor", "e.cash_minor", "t.fare_lines"])
     .where("e.driver_id", "=", input.driverId)
     .where("e.payout_id", "is", null)
-    .where("e.at", ">=", input.from)
+    .where("e.at", ">=", input.entriesFrom ?? input.from)
     .where("e.at", "<", input.to)
     .orderBy("e.at")
     .forUpdate("e")
@@ -241,10 +241,16 @@ export async function closePeriods(trx: Trx, now: Date): Promise<number> {
       schedules.set(key, payoutScheduleOf(live?.document as { payoutSchedule?: Partial<PayoutSchedule> } | undefined));
     }
     const schedule = schedules.get(key)!;
-    // Every ended period from the oldest unpaid entry on.
-    let period = await periodOf(trx, new Date(row.first_at), timeZone, schedule);
+    // Every ended period from the oldest unpaid entry on. Checker 4: an entry that came in late for a period already
+    // paid goes into the next open period (never stuck): periods start after the driver's last weekly payout.
+    const last = await trx.selectFrom("payouts").select((eb) => eb.fn.max("period_end").as("end")).where("driver_id", "=", row.driver_id).where("source", "=", "weekly").executeTakeFirst();
+    const lastEnd = last?.end ? new Date(last.end as unknown as string) : null;
+    const firstAt = new Date(row.first_at);
+    let period = await periodOf(trx, lastEnd && lastEnd > firstAt ? lastEnd : firstAt, timeZone, schedule);
+    let entriesFrom: Date | undefined = lastEnd && lastEnd > firstAt ? new Date(0) : undefined;
     while (period.end.getTime() <= now.getTime()) {
-      made += (await makePayouts(trx, { driverId: row.driver_id, from: period.start, to: period.end, source: "weekly", by: null }, now)).length;
+      made += (await makePayouts(trx, { driverId: row.driver_id, from: period.start, to: period.end, source: "weekly", by: null, ...(entriesFrom ? { entriesFrom } : {}) }, now)).length;
+      entriesFrom = undefined;
       period = await periodOf(trx, period.end, timeZone, schedule);
     }
   }
