@@ -1,3 +1,4 @@
+import { NOT_HELD } from "../reservations/view.js";
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
@@ -256,7 +257,7 @@ async function link(trx: Trx, deps: InviteDeps, row: InvitationRow, driver: Driv
   if (driver.fleet_id !== null) throw new ApiError("conflict", "The driver is already in a fleet.", { reason: "already_in_fleet" });
   if (driver.account_type === "fleet") throw new ApiError("conflict", "A fleet account cannot join another fleet.", { reason: "fleet_account" });
   if (fleet.status !== "approved") throw new ApiError("invalid_transition", "The fleet is not approved.", { reason: "fleet_not_approved" });
-  const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driver.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+  const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driver.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
   if (active) throw new ApiError("invalid_transition", "The driver is on a trip; try after it.", { reason: "on_trip" });
   await decide(trx, row, "accepted", by, now);
   await trx

@@ -147,6 +147,10 @@ function bodyFor(route: string): Json | undefined {
     "POST /trips/:tripId/messages": { ...v, text: "hello" },
     "POST /trips/:tripId/keep-waiting": { ...v, answer: "stop" },
     "POST /trips/:tripId/end-early": { ...v, reasonCode: "plans_changed" },
+    // v0.18.17 Book later.
+    "POST /trips/:tripId/reschedule": { ...v, quoteId: "qte_matrix" },
+    "POST /driver/reservations/:tripId/release": { reasonCode: "scheduled_other" },
+    "POST /driver/reservations/:tripId/keep": { keep: true },
     "POST /rider/trips/:tripId/sos": { at: "2026-10-27T10:00:00Z" },
     "POST /driver/trips/:tripId/sos": { at: "2026-10-27T10:00:00Z" },
     "POST /rider/trips/:tripId/ride-check": { checkId: "rc-matrix", trigger: "long_stop", at: "2026-10-27T10:00:00Z" },

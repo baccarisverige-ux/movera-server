@@ -25,6 +25,8 @@ const HAD_DRIVER = new Set(["accepted", "driver_to_pickup", "arrived"]);
 /** The moment a lifecycle step is for the rider, or null (most steps are not pushed). */
 export function momentOf(before: Pick<TripRow, "status" | "driver_id">, after: Pick<TripRow, "status">): TripMoment | null {
   if (before.status === after.status) return null;
+  // v0.18.17 (contract.json#bookLater.driver.accept): a booked ride taken from Scheduled rides sends its own message.
+  if (after.status === "accepted" && before.status === "requested") return null;
   if (after.status === "accepted") return "driver_found";
   if (after.status === "arrived") return "driver_arrived";
   if (after.status === "searching" && before.driver_id && HAD_DRIVER.has(before.status)) return "driver_changed";

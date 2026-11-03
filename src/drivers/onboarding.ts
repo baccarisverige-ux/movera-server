@@ -1,3 +1,4 @@
+import { NOT_HELD } from "../reservations/view.js";
 import { randomInt } from "node:crypto";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
@@ -171,7 +172,7 @@ export async function recordJoinTry(ex: Executor, driverId: string, now: Date): 
 
 /** Takes a driver out of his fleet: car released, offline, open offers withdrawn. Not during a trip. */
 export async function unlinkFromFleet(trx: Trx, row: DriverRow, now: Date, reason: "left" | "removed_by_owner" | "removed_by_admin" | "fleet_blocked"): Promise<void> {
-  const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", row.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+  const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", row.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
   if (active) throw new ApiError("invalid_transition", "Finish the trip first.", { reason: "on_trip", projection: await driverView(trx, row, "driver", now) });
   await releaseCar(trx, row.driver_id);
   const online = ["online", "going_online"].includes(row.online_status);
@@ -204,7 +205,7 @@ export async function startOwnCompany(trx: Trx, driverId: string, body: unknown,
     await unlinkFromFleet(trx, row, now, "left");
     row = await loadDriver(trx, driverId, true);
   } else {
-    const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+    const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
     if (active) throw new ApiError("invalid_transition", "Finish the trip first.", { reason: "on_trip", projection: await driverView(trx, row, "driver", now) });
   }
   const city = cityOf(row.country!, row.city_id!);
@@ -327,7 +328,7 @@ export async function reviewFleet(trx: Trx, who: Admin, fleetId: string, body: {
     const members = await trx.selectFrom("drivers").selectAll().where("fleet_id", "=", fleetId).forUpdate().execute();
     for (const member of members) {
       const row = member as unknown as DriverRow;
-      const onTrip = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", row.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+      const onTrip = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", row.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
       if (onTrip) continue; // keeps the trip to its end; the next online is refused by the blocked fleet
       await unlinkFromFleet(trx, row, now, "fleet_blocked");
     }

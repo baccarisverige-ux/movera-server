@@ -1,3 +1,4 @@
+import { NOT_HELD } from "../reservations/view.js";
 import { createHmac } from "node:crypto";
 import { sql } from "kysely";
 import type { Executor } from "../db/db.js";
@@ -63,7 +64,7 @@ export async function nearbyVehicles(ex: Executor, point: { lat: number; lng: nu
     .where("driver_locations.lng", "<=", point.lng + dLng)
     // A driver with an accepted trip is not free, also before the app says on_trip.
     .where(({ not, exists, selectFrom }) =>
-      not(exists(selectFrom("trips").select(sql`1`.as("one")).whereRef("trips.driver_id", "=", "drivers.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]))),
+      not(exists(selectFrom("trips").select(sql`1`.as("one")).whereRef("trips.driver_id", "=", "drivers.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD))),
     )
     .execute();
   const items = rows

@@ -1,3 +1,4 @@
+import { reservationView } from "../reservations/view.js";
 import { headingView } from "./headingCheck.js";
 import type { TripRow } from "../db/tripLog.js";
 import { bonusFor, priorityFor } from "../dispatch/bonusScope.js";
@@ -185,6 +186,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     sequence: overrides.sequence ?? Number(row.sequence),
     kind: row.kind,
     ...(row.scheduled_at ? { scheduledAt: iso(row.scheduled_at) } : {}),
+    // v0.18.17 (contract.json#bookLater.rider.projection).
+    ...(reservationView(row, viewer === "rider" ? "rider" : viewer === "driver" ? "driver" : "admin") ? { reservation: reservationView(row, viewer === "rider" ? "rider" : viewer === "driver" ? "driver" : "admin") } : {}),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
     acceptedAt: iso(row.accepted_at) ?? null,

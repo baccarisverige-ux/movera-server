@@ -1,3 +1,4 @@
+import { NOT_HELD } from "../reservations/view.js";
 import { drivingTimeOf, resetOnOnline } from "./drivingTime.js";
 import { scheduleRideCheckScan } from "../safety/rideCheckServer.js";
 import { TERMS_REASON, termsAccepted } from "../content/routes.js";
@@ -41,6 +42,8 @@ const MAX_FIX_AHEAD_MS = 60 * 1000;
 
 export type DriverRow = {
   driver_id: string;
+  /** v0.18.17 (owner BL-Q4). */
+  home_area?: unknown;
   phone: string;
   first_name: string;
   account_status: string;
@@ -83,7 +86,8 @@ export async function loadDriver(ex: Executor, driverId: string, lock = false): 
 }
 
 async function activeTripOf(ex: Executor, driverId: string) {
-  return ex.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+  // v0.18.17 (contract.json#bookLater): a booked ride held for later (scheduled, accepted) is not the current trip.
+  return ex.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
 }
 
 export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin", now: Date = new Date()): Promise<Record<string, unknown>> {
@@ -124,6 +128,8 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     requiredDocuments: await liveRequiredDocuments(ex, row.country, "driver"),
     ...(row.account_type === "fleet" ? { requiredFleetDocuments: await liveRequiredDocuments(ex, row.country, "fleet") } : {}),
     ...(active ? { activeTripId: active.trip_id } : {}),
+    // v0.18.17 (owner BL-Q4): the driver's home area, set in the driver app; admins see it too.
+    ...(row.home_area ? { homeArea: row.home_area } : {}),
     ...(row.scheduled_rides ? { scheduledRides: row.scheduled_rides } : {}),
     // v0.18.4 (G3-R2): the driver is told when his latest position is outside all his zones (no trips there).
     ...(viewer === "driver" ? await areaView(ex, row) : {}),

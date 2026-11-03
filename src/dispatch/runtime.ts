@@ -1,3 +1,4 @@
+import { afterHeldAccept, currentTripOf, exclusiveOnly, heldForLater, reservationTimer, searchesAgain } from "../reservations/service.js";
 import { drivingLimitReached } from "../drivers/drivingTime.js";
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
 import { commissionOf } from "../rules/commission.js";
@@ -11,7 +12,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent, lockTrip, OFFER_EVENTS_CHANNEL, type TripRow } from "../db/tripLog.js";
 import { ApiError } from "../http/errors.js";
 import { newId } from "../ids.js";
-import { cancelTimer, scheduleTimer, TimerBusy, type TimerHandler } from "../jobs/timers.js";
+import { cancelTimer, scheduleTimer, TimerBusy, type Timer, type TimerHandler } from "../jobs/timers.js";
 import { liveDocument } from "../config/service.js";
 import { autoOfflineIfDue, COUNTING_KINDS } from "./autoOffline.js";
 import { queueOfferPush } from "./offerPush.js";
@@ -82,6 +83,8 @@ async function controlOf(ex: Executor, zoneId: string): Promise<Control> {
 
 /** Called in the transaction that puts a live trip into searching. */
 export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<void> {
+  // v0.18.17 (owner BL-Q7): a booked ride past its pickup time goes out as Exclusive offers only.
+  const forced = exclusiveOnly(trip, now) ? ("exclusive" as const) : null;
   const live = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
   if (live === null) {
     // No published rules: nothing to dispatch with. The trip waits for an admin (alert) until it expires.
@@ -89,12 +92,13 @@ export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<v
     await scheduleTimer(trx, { kind: END, refId: trip.trip_id, dueAt: new Date(now.getTime() + 10 * 60_000), payload: {} });
     return;
   }
-  const doc = live.document;
+  // BL-Q7: Exclusive only (widening), never Radar, for a booked ride past its pickup time.
+  const doc: DispatchDoc = forced ? { ...live.document, exclusive: { ...live.document.exclusive, on: true, then: "widen" }, radar: { ...live.document.radar, on: false } } : live.document;
   const waiting = await trx.selectFrom("trips").select((eb) => eb.fn.countAll<string>().as("n")).where("zone_id", "=", trip.zone_id).where("status", "in", ["requested", "searching", "offered"]).executeTakeFirstOrThrow();
   const free = await freeDriversInZone(trx, trip.zone_id, now);
   const busy = busyOf(Number(waiting.n), free);
   const control = await controlOf(trx, trip.zone_id);
-  const start = startOf(doc, control, busy, localTime(doc.timeZone, now));
+  const start = forced ? { mode: forced } : startOf(doc, control, busy, localTime(doc.timeZone, now));
   const mode = start?.mode ?? null;
   const steps: Step[] = waitingSteps(doc).map((w) => ({ id: w.id, kind: w.kind, message: w.message, extraMin: w.extraMin ?? null, atSec: w.atSec }));
   const endAt = new Date(now.getTime() + searchEndSec(doc) * 1000);
@@ -193,7 +197,8 @@ async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, n
     if (d.vehicle_status !== null && (d.vehicle_status !== "approved" || (carTypes.length > 0 && !carTypes.includes(trip.category_id)))) continue;
     // A free driver holds at most one open Exclusive; one with a rider at most exclusiveWhileDriving.count (§3.6).
     const open = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).executeTakeFirstOrThrow();
-    const active = await trx.selectFrom("trips").select(["trip_id", "status", "dropoff"]).where("driver_id", "=", d.driver_id).where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).executeTakeFirst();
+    // v0.18.17: a booked ride he holds for later (scheduled, accepted) is not his current trip.
+    const active = await currentTripOf(trx, d.driver_id);
     // Next trips (an offer to a driver who still has a rider) are a later round (owner decision 10): only free
     // drivers get offers in the test week.
     if (active || d.online_status !== "online") continue;
@@ -471,7 +476,6 @@ export function positiveSeconds(...candidates: (number | null | undefined)[]): n
   return 15;
 }
 
-const ASSIGNED_TRIP = ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"];
 
 /**
  * Direct assign (kind assigned, one driver) or a radar group (kind radar, 1–10 drivers, one groupId), sent by an
@@ -508,7 +512,7 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   for (const driverId of driverIds) {
     const d = rows.find((r) => r.driver_id === driverId);
     if (!d) throw new ApiError("not_found", "No such driver.", { reason: "driver_not_found" });
-    const busy = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", ASSIGNED_TRIP).executeTakeFirst();
+    const busy = await currentTripOf(trx, driverId);
     const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "received_at", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
     const fresh = fix && now.getTime() - fix.received_at.getTime() <= STALE_AFTER_SECONDS * 1000 && now.getTime() - fix.measured_at.getTime() <= DISPATCH_FIX_MAX_AGE_SECONDS * 1000;
     const already = await trx.selectFrom("offers").select("offer_id").where("trip_id", "=", trip.trip_id).where("driver_id", "=", driverId).where("status", "=", "open").where("expires_at", ">", now).executeTakeFirst();
@@ -615,7 +619,9 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   await queue.flush(trx, now, [driverId]);
   const driver = await trx.selectFrom("drivers").selectAll().where("driver_id", "=", driverId).executeTakeFirstOrThrow();
   // Only an active, online driver with no trip can take one (a driver who went offline keeps no offer, §3.6).
-  const busy = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).executeTakeFirst();
+  const busy = await currentTripOf(trx, driverId);
+  // v0.18.17: an admin-assigned booked ride taken before its dispatch time is held for later (no on_trip, no ETA yet).
+  const held = heldForLater(trip, now);
   if (driver.account_status !== "active" || driver.online_status !== "online" || busy) {
     throw new ApiError("conflict", busy ? "You already have a trip." : "Go online to take rides.", { reason: busy ? "driver_on_trip" : "driver_not_available", projection: offerView(offer, trip) });
   }
@@ -660,9 +666,13 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       accept_pickup_meters: offer.pickup_meters,
     },
   });
-  await trx.updateTable("drivers").set({ online_status: "on_trip", version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
-  // v0.18.7 (Q4): the server's road-route ETA starts ticking now (trips/eta.ts).
-  await startEta(trx, trip.trip_id, now);
+  if (held) {
+    await afterHeldAccept(trx, trip, now);
+  } else {
+    await trx.updateTable("drivers").set({ online_status: "on_trip", version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
+    // v0.18.7 (Q4): the server's road-route ETA starts ticking now (trips/eta.ts).
+    await startEta(trx, trip.trip_id, now);
+  }
   await endSearchTimers(trx, trip.trip_id);
   // v0.18.6 (G4-F4): a repeating radar-zone send ends the moment a driver takes the trip.
   await endTripSends(trx, trip.trip_id, "accepted", null, now);
@@ -747,6 +757,18 @@ async function expireSearch(trx: Trx, tripId: string, now: Date) {
   if (!locked || !OPEN_STATUSES.includes(locked.status)) return;
   let trip = locked;
   const queue = new FeedQueue();
+  // v0.18.17 (contract.json#bookLater.plan, owner Q3 "keep searching"): a booked ride's search that ends before the
+  // pickup time starts again; after the pickup time it ends like a live ride's.
+  if (searchesAgain(trip, now)) {
+    await closeOpenOffers(trx, trip, "withdrawn", now, queue);
+    await queue.flush(trx, now);
+    await endSearchTimers(trx, tripId);
+    if (trip.status === "offered") trip = await applyCommand(trx, trip, { command: "offer_lapsed", actor: "system", now });
+    // A new round asks everyone again (a driver who said no an hour ago may say yes now).
+    await trx.updateTable("searches").set({ state: null }).where("trip_id", "=", tripId).execute();
+    await startSearch(trx, trip, now);
+    return;
+  }
   // Deep fix 2026-11-02 (MED "search end counts as miss"): the search ending takes the offers back (withdrawn) — the
   // driver did not let them run out, so they never count as missed offers for auto offline.
   await closeOpenOffers(trx, trip, "withdrawn", now, queue);
@@ -804,6 +826,8 @@ export const withdrawHandler: TimerHandler = async (trx, timer) => {
 
 // v0.18.7: the ETA tick booked at accept rides with the dispatch handlers (straight-line estimate here; main.ts sets the
 // server's real router over it, [TRIP_ETA]: etaHandler(router)).
-export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler, // "trip_eta" spelled out and the handler made on first use: trips/eta.ts imports this module, so when eta.ts loads
+export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler,
+  // v0.18.17 (contract.json#bookLater.timers): the booked-ride timers (kinds spelled out: reservations/service.ts imports this module).
+  ...Object.fromEntries(["resv_popup", "resv_open_all", "resv_dispatch", "resv_no_driver", "resv_rider_reminder", "resv_driver_reminder", "resv_go_online", "resv_offline_check", "resv_change_ask", "resv_overdue"].map((kind) => [kind, (trx: Trx, timer: Timer) => reservationTimer(trx, timer)])), // "trip_eta" spelled out and the handler made on first use: trips/eta.ts imports this module, so when eta.ts loads
 // first (main.ts), TRIP_ETA is not initialised yet while this line runs (Render deploy of 48e587e crashed on it).
   trip_eta: (trx, timer) => etaHandler(new EstimateRouter())(trx, timer) };

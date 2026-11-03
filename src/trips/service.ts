@@ -1,3 +1,4 @@
+import { checkWindow, planBookedRide } from "../reservations/service.js";
 import { appendTripEvent } from "../db/tripLog.js";
 import { checkPaymentMethod } from "./finish.js";
 import { commissionOf } from "../rules/commission.js";
@@ -89,6 +90,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   // v0.11.0 §20: a zone closed since the quote takes no new rides ("Movera isn't here yet").
   const zoneRow = await trx.selectFrom("zones").select("open").where("zone_id", "=", quote.zone_id).executeTakeFirst();
   if (zoneRow?.open !== true) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
+  // v0.18.17 (contract.json#bookLater.window): the window again at booking (the quote may be minutes old).
+  if (body.kind === "scheduled" && quote.scheduled_at) await checkWindow(trx, quote.zone_id, quote.scheduled_at, now);
   const rider = await trx.selectFrom("riders").select(["status"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
   if (rider.status !== "active") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
   // v0.10.0 §19 Legal: new terms published with reaccept must be accepted before booking.
@@ -159,6 +162,9 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   if (trip.kind === "live") {
     trip = await applyCommand(trx, trip, { command: "start_search", actor: "system", now, set: { search_started_at: now } });
     await startSearch(trx, trip, now);
+  } else {
+    // v0.18.17 (contract.json#bookLater.plan): now-mode searches at once, list-mode goes on Scheduled rides + notice.
+    trip = await planBookedRide(trx, trip, now);
   }
   return trip;
 }
