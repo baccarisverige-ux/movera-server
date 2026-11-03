@@ -210,11 +210,21 @@ describe("owner \"Leave ticket\": the claiming admin gives the ticket back to th
       other.post(`/admin/tickets/${id}/topic`, { category: "payment" }),
       other.post(`/admin/tickets/${id}/waiting`, { waiting: true }),
       owner.post(`/admin/tickets/${id}/solve`, {}),
+      (async () => (await sim.admin("ops")).post(`/admin/tickets/${id}/claim`, {}))(),
     ];
-    for (const res of await Promise.all(tries)) expect([res.status, res.body["reason"]]).toEqual([409, "ticket_not_yours"]);
+    for (const res of await Promise.all(tries)) expect([res.status]).toEqual([409]);
     expect((await agent.post(`/admin/tickets/${id}/reply`, { text: "On it" })).status).toBe(200);
     await agent.post(`/admin/tickets/${id}/solve`, {});
     expect((await other.post(`/admin/tickets/${id}/reopen`, { reason: "x" })).body["reason"]).toBe("ticket_not_yours");
+    // Owner 2026-11-03: a Super admin can take over another admin's claim (audited); then only he acts.
+    const id2 = await open();
+    await agent.post(`/admin/tickets/${id2}/claim`, {});
+    const taken = await owner.post(`/admin/tickets/${id2}/claim`, {});
+    expect(taken.body["assignedTo"]).toMatchObject({ adminId: owner.id });
+    expect((await agent.post(`/admin/tickets/${id2}/reply`, { text: "x" })).body["reason"]).toBe("ticket_not_yours");
+    const takeover = await sim.db.selectFrom("admin_audit").select(["action", "detail"]).where("target_id", "=", id2).where("action", "=", "ticket.takeover").execute();
+    expect(takeover).toHaveLength(1);
+    expect(takeover[0]!.detail).toMatchObject({ from: agent.id });
     // Checker LOW: a solved ticket cannot be claimed.
     await agent.post(`/admin/tickets/${id}/leave`, {});
     expect((await other.post(`/admin/tickets/${id}/claim`, {})).body["reason"]).toBe("ticket_not_open");

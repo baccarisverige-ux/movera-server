@@ -225,10 +225,11 @@ export async function claim(trx: Trx, who: Principal, row: Row, now: Date) {
   // Checker LOW: a solved or closed ticket is not claimed (it is reopened first).
   if (SOLVED.has(row.status)) throw new ApiError("invalid_transition", "This ticket is not open.", { reason: "ticket_not_open" });
   // Owner 2026-11-02 "Never": a claim stays until the ticket is solved or handed over.
-  const other = row.assigned_admin_id && row.assigned_admin_id !== who.subjectId;
-  if (other) throw new ApiError("conflict", "Another admin works on this ticket.", { reason: "ticket_claimed" });
+  const other = row.assigned_admin_id && row.assigned_admin_id !== who.subjectId ? row.assigned_admin_id : null;
+  // Owner 2026-11-03: a Super admin can take over a ticket another admin claimed (audited); nobody else.
+  if (other && who.role !== "super") throw new ApiError("conflict", "Another admin works on this ticket.", { reason: "ticket_claimed" });
   await trx.updateTable("support_tickets").set({ assigned_admin_id: who.subjectId, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
-  await audit(trx, { adminId: who.subjectId, action: "ticket.claim", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: {}, at: now });
+  await audit(trx, { adminId: who.subjectId, action: other ? "ticket.takeover" : "ticket.claim", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: other ? { from: other } : {}, at: now });
 }
 
 /** Owner 2026-11-02 "Leave ticket": the admin who works on it gives it back to the queue (no automatic timeout). */
