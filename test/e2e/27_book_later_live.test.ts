@@ -134,8 +134,28 @@ describe("book later live fixes", () => {
   it("owner C: a booked ride being searched takes a raise like a live ride", async () => {
     const trip = await book(minutes(20));
     const t = await rider.trip(trip.tripId);
-    const raised = await rider.post(`/trips/${trip.tripId}/raise-price`, { expectedVersion: t.version, increase: { amountMinor: 1000, currency: "SEK" } });
+    // Owner: the offers of a booked ride carry the reservation badge flag.
+    await sim.tick();
+    const offer = (await a.offerFor(trip.tripId)) ?? (await b.offerFor(trip.tripId));
+    expect(offer).toMatchObject({ reservation: true, scheduledAt: trip.scheduledAt });
+    const raised = await rider.post(`/trips/${trip.tripId}/raise-price`, { expectedVersion: (await rider.trip(trip.tripId)).version, increase: { amountMinor: 1000, currency: "SEK" } });
     expect(raised.status, JSON.stringify(raised.body)).toBe(200);
     expect(raised.body.fare.amountMinor).toBe(t.fare.amountMinor + 1000);
+  });
+
+  it("owner leave on time: leaveAt for the driver, 'start now' at that moment, then late risk for driver and admin", async () => {
+    const trip = await book(minutes(180));
+    expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
+    await jump(2 * 60 + 5);
+    const mine = (await a.get(`/trips/${trip.tripId}`)).body;
+    expect(mine.reservation.leaveAt).toBeDefined();
+    const leaveAt = Date.parse(mine.reservation.leaveAt);
+    expect(leaveAt).toBe(Date.parse(trip.scheduledAt) - 10 * 60_000 - mine.reservation.driveSeconds * 1000);
+    expect((await rider.trip(trip.tripId)).reservation.leaveAt).toBeUndefined();
+    await until(new Date(leaveAt).toISOString(), 125);
+    expect(await kinds(a.id, trip.tripId)).toContain("reservation_leave_now");
+    await jump(6 * 60);
+    expect(await kinds(a.id, trip.tripId)).toContain("reservation_late_risk");
+    expect((await owner.get(`/admin/trips/${trip.tripId}`)).body.reservation).toMatchObject({ atRisk: true });
   });
 });

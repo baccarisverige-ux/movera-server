@@ -13,10 +13,10 @@ import { applyCommand, expectVersion } from "../trips/commands.js";
 import { tripProjection } from "../trips/projection.js";
 import { startEta } from "../trips/eta.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
-import { dispatchKm } from "../dispatch/engine.js";
+import { DISPATCH, dispatchKm } from "../dispatch/engine.js";
 import { commissionOf } from "../rules/commission.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
-import { driverTimes, freeByTime, planOf, reservationSettings, rideTypeOf, windowError, type Plan, type ReservationSettings, type RideTypeKey } from "./plan.js";
+import { driverTimes, freeByTime, leaveAtOf, planOf, reservationSettings, rideTypeOf, windowError, type Plan, type ReservationSettings, type RideTypeKey } from "./plan.js";
 
 /**
  * v0.18.17 Book later (CONTRACT.md §41, contract.json#bookLater; owner 2026-11-03 Q1–Q7). Everything a booked ride
@@ -28,7 +28,7 @@ import { driverTimes, freeByTime, planOf, reservationSettings, rideTypeOf, windo
 
 type Lang = "sv" | "fr" | "en";
 type Texts = Record<Lang, string>;
-type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned" | "reservation_offered";
+type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned" | "reservation_offered" | "reservation_leave_now" | "reservation_late_risk";
 const BL = (contract as unknown as { bookLater: { push: { texts: Record<PushKind, { title: Texts; body: Texts }> } } }).bookLater;
 const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr", TN: "fr" };
 const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
@@ -47,6 +47,7 @@ export const TIMER = {
   goOnline: "resv_go_online",
   offlineCheck: "resv_offline_check",
   changeAsk: "resv_change_ask",
+  leaveCheck: "resv_leave_check",
   overdue: "resv_overdue",
 } as const;
 export const RESERVATION_TIMER_KINDS: string[] = Object.values(TIMER);
@@ -66,6 +67,11 @@ export type ReservationState = {
   notified: string[];
   mustBeOnlineAt?: string;
   rideType?: RideTypeKey;
+  /** Owner leave on time (v0.18.19). */
+  leaveAt?: string;
+  driveSeconds?: number;
+  leaveNotified?: boolean;
+  atRisk?: boolean;
   /** Checker M5: a held ride not started at its pickup time (admin alert). */
   notStarted?: boolean;
   /** v0.18.19: the drivers the rider was already told about ("driver found" once per driver). */
@@ -245,7 +251,7 @@ async function clearTimers(trx: Trx, tripId: string): Promise<void> {
 }
 
 async function clearDriverTimers(trx: Trx, tripId: string): Promise<void> {
-  await trx.deleteFrom("timers").where("kind", "in", [TIMER.driverReminder, TIMER.goOnline, TIMER.offlineCheck]).where((eb) => eb.or([eb("ref_id", "=", tripId), eb("ref_id", "like", `${tripId}:%`)])).execute();
+  await trx.deleteFrom("timers").where("kind", "in", [TIMER.driverReminder, TIMER.goOnline, TIMER.offlineCheck, TIMER.leaveCheck]).where((eb) => eb.or([eb("ref_id", "=", tripId), eb("ref_id", "like", `${tripId}:%`)])).execute();
 }
 
 async function startSearchNow(trx: Trx, trip: TripRow, now: Date): Promise<TripRow> {
@@ -398,6 +404,7 @@ export async function acceptReservation(trx: Trx, driverId: string, tripId: stri
   for (const [index, at] of times.reminders.entries()) await scheduleTimer(trx, { kind: TIMER.driverReminder, refId: `${tripId}:${index}`, dueAt: at, payload: { tripId, driverId } });
   await scheduleTimer(trx, { kind: TIMER.goOnline, refId: tripId, dueAt: times.goOnlineAt, payload: { driverId } });
   await scheduleTimer(trx, { kind: TIMER.offlineCheck, refId: tripId, dueAt: times.offlineCheckAt, payload: { driverId } });
+  await scheduleLeaveCheck(trx, tripId, trip.scheduled_at!, driverId, now);
   // Q5 rider: a message when a driver takes the ride. Owner M6-a: the driver gets an "assigned" notice.
   await tellDriverFound(trx, accepted, now);
   await push(trx, accepted, { audience: "driver", id: driverId }, "reservation_assigned", now);
@@ -608,6 +615,9 @@ export async function reservationTimer(trx: Trx, timer: Timer): Promise<void> {
     case TIMER.goOnline:
       if (trip.driver_id === payload.driverId && trip.status === "accepted") await push(trx, trip, { audience: "driver", id: trip.driver_id! }, "reservation_go_online", now);
       return;
+    case TIMER.leaveCheck:
+      if (trip.status === "accepted" && trip.driver_id === payload.driverId && state.held) await leaveCheck(trx, trip, state, s, now);
+      return;
     case TIMER.changeAsk:
       if (trip.status === "accepted" && trip.driver_id === payload.driverId && state.changeAsk) await changeRefused(trx, await lockTrip(trx, tripId), now);
       return;
@@ -672,6 +682,7 @@ export async function afterHeldAccept(trx: Trx, trip: TripRow, now: Date): Promi
   for (const [index, at] of times.reminders.entries()) await scheduleTimer(trx, { kind: TIMER.driverReminder, refId: `${trip.trip_id}:${index}`, dueAt: at, payload: { tripId: trip.trip_id, driverId: trip.driver_id } });
   await scheduleTimer(trx, { kind: TIMER.goOnline, refId: trip.trip_id, dueAt: times.goOnlineAt, payload: { driverId: trip.driver_id } });
   await scheduleTimer(trx, { kind: TIMER.offlineCheck, refId: trip.trip_id, dueAt: times.offlineCheckAt, payload: { driverId: trip.driver_id } });
+  if (trip.driver_id) await scheduleLeaveCheck(trx, trip.trip_id, trip.scheduled_at!, trip.driver_id, now);
   // Low (checker): the rider already got "driver found" from the accept itself; no second message here.
   if (trip.driver_id) await push(trx, trip, { audience: "driver", id: trip.driver_id }, "reservation_assigned", now);
 }
@@ -698,4 +709,59 @@ export async function tellDriverFound(trx: Trx, trip: TripRow, now: Date): Promi
   if (!state || (state.toldDrivers ?? []).includes(trip.driver_id)) return;
   await saveState(trx, trip.trip_id, { ...state, toldDrivers: [...(state.toldDrivers ?? []), trip.driver_id] });
   await push(trx, fresh, { audience: "rider", id: fresh.rider_id }, "reservation_driver_found", now, { driver: (fresh.driver_summary as { firstName?: string } | null)?.firstName ?? "" });
+}
+
+/** Owner leave on time: checks start 3 h before pickup (or now), then every 2 minutes. */
+async function scheduleLeaveCheck(trx: Trx, tripId: string, scheduledAt: Date, driverId: string, now: Date): Promise<void> {
+  const first = Math.max(now.getTime(), scheduledAt.getTime() - 180 * 60_000);
+  await scheduleTimer(trx, { kind: TIMER.leaveCheck, refId: tripId, dueAt: new Date(first), payload: { driverId } });
+}
+
+/** The drive from the driver's last position to the pickup (the same estimate as an offer's pickup ETA). */
+async function driveSecondsOf(ex: Executor, driverId: string, trip: TripRow): Promise<number | null> {
+  const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driverId).executeTakeFirst();
+  if (!fix) return null;
+  const km = dispatchKm(fix, trip.pickup as { lat: number; lng: number });
+  return Math.max(60, Math.round((km / DISPATCH.score.pickupKmh) * 3600));
+}
+
+/** Owner (v0.18.19 leaveOnTime): leaveAt, the "start now" notice, and the late-risk alert. */
+async function leaveCheck(trx: Trx, trip: TripRow, state: ReservationState, s: ReservationSettings, now: Date): Promise<void> {
+  const at = trip.scheduled_at!;
+  const drive = await driveSecondsOf(trx, trip.driver_id!, trip);
+  let next: ReservationState = { ...state };
+  if (drive !== null) {
+    const leaveAt = leaveAtOf(at, drive, s.arriveEarlyMin);
+    next = { ...next, leaveAt: leaveAt.toISOString(), driveSeconds: drive };
+    if (!next.leaveNotified && now.getTime() >= leaveAt.getTime()) {
+      next.leaveNotified = true;
+      await push(trx, trip, { audience: "driver", id: trip.driver_id! }, "reservation_leave_now", now, { early: String(s.arriveEarlyMin) });
+    }
+    const late = now.getTime() >= leaveAt.getTime() + 5 * 60_000 || now.getTime() + drive * 1000 > at.getTime();
+    if (late && !next.atRisk) {
+      next.atRisk = true;
+      await push(trx, trip, { audience: "driver", id: trip.driver_id! }, "reservation_late_risk", now);
+    }
+  }
+  await saveState(trx, trip.trip_id, next);
+  if (next.atRisk !== state.atRisk || next.leaveAt !== state.leaveAt) {
+    const marked = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+    await appendTripEvent(trx, { tripId: trip.trip_id, kind: "trip_projection", version: marked.version, occurredAt: now, projection: tripProjection(marked, "admin", { sequence: Number(marked.sequence) + 1 }) });
+  }
+  if (now.getTime() < at.getTime()) await scheduleTimer(trx, { kind: TIMER.leaveCheck, refId: trip.trip_id, dueAt: new Date(now.getTime() + 2 * 60_000), payload: { driverId: trip.driver_id } });
+}
+
+/**
+ * Owner smart assign (v0.18.19): a booked ride's offers go in 3 steps — 1) drivers who can arrive arriveEarlyMin
+ * before the pickup time, 2) drivers who can arrive on time, 3) any other near driver — for Exclusive and Radar rounds
+ * and after the pickup time alike (then nobody is early or on time, so step 3 keeps the nearest first).
+ */
+export async function smartOrder<T extends { id: string; km: number }>(ex: Executor, trip: TripRow, ranked: T[], now: Date): Promise<T[]> {
+  if (trip.kind !== "scheduled" || !trip.scheduled_at) return ranked;
+  const s = await settingsFor(ex, trip.zone_id);
+  const left = (trip.scheduled_at.getTime() - now.getTime()) / 1000;
+  const drive = (r: T) => (r.km / DISPATCH.score.pickupKmh) * 3600;
+  const early = ranked.filter((r) => drive(r) <= left - s.arriveEarlyMin * 60);
+  const onTime = ranked.filter((r) => !early.includes(r) && drive(r) <= left);
+  return [...early, ...onTime, ...ranked.filter((r) => !early.includes(r) && !onTime.includes(r))];
 }

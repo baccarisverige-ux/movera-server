@@ -1,4 +1,4 @@
-import { aheadOf, notifyOffered, tellDriverFound, afterHeldAccept, currentTripOf, exclusiveOnly, heldForLater, reservationTimer, searchesAgain } from "../reservations/service.js";
+import { smartOrder, aheadOf, notifyOffered, tellDriverFound, afterHeldAccept, currentTripOf, exclusiveOnly, heldForLater, reservationTimer, searchesAgain } from "../reservations/service.js";
 import { drivingLimitReached } from "../drivers/drivingTime.js";
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
 import { commissionOf } from "../rules/commission.js";
@@ -298,6 +298,8 @@ export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<s
     tripSeconds: trip.duration_seconds ?? 0,
     tripMeters: trip.distance_meters ?? 0,
     ...(trip.scheduled_at ? { scheduledAt: trip.scheduled_at.toISOString() } : {}),
+    // v0.18.19 (owner): a booked ride's offer always carries the reservation badge flag (Exclusive and Radar alike).
+    ...(trip.kind === "scheduled" ? { reservation: true } : {}),
     // v0.18.6 (G4 decision 3): the rider's real rating when the offer was sent; none without one (never made up).
     ...(offer.rider_rating !== null && offer.rider_rating !== undefined ? { riderRating: offer.rider_rating } : {}),
     // v0.18.6 (owner G4-E7 "Remove short line explain"): Offer.reasonCode is no longer sent (no "why you" line).
@@ -415,7 +417,8 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     state = newSearch(start.mode, start.pending);
   }
   const pool = await candidatesFor(trx, trip, doc, now);
-  const planned = planRound(doc, state, rank(doc, pool.candidates, trip.category_id));
+  // Owner smart assign (v0.18.19): a booked ride asks first the drivers who can arrive early.
+  const planned = planRound(doc, state, await smartOrder(trx, trip, rank(doc, pool.candidates, trip.category_id), now));
   await trx.updateTable("searches").set({ state: JSON.stringify(planned.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
   const round = planned.round;
   if (round.type === "wait") {
@@ -835,6 +838,6 @@ export const withdrawHandler: TimerHandler = async (trx, timer) => {
 // server's real router over it, [TRIP_ETA]: etaHandler(router)).
 export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler,
   // v0.18.17 (contract.json#bookLater.timers): the booked-ride timers (kinds spelled out: reservations/service.ts imports this module).
-  ...Object.fromEntries(["resv_popup", "resv_open_all", "resv_dispatch", "resv_no_driver", "resv_rider_reminder", "resv_driver_reminder", "resv_go_online", "resv_offline_check", "resv_change_ask", "resv_overdue"].map((kind) => [kind, (trx: Trx, timer: Timer) => reservationTimer(trx, timer)])), // "trip_eta" spelled out and the handler made on first use: trips/eta.ts imports this module, so when eta.ts loads
+  ...Object.fromEntries(["resv_popup", "resv_open_all", "resv_dispatch", "resv_no_driver", "resv_rider_reminder", "resv_driver_reminder", "resv_go_online", "resv_offline_check", "resv_change_ask", "resv_overdue", "resv_leave_check"].map((kind) => [kind, (trx: Trx, timer: Timer) => reservationTimer(trx, timer)])), // "trip_eta" spelled out and the handler made on first use: trips/eta.ts imports this module, so when eta.ts loads
 // first (main.ts), TRIP_ETA is not initialised yet while this line runs (Render deploy of 48e587e crashed on it).
   trip_eta: (trx, timer) => etaHandler(new EstimateRouter())(trx, timer) };
