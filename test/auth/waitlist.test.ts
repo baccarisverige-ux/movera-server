@@ -130,7 +130,8 @@ describe("GET /auth/test-accounts", () => {
     const [riderPhone, driverPhone] = TEST_PHONES as [string, string];
     await database.db.insertInto("riders").values({ rider_id: "rdr_testacct1", phone: riderPhone, email: null, language: null, first_name: "Ada" }).execute();
     await database.db.insertInto("drivers").values({ driver_id: "drv_testacct1", phone: driverPhone, online_since: null, vehicle_id: null, scheduled_rides: null }).execute();
-    const res = await app.inject({ method: "GET", url: "/api/v1/auth/test-accounts" });
+    const admin = await adminSession(app, database.db, "viewer", { now: clock.now });
+    const res = await app.inject({ method: "GET", url: "/api/v1/auth/test-accounts", headers: admin.headers });
     expect(res.statusCode).toBe(200);
     const accounts = (res.json() as { accounts: { phone: string; app: string; status: string; name?: string }[] }).accounts;
     expect(accounts).toHaveLength(TEST_PHONES.length * 2);
@@ -138,6 +139,14 @@ describe("GET /auth/test-accounts", () => {
     expect(accounts).toContainEqual({ phone: driverPhone, app: "driver", status: "pending" });
     expect(accounts).toContainEqual({ phone: riderPhone, app: "driver", status: "test" });
     for (const account of accounts) expect(AUTH.testAccounts.statuses).toContain(account.status);
+  });
+
+  it("owner 2026-11-03: needs a signed-in admin (401 signed out or with a bad token)", async () => {
+    const signedOut = await app.inject({ method: "GET", url: "/api/v1/auth/test-accounts" });
+    expect(signedOut.statusCode).toBe(401);
+    expect(signedOut.body).not.toContain(TEST_PHONES[0] as string);
+    const bogus = await app.inject({ method: "GET", url: "/api/v1/auth/test-accounts", headers: { authorization: "Bearer not-a-token" } });
+    expect(bogus.statusCode).toBe(401);
   });
 
   it("does not exist on production (404)", async () => {
