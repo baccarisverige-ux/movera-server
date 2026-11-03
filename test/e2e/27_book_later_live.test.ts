@@ -109,7 +109,10 @@ describe("book later live fixes", () => {
     await sim.publish(owner, "driver_app_config", "Z001", (doc) => ({ ...doc, reservations: { ...(doc.reservations ?? {}), on: false } }));
     expect((await rider.quote({ categoryIds: ["economy"], kind: "scheduled", scheduledAt: minutes(120) })).body).toMatchObject({ reason: "reservations_off" });
     expect((await rider.quote({ categoryIds: ["economy"] })).status).toBe(201);
+    // The rider app reads the switch so it can say "Not available in this area yet" (never hides Book later).
+    expect((await rider.get("/rider/config?zoneId=Z001")).body.booking).toMatchObject({ reservationsOn: false });
     await sim.publish(owner, "driver_app_config", "Z001", (doc) => ({ ...doc, reservations: { ...(doc.reservations ?? {}), on: true } }));
+    expect((await rider.get("/rider/config?zoneId=Z001")).body.booking).toMatchObject({ reservationsOn: true });
   });
 
   it("owner D: the rider sees 'driver assigned' without details until the driver drives; owner B: free waiting from the pickup time", async () => {
