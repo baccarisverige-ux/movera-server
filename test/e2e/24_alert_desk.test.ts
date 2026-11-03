@@ -19,6 +19,9 @@ beforeAll(async () => {
   owner = await sim.owner();
   nora = await sim.admin("dispatcher", ["Z001"]);
   erik = await sim.admin("ops", ["Z001"]);
+  // v0.18.18 (owner "Real name from Team"): names shown are the first name set in Team.
+  await sim.db.updateTable("admins").set({ first_name: "Nora" }).where("admin_id", "=", nora.id).execute();
+  await sim.db.updateTable("admins").set({ first_name: "Erik" }).where("admin_id", "=", erik.id).execute();
 });
 afterAll(async () => {
   await sim.stop();
@@ -31,9 +34,9 @@ describe("take / pass / snooze / done: every admin sees who has it", () => {
   it("Nora takes it; Erik sees her name and cannot take or solve it; she passes it to Erik; Erik snoozes and solves", async () => {
     const taken = await nora.post("/admin/alerts/long_wait:Z001/take", ALERT);
     expect(taken.status).toBe(200);
-    expect(record(taken.body, "long_wait:Z001")).toMatchObject({ status: "taken", owner: nora.id, ownerName: "dispatcher admin", kind: "long_wait", zoneId: "Z001" });
+    expect(record(taken.body, "long_wait:Z001")).toMatchObject({ status: "taken", owner: nora.id, ownerName: "Nora", kind: "long_wait", zoneId: "Z001" });
     const seen = await erik.get("/admin/alerts/book?country=SE");
-    expect(record(seen.body, "long_wait:Z001")).toMatchObject({ owner: nora.id, ownerName: "dispatcher admin" });
+    expect(record(seen.body, "long_wait:Z001")).toMatchObject({ owner: nora.id, ownerName: "Nora" });
     expect(seen.body["people"].map((p: Json) => p["adminId"])).toEqual(expect.arrayContaining([nora.id, erik.id]));
     for (const verb of ["take", "done", "snooze", "pass"]) {
       const res = await erik.post(`/admin/alerts/long_wait:Z001/${verb}`, { ...ALERT, minutes: 10, to: erik.id });
@@ -50,8 +53,8 @@ describe("take / pass / snooze / done: every admin sees who has it", () => {
     const r = record(done.body, "long_wait:Z001")!;
     expect(r).toMatchObject({ status: "done", owner: erik.id });
     expect((r["events"] as Json[]).map((e) => e["kind"])).toEqual(["take", "pass", "snooze", "done"]);
-    expect((r["events"] as Json[])[1]).toMatchObject({ text: "Passed to ops admin", to: erik.id, toName: "ops admin" });
-    expect((r["events"] as Json[]).at(-1)).toMatchObject({ text: "Sent a driver", by: erik.id, byName: "ops admin" });
+    expect((r["events"] as Json[])[1]).toMatchObject({ text: "Passed to Erik", to: erik.id, toName: "Erik" });
+    expect((r["events"] as Json[]).at(-1)).toMatchObject({ text: "Sent a driver", by: erik.id, byName: "Erik" });
     const audit = await sim.db.selectFrom("admin_audit").select("action").where("target_id", "=", "long_wait:Z001").execute();
     expect(audit.map((a) => a.action).sort()).toEqual(["alert.done", "alert.pass", "alert.snooze", "alert.take"]);
     // Checker MED4: the same alert taken again after done keeps its history (nobody owned it, so Nora can take it).

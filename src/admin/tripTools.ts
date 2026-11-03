@@ -38,7 +38,7 @@ export async function tripNotes(ex: Executor, who: Principal, tripId: string) {
   const rows = await ex
     .selectFrom("admin_trip_notes")
     .leftJoin("admins", "admins.admin_id", "admin_trip_notes.admin_id")
-    .select(["admin_trip_notes.note_id", "admin_trip_notes.trip_id", "admin_trip_notes.text", "admin_trip_notes.admin_id", "admin_trip_notes.at", "admins.name as admin_name"])
+    .select(["admin_trip_notes.note_id", "admin_trip_notes.trip_id", "admin_trip_notes.text", "admin_trip_notes.admin_id", "admin_trip_notes.at", "admins.first_name as admin_name"])
     .where("admin_trip_notes.trip_id", "=", tripId)
     .orderBy("admin_trip_notes.at", "desc")
     .orderBy("admin_trip_notes.note_id", "desc")

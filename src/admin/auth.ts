@@ -25,6 +25,8 @@ export type AdminMe = {
   adminId: string;
   email: string;
   name: string;
+  /** v0.18.18: the first name set in Team (absent until set). */
+  firstName?: string;
   role: AdminRole;
   permissions: string[];
   scope: { zones: "all" | string[]; countries?: string[]; fleetPartnerId?: string };
@@ -39,6 +41,7 @@ type AdminRow = {
   admin_id: string;
   email: string;
   name: string;
+  first_name?: string | null;
   role: string;
   zone_ids: string[] | null;
   countries: string[] | null;
@@ -66,6 +69,7 @@ export function adminMe(row: AdminRow): AdminMe {
     adminId: row.admin_id,
     email: row.email,
     name: row.name,
+    ...(row.first_name ? { firstName: row.first_name } : {}),
     role,
     permissions: permissionsOf(role),
     scope: {

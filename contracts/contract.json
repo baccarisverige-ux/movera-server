@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.15",
+  "version": "0.18.16",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -4164,6 +4164,12 @@
     },
     "applied": "After each rating (POST .../rating) and each admin hide or restore, the server: (1) a comment with a listed word as a whole word (case-insensitive; 'scam' matches 'Scam!' but not 'scampi') is hidden at once like an admin hide (hiddenBy system, reason bad_word; its stars do not count; an admin can restore it); (2) the rated person's average over counted ratings, once they have minReviews: below review -> on the admin review list; below warn -> one bell + push notice review_warning with the country's warningText in the person's language. Owner 2026-11-02 'No automatic pause': the rules never pause or suspend an account; an admin pauses by hand on the Drivers / Riders page. Each step happens once when the person crosses the line; back above every line clears it, so a later fall acts again.",
     "queue": "GET /admin/reviews/queue (riders.read) -> { items: [{ who: driver | rider, personId, name, country, level: review, average, count, since }] } of the admin's countries; POST /admin/reviews/queue/{who}/{personId}/done { note } (riders.block) removes the row (an admin looked at it). Audited reviews.done."
+  },
+  "adminNames": {
+    "note": "v0.18.16 (A1 live check 2026-11-03, owner 'Real name from Team'): every admin has a first name set in Team; an e-mail is never shown as a name anywhere in the admin; until a first name is set the panel shows 'Admin'.",
+    "me": "AdminMe.firstName (string, absent until set). PATCH /admin/auth/me { language?, firstName? } (any signed-in admin, own account; firstName 1-40 characters, no '@'; null clears it). Audited admin.first_name.",
+    "others": "GET /admin/agents (team.read) -> { items: [{ adminId, firstName?, role, zones }] } (never the e-mail), sorted by first name: a Super admin (role super) sees every admin; other admins see the admins who share one of their zones. PATCH /admin/agents/{adminId} { firstName } (team.edit; null clears it): a Super admin renames anyone; another admin only non-Super admins who share one of his zones (else 403 forbidden). Audited admin.first_name.",
+    "shown": "Every name the server gives the admin panel about an admin (ticket assignedTo.name, ticket message adminName on admin views, alert ownerName / byName / toName, alert people, support agents, trip notes) is that admin's firstName, or absent when none is set (the panel shows 'Admin'); never the e-mail. The person's apps: supportName = firstName; without one the apps show only 'Movera Support'."
   },
   "payouts": {
     "note": "v0.9.0 (owner real-data decision, part 3): every payout period (v0.18.13: the country's schedule, default weekly from Monday 08:00 to Monday 08:00 local time) a nightly job makes one payout per driver with earnings; an admin can also make one by hand for a driver and a date range. Same calculation both ways; a trip already in a payout is never counted again. amount = trips + waiting + pickup pay + bonus + tips + fees − cash collected; it may be negative (the driver owes Movera). An admin marks a payout paid. The admin sees the lines; the driver app shows only the total.",
