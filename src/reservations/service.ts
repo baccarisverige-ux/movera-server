@@ -12,6 +12,7 @@ import { cancelTimer, scheduleTimer, type Timer } from "../jobs/timers.js";
 import { applyCommand, expectVersion } from "../trips/commands.js";
 import { tripProjection } from "../trips/projection.js";
 import { startEta } from "../trips/eta.js";
+import { reservationView } from "./view.js";
 import { EstimateRouter, type Router } from "../maps/routing.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { DISPATCH, dispatchKm } from "../dispatch/engine.js";
@@ -334,6 +335,9 @@ async function itemOf(ex: Executor, trip: TripRow, s: ReservationSettings): Prom
     mustBeOnlineAt: online.toISOString(),
     canStartAt: online.toISOString(),
     popup: stateOf(trip)?.popup ?? false,
+    // Live test HIGH 2 (v0.18.19): the list row carries the reservation (changeAsk for "Keep it at the new time?",
+    // leaveAt for the start countdown), as the trip read does.
+    reservation: reservationView(trip, "driver"),
   };
 }
 

@@ -161,6 +161,22 @@ describe("book later live fixes", () => {
     expect((await owner.get(`/admin/trips/${trip.tripId}`)).body.reservation).toMatchObject({ atRisk: true });
   });
 
+  it("HIGH 2 + MED 6: the driver's Booked rides list carries the Keep-it question, the new time and the new earnings", async () => {
+    const trip = await book(minutes(180));
+    expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
+    const before = (await a.get("/driver/reservations?scope=accepted")).body.items.find((r: Json) => r.tripId === trip.tripId);
+    const later = minutes(240);
+    const quote = (await rider.quote({ categoryIds: ["economy"], kind: "scheduled", scheduledAt: later, dropoff: PLACES.odenplan })).body.quotes[0];
+    expect((await rider.post(`/trips/${trip.tripId}/reschedule`, { quoteId: quote.quoteId, expectedVersion: (await rider.trip(trip.tripId)).version })).status).toBe(200);
+    const row = (await a.get("/driver/reservations?scope=accepted")).body.items.find((r: Json) => r.tripId === trip.tripId);
+    expect(row).toMatchObject({ scheduledAt: later, reservation: { changeAsk: { previousAt: trip.scheduledAt } } });
+    const fresh = (await a.get(`/trips/${trip.tripId}`)).body;
+    // MED 6: the list shows the trip's earnings after the change (the price of the new quote).
+    expect(fresh.fare).toEqual(quote.total);
+    expect(row.earnings).toEqual(fresh.driverEarnings);
+    expect(before.tripId).toBe(trip.tripId);
+  });
+
   it("owner leave on time: the drive comes from the server's road router (the same live ETA source as normal rides)", async () => {
     setLeaveRouter({ route: async () => ({ distanceMeters: 15_000, durationSeconds: 1234, source: "osrm" }) } as unknown as Router);
     try {
