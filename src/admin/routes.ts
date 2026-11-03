@@ -16,7 +16,8 @@ const SetupBody = z.object({ setupToken: z.string().min(16).max(256), password: 
 const SetupCheckBody = z.object({ setupToken: z.string().min(16).max(256) });
 const RefreshBody = z.object({ refreshToken: z.string().min(1).max(512) });
 // contract v0.16.1 §9: the admin's own panel language; null clears it.
-const MeBody = z.object({ language: z.enum(["en", "fr", "sv"]).nullable() }).strict();
+const FirstName = z.string().trim().min(1).max(40).refine((v) => !v.includes("@"), "A first name, not an e-mail.");
+const MeBody = z.object({ language: z.enum(["en", "fr", "sv"]).nullable().optional(), firstName: FirstName.nullable().optional() }).strict().refine((b) => b.language !== undefined || b.firstName !== undefined, "language or firstName");
 const AdminIdParam = z.object({ adminId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
 
 export async function adminAuthRoutes(app: FastifyInstance, deps: AdminDeps): Promise<void> {
@@ -49,19 +50,62 @@ export async function adminAuthRoutes(app: FastifyInstance, deps: AdminDeps): Pr
   // panel language, so it stays after reload, sign-in and on other devices. Audited; no permission id.
   app.patch(`${API_PREFIX}/admin/auth/me`, async (request) => {
     const who = await authenticateAdmin(request, guard);
-    const { language } = parseBody(MeBody, request.body);
+    const { language, firstName } = parseBody(MeBody, request.body);
     const key = request.headers["idempotency-key"];
     const now = deps.clock?.() ?? new Date();
     const result = await runIdempotent(
       deps.db,
       { actor: "admin", subjectId: who.subjectId, key: Array.isArray(key) ? key[0] : key, method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null },
       async (trx) => {
-        const before = await trx.selectFrom("admins").select("language").where("admin_id", "=", who.subjectId).forUpdate().executeTakeFirstOrThrow();
-        if (before.language !== language) {
+        const before = await trx.selectFrom("admins").select(["language", "first_name"]).where("admin_id", "=", who.subjectId).forUpdate().executeTakeFirstOrThrow();
+        // v0.18.18 (owner "Real name from Team"): the own first name.
+        if (firstName !== undefined && before.first_name !== firstName) {
+          await trx.updateTable("admins").set({ first_name: firstName, updated_at: now }).where("admin_id", "=", who.subjectId).execute();
+          await audit(trx, { adminId: who.subjectId, action: "admin.first_name", targetType: "admin", targetId: who.subjectId, detail: { from: before.first_name, to: firstName }, at: now });
+        }
+        if (language !== undefined && before.language !== language) {
           await trx.updateTable("admins").set({ language, updated_at: now }).where("admin_id", "=", who.subjectId).execute();
           await audit(trx, { adminId: who.subjectId, action: "admin.language", targetType: "admin", targetId: who.subjectId, detail: { from: before.language, to: language }, at: now });
         }
         return { status: 200, body: await loadAdminMe(trx, who.subjectId) };
+      },
+    );
+    return result.body;
+  });
+
+  // v0.18.18 (contract.json#adminNames, owner "Real name from Team"): admins as Team shows them, never the e-mail.
+  const agentView = (r: { admin_id: string; first_name: string | null; role: string; zone_ids: string[] | null }) => ({ adminId: r.admin_id, ...(r.first_name ? { firstName: r.first_name } : {}), role: r.role, zones: r.zone_ids ?? ["*"] });
+  const sharesZone = (who: { zones: string[] }, zones: string[] | null) => who.zones.includes("*") || (zones ?? ["*"]).some((z) => z !== "*" && who.zones.includes(z));
+  app.get(`${API_PREFIX}/admin/agents`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "team.read");
+    const rows = await deps.db.selectFrom("admins").select(["admin_id", "first_name", "role", "zone_ids"]).where("active", "=", true).orderBy("first_name").orderBy("admin_id").execute();
+    return { items: rows.filter((r) => r.admin_id === who.subjectId || sharesZone(who, r.zone_ids)).map(agentView) };
+  });
+  app.patch(`${API_PREFIX}/admin/agents/:adminId`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "team.edit");
+    const { adminId } = parseBody(z.object({ adminId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }), request.params);
+    // The scope is checked before the body, so another zone's admin gets 403, not a body error.
+    const peek = await deps.db.selectFrom("admins").select(["role", "zone_ids"]).where("admin_id", "=", adminId).executeTakeFirst();
+    if (peek && !who.zones.includes("*") && (peek.role === "super" || peek.zone_ids === null || !sharesZone(who, peek.zone_ids))) {
+      throw new ApiError("forbidden", "This admin is outside your scope.", { reason: "zone_out_of_scope" });
+    }
+    const { firstName } = parseBody(z.object({ firstName: FirstName.nullable() }).strict(), request.body);
+    const key = request.headers["idempotency-key"];
+    const now = deps.clock?.() ?? new Date();
+    const result = await runIdempotent(
+      deps.db,
+      { actor: "admin", subjectId: who.subjectId, key: Array.isArray(key) ? key[0] : key, method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null },
+      async (trx) => {
+        const target = await trx.selectFrom("admins").select(["admin_id", "first_name", "role", "zone_ids"]).where("admin_id", "=", adminId).forUpdate().executeTakeFirst();
+        if (!target) throw new ApiError("not_found", "No such admin.", { reason: "admin_not_found" });
+        // A Super admin edits anyone; another admin only non-Super admins who share one of his zones.
+        const allowed = who.zones.includes("*") ? true : target.role !== "super" && target.zone_ids !== null && sharesZone(who, target.zone_ids);
+        if (!allowed) throw new ApiError("forbidden", "This admin is outside your scope.", { reason: "zone_out_of_scope" });
+        if (target.first_name !== firstName) {
+          await trx.updateTable("admins").set({ first_name: firstName, updated_at: now }).where("admin_id", "=", adminId).execute();
+          await audit(trx, { adminId: who.subjectId, action: "admin.first_name", targetType: "admin", targetId: adminId, detail: { from: target.first_name, to: firstName }, at: now });
+        }
+        return { status: 200, body: agentView({ ...target, first_name: firstName }) };
       },
     );
     return result.body;

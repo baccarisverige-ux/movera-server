@@ -45,11 +45,13 @@ type TicketRow = {
   feedback_text?: string | null;
   feedback_at?: Date | null;
 };
-type MessageRow = { message_id: string; sender: "rider" | "driver" | "support"; text: string; at: Date; admin_name?: string | null };
+type MessageRow = { message_id: string; sender: "rider" | "driver" | "support"; text: string; at: Date; admin_name?: string | null; admin_first?: string | null };
 
 /** v0.18.15: `person` = the rider's / driver's own view (support names = first name only, QO-2); `extra` = admin desk fields. */
 export function ticketView(row: TicketRow, messages?: readonly MessageRow[], opts: { person?: boolean; extra?: Record<string, unknown> | undefined } = {}) {
-  const nameOf = (m: MessageRow) => (opts.person ? desk.firstNameOf(m.admin_name) : m.admin_name || undefined);
+  // v0.18.18 (owner "Real name from Team"): the first name set in Team; never an e-mail. The person's apps fall back
+  // to the first word of the name only when it is not an e-mail (older accounts).
+  const nameOf = (m: MessageRow) => (m.admin_first ? m.admin_first : opts.person ? desk.firstNameOf(m.admin_name) : undefined);
   return {
     ticketId: row.ticket_id,
     ...(row.trip_id ? { tripId: row.trip_id } : {}),
@@ -82,7 +84,7 @@ async function messagesOf(ex: Executor, ticketId: string): Promise<MessageRow[]>
   return ex
     .selectFrom("ticket_messages")
     .leftJoin("admins", "admins.admin_id", "ticket_messages.admin_id")
-    .select(["ticket_messages.message_id", "ticket_messages.sender", "ticket_messages.text", "ticket_messages.at", "admins.name as admin_name"])
+    .select(["ticket_messages.message_id", "ticket_messages.sender", "ticket_messages.text", "ticket_messages.at", "admins.first_name as admin_first", "admins.name as admin_name"])
     .where("ticket_messages.ticket_id", "=", ticketId)
     .orderBy("ticket_messages.n")
     .execute();

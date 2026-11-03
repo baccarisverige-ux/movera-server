@@ -139,8 +139,10 @@ describe("support tickets: the apps open them, Admin › Support answers, the ap
     expect(notMine.status).toBe(404);
     const list = await owner.get("/admin/tickets?status=open");
     expect(list.body["items"].map((t: Json) => t["ticketId"]).sort()).toEqual([dispute.body["ticketId"], help.body["ticketId"]].sort());
+    // v0.18.18 (owner "Real name from Team"): the name shown is the first name set in Team.
+    await owner.send("PATCH", "/admin/auth/me", { firstName: "Ada" });
     const answer = await owner.post(`/admin/tickets/${dispute.body["ticketId"]}/reply`, { text: "We refunded 50 kr.", status: "resolved" });
-    expect(answer.body).toMatchObject({ status: "resolved", messages: [{ from: "rider" }, { from: "support", text: "We refunded 50 kr.", adminName: expect.any(String) }] });
+    expect(answer.body).toMatchObject({ status: "resolved", messages: [{ from: "rider" }, { from: "support", text: "We refunded 50 kr.", adminName: "Ada" }] });
     const seen = await rider.get(`/support/tickets/${dispute.body["ticketId"]}`);
     expect(seen.body["messages"].at(-1)).toMatchObject({ from: "support", text: "We refunded 50 kr." });
     expect((await rider.get("/support/tickets")).body["items"].map((t: Json) => t["status"])).toEqual(["resolved"]);

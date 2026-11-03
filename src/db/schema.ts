@@ -472,6 +472,8 @@ export interface AdminsTable {
   admin_id: string;
   email: string;
   name: string;
+  /** v0.18.18 (migration 0063): the first name set in Team; never an e-mail. */
+  first_name: ColumnType<string | null, string | null | undefined, string | null>;
   role: string;
   zone_ids: string[] | null;
   countries: string[] | null;

@@ -50,10 +50,10 @@ export async function assertCountry(ex: Executor, who: Principal, country: strin
 
 /** Active admins with a zone in the country (Super admins included), each with what they may do. */
 async function colleagues(ex: Executor, countryZones: readonly string[]) {
-  const rows = await ex.selectFrom("admins").select(["admin_id", "name", "role", "zone_ids"]).where("active", "=", true).orderBy("name").execute();
+  const rows = await ex.selectFrom("admins").select(["admin_id", "first_name", "role", "zone_ids"]).where("active", "=", true).orderBy("name").execute();
   return rows
     .filter((r) => r.zone_ids === null || r.zone_ids.includes("*") || r.zone_ids.some((z) => countryZones.includes(z)))
-    .map((r) => ({ adminId: r.admin_id, name: r.name, zones: r.zone_ids ?? ["*"], perms: isAdminRole(r.role) ? permissionsOf(r.role) : [] }));
+    .map((r) => ({ adminId: r.admin_id, ...(r.first_name ? { name: r.first_name } : {}), zones: r.zone_ids ?? ["*"], perms: isAdminRole(r.role) ? permissionsOf(r.role) : [] }));
 }
 
 function recordView(r: RecordRow, names: Map<string, string>) {
@@ -73,8 +73,9 @@ function recordView(r: RecordRow, names: Map<string, string>) {
 }
 
 async function namesOf(ex: Executor): Promise<Map<string, string>> {
-  const rows = await ex.selectFrom("admins").select(["admin_id", "name"]).execute();
-  return new Map(rows.map((r) => [r.admin_id, r.name]));
+  // v0.18.18 (owner "Real name from Team"): the first name only; never the e-mail.
+  const rows = await ex.selectFrom("admins").select(["admin_id", "first_name"]).execute();
+  return new Map(rows.filter((r) => r.first_name).map((r) => [r.admin_id, r.first_name!]));
 }
 
 /** The records an admin may see in a country: their zones there, the groups they may read; no-zone ones for Super. */
@@ -114,7 +115,7 @@ export async function alertBook(ex: Executor, who: Principal, country: string, n
     records: rows.map((r) => recordView(r, names)),
     mutes,
     quiet: quiet ? { on: quiet.quiet_on, from: quiet.from_hm, to: quiet.to_hm } : { on: false, from: "22:00", to: "07:00" },
-    people: (await colleagues(ex, countryZones)).map((p) => ({ adminId: p.adminId, name: p.name })),
+    people: (await colleagues(ex, countryZones)).map((p) => ({ adminId: p.adminId, ...(p.name ? { name: p.name } : {}) })),
   };
 }
 
@@ -176,7 +177,7 @@ export async function alertCommand(trx: Trx, who: Principal, alertId: string, in
       const covers = target && (target.zones.includes("*") || (row.zone_id !== null && target.zones.includes(row.zone_id)));
       if (!target || !covers || !mayAct(target.perms, kind)) throw badRequest("That admin cannot get this alert.", "assignee_not_allowed");
       next = { status: "taken", owner: command.to, snooze_until: null };
-      events.push({ at, by: me, kind: "pass", text: `Passed to ${target.name}`, to: command.to });
+      events.push({ at, by: me, kind: "pass", text: `Passed to ${target.name ?? "Admin"}`, to: command.to });
       break;
     }
   }

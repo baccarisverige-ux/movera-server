@@ -24,6 +24,8 @@ beforeAll(async () => {
   driver = await sim.driver(1, PLACES.nearSergels);
   owner = await sim.owner();
   agent = await sim.admin("support");
+  // v0.18.18 (owner "Real name from Team"): names shown are the first name set in Team.
+  await sim.db.updateTable("admins").set({ first_name: "Sara" }).where("admin_id", "=", agent.id).execute();
   ({ tripId } = await bookAndAccept(sim, rider, driver));
   await drive(driver, tripId, "in_trip");
   expect((await driver.command(tripId, "complete")).status).toBe(200);
@@ -50,9 +52,9 @@ describe("person replies chat-style (QO-1) and sees only the agent's first name 
     const id = await open();
     const answer = await agent.post(`/admin/tickets/${id}/reply`, { text: "We look at it." });
     expect(answer.body["status"]).toBe("pending");
-    expect(answer.body["messages"].at(-1)["adminName"]).toBe("support admin");
+    expect(answer.body["messages"].at(-1)["adminName"]).toBe("Sara");
     const seen = await rider.get(`/support/tickets/${id}`);
-    expect(seen.body["messages"].at(-1)).toMatchObject({ from: "support", adminName: "support", supportName: "support" });
+    expect(seen.body["messages"].at(-1)).toMatchObject({ from: "support", adminName: "Sara", supportName: "Sara" });
     const again = await rider.post(`/support/tickets/${id}/messages`, { text: "Thanks, here is the receipt." });
     expect(again.status).toBe(201);
     expect(again.body).toMatchObject({ status: "open", messages: [{ from: "rider" }, { from: "support" }, { from: "rider", text: "Thanks, here is the receipt." }] });
@@ -103,7 +105,7 @@ describe("Admin › Support desk commands (QO-5)", () => {
     const id = await open();
     const claimed = await agent.post(`/admin/tickets/${id}/claim`, {});
     expect(claimed.status).toBe(200);
-    expect(claimed.body["assignedTo"]).toMatchObject({ adminId: agent.id, name: "support admin" });
+    expect(claimed.body["assignedTo"]).toMatchObject({ adminId: agent.id, name: "Sara" });
     expect(claimed.body).not.toHaveProperty("claimedUntil");
     const other = await sim.admin("support");
     const taken = await other.post(`/admin/tickets/${id}/claim`, {});
