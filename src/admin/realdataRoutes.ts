@@ -11,7 +11,11 @@ import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from ".
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearDispatch } from "../dispatch/feed.js";
-import { adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets } from "../support/tickets.js";
+import { adminDeskCommand, adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets, writeOwnTicket, giveFeedback, type DeskCommand } from "../support/tickets.js";
+import { reviewDone, reviewQueue, reviewRulesOf, saveReviewRules } from "./reviewRules.js";
+import { incidentSettings, recordReport, saveIncidentSettings } from "../safety/incidentDesk.js";
+import { alertBook, alertCommand, alertHistory, saveDoc, setMute, setQuiet, type AlertCommand } from "./alerts.js";
+import { adminGetSettings, adminPutSettings, SUPPORT_COUNTRIES, topicsFor } from "../support/desk.js";
 import { kpis } from "./kpis.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
 import { createPayout, driverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
@@ -37,9 +41,38 @@ const CreatePayoutBody = z.object({ driverId: ID, from: z.string().datetime(), t
 const PaidBody = z.object({ note: z.string().max(1000).optional() }).default({});
 const RefundsQuery = { ...Page, ...When, status: many(z.enum(["pending_approval", "done", "rejected"])), paymentId: z.string().max(80).optional(), tripId: ID.optional(), ...ZoneFilterQuery };
 const TicketStatus = z.enum(["open", "pending", "resolved", "closed"]);
-const TicketsQuery = { ...Page, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), ...ZoneFilterQuery };
+const TicketsQuery = { ...Page, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), assignedTo: z.union([z.literal("me"), z.literal("none"), ID]).optional(), ...ZoneFilterQuery };
 const OwnTicketsQuery = z.object({ ...Page, status: TicketStatus.optional() });
 const TicketBody = z.object({ tripId: ID.optional(), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().min(1).max(200), text: z.string().min(1).max(5000) });
+/* v0.18.15 support desk (contract.json#supportDesk) */
+const PersonMessageBody = z.object({ text: z.string().min(1).max(5000) });
+const REASON = z.string().min(1).max(500);
+const DESK_BODIES = {
+  claim: z.object({}).passthrough(),
+  leave: z.object({}).passthrough(),
+  assign: z.object({ adminId: ID.nullable(), reason: REASON }),
+  topic: z.object({ category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/) }),
+  waiting: z.object({ waiting: z.boolean() }),
+  solve: z.object({ note: z.string().max(2000).optional() }),
+  reopen: z.object({ reason: REASON }),
+  case: z.object({ reason: REASON }),
+} as const;
+const SupportCountry = z.enum(SUPPORT_COUNTRIES as [string, ...string[]]);
+const TopicSettingBody = z.object({ code: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), on: z.boolean(), firstReplyMin: z.number().int().min(1).max(10080), solveHours: z.number().int().min(1).max(720), assignTo: ID.optional() });
+const ReadyReplyBody = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), lang: z.enum(["sv", "fr", "en"]), title: z.string().trim().min(1).max(80), text: z.string().trim().min(1).max(2000) });
+const SupportSettingsBody = z.object({ country: SupportCountry, expectedRev: z.number().int().min(1), topics: z.array(TopicSettingBody).min(1).max(20), replies: z.array(ReadyReplyBody).max(100).optional() }).passthrough();
+/* v0.18.15 alerts full flow (contract.json#alertDesk) */
+const ALERT_ID = z.string().regex(/^[A-Za-z0-9_:.-]{1,200}$/);
+const KIND = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+const ISO = z.string().datetime({ offset: true });
+const AlertBase = { kind: KIND, level: z.enum(["critical", "important", "info"]), title: z.string().min(1).max(300), zoneId: ID.optional(), since: ISO };
+const ALERT_BODIES = {
+  take: z.object(AlertBase),
+  done: z.object({ ...AlertBase, note: z.string().max(500).optional() }),
+  snooze: z.object({ ...AlertBase, minutes: z.number().int().min(1).max(1440) }),
+  pass: z.object({ ...AlertBase, to: ID }),
+} as const;
+const HM = z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/);
 const ReplyBody = z.object({ text: z.string().min(1).max(5000), status: z.enum(["pending", "resolved", "closed"]).optional() });
 const RatingsQuery = { ...Page, ...When, rater: z.enum(["rider", "driver"]).optional(), hidden: Bool.optional(), maxStars: z.coerce.number().int().min(1).max(5).optional(), driverId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
 const ModerationBody = z.object({ reason: z.string().min(1).max(500) });
@@ -143,17 +176,159 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   app.get(`${API_PREFIX}/admin/tickets`, async (request) => {
     const who = await authenticateAdmin(request, guard, "support.reply");
     const query = parseQuery(TicketsQuery, request.query);
-    return adminTickets(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)));
+    return adminTickets(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)), now());
   });
   app.get(`${API_PREFIX}/admin/tickets/:ticketId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "support.reply");
-    return adminTicket(deps.db, who, param(request, "ticketId"));
+    return adminTicket(deps.db, who, param(request, "ticketId"), now());
   });
   app.post(`${API_PREFIX}/admin/tickets/:ticketId/reply`, async (request) => {
     const who = await authenticateAdmin(request, guard, "support.reply");
     const ticketId = param(request, "ticketId");
     const body = parseBody(ReplyBody, request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminReply(trx, who, ticketId, clean(body), now()) }));
+    return result.body;
+  });
+
+  /* ---- support desk (v0.18.15, contract.json#supportDesk) */
+  app.post(`${API_PREFIX}/support/tickets/:ticketId/messages`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    const ticketId = param(request, "ticketId");
+    const body = parseBody(PersonMessageBody, request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await writeOwnTicket(trx, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, ticketId, body.text, now()) }));
+    return reply.status(result.status).send(result.body);
+  });
+  app.post(`${API_PREFIX}/support/tickets/:ticketId/feedback`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    const ticketId = param(request, "ticketId");
+    const body = parseBody(z.object({ text: z.string().trim().min(1).max(2000) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await giveFeedback(trx, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, ticketId, body.text, now()) }));
+    return reply.status(result.status).send(result.body);
+  });
+  app.get(`${API_PREFIX}/support/topics`, async (request) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    return topicsFor(deps.db, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId });
+  });
+  for (const verb of Object.keys(DESK_BODIES) as (keyof typeof DESK_BODIES)[]) {
+    app.post(`${API_PREFIX}/admin/tickets/:ticketId/${verb}`, async (request) => {
+      const who = await authenticateAdmin(request, guard, "support.reply");
+      const ticketId = param(request, "ticketId");
+      const body = parseBody(DESK_BODIES[verb], request.body ?? {}) as Record<string, unknown>;
+      const command = { ...clean(body), verb } as DeskCommand;
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminDeskCommand(trx, who, ticketId, command, now()) }));
+      return result.body;
+    });
+  }
+  app.get(`${API_PREFIX}/admin/support/settings`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "support.reply");
+    const { country } = parseBody(z.object({ country: SupportCountry }), request.query);
+    return adminGetSettings(deps.db, who, country);
+  });
+  app.put(`${API_PREFIX}/admin/support/settings`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "settings.edit");
+    const body = parseBody(SupportSettingsBody, request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await adminPutSettings(trx, who, body, now()) }));
+    return result.body;
+  });
+
+  /* ---- alerts full flow (v0.18.15, contract.json#alertDesk) */
+  const CountryQuery = z.object({ country: SupportCountry });
+  app.get(`${API_PREFIX}/admin/alerts/book`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    const { country } = parseBody(CountryQuery, request.query);
+    return alertBook(deps.db, who, country, now());
+  });
+  app.get(`${API_PREFIX}/admin/alerts/history`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    const q = parseBody(z.object({ country: SupportCountry, from: ISO.optional(), to: ISO.optional() }), request.query);
+    return alertHistory(deps.db, who, q);
+  });
+  for (const verb of Object.keys(ALERT_BODIES) as (keyof typeof ALERT_BODIES)[]) {
+    app.post(`${API_PREFIX}/admin/alerts/:alertId/${verb}`, async (request) => {
+      // The act permission depends on the alert's kind (contract.json#alertDesk.permissions), checked in alertCommand.
+      const who = await authenticateAdmin(request, guard, "overview.read");
+      const alertId = parseBody(z.object({ alertId: ALERT_ID }), request.params).alertId;
+      const body = parseBody(ALERT_BODIES[verb], request.body) as Record<string, unknown> & { kind: string; level: "critical" | "important" | "info"; title: string; since: string; zoneId?: string };
+      const command = { verb, ...(verb === "done" ? { note: body["note"] } : {}), ...(verb === "snooze" ? { minutes: body["minutes"] } : {}), ...(verb === "pass" ? { to: body["to"] } : {}) } as AlertCommand;
+      const input = { kind: body.kind, level: body.level, title: body.title, since: body.since, ...(body.zoneId ? { zoneId: body.zoneId } : {}) };
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await alertCommand(trx, who, alertId, input, command, now()) }));
+      return result.body;
+    });
+  }
+  app.put(`${API_PREFIX}/admin/alerts/mutes/:kind`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "alerts.manage");
+    const { kind } = parseBody(z.object({ kind: KIND }), request.params);
+    const { country } = parseBody(CountryQuery, request.query);
+    const { minutes } = parseBody(z.object({ minutes: z.number().int().min(1).max(1440) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setMute(trx, who, country, kind, minutes, now()) }));
+    return result.body;
+  });
+  app.delete(`${API_PREFIX}/admin/alerts/mutes/:kind`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "alerts.manage");
+    const { kind } = parseBody(z.object({ kind: KIND }), request.params);
+    const { country } = parseBody(CountryQuery, request.query);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setMute(trx, who, country, kind, null, now()) }));
+    return result.body;
+  });
+  app.put(`${API_PREFIX}/admin/alerts/quiet`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    const { country } = parseBody(CountryQuery, request.query);
+    const body = parseBody(z.object({ on: z.boolean(), from: HM, to: HM }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setQuiet(trx, who, country, body, now()) }));
+    return result.body;
+  });
+  for (const which of ["settings", "rules"] as const) {
+    app.put(`${API_PREFIX}/admin/alerts/${which}`, async (request) => {
+      const who = await authenticateAdmin(request, guard, "alerts.manage");
+      const body = parseBody(which === "settings" ? z.object({ country: SupportCountry, expectedRev: z.number().int().min(1), settings: z.record(z.string(), z.unknown()) }) : z.object({ country: SupportCountry, expectedRev: z.number().int().min(1), rules: z.array(z.record(z.string(), z.unknown())).max(200) }), request.body) as { country: string; expectedRev: number; settings?: unknown; rules?: unknown };
+      const doc = which === "settings" ? body.settings : body.rules;
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveDoc(trx, who, body.country, which, body.expectedRev, doc, now()) }));
+      return result.body;
+    });
+  }
+
+  /* ---- incidents settings and report (v0.18.15, contract.json#incidentDesk) */
+  app.get(`${API_PREFIX}/admin/incidents/settings`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "incidents.read");
+    const { country } = parseBody(z.object({ country: SupportCountry }), request.query);
+    return incidentSettings(deps.db, who, country);
+  });
+  app.put(`${API_PREFIX}/admin/incidents/settings`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "safety.edit");
+    const body = parseBody(z.object({ country: SupportCountry, expectedRev: z.number().int().min(1), settings: z.record(z.string(), z.unknown()) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveIncidentSettings(trx, who, body, now()) }));
+    return result.body;
+  });
+  app.post(`${API_PREFIX}/admin/incidents/:incidentId/report`, async (request, reply) => {
+    const who = await authenticateAdmin(request, guard, "incidents.read");
+    const incidentId = param(request, "incidentId");
+    await runIdempotent(deps.db, idem(request, who), async (trx) => { await recordReport(trx, who, incidentId, now()); return { status: 204, body: null }; });
+    return reply.status(204).send();
+  });
+
+  /* ---- review rules (v0.18.15, contract.json#reviewRules) */
+  const LineBody = z.object({ on: z.boolean(), below: z.number().min(1).max(5) });
+  const ReviewRulesBody = z.object({ country: SupportCountry, warn: LineBody, review: LineBody, minReviews: z.number().int().min(1).max(1000), badWords: z.object({ on: z.boolean(), words: z.array(z.string().trim().min(1).max(40)).max(200) }), warningText: z.object({ sv: z.string().trim().min(1).max(500), fr: z.string().trim().min(1).max(500), en: z.string().trim().min(1).max(500) }).optional() }).passthrough();
+  app.get(`${API_PREFIX}/admin/reviews/rules`, async (request) => {
+    await authenticateAdmin(request, guard, "settings.read");
+    const { country } = parseBody(z.object({ country: SupportCountry }), request.query);
+    return reviewRulesOf(deps.db, country);
+  });
+  app.put(`${API_PREFIX}/admin/reviews/rules`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "settings.edit");
+    const body = parseBody(ReviewRulesBody, request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveReviewRules(trx, who, { country: body.country, warn: body.warn, review: body.review, minReviews: body.minReviews, badWords: body.badWords, ...(body.warningText ? { warningText: body.warningText } : {}) }, now()) }));
+    return result.body;
+  });
+  app.get(`${API_PREFIX}/admin/reviews/queue`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "riders.read");
+    return reviewQueue(deps.db, who);
+  });
+  app.post(`${API_PREFIX}/admin/reviews/queue/:who/:personId/done`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "riders.block");
+    const person = parseBody(z.object({ who: z.enum(["driver", "rider"]), personId: ID }), request.params);
+    const { note } = parseBody(z.object({ note: z.string().min(1).max(500) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await reviewDone(trx, who, person, note, now()) }));
     return result.body;
   });
 

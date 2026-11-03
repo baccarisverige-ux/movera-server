@@ -1,4 +1,5 @@
 import { randomInt } from "node:crypto";
+import { applyPersonRules, hasBadWord, ratingRules } from "../admin/reviewRules.js";
 import { commissionOf } from "../rules/commission.js";
 import { checkTags } from "../admin/ratings.js";
 import { closeDriverSilent, incidentHandlers, openDriverSilent } from "../safety/incidents.js";
@@ -1214,13 +1215,18 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
   } else {
     const stars = rating.stars!;
     const tags = rating.tags ?? [];
-    await trx.insertInto("ratings").values({ trip_id: tripId, rater: who.actor, stars, tags, comment: rating.comment ?? null, at: now }).execute();
+    // v0.18.15 (contract.json#reviewRules, owner G14 Q6): a comment with a listed word is hidden at once, like an admin hide.
+    const { rules, country } = await ratingRules(trx, trip);
+    const badWord = hasBadWord(rating.comment, rules);
+    await trx.insertInto("ratings").values({ trip_id: tripId, rater: who.actor, stars, tags, comment: rating.comment ?? null, at: now, ...(badWord ? { hidden: true, hidden_by: "system", hidden_at: now, hide_reason: "bad_word" } : {}) }).execute();
     await trx.updateTable("trips").set({ [column]: "submitted" }).where("trip_id", "=", tripId).execute();
-    // The rider rates the driver; the driver rates the rider.
+    // The rider rates the driver; the driver rates the rider. A hidden rating does not count.
     if (who.actor === "rider" && trip.driver_id) {
-      await trx.updateTable("drivers").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("driver_id", "=", trip.driver_id).execute();
+      if (!badWord) await trx.updateTable("drivers").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("driver_id", "=", trip.driver_id).execute();
+      await applyPersonRules(trx, "driver", trip.driver_id, country, rules, now);
     } else if (who.actor === "driver") {
-      await trx.updateTable("riders").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("rider_id", "=", trip.rider_id).execute();
+      if (!badWord) await trx.updateTable("riders").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("rider_id", "=", trip.rider_id).execute();
+      await applyPersonRules(trx, "rider", trip.rider_id, country, rules, now);
     }
     answer = { tripId, from: who.actor, stars, tags, ...(rating.comment ? { comment: rating.comment } : {}) };
   }
