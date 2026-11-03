@@ -1,11 +1,11 @@
-# Movera API v0.18.18 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.16 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.18
+  version: 0.18.16
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.18 in this folder; this file must agree with them.
+    v0.18.16 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -83,7 +83,7 @@ tags:
 - name: Driver · Home
 x-contract:
   name: movera
-  version: 0.18.18
+  version: 0.18.16
   source: contract.json
 paths:
   /auth/otp/request:
@@ -9409,10 +9409,10 @@ paths:
     get:
       operationId: adminListAgents
       summary: Admins as Team shows them (first names, never e-mails)
-      description: 'v0.18.18. GET /admin/agents (team.read) -> { items: [{ adminId, firstName?, role, zones }] } (never the
-        e-mail): a Super admin sees every admin; other admins see the admins who share one of their zones. PATCH /admin/agents/{adminId}
-        { firstName } (team.edit): a Super admin edits anyone; another admin only non-Super admins who share one of his zones
-        (else 403 forbidden). Audited admin.first_name.'
+      description: 'v0.18.16. GET /admin/agents (team.read) -> { items: [{ adminId, firstName?, role, zones }] } (never the
+        e-mail), sorted by first name: a Super admin (role super) sees every admin; other admins see the admins who share
+        one of their zones. PATCH /admin/agents/{adminId} { firstName } (team.edit; null clears it): a Super admin renames
+        anyone; another admin only non-Super admins who share one of his zones (else 403 forbidden). Audited admin.first_name.'
       tags:
       - Admin · Auth
       x-actor:
@@ -9449,10 +9449,10 @@ paths:
     patch:
       operationId: adminSetAgentName
       summary: Set another admin's first name
-      description: 'v0.18.18. GET /admin/agents (team.read) -> { items: [{ adminId, firstName?, role, zones }] } (never the
-        e-mail): a Super admin sees every admin; other admins see the admins who share one of their zones. PATCH /admin/agents/{adminId}
-        { firstName } (team.edit): a Super admin edits anyone; another admin only non-Super admins who share one of his zones
-        (else 403 forbidden). Audited admin.first_name.'
+      description: 'v0.18.16. GET /admin/agents (team.read) -> { items: [{ adminId, firstName?, role, zones }] } (never the
+        e-mail), sorted by first name: a Super admin (role super) sees every admin; other admins see the admins who share
+        one of their zones. PATCH /admin/agents/{adminId} { firstName } (team.edit; null clears it): a Super admin renames
+        anyone; another admin only non-Super admins who share one of his zones (else 403 forbidden). Audited admin.first_name.'
       tags:
       - Admin · Auth
       x-actor:
@@ -17999,7 +17999,7 @@ components:
                 $ref: '#/components/schemas/Id'
               name:
                 type: string
-                description: 'v0.18.18: the first name; absent until set.'
+                description: 'v0.18.16: the first name; absent until set.'
           description: 'Read only: Checker LOW: GET /admin/support/settings also lists agents [{ adminId, name }]: the active
             admins with support.reply and a zone in that country (or all zones) — the only ones a topic''s assignTo may name
             (read only).'
@@ -18172,7 +18172,7 @@ components:
                 $ref: '#/components/schemas/Id'
               name:
                 type: string
-                description: 'v0.18.18: the first name; absent until set.'
+                description: 'v0.18.16: the first name; absent until set.'
     AlertTakeCommand:
       type: object
       description: v0.18.15.
@@ -22082,7 +22082,7 @@ components:
           type: string
           minLength: 1
           maxLength: 40
-          description: 'v0.18.18: the first name set in Team; absent until set (contract.json#adminNames).'
+          description: 'v0.18.16: the first name set in Team; absent until set (contract.json#adminNames).'
         role:
           $ref: '#/components/schemas/AdminRole'
         permissions:
@@ -24810,7 +24810,7 @@ components:
           $ref: '#/components/schemas/Id'
     AdminMeUpdate:
       type: object
-      description: 'v0.17.1: the signed-in admin''s own panel language (null clears it); v0.18.18 also the own first name.
+      description: 'v0.17.1: the signed-in admin''s own panel language (null clears it); v0.18.16 also the own first name.
         At least one of them.'
       properties:
         language:
@@ -24823,10 +24823,10 @@ components:
             minLength: 1
             maxLength: 40
           - type: 'null'
-          description: 'v0.18.18: own first name; null clears it.'
+          description: 'v0.18.16: own first name; null clears it.'
     AdminAgent:
       type: object
-      description: 'v0.18.18: an admin as Team shows him (never the e-mail).'
+      description: 'v0.18.16: an admin as Team shows him (never the e-mail).'
       required:
       - adminId
       - role
@@ -24846,7 +24846,7 @@ components:
             type: string
     AdminAgentList:
       type: object
-      description: v0.18.18.
+      description: v0.18.16.
       required:
       - items
       properties:
@@ -24856,7 +24856,7 @@ components:
             $ref: '#/components/schemas/AdminAgent'
     AdminAgentNameCommand:
       type: object
-      description: 'v0.18.18: another admin''s first name; null clears it.'
+      description: 'v0.18.16: another admin''s first name; null clears it.'
       required:
       - firstName
       properties:

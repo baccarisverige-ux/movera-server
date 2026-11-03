@@ -71,6 +71,12 @@ describe("admin first names (owner \"Real name from Team\")", () => {
     const named = await owner.send("PATCH", `/admin/agents/${agent.id}`, { firstName: "Nora L" });
     expect(named.body).toMatchObject({ adminId: agent.id, firstName: "Nora L" });
     expect((await owner.send("PATCH", `/admin/agents/${agent.id}`, { firstName: "x@y.se" })).status).toBe(400);
+    // Checker MED1 / LOW6: role super sees every admin (another zone too), sorted by first name; null clears a name.
+    const far = await sim.admin("support", ["FR-PC"]);
+    await owner.send("PATCH", `/admin/agents/${far.id}`, { firstName: "Anna" });
+    const sorted = ((await owner.get("/admin/agents")).body["items"] as Json[]).filter((i) => i["firstName"]).map((i) => i["firstName"]);
+    expect(sorted).toEqual([...sorted].sort((a, b) => String(a).localeCompare(String(b), "sv")));
+    expect(sorted).toContain("Anna");
     expect((await owner.send("PATCH", `/admin/agents/${agent.id}`, { firstName: null })).body["firstName"]).toBeUndefined();
     const items = (await owner.get("/admin/agents")).body["items"] as Json[];
     expect(items.find((i) => i["adminId"] === agent.id)).not.toHaveProperty("firstName");

@@ -51,7 +51,8 @@ type MessageRow = { message_id: string; sender: "rider" | "driver" | "support"; 
 export function ticketView(row: TicketRow, messages?: readonly MessageRow[], opts: { person?: boolean; extra?: Record<string, unknown> | undefined } = {}) {
   // v0.18.18 (owner "Real name from Team"): the first name set in Team; never an e-mail. The person's apps fall back
   // to the first word of the name only when it is not an e-mail (older accounts).
-  const nameOf = (m: MessageRow) => (m.admin_first ? m.admin_first : opts.person ? desk.firstNameOf(m.admin_name) : undefined);
+  // Checker LOW4: without a first name the apps show only "Movera Support" (no word of the old name).
+  const nameOf = (m: MessageRow) => m.admin_first || undefined;
   return {
     ticketId: row.ticket_id,
     ...(row.trip_id ? { tripId: row.trip_id } : {}),

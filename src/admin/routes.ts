@@ -76,17 +76,25 @@ export async function adminAuthRoutes(app: FastifyInstance, deps: AdminDeps): Pr
   // v0.18.18 (contract.json#adminNames, owner "Real name from Team"): admins as Team shows them, never the e-mail.
   const agentView = (r: { admin_id: string; first_name: string | null; role: string; zone_ids: string[] | null }) => ({ adminId: r.admin_id, ...(r.first_name ? { firstName: r.first_name } : {}), role: r.role, zones: r.zone_ids ?? ["*"] });
   const sharesZone = (who: { zones: string[] }, zones: string[] | null) => who.zones.includes("*") || (zones ?? ["*"]).some((z) => z !== "*" && who.zones.includes(z));
+  // Checker MED1: a Super admin (role super, every zone) renames anyone; a Super admin limited to some zones renames
+  // admins who share one of them; others with team.edit only non-Super admins who share one of their zones.
+  const mayRename = (who: { role?: string; zones: string[] }, target: { role: string; zone_ids: string[] | null }) =>
+    who.role === "super" ? who.zones.includes("*") || sharesZone(who, target.zone_ids) : target.role !== "super" && sharesZone(who, target.zone_ids);
   app.get(`${API_PREFIX}/admin/agents`, async (request) => {
     const who = await authenticateAdmin(request, guard, "team.read");
-    const rows = await deps.db.selectFrom("admins").select(["admin_id", "first_name", "role", "zone_ids"]).where("active", "=", true).orderBy("first_name").orderBy("admin_id").execute();
-    return { items: rows.filter((r) => r.admin_id === who.subjectId || sharesZone(who, r.zone_ids)).map(agentView) };
+    const rows = await deps.db.selectFrom("admins").select(["admin_id", "first_name", "role", "zone_ids"]).where("active", "=", true).execute();
+    // Checker MED1: role super sees every admin; others the admins who share one of their zones. Sorted by first name.
+    const seen = who.role === "super" ? rows : rows.filter((r) => r.admin_id === who.subjectId || sharesZone(who, r.zone_ids));
+    const key = (r: { first_name: string | null; admin_id: string }) => `${r.first_name === null ? "1" : "0"}${(r.first_name ?? "").toLocaleLowerCase("sv")}\u0000${r.admin_id}`;
+    return { items: seen.sort((a, b) => key(a).localeCompare(key(b), "sv")).map(agentView) };
   });
   app.patch(`${API_PREFIX}/admin/agents/:adminId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "team.edit");
     const { adminId } = parseBody(z.object({ adminId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) }), request.params);
     // The scope is checked before the body, so another zone's admin gets 403, not a body error.
     const peek = await deps.db.selectFrom("admins").select(["role", "zone_ids"]).where("admin_id", "=", adminId).executeTakeFirst();
-    if (peek && !who.zones.includes("*") && (peek.role === "super" || peek.zone_ids === null || !sharesZone(who, peek.zone_ids))) {
+    // Checker MED1: role super renames anyone; others only non-Super admins who share one of their zones.
+    if (peek && !mayRename(who, peek)) {
       throw new ApiError("forbidden", "This admin is outside your scope.", { reason: "zone_out_of_scope" });
     }
     const { firstName } = parseBody(z.object({ firstName: FirstName.nullable() }).strict(), request.body);
@@ -99,7 +107,7 @@ export async function adminAuthRoutes(app: FastifyInstance, deps: AdminDeps): Pr
         const target = await trx.selectFrom("admins").select(["admin_id", "first_name", "role", "zone_ids"]).where("admin_id", "=", adminId).forUpdate().executeTakeFirst();
         if (!target) throw new ApiError("not_found", "No such admin.", { reason: "admin_not_found" });
         // A Super admin edits anyone; another admin only non-Super admins who share one of his zones.
-        const allowed = who.zones.includes("*") ? true : target.role !== "super" && target.zone_ids !== null && sharesZone(who, target.zone_ids);
+        const allowed = mayRename(who, target);
         if (!allowed) throw new ApiError("forbidden", "This admin is outside your scope.", { reason: "zone_out_of_scope" });
         if (target.first_name !== firstName) {
           await trx.updateTable("admins").set({ first_name: firstName, updated_at: now }).where("admin_id", "=", adminId).execute();
