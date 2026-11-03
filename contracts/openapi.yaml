@@ -20912,11 +20912,13 @@ components:
           description: 'v0.18.19 (owner C): an admin may raise the driver''s fare of a booked ride (POST /admin/trips/{tripId}/driver-bonus,
             the same call and the same Pricing bonus limit as a live ride). false: the server refuses it for kind scheduled
             (403 forbidden, reason raise_off). Missing = true.'
+          default: true
         raiseMax:
           oneOf:
           - type: number
             minimum: 0
           - type: 'null'
+          default: null
           description: 'v0.18.19 (owner C): the highest raise of a booked ride, in the zone''s money (major units, e.g. 500
             = 500 kr); the server also keeps the live-ride bonus limit, whichever is lower. Missing or null = the live-ride
             limit only. Over it: 400 invalid_request, reason bonus_over_limit.'

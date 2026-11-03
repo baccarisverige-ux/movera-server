@@ -3132,7 +3132,9 @@
       "listAtTimeKm": 5,
       "listAtTimeMin": 30,
       "changeAnswerMin": 15,
-      "arriveEarlyMin": 10
+      "arriveEarlyMin": 10,
+      "raiseFare": true,
+      "raiseMax": null
     },
     "countries": {
       "SE": {
@@ -6954,7 +6956,7 @@
       "raiseFare": "Owner C: a booked ride being searched (searching / offered) takes POST /trips/{tripId}/raise-price exactly like a live ride (same steps, raisePrice.maxFactor, same screens).",
       "driverShown": "Owner D: the rider sees the driver (name, photo, car: TripProjection.driver) only from driver_to_pickup on; while a driver holds the booked ride for later the rider view has driverAssigned true and no driver details, and reservation_driver_found names nobody. The admin switch 'Rider sees the driver at once' becomes this fixed rule.",
       "noEarlyAssign": "Owner E: no early auto-assign and no backup driver: an untaken or given-back booked ride stays on the list until dispatchBeforeMin (30) before pickup, then Exclusive + Radar. The admin fields for those show 'Coming soon'.",
-      "raiseFare": "Owner C (v0.18.19): raising the driver's fare of a booked ride works exactly like a live ride: the admin call is POST /admin/trips/{tripId}/driver-bonus with the same Pricing bonus limit. The zone's DriverAppConfig.reservations.raiseFare (false: refused, reason raise_off) and raiseMax (major units; the lower of it and the live limit applies) are saved on the server from Dispatch › Bokningar.",
+      "raiseFare": "Owner C (v0.18.19): raising the driver's fare of a booked ride works exactly like a live ride: the admin call is POST /admin/trips/{tripId}/driver-bonus with the same Pricing bonus limit. The zone's DriverAppConfig.reservations.raiseFare (false: refused, reason raise_off) and raiseMax (major units; the lower of it and the live limit applies; null, the default, = no cap of its own: the live limit only) are saved on the server from Dispatch › Bokningar.",
       "includedWaitingPolicy": "Owner 2026-11-03: ONE included waiting for every zone (admin 'Included waiting' of the reservation policy), saved on the server: GET /admin/reservations/policy (trips.read) → ReservationPolicy { includedWaitingMinutes, rev, updatedAt }; PUT /admin/reservations/policy { expectedRev, includedWaitingMinutes 0–60 } (trips.intervene; 409 version_mismatch when another admin saved first). A kind scheduled trip's free waiting is this many minutes, counted from the pickup time; the no-show time is never before its end.",
       "riderZoneSwitch": "Owner A (v0.18.19): RiderAppConfig.booking.reservationsOn is the zone's DriverAppConfig.reservations.on, written by the server when it serves the rider document. The rider app never hides Book later; with reservationsOn false a tap says bookLater.texts.zoneOff and no booking starts. POST /quotes and POST /trips with kind scheduled still answer 403 forbidden, reason reservations_off.",
       "driverListReservation": "Live test 2026-11-03 HIGH 2: each DriverReservation row of GET /driver/reservations carries reservation (ReservationInfo, driver view) with changeAsk, leaveAt and driveSeconds, so the driver app asks Keep it at the new time? (new time and new earnings) from the list, the notice tap and the details screen. Before, the row had no changeAsk and the question never showed.",
