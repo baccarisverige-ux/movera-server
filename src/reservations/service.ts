@@ -99,6 +99,8 @@ export async function settingsFor(ex: Executor, zoneId: string): Promise<Reserva
 /** Q1: the booking window, at quote and at booking. */
 export async function checkWindow(ex: Executor, zoneId: string, scheduledAt: Date, now: Date): Promise<void> {
   const s = await settingsFor(ex, zoneId);
+  // Owner A (v0.18.19): booked rides switched off in the zone → refused (the rider app shows "Not available in this area yet").
+  if (!s.on) throw new ApiError("forbidden", "Booked rides are not available in this area yet.", { reason: "reservations_off" });
   const error = windowError(now, scheduledAt, s);
   if (error === "booking_too_soon") throw badRequest(`Book at least ${s.minAheadMin} minutes ahead.`, error);
   if (error === "booking_too_far") throw badRequest(`Book at most ${s.maxAheadDays} days ahead.`, error);

@@ -213,7 +213,9 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     pinRequired: row.pin_required,
     // v0.18.8: the PIN (rider and admin views; taken out for the driver below and on his stream) and whether it was given.
     ...(row.pin_required && row.pickup_pin ? { pickupPin: row.pickup_pin, pinVerified: row.pin_verified_at !== null, pinAttempts: Number(row.pin_attempts ?? 0), pinBlocked: row.pin_blocked === true } : {}),
-    ...(row.driver_summary ? { driver: row.driver_summary } : {}),
+    // Owner D (v0.18.19): a held booked ride shows the rider "Driver assigned" only; the driver from driver_to_pickup on.
+    ...(row.driver_summary && !(viewer === "rider" && row.kind === "scheduled" && row.status === "accepted") ? { driver: row.driver_summary } : {}),
+    ...(viewer === "rider" && row.kind === "scheduled" && row.status === "accepted" && row.driver_id ? { driverAssigned: true } : {}),
     // v0.18.7 (Q1): the rider as the driver sees him; never in the rider's own view.
     ...(row.rider_summary && viewer !== "rider" ? { rider: row.rider_summary } : {}),
     // v0.18.7: the rules this trip is charged by, and the server's road-route ETA (TripEta) while it has one.

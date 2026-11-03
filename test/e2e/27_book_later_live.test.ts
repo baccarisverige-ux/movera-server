@@ -102,4 +102,40 @@ describe("book later live fixes", () => {
   it("LOW 15: the rider config sends the 90-day horizon", async () => {
     expect((await rider.get("/rider/config?zoneId=Z001")).body.booking).toMatchObject({ bookingHorizonDays: 90, maxAheadDays: 90 });
   });
+
+  it("owner A: booked rides switched off in the zone are refused (reservations_off)", async () => {
+    await sim.publish(owner, "driver_app_config", "Z001", (doc) => ({ ...doc, reservations: { ...(doc.reservations ?? {}), on: false } }));
+    expect((await rider.quote({ categoryIds: ["economy"], kind: "scheduled", scheduledAt: minutes(120) })).body).toMatchObject({ reason: "reservations_off" });
+    expect((await rider.quote({ categoryIds: ["economy"] })).status).toBe(201);
+    await sim.publish(owner, "driver_app_config", "Z001", (doc) => ({ ...doc, reservations: { ...(doc.reservations ?? {}), on: true } }));
+  });
+
+  it("owner D: the rider sees 'driver assigned' without details until the driver drives; owner B: free waiting from the pickup time", async () => {
+    const trip = await book(minutes(120));
+    expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
+    const held = await rider.trip(trip.tripId);
+    expect(held.driverAssigned).toBe(true);
+    expect(held.driver).toBeUndefined();
+    expect(held.driverLocation).toBeUndefined();
+    const notes = await sim.db.selectFrom("notifications").select("body").where("subject_id", "=", rider.id).where("kind", "=", "reservation_driver_found").execute();
+    expect(notes.every((n) => !n.body.includes("Test"))).toBe(true);
+    await until(new Date(Date.parse(trip.scheduledAt) - 60 * 60_000).toISOString(), 1);
+    expect((await a.post(`/driver/reservations/${trip.tripId}/start`, {})).status).toBe(200);
+    const driving = await rider.trip(trip.tripId);
+    expect(driving.driver?.driverId).toBe(a.id);
+    // The driver arrives 5 min late: the free wait still ends at pickup + free minutes.
+    await until(new Date(Date.parse(trip.scheduledAt) + 5 * 60_000).toISOString());
+    const arrived = await a.command(trip.tripId, "arrive", { location: a.fix(PLACES.sergels) });
+    expect(arrived.status, JSON.stringify(arrived.body)).toBe(200);
+    const free = arrived.body.terms.freeWaitMin as number;
+    expect(Date.parse(arrived.body.waiting.freeUntil)).toBe(Date.parse(trip.scheduledAt) + free * 60_000);
+  });
+
+  it("owner C: a booked ride being searched takes a raise like a live ride", async () => {
+    const trip = await book(minutes(20));
+    const t = await rider.trip(trip.tripId);
+    const raised = await rider.post(`/trips/${trip.tripId}/raise-price`, { expectedVersion: t.version, increase: { amountMinor: 1000, currency: "SEK" } });
+    expect(raised.status, JSON.stringify(raised.body)).toBe(200);
+    expect(raised.body.fare.amountMinor).toBe(t.fare.amountMinor + 1000);
+  });
 });

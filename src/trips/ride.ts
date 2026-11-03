@@ -608,7 +608,8 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
       acceptPickupMeters: trip.accept_pickup_meters,
     });
     // A reservation's clock starts at the booked time, not when an early driver arrives.
-    const start = trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
+    // Owner B (v0.18.19): a booked ride's free waiting counts from the pickup time, also when the driver arrives late.
+    const start = trip.kind === "scheduled" && trip.scheduled_at ? trip.scheduled_at : now;
     const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
     // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
     const noShowFee: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
