@@ -66,8 +66,12 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
   });
 
   // v0.15.0 §24 (decision 6, "Only in test builds"): only outside production; production has no such route (404).
+  // v0.18.18 (owner 2026-11-03 "Close it now"): signed-in admin with drivers.read only (401 signed out, 403 without it).
   if (deps.testSignInEnabled) {
-    app.get(`${API_PREFIX}/auth/test-accounts`, async () => listTestAccounts(deps.db));
+    app.get(`${API_PREFIX}/auth/test-accounts`, async (request) => {
+      await authenticateAdmin(request, guard, "drivers.read");
+      return listTestAccounts(deps.db);
+    });
   }
 
   app.get(`${API_PREFIX}/admin/waitlist`, async (request) => {
