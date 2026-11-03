@@ -117,7 +117,7 @@ describe("book later (owner Q1–Q7)", () => {
     await a.command(trip.tripId, "cancel", { reasonCode: "scheduled_other" });
   });
 
-  it("nobody takes it: the search starts 20 min before; Q3 no driver 10 min before → admin flag + rider told, search goes on", async () => {
+  it("nobody takes it: the search starts 30 min before; Q3 no driver 10 min before → admin flag + rider told, search goes on", async () => {
     const trip = await book(minutes(120));
     await until(trip.reservation.dispatchAt, 1);
     expect((await rider.trip(trip.tripId)).status).toMatch(/searching|offered/);
