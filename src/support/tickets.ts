@@ -41,6 +41,7 @@ type TicketRow = {
   solved_at?: Date | null;
   incident_id?: string | null;
   first_reply_at?: Date | null;
+  country?: string | null;
   feedback_text?: string | null;
   feedback_at?: Date | null;
 };
@@ -116,6 +117,7 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
       driver_id: who.actor === "driver" ? who.subjectId : null,
       trip_id: body.tripId ?? null,
       zone_id: zoneId,
+      country: (await desk.countryOfZone(trx, zoneId)) ?? country,
       category: body.category,
       subject: body.subject,
       // A ride dispute or a safety question is looked at first.
@@ -178,8 +180,12 @@ export async function giveFeedback(trx: Trx, who: Who, ticketId: string, text: s
 }
 
 /** contract v0.13.0 §22: an admin sees tickets of their zones; a ticket without a zone only a Super admin ("*"). */
-function inScope(who: Principal, zoneId: string | null): boolean {
-  return zoneId === null ? who.zones.includes("*") : adminCoversZone(who, zoneId);
+/** Owner 2026-11-03: a ticket without zone belongs to its country's team (the country from the phone prefix). */
+async function inScope(ex: Executor, who: Principal, zoneId: string | null, country: string | null): Promise<boolean> {
+  if (zoneId !== null) return adminCoversZone(who, zoneId);
+  if (who.zones.includes("*")) return true;
+  if (!country || who.zones.length === 0) return false;
+  return (await ex.selectFrom("zones").select("zone_id").where("country", "=", country).where("zone_id", "in", who.zones).executeTakeFirst()) !== undefined;
 }
 
 export async function adminTickets(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; priority?: string; tripId?: string; riderId?: string; driverId?: string; q?: string; assignedTo?: string }, now: Date = new Date()) {
@@ -187,7 +193,11 @@ export async function adminTickets(ex: Executor, who: Principal, input: { cursor
   // v0.18.15: me | none | an admin id (a claim never runs out by itself, owner "Never").
   if (input.assignedTo === "none") q = q.where("assigned_admin_id", "is", null);
   else if (input.assignedTo) q = q.where("assigned_admin_id", "=", input.assignedTo === "me" ? who.subjectId : input.assignedTo);
-  if (!who.zones.includes("*")) q = q.where("zone_id", "in", who.zones.length ? who.zones : ["-"]);
+  if (!who.zones.includes("*")) {
+    // Owner 2026-11-03: zone-less tickets of the countries the admin has zones in.
+    const countries = who.zones.length ? [...new Set((await ex.selectFrom("zones").select("country").where("zone_id", "in", who.zones).execute()).map((z) => z.country).filter((c): c is string => Boolean(c)))] : [];
+    q = q.where((eb) => eb.or([eb("zone_id", "in", who.zones.length ? who.zones : ["-"]), eb.and([eb("zone_id", "is", null), eb("country", "in", countries.length ? countries : ["-"])])]));
+  }
   if (input.status?.length) q = q.where("status", "in", input.status as TicketRow["status"][]);
   if (input.priority) q = q.where("priority", "=", input.priority as TicketRow["priority"]);
   if (input.tripId) q = q.where("trip_id", "=", input.tripId);
@@ -213,7 +223,7 @@ async function ticketForAdmin(ex: Executor, who: Principal, ticketId: string, lo
   if (lock) q = q.forUpdate();
   const row = await q.executeTakeFirst();
   if (row === undefined) throw notFound("No such ticket.", "ticket_not_found");
-  if (!inScope(who, row.zone_id)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
+  if (!(await inScope(ex, who, row.zone_id, row.country ?? null))) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
   return row as TicketRow;
 }
 

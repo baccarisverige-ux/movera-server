@@ -4061,7 +4061,8 @@
     },
     "caseIncidentKind": "support_case",
     "next": "Rider and driver apps: reply box on the ticket, '<first name> · Movera Support', topics from GET /support/topics.",
-    "claimedOnly": "Owner 2026-11-02 'Never' + 'Leave ticket', 2026-11-03: on a claimed ticket only the claiming admin acts (reply, assign, topic, waiting, solve, reopen, case); others get 409 conflict, reason ticket_not_yours. He gives it back with leave. A Super admin (role super) can take it over with claim (audited ticket.takeover with the previous admin); nobody else."
+    "claimedOnly": "Owner 2026-11-02 'Never' + 'Leave ticket', 2026-11-03: on a claimed ticket only the claiming admin acts (reply, assign, topic, waiting, solve, reopen, case); others get 409 conflict, reason ticket_not_yours. He gives it back with leave. A Super admin (role super) can take it over with claim (audited ticket.takeover with the previous admin); nobody else.",
+    "countryTeam": "Owner 2026-11-03: a ticket without zone belongs to its country (the person's phone prefix: +46 SE, +33 FR, +216 TN, else the driver's country); the support admins with a zone in that country see and answer it (list and one ticket), Super admins too. Before: Super admins only (contract v0.13.0 §22)."
   },
   "alertDesk": {
     "note": "v0.18.15 (build-all A1, owner 2026-11-02 Q5 'Alerts = FULL FLOW': take — the others see who has it, pass on, snooze, mute types, quiet hours, done). The admin panel finds the alerts from the live data (its alert engine, admin settings + rules); the SERVER keeps who works on each alert, the history, the mutes, every admin's quiet hours and the shared alert settings and rules, so every admin sees the same state on live.",

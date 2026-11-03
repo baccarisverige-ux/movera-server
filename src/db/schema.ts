@@ -828,6 +828,8 @@ export interface SupportTicketsTable {
   solved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   incident_id: ColumnType<string | null, string | null | undefined, string | null>;
   first_reply_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** Owner 2026-11-03: the ticket's country (zone's, else the person's phone prefix). */
+  country: ColumnType<string | null, string | null | undefined, string | null>;
   feedback_text: ColumnType<string | null, string | null | undefined, string | null>;
   feedback_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }

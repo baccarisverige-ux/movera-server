@@ -12,6 +12,12 @@ ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS feedback_at timestamptz;
 UPDATE support_tickets t SET first_reply_at = m.at
   FROM (SELECT ticket_id, min(at) AS at FROM ticket_messages WHERE sender = 'support' GROUP BY ticket_id) m
   WHERE m.ticket_id = t.ticket_id AND t.first_reply_at IS NULL;
+-- Owner 2026-11-03: a ticket without zone goes to the country team from the phone prefix (+46 SE, +33 FR, +216 TN).
+ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS country text;
+UPDATE support_tickets t SET country = z.country FROM zones z WHERE t.zone_id = z.zone_id AND t.country IS NULL;
+UPDATE support_tickets t SET country = CASE WHEN p.phone LIKE '+46%' THEN 'SE' WHEN p.phone LIKE '+33%' THEN 'FR' WHEN p.phone LIKE '+216%' THEN 'TN' END
+  FROM (SELECT rider_id AS id, phone, 'rider' AS kind FROM riders UNION ALL SELECT driver_id, phone, 'driver' FROM drivers) p
+  WHERE t.zone_id IS NULL AND t.country IS NULL AND ((t.rider_id = p.id AND p.kind = 'rider' AND t.opened_by <> 'driver') OR (t.driver_id = p.id AND p.kind = 'driver' AND t.opened_by = 'driver'));
 CREATE INDEX IF NOT EXISTS support_tickets_assigned ON support_tickets (assigned_admin_id, updated_at DESC);
 
 -- Admin › Support › Settings per country (never saved = contract.json#supportDesk.settings.defaults).

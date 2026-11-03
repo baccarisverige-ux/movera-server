@@ -286,6 +286,16 @@ describe("owner: a person without a country gets it from the phone prefix", () =
     expect(topics["topics"]).not.toContain("payment");
     expect((await newcomer.post("/support/tickets", { category: "payment", subject: "x", text: "x" })).body["reason"]).toBe("topic_off");
     await putSettings(owner, fr);
+    // Owner 2026-11-03: the zone-less ticket goes to the French team (phone prefix), not to Swedish support.
+    const ticket = await newcomer.post("/support/tickets", { category: "help", subject: "Aide", text: "Bonjour" });
+    expect(ticket.body["zoneId"]).toBeUndefined();
+    const frAgent = await sim.admin("support", ["FR-PC"]);
+    expect((await frAgent.get(`/admin/tickets/${ticket.body["ticketId"]}`)).status).toBe(200);
+    expect((await frAgent.get("/admin/tickets")).body["items"].map((x: Json) => x["ticketId"])).toContain(ticket.body["ticketId"]);
+    const seAgent = await sim.admin("support", ["Z001"]);
+    expect((await seAgent.get(`/admin/tickets/${ticket.body["ticketId"]}`)).body["reason"]).toBe("zone_out_of_scope");
+    expect((await seAgent.get("/admin/tickets")).body["items"].map((x: Json) => x["ticketId"])).not.toContain(ticket.body["ticketId"]);
+    expect((await owner.get(`/admin/tickets/${ticket.body["ticketId"]}`)).status).toBe(200);
   });
 });
 
