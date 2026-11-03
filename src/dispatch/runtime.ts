@@ -1,4 +1,4 @@
-import { afterHeldAccept, currentTripOf, exclusiveOnly, heldForLater, reservationTimer, searchesAgain } from "../reservations/service.js";
+import { aheadOf, notifyOffered, tellDriverFound, afterHeldAccept, currentTripOf, exclusiveOnly, heldForLater, reservationTimer, searchesAgain } from "../reservations/service.js";
 import { drivingLimitReached } from "../drivers/drivingTime.js";
 import { driverPerformance, scoreInputs } from "../drivers/performance.js";
 import { commissionOf } from "../rules/commission.js";
@@ -497,7 +497,10 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
     : positiveSeconds(secondsOverride, offersDoc.assignAcceptSeconds, offersDoc.exclusiveSeconds, dispatchDoc?.document.exclusive.seconds, 30);
   const search = await loadSearch(trx, trip.trip_id);
   const end = search && ["searching", "offered"].includes(trip.status) ? search.end_at.getTime() : Infinity;
-  const expiresAt = new Date(Math.min(now.getTime() + seconds * 1000, end));
+  // v0.18.19 (contract.json#bookLater.liveFixes.offlineGive, live MED 7): a booked ride hours ahead may be given to an
+  // offline driver; the offer stays open until the ride's search would start, and he gets a notice.
+  const aheadUntil = aheadOf(trip, now);
+  const expiresAt = aheadUntil ?? new Date(Math.min(now.getTime() + seconds * 1000, end));
   const rate = driverDoc?.document.pickupPay?.byCategory?.[trip.category_id];
   const kinds = driverDoc?.document.pickupPay?.offers ?? {};
   const groupId = kind === "radar" ? newId("grp", now.getTime()) : null;
@@ -528,7 +531,8 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
       kept.push(offerView(mine, trip));
       continue;
     }
-    if (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh || (already && kind === "radar")) {
+    const offlineOk = aheadUntil !== null && d.account_status === "active" && !busy;
+    if (!offlineOk && (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh || (already && kind === "radar"))) {
       skipped.push({ driverId, name: d.first_name || driverId, reason: busy ? "driver_on_trip" : "driver_not_available" });
       continue;
     }
@@ -538,7 +542,7 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
       await trx.updateTable("offers").set({ status: "withdrawn", version: old.version + 1, answered_at: now }).where("offer_id", "=", old.offer_id).execute();
       queue.push(driverId, "offer_withdrawn", offerView({ ...old, status: "withdrawn", version: old.version + 1 }, trip));
     }
-    const km = dispatchKm(fix!, trip.pickup as Place);
+    const km = fix ? dispatchKm(fix, trip.pickup as Place) : 0;
     const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600));
     const pickupPay = rate ? pickupPayMinor(rate, kinds, kind, km, etaSeconds / 60) : 0;
     const offer = {
@@ -566,6 +570,7 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
     const view = offerView((await loadOffer(trx, offer.offer_id))!, trip);
     queue.push(driverId, "offer_created", view);
     made.push(view);
+    if (aheadUntil !== null) await notifyOffered(trx, trip, driverId, now);
   }
   if (made.length === 0 && kept.length === 0) {
     const first = skipped[0]!;
@@ -666,6 +671,8 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       accept_pickup_meters: offer.pickup_meters,
     },
   });
+  // v0.18.19: a booked ride tells its rider "driver found" once per driver.
+  if (trip.kind === "scheduled") await tellDriverFound(trx, trip, now);
   if (held) {
     await afterHeldAccept(trx, trip, now);
   } else {

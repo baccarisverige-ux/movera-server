@@ -1,3 +1,4 @@
+import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
 import { commissionOf } from "../rules/commission.js";
@@ -291,6 +292,13 @@ export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string,
 
 export async function adminNoShow(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; note: string; waiveFee?: boolean }, now: Date): Promise<TripRow> {
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
+  // v0.18.19 (contract.json#bookLater.liveFixes.noShowTime, live test HIGH 1): a booked ride is a no-show only after its
+  // pickup time plus its no-show wait; before that the rider has not missed anything.
+  if (trip.kind === "scheduled" && trip.scheduled_at) {
+    const wait = Number(tripTerms(trip)?.["noShowAfterMin"] ?? 0);
+    const from = trip.scheduled_at.getTime() + (Number.isFinite(wait) ? wait : 0) * 60_000;
+    if (now.getTime() < from) throw new ApiError("conflict", "A booked ride can be marked a no-show only after its pickup time and the waiting time.", { reason: "no_show_too_early", projection: tripProjection(trip, "admin") });
+  }
   const ended = await markNoShow(trx, trip, "admin", body.waiveFee === true, now);
   await audit(trx, { adminId: who.subjectId, action: "trip.no_show", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { note: body.note, waiveFee: body.waiveFee === true, from: trip.status }, at: now });
   return ended;

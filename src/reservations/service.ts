@@ -28,7 +28,7 @@ import { driverTimes, freeByTime, planOf, reservationSettings, rideTypeOf, windo
 
 type Lang = "sv" | "fr" | "en";
 type Texts = Record<Lang, string>;
-type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned";
+type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned" | "reservation_offered";
 const BL = (contract as unknown as { bookLater: { push: { texts: Record<PushKind, { title: Texts; body: Texts }> } } }).bookLater;
 const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr", TN: "fr" };
 const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
@@ -68,6 +68,8 @@ export type ReservationState = {
   rideType?: RideTypeKey;
   /** Checker M5: a held ride not started at its pickup time (admin alert). */
   notStarted?: boolean;
+  /** v0.18.19: the drivers the rider was already told about ("driver found" once per driver). */
+  toldDrivers?: string[];
   /** Checker H1: held for later (not the driver's current trip until he starts it). */
   held?: boolean;
   /** BL-Q7: the pickup time passed with no driver (admin alert). */
@@ -395,7 +397,7 @@ export async function acceptReservation(trx: Trx, driverId: string, tripId: stri
   await scheduleTimer(trx, { kind: TIMER.goOnline, refId: tripId, dueAt: times.goOnlineAt, payload: { driverId } });
   await scheduleTimer(trx, { kind: TIMER.offlineCheck, refId: tripId, dueAt: times.offlineCheckAt, payload: { driverId } });
   // Q5 rider: a message when a driver takes the ride. Owner M6-a: the driver gets an "assigned" notice.
-  await push(trx, accepted, { audience: "rider", id: accepted.rider_id }, "reservation_driver_found", now, { driver: (summary["firstName"] as string) || "" });
+  await tellDriverFound(trx, accepted, now);
   await push(trx, accepted, { audience: "driver", id: driverId }, "reservation_assigned", now);
   return accepted;
 }
@@ -523,7 +525,7 @@ export async function keepReservation(trx: Trx, driverId: string, tripId: string
   const kept = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   await planTimersOnly(trx, kept, now);
   await afterHeldAccept(trx, kept, now);
-  await push(trx, kept, { audience: "rider", id: kept.rider_id }, "reservation_driver_found", now, { driver: (kept.driver_summary as { firstName?: string } | null)?.firstName ?? "" });
+  await tellDriverFound(trx, kept, now);
   return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
 }
 
@@ -673,3 +675,25 @@ export async function afterHeldAccept(trx: Trx, trip: TripRow, now: Date): Promi
 }
 
 export type { ReservationSettings };
+
+/** v0.18.19 (liveFixes.offlineGive): a booked ride whose search starts later: an admin offer may wait for the driver until then. */
+export function aheadOf(trip: Pick<TripRow, "kind" | "reservation" | "status">, now: Date): Date | null {
+  const state = trip.kind === "scheduled" ? stateOf(trip) : null;
+  if (!state || state.mode !== "list") return null;
+  const at = Date.parse(state.dispatchAt);
+  return at > now.getTime() ? new Date(at) : null;
+}
+
+export async function notifyOffered(trx: Trx, trip: TripRow, driverId: string, now: Date): Promise<void> {
+  await push(trx, trip, { audience: "driver", id: driverId }, "reservation_offered", now);
+}
+
+/** v0.18.19 (liveFixes.driverFoundOnce): "driver found" once per driver of a booked ride. */
+export async function tellDriverFound(trx: Trx, trip: TripRow, now: Date): Promise<void> {
+  if (trip.kind !== "scheduled" || !trip.driver_id) return;
+  const fresh = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+  const state = stateOf(fresh);
+  if (!state || (state.toldDrivers ?? []).includes(trip.driver_id)) return;
+  await saveState(trx, trip.trip_id, { ...state, toldDrivers: [...(state.toldDrivers ?? []), trip.driver_id] });
+  await push(trx, fresh, { audience: "rider", id: fresh.rider_id }, "reservation_driver_found", now, { driver: (fresh.driver_summary as { firstName?: string } | null)?.firstName ?? "" });
+}
