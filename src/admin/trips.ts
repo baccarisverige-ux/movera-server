@@ -89,7 +89,15 @@ function notBelowZero(fare: Money | undefined) {
 async function checkBonus(ex: Executor, trip: TripRow, amount: Money, scope: BonusScope = "both") {
   sameCurrency(trip, amount, "The bonus");
   if (amount.amountMinor <= 0) throw badRequest("The bonus must be more than 0.", "invalid_amount");
-  const limit = await bonusLimit(ex, trip);
+  let limit = await bonusLimit(ex, trip);
+  // Owner C (v0.18.19 liveFixes.raiseFare): a booked ride's raise is the same call and the same limit as a live ride;
+  // the zone's Book later switch and highest raise (DriverAppConfig.reservations.raiseFare / raiseMax) apply on top.
+  if (trip.kind === "scheduled") {
+    const doc = await liveDocument<{ reservations?: { raiseFare?: unknown; raiseMax?: unknown } }>(ex, "driver_app_config", trip.zone_id);
+    const resv = doc?.document.reservations ?? {};
+    if (resv.raiseFare === false) throw new ApiError("forbidden", "Raising the driver's fare of a booked ride is switched off in this zone.", { reason: "raise_off" });
+    if (typeof resv.raiseMax === "number" && Number.isFinite(resv.raiseMax) && resv.raiseMax >= 0) limit = Math.min(limit, Math.round(resv.raiseMax * 100));
+  }
   if ((await bonusSoFar(ex, trip, scope)) + amount.amountMinor > limit) {
     throw badRequest(`A trip can carry at most ${limit / 100} ${trip.currency} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
   }

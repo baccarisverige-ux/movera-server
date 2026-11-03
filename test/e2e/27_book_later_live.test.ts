@@ -75,6 +75,37 @@ describe("book later live fixes", () => {
     await b.goOnline(PLACES.odenplan);
   });
 
+  it("LOW: offering a ride hours ahead to the same offline driver again keeps his one offer and sends no second notice", async () => {
+    const profile = (await b.get("/driver/profile")).body;
+    expect((await b.post("/driver/availability", { expectedVersion: profile.version, onlineStatus: "offline" })).status).toBe(200);
+    const trip = await book(minutes(240));
+    for (let i = 0; i < 2; i++) {
+      const sent = await owner.tripCommand(trip.tripId, "radar-group", { expectedVersion: await version(trip.tripId), driverIds: [b.id] });
+      expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    }
+    const offers = await sim.db.selectFrom("offers").select(["offer_id", "status"]).where("trip_id", "=", trip.tripId).where("driver_id", "=", b.id).execute();
+    expect(offers.map((o) => o.status)).toEqual(["open"]);
+    expect((await kinds(b.id, trip.tripId)).filter((k) => k === "reservation_offered")).toHaveLength(1);
+    await b.goOnline(PLACES.odenplan);
+  });
+
+  it("owner C: a booked ride's raise is the live-ride call and limit, with the zone's switch and highest raise", async () => {
+    const trip = await book(minutes(20));
+    await sim.publish(owner, "driver_app_config", "Z001", (doc) => ({ ...doc, reservations: { ...(doc.reservations ?? {}), raiseFare: true, raiseMax: 10 } }));
+    const over = await owner.tripCommand(trip.tripId, "driver-bonus", { expectedVersion: await version(trip.tripId), amount: { amountMinor: 1500, currency: "SEK" } });
+    expect(over.body).toMatchObject({ reason: "bonus_over_limit" });
+    const ok = await owner.tripCommand(trip.tripId, "driver-bonus", { expectedVersion: await version(trip.tripId), amount: { amountMinor: 1000, currency: "SEK" } });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    await sim.publish(owner, "driver_app_config", "Z001", (doc) => ({ ...doc, reservations: { ...(doc.reservations ?? {}), raiseFare: false } }));
+    const off = await owner.tripCommand(trip.tripId, "driver-bonus", { expectedVersion: await version(trip.tripId), amount: { amountMinor: 100, currency: "SEK" } });
+    expect(off.body).toMatchObject({ reason: "raise_off" });
+    await sim.publish(owner, "driver_app_config", "Z001", (doc) => {
+      const { raiseFare: _f, raiseMax: _m, ...rest } = (doc.reservations ?? {}) as Json;
+      void _f; void _m;
+      return { ...doc, reservations: rest };
+    });
+  });
+
   it("MED 9: the rider hears 'driver found' once per driver (not again on keep or re-accept)", async () => {
     const trip = await book(minutes(240));
     expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
@@ -134,6 +165,25 @@ describe("book later live fixes", () => {
     expect(arrived.status, JSON.stringify(arrived.body)).toBe(200);
     const free = arrived.body.terms.freeWaitMin as number;
     expect(Date.parse(arrived.body.waiting.freeUntil)).toBe(Date.parse(trip.scheduledAt) + free * 60_000);
+  });
+
+  it("owner B: ONE included waiting for every zone, saved on the server, counted from the pickup time", async () => {
+    const before = await owner.get("/admin/reservations/policy");
+    expect(before.status).toBe(200);
+    const saved = await owner.put("/admin/reservations/policy", { expectedRev: before.body.rev, includedWaitingMinutes: 9 });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ includedWaitingMinutes: 9, rev: before.body.rev + 1 });
+    expect((await owner.put("/admin/reservations/policy", { expectedRev: before.body.rev, includedWaitingMinutes: 3 })).body).toMatchObject({ code: "version_mismatch" });
+    const trip = await book(minutes(120));
+    expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
+    await until(new Date(Date.parse(trip.scheduledAt) - 60 * 60_000).toISOString(), 1);
+    expect((await a.post(`/driver/reservations/${trip.tripId}/start`, {})).status).toBe(200);
+    await until(new Date(Date.parse(trip.scheduledAt) + 2 * 60_000).toISOString());
+    const arrived = await a.command(trip.tripId, "arrive", { location: a.fix(PLACES.sergels) });
+    expect(arrived.status, JSON.stringify(arrived.body)).toBe(200);
+    expect(arrived.body.terms.freeWaitMin).toBe(9);
+    expect(Date.parse(arrived.body.waiting.freeUntil)).toBe(Date.parse(trip.scheduledAt) + 9 * 60_000);
+    await owner.put("/admin/reservations/policy", { expectedRev: saved.body.rev, includedWaitingMinutes: before.body.includedWaitingMinutes });
   });
 
   it("owner C: a booked ride being searched takes a raise like a live ride", async () => {

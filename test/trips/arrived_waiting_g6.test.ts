@@ -235,6 +235,8 @@ describe("item 1: every admin waiting rule, picked by the server at arrive (cont
 
   it("scheduled ride: the free wait is the reservation's included waiting, counted from the booked time", async () => {
     await publish("driver_app_config", "Z001", driverDoc({ waiting: { rideTypes: { scheduled: { on: true, freeWaitMin: 10, perMin: null, noShowAfterMin: null, noShowFee: null } } } }));
+    // v0.18.19 (owner): the included waiting is the ONE all-zones value of the reservation policy, kept on the server.
+    await database.db.updateTable("reservation_policy").set({ included_waiting_min: 10 }).where("id", "=", 1).execute();
     const at = new Date(clock.now.getTime() + 3 * 3600_000);
     const { tripId, version } = await forced({ pickup: NORRMALM, dropoff: SODERMALM, kind: "scheduled", scheduledAt: at });
     const soon = new Date(clock.now.getTime() + 10 * 60_000);

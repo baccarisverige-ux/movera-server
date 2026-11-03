@@ -534,6 +534,12 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
       kept.push(offerView(mine, trip));
       continue;
     }
+    // Coordinator LOW (v0.18.19 offlineGive): a ride hours ahead already offered to him stays that one offer: no second
+    // offer and no second notice when the admin sends it again.
+    if (already && aheadUntil !== null) {
+      kept.push(offerView((await loadOffer(trx, already.offer_id))!, trip));
+      continue;
+    }
     const offlineOk = aheadUntil !== null && d.account_status === "active" && !busy;
     if (!offlineOk && (d.account_status !== "active" || d.online_status !== "online" || busy || !fresh || (already && kind === "radar"))) {
       skipped.push({ driverId, name: d.first_name || driverId, reason: busy ? "driver_on_trip" : "driver_not_available" });
