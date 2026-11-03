@@ -1,3 +1,4 @@
+import { NOT_HELD } from "../reservations/view.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
@@ -196,7 +197,7 @@ export async function freeDriversFor(ex: Executor, trip: Pick<TripRow, "trip_id"
     .where("driver_locations.received_at", ">", new Date(opts.now.getTime() - STALE_AFTER_SECONDS * 1000))
     .where("driver_locations.measured_at", ">", new Date(opts.now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
     .where(sql<boolean>`${trip.category_id} = ANY(drivers.category_ids)`)
-    .where((eb) => eb.not(eb.exists(eb.selectFrom("trips").select("trips.trip_id").whereRef("trips.driver_id", "=", "drivers.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]))))
+    .where((eb) => eb.not(eb.exists(eb.selectFrom("trips").select("trips.trip_id").whereRef("trips.driver_id", "=", "drivers.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD))))
     .where((eb) => eb.not(eb.exists(eb.selectFrom("offers").select("offers.offer_id").whereRef("offers.driver_id", "=", "drivers.driver_id").where("offers.trip_id", "=", trip.trip_id).where("offers.status", "=", "open"))));
   if (opts.only !== undefined) q = q.where("drivers.driver_id", "in", opts.only);
   const pickup = trip.pickup as Place;
@@ -327,7 +328,7 @@ export async function radarZoneFree(ex: Executor, who: Principal, radarZoneId: s
     .where("drivers.online_status", "=", "online")
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
     .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
-    .where((eb) => eb.not(eb.exists(eb.selectFrom("trips").select("trips.trip_id").whereRef("trips.driver_id", "=", "drivers.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]))));
+    .where((eb) => eb.not(eb.exists(eb.selectFrom("trips").select("trips.trip_id").whereRef("trips.driver_id", "=", "drivers.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD))));
   if (categoryId !== undefined) q = q.where(sql<boolean>`${categoryId} = ANY(drivers.category_ids)`);
   const free = (await q.execute()).filter((r) => inPolygon(r.lat, r.lng, zone.polygon as Polygon)).length;
   return { radarZoneId, free, at: now.toISOString() };

@@ -32,6 +32,7 @@ import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
 import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
+import { reservationRoutes } from "./reservations/routes.js";
 import { dispatchToolRoutes } from "./dispatch/toolRoutes.js";
 import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
@@ -206,6 +207,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await driverRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     await dispatchRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await reservationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.6 §32 (owner G4-F2..F6): the admin's Dispatch tools and the driver's events.
     await dispatchToolRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await safetyRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });

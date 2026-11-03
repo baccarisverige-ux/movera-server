@@ -1,3 +1,4 @@
+import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
@@ -334,6 +335,10 @@ export async function withLivePricing(ex: Executor, doc: ConfigDoc, zoneId: stri
     const own = driver as (Doc & { rideCheck?: unknown; routeChange?: unknown }) | null;
     if (own && isObject(own.rideCheck)) next = { ...next, rideCheck: own.rideCheck };
     if (own && isObject(own.routeChange)) next = { ...next, routeChange: own.routeChange };
+    // v0.18.17 (contract.json#bookLater.window): the booking window and free-change time come from the zone's driver document.
+    const resv = reservationSettings((driver as Doc | null)?.["reservations"]);
+    const booking: Doc = isObject(next["booking"]) ? next["booking"] : {};
+    next = { ...next, booking: { ...booking, minAheadMin: resv.minAheadMin, maxAheadDays: resv.maxAheadDays, freeChangeBeforeMin: resv.freeChangeBeforeMin } };
   }
   return withoutLegacyEndFar(next);
 }

@@ -61,6 +61,8 @@ export interface DriversTable {
   country: ColumnType<string | null, string | null | undefined, string | null>;
   city_id: ColumnType<string | null, string | null | undefined, string | null>;
   language: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.17 (owner BL-Q4): HomeArea { lat, lng, label? }. */
+  home_area: ColumnType<unknown, string | null | undefined, string | null>;
   terms_accepted_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   fleet_id: ColumnType<string | null, string | null | undefined, string | null>;
   fleet_linked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
@@ -308,6 +310,8 @@ export interface TripsTable {
   eta: ColumnType<unknown, string | null | undefined, string | null>;
   /** v0.18.13 (G5-8): the latest heading-to-pickup check. */
   heading_check: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.17 (contract.json#bookLater): the booked ride's plan (reservations/service.ts ReservationState). */
+  reservation: ColumnType<unknown, string | null | undefined, string | null>;
   /** v0.18.7 (status item 4): the pickup as booked, set on the first move; the move limit is measured from it. */
   booked_pickup: ColumnType<unknown, string | null | undefined, string | null>;
   arrived_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
@@ -1282,6 +1286,7 @@ export interface Database {
   dispatch_events: DispatchEventsTable;
   dispatch_presets: DispatchPresetsTable;
   driver_groups: DriverGroupsTable;
+  rider_favourite_drivers: { rider_id: string; driver_id: string; created_at: Generated<Date> };
   radar_zones: RadarZonesTable;
   radar_zone_rules: RadarZoneRulesTable;
   radar_zone_sends: RadarZoneSendsTable;

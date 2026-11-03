@@ -1,3 +1,4 @@
+import { checkTripLength, checkWindow } from "../reservations/service.js";
 import { checkMaxStops } from "../trips/onTripSettings.js";
 import { contract } from "../contract/contract.js";
 import type { Db, Trx } from "../db/db.js";
@@ -59,12 +60,16 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   if (zone === null || !zone.open) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
   // v0.18.9 (contract.json#onTrip.maxStops, owner G7 decision 5): the zone's max stops, checked by the server.
   await checkMaxStops(trx, zone.zoneId, body.stops.length);
+  // v0.18.17 (contract.json#bookLater.window, owner Q1): 15 min to 90 days ahead by default, the zone's admin setting.
+  if (kind === "scheduled") await checkWindow(trx, zone.zoneId, new Date(body.scheduledAt!), now);
   const pricing = await liveDocument<PricingDocument>(trx, "pricing", zone.zoneId);
   if (pricing === null) throw new ApiError("unavailable", "Prices are not set for this area yet.", { reason: "pricing_not_published", retryAfterSeconds: 60 });
 
   const points: LatLng[] = [body.pickup, ...body.stops, body.dropoff].map((p) => ({ lat: p.lat, lng: p.lng }));
   const leg = await deps.router.route(points);
   const km = leg.distanceMeters / 1000;
+  // v0.18.17 (contract.json#bookLater.window): the zone's longest booked ride (demo admin: 60 km).
+  if (kind === "scheduled") await checkTripLength(trx, zone.zoneId, km);
   const minutes = leg.durationSeconds / 60;
 
   // An unpaid cash fee from an earlier trip rides along on the next price (§3.7, owner decision 7).

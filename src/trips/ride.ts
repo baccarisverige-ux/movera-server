@@ -1,3 +1,4 @@
+import { afterBackToRequested, freeCancelByTime } from "../reservations/service.js";
 import { randomInt } from "node:crypto";
 import { applyPersonRules, hasBadWord, ratingRules } from "../admin/reviewRules.js";
 import { commissionOf } from "../rules/commission.js";
@@ -835,6 +836,8 @@ export type RiderFee = { fee: Money; kind: "cancel" | "no_show" };
 
 export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<RiderFee | null> {
   if (trip.accepted_at === null || trip.driver_id === null) return null;
+  // v0.18.17 (contract.json#bookLater.rider.cancel, owner Q6): more than freeChangeBeforeMin before pickup = free.
+  if (await freeCancelByTime(ex, trip, now)) return null;
   const rules = await rulesOf(ex, trip);
   const rule = rules.cancelRule;
   if (rule === null) return null;
@@ -994,6 +997,8 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
   await stopSearch(trx, back, now);
   await releaseDriver(trx, trip.driver_id, now);
   if (back.status === "searching") await startSearch(trx, back, now);
+  // v0.18.17 (contract.json#bookLater.driver.release): a booked ride back on the list; after its dispatch time, searched now.
+  if (back.status === "requested") return afterBackToRequested(trx, back, now);
   return back;
 }
 

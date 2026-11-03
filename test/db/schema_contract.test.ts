@@ -37,7 +37,9 @@ async function allowed(table: string, column: string): Promise<string[]> {
 async function indexPredicate(name: string): Promise<string[]> {
   const result = await database.pool.query<{ def: string }>("SELECT pg_get_indexdef($1::regclass) AS def", [name]);
   const def = result.rows[0]!.def;
-  return [...def.slice(def.indexOf("status")).matchAll(/'([^']+)'/g)].map((match) => match[1]!);
+  // The status list only (v0.18.17: the driver index also leaves out a booked ride held for later).
+  const list = /status\)?(::[a-z ]+)?\s*=\s*ANY\s*\(+ARRAY\[([^\]]+)\]/.exec(def.slice(def.indexOf("status")))?.[2] ?? def.slice(def.indexOf("status"));
+  return [...list.matchAll(/'([^']+)'/g)].map((match) => match[1]!);
 }
 
 describe("database values match contract v" + String((contract as { version: string }).version), () => {
@@ -53,4 +55,8 @@ describe("database values match contract v" + String((contract as { version: str
     expect(await indexPredicate("trips_one_live_per_rider")).toEqual(c.tripStatus.terminal));
   it("'active' for one-trip-per-driver is the driver-assigned statuses", async () =>
     expect(await indexPredicate("trips_one_active_per_driver")).toEqual(c.tripStatus.driverAssigned));
+  it("v0.18.17: a booked ride a driver holds for later is not his one active trip", async () => {
+    const result = await database.pool.query<{ def: string }>("SELECT pg_get_indexdef('trips_one_active_per_driver'::regclass) AS def");
+    expect(result.rows[0]!.def).toMatch(/NOT \(\(kind = 'scheduled'::text\) AND \(status = 'accepted'::text\) AND \(COALESCE\(\(reservation ->> 'held'::text\), 'false'::text\) = 'true'::text\)\)/);
+  });
 });

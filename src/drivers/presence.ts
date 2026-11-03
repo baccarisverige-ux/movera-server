@@ -1,3 +1,4 @@
+import { NOT_HELD } from "../reservations/view.js";
 import { audit } from "../admin/audit.js";
 import { liveDocument } from "../config/service.js";
 import { contract } from "../contract/contract.js";
@@ -75,7 +76,7 @@ export async function setOfflineWithoutPosition(trx: Trx, now: Date): Promise<st
     // Lock the driver; one busy with a command is looked at again on the next run.
     const locked = await trx.selectFrom("drivers").select(["online_status", "version"]).where("driver_id", "=", r.driver_id).forUpdate().skipLocked().executeTakeFirst();
     if (locked === undefined || locked.online_status !== "online") continue;
-    const onTrip = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", r.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).executeTakeFirst();
+    const onTrip = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", r.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
     if (onTrip) continue;
     await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: locked.version + 1, updated_at: now }).where("driver_id", "=", r.driver_id).execute();
     // As going offline by hand: the open offers are withdrawn by a job that locks each trip in turn.
