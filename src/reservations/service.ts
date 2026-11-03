@@ -12,6 +12,7 @@ import { cancelTimer, scheduleTimer, type Timer } from "../jobs/timers.js";
 import { applyCommand, expectVersion } from "../trips/commands.js";
 import { tripProjection } from "../trips/projection.js";
 import { startEta } from "../trips/eta.js";
+import { EstimateRouter, type Router } from "../maps/routing.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { DISPATCH, dispatchKm } from "../dispatch/engine.js";
 import { commissionOf } from "../rules/commission.js";
@@ -718,11 +719,19 @@ async function scheduleLeaveCheck(trx: Trx, tripId: string, scheduledAt: Date, d
 }
 
 /** The drive from the driver's last position to the pickup (the same estimate as an offer's pickup ETA). */
+/** The router behind the start time: main.ts sets the server's real router (OSRM, else the estimate), the same one
+ * that gives normal rides their ETA (trips/eta.ts). Tests and the default use the straight-line estimate. */
+let leaveRouter: Router = new EstimateRouter();
+export function setLeaveRouter(router: Router): void {
+  leaveRouter = router;
+}
+
+/** Owner (v0.18.19 leaveOnTime): the drive from the driver's live position to the pickup, by the real road route. */
 async function driveSecondsOf(ex: Executor, driverId: string, trip: TripRow): Promise<number | null> {
   const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driverId).executeTakeFirst();
   if (!fix) return null;
-  const km = dispatchKm(fix, trip.pickup as { lat: number; lng: number });
-  return Math.max(60, Math.round((km / DISPATCH.score.pickupKmh) * 3600));
+  const leg = await leaveRouter.route([{ lat: fix.lat, lng: fix.lng }, trip.pickup as { lat: number; lng: number }]);
+  return Math.max(60, Math.round(leg.durationSeconds));
 }
 
 /** Owner (v0.18.19 leaveOnTime): leaveAt, the "start now" notice, and the late-risk alert. */

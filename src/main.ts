@@ -13,6 +13,7 @@ import { dispatchHandlers } from "./dispatch/runtime.js";
 import { RADAR_ZONE_REPEAT, radarZoneRepeatHandler } from "./dispatch/tools.js";
 import { rideHandlers } from "./trips/ride.js";
 import { etaHandler, TRIP_ETA } from "./trips/eta.js";
+import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
 import { CONFIG_CHANNEL } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
@@ -51,6 +52,8 @@ if (db !== undefined) {
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db);
   await prepareTestWeek(db, env, app.log);
+  // Owner (v0.18.19 leaveOnTime): booked rides start from the same live road-route ETA as normal rides.
+  setLeaveRouter((app as unknown as { router: Router }).router);
   worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.

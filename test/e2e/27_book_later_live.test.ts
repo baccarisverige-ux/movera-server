@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { setLeaveRouter } from "../../src/reservations/service.js";
+import { EstimateRouter, type Router } from "../../src/maps/routing.js";
 import { fakeOsrm, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
 /** v0.18.19 Book later live test fixes (Rules audits/live-book-later-2026-11-03.md). */
@@ -157,5 +159,19 @@ describe("book later live fixes", () => {
     await jump(6 * 60);
     expect(await kinds(a.id, trip.tripId)).toContain("reservation_late_risk");
     expect((await owner.get(`/admin/trips/${trip.tripId}`)).body.reservation).toMatchObject({ atRisk: true });
+  });
+
+  it("owner leave on time: the drive comes from the server's road router (the same live ETA source as normal rides)", async () => {
+    setLeaveRouter({ route: async () => ({ distanceMeters: 15_000, durationSeconds: 1234, source: "osrm" }) } as unknown as Router);
+    try {
+      const trip = await book(minutes(180));
+      expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
+      await jump(2 * 60 + 5);
+      const mine = (await a.get(`/trips/${trip.tripId}`)).body;
+      expect(mine.reservation.driveSeconds).toBe(1234);
+      expect(Date.parse(mine.reservation.leaveAt)).toBe(Date.parse(trip.scheduledAt) - 10 * 60_000 - 1234 * 1000);
+    } finally {
+      setLeaveRouter(new EstimateRouter());
+    }
   });
 });
