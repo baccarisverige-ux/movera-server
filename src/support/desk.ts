@@ -265,9 +265,10 @@ export async function setWaiting(trx: Trx, who: Principal, row: Row, waiting: bo
   await audit(trx, { adminId: who.subjectId, action: "ticket.waiting", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: { before: row.status, after: status }, at: now });
 }
 
+/** Owner "until solved or handed over": solving ends the claim, so any support admin of the country can reopen. */
 export async function solve(trx: Trx, who: Principal, row: Row, note: string | undefined, now: Date) {
   if (row.status === "closed") throw new ApiError("invalid_transition", "This ticket is closed.", { reason: "ticket_closed" });
-  await trx.updateTable("support_tickets").set({ status: "resolved", solved_by: who.subjectId, solved_at: now, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
+  await trx.updateTable("support_tickets").set({ status: "resolved", solved_by: who.subjectId, solved_at: now, assigned_admin_id: null, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
   // The note is private: only in the audit log, never on the ticket the person reads.
   await audit(trx, { adminId: who.subjectId, action: "ticket.solve", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: { before: row.status, ...(note ? { note } : {}) }, at: now });
 }

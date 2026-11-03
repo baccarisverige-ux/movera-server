@@ -273,7 +273,7 @@ export async function adminReply(trx: Trx, who: Principal, ticketId: string, bod
   if (row.status === "closed") throw new ApiError("invalid_transition", "This ticket is closed.", { reason: "ticket_closed" });
   const status = body.status ?? "pending";
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: "support", admin_id: who.subjectId, text: body.text, at: now }).execute();
-  await trx.updateTable("support_tickets").set({ status, updated_at: now, last_message_at: now, ...(row.first_reply_at ? {} : { first_reply_at: now }), ...(status === "resolved" ? { solved_by: who.subjectId, solved_at: now } : {}) }).where("ticket_id", "=", ticketId).execute();
+  await trx.updateTable("support_tickets").set({ status, updated_at: now, last_message_at: now, ...(row.first_reply_at ? {} : { first_reply_at: now }), ...(status === "resolved" ? { solved_by: who.subjectId, solved_at: now, assigned_admin_id: null } : {}) }).where("ticket_id", "=", ticketId).execute();
   await audit(trx, { adminId: who.subjectId, action: "ticket.reply", targetType: "ticket", targetId: ticketId, zoneId: row.zone_id, detail: { status }, at: now });
   return adminTicket(trx, who, ticketId, now);
 }

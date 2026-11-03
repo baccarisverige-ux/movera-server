@@ -215,7 +215,17 @@ describe("owner \"Leave ticket\": the claiming admin gives the ticket back to th
     for (const res of await Promise.all(tries)) expect([res.status]).toEqual([409]);
     expect((await agent.post(`/admin/tickets/${id}/reply`, { text: "On it" })).status).toBe(200);
     await agent.post(`/admin/tickets/${id}/solve`, {});
-    expect((await other.post(`/admin/tickets/${id}/reopen`, { reason: "x" })).body["reason"]).toBe("ticket_not_yours");
+    // Checker re-check (owner "until solved or handed over"): solving ends the claim; any support admin reopens.
+    const solvedView = (await other.get(`/admin/tickets/${id}`)).body;
+    expect(solvedView["assignedTo"]).toBeUndefined();
+    expect((await other.post(`/admin/tickets/${id}/reopen`, { reason: "Rider wrote again" })).body["status"]).toBe("open");
+    // Also when solved through an answer with status resolved.
+    const id3 = await open();
+    await agent.post(`/admin/tickets/${id3}/claim`, {});
+    await agent.post(`/admin/tickets/${id3}/reply`, { text: "Done", status: "resolved" });
+    expect((await other.post(`/admin/tickets/${id3}/reopen`, { reason: "x" })).body["status"]).toBe("open");
+    await agent.post(`/admin/tickets/${id}/claim`, {});
+    await agent.post(`/admin/tickets/${id}/solve`, {});
     // Owner 2026-11-03: a Super admin can take over another admin's claim (audited); then only he acts.
     const id2 = await open();
     await agent.post(`/admin/tickets/${id2}/claim`, {});
@@ -226,7 +236,6 @@ describe("owner \"Leave ticket\": the claiming admin gives the ticket back to th
     expect(takeover).toHaveLength(1);
     expect(takeover[0]!.detail).toMatchObject({ from: agent.id });
     // Checker LOW: a solved ticket cannot be claimed.
-    await agent.post(`/admin/tickets/${id}/leave`, {});
     expect((await other.post(`/admin/tickets/${id}/claim`, {})).body["reason"]).toBe("ticket_not_open");
   });
 });
