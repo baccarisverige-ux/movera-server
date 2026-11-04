@@ -14,7 +14,7 @@ import { markSetOffline } from "../drivers/offlineReason.js";
  */
 const DEFAULT_LIMIT = (contract as unknown as { configDefaults: { missedExclusiveBeforeOffline: number } }).configDefaults.missedExclusiveBeforeOffline;
 
-export async function autoOfflineLimit(trx: Trx, zoneId: string): Promise<number> {
+export async function autoOfflineLimit(trx: Executor, zoneId: string): Promise<number> {
   const doc = await liveDocument<{ offers?: { autoOffline?: { missedExclusive?: unknown; on?: unknown } } }>(trx, "driver_app_config", zoneId);
   // v0.18.14 (g1-g3 M8): the admin's switch DriverAppConfig.offers.autoOffline.on false = never set offline (0).
   if (doc?.document.offers?.autoOffline?.on === false) return 0;

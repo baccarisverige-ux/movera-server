@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { newId } from "../../src/ids.js";
+import { driverPerformance } from "../../src/drivers/performance.js";
+import { missedInRow } from "../../src/dispatch/autoOffline.js";
+import { zoneDriverFacts } from "../../src/dispatch/driverFacts.js";
+import { drivingLimitReached } from "../../src/drivers/drivingTime.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
 import { adminSession } from "../support/admin.js";
@@ -16,7 +20,7 @@ let app: FastifyInstance;
 const clock = { now: new Date("2026-11-04T10:00:00Z") };
 let superAdmin: Record<string, string>;
 let stockholmOnly: Record<string, string>;
-const ids = { free: "", busy: "", offline: "", fr: "" };
+const ids = { free: "", busy: "", offline: "", fr: "", rich: "" };
 const NOT_YET = ["finishingInMin", "extras", "female", "skipsInRow", "favourite", "goingHome", "homeDirectionOk", "priorityUntilMin", "queuePos"];
 
 const get = (url: string, headers: Record<string, string>) => app.inject({ method: "GET", url: `/api/v1${url}`, headers });
@@ -45,6 +49,15 @@ beforeAll(async () => {
     const tripId = await insertTrip(db, rider, { status: "cancelled_by_rider" });
     await db.insertInto("offers").values({ offer_id: newId("ofr"), trip_id: tripId, driver_id: ids.free, kind: "exclusive", status, round: 1, currency: "SEK", fare_minor: 25000, driver_earnings_minor: 20000, pickup_meters: 900, pickup_eta_seconds: 120, sent_at: min(n), expires_at: min(n), answered_at: min(n - 1), group_id: null, reason_code: null, decline_reason: null }).execute();
   }
+  // A driver with enough offers, cancels and ratings for every minimum (the batched numbers must equal the per-driver ones).
+  ids.rich = await insertDriver(db);
+  await db.updateTable("drivers").set({ account_status: "active", zone_ids: ["Z001"], online_status: "online", online_since: min(600), last_free_at: min(3), rating_sum: 14, rating_count: 3 }).where("driver_id", "=", ids.rich).execute();
+  for (let k = 0; k < 14; k += 1) {
+    const tripId = await insertTrip(db, rider, { status: "cancelled_by_rider" });
+    const status = k < 11 ? "claimed" : "declined";
+    await db.insertInto("offers").values({ offer_id: newId("ofr"), trip_id: tripId, driver_id: ids.rich, kind: k % 2 ? "assigned" : "exclusive", status, round: 1, currency: "SEK", fare_minor: 25000, driver_earnings_minor: 20000, pickup_meters: 900, pickup_eta_seconds: 120, sent_at: min(300 - k), expires_at: min(300 - k), answered_at: min(299 - k), group_id: null, reason_code: null, decline_reason: null }).execute();
+    if (k < 3) await db.insertInto("driver_cancels").values({ trip_id: tripId, driver_id: ids.rich, at: min(200 - k), from_status: "driver_assigned", reason_code: "other", note: null }).execute();
+  }
   superAdmin = (await adminSession(app, db, "super", { now: clock.now })).headers;
   stockholmOnly = (await adminSession(app, db, "super", { zoneIds: ["Z001"], now: clock.now })).headers;
 });
@@ -60,7 +73,7 @@ describe("GET /admin/zones/{zoneId}/driver-facts", () => {
     expect(res.statusCode, res.body).toBe(200);
     const body = res.json() as { zoneId: string; items: Record<string, unknown>[] };
     expect(body.zoneId).toBe("Z001");
-    expect(body.items.map((row) => row.driverId).sort()).toEqual([ids.free, ids.busy].sort());
+    expect(body.items.map((row) => row.driverId).sort()).toEqual([ids.free, ids.busy, ids.rich].sort());
     const free = body.items.find((row) => row.driverId === ids.free)!;
     expect(free).toMatchObject({ state: "free", idleMin: 7, categoryIds: ["economy"], missedInRow: 2, ridesThisHour: 1, restNeeded: false });
     // Too few offers / trips / ratings for the minimums: null, as Driver.performance.
@@ -79,5 +92,23 @@ describe("GET /admin/zones/{zoneId}/driver-facts", () => {
 
   it("needs an admin token", async () => {
     expect((await get("/admin/zones/Z001/driver-facts", {})).statusCode).toBe(401);
+  });
+});
+
+describe("batched facts equal the per-driver reads", () => {
+  it("rating, acceptance, cancels, missed in a row and rest match driverPerformance / missedInRow / drivingLimitReached", async () => {
+    const db = database.db;
+    const { items } = await zoneDriverFacts(db, "Z001", clock.now);
+    const rich = items.find((row) => row.driverId === ids.rich)!;
+    expect(rich.acceptancePct).not.toBeNull();
+    expect(rich.cancelPct).not.toBeNull();
+    expect(rich.rating).not.toBeNull();
+    for (const row of items) {
+      const perf = await driverPerformance(db, row.driverId, clock.now);
+      const driver = await db.selectFrom("drivers").select("online_since").where("driver_id", "=", row.driverId).executeTakeFirstOrThrow();
+      expect({ rating: row.rating, acceptancePct: row.acceptancePct, cancelPct: row.cancelPct }, row.driverId).toEqual({ rating: perf.rating, acceptancePct: perf.acceptancePct, cancelPct: perf.cancellationPct });
+      expect(row.missedInRow).toBe(await missedInRow(db, row.driverId, driver.online_since));
+      expect(row.restNeeded).toBe(await drivingLimitReached(db, row.driverId, clock.now));
+    }
   });
 });
