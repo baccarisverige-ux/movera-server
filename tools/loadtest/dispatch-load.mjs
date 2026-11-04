@@ -1,3 +1,4 @@
+/* global process, console, fetch, performance, Buffer, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, URL */
 // Job 1 "Fast dispatch" load test — PRIVATE local copy only, never a live server.
 //
 //   LOADTEST_ADMIN_URL="postgres://movera:movera@localhost/movera?host=/var/tmp/movera-pg" \
@@ -102,7 +103,7 @@ server.stderr.on("data", (c) => (serverErr = (serverErr + c).slice(-4000)));
 for (let i = 0; i < 120; i++) {
   try {
     if ((await fetch(`http://127.0.0.1:${PORT}/healthz`)).ok) break;
-  } catch {}
+  } catch { /* sample or stream lost: skip */ }
   await sleep(500);
 }
 
@@ -179,7 +180,7 @@ async function riderAct() {
   const t = pick(myTrips.length ? myTrips : [{ id: "trp_none", rider: r }]);
   return call(t.rider.token, "GET", `/trips/${t.id}`, null, "GET trip");
 }
-async function oneRequest(rate) {
+async function oneRequest() {
   const bookShare = (0.8 / 60) / 2; // ≈ 0.8 trips / min per req/s, 2 requests per booking
   const x = Math.random();
   if (x < bookShare * 2) return bookOne();
@@ -195,13 +196,13 @@ async function runStep(name, rate, seconds) {
     try {
       const r = await pool.query("SELECT count(*)::int AS n FROM timers WHERE due_at < now() - interval '2 seconds'");
       P().overdue.push(r.rows[0].n);
-    } catch {}
+    } catch { /* sample or stream lost: skip */ }
   }, 5000);
   const inflight = new Set();
   let next = performance.now();
   while (Date.now() < end) {
     next += 1000 / rate;
-    const p = oneRequest(rate).catch(() => undefined);
+    const p = oneRequest().catch(() => undefined);
     inflight.add(p);
     p.finally(() => inflight.delete(p));
     const wait = next - performance.now();
@@ -211,7 +212,7 @@ async function runStep(name, rate, seconds) {
   console.log(`${name} done (${P().sent} requests, ${inflight.size} still running)`);
 }
 // Offer feed (SSE) for 20 drivers: delay = received − occurredAt (same machine clock).
-const feeds = drivers.slice(0, 20).map((d) =>
+void drivers.slice(0, 20).map((d) =>
   (async () => {
     try {
       const r = await fetch(`${B}/driver/offers/stream`, { headers: { authorization: `Bearer ${d.token}`, accept: "text/event-stream" } });
@@ -227,10 +228,10 @@ const feeds = drivers.slice(0, 20).map((d) =>
           try {
             const e = JSON.parse(data.slice(5));
             if (e.kind === "offer_created" && e.occurredAt) P().feed.push(Date.now() - Date.parse(e.occurredAt));
-          } catch {}
+          } catch { /* sample or stream lost: skip */ }
         }
       }
-    } catch {}
+    } catch { /* sample or stream lost: skip */ }
   })(),
 );
 const plan = [...STEPS.map((r) => [`s${r}`, r, SECONDS])];
