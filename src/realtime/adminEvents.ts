@@ -203,8 +203,9 @@ export async function adminEventRoutes(app: FastifyInstance, deps: GuardDeps & {
     }
     if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available; poll the admin lists instead.", { reason: "realtime_unavailable", retryAfterSeconds: 10 });
     const feed = adminLiveFeed(deps.db, deps.hub, { warn: (data, message) => request.log.warn(data, message) });
-    feed.admit(who);
     const first = await resync();
+    // No await between the cap check and join (which counts the stream at once): two requests cannot both pass.
+    feed.admit(who);
     const stream = openEventStream(request, reply);
     // resync keeps the client's cursor: its id is the cursor it came with.
     if (first) stream.send(after, first);
