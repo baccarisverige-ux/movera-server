@@ -7192,6 +7192,7 @@
       "A preview token can only READ: every POST, PUT, PATCH and DELETE by it is refused with 403 forbidden, reason preview_blocked, before any route code runs (no booking, accept, payment, going online, payout, chat or profile change is ever stored).",
       "GET /rider/config and GET /driver/config with ?draft=1 return the admin's saved draft of that zone (falls back to live when no draft) — ONLY for a preview token; any other caller gets the live document.",
       "A preview token is never counted as a real rider or driver: no supply, no dispatch, no metrics.",
+      "Owner 2026-11-04 (B: Empty screens): a preview token's own-account reads answer what a brand-new account gets, never an error and never fake data: empty lists, a blank profile (firstName \"\", driver active + offline), a zero wallet; the normal 'no active trip' (204) and 'not in a fleet' (404 no_fleet) answers stay. The apps show their usual 'nothing yet' states.",
       "An app that holds a preview token shows a 'Preview' banner, and every Book / Accept / Pay / Go online style action shows 'Preview – not sent' instead of calling the server (owner P1 a)."
     ],
     "errorReason": "preview_blocked",

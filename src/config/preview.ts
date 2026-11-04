@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { adminCoversZone, authenticateAdmin, type GuardDeps } from "../auth/guard.js";
-import { signAccessToken } from "../auth/jwt.js";
+import { signAccessToken, verifyAccessToken } from "../auth/jwt.js";
 import type { Executor } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
 import { ApiError } from "../http/errors.js";
@@ -28,7 +28,43 @@ export async function draftForPreview(ex: Executor, doc: ConfigDoc, zoneId: stri
   return { version: row.version, document: row.document as Record<string, unknown>, usesStandard: false, scope: zoneId };
 }
 
+type Empty = (who: { sub: string; zone: string; currency: string; now: Date }) => { status: number; body?: unknown };
+const page = () => ({ status: 200, body: { items: [], nextCursor: null } });
+
+/**
+ * Owner 2026-11-04 (B7, "B: Empty screens"): a preview account has no rows, so its own-account reads answer what a
+ * brand-new account gets — empty lists, a blank profile, a zero wallet — never an error and never fake data. Reads
+ * that already answer empty for an unknown account (trips, offers, payouts, documents, notifications…) need no entry.
+ */
+export const PREVIEW_EMPTY_READS: Record<string, Empty> = {
+  "/rider/profile": ({ sub }) => ({ status: 200, body: { riderId: sub, firstName: "", status: "active", version: 1, rating: null, outstanding: null, outstandingByCurrency: [] } }),
+  "/wallet": ({ sub, currency, now }) => ({ status: 200, body: { ownerId: sub, balance: { amountMinor: 0, currency }, updatedAt: now.toISOString() } }),
+  "/driver/profile": ({ sub, zone }) => ({ status: 200, body: { driverId: sub, accountStatus: "active", onlineStatus: "offline", moving: false, firstName: "", zoneIds: [zone], categoryIds: [], documents: [], version: 1 } }),
+  "/driver/fleet": () => ({ status: 404, body: { code: "not_found", message: "You are not in a fleet yet.", retryable: false, reason: "no_fleet" } }),
+  "/driver/fleet/invitations": () => ({ status: 200, body: { items: [] } }),
+  "/driver/reminders": () => ({ status: 200, body: { items: [], blocksOnline: 0 } }),
+  "/driver/reservations": page,
+  "/driver/vehicles": page,
+};
+
 export async function previewRoutes(app: FastifyInstance, deps: GuardDeps): Promise<void> {
+  app.addHook("onRequest", async (request, reply) => {
+    if (request.method !== "GET") return;
+    const path = request.url.split("?")[0]!.slice(API_PREFIX.length);
+    const empty = PREVIEW_EMPTY_READS[path];
+    if (empty === undefined) return;
+    const header = request.headers.authorization;
+    const token = typeof header === "string" ? /^Bearer (\S+)$/.exec(header.trim())?.[1] : undefined;
+    if (token === undefined) return;
+    const now = deps.clock?.() ?? new Date();
+    const result = verifyAccessToken(token, deps.jwtSecret, now);
+    if (!result.ok || result.claims.pv !== true) return;
+    if (result.claims.actor !== (path.startsWith("/driver/") ? "driver" : "rider")) return; // the normal wrong_actor answer
+    const zone = result.claims.zones[0] ?? "";
+    const row = await deps.db.selectFrom("zones").select("currency").where("zone_id", "=", zone).executeTakeFirst();
+    const answer = empty({ sub: result.claims.sub, zone, currency: row?.currency ?? "SEK", now });
+    return reply.status(answer.status).send(answer.status >= 400 ? { ...(answer.body as object), requestId: request.id } : answer.body);
+  });
   app.post(`${API_PREFIX}/admin/preview-sessions`, async (request, reply) => {
     const who = await authenticateAdmin(request, deps, "settings.read");
     const body = parseBody(Body, request.body);
