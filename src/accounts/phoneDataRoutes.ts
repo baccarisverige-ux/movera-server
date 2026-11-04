@@ -5,7 +5,7 @@ import type { Db } from "../db/db.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
-import { MAX_CONTACTS, MAX_PLACES, deletePlace, driverContacts, driverPreferences, importPlaces, incidentEmergencyContacts, listPlaces, saveDriverContacts, saveDriverPreferences, savePlace, updatePlace } from "./phoneData.js";
+import { adminDriverPreferences, adminRiderPlaces, MAX_CONTACTS, MAX_PLACES, deletePlace, driverContacts, driverPreferences, importPlaces, incidentEmergencyContacts, listPlaces, saveDriverContacts, saveDriverPreferences, savePlace, updatePlace } from "./phoneData.js";
 
 /** BASE B13 (contract v0.18.26 §47, contract.json#phoneDataToServer): the routes; each reads the owner from the token. */
 
@@ -91,5 +91,16 @@ export async function phoneDataRoutes(app: FastifyInstance, deps: PhoneDataDeps)
     const { incidentId } = parseBody(z.object({ incidentId: ID }), request.params);
     // A read, but it writes the audit line in the same transaction.
     return deps.db.transaction().execute((trx) => incidentEmergencyContacts(trx, who, incidentId, now()));
+  });
+
+  app.get(`${API_PREFIX}/admin/riders/:riderId/saved-places`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "riders.read");
+    const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
+    return deps.db.transaction().execute((trx) => adminRiderPlaces(trx, who, riderId, now()));
+  });
+  app.get(`${API_PREFIX}/admin/drivers/:driverId/preferences`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "drivers.read");
+    const { driverId } = parseBody(z.object({ driverId: ID }), request.params);
+    return deps.db.transaction().execute((trx) => adminDriverPreferences(trx, who, driverId, now()));
   });
 }

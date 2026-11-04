@@ -1,8 +1,8 @@
 -- BASE B13 (contract v0.18.26 §47, contract.json#phoneDataToServer; owner 2026-11-03 "Phone-only data: Yes, all to
 -- server"): the rider's saved places, the driver's ride preferences (switched-off categories, read by dispatch) and the
 -- driver's emergency contacts move from the phone to the server. Each row is read only by its owner; an admin reads
--- emergency contacts only through a safety incident (audited). Numbered 0068 after the open 0066 (server alerts) and
--- 0067 (admin live updates) branches; renumber at merge if needed.
+-- emergency contacts only through a safety incident (audited). Numbered 0069 after 0066 and 0068 (server alerts) and
+-- 0067 (admin live updates); renumber at merge if needed.
 CREATE TABLE IF NOT EXISTS rider_places (
   place_id   text PRIMARY KEY,
   rider_id   text NOT NULL REFERENCES riders (rider_id) ON DELETE CASCADE,

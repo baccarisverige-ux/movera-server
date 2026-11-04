@@ -1,3 +1,4 @@
+import "./schema.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
@@ -5,6 +6,7 @@ import { newId } from "../ids.js";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
+import { riderInZones, zonesOf } from "../admin/lists.js";
 
 /**
  * BASE B13 (contract v0.18.26 §47, contract.json#phoneDataToServer; owner 2026-11-03 "Phone-only data: Yes, all to
@@ -156,10 +158,14 @@ export async function saveDriverContacts(trx: Trx, driverId: string, items: Cont
 
 /** Admin, read-only: the emergency contacts of the incident's driver, in the admin's zones, written to the audit. */
 export async function incidentEmergencyContacts(trx: Trx, who: Principal, incidentId: string, now: Date) {
-  const incident = await trx.selectFrom("incidents").select(["incident_id", "zone_id", "driver_id"]).where("incident_id", "=", incidentId).executeTakeFirst();
+  const incident = await trx.selectFrom("incidents").select(["incident_id", "zone_id", "driver_id", "status"]).where("incident_id", "=", incidentId).executeTakeFirst();
   if (!incident) throw notFound("No such incident.", "incident_not_found");
   if (!who.zones.includes("*") && (incident.zone_id === null || !adminCoversZone(who, incident.zone_id))) {
     throw new ApiError("forbidden", "This incident is outside your zones.", { reason: "zone_out_of_scope" });
+  }
+  // Owner 2026-11-04 "Yes, during a safety case": only while the case is open (open or being worked on).
+  if (incident.status !== "open" && incident.status !== "investigating") {
+    throw new ApiError("invalid_transition", "Emergency contacts are shown only while the safety case is open.", { reason: "incident_closed" });
   }
   const contacts = incident.driver_id ? await driverContacts(trx, incident.driver_id) : { items: [], updatedAt: null };
   // Who looked, when and at which incident; never the names or numbers.
@@ -172,4 +178,31 @@ export async function driversWithCategoryOff(ex: Executor, driverIds: string[], 
   if (driverIds.length === 0) return new Set();
   const rows = await ex.selectFrom("driver_phone_data").select("driver_id").where("driver_id", "in", driverIds).where(sql<boolean>`${categoryId} = ANY(categories_off)`).execute();
   return new Set(rows.map((r) => r.driver_id));
+}
+
+/* ---------------------------------------------------- admin profile pages */
+
+/** Owner 2026-11-04 "Read-only on profile": a rider's saved places on his admin page (riders.read), audited. */
+export async function adminRiderPlaces(trx: Trx, who: Principal, riderId: string, now: Date) {
+  const zones = zonesOf(who);
+  let q = trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId);
+  if (zones) q = q.where(riderInZones(zones));
+  if (!(await q.executeTakeFirst())) {
+    const exists = await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).executeTakeFirst();
+    if (!exists) throw notFound("No such rider.", "rider_not_found");
+    throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
+  }
+  const page = await listPlaces(trx, riderId);
+  await audit(trx, { adminId: who.subjectId, action: "rider.saved_places_viewed", targetType: "rider", targetId: riderId, detail: { count: page.items.length }, at: now });
+  return { riderId, items: page.items };
+}
+
+/** Owner 2026-11-04 "Read-only on profile": a driver's ride preferences on his admin page (drivers.read), audited. */
+export async function adminDriverPreferences(trx: Trx, who: Principal, driverId: string, now: Date) {
+  const row = await trx.selectFrom("drivers").select(["driver_id", "zone_ids"]).where("driver_id", "=", driverId).executeTakeFirst();
+  if (!row) throw notFound("No such driver.", "driver_not_found");
+  if (!who.zones.includes("*") && !row.zone_ids.some((z) => adminCoversZone(who, z))) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
+  const prefs = await driverPreferences(trx, driverId);
+  await audit(trx, { adminId: who.subjectId, action: "driver.preferences_viewed", targetType: "driver", targetId: driverId, detail: { count: prefs.categoriesOff.length }, at: now });
+  return { driverId, ...prefs };
 }

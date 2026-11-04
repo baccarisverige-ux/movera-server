@@ -150,6 +150,30 @@ describe("driver ride preferences and emergency contacts", () => {
     expect(out.json().reason).toBe("zone_out_of_scope");
     const finance = await adminSession(app, database.db, "finance", { now: clock.now });
     expect((await call(app, "GET", "/admin/incidents/inc_pds_1/emergency-contacts", finance.headers)).statusCode).toBe(403);
+    // Owner 2026-11-04: only from an OPEN safety case.
+    await database.db.updateTable("incidents").set({ status: "resolved" }).where("incident_id", "=", "inc_pds_1").execute();
+    const closed = await call(app, "GET", "/admin/incidents/inc_pds_1/emergency-contacts", safety.headers);
+    expect(closed.statusCode).toBe(409);
+    expect(closed.json().reason).toBe("incident_closed");
+  });
+
+  it("shows saved places and ride preferences read-only on the admin profile pages, audited", async () => {
+    await call(app, "POST", "/rider/places", riderA, { label: "Home", kind: "home", place: { address: "Sveavägen 1" } });
+    await call(app, "PUT", "/driver/preferences", driverB.headers, { categoriesOff: ["premium"] });
+    const ops = await adminSession(app, database.db, "super", { now: clock.now });
+    const rid = await riderId(riderA);
+    const places = await call(app, "GET", `/admin/riders/${rid}/saved-places`, ops.headers);
+    expect(places.statusCode).toBe(200);
+    expect(places.json().items[0]).toMatchObject({ kind: "home", place: { address: "Sveavägen 1" } });
+    const prefs = await call(app, "GET", `/admin/drivers/${driverB.id}/preferences`, ops.headers);
+    expect(prefs.json()).toMatchObject({ driverId: driverB.id, categoriesOff: ["premium"] });
+    const actions = (await database.db.selectFrom("admin_audit").select("action").where("admin_id", "=", ops.adminId).execute()).map((a) => a.action);
+    expect(actions).toEqual(expect.arrayContaining(["rider.saved_places_viewed", "driver.preferences_viewed"]));
+    const support = await adminSession(app, database.db, "support", { now: clock.now });
+    expect((await call(app, "GET", `/admin/drivers/${driverB.id}/preferences`, support.headers)).statusCode).toBe(403);
+    const elsewhere = await adminSession(app, database.db, "super", { zoneIds: ["Z002"], now: clock.now });
+    expect((await call(app, "GET", `/admin/drivers/${driverB.id}/preferences`, elsewhere.headers)).json().reason).toBe("zone_out_of_scope");
+    await call(app, "PUT", "/driver/preferences", driverB.headers, { categoriesOff: [] });
   });
 });
 
