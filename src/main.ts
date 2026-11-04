@@ -17,6 +17,7 @@ import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
 import { CONFIG_CHANNEL } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
+import { ADMIN_EVENTS_CHANNEL } from "./realtime/adminEvents.js";
 import { DISPATCH_EVENTS_CHANNEL } from "./dispatch/feed.js";
 import { prepareTestWeek } from "./testWeek.js";
 import { pushServicesFrom } from "./push/config.js";
@@ -36,7 +37,7 @@ if (env.DATABASE_URL !== undefined) {
   const pool = createPool(env.DATABASE_URL, poolOptionsFrom(env), (error) => warn(error));
   if (env.MIGRATE_ON_START) await migrate(pool);
   db = createDb(pool);
-  hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();
 }
 

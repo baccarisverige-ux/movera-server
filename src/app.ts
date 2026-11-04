@@ -24,6 +24,7 @@ import { rideRoutes } from "./trips/rideRoutes.js";
 import { supportedPaymentMethods } from "./trips/finish.js";
 import { adminTripRoutes } from "./admin/tripRoutes.js";
 import { realDataRoutes } from "./admin/realdataRoutes.js";
+import { adminEventRoutes } from "./realtime/adminEvents.js";
 import { driverRoutes } from "./drivers/routes.js";
 import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
@@ -217,6 +218,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await dispatchToolRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await safetyRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
 
