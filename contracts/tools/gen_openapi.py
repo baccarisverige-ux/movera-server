@@ -2813,6 +2813,35 @@ doc["components"] = OrderedDict([
                                         "description": "Claims: sub, actor (rider|driver|admin), zoneIds, role, permissions."}}),
     ("parameters", PARAMS), ("responses", RESP), ("schemas", S)])
 
+# v0.18.22 admin live updates (CONTRACT.md §46, contract.json#adminLiveEvents): one admin event stream.
+ALE = C["adminLiveEvents"]
+S["AdminLiveEventType"] = s("v0.18.22: what changed; the panel reads the record again with the normal routes.", enum=list(ALE["types"].keys()))
+S["AdminLiveEvent"] = obj({"sequence": i(minimum=1), "type": ref("AdminLiveEventType"), "entityId": ref("Id"),
+                           "zoneId": {"oneOf": [ref("Id"), {"type": "null"}]}, "occurredAt": ref("Timestamp"), "serverTime": ref("Timestamp")},
+                          ALE["envelope"], ALE["note"])
+S["AdminLiveEventPage"] = obj({"items": arr(ref("AdminLiveEvent")), "nextCursor": {"type": ["string", "null"]}}, ["items", "nextCursor"])
+op("get", ALE["path"], "adminStreamEvents", "Admin live updates (what changed, in the admin's zones)", ["admin"], "Realtime",
+   params=[pref("ZoneIdQuery"), q("zoneIds", {"type": "string"}, "Several zones, comma separated (inside the admin's zones)."),
+           q("country", {"type": "string", "pattern": "^[A-Z]{2}$"}, "Every zone of that country the admin covers."),
+           pref("After"), pref("Limit"), pref("LastEventId")],
+   content=sse("Server-sent events. " + ALE["transport"] + " " + " ".join(ALE["scope"]) + " " + ALE["replay"], "AdminLiveEvent", "AdminLiveEventPage"),
+   permission=ALE["permission"])
+
+# v0.18.25 admin real app preview (CONTRACT.md §47, contract.json#previewSession): a read-only preview token for the real apps.
+PVS = C["previewSession"]
+S["PreviewRole"] = s("v0.18.25: which real app the preview opens.", enum=PVS["roles"])
+S["PreviewSessionRequest"] = obj({"role": ref("PreviewRole"), "zoneId": ref("Id"), "useDraft": b("true: the app shows the zone's saved draft settings (GET .../config?draft=1).")},
+                                 ["role", "zoneId"], PVS["note"])
+S["PreviewSession"] = obj({"token": s(PVS["token"]), "role": ref("PreviewRole"), "zoneId": ref("Id"), "useDraft": b(),
+                           "expiresAt": ref("Timestamp"), "subjectId": s("preview:<role>:<zoneId>")},
+                          PVS["response"], PVS["handoff"] + " " + " ".join(PVS["rules"]))
+op("post", PVS["path"], "adminCreatePreviewSession", "Open a read-only preview of the real rider or driver app", ["admin"], "Config",
+   body="PreviewSessionRequest", ok=(201, "PreviewSession"), permission=PVS["permission"],
+   desc=" ".join(PVS["rules"]))
+for _p in ["/rider/config", "/driver/config"]:
+    for _m in PATHS[_p].values():
+        _m["parameters"].insert(0, q("draft", {"type": "string", "enum": ["0", "1"]}, "v0.18.25: '1' with a preview token (contract.json#previewSession) returns the zone's saved draft; ignored for every other token."))
+
 def to_plain(x):
     if isinstance(x, dict): return {k: to_plain(v) for k, v in x.items()}
     if isinstance(x, list): return [to_plain(v) for v in x]
