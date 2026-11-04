@@ -47,6 +47,7 @@ Settings come from the environment (`src/env.ts`):
 | `SEED_TEST_ON_START` | `true`: at start, make the test accounts once and publish sample settings where a zone has none (a host without a shell; not in production) | `false` |
 | `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_NAME` | At start, make this Super admin and write its password link to the log while it has no password (not in production) | none |
 | `ADMIN_TEST_EMAIL`, `ADMIN_TEST_NAME`, `ADMIN_TEST_PASSWORD_RESET` | A second Super admin for automated checks, made at start the same way: kept if it exists, password link in the log while it has no password, any new reset text gives one new link (not in production) | none |
+| `MOVERA_EXTRA_TEST_PHONES` | Big test: more test numbers than the six built in, comma list of numbers and ranges (`+46701740611-+46701740660,+33639980001`), both ends included, at most 1000; seeded at start for both apps with the fixed code (not in production) | none |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
 Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).

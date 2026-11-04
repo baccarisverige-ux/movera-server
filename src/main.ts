@@ -4,7 +4,7 @@ import { buildApp } from "./app.js";
 import { createDb, createPool, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { readEnv } from "./env.js";
-import { seedTestPhones } from "./auth/testPhones.js";
+import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
 import { TimerWorker } from "./jobs/timers.js";
 import { NotificationHub } from "./realtime/hub.js";
@@ -50,7 +50,7 @@ if (db !== undefined) {
   await ensureMaintenanceTimers(db);
   await ensurePricingTimers(db);
   // Test numbers exist only outside production (contract §8); production never reads them.
-  if (env.MOVERA_ENV !== "production") await seedTestPhones(db);
+  if (env.MOVERA_ENV !== "production") await seedTestPhones(db, testPhonesFor(env));
   await prepareTestWeek(db, env, app.log);
   // Owner (v0.18.19 leaveOnTime): booked rides start from the same live road-route ETA as normal rides.
   setLeaveRouter((app as unknown as { router: Router }).router);
