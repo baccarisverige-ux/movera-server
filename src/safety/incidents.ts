@@ -136,7 +136,7 @@ export async function openIncident(
     .executeTakeFirstOrThrow();
   await appendIncidentEvent(trx, row, "incident_opened", now);
   if (row.alarm && SAFETY.alarmKinds.includes(input.kind)) await scheduleTimer(trx, { kind: INCIDENT_ESCALATE, refId: row.incident_id, dueAt: new Date(now.getTime() + ESCALATE_MS) });
-  // v0.18.20: the admin alert (SOS, car lost, ride check) is found at once, not at the next 30 s sweep.
+  // v0.18.23: the admin alert (SOS, car lost, ride check) is found at once, not at the next 30 s sweep.
   await pokeAlerts(trx, now);
   await audit(trx, { adminId: null, action: "incident.open", targetType: "incident", targetId: row.incident_id, zoneId: row.zone_id, detail: { kind: row.kind, raisedBy: row.raised_by, tripId: row.trip_id }, at: now });
   return row;
@@ -190,7 +190,7 @@ export const escalateHandler: TimerHandler = async (trx, timer) => {
   await appendIncidentEvent(trx, updated, "incident_escalated", timer.firedAt);
 };
 
-// v0.18.20: the alert sweep rides along with the incident timers, so every worker that runs incidents also runs it.
+// v0.18.23: the alert sweep rides along with the incident timers, so every worker that runs incidents also runs it.
 export const incidentHandlers: Record<string, TimerHandler> = { [INCIDENT_ESCALATE]: escalateHandler, [ALERT_SWEEP]: alertSweepHandler };
 
 /* ---------------------------------------------------------------- admin */

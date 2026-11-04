@@ -1,7 +1,7 @@
 import { contract } from "../contract/contract.js";
 
 /**
- * v0.18.20 (contract.json#alertDesk.serverDetection, owner 2026-11-04 A1–A3): the alert kinds the server finds, their
+ * v0.18.23 (contract.json#alertDesk.serverDetection, owner 2026-11-04 A1–A3): the alert kinds the server finds, their
  * defaults, and how the country's alert settings document (PUT /admin/alerts/settings) is read.
  */
 

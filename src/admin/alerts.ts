@@ -109,7 +109,7 @@ const render = (text: unknown) => {
 };
 
 /**
- * v0.18.20 (contract.json#alertDesk.serverDetection): the alerts the server found in the country, open or solved by
+ * v0.18.23 (contract.json#alertDesk.serverDetection): the alerts the server found in the country, open or solved by
  * itself (owner A2: shown green until an admin marks them done), with the same zone and group filter as the records.
  */
 async function liveAlerts(ex: Executor, who: Principal, country: string) {
@@ -184,7 +184,7 @@ export type AlertCommand =
 export async function alertCommand(trx: Trx, who: Principal, alertId: string, input: AlertInput, command: AlertCommand, now: Date) {
   if (INCIDENT_KINDS.includes(input.kind)) throw new ApiError("invalid_transition", "Take, pass and solve this alert in Incidents.", { reason: "alert_in_incidents" });
   if (!groupOf(input.kind)) throw badRequest(`Unknown alert kind ${input.kind}.`, "unknown_alert_kind");
-  // v0.18.20: a server-found alert's kind, zone, level, title and start are the server's, never what the call sends.
+  // v0.18.23: a server-found alert's kind, zone, level, title and start are the server's, never what the call sends.
   const found = await liveAlertRow(trx, alertId);
   if (found) input = { kind: found.kind, level: found.level, title: found.title, since: found.since.toISOString(), ...(found.zone_id ? { zoneId: found.zone_id } : {}) };
   if (INCIDENT_KINDS.includes(input.kind)) throw new ApiError("invalid_transition", "Take, pass and solve this alert in Incidents.", { reason: "alert_in_incidents" });

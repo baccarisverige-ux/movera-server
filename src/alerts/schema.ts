@@ -1,7 +1,7 @@
 import type { ColumnType } from "kysely";
 
 /**
- * v0.18.20 (migration 0066, contract.json#alertDesk.serverDetection): the tables of the server's alert detector. Kept
+ * v0.18.23 (migration 0066, contract.json#alertDesk.serverDetection): the tables of the server's alert detector. Kept
  * out of db/schema.ts on purpose (Rules rule 25: schema.ts is waiting for its split), added to Database here.
  */
 type Json = ColumnType<unknown, string, string>;

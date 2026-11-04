@@ -1,4 +1,4 @@
--- v0.18.20 (BASE job 4, contract.json#alertDesk.serverDetection; owner 2026-11-04 A1–A3): the alerts the SERVER finds.
+-- v0.18.23 (BASE job 4, contract.json#alertDesk.serverDetection; owner 2026-11-04 A1–A3): the alerts the SERVER finds.
 -- One row per alert; at most one open or solved alert per cause. state: open = the cause is there now; solved = the
 -- cause ended by itself (owner A2: shown green with solved_t until an admin marks it done); closed = an admin marked
 -- it done. cause_live: the cause is still there (a closed alert whose cause is still there makes no new alert).

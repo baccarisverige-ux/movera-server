@@ -7,7 +7,7 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
 
 /**
- * v0.18.20 server-side alerts (contract.json#alertDesk.serverDetection; Rules BASE job 4, owner 2026-11-04 A1–A3).
+ * v0.18.23 server-side alerts (contract.json#alertDesk.serverDetection; Rules BASE job 4, owner 2026-11-04 A1–A3).
  * One test per kind, each in Sweden and France: the server raises it, a second sweep makes no duplicate, it is solved
  * by itself (green, with what happened) when the cause ends, and it carries the zone and country it belongs to.
  * Fails before: no detector (src/alerts/detector.ts), no admin_alerts_live table.

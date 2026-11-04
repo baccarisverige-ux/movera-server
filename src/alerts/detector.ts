@@ -5,7 +5,7 @@ import "./schema.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
 /**
- * v0.18.20 server-side alerts (contract.json#alertDesk.serverDetection; owner 2026-11-04 A1 per-zone at-risk minutes,
+ * v0.18.23 server-side alerts (contract.json#alertDesk.serverDetection; owner 2026-11-04 A1 per-zone at-risk minutes,
  * A2 solved-by-itself turns green with new info, A3 custom rules checked by the server 24/7). Alerts are SERVER-CREATED
  * only: one sweep finds every cause from the server's own data, then makes the stored alerts match:
  *   new cause            → a new open alert (since = now, never a made-up time);

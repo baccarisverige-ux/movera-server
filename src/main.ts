@@ -50,7 +50,7 @@ warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 if (db !== undefined) {
   await ensureMaintenanceTimers(db);
   await ensurePricingTimers(db);
-  // v0.18.20 (contract.json#alertDesk.serverDetection): the server finds the admin alerts every 30 s.
+  // v0.18.23 (contract.json#alertDesk.serverDetection): the server finds the admin alerts every 30 s.
   await ensureAlertSweep(db);
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db, testPhonesFor(env));

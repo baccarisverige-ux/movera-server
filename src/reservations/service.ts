@@ -640,7 +640,7 @@ export async function reservationTimer(trx: Trx, timer: Timer): Promise<void> {
       if (!NO_DRIVER.has(trip.status)) return;
       // Owner BL-Q7: never expires; the admin is alerted and it keeps going out as Exclusive offers.
       await saveState(trx, tripId, { ...state, overdue: true, noDriver: true });
-      // v0.18.20: the admin alert "pickup time passed, no driver" at once.
+      // v0.18.23: the admin alert "pickup time passed, no driver" at once.
       await pokeAlerts(trx, now);
       const marked = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
       await appendTripEvent(trx, { tripId, kind: "trip_projection", version: marked.version, occurredAt: now, projection: tripProjection(marked, "admin", { sequence: Number(marked.sequence) + 1 }) });

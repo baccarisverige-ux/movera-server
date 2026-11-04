@@ -5,7 +5,7 @@ import { insertRider, insertTrip } from "../support/seed.js";
 import { fakeOsrm, Sim, type Admin, type Json } from "./harness.js";
 
 /**
- * v0.18.20 server-side alerts through the admin API (contract.json#alertDesk.serverDetection): the book carries the
+ * v0.18.23 server-side alerts through the admin API (contract.json#alertDesk.serverDetection): the book carries the
  * alerts the server found, only of the admin's country / zones / groups; a command on a server alert uses the server's
  * kind, zone and title (never the panel's); done closes it. Fails before: no `alerts` in AlertBookState.
  */

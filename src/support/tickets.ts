@@ -134,7 +134,7 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
     .returningAll()
     .executeTakeFirstOrThrow();
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text: body.text, at: now }).execute();
-  // v0.18.20: the "Support ticket waiting" admin alert at once.
+  // v0.18.23: the "Support ticket waiting" admin alert at once.
   await pokeAlerts(trx, now);
   return ticketView(row as TicketRow, await messagesOf(trx, ticketId), { person: true });
 }
