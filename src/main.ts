@@ -7,6 +7,7 @@ import { readEnv } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
 import { TimerWorker } from "./jobs/timers.js";
+import { ALERT_SWEEP, alertSweepHandler, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { dispatchHandlers } from "./dispatch/runtime.js";
@@ -49,12 +50,14 @@ warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 if (db !== undefined) {
   await ensureMaintenanceTimers(db);
   await ensurePricingTimers(db);
+  // v0.18.20 (contract.json#alertDesk.serverDetection): the server finds the admin alerts every 30 s.
+  await ensureAlertSweep(db);
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db, testPhonesFor(env));
   await prepareTestWeek(db, env, app.log);
   // Owner (v0.18.19 leaveOnTime): booked rides start from the same live road-route ETA as normal rides.
   setLeaveRouter((app as unknown as { router: Router }).router);
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log });
+  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router), [ALERT_SWEEP]: alertSweepHandler }, logger: app.log });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
   if (push.sender !== undefined) {

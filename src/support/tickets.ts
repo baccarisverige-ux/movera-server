@@ -8,6 +8,7 @@ import { audit } from "../admin/audit.js";
 import { cursorOf, readCursor } from "../admin/lists.js";
 import { permissionsOf, isAdminRole } from "../admin/permissions.js";
 import * as desk from "./desk.js";
+import { pokeAlerts } from "../alerts/detector.js";
 
 /**
  * Support tickets (contract v0.9.0 §16, contract.json#support; owner, 2026-10-27): the rider and driver apps open
@@ -133,6 +134,8 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
     .returningAll()
     .executeTakeFirstOrThrow();
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text: body.text, at: now }).execute();
+  // v0.18.20: the "Support ticket waiting" admin alert at once.
+  await pokeAlerts(trx, now);
   return ticketView(row as TicketRow, await messagesOf(trx, ticketId), { person: true });
 }
 

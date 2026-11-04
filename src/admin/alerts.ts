@@ -4,6 +4,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { audit } from "./audit.js";
 import { isAdminRole, permissionsOf } from "./permissions.js";
+import { closeLiveAlert, liveAlertRow } from "../alerts/detector.js";
 
 /**
  * Alerts full flow (contract v0.18.15 §38, contract.json#alertDesk; owner 2026-11-02 Q5 "FULL FLOW": take — the
@@ -100,6 +101,40 @@ async function bookRow(ex: Executor, country: string, lock = false) {
   return (await q.executeTakeFirst()) ?? { country, rev: 1, settings: {}, rules: [], mutes: {}, updated_at: new Date(0) };
 }
 
+type LiveRow = { alert_id: string; cause_key: string; kind: string; country: string; zone_id: string | null; level: string; title: string; title_t: unknown; detail: string; detail_t: unknown; since: Date; state: string; solved_at: Date | null; solved_t: unknown; ref: unknown };
+
+const render = (text: unknown) => {
+  const t = text as { t?: string; a?: unknown[] } | null;
+  return t?.t ? t.t.replace(/\{(\d+)\}/g, (_, i: string) => String(t.a?.[Number(i)] ?? "")) : undefined;
+};
+
+/**
+ * v0.18.20 (contract.json#alertDesk.serverDetection): the alerts the server found in the country, open or solved by
+ * itself (owner A2: shown green until an admin marks them done), with the same zone and group filter as the records.
+ */
+async function liveAlerts(ex: Executor, who: Principal, country: string) {
+  const rows = (await ex.selectFrom("admin_alerts_live").selectAll().where("country", "=", country).where("state", "in", ["open", "solved"]).orderBy("since", "asc").limit(1000).execute()) as LiveRow[];
+  return rows
+    .filter((r) => coversZone(who, r.zone_id) && maySee(who, r.kind))
+    .map((r) => ({
+      alertId: r.alert_id,
+      causeKey: r.cause_key,
+      kind: r.kind,
+      level: r.level,
+      title: r.title,
+      titleT: r.title_t,
+      detail: r.detail,
+      ...(r.detail_t ? { detailT: r.detail_t } : {}),
+      ...(r.zone_id ? { zoneId: r.zone_id } : {}),
+      country: r.country,
+      since: r.since.toISOString(),
+      state: r.state,
+      ...(r.solved_at ? { solvedAt: r.solved_at.toISOString() } : {}),
+      ...(r.solved_t ? { solvedText: render(r.solved_t), solvedT: r.solved_t } : {}),
+      ref: r.ref ?? {},
+    }));
+}
+
 export async function alertBook(ex: Executor, who: Principal, country: string, now: Date) {
   const countryZones = await assertCountry(ex, who, country);
   const book = await bookRow(ex, country);
@@ -116,6 +151,7 @@ export async function alertBook(ex: Executor, who: Principal, country: string, n
     mutes,
     quiet: quiet ? { on: quiet.quiet_on, from: quiet.from_hm, to: quiet.to_hm } : { on: false, from: "22:00", to: "07:00" },
     people: (await colleagues(ex, countryZones)).map((p) => ({ adminId: p.adminId, ...(p.name ? { name: p.name } : {}) })),
+    alerts: await liveAlerts(ex, who, country),
   };
 }
 
@@ -135,6 +171,10 @@ export type AlertCommand =
 export async function alertCommand(trx: Trx, who: Principal, alertId: string, input: AlertInput, command: AlertCommand, now: Date) {
   if (INCIDENT_KINDS.includes(input.kind)) throw new ApiError("invalid_transition", "Take, pass and solve this alert in Incidents.", { reason: "alert_in_incidents" });
   if (!groupOf(input.kind)) throw badRequest(`Unknown alert kind ${input.kind}.`, "unknown_alert_kind");
+  // v0.18.20: a server-found alert's kind, zone, level, title and start are the server's, never what the call sends.
+  const found = await liveAlertRow(trx, alertId);
+  if (found) input = { kind: found.kind, level: found.level, title: found.title, since: found.since.toISOString(), ...(found.zone_id ? { zoneId: found.zone_id } : {}) };
+  if (INCIDENT_KINDS.includes(input.kind)) throw new ApiError("invalid_transition", "Take, pass and solve this alert in Incidents.", { reason: "alert_in_incidents" });
   // The row exists before anyone acts, so two admins acting at once queue on its lock (checker HIGH).
   await trx
     .insertInto("admin_alert_records")
@@ -164,6 +204,7 @@ export async function alertCommand(trx: Trx, who: Principal, alertId: string, in
       if (!owner) events.push({ at, by: me, kind: "take", text: "Working on it" });
       next = { status: "done", owner: me, snooze_until: null };
       events.push({ at, by: me, kind: "done", text: command.note?.trim() || "Solved" });
+      if (found) await closeLiveAlert(trx, alertId, now);
       break;
     case "snooze":
       next = { status: "snoozed", owner, snooze_until: new Date(now.getTime() + command.minutes * 60_000) };
