@@ -65,3 +65,39 @@ export class OsrmRouter implements Router {
     }
   }
 }
+
+/**
+ * Job 1 (fix plan R1 b, audits/stress-test-2026-11-04.md H2): road routes are asked BEFORE a timer's transaction (the
+ * handler's `prepare`, no lock held) and handed to the handler as prepared legs. Inside the transaction the handler
+ * routes with `preparedRouter`: the prepared leg for the same points, else the straight-line estimate (without a
+ * shape, so nothing estimated is ever kept as a road route) — never a network call while a row is locked.
+ */
+export type PreparedLegs = { legs: Array<{ key: string; leg: RouteLeg }> };
+
+export const legKey = (points: LatLng[]): string => points.map((p) => `${Number(p.lat).toFixed(6)},${Number(p.lng).toFixed(6)}`).join(";");
+
+export async function prepareLegs(router: Router, wanted: LatLng[][]): Promise<PreparedLegs> {
+  const legs: PreparedLegs["legs"] = [];
+  for (const points of wanted) {
+    try {
+      legs.push({ key: legKey(points), leg: await router.route(points) });
+    } catch {
+      // No road route now: the handler estimates.
+    }
+  }
+  return { legs };
+}
+
+export function preparedRouter(prepared: unknown): Router {
+  const legs = (prepared as PreparedLegs | null | undefined)?.legs ?? [];
+  const estimate = new EstimateRouter();
+  return {
+    async route(points: LatLng[]): Promise<RouteLeg> {
+      const key = legKey(points);
+      const found = legs.find((l) => l.key === key);
+      if (found) return found.leg;
+      const { points: _shape, ...leg } = await estimate.route(points);
+      return leg;
+    },
+  };
+}

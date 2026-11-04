@@ -5,7 +5,7 @@ import { zoneRoutes } from "./zones/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
-import type { Db } from "./db/db.js";
+import { isDatabaseBusy, type Db } from "./db/db.js";
 import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
 import type { Env } from "./env.js";
 import { ApiError, badRequest, notFound } from "./http/errors.js";
@@ -132,6 +132,12 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     }
     if (error.statusCode === 413) {
       return reply.status(400).send(badRequest("The body is too large.", "body_too_large").body(request.id));
+    }
+    // Job 1 (fix plan R22): an overloaded database is not a bug: 503 server_busy, retry in a moment (contract.json#errors).
+    if (isDatabaseBusy(error)) {
+      request.log.warn({ err: error }, "database busy");
+      reply.header("Retry-After", "2");
+      return reply.status(503).send(new ApiError("unavailable", "The server is busy. Try again in a moment.", { reason: "server_busy", retryAfterSeconds: 2 }).body(request.id));
     }
     request.log.error({ err: error }, "unhandled error");
     // contract v0.16.0: the server's own unhandled 5xx errors show in the admin's Crashes & errors (app server, scrubbed).

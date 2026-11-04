@@ -163,3 +163,72 @@ describe("timers", () => {
     expect(seen).toEqual(["p1"]);
   });
 });
+
+describe("timers — Job 1 (fast dispatch)", () => {
+  it("a busy timer keeps its place: it runs before a backlog of later timers once its short retry is over", async () => {
+    const { TimerBusy } = await import("../../src/jobs/timers.js");
+    const seen: string[] = [];
+    let busyOnce = true;
+    const clock = { now: at(500) };
+    const w = worker({
+      round: async (_trx, timer) => {
+        if (timer.refId === "first" && busyOnce) {
+          busyOnce = false;
+          throw new TimerBusy("trip busy");
+        }
+        seen.push(timer.refId);
+      },
+    }, clock);
+    await scheduleTimer(database.db, { kind: "round", refId: "first", dueAt: at(0) });
+    for (let i = 1; i <= 20; i++) await scheduleTimer(database.db, { kind: "round", refId: `later${i}`, dueAt: at(i) });
+    expect(await w.runOne()).toBe(true); // "first" was busy
+    for (let i = 0; i < 3; i++) await w.runOne();
+    clock.now = at(501); // the 250 ms retry is over
+    await w.runDue();
+    // Before Job 1 the busy timer was moved to now + 250 ms, behind all 20 overdue ones (it ran last).
+    expect(seen.indexOf("first")).toBe(3);
+    expect(seen).toHaveLength(21);
+  });
+
+  it("a lane takes only its kinds; another lane leaves them alone", async () => {
+    const seen: string[] = [];
+    const clock = { now: at(100) };
+    const w = worker({ dispatch_round: async (_t, timer) => void seen.push(timer.kind), trip_eta: async (_t, timer) => void seen.push(timer.kind) }, clock);
+    await scheduleTimer(database.db, { kind: "trip_eta", refId: "t1", dueAt: at(0) });
+    await scheduleTimer(database.db, { kind: "dispatch_round", refId: "t2", dueAt: at(5) });
+    await w.runDue(100, { kinds: ["dispatch_round"] });
+    expect(seen).toEqual(["dispatch_round"]);
+    await w.runDue(100, { exclude: ["trip_eta"] });
+    expect(seen).toEqual(["dispatch_round"]);
+    await w.runDue(100, { kinds: ["trip_eta"] });
+    expect(seen).toEqual(["dispatch_round", "trip_eta"]);
+  });
+
+  it("prepare runs outside the transaction (no row lock held) and its result reaches the handler", async () => {
+    const clock = { now: at(100) };
+    const got: unknown[] = [];
+    const handler: TimerHandler = async (_trx, timer) => void got.push(timer.prepared);
+    handler.prepare = async (db) => {
+      // The timer row is not locked while preparing: another connection can lock it without waiting.
+      const row = await db.transaction().execute((trx) => trx.selectFrom("timers").select("timer_id").forUpdate().noWait().executeTakeFirst());
+      return { locked: row === undefined ? "gone" : "free" };
+    };
+    const w = worker({ slow: handler }, clock);
+    await scheduleTimer(database.db, { kind: "slow", refId: "x", dueAt: at(0) });
+    await w.runDue();
+    expect(got).toEqual([{ locked: "free" }]);
+    expect(await pending()).toEqual([]);
+  });
+
+  it("several lanes run at once and never run one timer twice", async () => {
+    const seen: string[] = [];
+    const clock = { now: at(100) };
+    const w = new TimerWorker(database.db, { handlers: { step: async (_t, timer) => { await sleep(5); seen.push(timer.refId); } }, logger, clock: () => clock.now, pollMs: 10, lanes: [{}, {}, {}, {}] });
+    for (let i = 0; i < 40; i++) await scheduleTimer(database.db, { kind: "step", refId: `s${i}`, dueAt: at(0) });
+    w.start();
+    for (let i = 0; i < 200 && seen.length < 40; i++) await sleep(20);
+    await w.stop();
+    expect(seen.length).toBe(40);
+    expect(new Set(seen).size).toBe(40);
+  });
+});

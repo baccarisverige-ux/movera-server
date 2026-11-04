@@ -1,7 +1,9 @@
+import type pg from "pg";
+import { registerLoadShedding } from "./http/shed.js";
 import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "./safety/rideCheckServer.js";
 import { ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
-import { createDb, createPool, type Db } from "./db/db.js";
+import { createDb, createPool, limitStatements, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { readEnv } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
@@ -9,13 +11,13 @@ import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance
 import { TimerWorker } from "./jobs/timers.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
-import { dispatchHandlers } from "./dispatch/runtime.js";
+import { dispatchHandlers, ROUND, WITHDRAW } from "./dispatch/runtime.js";
 import { RADAR_ZONE_REPEAT, radarZoneRepeatHandler } from "./dispatch/tools.js";
 import { rideHandlers } from "./trips/ride.js";
 import { etaHandler, TRIP_ETA } from "./trips/eta.js";
 import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
-import { CONFIG_CHANNEL } from "./config/service.js";
+import { CONFIG_CHANNEL, cacheLiveDocuments, forgetLiveDocuments } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
 import { ADMIN_EVENTS_CHANNEL } from "./realtime/adminEvents.js";
 import { DISPATCH_EVENTS_CHANNEL } from "./dispatch/feed.js";
@@ -27,6 +29,7 @@ import { onNotify } from "./notifications/service.js";
 const env = readEnv();
 
 let db: Db | undefined;
+let pool: pg.Pool | undefined;
 let hub: NotificationHub | undefined;
 let worker: TimerWorker | undefined;
 let pusher: PushDispatcher | undefined;
@@ -34,11 +37,15 @@ let pusher: PushDispatcher | undefined;
 let warn = (error: Error) => console.warn("database connection dropped:", error.message);
 
 if (env.DATABASE_URL !== undefined) {
-  const pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX, (error) => warn(error));
+  pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX, (error) => warn(error));
   if (env.MIGRATE_ON_START) await migrate(pool);
+  limitStatements(pool, env.DATABASE_STATEMENT_TIMEOUT_MS);
   db = createDb(pool);
   hub = new NotificationHub(env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();
+  // Job 1 (fix plan R23): settings are kept in memory; any config_published (from any instance) empties the cache.
+  hub.subscribe(CONFIG_CHANNEL, () => forgetLiveDocuments());
+  cacheLiveDocuments(15_000);
 }
 
 let log: (message: string) => void = (message) => console.warn(message);
@@ -55,7 +62,12 @@ if (db !== undefined) {
   await prepareTestWeek(db, env, app.log);
   // Owner (v0.18.19 leaveOnTime): booked rides start from the same live road-route ETA as normal rides.
   setLeaveRouter((app as unknown as { router: Router }).router);
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log });
+  // Job 1 (fast dispatch): one lane only for dispatch rounds and withdrawals, the others for any timer (TIMER_LANES).
+  // Stress H1: trip GPS work (ETA, ride check, near drop-off) has its own lane and never takes the other lanes, so it
+  // can never starve dispatch; general lanes take everything else (dispatch too, when it is busy).
+  const tripKinds = [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"];
+  const lanes = [{ kinds: [ROUND, WITHDRAW] }, { kinds: tripKinds }, ...Array.from({ length: Math.max(1, env.TIMER_LANES - 2) }, () => ({ exclude: tripKinds }))];
+  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log, pollMs: 200, lanes });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
   if (push.sender !== undefined) {
@@ -82,4 +94,6 @@ const close = async (signal: string) => {
 process.once("SIGINT", () => void close("SIGINT"));
 process.once("SIGTERM", () => void close("SIGTERM"));
 
+// Job 1 (stress H3): load shedding while the pool queue or the event loop is over its limit (SHED_* settings).
+if (pool !== undefined) registerLoadShedding(app, { maxPoolWaiting: env.SHED_POOL_WAITING, maxLoopDelayMs: env.SHED_LOOP_DELAY_MS, poolWaiting: () => pool!.waitingCount });
 await app.listen({ host: env.HOST, port: env.PORT });

@@ -65,11 +65,11 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     const who = await authenticate(request, guard, ["driver"]);
     const { status, limit } = parseBody(z.object({ status: z.string().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) }), request.query);
     const rows = await deps.db.selectFrom("offers").selectAll().where("driver_id", "=", who.subjectId).where("status", "=", (status ?? "open") as "open").orderBy("sent_at", "desc").limit(limit).execute();
-    const items = [];
-    for (const row of rows) {
-      const trip = await deps.db.selectFrom("trips").selectAll().where("trip_id", "=", row.trip_id).executeTakeFirstOrThrow();
-      items.push(offerView(row, trip));
-    }
+    // Job 1 (fix plan R23, stress L1): the offers' trips in ONE query, not one per offer.
+    const tripIds = [...new Set(rows.map((r) => r.trip_id))];
+    const trips = tripIds.length ? await deps.db.selectFrom("trips").selectAll().where("trip_id", "in", tripIds).execute() : [];
+    const tripOf = new Map(trips.map((t) => [t.trip_id, t]));
+    const items = rows.map((row) => offerView(row, tripOf.get(row.trip_id)!));
     return { items, nextCursor: null };
   });
 

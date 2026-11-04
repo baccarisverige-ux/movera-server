@@ -130,7 +130,7 @@ const kmAt = (doc: DispatchDoc, mode: Mode, step: number) => {
 };
 
 /** The farthest pickup any offer may go to: limits.maxPickupKm, else the widest step of the modes. */
-function maxPickupKm(doc: DispatchDoc): number {
+export function maxPickupKm(doc: DispatchDoc): number {
   const widest = Math.max(...stepsOf(doc, "radar"), ...stepsOf(doc, "exclusive"));
   const limit = doc.limits?.maxPickupKm;
   return typeof limit === "number" && limit > 0 ? Math.min(limit, widest) : widest;
@@ -193,7 +193,7 @@ function inRange(doc: DispatchDoc, ranked: Ranked[], mode: Mode, km: number, ste
 }
 
 /** Where a search is in its steps (stored per trip by the runtime). */
-export type SearchState = { cur: Mode; step: number; tried: number; asked: string[]; switched: Mode[]; repeat: boolean; pending?: "both" | "byDistance" };
+export type SearchState = { cur: Mode; step: number; tried: number; asked: string[]; switched: Mode[]; repeat: boolean; pending?: "both" | "byDistance"; again?: boolean };
 
 export function newSearch(mode: Mode, pending?: "both" | "byDistance"): SearchState {
   return { cur: mode, step: 0, tried: 0, asked: [], switched: [], repeat: false, ...(pending ? { pending } : {}) };
@@ -246,10 +246,25 @@ export function planRound(doc: DispatchDoc, input: SearchState, ranked: Ranked[]
       const rKm = kmAt(doc, "radar", last);
       const shown = inRange(doc, ranked, "radar", rKm).slice(0, doc.radar.drivers);
       if (doc.exclusive.on && next) {
+        delete s.again;
         s.asked.push(next.id);
         return { state: s, round: { type: "offer", kind: "exclusive", radiusKm: kmAt(doc, "exclusive", last), driverIds: [next.id], reasonCode: reasonFor(next, ex) } };
       }
       if (doc.radar.on && shown.length) return { state: s, round: { type: "offer", kind: "radar", radiusKm: rKm, driverIds: shown.map((r) => r.id) } };
+      // Job 1 (owner Q1 2026-11-04 "a driver who declined a live exclusive offer may get it again in a later round: YES";
+      // BL M6-e): with Radar off nobody would ever see the trip again once every driver in range was asked. So, after
+      // one wait of exclusive.seconds, a new Exclusive cycle starts: the drivers in range are asked again, best first.
+      if (doc.exclusive.on && !doc.radar.on && ex.length > 0) {
+        if (s.again) {
+          const inRange = new Set(ex.map((r) => r.id));
+          s.asked = s.asked.filter((id) => !inRange.has(id));
+          delete s.again;
+          const first = ex[0]!;
+          s.asked.push(first.id);
+          return { state: s, round: { type: "offer", kind: "exclusive", radiusKm: kmAt(doc, "exclusive", last), driverIds: [first.id], reasonCode: reasonFor(first, ex) } };
+        }
+        s.again = true;
+      }
       return { state: s, round: { type: "wait", seconds: doc.radar.on ? doc.radar.seconds : doc.exclusive.seconds } };
     }
     const km = kmAt(doc, s.cur, s.step);

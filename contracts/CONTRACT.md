@@ -1,4 +1,8 @@
-# Movera shared contract v0.18.22
+# Movera shared contract v0.18.27
+
+v0.18.27 (fix plan Job 1 "Fast dispatch"; builds on v0.18.23; X-Api-Version stays `0.5`, additive; rider, driver and admin apps: no change needed): rides are offered in seconds under load (parallel timer loops, a dispatch-only loop, cheap set-based rounds that lock only the chosen drivers, no road routing inside locks); an overdue booked ride goes on as Exclusive only; no live ride that clashes with a held booking; with Radar off decliners are asked again in a new cycle (owner Q1); admin-sent offers use the dispatch seconds; an accept with an older version of a still-open offer goes through; `503 unavailable` reason `server_busy` with Retry-After under overload. §47, `contract.json#fastDispatch`.
+
+v0.18.23 (BASE job 4 "Server-side alerts", owner 2026-11-04 A1–A3, Rules `decisions/admin-fake-by-group.md`; builds on v0.18.22; X-Api-Version stays `0.5`, additive; rider and driver apps: no change): **alerts are server-created only** — the server finds every alert kind itself every 30 s and right after key events (SOS / car lost / ride check opened, ticket opened, booked-ride timers), one alert per cause, no duplicates; `GET /admin/alerts/book` also returns `alerts [LiveAlert]`. New booked-ride kinds `booked_at_risk`, `booked_late`, `booked_not_started`. **At risk** is an admin setting per zone (owner A1): `settings.zones[zoneId].bookedAtRiskMin` and `liveAtRiskMin`, default 15 each. **Solved by itself** (owner A2): the alert stays, turns green with the new info ("Driver Ali took it 17:48"), an admin can still mark it done. **Custom rules** are checked by the server 24/7 (owner A3). §44, `contract.json#alertDesk.serverDetection`.
 
 v0.18.22 (BASE job admin live updates 2026-11-04; builds on v0.18.21 main; additive; 0.18.20 is taken by the open contracts PR #60): one admin event stream `GET /admin/events` (SSE, `AdminLiveEvent`: trip.changed, driver.status, zone.supply, alert.changed, ticket.changed, incident.changed, approval.changed, payment.failed, resync), zone-scoped, replay with Last-Event-ID; the admin panel drops its 15 s polling and shows a small "Reconnecting…" badge when the stream drops (owner L1). §46, `contract.json#adminLiveEvents`.
 
@@ -1031,7 +1035,7 @@ Owner 2026-11-02 Q5 "Alerts = FULL FLOW" (take — the others see who has it, pa
 - **Commands** (overview.read): `POST /admin/alerts/{alertId}/take | done | snooze | pass` (owner rules: another admin's alert → `409 alert_taken`; SOS, car lost and ride check are taken in Incidents → `409 alert_in_incidents`; pass → an active admin in `people`, else `400 assignee_not_allowed`), `PUT | DELETE /admin/alerts/mutes/{kind}`, `PUT /admin/alerts/quiet` (own quiet hours).
 - **Settings and rules** (alerts.manage): `PUT /admin/alerts/settings | rules { expectedRev, … }` (stale rev → `409 version_mismatch`); stored as the panel's documents, at most 256 KB.
 - **Export**: `GET /admin/alerts/history?from=&to=` → `{ items }`; the panel makes the CSV. Every command is audited (`alert.*`).
-- **Next**: server-side detection and push to admins.
+- **Next**: server-side detection — done in v0.18.23 (§44); push to admins later.
 
 ## 39. Incidents settings, report, calls — build-all A1 (v0.18.15)
 
@@ -1066,6 +1070,15 @@ Owner 2026-11-03 Q1–Q7 (Rules `decisions/driver-g15.md`, "Book later answers")
 
 `GET /admin/zones/{zoneId}/driver-facts` → `DispatchDriverFactsList { zoneId, serverTime, items: DispatchDriverFacts[] }` (`trips.read`; a zone outside the admin's scope is `403 zone_out_of_scope`). One row per active driver of the zone who is online (`state: free`) or on a trip (`state: trip`). Real: `rating`, `acceptancePct`, `cancelPct` (the same numbers and minimums as `Driver.performance`, null below them), `idleMin` (null on a trip), `categoryIds`, `missedInRow` (counted as `contract.json#autoOffline`), `ridesThisHour`, `restNeeded` (driving-time limit). Not tracked yet, always `null`: `finishingInMin`, `extras`, `female`, `skipsInRow`, `favourite`, `goingHome`, `homeDirectionOk`, `priorityUntilMin`, `queuePos`. The admin shows "—" for null and no alert fires on a null fact. Driver and rider apps: no change.
 
+## 44. Server-side alerts — BASE job 4 (v0.18.23)
+Owner 2026-11-04 A1 "First answer and add 15 min by default also admin can set time risk for reservation and for live booking", A2 "Alert become green color with new info", A3 "Yes, server checks them". `contract.json#alertDesk.serverDetection`.
+- **Server-created only.** The server's sweep (every 30 s on the timer worker, and at once after an incident, a ticket or a booked-ride timer) finds every kind of `alertDesk.kindGroups` from its own data. The admin panel reads `AlertBookState.alerts` and never makes up an alert or its start time.
+- **One alert per cause** (`causeKey`); `since` = when the server first found it. States: `open`, `solved` (green, `solvedText`, still to be marked done), done (an `AlertRecord` with status done).
+- **Per-zone settings** in the country's alert settings: `zones[zoneId] { bookedAtRiskMin 15, liveAtRiskMin 15, fewDriversLimit 2, noDriverLimit 5 }`; the kinds' on / level / limits as before.
+- **Booked rides:** `booked_at_risk` (no driver ≤ bookedAtRiskMin before pickup), `booked_late` (pickup time passed, no driver), `booked_not_started` (driver holds it, leave time passed, not started).
+- **Custom rules** (metric, above / below, value, for N min, zone or all, level) are checked by the server on every sweep.
+- Rider and driver apps: no change.
+
 ## 46. Admin live updates — BASE job (v0.18.22)
 
 Owner L1 (2026-11-04, Rules `decisions/admin-fake-by-group.md`): a small "Reconnecting…" badge, data still refreshes every minute. `contract.json#adminLiveEvents`.
@@ -1077,3 +1090,17 @@ Owner L1 (2026-11-04, Rules `decisions/admin-fake-by-group.md`): a small "Reconn
 - **Replay**: `after` or `Last-Event-ID`; events kept 24 h; an older cursor gets one `resync` first.
 - **Admin panel**: one EventSource; each type invalidates its lists (`adminLiveEvents.client.invalidates`) on Overview, Alerts, Live map/Dispatch, Trips, Reservations, Support tickets, Incidents, Approvals, Payments. While the stream is open no timed polling; while it is not, a small "Reconnecting…" badge and a refresh every 60 s.
 - **Rider and driver apps**: no change (own streams).
+
+## 47. Fast dispatch — fix plan Job 1 (v0.18.27)
+
+Owner: plan/FIX-PLAN-ORDER-2026-11-04b.md job 1, owner Q1 2026-11-04 (decliners asked again: YES). `contract.json#fastDispatch`.
+
+- **Timers**: several loops per instance (dispatch-only, trip-GPS-only, general); a busy timer keeps its place; 2 s lock timeout; OSRM before the transaction.
+- **Rounds**: drivers within reach only, one query per check, only the chosen drivers locked and re-checked.
+- **Overdue booked ride**: Exclusive only from the round after its pickup time (BL-Q7).
+- **Held booking**: no clashing live offer (smart gap, `hideClashing`, `spareMin`).
+- **Decliners** (Radar off): one wait of `exclusive.seconds`, then a new Exclusive cycle.
+- **Admin offers**: the zone's dispatch seconds of that kind.
+- **Accept**: an older `expectedVersion` of a still-open offer is accepted.
+- **Overload**: `503 unavailable`, reason `server_busy`, Retry-After 2 (pool queue / event-loop limits, statement timeout).
+- **Reads**: settings cached (≤ 15 s, emptied on publish); `GET /driver/offers` one trips query; `GET /admin/live/drivers` only the admin's zones.
