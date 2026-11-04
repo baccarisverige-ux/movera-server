@@ -1,3 +1,4 @@
+import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
 import { commissionOf } from "../rules/commission.js";
@@ -88,7 +89,15 @@ function notBelowZero(fare: Money | undefined) {
 async function checkBonus(ex: Executor, trip: TripRow, amount: Money, scope: BonusScope = "both") {
   sameCurrency(trip, amount, "The bonus");
   if (amount.amountMinor <= 0) throw badRequest("The bonus must be more than 0.", "invalid_amount");
-  const limit = await bonusLimit(ex, trip);
+  let limit = await bonusLimit(ex, trip);
+  // Owner C (v0.18.19 liveFixes.raiseFare): a booked ride's raise is the same call and the same limit as a live ride;
+  // the zone's Book later switch and highest raise (DriverAppConfig.reservations.raiseFare / raiseMax) apply on top.
+  if (trip.kind === "scheduled") {
+    const doc = await liveDocument<{ reservations?: { raiseFare?: unknown; raiseMax?: unknown } }>(ex, "driver_app_config", trip.zone_id);
+    const resv = doc?.document.reservations ?? {};
+    if (resv.raiseFare === false) throw new ApiError("forbidden", "Raising the driver's fare of a booked ride is switched off in this zone.", { reason: "raise_off" });
+    if (typeof resv.raiseMax === "number" && Number.isFinite(resv.raiseMax) && resv.raiseMax >= 0) limit = Math.min(limit, Math.round(resv.raiseMax * 100));
+  }
   if ((await bonusSoFar(ex, trip, scope)) + amount.amountMinor > limit) {
     throw badRequest(`A trip can carry at most ${limit / 100} ${trip.currency} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
   }
@@ -291,6 +300,13 @@ export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string,
 
 export async function adminNoShow(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; note: string; waiveFee?: boolean }, now: Date): Promise<TripRow> {
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
+  // v0.18.19 (contract.json#bookLater.liveFixes.noShowTime, live test HIGH 1): a booked ride is a no-show only after its
+  // pickup time plus its no-show wait; before that the rider has not missed anything.
+  if (trip.kind === "scheduled" && trip.scheduled_at) {
+    const wait = Number(tripTerms(trip)?.["noShowAfterMin"] ?? 0);
+    const from = trip.scheduled_at.getTime() + (Number.isFinite(wait) ? wait : 0) * 60_000;
+    if (now.getTime() < from) throw new ApiError("conflict", "A booked ride can be marked a no-show only after its pickup time and the waiting time.", { reason: "no_show_too_early", projection: tripProjection(trip, "admin") });
+  }
   const ended = await markNoShow(trx, trip, "admin", body.waiveFee === true, now);
   await audit(trx, { adminId: who.subjectId, action: "trip.no_show", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { note: body.note, waiveFee: body.waiveFee === true, from: trip.status }, at: now });
   return ended;

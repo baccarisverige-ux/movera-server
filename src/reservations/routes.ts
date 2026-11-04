@@ -8,6 +8,7 @@ import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { tripProjection } from "../trips/projection.js";
 import { driverView } from "../drivers/service.js";
+import { reservationPolicy, saveReservationPolicy } from "./policy.js";
 import { acceptReservation, keepReservation, adminDispatchNow, adminUnassign, driverReservations, releaseReservation, rescheduleTrip, startReservation } from "./service.js";
 
 /** v0.18.17 Book later (CONTRACT.md §41, contract.json#bookLater): driver Scheduled rides, rider change, admin actions. */
@@ -135,4 +136,16 @@ export async function reservationRoutes(app: FastifyInstance, deps: ReservationD
       return result.body;
     });
   }
+
+  /* v0.18.19 (owner, bookLater.liveFixes.includedWaiting): the all-zones reservation policy. */
+  app.get(`${API_PREFIX}/admin/reservations/policy`, async (request) => {
+    await authenticateAdmin(request, guard, "trips.read");
+    return reservationPolicy(deps.db);
+  });
+  app.put(`${API_PREFIX}/admin/reservations/policy`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.intervene");
+    const body = parseBody(z.object({ expectedRev: z.number().int().min(1), includedWaitingMinutes: z.number().int().min(0).max(60) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveReservationPolicy(trx, who, body, now()) }));
+    return result.body;
+  });
 }

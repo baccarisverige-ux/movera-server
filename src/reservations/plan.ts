@@ -39,6 +39,8 @@ export type ReservationSettings = {
   listAtTimeKm: number;
   listAtTimeMin: number;
   changeAnswerMin: number;
+  /** Owner: arrive this many minutes before the pickup time (default 10). */
+  arriveEarlyMin: number;
   offlineBackupAfterMin: number;
   hideClashing: boolean;
   longTripKm: number;
@@ -94,6 +96,7 @@ export function reservationSettings(raw: unknown): ReservationSettings {
     listAtTimeKm: num(r["listAtTimeKm"], 0.5, 50, d.listAtTimeKm, false),
     listAtTimeMin: num(r["listAtTimeMin"], 5, 240, d.listAtTimeMin),
     changeAnswerMin: num(r["changeAnswerMin"], 1, 120, d.changeAnswerMin),
+    arriveEarlyMin: num(r["arriveEarlyMin"], 0, 60, d.arriveEarlyMin),
     offlineBackupAfterMin: num(r["offlineBackupAfterMin"], 1, 60, d.offlineBackupAfterMin),
     hideClashing: bool(r["hideClashing"], d.hideClashing),
     longTripKm: num(r["longTripKm"], 10, 500, d.longTripKm, false),
@@ -167,3 +170,8 @@ export function rideTypeOf(trip: { category_id: string; distance_meters: number 
 
 /** contract.json#bookLater.card (owner Q4 "Charge at booking"): a booked ride paid by card is charged in full when it is booked. */
 export const chargedAtBooking = (kind: string, paymentMethod: string): boolean => kind === "scheduled" && (paymentMethod === "card" || paymentMethod === "apple_pay");
+
+/** Owner (v0.18.19 leaveOnTime): when to start driving so the driver arrives arriveEarlyMin before the pickup. */
+export function leaveAtOf(scheduledAt: Date, driveSeconds: number, arriveEarlyMin: number): Date {
+  return new Date(scheduledAt.getTime() - arriveEarlyMin * 60_000 - driveSeconds * 1000);
+}

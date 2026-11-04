@@ -338,7 +338,7 @@ export async function withLivePricing(ex: Executor, doc: ConfigDoc, zoneId: stri
     // v0.18.17 (contract.json#bookLater.window): the booking window and free-change time come from the zone's driver document.
     const resv = reservationSettings((driver as Doc | null)?.["reservations"]);
     const booking: Doc = isObject(next["booking"]) ? next["booking"] : {};
-    next = { ...next, booking: { ...booking, minAheadMin: resv.minAheadMin, maxAheadDays: resv.maxAheadDays, freeChangeBeforeMin: resv.freeChangeBeforeMin } };
+    next = { ...next, booking: { ...booking, bookingHorizonDays: resv.maxAheadDays, minAheadMin: resv.minAheadMin, maxAheadDays: resv.maxAheadDays, freeChangeBeforeMin: resv.freeChangeBeforeMin, reservationsOn: resv.on } };
   }
   return withoutLegacyEndFar(next);
 }

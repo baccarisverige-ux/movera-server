@@ -1278,6 +1278,7 @@ export interface Database {
   ticket_messages: TicketMessagesTable;
   support_settings: SupportSettingsTable;
   admin_alert_book: AdminAlertBookTable;
+  reservation_policy: ReservationPolicyTable;
   admin_alert_records: AdminAlertRecordsTable;
   admin_alert_quiet: AdminAlertQuietTable;
   admin_incident_settings: AdminIncidentSettingsTable;
@@ -1319,4 +1320,13 @@ export interface TermsAcceptancesTable {
   zone_id: string;
   content_version: number;
   accepted_at: Date;
+}
+
+/** v0.18.19 (owner, bookLater.liveFixes.includedWaiting): the all-zones reservation policy (one row). */
+export interface ReservationPolicyTable {
+  id: Generated<number>;
+  included_waiting_min: number;
+  rev: number;
+  updated_at: Generated<Date>;
+  updated_by: string | null;
 }

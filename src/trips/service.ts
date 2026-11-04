@@ -183,6 +183,8 @@ export async function getTrip(ex: Executor, tripId: string, who: { actor: "rider
  */
 export async function withDriverPosition(ex: Executor, trip: TripRow, projection: Record<string, unknown>, now: Date = new Date()): Promise<Record<string, unknown>> {
   if (!trip.driver_id) return projection;
+  // Owner D (v0.18.19): no driver position for the rider while a driver only holds the booked ride.
+  if (trip.kind === "scheduled" && trip.status === "accepted" && projection["driverAssigned"] === true) return projection;
   const fix = await ex.selectFrom("driver_locations").selectAll().where("driver_id", "=", trip.driver_id).executeTakeFirst();
   if (fix === undefined) return projection;
   const over = TERMINAL.has(trip.status as TripStatus);

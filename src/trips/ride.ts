@@ -1,3 +1,4 @@
+import { reservationPolicy } from "../reservations/policy.js";
 import { afterBackToRequested, freeCancelByTime } from "../reservations/service.js";
 import { randomInt } from "node:crypto";
 import { applyPersonRules, hasBadWord, ratingRules } from "../admin/reviewRules.js";
@@ -607,8 +608,16 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
       inEvent: kept.waitingRules !== null && kept.waitingRules.rideTypes.event.on ? await pickupInRunningEvent(trx, trip, kept.waitingRules, now) : false,
       acceptPickupMeters: trip.accept_pickup_meters,
     });
+    // Owner 2026-11-03 (v0.18.19 includedWaiting): a booked ride's free waiting is the ONE all-zones value of the
+    // reservation policy (admin "Included waiting"); the no-show time is never before its end.
+    if (trip.kind === "scheduled") {
+      const policy = await reservationPolicy(trx);
+      rules.freeWaitMin = policy.includedWaitingMinutes;
+      rules.noShowAfterMin = Math.max(rules.noShowAfterMin, rules.freeWaitMin);
+    }
     // A reservation's clock starts at the booked time, not when an early driver arrives.
-    const start = trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
+    // Owner B (v0.18.19): a booked ride's free waiting counts from the pickup time, also when the driver arrives late.
+    const start = trip.kind === "scheduled" && trip.scheduled_at ? trip.scheduled_at : now;
     const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
     // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
     const noShowFee: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };

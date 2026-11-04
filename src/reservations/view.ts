@@ -1,7 +1,7 @@
 import { sql } from "kysely";
 
 /** v0.18.17 (contract.json#bookLater.rider.projection): TripProjection.reservation, from trips.reservation. No imports: projection.ts reads it. */
-type State = { mode: "now" | "list"; dispatchAt: string; freeChangeUntil: string; noDriver: boolean; mustBeOnlineAt?: string; overdue?: boolean; notStarted?: boolean; changeAsk?: { until: string; previousAt: string } | null };
+type State = { mode: "now" | "list"; dispatchAt: string; freeChangeUntil: string; noDriver: boolean; mustBeOnlineAt?: string; overdue?: boolean; notStarted?: boolean; atRisk?: boolean; leaveAt?: string; driveSeconds?: number; changeAsk?: { until: string; previousAt: string } | null };
 
 export function reservationView(trip: { kind: string; reservation: unknown }, viewer: "rider" | "driver" | "admin"): Record<string, unknown> | null {
   const state = trip.kind === "scheduled" ? ((trip.reservation as State | null) ?? null) : null;
@@ -15,6 +15,8 @@ export function reservationView(trip: { kind: string; reservation: unknown }, vi
     notStarted: state.notStarted === true,
     ...(state.changeAsk ? { changeAsk: state.changeAsk } : {}),
     ...(viewer !== "rider" && state.mustBeOnlineAt ? { mustBeOnlineAt: state.mustBeOnlineAt } : {}),
+    ...(viewer !== "rider" && state.leaveAt ? { leaveAt: state.leaveAt, driveSeconds: state.driveSeconds ?? 0 } : {}),
+    ...(viewer !== "rider" ? { atRisk: state.atRisk === true } : {}),
   };
 }
 
