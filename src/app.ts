@@ -7,7 +7,9 @@ import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
 import type { Db } from "./db/db.js";
 import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
-import type { Env } from "./env.js";
+import { writeLimitsFrom, type Env } from "./env.js";
+import { registerWriteLimit } from "./http/rateLimit.js";
+import { poolStats } from "./db/db.js";
 import { ApiError, badRequest, notFound } from "./http/errors.js";
 
 import { API_PREFIX } from "./http/prefix.js";
@@ -115,6 +117,9 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     }
   });
 
+  // B11: the general write limit (contract.json#rateLimit), before any route reads the body or the database.
+  registerWriteLimit(app, writeLimitsFrom(env), { jwtSecret: db !== undefined ? (env.JWT_SECRET ?? DEV_JWT_SECRET) : env.JWT_SECRET, ...(clock ? { clock } : {}) });
+
   app.setErrorHandler(async (error: FastifyError | ApiError, request, reply) => {
     if (error instanceof ApiError) {
       if (error.options.retryAfterSeconds !== undefined) reply.header("Retry-After", String(error.options.retryAfterSeconds));
@@ -153,7 +158,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
 
   app.addHook("preClose", async () => closeAllStreams(app));
 
-  app.get("/healthz", async () => ({ status: "ok", contract: CONTRACT_VERSION, apiVersion: API_VERSION, env: env.MOVERA_ENV }));
+  app.get("/healthz", async () => ({ status: "ok", contract: CONTRACT_VERSION, apiVersion: API_VERSION, env: env.MOVERA_ENV, ...(db !== undefined ? { dbPool: poolStats() } : {}) }));
   // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
   app.get("/readyz", async () => {
     if (db === undefined) return { status: "ready", database: "not_configured" };

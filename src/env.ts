@@ -27,7 +27,28 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
-  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  /**
+   * B12 (architecture audit item 14): database connections. Render basic-1gb Postgres allows about 100 connections;
+   * the web service has 1 CPU. 20 per instance + 1 LISTEN client leaves room for a second instance during a deploy
+   * (2 × 21), migrations and the admin CLI. Raise only together with the database plan.
+   */
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(20),
+  /** An idle pooled connection is closed after this many ms (0: never). */
+  DATABASE_POOL_IDLE_MS: z.coerce.number().int().min(0).max(3_600_000).default(30_000),
+  /** A query waits at most this long for a free pooled connection, then fails (0: wait forever). */
+  DATABASE_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(0).max(120_000).default(10_000),
+  /**
+   * The realtime LISTEN client (realtime/hub.ts): a separate connection string, e.g. a direct (non-pooler) address.
+   * Unset: DATABASE_URL. Never logged.
+   */
+  DATABASE_LISTEN_URL: z.string().url().optional(),
+  /**
+   * B11 (architecture audit item 9, contract.json#rateLimit): writes (POST/PUT/PATCH/DELETE) per minute per signed-in
+   * user, and per address for callers without a token. 0 turns that limit off. Unset: 120 / 60 in production,
+   * 1200 / 600 on staging and development (the load test signs in many accounts from a few addresses).
+   */
+  RATE_LIMIT_WRITES_PER_USER_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).optional(),
+  RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).optional(),
   /** Signs access tokens. At least 32 characters; required on staging and production (a laptop gets a random one). */
   JWT_SECRET: z.string().min(32).optional(),
   /** Movera's own OSRM (owner decision 4), e.g. http://osrm:5000. Unset: distances are estimated. */
@@ -147,6 +168,15 @@ const schema = z.object({
 });
 
 export type Env = z.infer<typeof schema>;
+
+/** The write limit in force (B11): the env value, else the default for MOVERA_ENV. */
+export function writeLimitsFrom(env: Env): { userPerMinute: number; addressPerMinute: number } {
+  const production = env.MOVERA_ENV === "production";
+  return {
+    userPerMinute: env.RATE_LIMIT_WRITES_PER_USER_PER_MINUTE ?? (production ? 120 : 1200),
+    addressPerMinute: env.RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE ?? (production ? 60 : 600),
+  };
+}
 
 export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
   // A host's dashboard may keep a variable that was left blank as an empty string: that means "not set".

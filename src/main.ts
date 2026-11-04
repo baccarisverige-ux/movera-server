@@ -1,7 +1,7 @@
 import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "./safety/rideCheckServer.js";
 import { ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
-import { createDb, createPool, type Db } from "./db/db.js";
+import { createDb, createPool, poolOptionsFrom, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { readEnv } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
@@ -33,10 +33,10 @@ let pusher: PushDispatcher | undefined;
 let warn = (error: Error) => console.warn("database connection dropped:", error.message);
 
 if (env.DATABASE_URL !== undefined) {
-  const pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX, (error) => warn(error));
+  const pool = createPool(env.DATABASE_URL, poolOptionsFrom(env), (error) => warn(error));
   if (env.MIGRATE_ON_START) await migrate(pool);
   db = createDb(pool);
-  hub = new NotificationHub(env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();
 }
 
