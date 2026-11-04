@@ -17,7 +17,7 @@ import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
 import { CONFIG_CHANNEL } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
-import { ADMIN_EVENTS_CHANNEL } from ".//realtime/adminEvents.js";
+import { ADMIN_EVENTS_CHANNEL } from "./realtime/adminEvents.js";
 import { DISPATCH_EVENTS_CHANNEL } from "./dispatch/feed.js";
 import { prepareTestWeek } from "./testWeek.js";
 import { pushServicesFrom } from "./push/config.js";

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mayHearLive, pruneAdminLiveEvents } from "../../src/realtime/adminEvents.js";
+import { sql } from "kysely";
+import { adminLiveFeed, ADMIN_EVENTS_CHANNEL, LIVE, mayHearLive, pruneAdminLiveEvents } from "../../src/realtime/adminEvents.js";
 import { fakeOsrm, PLACES, Sim, type Admin, type Json, type Rider } from "./harness.js";
 
 /**
@@ -101,4 +102,35 @@ describe("GET /admin/events (server-sent events)", () => {
     const fresh = items(await owner.get(`/admin/events?after=${top}&limit=200`));
     expect(fresh.some((e) => e["type"] === "resync")).toBe(false);
   });
+
+  it("one shared read per change, whatever the number of open streams (500+500 load)", async () => {
+    const streams = await Promise.all([0, 1, 2, 3].map(() => sim.stream("/admin/events", owner.token)));
+    const feed = adminLiveFeed(sim.database.db, sim.hub, { warn: () => undefined });
+    expect(feed.open).toBeGreaterThanOrEqual(4);
+    const before = feed.reads;
+    await sim.database.db.transaction().execute(async (trx) => {
+      await trx.insertInto("admin_live_events").values({ type: "trip.changed", entity_id: "shared", zone_id: "Z001" }).execute();
+      await sql`SELECT pg_notify(${ADMIN_EVENTS_CHANNEL}, '{}')`.execute(trx);
+    });
+    for (const stream of streams) await stream.waitFor((e) => e.data["entityId"] === "shared");
+    // Fail-before: one SELECT per stream (4); now one shared read (a second may follow to see nothing is left).
+    expect(feed.reads - before).toBeLessThanOrEqual(2);
+    for (const stream of streams) stream.close();
+  });
+
+  it("at most maxStreamsPerAdmin streams per admin: the next one is 429 too_many_streams", async () => {
+    const admin = await sim.admin("super");
+    const open = [];
+    for (let i = 0; i < LIVE.limits.maxStreamsPerAdmin; i += 1) open.push(await sim.stream("/admin/events", admin.token));
+    const refused = await sim.request("GET", "/admin/events", admin.token, undefined, { key: null, headers: { accept: "text/event-stream" } });
+    expect(refused.status).toBe(429);
+    expect(refused.body["reason"]).toBe("too_many_streams");
+    open[0]!.close();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const again = await sim.stream("/admin/events", admin.token);
+    expect(again.status).toBe(200);
+    again.close();
+    for (const stream of open.slice(1)) stream.close();
+  });
 });
+

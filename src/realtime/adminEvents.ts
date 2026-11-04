@@ -18,7 +18,7 @@ import { openEventStream, wantsEventStream } from "./sse.js";
 
 export const ADMIN_EVENTS_CHANNEL = "movera_admin_events";
 
-type LiveSpec = { path: string; permission: string; retentionHours: number; types: Record<string, { permission: string }> };
+type LiveSpec = { path: string; permission: string; retentionHours: number; types: Record<string, { permission: string }>; limits: { maxStreamsPerAdmin: number; maxStreamsTotal: number } };
 export const LIVE = (contract as unknown as { adminLiveEvents: LiveSpec }).adminLiveEvents;
 
 export type AdminLiveRow = { sequence: string; type: string; entity_id: string; zone_id: string | null; occurred_at: Date };
@@ -52,6 +52,130 @@ export async function pruneAdminLiveEvents(ex: Executor, now: Date): Promise<voi
   await ex.updateTable("admin_live_pruned").set({ up_to: sql<string>`greatest(up_to, ${String(top)}::bigint)` }).where("id", "=", 1).execute();
 }
 
+type Subscriber = { who: Principal; last: number; catchingUp: boolean; send: (row: AdminLiveRow) => void; cursor: (sequence: number) => void };
+
+/**
+ * One reader per server for every open admin stream: a notify makes ONE read of the new rows, fanned out to each
+ * stream with its own scope (mayHearLive). A new stream first catches up from its cursor on its own, then joins.
+ */
+export class AdminLiveFeed {
+  private readonly subs = new Set<Subscriber>();
+  private readonly perAdmin = new Map<string, number>();
+  private head: number | undefined;
+  private running = false;
+  private again = false;
+  private unsubscribe: (() => void) | undefined;
+  /** How many shared reads ran (tests: one per change, whatever the number of streams). */
+  reads = 0;
+
+  constructor(
+    private readonly db: Executor,
+    private readonly hub: NotificationHub,
+    private readonly log: { warn: (data: object, message: string) => void },
+    private readonly limits = LIVE.limits,
+  ) {}
+
+  /** 429 too_many_streams over the per-admin or total cap. */
+  admit(who: Principal): void {
+    if (this.subs.size >= this.limits.maxStreamsTotal || (this.perAdmin.get(who.subjectId) ?? 0) >= this.limits.maxStreamsPerAdmin) {
+      throw new ApiError("rate_limited", "Too many live update streams are open. The panel keeps refreshing every minute.", { reason: "too_many_streams", retryAfterSeconds: 30 });
+    }
+  }
+
+  async join(sub: Subscriber): Promise<() => void> {
+    this.subs.add(sub);
+    this.perAdmin.set(sub.who.subjectId, (this.perAdmin.get(sub.who.subjectId) ?? 0) + 1);
+    let left = false;
+    const leave = () => {
+      if (left) return;
+      left = true;
+      this.subs.delete(sub);
+      const n = (this.perAdmin.get(sub.who.subjectId) ?? 1) - 1;
+      if (n > 0) this.perAdmin.set(sub.who.subjectId, n);
+      else this.perAdmin.delete(sub.who.subjectId);
+      if (!this.subs.size) this.stop();
+    };
+    try {
+      if (!this.unsubscribe) this.unsubscribe = this.hub.subscribe(ADMIN_EVENTS_CHANNEL, () => void this.pump());
+      if (this.head === undefined) {
+        const top = await this.db.selectFrom("admin_live_events").select((eb) => eb.fn.max("sequence").as("top")).executeTakeFirst();
+        this.head ??= Number(top?.top ?? 0);
+      }
+      // Catch up alone; the shared reader skips this stream until it has read up to the shared head.
+      for (;;) {
+        if (left) break;
+        const rows = await rowsAfter(this.db, sub.last, 200);
+        for (const row of rows) {
+          if (left) break;
+          if (mayHearLive(sub.who, row)) sub.send(row);
+          sub.last = Number(row.sequence);
+        }
+        if (rows.length) sub.cursor(sub.last);
+        // Synchronous check: no fan-out can run between it and the switch.
+        if (rows.length < 200 && sub.last >= (this.head ?? 0)) {
+          sub.catchingUp = false;
+          break;
+        }
+      }
+    } catch (error) {
+      leave();
+      throw error;
+    }
+    return leave;
+  }
+
+  get open(): number {
+    return this.subs.size;
+  }
+
+  private async pump(): Promise<void> {
+    if (this.running) {
+      this.again = true;
+      return;
+    }
+    this.running = true;
+    try {
+      do {
+        this.again = false;
+        if (this.head === undefined) return;
+        this.reads += 1;
+        const rows = await rowsAfter(this.db, this.head, 500);
+        if (!rows.length) break;
+        for (const sub of this.subs) {
+          if (sub.catchingUp) continue;
+          for (const row of rows) {
+            const seq = Number(row.sequence);
+            if (seq <= sub.last) continue;
+            if (mayHearLive(sub.who, row)) sub.send(row);
+            sub.last = seq;
+          }
+          sub.cursor(sub.last);
+        }
+        this.head = Number(rows[rows.length - 1]!.sequence);
+        if (rows.length === 500) this.again = true;
+      } while (this.again && this.subs.size);
+    } catch (error) {
+      this.log.warn({ err: error }, "admin events read failed");
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private stop(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    // Re-read the head on the next join (events may be written while nobody listens).
+    this.head = undefined;
+  }
+}
+
+const feeds = new WeakMap<NotificationHub, AdminLiveFeed>();
+export function adminLiveFeed(db: Executor, hub: NotificationHub, log: { warn: (data: object, message: string) => void }): AdminLiveFeed {
+  let feed = feeds.get(hub);
+  if (!feed) feeds.set(hub, (feed = new AdminLiveFeed(db, hub, log)));
+  return feed;
+}
+
 const Query = {
   ...ZoneFilterQuery,
   after: z.coerce.number().int().min(0).optional(),
@@ -78,41 +202,21 @@ export async function adminEventRoutes(app: FastifyInstance, deps: GuardDeps & {
       return { items, nextCursor: rows.length > query.limit && last ? String(last.sequence) : null };
     }
     if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available; poll the admin lists instead.", { reason: "realtime_unavailable", retryAfterSeconds: 10 });
-    const stream = openEventStream(request, reply);
+    const feed = adminLiveFeed(deps.db, deps.hub, { warn: (data, message) => request.log.warn(data, message) });
+    feed.admit(who);
     const first = await resync();
+    const stream = openEventStream(request, reply);
     // resync keeps the client's cursor: its id is the cursor it came with.
     if (first) stream.send(after, first);
-    let last = after;
-    let running = false;
-    let again = false;
-    const pump = async () => {
-      if (running) {
-        again = true;
-        return;
-      }
-      running = true;
-      try {
-        do {
-          again = false;
-          const rows = await rowsAfter(deps.db, last, 200);
-          const serverTime = now();
-          for (const row of rows) {
-            if (stream.closed()) return;
-            if (mayHearLive(who, row)) stream.send(Number(row.sequence), liveEventOf(row, serverTime));
-            last = Number(row.sequence);
-          }
-          // Out-of-scope rows still move the client's cursor, so a reconnect does not read them again.
-          if (rows.length) stream.cursor(last);
-          if (rows.length === 200) again = true;
-        } while (again && !stream.closed());
-      } catch (error) {
-        request.log.warn({ err: error }, "admin events stream read failed");
-      } finally {
-        running = false;
-      }
-    };
-    stream.onClose(deps.hub.subscribe(ADMIN_EVENTS_CHANNEL, () => void pump()));
-    await pump();
+    const leave = await feed.join({
+      who,
+      last: after,
+      catchingUp: true,
+      send: (row) => void stream.send(Number(row.sequence), liveEventOf(row, now())),
+      cursor: (sequence) => stream.cursor(sequence),
+    });
+    if (stream.closed()) leave();
+    else stream.onClose(leave);
     return reply;
   });
 }
