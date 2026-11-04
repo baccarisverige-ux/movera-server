@@ -1098,9 +1098,10 @@ Owner: plan/FIX-PLAN-ORDER-2026-11-04b.md job 1, owner Q1 2026-11-04 (decliners 
 - **Timers**: several loops per instance (dispatch-only, trip-GPS-only, general); a busy timer keeps its place; 2 s lock timeout; OSRM before the transaction.
 - **Rounds**: drivers within reach only, one query per check, only the chosen drivers locked and re-checked.
 - **Overdue booked ride**: Exclusive only from the round after its pickup time (BL-Q7).
-- **Held booking**: no clashing live offer (smart gap, `hideClashing`, `spareMin`).
-- **Decliners** (Radar off): one wait of `exclusive.seconds`, then a new Exclusive cycle.
-- **Admin offers**: the zone's dispatch seconds of that kind.
+- **Held booking**: never a clashing live offer (smart gap, `spareMin`), always — owner Q3; `hideClashing` is only about the list.
+- **Decliners** (Radar off): one wait of `exclusive.reaskAfterSeconds` (owner Q1: admin setting, default `exclusive.seconds`), then a new Exclusive cycle.
+- **Admin offers**: the zone's dispatch seconds of that kind; `assignAcceptSeconds` shown read-only in the admin (owner Q2, kept).
 - **Accept**: an older `expectedVersion` of a still-open offer is accepted.
-- **Overload**: `503 unavailable`, reason `server_busy`, Retry-After 2 (pool queue / event-loop limits, statement timeout).
+- **Overload**: `503 unavailable`, reason `server_busy`, Retry-After 2 (pool queue / event-loop limits, statement timeout) — only for low-priority work (quotes, address search, rider map, admin lists); SOS, accept, trip changes, cash, GPS and streams are never shed. Apps treat it like 429 (wait Retry-After, retry).
+- **Admin map box**: `GET /admin/live/drivers?minLat&minLng&maxLat&maxLng` (map-only answer); nearby cars capped.
 - **Reads**: settings cached (≤ 15 s, emptied on publish); `GET /driver/offers` one trips query; `GET /admin/live/drivers` only the admin's zones.

@@ -73,8 +73,12 @@ describe("fast dispatch — Job 1", () => {
     const held = await book();
     await database.db.updateTable("trips").set({ kind: "scheduled", status: "accepted", driver_id: drivers.A.id, scheduled_at: new Date(clock.now.getTime() + 10 * 60_000), reservation: JSON.stringify({ held: true }) }).where("trip_id", "=", held).execute();
     await database.db.deleteFrom("timers").execute();
+    // Owner Q3: always, also with the list switch hideClashing off.
+    const appDoc = sample("driver_app_config");
+    await database.db.updateTable("config_live").set({ document: JSON.stringify({ ...appDoc, reservations: { ...(appDoc.reservations ?? {}), hideClashing: false } }) }).where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
     const tripId = await book();
     await worker.runDue();
+    await database.db.updateTable("config_live").set({ document: JSON.stringify(appDoc) }).where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
     const offers = await offersOf(tripId);
     expect(offers.length).toBeGreaterThan(0);
     expect(offers.map((o) => o.driver_id)).not.toContain(drivers.A.id);
@@ -132,5 +136,18 @@ describe("fast dispatch — Job 1", () => {
       await database.db.updateTable("config_live").set({ version: 1 }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
       cacheLiveDocuments(0);
     }
+  });
+
+  it("M4: the admin map can ask only for the drivers inside its visible box (map-only answer)", async () => {
+    admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    const box = `minLat=${SPOTS.A.lat - 0.001}&minLng=${SPOTS.A.lng - 0.001}&maxLat=${SPOTS.A.lat + 0.001}&maxLng=${SPOTS.A.lng + 0.001}`;
+    const inBox = (await call(app, "GET", `/admin/live/drivers?${box}`, admin)).json();
+    expect(inBox.items.map((d: { driverId: string }) => d.driverId)).toEqual([drivers.A.id]);
+    expect(inBox).not.toHaveProperty("zoneSupply");
+    const all = (await call(app, "GET", "/admin/live/drivers", admin)).json();
+    expect(all.items.length).toBeGreaterThanOrEqual(3);
+    expect(all).toHaveProperty("zoneSupply");
+    const bad = await call(app, "GET", `/admin/live/drivers?minLat=60&minLng=18&maxLat=59&maxLng=19`, admin);
+    expect(bad.json()).toMatchObject({ reason: "invalid_map_box" });
   });
 });

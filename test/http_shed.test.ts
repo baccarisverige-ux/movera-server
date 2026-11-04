@@ -8,15 +8,19 @@ describe("load shedding", () => {
   it("answers 503 server_busy with Retry-After while the pool queue is over the limit, and serves again after", async () => {
     let waiting = 500;
     const app = Fastify();
-    app.get("/api/v1/x", async () => ({ ok: true }));
+    app.get("/api/v1/admin/trips", async () => ({ ok: true }));
+    for (const [m, u] of [["POST", "/api/v1/safety/sos"], ["POST", "/api/v1/offers/ofr_1/accept"], ["POST", "/api/v1/trips/trp_1/complete"], ["POST", "/api/v1/driver/location"], ["GET", "/api/v1/driver/offers/stream"], ["GET", "/api/v1/admin/events"]] as const) app.route({ method: m, url: u, handler: async () => ({ ok: true }) });
     const stop = registerLoadShedding(app, { maxPoolWaiting: 200, maxLoopDelayMs: 0, poolWaiting: () => waiting });
-    const busy = await app.inject({ method: "GET", url: "/api/v1/x" });
+    const busy = await app.inject({ method: "GET", url: "/api/v1/admin/trips" });
     expect(busy.statusCode).toBe(503);
     expect(busy.headers["retry-after"]).toBe("2");
     expect(busy.json()).toMatchObject({ code: "unavailable", reason: "server_busy", retryable: true });
-    expect((await app.inject({ method: "GET", url: "/healthz" })).statusCode).toBe(404); // never shed (no route here)
+    // Supervisor P4: SOS, accept, trip changes, GPS and streams are never refused, however busy.
+    for (const [m, u] of [["POST", "/api/v1/safety/sos"], ["POST", "/api/v1/offers/ofr_1/accept"], ["POST", "/api/v1/trips/trp_1/complete"], ["POST", "/api/v1/driver/location"], ["GET", "/api/v1/driver/offers/stream"], ["GET", "/api/v1/admin/events"]] as const) {
+      expect((await app.inject({ method: m, url: u })).statusCode, u).toBe(200);
+    }
     waiting = 0;
-    expect((await app.inject({ method: "GET", url: "/api/v1/x" })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/v1/admin/trips" })).statusCode).toBe(200);
     stop();
     await app.close();
   });

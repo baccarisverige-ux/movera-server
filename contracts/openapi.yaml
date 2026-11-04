@@ -22529,6 +22529,12 @@ components:
           maxItems: 5
           description: 'v0.18.11 dispatch start: optional own search steps (km, strictly increasing) for this mode. Missing
             = radius.steps.'
+        reaskAfterSeconds:
+          type: integer
+          minimum: 5
+          maximum: 600
+          description: 'v0.18.27 (owner Q1 2026-11-04, exclusive only): with Radar off, the wait before drivers who all said
+            no are asked again. Missing = this mode''s seconds.'
     DispatchTimeRule:
       type: object
       description: Zone-local [from, to); wraps midnight when from > to.

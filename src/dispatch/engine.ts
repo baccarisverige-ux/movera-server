@@ -16,7 +16,8 @@ export type DispatchDoc = {
   zoneId: string;
   timeZone: string;
   radar: { on: boolean; drivers: number; seconds: number; then: Then; steps?: number[] };
-  exclusive: { on: boolean; drivers: number; seconds: number; then: Then; steps?: number[] };
+  /** v0.18.27 reaskAfterSeconds (owner Q1, exclusive only): the wait before decliners are asked again (missing = seconds). */
+  exclusive: { on: boolean; drivers: number; seconds: number; then: Then; steps?: number[]; reaskAfterSeconds?: number };
   /** v0.18.9 (owner 2026-11-01, rule 16): which offer goes out first; missing = auto (choose decides, as before). */
   start?: { mode: StartChoice; nearKm?: number };
   /** v0.18.9: farthest pickup (km, missing = widest step) and longest pickup ETA (min, 0 / missing = off). */
@@ -253,7 +254,7 @@ export function planRound(doc: DispatchDoc, input: SearchState, ranked: Ranked[]
       if (doc.radar.on && shown.length) return { state: s, round: { type: "offer", kind: "radar", radiusKm: rKm, driverIds: shown.map((r) => r.id) } };
       // Job 1 (owner Q1 2026-11-04 "a driver who declined a live exclusive offer may get it again in a later round: YES";
       // BL M6-e): with Radar off nobody would ever see the trip again once every driver in range was asked. So, after
-      // one wait of exclusive.seconds, a new Exclusive cycle starts: the drivers in range are asked again, best first.
+      // one wait of exclusive.reaskAfterSeconds (an admin setting, missing = exclusive.seconds), a new Exclusive cycle starts: the drivers in range are asked again, best first.
       if (doc.exclusive.on && !doc.radar.on && ex.length > 0) {
         if (s.again) {
           const inRange = new Set(ex.map((r) => r.id));
@@ -264,6 +265,8 @@ export function planRound(doc: DispatchDoc, input: SearchState, ranked: Ranked[]
           return { state: s, round: { type: "offer", kind: "exclusive", radiusKm: kmAt(doc, "exclusive", last), driverIds: [first.id], reasonCode: reasonFor(first, ex) } };
         }
         s.again = true;
+        const reask = doc.exclusive.reaskAfterSeconds;
+        return { state: s, round: { type: "wait", seconds: typeof reask === "number" && reask >= 1 ? reask : doc.exclusive.seconds } };
       }
       return { state: s, round: { type: "wait", seconds: doc.radar.on ? doc.radar.seconds : doc.exclusive.seconds } };
     }

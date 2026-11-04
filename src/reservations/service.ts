@@ -111,13 +111,13 @@ export async function driversWithCurrentTrip(ex: Executor, driverIds: string[]):
 
 /**
  * Job 1 (fix plan R10, ledger L10): the drivers of `driverIds` for whom a live ride starting now clashes with a booked
- * ride they hold — the same smart gap as the booking list (hideClashing, rideTypes.normal.spareMin): the live ride
+ * ride they hold — the same smart gap as the booking list (rideTypes.normal.spareMin), always (owner Q3): the live ride
  * [now, now + drive to pickup + trip + spareMin] overlaps the booked [scheduledAt, scheduledAt + trip + spareMin].
  */
 export async function driversWithClashingBooking(ex: Executor, trip: TripRow, driverIds: string[], pickupSecondsOf: (driverId: string) => number, now: Date): Promise<Set<string>> {
   if (driverIds.length === 0) return new Set();
   const s = await settingsFor(ex, trip.zone_id);
-  if (!s.hideClashing) return new Set();
+  // Owner Q3 2026-11-04: ALWAYS, whatever hideClashing says (that switch is only about the Scheduled rides list).
   const held = await ex.selectFrom("trips").select(["driver_id", "scheduled_at", "duration_seconds"]).where("driver_id", "in", driverIds).where("kind", "=", "scheduled").where("status", "=", "accepted").where("trip_id", "!=", trip.trip_id).execute();
   const spare = s.rideTypes.normal.spareMin * 60_000;
   const out = new Set<string>();

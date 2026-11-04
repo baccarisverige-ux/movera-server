@@ -317,8 +317,9 @@ def search(doc, case):
                 asked -= {r['id'] for r in ex}; again = False; first = ex[0]; asked.add(first['id'])
                 t = offer('exclusive', t, km, [first['id']], 'favourite' if first['fav'] else 'finishing-nearby' if first['near'] else 'best-match')
             else:
-                if doc['exclusive']['on'] and not doc['radar']['on'] and ex: again = True
-                t += doc['radar']['seconds'] if doc['radar']['on'] else doc['exclusive']['seconds']
+                if doc['exclusive']['on'] and not doc['radar']['on'] and ex:
+                    again = True; t += doc['exclusive'].get('reaskAfterSeconds', doc['exclusive']['seconds'])
+                else: t += doc['radar']['seconds'] if doc['radar']['on'] else doc['exclusive']['seconds']
             continue
         km = steps[step]; ring = in_range(cur, t, km); widest = step == len(steps) - 1
         if cur == 'radar':

@@ -35,4 +35,18 @@ describe("re-asking decliners (R26)", () => {
     expect(seen.filter((k) => k === "exclusive").length).toBe(1);
     expect(seen).toContain("radar");
   });
+
+  it("owner Q1: the wait before asking again is the admin setting exclusive.reaskAfterSeconds (default exclusive.seconds)", () => {
+    const waitOf = (doc: DispatchDoc) => {
+      let state: SearchState = newSearch("exclusive");
+      for (let i = 0; i < 12; i++) {
+        const { state: next, round } = planRound(doc, state, drivers);
+        state = next;
+        if (round.type === "wait") return round.seconds;
+      }
+      return null;
+    };
+    expect(waitOf(exclusiveOnly)).toBe(exclusiveOnly.exclusive.seconds);
+    expect(waitOf({ ...exclusiveOnly, exclusive: { ...exclusiveOnly.exclusive, reaskAfterSeconds: 90 } })).toBe(90);
+  });
 });
