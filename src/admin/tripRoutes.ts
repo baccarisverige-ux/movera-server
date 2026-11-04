@@ -206,7 +206,9 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   /* ---- the rider's wallet and refunds */
   app.get(`${API_PREFIX}/wallet`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
-    return getWallet(deps.db, who.subjectId, deps.currency);
+    // v0.18.28 (owner Q4): ?currency= picks the balance; without it, the currency of the rider's zone.
+    const { currency } = parseBody(z.object({ currency: z.string().regex(/^[A-Z]{3}$/).optional() }), request.query);
+    return getWallet(deps.db, who.subjectId, deps.currency, currency);
   });
   app.get(`${API_PREFIX}/wallet/entries`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
