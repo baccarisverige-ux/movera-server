@@ -32,3 +32,9 @@ CREATE TABLE admin_alert_rule_state (
   rule_key      text PRIMARY KEY,
   holding_since timestamptz NOT NULL
 );
+
+-- Checker MED 4: the sweep's scans every 30 s stay small.
+CREATE INDEX trips_payment_failed ON trips (zone_id) WHERE payment_status = 'failed';
+CREATE INDEX trips_rider_recent ON trips (created_at, rider_id) WHERE status IN ('completed', 'cancelled_by_rider', 'no_show');
+CREATE INDEX drivers_rated_active ON drivers (driver_id) WHERE account_status = 'active' AND rating_count > 0;
+CREATE INDEX drivers_missed_offers_offline ON drivers (driver_id) WHERE offline_reason = 'missed_offers' AND online_status = 'offline';

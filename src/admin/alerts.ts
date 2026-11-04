@@ -113,7 +113,20 @@ const render = (text: unknown) => {
  * itself (owner A2: shown green until an admin marks them done), with the same zone and group filter as the records.
  */
 async function liveAlerts(ex: Executor, who: Principal, country: string) {
-  const rows = (await ex.selectFrom("admin_alerts_live").selectAll().where("country", "=", country).where("state", "in", ["open", "solved"]).orderBy("since", "asc").limit(1000).execute()) as LiveRow[];
+  // Checker LOW: the zone and group filter runs in SQL, before the limit.
+  const kinds = Object.keys(DESK.kindGroups).filter((kind) => maySee(who, kind));
+  if (!kinds.length) return [];
+  const all = who.zones.includes("*");
+  const rows = (await ex
+    .selectFrom("admin_alerts_live")
+    .selectAll()
+    .where("country", "=", country)
+    .where("state", "in", ["open", "solved"])
+    .where("kind", "in", kinds)
+    .where((eb) => (all ? eb.or([eb("zone_id", "is", null), eb("zone_id", "is not", null)]) : eb("zone_id", "in", who.zones.length ? [...who.zones] : ["-"])))
+    .orderBy("since", "asc")
+    .limit(1000)
+    .execute()) as LiveRow[];
   return rows
     .filter((r) => coversZone(who, r.zone_id) && maySee(who, r.kind))
     .map((r) => ({
@@ -228,7 +241,8 @@ export async function alertCommand(trx: Trx, who: Principal, alertId: string, in
     .where("alert_id", "=", alertId)
     .execute();
   await audit(trx, { adminId: me, action: `alert.${command.verb}`, targetType: "alert", targetId: alertId, zoneId: row.zone_id, detail: { kind, ...(command.verb === "pass" ? { to: command.to } : {}), ...(command.verb === "snooze" ? { minutes: command.minutes } : {}) }, at: now });
-  const country = row.zone_id ? (await trx.selectFrom("zones").select("country").where("zone_id", "=", row.zone_id).executeTakeFirst())?.country ?? "SE" : "SE";
+  // Checker LOW: an alert without a zone answers with its own country's book (server alerts carry it).
+  const country = row.zone_id ? (await trx.selectFrom("zones").select("country").where("zone_id", "=", row.zone_id).executeTakeFirst())?.country ?? "SE" : found?.country ?? "SE";
   return alertBook(trx, who, country, now);
 }
 

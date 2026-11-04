@@ -82,13 +82,18 @@ async function dispatchCauses(ctx: Ctx): Promise<Cause[]> {
     SELECT t.trip_id, t.zone_id, t.rider_id, r.first_name AS rider, coalesce(t.search_started_at, t.created_at) AS started
       FROM trips t JOIN riders r ON r.rider_id = t.rider_id
      WHERE t.kind = 'live' AND t.driver_id IS NULL AND t.status IN ('requested', 'searching', 'offered')`.execute(ctx.ex);
+  // Owner 2026-11-04: a zone's free drivers are counted by their LIVE position (the zone of their latest fix,
+  // driver_locations.zone_id), never their first or home zone; a driver with no position counts nowhere.
   const free = await sql<{ zone_id: string; n: string }>`
-    SELECT d.zone_ids[1] AS zone_id, count(*) AS n FROM drivers d
-     WHERE d.online_status = 'online' AND d.account_status = 'active' AND array_length(d.zone_ids, 1) > 0
+    SELECT l.zone_id, count(*) AS n FROM drivers d JOIN driver_locations l ON l.driver_id = d.driver_id
+     WHERE d.online_status = 'online' AND d.account_status = 'active' AND l.zone_id IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_id = d.driver_id AND t.status IN ('accepted', 'driver_to_pickup', 'arrived', 'rider_onboard', 'in_trip', 'approaching_dropoff')
                          AND NOT (t.kind = 'scheduled' AND t.status = 'accepted' AND coalesce(t.reservation->>'held', 'false') = 'true'))
      GROUP BY 1`.execute(ctx.ex);
   const freeBy = new Map(free.rows.map((r) => [r.zone_id, Number(r.n)]));
+  // Checker MED 4: one count per zone, not a filter over every waiting trip per zone.
+  const waitingBy = new Map<string, number>();
+  for (const w of waiting.rows) waitingBy.set(w.zone_id, (waitingBy.get(w.zone_id) ?? 0) + 1);
   for (const w of waiting.rows) {
     const country = countryOf(ctx, w.zone_id);
     const s = settingsOf(ctx, country);
@@ -102,7 +107,7 @@ async function dispatchCauses(ctx: Ctx): Promise<Cause[]> {
   for (const zone of ctx.zones.values()) {
     const s = settingsOf(ctx, zone.country);
     const z = s.zone(zone.zone_id);
-    const riders = waiting.rows.filter((w) => w.zone_id === zone.zone_id).length;
+    const riders = waitingBy.get(zone.zone_id) ?? 0;
     const freeHere = freeBy.get(zone.zone_id) ?? 0;
     const few = s.kind("few_drivers");
     // G3-D5: only when riders really wait and the free drivers are short.
@@ -188,7 +193,7 @@ async function driverCauses(ctx: Ctx): Promise<Cause[]> {
   }
   const offline = await sql<{ driver_id: string; first_name: string; zone_id: string | null; country: string | null; offline_at: Date }>`
     SELECT driver_id, first_name, zone_ids[1] AS zone_id, country, offline_at FROM drivers
-     WHERE offline_reason = 'missed_offers' AND online_status = 'offline' AND offline_at >= ${new Date(ctx.now.getTime() - DAY)}`.execute(ctx.ex);
+     WHERE offline_reason = 'missed_offers' AND online_status = 'offline' AND offline_at IS NOT NULL`.execute(ctx.ex);
   for (const d of offline.rows) {
     const country = countryOf(ctx, d.zone_id, d.country ?? "SE");
     const k = settingsOf(ctx, country).kind("auto_offline");
@@ -204,7 +209,7 @@ async function moneyCauses(ctx: Ctx): Promise<Cause[]> {
   const failed = await sql<{ trip_id: string; zone_id: string; rider_id: string; rider: string | null; fare_minor: string; currency: string }>`
     SELECT t.trip_id, t.zone_id, t.rider_id, r.first_name AS rider, t.fare_minor, t.currency
       FROM trips t JOIN riders r ON r.rider_id = t.rider_id
-     WHERE t.payment_status = 'failed' AND t.updated_at >= ${new Date(ctx.now.getTime() - 7 * DAY)}`.execute(ctx.ex);
+     WHERE t.payment_status = 'failed'`.execute(ctx.ex);
   for (const p of failed.rows) {
     const country = countryOf(ctx, p.zone_id);
     const k = settingsOf(ctx, country).kind("payment_failed");
@@ -279,8 +284,8 @@ async function metricValues(ctx: Ctx): Promise<(metric: string, zoneId: string) 
     SELECT zone_id, count(*) AS n, max(extract(epoch FROM (${ctx.now}::timestamptz - coalesce(search_started_at, created_at))) / 60)::float AS longest
       FROM trips WHERE kind = 'live' AND driver_id IS NULL AND status IN ('requested', 'searching', 'offered') GROUP BY zone_id`.execute(ctx.ex);
   const free = await sql<{ zone_id: string; n: string }>`
-    SELECT d.zone_ids[1] AS zone_id, count(*) AS n FROM drivers d
-     WHERE d.online_status = 'online' AND array_length(d.zone_ids, 1) > 0 GROUP BY 1`.execute(ctx.ex);
+    SELECT l.zone_id, count(*) AS n FROM drivers d JOIN driver_locations l ON l.driver_id = d.driver_id
+     WHERE d.online_status = 'online' AND l.zone_id IS NOT NULL GROUP BY 1`.execute(ctx.ex);
   const failed = await sql<{ zone_id: string; n: string }>`
     SELECT zone_id, count(*) AS n FROM trips WHERE payment_status = 'failed' AND updated_at >= ${new Date(ctx.now.getTime() - DAY)} GROUP BY zone_id`.execute(ctx.ex);
   const sos = await sql<{ zone_id: string; n: string }>`SELECT zone_id, count(*) AS n FROM incidents WHERE kind = 'sos' AND status = 'open' GROUP BY zone_id`.execute(ctx.ex);
@@ -320,21 +325,34 @@ async function ruleCauses(ctx: Ctx): Promise<Cause[]> {
 
 /* ------------------------------------------------------------------ what happened when a cause ended (owner A2) */
 
-type LiveRow = { alert_id: string; cause_key: string; kind: string; zone_id: string | null; ref: unknown; state: string; cause_live: boolean };
+type LiveRow = { alert_id: string; cause_key: string; kind: string; country: string; zone_id: string | null; level: string; title: string; detail: string; ref: unknown; state: string; cause_live: boolean };
+type TripFacts = { status: string; accepted_at: Date | null; updated_at: Date; payment_status: string | null; driver: string | null };
+type Lookups = { trips: Map<string, TripFacts>; incidents: Map<string, { status: string; resolved_at: Date | null }> };
 
-async function solvedText(ctx: Ctx, row: LiveRow): Promise<Text> {
+/** Checker MED 4: what every alert about to turn green needs, read in two queries (not one per alert). */
+async function lookupsFor(ctx: Ctx, rows: readonly LiveRow[]): Promise<Lookups> {
+  const refs = rows.map((r) => (r.ref ?? {}) as Ref);
+  const tripIds = [...new Set(refs.flatMap((r) => (r.tripId ? [r.tripId] : [])))];
+  const incidentIds = [...new Set(refs.flatMap((r) => (r.incidentId ? [r.incidentId] : [])))];
+  const trips = tripIds.length
+    ? (await sql<TripFacts & { trip_id: string }>`
+        SELECT t.trip_id, t.status, t.accepted_at, t.updated_at, t.payment_status, d.first_name AS driver
+          FROM trips t LEFT JOIN drivers d ON d.driver_id = t.driver_id WHERE t.trip_id = ANY(${tripIds})`.execute(ctx.ex)).rows
+    : [];
+  const incidents = incidentIds.length ? await ctx.ex.selectFrom("incidents").select(["incident_id", "status", "resolved_at"]).where("incident_id", "in", incidentIds).execute() : [];
+  return { trips: new Map(trips.map((r) => [r.trip_id, r])), incidents: new Map(incidents.map((r) => [r.incident_id, r])) };
+}
+
+function solvedText(ctx: Ctx, row: LiveRow, look: Lookups): Text {
   const ref = (row.ref ?? {}) as Ref;
   const at = (d: Date | null | undefined) => hhmm(d ?? ctx.now, tz(ctx, row.zone_id));
   if (ref.incidentId && ["sos", "sos_slow", "car_lost", "ride_check"].includes(row.kind)) {
-    const i = await ctx.ex.selectFrom("incidents").select(["status", "resolved_at"]).where("incident_id", "=", ref.incidentId).executeTakeFirst();
+    const i = look.incidents.get(ref.incidentId);
     if (i && (i.status === "resolved" || i.status === "dismissed")) return T("Closed in Incidents {0}", [at(i.resolved_at)]);
     if (row.kind === "car_lost") return T("The car's position came back {0}", [at(ctx.now)]);
   }
   if (ref.tripId && ["long_wait", "late_reservation", "booked_at_risk", "booked_late", "booked_not_started", "payment_failed"].includes(row.kind)) {
-    const t = await sql<{ status: string; accepted_at: Date | null; started_at: Date | null; updated_at: Date; payment_status: string | null; driver: string | null }>`
-      SELECT t.status, t.accepted_at, t.started_at, t.updated_at, t.payment_status, d.first_name AS driver
-        FROM trips t LEFT JOIN drivers d ON d.driver_id = t.driver_id WHERE t.trip_id = ${ref.tripId}`.execute(ctx.ex);
-    const trip = t.rows[0];
+    const trip = look.trips.get(ref.tripId);
     if (trip) {
       if (row.kind === "payment_failed") return trip.payment_status === "failed" ? T("Solved by itself {0}", [at(ctx.now)]) : T("Paid {0}", [at(trip.updated_at)]);
       if (trip.status.startsWith("cancelled") || trip.status === "expired") return T("Ride cancelled {0}", [at(trip.updated_at)]);
@@ -394,35 +412,48 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
   const causes = new Map((await findAll(ctx)).map((c) => [c.key, c]));
   const rows = (await trx
     .selectFrom("admin_alerts_live")
-    .select(["alert_id", "cause_key", "kind", "zone_id", "ref", "state", "cause_live"])
+    .select(["alert_id", "cause_key", "kind", "country", "zone_id", "level", "title", "detail", "ref", "state", "cause_live"])
     .where((eb) => eb.or([eb("state", "!=", "closed"), eb("cause_live", "=", true)]))
     .execute()) as LiveRow[];
   const handled = new Set<string>();
   const result = { opened: 0, solved: 0, reopened: 0 };
+  const ending = rows.filter((r) => r.state === "open" && !causes.has(r.cause_key));
+  const look = await lookupsFor(ctx, ending);
+  const endedClosed: string[] = [];
   for (const row of rows) {
     const cause = causes.get(row.cause_key);
     if (row.state === "closed") {
       // Done by an admin: no new alert while its cause is still there; once it ends, the next one is new.
       if (cause) handled.add(row.cause_key);
-      else await trx.updateTable("admin_alerts_live").set({ cause_live: false, updated_at: now }).where("alert_id", "=", row.alert_id).execute();
+      else endedClosed.push(row.alert_id);
       continue;
     }
     if (cause) {
       handled.add(row.cause_key);
       const reopen = row.state === "solved";
+      const title = render(cause.title);
+      const detail = cause.detail ? render(cause.detail) : "";
+      const ref = JSON.stringify(cause.ref);
+      // Checker MED 4: write only what changed (an unchanged open alert costs no write).
+      const same = !reopen && row.level === cause.level && row.title === title && row.detail === detail && row.zone_id === cause.zoneId && row.country === cause.country && JSON.stringify(row.ref ?? {}) === ref;
+      if (same) continue;
       if (reopen) result.reopened += 1;
       await trx
         .updateTable("admin_alerts_live")
         .set({
           level: cause.level,
-          title: render(cause.title),
+          title,
           title_t: JSON.stringify(cause.title),
-          detail: cause.detail ? render(cause.detail) : "",
+          detail,
           detail_t: cause.detail ? JSON.stringify(cause.detail) : null,
-          ref: JSON.stringify(cause.ref),
+          // Checker HIGH 1: a cause that moved zone (or country) moves its alert with it.
+          zone_id: cause.zoneId,
+          country: cause.country,
+          ref,
           seen_at: now,
           cause_live: true,
-          ...(reopen ? { state: "open" as const, solved_at: null, solved_t: null, updated_at: now } : {}),
+          updated_at: now,
+          ...(reopen ? { state: "open" as const, solved_at: null, solved_t: null } : {}),
         })
         .where("alert_id", "=", row.alert_id)
         .execute();
@@ -430,16 +461,19 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
     }
     if (row.state === "open") {
       // Owner A2: the problem ended by itself → the alert stays, green, with what happened.
-      const text = await solvedText(ctx, row);
+      const text = solvedText(ctx, row, look);
       await trx.updateTable("admin_alerts_live").set({ state: "solved", cause_live: false, solved_at: now, solved_t: JSON.stringify(text), updated_at: now }).where("alert_id", "=", row.alert_id).execute();
       result.solved += 1;
     }
   }
-  for (const cause of causes.values()) {
-    if (handled.has(cause.key)) continue;
-    await trx
+  if (endedClosed.length) await trx.updateTable("admin_alerts_live").set({ cause_live: false, updated_at: now }).where("alert_id", "in", endedClosed).execute();
+  const fresh = [...causes.values()].filter((c) => !handled.has(c.key));
+  if (fresh.length) {
+    // Checker MED 3: a clash on the one-open-alert-per-cause index is skipped, never an error that undoes the sweep;
+    // only rows really written count as opened.
+    const inserted = await trx
       .insertInto("admin_alerts_live")
-      .values({
+      .values(fresh.map((cause) => ({
         // The admin routes take [A-Za-z0-9_:.-] ids (realdataRoutes ALERT_ID).
         alert_id: `${cause.key.replace(/[^A-Za-z0-9_:.-]/g, "_").slice(0, 180)}.${now.getTime().toString(36)}`,
         cause_key: cause.key,
@@ -452,15 +486,16 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
         detail: cause.detail ? render(cause.detail) : "",
         detail_t: cause.detail ? JSON.stringify(cause.detail) : null,
         since: now,
-        state: "open",
+        state: "open" as const,
         cause_live: true,
         ref: JSON.stringify(cause.ref),
         seen_at: now,
         updated_at: now,
-      })
-      .onConflict((oc) => oc.column("alert_id").doNothing())
+      })))
+      .onConflict((oc) => oc.doNothing())
+      .returning("alert_id")
       .execute();
-    result.opened += 1;
+    result.opened += inserted.length;
   }
   return result;
 }

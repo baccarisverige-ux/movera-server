@@ -73,6 +73,10 @@ async function driver(zone: string, set: Record<string, unknown> = {}, firstName
   await db().updateTable("drivers").set({ first_name: firstName, zone_ids: [zone], account_status: "active", ...set } as never).where("driver_id", "=", id).execute();
   return id;
 }
+/** The driver's latest position, in a zone (the live position the server counts free drivers by). */
+async function at(driverId: string, zone: string | null) {
+  await db().insertInto("driver_locations").values({ driver_id: driverId, lat: 59.33, lng: 18.06, accuracy: 5, measured_at: NOW, received_at: NOW, zone_id: zone } as never).onConflict((oc) => oc.column("driver_id").doUpdateSet({ zone_id: zone } as never)).execute();
+}
 async function trip(zone: string, currency: string, set: Record<string, unknown> = {}, kind: "live" | "scheduled" = "live") {
   const riderId = await rider();
   const id = await insertTrip(db(), riderId, { kind });
@@ -119,7 +123,7 @@ for (const c of COUNTRIES) {
 
     it("few_drivers and no_driver per zone, from the zone limits", async () => {
       for (let i = 0; i < 5; i += 1) await trip(c.zone, c.currency, { status: "searching", search_started_at: min(1) });
-      await driver(c.zone, { online_status: "online" });
+      await at(await driver(c.zone, { online_status: "online" }), c.zone);
       expect(await raised("few_drivers")).toMatchObject({ level: "important", zone_id: c.zone, cause_key: `few_drivers:${c.zone}` });
       expect(await one("no_driver")).toMatchObject({ level: "critical", title: expect.stringMatching(/^5 requests without a driver in /) });
       await db().updateTable("trips").set({ status: "cancelled_by_rider" }).where("zone_id", "=", c.zone).execute();
@@ -129,7 +133,8 @@ for (const c of COUNTRIES) {
   });
 
   describe(`${c.country}: booked rides`, () => {
-    it("booked_at_risk: no driver 15 min (A1 default) before pickup; late_reservation before that; green when a driver takes it", async () => {
+    it("booked_at_risk: no driver 15 min (A1 default) before pickup; late_reservation (switched on) before that; green when a driver takes it", async () => {
+      await settings(c.country, { kinds: { late_reservation: { on: true } } });
       const t = await trip(c.zone, c.currency, { status: "requested", scheduled_at: later(40) }, "scheduled");
       await sweep();
       expect((await one("late_reservation")).level).toBe("important");
@@ -320,3 +325,72 @@ describe("event-driven + periodic", () => {
     await sql`SELECT 1`.execute(db());
   });
 });
+
+/* ---- owner answers 2026-11-04 + checker findings (each failed before the fix) */
+for (const c of COUNTRIES) {
+  describe(`${c.country}: owner answers and checker fixes`, () => {
+    it("owner: 'Booked ride soon with no driver' is OFF by default; an admin can switch it back on", async () => {
+      await trip(c.zone, c.currency, { status: "requested", scheduled_at: later(40) }, "scheduled");
+      await sweep();
+      expect(await live("late_reservation")).toHaveLength(0);
+      await settings(c.country, { kinds: { late_reservation: { on: true } } });
+      await raised("late_reservation");
+    });
+
+    it("owner: free drivers are counted by their live position, not their home zone", async () => {
+      for (let i = 0; i < 2; i += 1) await trip(c.zone, c.currency, { status: "searching", search_started_at: min(1) });
+      await settings(c.country, { zones: { [c.zone]: { fewDriversLimit: 0 } } });
+      const away = await driver(c.zone, { online_status: "online" });
+      await at(away, "CDG");
+      // His home zone is this one but he is elsewhere: 0 free here.
+      expect((await raised("few_drivers")).title).toMatch(/^Only 0 free drivers in /);
+      await at(away, c.zone);
+      await solved("few_drivers");
+    });
+
+    it("checker HIGH 1: a cause that moves zone moves its alert (zone and country)", async () => {
+      const t = await trip(c.zone, c.currency, { status: "searching", search_started_at: min(20) });
+      await raised("long_wait");
+      const other = c.zone === "Z001" ? { zone: "FR-PC", country: "FR" } : { zone: "Z001", country: "SE" };
+      await db().updateTable("trips").set({ zone_id: other.zone }).where("trip_id", "=", t.id).execute();
+      await sweep(later(1));
+      expect(await one("long_wait")).toMatchObject({ zone_id: other.zone, country: other.country, state: "open" });
+    });
+
+    it("checker MED 2: a failed payment and an auto-offline stay open past any time window; green only when really solved", async () => {
+      const t = await trip(c.zone, c.currency, { status: "completed", payment_status: "failed", updated_at: min(10 * 1440) });
+      const d = await driver(c.zone, { online_status: "offline", offline_reason: "missed_offers", offline_at: min(2 * 1440) });
+      await raised("payment_failed");
+      await raised("auto_offline");
+      await sweep(later(20 * 1440));
+      expect((await one("payment_failed")).state).toBe("open");
+      expect((await one("auto_offline")).state).toBe("open");
+      await db().updateTable("trips").set({ payment_status: "captured" }).where("trip_id", "=", t.id).execute();
+      await db().updateTable("drivers").set({ online_status: "online", offline_reason: null }).where("driver_id", "=", d).execute();
+      expect(text((await solved("payment_failed", later(20 * 1440))).solved_t)).toMatch(/^Paid /);
+      expect(text((await solved("auto_offline", later(20 * 1440))).solved_t)).toMatch(/^Back online /);
+    });
+
+    it("checker MED 4: an unchanged alert is not written again (seen_at stays)", async () => {
+      await trip(c.zone, c.currency, { status: "requested", scheduled_at: min(2) }, "scheduled");
+      const first = await raised("booked_late");
+      await sweep(later(5));
+      expect((await one("booked_late")).seen_at).toEqual(first.seen_at);
+    });
+  });
+}
+
+describe("checker MED 3: two sweeps at once", () => {
+  it("both finish, one alert per cause, opened counts only rows written", async () => {
+    await trip("Z001", "SEK", { status: "searching", search_started_at: min(20) });
+    const [a, b] = await Promise.all([sweep(), sweep()]);
+    expect(a.opened + b.opened).toBe((await live()).length);
+    expect(await live("long_wait")).toHaveLength(1);
+  });
+
+  it("the sweep's scans have their indexes", async () => {
+    const rows = await sql<{ indexname: string }>`SELECT indexname FROM pg_indexes WHERE indexname IN ('trips_payment_failed', 'trips_rider_recent', 'drivers_rated_active', 'drivers_missed_offers_offline', 'admin_alerts_live_cause')`.execute(db());
+    expect(rows.rows.map((r) => r.indexname).sort()).toEqual(["admin_alerts_live_cause", "drivers_missed_offers_offline", "drivers_rated_active", "trips_payment_failed", "trips_rider_recent"]);
+  });
+});
+

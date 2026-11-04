@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "kysely";
 import { sweepAlerts } from "../../src/alerts/detector.js";
 import { insertRider, insertTrip } from "../support/seed.js";
 import { fakeOsrm, Sim, type Admin, type Json } from "./harness.js";
@@ -68,3 +69,22 @@ describe("the admin reads the server's alerts", () => {
     expect(longWaits((await se.get("/admin/alerts/book?country=SE")).body)).toHaveLength(0);
   });
 });
+
+describe("checker LOW fixes", () => {
+  it("the zone filter runs before the 1000-row limit; an action on a no-zone alert answers with its own country's book", async () => {
+    const now = new Date(NOW.getTime() + 3_600_000);
+    // 1 000 open alerts of another SE zone, then one of Z001: the Z001 admin still sees his.
+    await sim.db.executeQuery(sql`INSERT INTO admin_alerts_live (alert_id, cause_key, kind, country, zone_id, level, title, title_t, since, state, seen_at, updated_at)
+      SELECT 'few_drivers:x' || g, 'few_drivers:x' || g, 'few_drivers', 'SE', 'Z002', 'important', 'x', '{"t":"x","a":[]}', ${new Date(NOW.getTime() - 3_600_000)}, 'open', ${now}, ${now} FROM generate_series(1, 1000) g`.compile(sim.db));
+    await sim.db.executeQuery(sql`INSERT INTO admin_alerts_live (alert_id, cause_key, kind, country, zone_id, level, title, title_t, since, state, seen_at, updated_at)
+      VALUES ('no_driver:Z001.z', 'no_driver:Z001', 'no_driver', 'SE', 'Z001', 'critical', 'mine', '{"t":"mine","a":[]}', ${now}, 'open', ${now}, ${now})`.compile(sim.db));
+    const book = (await se.get("/admin/alerts/book?country=SE")).body;
+    expect((book["alerts"] as Json[]).map((a) => a["alertId"])).toContain("no_driver:Z001.z");
+    await sim.db.executeQuery(sql`INSERT INTO admin_alerts_live (alert_id, cause_key, kind, country, zone_id, level, title, title_t, since, state, seen_at, updated_at)
+      VALUES ('system_health:timers:FR.z', 'system_health:timers:FR', 'system_health', 'FR', NULL, 'important', 'jobs', '{"t":"jobs","a":[]}', ${now}, 'open', ${now}, ${now})`.compile(sim.db));
+    const taken = await owner.post("/admin/alerts/system_health:timers:FR.z/take", { kind: "system_health", level: "important", title: "jobs", since: now.toISOString() });
+    expect(taken.status).toBe(200);
+    expect(taken.body["country"]).toBe("FR");
+  });
+});
+

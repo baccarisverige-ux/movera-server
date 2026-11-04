@@ -10,7 +10,7 @@ export type Limits = { info: number | null; important: number | null; critical: 
 /** A text as an English template with {0}, {1} places; x = the places whose value is itself a text to translate. */
 export type Text = { t: string; a: (string | number)[]; x?: number[] };
 
-type KindDefault = { level?: Level; limits?: Limits };
+type KindDefault = { on?: boolean; level?: Level; limits?: Limits };
 type ZoneDefaults = { bookedAtRiskMin: number; liveAtRiskMin: number; fewDriversLimit: number; noDriverLimit: number };
 const SD = (contract as unknown as {
   alertDesk: {
@@ -48,7 +48,7 @@ export class AlertSettings {
       important: num(rawLimits["important"]) === undefined ? base.important : (num(rawLimits["important"]) as number | null),
       critical: num(rawLimits["critical"]) === undefined ? base.critical : (num(rawLimits["critical"]) as number | null),
     };
-    return { on: raw["on"] !== false, level: isLevel(raw["level"]) ? raw["level"] : (def.level ?? "important"), limits };
+    return { on: typeof raw["on"] === "boolean" ? raw["on"] : def.on !== false, level: isLevel(raw["level"]) ? raw["level"] : (def.level ?? "important"), limits };
   }
 
   zone(zoneId: string): ZoneDefaults {
