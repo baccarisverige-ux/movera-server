@@ -7181,6 +7181,7 @@
     "applies": "every POST, PUT, PATCH and DELETE under /api/v1; reads (GET, HEAD) and CORS preflights (OPTIONS) are never counted",
     "key": "a valid access token: its actor and user (sub), so many accounts behind one address never share a budget; no or an invalid token: the client address (the address the trusted proxy saw, TRUST_PROXY_HOPS)",
     "window": "fixed 60 s window per key, in the server's memory",
+    "signInOutsideProduction": "staging and development: POST /auth/otp/request and /auth/otp/verify are not counted per address (load test); the OTP limits still apply. Production counts them.",
     "defaults": {
       "production": {
         "userPerMinute": 120,
