@@ -112,3 +112,26 @@ describe("batched facts equal the per-driver reads", () => {
     }
   });
 });
+
+describe("missed in a row is the true count, whatever the zone limit", () => {
+  for (const limit of [0, 3]) {
+    it(`limit ${limit}, 5 missed → 5`, async () => {
+      const db = database.db;
+      const zoneId = `Z001`;
+      await db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", zoneId).execute();
+      await db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: zoneId, version: 1, document: JSON.stringify({ offers: { autoOffline: { missedExclusive: limit } } }), published_at: new Date(), published_by: null }).execute();
+      const driverId = await insertDriver(db);
+      const at = (m: number) => new Date(clock.now.getTime() - m * 60_000);
+      await db.updateTable("drivers").set({ account_status: "active", zone_ids: [zoneId], online_status: "online", online_since: at(100) }).where("driver_id", "=", driverId).execute();
+      const rider = await insertRider(db);
+      for (let k = 0; k < 5; k += 1) {
+        const tripId = await insertTrip(db, rider, { status: "cancelled_by_rider" });
+        await db.insertInto("offers").values({ offer_id: newId("ofr"), trip_id: tripId, driver_id: driverId, kind: "exclusive", status: "declined", round: 1, currency: "SEK", fare_minor: 25000, driver_earnings_minor: 20000, pickup_meters: 900, pickup_eta_seconds: 120, sent_at: at(50 - k), expires_at: at(50 - k), answered_at: at(49 - k), group_id: null, reason_code: null, decline_reason: null }).execute();
+      }
+      const { items } = await zoneDriverFacts(db, zoneId, clock.now);
+      expect(items.find((row) => row.driverId === driverId)?.missedInRow).toBe(5);
+      await db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", zoneId).execute();
+      await db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", driverId).execute();
+    });
+  }
+});

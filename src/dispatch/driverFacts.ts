@@ -2,7 +2,10 @@ import { sql } from "kysely";
 import type { Executor } from "../db/db.js";
 import { PERFORMANCE, performanceFromCounts } from "../drivers/performance.js";
 import { drivingLimitReached } from "../drivers/drivingTime.js";
-import { autoOfflineLimit, missedInRow } from "./autoOffline.js";
+import { missedInRow } from "./autoOffline.js";
+
+/** The true run of missed offers, whatever the zone limit (or with auto-offline off); counted up to 50 (the admin shows "50+"). */
+export const MISSED_IN_ROW_CAP = 50;
 
 /**
  * Contract v0.18.21 §45 (contract.json#dispatchDriverFacts, owner 2026-11-04 "real driver facts"): what dispatch knows
@@ -76,9 +79,6 @@ export async function zoneDriverFacts(ex: Executor, zoneId: string, now: Date): 
   const offerOf = new Map(offers.map((o) => [o.driver_id, o]));
   const cancelOf = new Map(cancels.map((c) => [c.driver_id, Number(c.n)]));
   const rideOf = new Map(rides.map((r) => [r.driver_id as string, Number(r.n)]));
-  // The facts count missed offers only up to the zone's auto-offline limit + 1 (enough to show "reached").
-  const limit = await autoOfflineLimit(ex, zoneId);
-  const cap = limit + 1;
   const items: DispatchDriverFacts[] = [];
   for (const row of rows) {
     const onTrip = row.online_status === "on_trip";
@@ -94,7 +94,7 @@ export async function zoneDriverFacts(ex: Executor, zoneId: string, now: Date): 
       idleMin: !onTrip && row.last_free_at ? Math.max(0, Math.floor((now.getTime() - row.last_free_at.getTime()) / 60_000)) : null,
       categoryIds: row.category_ids,
       // Per driver by nature (a run read newest first), capped small.
-      missedInRow: await missedInRow(ex, row.driver_id, row.online_since, cap),
+      missedInRow: await missedInRow(ex, row.driver_id, row.online_since, MISSED_IN_ROW_CAP),
       ridesThisHour: rideOf.get(row.driver_id) ?? 0,
       restNeeded: await drivingLimitReached(ex, row.driver_id, now),
       ...NOT_YET,
