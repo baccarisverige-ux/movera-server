@@ -187,7 +187,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   if (db !== undefined) {
     const jwtSecret = env.JWT_SECRET ?? DEV_JWT_SECRET;
     const signInProviders = providers ?? providersFrom(env);
-    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", providers: signInProviders, ...(clock ? { clock } : {}) });
+    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await telemetryRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.

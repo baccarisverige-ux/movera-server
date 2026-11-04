@@ -22,7 +22,7 @@ const advance = (seconds: number) => (clock.now = new Date(clock.now.getTime() +
 beforeAll(async () => {
   database = await freshDatabase();
   await seedTestPhones(database.db);
-  app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: "deep-fix-1".padEnd(48, "d") }), logger: false, db: database.db, clock: () => clock.now });
+  app = await buildApp({ env: readEnv({ MOVERA_ENV: "development" /* OTP limits on test numbers; staging skips them */, DATABASE_URL: database.url, JWT_SECRET: "deep-fix-1".padEnd(48, "d") }), logger: false, db: database.db, clock: () => clock.now });
 });
 afterAll(async () => {
   await app.close();
