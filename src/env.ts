@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseExtraTestPhones } from "./auth/testPhones.js";
 
 /**
  * Server settings, read from the environment once at start. Anything missing or malformed stops the server
@@ -79,6 +80,22 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
+  /**
+   * The big test (owner 2026-11-03): more test numbers than the six built in, as a comma list of numbers and ranges
+   * ("+46701740611-+46701740660,+33639980001"). Seeded at start like the six (both apps, fixed sign-in code).
+   * Staging and development only.
+   */
+  MOVERA_EXTRA_TEST_PHONES: z
+    .string()
+    .optional()
+    .transform((value, ctx) => {
+      try {
+        return parseExtraTestPhones(value);
+      } catch (error) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: (error as Error).message });
+        return z.NEVER;
+      }
+    }),
   /** Also for a host without a shell: this Super admin is made at start and its password link written to the log. */
   ADMIN_BOOTSTRAP_EMAIL: z.string().email().optional(),
   ADMIN_BOOTSTRAP_NAME: z.string().min(1).max(120).optional(),
@@ -118,6 +135,7 @@ const schema = z.object({
       ["SEED_TEST_ON_START", env.SEED_TEST_ON_START],
       ["ADMIN_BOOTSTRAP_EMAIL", env.ADMIN_BOOTSTRAP_EMAIL !== undefined],
       ["ADMIN_TEST_EMAIL", env.ADMIN_TEST_EMAIL !== undefined],
+      ["MOVERA_EXTRA_TEST_PHONES", env.MOVERA_EXTRA_TEST_PHONES.length > 0],
     ] as const;
     for (const [path, set] of stagingOnly) {
       if (set) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message: "for staging and development only" });
