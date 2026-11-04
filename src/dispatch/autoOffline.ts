@@ -1,5 +1,5 @@
 import { sql } from "kysely";
-import type { Trx } from "../db/db.js";
+import type { Executor, Trx } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { liveDocument } from "../config/service.js";
 import { scheduleTimer } from "../jobs/timers.js";
@@ -33,6 +33,22 @@ export async function autoOfflineIfDue(trx: Trx, driverId: string, tripId: strin
   if (trip === undefined) return false;
   const limit = await autoOfflineLimit(trx, trip.zone_id);
   if (limit === 0) return false;
+  const run = await missedInRow(trx, driverId, driver.online_since, limit);
+  if (run < limit) return false;
+  await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
+  // v0.18.6 (owner "Send the real reason"): Driver.offlineReason missed_offers + the set_offline notice.
+  await markSetOffline(trx, driverId, "missed_offers", { count: limit }, now);
+  // As going offline by hand: the driver's other open offers are withdrawn by a job that locks each trip in turn.
+  await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
+  return true;
+}
+
+/**
+ * contract.json#autoOffline / #dispatchDriverFacts.real.missedInRow: Exclusive or assigned offers of live trips the
+ * driver declined or let expire in a row since `onlineSince` (an accept ends the run; offers sent while on a trip and
+ * Radar / reservation offers never count). Stops counting at `cap`.
+ */
+export async function missedInRow(trx: Executor, driverId: string, onlineSince: Date | null, cap = 500): Promise<number> {
   let query = trx
     .selectFrom("offers")
     .innerJoin("trips", "trips.trip_id", "offers.trip_id")
@@ -44,18 +60,12 @@ export async function autoOfflineIfDue(trx: Trx, driverId: string, tripId: strin
     .orderBy(sql`offers.status = 'claimed'`, "desc")
     .orderBy("offers.offer_id", "desc")
     .limit(500);
-  if (driver.online_since !== null) query = query.where("offers.answered_at", ">=", driver.online_since);
+  if (onlineSince !== null) query = query.where("offers.answered_at", ">=", onlineSince);
   let run = 0;
   for (const offer of await query.execute()) {
     if (offer.status === "claimed") break;
     if (COUNTING_KINDS.includes(offer.kind) && offer.tripKind === "live" && !offer.driver_on_trip) run += 1;
-    if (run >= limit) break;
+    if (run >= cap) break;
   }
-  if (run < limit) return false;
-  await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
-  // v0.18.6 (owner "Send the real reason"): Driver.offlineReason missed_offers + the set_offline notice.
-  await markSetOffline(trx, driverId, "missed_offers", { count: limit }, now);
-  // As going offline by hand: the driver's other open offers are withdrawn by a job that locks each trip in turn.
-  await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
-  return true;
+  return run;
 }
