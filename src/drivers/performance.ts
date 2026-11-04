@@ -40,10 +40,11 @@ export async function driverPerformance(ex: Executor, driverId: string, now: Dat
     .where("at", "<=", now)
     .executeTakeFirstOrThrow();
   const driver = await ex.selectFrom("drivers").select(["rating_sum", "rating_count"]).where("driver_id", "=", driverId).executeTakeFirst();
-  const answerable = Number(offers.all);
-  const accepted = Number(offers.took);
-  const cancelled = Number(cancels.n);
-  const ratingCount = Number(driver?.rating_count ?? 0);
+  return performanceFromCounts(since, Number(offers.all), Number(offers.took), Number(cancels.n), Number(driver?.rating_sum ?? 0), Number(driver?.rating_count ?? 0));
+}
+
+/** The same numbers from counts already read (also used by the batched admin dispatch facts, one query per zone). */
+export function performanceFromCounts(since: Date, answerable: number, accepted: number, cancelled: number, ratingSum: number, ratingCount: number): DriverPerformance {
   return {
     windowDays: PERFORMANCE.windowDays,
     from: since.toISOString(),
@@ -53,7 +54,7 @@ export async function driverPerformance(ex: Executor, driverId: string, now: Dat
     ratingCount,
     acceptancePct: answerable >= PERFORMANCE.minOffers ? Math.round((accepted / answerable) * 100) : null,
     cancellationPct: accepted >= PERFORMANCE.minTrips ? Math.round(Math.min(100, (cancelled / accepted) * 100)) : null,
-    rating: ratingCount >= PERFORMANCE.minRatings && ratingCount > 0 ? Math.round((Number(driver!.rating_sum) / ratingCount) * 100) / 100 : null,
+    rating: ratingCount >= PERFORMANCE.minRatings && ratingCount > 0 ? Math.round((ratingSum / ratingCount) * 100) / 100 : null,
   };
 }
 

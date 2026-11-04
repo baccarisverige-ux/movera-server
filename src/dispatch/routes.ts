@@ -14,6 +14,7 @@ import { tripProjection } from "../trips/projection.js";
 import { riderCancel } from "../trips/service.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import type { DispatchDoc } from "./engine.js";
+import { zoneDriverFacts } from "./driverFacts.js";
 import { acceptOffer, declineOffer, keepWaiting, offerView } from "./runtime.js";
 import type { Trx } from "../db/db.js";
 
@@ -186,6 +187,15 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     if (!adminCoversZone(who, zoneId)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
     await getZone(deps.db, zoneId);
     return controlView(deps.db, zoneId);
+  });
+
+  // v0.18.21 (contract.json#dispatchDriverFacts, owner 2026-11-04): the real facts of the zone's online drivers.
+  app.get(`${API_PREFIX}/admin/zones/:zoneId/driver-facts`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "trips.read");
+    const { zoneId } = parseBody(z.object({ zoneId: ID }), request.params);
+    if (!adminCoversZone(who, zoneId)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
+    await getZone(deps.db, zoneId);
+    return zoneDriverFacts(deps.db, zoneId, now());
   });
 
   app.put(`${API_PREFIX}/admin/zones/:zoneId/dispatch-control`, async (request, reply) => {
