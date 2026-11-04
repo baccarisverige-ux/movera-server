@@ -54,8 +54,8 @@ describe("sign-in code: 6 digits, per-number daily lock, per-address limit as ad
   });
 
   it("defaults, ranges and the phone's country", () => {
-    expect(COUNTRY_LIMITS.defaults).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 60, uploadsPerHour: 30, codesPerPhonePerHour: 10 });
-    expect(countryLimitsOf({ limits: { wrongCodesPerDay: 1, codesPerAddressPerHour: 200, uploadsPerHour: "x" } })).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 200, uploadsPerHour: 30, codesPerPhonePerHour: 10 });
+    expect(COUNTRY_LIMITS.defaults).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 60, uploadsPerHour: 30, codesPerPhonePerHour: 10, writesPerUserPerMinute: 120, writesPerAddressPerMinute: 60 });
+    expect(countryLimitsOf({ limits: { wrongCodesPerDay: 1, codesPerAddressPerHour: 200, uploadsPerHour: "x" } })).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 200, uploadsPerHour: 30, codesPerPhonePerHour: 10, writesPerUserPerMinute: 120, writesPerAddressPerMinute: 60 });
     expect([countryOfPhone("+46701740600"), countryOfPhone("+33612345678"), countryOfPhone("+4930123456")]).toEqual(["SE", "FR", null]);
   });
 

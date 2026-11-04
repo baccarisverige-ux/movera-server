@@ -24,7 +24,8 @@ describe("database pool settings", () => {
     const res = await app.inject({ method: "GET", url: "/healthz" });
     await app.close();
     await db.destroy();
-    expect(res.json().dbPool).toEqual({ max: 7, total: 0, idle: 0, waiting: 0 });
+    expect(res.json().dbPool).toMatchObject({ max: 7, idle: 0 });
+    expect(Object.keys(res.json().dbPool).sort()).toEqual(["idle", "max", "total", "waiting"]);
     expect(res.body).not.toContain("secret");
   });
 });

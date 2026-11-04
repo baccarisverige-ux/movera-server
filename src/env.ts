@@ -169,13 +169,20 @@ const schema = z.object({
 
 export type Env = z.infer<typeof schema>;
 
-/** The write limit in force (B11): the env value, else the default for MOVERA_ENV. */
-export function writeLimitsFrom(env: Env): { userPerMinute: number; addressPerMinute: number } {
+/**
+ * The write limit's env part (B11, contract.json#rateLimit). `fallback` is used while no admin setting is known; `floor`
+ * is the least the admin setting may give (0: none). An env value that is set is both; unset in production the
+ * fallback is the contract default (120 / 60) and the admin may go lower; unset on staging and development 1200 / 600
+ * are both (the load test). `off`: env 0 turns that limit off whatever the admin says.
+ */
+export type WriteLimitEnv = { fallback: number; floor: number; off: boolean };
+export function writeLimitsFrom(env: Env): { user: WriteLimitEnv; address: WriteLimitEnv } {
   const production = env.MOVERA_ENV === "production";
-  return {
-    userPerMinute: env.RATE_LIMIT_WRITES_PER_USER_PER_MINUTE ?? (production ? 120 : 1200),
-    addressPerMinute: env.RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE ?? (production ? 60 : 600),
+  const part = (given: number | undefined, prodDefault: number, testDefault: number): WriteLimitEnv => {
+    if (given !== undefined) return { fallback: given, floor: given, off: given === 0 };
+    return production ? { fallback: prodDefault, floor: 0, off: false } : { fallback: testDefault, floor: testDefault, off: false };
   };
+  return { user: part(env.RATE_LIMIT_WRITES_PER_USER_PER_MINUTE, 120, 1200), address: part(env.RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE, 60, 600) };
 }
 
 export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {

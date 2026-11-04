@@ -30189,6 +30189,21 @@ components:
           maximum: 60
           description: Sign-in codes per phone number and app per hour (429 otp_too_many). Range 3–60.
           default: 10
+        writesPerUserPerMinute:
+          type: integer
+          minimum: 30
+          maximum: 10000
+          description: 'v0.18.24 (owner 2026-11-04 "Yes, admin setting"): writes (POST/PUT/PATCH/DELETE) per signed-in user
+            per minute (contract.json#rateLimit; 429 rate_limited reason too_many_requests); the user''s country (first zone
+            of the token). Range 30–10000.'
+          default: 120
+        writesPerAddressPerMinute:
+          type: integer
+          minimum: 20
+          maximum: 10000
+          description: 'v0.18.24: writes per client address per minute for callers without a valid token (sign-in, waiting
+            list); the country of the server''s default zone. Range 20–10000.'
+          default: 60
     AccountPhoneChange:
       type: object
       required:

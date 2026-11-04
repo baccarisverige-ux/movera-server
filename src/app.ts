@@ -8,7 +8,7 @@ import { sql } from "kysely";
 import type { Db } from "./db/db.js";
 import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
 import { writeLimitsFrom, type Env } from "./env.js";
-import { registerWriteLimit } from "./http/rateLimit.js";
+import { registerWriteLimit, SIGN_IN_PATHS } from "./http/rateLimit.js";
 import { poolStats } from "./db/db.js";
 import { ApiError, badRequest, notFound } from "./http/errors.js";
 
@@ -118,7 +118,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   });
 
   // B11: the general write limit (contract.json#rateLimit), before any route reads the body or the database.
-  registerWriteLimit(app, writeLimitsFrom(env), { jwtSecret: db !== undefined ? (env.JWT_SECRET ?? DEV_JWT_SECRET) : env.JWT_SECRET, ...(clock ? { clock } : {}) });
+  registerWriteLimit(app, writeLimitsFrom(env), { jwtSecret: db !== undefined ? (env.JWT_SECRET ?? DEV_JWT_SECRET) : env.JWT_SECRET, db, defaultZoneId: env.DEFAULT_ZONE_ID, exemptPaths: env.MOVERA_ENV === "production" ? [] : SIGN_IN_PATHS, ...(clock ? { clock } : {}) });
 
   app.setErrorHandler(async (error: FastifyError | ApiError, request, reply) => {
     if (error instanceof ApiError) {
