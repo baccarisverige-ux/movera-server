@@ -7,7 +7,7 @@ import type { Executor } from "../db/db.js";
  * the 24 h window), sign-in codes per client address (one wifi) per hour, document uploads per driver per hour.
  * A missing value, or one outside its range, reads as the default.
  */
-export type CountryLimits = { wrongCodesPerDay: number; codesPerAddressPerHour: number; codesPerPhonePerHour: number; uploadsPerHour: number };
+export type CountryLimits = { wrongCodesPerDay: number; codesPerAddressPerHour: number; codesPerPhonePerHour: number; uploadsPerHour: number; savedPlacesPerPerson: number; emergencyContactsPerPerson: number };
 type Spec = { defaults: CountryLimits; ranges: Record<keyof CountryLimits, [number, number]> };
 export const COUNTRY_LIMITS = (contract as unknown as { countryLimits: Spec }).countryLimits;
 

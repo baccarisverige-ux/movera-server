@@ -7,6 +7,7 @@ import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { riderInZones, zonesOf } from "../admin/lists.js";
+import { COUNTRY_LIMITS, countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 
 /**
  * BASE B13 (contract v0.18.26 §47, contract.json#phoneDataToServer; owner 2026-11-03 "Phone-only data: Yes, all to
@@ -15,9 +16,22 @@ import { riderInZones, zonesOf } from "../admin/lists.js";
  * emergency contacts only through one of his safety incidents, and that read is audited.
  */
 
-const PDS = (contract as unknown as { phoneDataToServer: { riderPlaces: { maxPlaces: number }; driverEmergencyContacts: { maxContacts: number } } }).phoneDataToServer;
-export const MAX_PLACES: number = PDS.riderPlaces.maxPlaces;
-export const MAX_CONTACTS: number = PDS.driverEmergencyContacts.maxContacts;
+/**
+ * Owner 2026-11-04: the limits are an admin setting per country, per person (contract.json#countryLimits
+ * savedPlacesPerPerson, emergencyContactsPerPerson; defaults 50 and 10). The bodies are capped at the ranges' top.
+ */
+export const MAX_PLACES_CAP: number = COUNTRY_LIMITS.ranges.savedPlacesPerPerson[1];
+export const MAX_CONTACTS_CAP: number = COUNTRY_LIMITS.ranges.emergencyContactsPerPerson[1];
+void contract;
+
+async function riderCountry(ex: Executor, riderId: string): Promise<string | null> {
+  const row = await ex.selectFrom("riders").select("phone").where("rider_id", "=", riderId).executeTakeFirst();
+  return row?.phone ? countryOfPhone(row.phone) : null;
+}
+async function driverCountry(ex: Executor, driverId: string): Promise<string | null> {
+  const row = await ex.selectFrom("drivers").select(["country", "phone"]).where("driver_id", "=", driverId).executeTakeFirst();
+  return row?.country ?? (row?.phone ? countryOfPhone(row.phone) : null);
+}
 
 export type PlaceInput = { label: string; kind: "home" | "work" | "other"; type?: string | undefined; place: { address: string; lat?: number | undefined; lng?: number | undefined } };
 export type ContactInput = { name: string; phone: string; relation?: string | undefined };
@@ -69,7 +83,8 @@ export async function savePlace(trx: Trx, riderId: string, input: PlaceInput, no
     }
   }
   const count = await trx.selectFrom("rider_places").select((eb) => eb.fn.countAll<string>().as("n")).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
-  if (Number(count.n) >= MAX_PLACES) throw new ApiError("conflict", `At most ${MAX_PLACES} saved places.`, { reason: "too_many_places" });
+  const max = (await countryLimitsFor(trx, await riderCountry(trx, riderId))).savedPlacesPerPerson;
+  if (Number(count.n) >= max) throw new ApiError("conflict", `At most ${max} saved places per person.`, { reason: "too_many_places" });
   const row = await trx.insertInto("rider_places").values({ place_id: newId("plc", now.getTime()), rider_id: riderId, ...v, created_at: now, updated_at: now }).returning(PLACE_COLUMNS).executeTakeFirstOrThrow();
   return placeView(row);
 }
@@ -99,7 +114,7 @@ export async function deletePlace(trx: Trx, riderId: string, placeId: string) {
   await trx.deleteFrom("rider_places").where("place_id", "=", placeId).where("rider_id", "=", riderId).execute();
 }
 
-/** The one-time upload of the phone's places: applied the first time only; places past MAX_PLACES are dropped. */
+/** The one-time upload of the phone's places: applied the first time only; places past the country limit are dropped. */
 export async function importPlaces(trx: Trx, riderId: string, items: PlaceInput[], now: Date) {
   await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).forUpdate().executeTakeFirstOrThrow();
   const done = await trx.selectFrom("rider_places_imported").select("rider_id").where("rider_id", "=", riderId).executeTakeFirst();
@@ -147,18 +162,37 @@ export async function driverContacts(ex: Executor, driverId: string) {
   return { items: contactsOf(row?.emergency_contacts), updatedAt: row?.contacts_at?.toISOString() ?? null };
 }
 
-export async function saveDriverContacts(trx: Trx, driverId: string, items: ContactInput[], now: Date) {
-  if (items.length > MAX_CONTACTS) throw badRequest(`At most ${MAX_CONTACTS} emergency contacts.`, "too_many_contacts");
+/** Owner 2026-11-04 "Yes, same as drivers": the rider's own emergency contacts. */
+export async function riderContacts(ex: Executor, riderId: string) {
+  const row = await ex.selectFrom("rider_phone_data").select(["emergency_contacts", "contacts_at"]).where("rider_id", "=", riderId).executeTakeFirst();
+  return { items: contactsOf(row?.emergency_contacts), updatedAt: row?.contacts_at?.toISOString() ?? null };
+}
+
+async function cleanContacts(ex: Executor, country: string | null, items: ContactInput[]) {
+  const max = (await countryLimitsFor(ex, country)).emergencyContactsPerPerson;
+  if (items.length > max) throw badRequest(`At most ${max} emergency contacts per person.`, "too_many_contacts");
   const clean = items.map((c) => ({ name: c.name.trim(), phone: c.phone, ...(c.relation?.trim() ? { relation: c.relation.trim() } : {}) }));
   if (clean.some((c) => c.name === "")) throw badRequest("Every contact needs a name.", "contact_incomplete");
+  return clean;
+}
+
+export async function saveDriverContacts(trx: Trx, driverId: string, items: ContactInput[], now: Date) {
+  const clean = await cleanContacts(trx, await driverCountry(trx, driverId), items);
   await ensureRow(trx, driverId);
   await trx.updateTable("driver_phone_data").set({ emergency_contacts: JSON.stringify(clean), contacts_at: now }).where("driver_id", "=", driverId).execute();
   return driverContacts(trx, driverId);
 }
 
+export async function saveRiderContacts(trx: Trx, riderId: string, items: ContactInput[], now: Date) {
+  const clean = await cleanContacts(trx, await riderCountry(trx, riderId), items);
+  await trx.insertInto("rider_phone_data").values({ rider_id: riderId, emergency_contacts: JSON.stringify(clean), contacts_at: now })
+    .onConflict((c) => c.column("rider_id").doUpdateSet({ emergency_contacts: JSON.stringify(clean), contacts_at: now })).execute();
+  return riderContacts(trx, riderId);
+}
+
 /** Admin, read-only: the emergency contacts of the incident's driver, in the admin's zones, written to the audit. */
 export async function incidentEmergencyContacts(trx: Trx, who: Principal, incidentId: string, now: Date) {
-  const incident = await trx.selectFrom("incidents").select(["incident_id", "zone_id", "driver_id", "status"]).where("incident_id", "=", incidentId).executeTakeFirst();
+  const incident = await trx.selectFrom("incidents").select(["incident_id", "zone_id", "driver_id", "rider_id", "status"]).where("incident_id", "=", incidentId).executeTakeFirst();
   if (!incident) throw notFound("No such incident.", "incident_not_found");
   if (!who.zones.includes("*") && (incident.zone_id === null || !adminCoversZone(who, incident.zone_id))) {
     throw new ApiError("forbidden", "This incident is outside your zones.", { reason: "zone_out_of_scope" });
@@ -168,9 +202,11 @@ export async function incidentEmergencyContacts(trx: Trx, who: Principal, incide
     throw new ApiError("invalid_transition", "Emergency contacts are shown only while the safety case is open.", { reason: "incident_closed" });
   }
   const contacts = incident.driver_id ? await driverContacts(trx, incident.driver_id) : { items: [], updatedAt: null };
+  // Owner 2026-11-04 "Yes, same as drivers": the rider's contacts of the same open case.
+  const rider = incident.rider_id ? { riderId: incident.rider_id, ...(await riderContacts(trx, incident.rider_id)) } : null;
   // Who looked, when and at which incident; never the names or numbers.
-  await audit(trx, { adminId: who.subjectId, action: "incident.emergency_contacts_viewed", targetType: "incident", targetId: incident.incident_id, zoneId: incident.zone_id, detail: { driverId: incident.driver_id, count: contacts.items.length }, at: now });
-  return { incidentId: incident.incident_id, driverId: incident.driver_id, ...contacts };
+  await audit(trx, { adminId: who.subjectId, action: "incident.emergency_contacts_viewed", targetType: "incident", targetId: incident.incident_id, zoneId: incident.zone_id, detail: { driverId: incident.driver_id, riderId: incident.rider_id, count: contacts.items.length + (rider?.items.length ?? 0) }, at: now });
+  return { incidentId: incident.incident_id, driverId: incident.driver_id, ...contacts, rider };
 }
 
 /** Dispatch (contract.json#phoneDataToServer.driverPreferences.dispatch): drivers who switched [categoryId] off. */

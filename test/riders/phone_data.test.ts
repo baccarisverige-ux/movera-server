@@ -121,6 +121,34 @@ describe("driver ride preferences and emergency contacts", () => {
     await call(app, "PUT", "/driver/preferences", driverB.headers, { categoriesOff: [] });
   });
 
+  it("uses the country's per-person limits set by the admin", async () => {
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "standard-SE", version: 1, document: JSON.stringify({ limits: { emergencyContactsPerPerson: 2, savedPlacesPerPerson: 1 } }), published_at: clock.now, published_by: null })
+      .onConflict((c) => c.columns(["doc", "zone_id"]).doUpdateSet({ document: JSON.stringify({ limits: { emergencyContactsPerPerson: 2, savedPlacesPerPerson: 1 } }) })).execute();
+    const three = Array.from({ length: 3 }, (_, i) => ({ name: `C${i}`, phone: `+4670000000${i}` }));
+    const res = await call(app, "PUT", "/driver/emergency-contacts", driverB.headers, { items: three });
+    expect(res.json().reason).toBe("too_many_contacts");
+    expect((await call(app, "PUT", "/driver/emergency-contacts", driverB.headers, { items: three.slice(0, 2) })).statusCode).toBe(200);
+    await database.db.deleteFrom("driver_phone_data").where("driver_id", "=", driverB.id).execute();
+    await database.db.deleteFrom("rider_places").execute();
+    await call(app, "POST", "/rider/places", riderA, { label: "A", kind: "other", place: { address: "A" } });
+    expect((await call(app, "POST", "/rider/places", riderA, { label: "B", kind: "other", place: { address: "B" } })).json().reason).toBe("too_many_places");
+    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").where("zone_id", "=", "standard-SE").execute();
+    await database.db.deleteFrom("rider_places").execute();
+  });
+
+  it("keeps the rider's emergency contacts too, private, shown in an open case", async () => {
+    expect((await call(app, "GET", "/rider/emergency-contacts", riderA)).json()).toEqual({ items: [], updatedAt: null });
+    const items = [{ name: "Mona", phone: "+46709999999" }];
+    expect((await call(app, "PUT", "/rider/emergency-contacts", riderA, { items })).json().items).toEqual(items);
+    expect((await call(app, "GET", "/rider/emergency-contacts", riderB)).json().items).toEqual([]);
+    expect((await call(app, "GET", "/rider/emergency-contacts", driverA.headers)).statusCode).toBe(403);
+    await database.db.insertInto("incidents").values({ incident_id: "inc_pds_r", trip_id: null, kind: "sos", severity: "critical", raised_by: "rider", zone_id: "Z001", rider_id: await riderId(riderA), driver_id: null, opened_at: clock.now, updated_at: clock.now } as never).execute();
+    const safety = await adminSession(app, database.db, "safety", { zoneIds: ["Z001"], now: clock.now });
+    const res = (await call(app, "GET", "/admin/incidents/inc_pds_r/emergency-contacts", safety.headers)).json();
+    expect(res.rider).toMatchObject({ items });
+    expect(res.items).toEqual([]);
+  });
+
   it("keeps the emergency contacts list (at most 10), private to the driver", async () => {
     expect((await call(app, "GET", "/driver/emergency-contacts", driverA.headers)).json()).toEqual({ items: [], updatedAt: null });
     const items = [{ name: "Sara", phone: "+46701234567", relation: "Sister" }, { name: "Paul", phone: "0612345678" }];
@@ -141,7 +169,7 @@ describe("driver ride preferences and emergency contacts", () => {
     const res = await call(app, "GET", "/admin/incidents/inc_pds_1/emergency-contacts", safety.headers);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ incidentId: "inc_pds_1", driverId: driverA.id, items: [{ name: "Sara", phone: "+46701234567" }] });
-    const line = await database.db.selectFrom("admin_audit").selectAll().where("action", "=", "incident.emergency_contacts_viewed").executeTakeFirstOrThrow();
+    const line = await database.db.selectFrom("admin_audit").selectAll().where("action", "=", "incident.emergency_contacts_viewed").where("target_id", "=", "inc_pds_1").executeTakeFirstOrThrow();
     expect(line).toMatchObject({ admin_id: safety.adminId, target_id: "inc_pds_1" });
     expect(JSON.stringify(line.detail)).not.toContain("46701234567");
     const elsewhere = await adminSession(app, database.db, "safety", { zoneIds: ["Z002"], now: clock.now });
@@ -196,5 +224,16 @@ describe("dispatch follows the driver's switched-off categories", () => {
     expect(offered.length).toBeGreaterThan(0);
     expect(offered.map((o) => o.driver_id)).not.toContain(driverA.id);
     expect(offered.map((o) => o.driver_id)).toContain(driverB.id);
+
+    // Owner 2026-11-04 "Yes, respect it": an admin hand-assign to A says why, and nothing is sent to him.
+    const ops = await adminSession(app, database.db, "super", { now: clock.now });
+    const view = (await call(app, "GET", `/admin/trips/${trip.tripId}`, ops.headers)).json();
+    const assign = await call(app, "POST", `/admin/trips/${trip.tripId}/assign`, ops.headers, { expectedVersion: view.version, driverId: driverA.id });
+    expect(assign.statusCode).toBe(409);
+    expect(assign.json().reason).toBe("category_switched_off");
+    const radar = await call(app, "POST", `/admin/trips/${trip.tripId}/radar-group`, ops.headers, { expectedVersion: view.version, driverIds: [driverA.id] });
+    if (radar.statusCode === 200) expect(radar.json().skipped).toEqual([expect.objectContaining({ driverId: driverA.id, reason: "category_switched_off" })]);
+    expect((await database.db.selectFrom("offers").select("driver_id").where("trip_id", "=", trip.tripId).where("driver_id", "=", driverA.id).execute())).toEqual([]);
+    await call(app, "PUT", "/driver/preferences", driverA.headers, { categoriesOff: [] });
   });
 });

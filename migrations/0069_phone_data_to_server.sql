@@ -33,3 +33,11 @@ CREATE TABLE IF NOT EXISTS driver_phone_data (
   emergency_contacts jsonb NOT NULL DEFAULT '[]',
   contacts_at        timestamptz
 );
+
+-- Owner 2026-11-04 "Yes, same as drivers": the rider's emergency contacts on the server too (owner only; admins only
+-- through an open safety case, audited).
+CREATE TABLE IF NOT EXISTS rider_phone_data (
+  rider_id           text PRIMARY KEY REFERENCES riders (rider_id) ON DELETE CASCADE,
+  emergency_contacts jsonb NOT NULL DEFAULT '[]',
+  contacts_at        timestamptz
+);

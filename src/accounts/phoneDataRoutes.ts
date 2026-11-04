@@ -5,7 +5,7 @@ import type { Db } from "../db/db.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
-import { adminDriverPreferences, adminRiderPlaces, MAX_CONTACTS, MAX_PLACES, deletePlace, driverContacts, driverPreferences, importPlaces, incidentEmergencyContacts, listPlaces, saveDriverContacts, saveDriverPreferences, savePlace, updatePlace } from "./phoneData.js";
+import { adminDriverPreferences, adminRiderPlaces, MAX_CONTACTS_CAP, MAX_PLACES_CAP, riderContacts, saveRiderContacts, deletePlace, driverContacts, driverPreferences, importPlaces, incidentEmergencyContacts, listPlaces, saveDriverContacts, saveDriverPreferences, savePlace, updatePlace } from "./phoneData.js";
 
 /** BASE B13 (contract v0.18.26 §47, contract.json#phoneDataToServer): the routes; each reads the owner from the token. */
 
@@ -18,12 +18,12 @@ const PlaceBody = z.object({
   type: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).optional(),
   place: z.object({ address: z.string().min(1).max(512), lat: z.number().min(-90).max(90).optional(), lng: z.number().min(-180).max(180).optional() }).strict(),
 }).strict();
-const ImportBody = z.object({ items: z.array(PlaceBody).max(MAX_PLACES) }).strict();
+const ImportBody = z.object({ items: z.array(PlaceBody).max(MAX_PLACES_CAP) }).strict();
 const CATEGORY = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const PreferencesBody = z.object({ categoriesOff: z.array(CATEGORY).max(50) }).strict();
 const Contact = z.object({ name: z.string().min(1).max(80), phone: z.string().regex(/^\+?[0-9]{3,15}$/), relation: z.string().max(40).optional() }).strict();
 // The count is checked by the service (400 too_many_contacts), so a long list gets that reason, not a schema error.
-const ContactsBody = z.object({ items: z.array(Contact).max(MAX_CONTACTS * 10) }).strict();
+const ContactsBody = z.object({ items: z.array(Contact).max(MAX_CONTACTS_CAP * 2) }).strict();
 
 const keyOf = (request: FastifyRequest) => {
   const value = request.headers["idempotency-key"];
@@ -84,6 +84,17 @@ export async function phoneDataRoutes(app: FastifyInstance, deps: PhoneDataDeps)
     const who = await authenticate(request, guard, ["driver"]);
     const body = parseBody(ContactsBody, request.body);
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveDriverContacts(trx, who.subjectId, body.items, now()) }))).body;
+  });
+
+  // Owner 2026-11-04 "Yes, same as drivers": the rider's emergency contacts on the server too.
+  app.get(`${API_PREFIX}/rider/emergency-contacts`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    return riderContacts(deps.db, who.subjectId);
+  });
+  app.put(`${API_PREFIX}/rider/emergency-contacts`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const body = parseBody(ContactsBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveRiderContacts(trx, who.subjectId, body.items, now()) }))).body;
   });
 
   app.get(`${API_PREFIX}/admin/incidents/:incidentId/emergency-contacts`, async (request) => {

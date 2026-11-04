@@ -32,5 +32,6 @@ declare module "../db/schema.js" {
     rider_places: RiderPlacesTable;
     rider_places_imported: { rider_id: string; imported_at: Timestamp };
     driver_phone_data: DriverPhoneDataTable;
+    rider_phone_data: { rider_id: string; emergency_contacts: ColumnType<unknown, string, string>; contacts_at: ColumnType<Date | null, Date | null | undefined, Date | null> };
   }
 }

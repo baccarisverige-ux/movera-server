@@ -1,3 +1,4 @@
+import { driversWithCategoryOff } from "../../accounts/phoneData.js";
 import { aheadOf, notifyOffered, currentTripOf } from "../../reservations/service.js";
 import { scopeCovers, sideOfKind, type BonusScope } from "../bonusScope.js";
 import type { Trx } from "../../db/db.js";
@@ -57,9 +58,16 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   const made: Record<string, unknown>[] = [];
   const kept: Record<string, unknown>[] = [];
   const skipped: { driverId: string; reason: string; name: string }[] = [];
+  // v0.18.26 (owner 2026-11-04 "Yes, respect it"): a driver who switched the trip's category off in Ride preferences
+  // is skipped here too; the admin sees the reason category_switched_off.
+  const switchedOff = await driversWithCategoryOff(trx, sorted, trip.category_id);
   for (const driverId of driverIds) {
     const d = rows.find((r) => r.driver_id === driverId);
     if (!d) throw new ApiError("not_found", "No such driver.", { reason: "driver_not_found" });
+    if (switchedOff.has(driverId)) {
+      skipped.push({ driverId, name: d.first_name || driverId, reason: "category_switched_off" });
+      continue;
+    }
     const busy = await currentTripOf(trx, driverId);
     const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "received_at", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
     const fresh = fix && now.getTime() - fix.received_at.getTime() <= STALE_AFTER_SECONDS * 1000 && now.getTime() - fix.measured_at.getTime() <= DISPATCH_FIX_MAX_AGE_SECONDS * 1000;
