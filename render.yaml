@@ -1,6 +1,6 @@
 # Render Blueprint for the test server (docs/DEPLOY_RENDER.md): the server as one Docker web service
-# plus its PostgreSQL, both in Frankfurt. Paid plans (owner 2026-11-04): web "starter" ($7, never sleeps) and
-# database "basic-1gb" ($19, never expires). Switch the web service to "standard" for heavy load tests. MOVERA_ENV=staging keeps the test numbers.
+# plus its PostgreSQL, both in Frankfurt. Paid plans (owner 2026-11-04): web "standard" ($25, 1 CPU 2 GB, never sleeps) and
+# database "basic-1gb" ($19, never expires). MOVERA_ENV=staging keeps the test numbers.
 # The test accounts, sample settings and first admin are made at start (SEED_TEST_ON_START,
 # ADMIN_BOOTSTRAP_EMAIL).
 services:
@@ -9,7 +9,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: frankfurt
-    plan: starter
+    plan: standard
     healthCheckPath: /readyz
     envVars:
       - key: MOVERA_ENV
