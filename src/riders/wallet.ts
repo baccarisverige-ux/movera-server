@@ -12,7 +12,7 @@ import "./walletSchema.js";
  * Tunisia: bank (IBAN) only.
  */
 
-/** Every balance the rider holds (rider_wallets, migration 0069): one per currency, never converted (owner Q4). */
+/** Every balance the rider holds (rider_wallets, migration 0070): one per currency, never converted (owner Q4). */
 export async function walletBalances(ex: Executor, riderId: string): Promise<Array<{ amountMinor: number; currency: string }>> {
   const rows = await ex.selectFrom("rider_wallets").select(["currency", "balance_minor"]).where("rider_id", "=", riderId).where("balance_minor", "<>", "0").orderBy("currency").execute();
   return rows.map((r) => ({ amountMinor: Number(r.balance_minor), currency: r.currency }));
