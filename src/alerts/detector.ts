@@ -35,6 +35,8 @@ const MIN = 60_000;
 const DAY = 86_400_000;
 const TRIGGER_LABEL: Record<string, string> = { far: "Dropped far away", stop: "Long stop", route: "Off the route", longer: "Longer than expected", crash: "Possible crash", help: "Asked for help", sos: "SOS" };
 
+/** Key order does not count (jsonb stores keys in its own order). */
+const stable = (v: unknown) => JSON.stringify(Object.fromEntries(Object.entries((v ?? {}) as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))));
 const T = (t: string, a: (string | number)[] = [], x?: number[]): Text => (x ? { t, a, x } : { t, a });
 const settingsOf = (ctx: Ctx, country: string) => ctx.settings.get(country) ?? new AlertSettings({});
 const countryOf = (ctx: Ctx, zoneId: string | null | undefined, fallback = "SE") => (zoneId ? ctx.zones.get(zoneId)?.country : undefined) ?? fallback;
@@ -435,7 +437,7 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
       const detail = cause.detail ? render(cause.detail) : "";
       const ref = JSON.stringify(cause.ref);
       // Checker MED 4: write only what changed (an unchanged open alert costs no write).
-      const same = !reopen && row.level === cause.level && row.title === title && row.detail === detail && row.zone_id === cause.zoneId && row.country === cause.country && JSON.stringify(row.ref ?? {}) === ref;
+      const same = !reopen && row.level === cause.level && row.title === title && row.detail === detail && row.zone_id === cause.zoneId && row.country === cause.country && stable(row.ref ?? {}) === stable(cause.ref);
       if (same) continue;
       if (reopen) result.reopened += 1;
       await trx

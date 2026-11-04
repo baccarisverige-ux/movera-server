@@ -394,3 +394,15 @@ describe("checker MED 3: two sweeps at once", () => {
   });
 });
 
+describe("live updates (migration 0068): server alerts reach admin screens as alert.changed", () => {
+  it("open, solved: each change is one alert.changed event with the alert's zone; an unchanged sweep adds none", async () => {
+    const t = await trip("Z001", "SEK", { status: "searching", search_started_at: min(20) });
+    const events = () => db().selectFrom("admin_live_events").select(["type", "entity_id", "zone_id"]).where("type", "=", "alert.changed").where("entity_id", "like", "long_wait:%").execute();
+    const row = await raised("long_wait");
+    expect(await events()).toEqual([{ type: "alert.changed", entity_id: row.alert_id, zone_id: "Z001" }]);
+    await db().updateTable("trips").set({ status: "cancelled_by_rider" }).where("trip_id", "=", t.id).execute();
+    await solved("long_wait");
+    expect(await events()).toHaveLength(2);
+  });
+});
+
