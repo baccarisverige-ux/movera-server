@@ -5,6 +5,7 @@ import { summarize } from "../admin/kpis.js";
 import { purgeOldMessages } from "../trips/messages.js";
 import { purgeOldErrorGroups } from "../telemetry/errors.js";
 import { purgeOfferPushes } from "../dispatch/offerPush.js";
+import { pruneAdminLiveEvents } from "../realtime/adminEvents.js";
 import { sweepDocumentExpiry, sweepSignUpReminders } from "../drivers/reminders.js";
 import { NO_FIX_OFFLINE, ensureNoFixTimer, noFixOfflineHandler } from "../drivers/presence.js";
 import type { TimerHandler } from "./timers.js";
@@ -53,6 +54,8 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   await purgeOldErrorGroups(trx, new Date(now.getTime() - 30 * 24 * HOUR_MS));
   // v0.18.6 (checker LOW 10): new-offer push rows (never bell notices) a day after their offer ran out.
   await purgeOfferPushes(trx, now);
+  // v0.18.22: admin live events after contract.json#adminLiveEvents.retentionHours (an older cursor gets resync).
+  await pruneAdminLiveEvents(trx, now);
   // Quotes nobody booked, a day after they expired.
   await trx.deleteFrom("quotes").where("expires_at", "<", new Date(now.getTime() - 24 * HOUR_MS)).where("used_at", "is", null).execute();
   // Every trip with the rider on board has a driver-silence check (owner decision 2026-10-26), also one boarded

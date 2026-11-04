@@ -917,6 +917,20 @@ export interface TicketMessagesTable {
   at: Timestamp;
 }
 
+/** v0.18.22 (contract.json#adminLiveEvents): what changed, for the admin live updates stream (written by triggers). */
+export interface AdminLiveEventsTable {
+  sequence: Generated<string>;
+  type: string;
+  entity_id: string;
+  zone_id: string | null;
+  occurred_at: Timestamp;
+}
+
+export interface AdminLivePrunedTable {
+  id: number;
+  up_to: string;
+}
+
 export interface DispatchEventsTable {
   sequence: Generated<string>;
   event_id: Generated<string>;
@@ -1285,6 +1299,8 @@ export interface Database {
   review_rules: ReviewRulesTable;
   review_people: ReviewPeopleTable;
   dispatch_events: DispatchEventsTable;
+  admin_live_events: AdminLiveEventsTable;
+  admin_live_pruned: AdminLivePrunedTable;
   dispatch_presets: DispatchPresetsTable;
   driver_groups: DriverGroupsTable;
   rider_favourite_drivers: { rider_id: string; driver_id: string; created_at: Generated<Date> };

@@ -1,3 +1,4 @@
+import { ADMIN_EVENTS_CHANNEL } from "../../src/realtime/adminEvents.js";
 import { TEST_CODE } from "../../src/auth/service.js";
 import { DISPATCH_EVENTS_CHANNEL } from "../../src/dispatch/feed.js";
 import { pricingHandlers } from "../../src/pricing/surge.js";
@@ -90,7 +91,7 @@ export class Sim {
       ...(options.osrmUrl ? { OSRM_URL: options.osrmUrl } : {}),
     });
     await prepareTestWeek(db, env, { info: (data, message) => sim.startLog.push({ data, message }) }, { now: sim.clock.now });
-    sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL]);
+    sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL]);
     await sim.hub.start();
     sim.app = await buildApp({ env, logger: false, db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : {}) });
     // Phase 7: every HTTP response's route, status and server time (Fastify's elapsedTime), for the timing budgets
