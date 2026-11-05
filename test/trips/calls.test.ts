@@ -64,7 +64,9 @@ afterAll(async () => {
 const fix = (at: { lat: number; lng: number }) => ({ fixes: [{ ...at, accuracy: 5, measuredAt: clock.now.toISOString() }] });
 const moveTo = async (at: { lat: number; lng: number }) => expect((await call(app, "POST", "/driver/location", driver.headers, fix(at))).statusCode).toBe(200);
 
-beforeEach(async () => {
+beforeEach(() => fresh());
+/** A free driver at SPOT, fresh sign-ins (tokens outlive no long clock jump), no open trips. */
+async function fresh() {
   clock.now = new Date(clock.now.getTime() + 3 * 3600_000);
   await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("status", "not in", ["completed", "cancelled_by_admin", "cancelled_by_rider", "cancelled_by_driver", "no_show", "expired"]).execute();
   await database.db.deleteFrom("timers").execute();
@@ -75,7 +77,11 @@ beforeEach(async () => {
   driver.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
   await database.db.updateTable("drivers").set({ online_status: "online", last_free_at: clock.now, rating_sum: 0, rating_count: 0 }).where("driver_id", "=", driver.id).execute();
   await moveTo(SPOT);
-});
+}
+async function signInAgain() {
+  rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+  driver.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+}
 
 async function accepted() {
   const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
@@ -89,13 +95,16 @@ async function accepted() {
 }
 
 async function completed() {
-  const { tripId } = await accepted();
-  let v = (await call(app, "GET", `/trips/${tripId}`, driver.headers)).json().version as number;
-  for (const path of ["board", "start"]) v = (await call(app, "POST", `/trips/${tripId}/${path}`, driver.headers, { expectedVersion: v })).json().version;
+  const { tripId, version } = await accepted();
+  let v = version;
+  for (const path of ["head-to-pickup", "arrive", "board", "start"]) {
+    if (path === "board") await advance(60);
+    expect((await call(app, "POST", `/trips/${tripId}/${path}`, driver.headers, { expectedVersion: v++ })).statusCode).toBe(200);
+  }
   clock.now = new Date(clock.now.getTime() + 1000);
   await moveTo(SODERMALM);
   const done = await call(app, "POST", `/trips/${tripId}/complete`, driver.headers, { expectedVersion: v });
-  expect(done.json().status).toBe("completed");
+  expect(done.json()).toMatchObject({ status: "completed" });
   return { tripId };
 }
 
@@ -173,10 +182,12 @@ describe("in-app calls (v0.18.38 §62)", () => {
   it("C5 the window: drop-off + 59 min → 200; drop-off + 61 min → 409 call_window_closed (today 409 chat_closed)", async () => {
     const { tripId } = await completed();
     await advance(59 * 60);
+    await signInAgain();
     const inside = await startCall(tripId, rider);
     expect(inside.statusCode).toBe(200);
     expect((await call(app, "POST", `/calls/${inside.json().callId}/end`, rider, { reason: "hangup" })).statusCode).toBe(200);
     await advance(2 * 60);
+    await signInAgain();
     const late = await startCall(tripId, driver.headers);
     expect(late.statusCode).toBe(409);
     expect(late.json()).toMatchObject({ code: "invalid_transition", reason: "call_window_closed" });
@@ -188,12 +199,13 @@ describe("in-app calls (v0.18.38 §62)", () => {
     const res = await startCall(off.tripId, rider);
     expect(res.statusCode).toBe(403);
     expect(res.json()).toMatchObject({ code: "forbidden", reason: "calls_off" });
-    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").execute();
+    await fresh();
     await setCalls({ on: true, callWindowAfterTripMin: 10 });
     const done = await completed();
     await advance(11 * 60);
+    await signInAgain();
     expect((await startCall(done.tripId, rider)).json()).toMatchObject({ reason: "call_window_closed" });
-    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").execute();
+    await fresh();
     await setCalls({ mode: "phone" });
     const phone = await accepted();
     const trip = await database.db.selectFrom("trips").select(["rider_id"]).where("trip_id", "=", phone.tripId).executeTakeFirstOrThrow();

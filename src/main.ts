@@ -16,6 +16,7 @@ import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { dispatchHandlers, ROUND, WITHDRAW } from "./dispatch/runtime.js";
 import { RADAR_ZONE_REPEAT, radarZoneRepeatHandler } from "./dispatch/tools.js";
 import { rideHandlers } from "./trips/ride.js";
+import { callHandlers } from "./calls/service.js";
 import { etaHandler, TRIP_ETA } from "./trips/eta.js";
 import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
@@ -78,7 +79,7 @@ if (db !== undefined) {
   // can never starve dispatch; general lanes take everything else (dispatch too, when it is busy).
   const tripKinds = [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"];
   const lanes = [{ kinds: [ROUND, WITHDRAW] }, { kinds: tripKinds }, ...Array.from({ length: Math.max(1, env.TIMER_LANES - 2) }, () => ({ exclude: tripKinds }))];
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers, [ALERT_SWEEP]: alertSweepHandler, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log, pollMs: 200, lanes });
+  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...callHandlers, ...pricingHandlers, [ALERT_SWEEP]: alertSweepHandler, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log, pollMs: 200, lanes });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
   if (push.sender !== undefined) {
