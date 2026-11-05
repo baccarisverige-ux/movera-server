@@ -6,7 +6,7 @@ import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { PlacesUnavailable, type Places } from "./places.js";
-import type { Router } from "./routing.js";
+import type { LatLng, Router } from "./routing.js";
 import { zoneAt } from "../config/zoneLookup.js";
 
 /** contract §10: /locations/autocomplete, /geocode, /reverse-geocode, /routes, /routes/driving/{coordinates}. Read-only: no Idempotency-Key. */
@@ -110,10 +110,12 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
 
   app.post(`${API_PREFIX}/routes`, async (request) => {
     await authenticate(request, guard, ["rider", "driver"]);
-    const body = (request.body ?? {}) as { from: { lat: number; lng: number }; to: { lat: number; lng: number } };
+    const body = (request.body ?? {}) as { from: LatLng; to: LatLng; via?: LatLng[] };
     check("RouteRequest", body);
-    const leg = await deps.router.route([body.from, body.to]);
-    const points = leg.points && leg.points.length >= 2 ? leg.points : [body.from, body.to];
+    // v0.18.41 §66 (A14): through every stop, with the same router as POST /quotes; no road = straight through them.
+    const waypoints = [body.from, ...(body.via ?? []), body.to];
+    const leg = await deps.router.route(waypoints);
+    const points = leg.points && leg.points.length >= 2 ? leg.points : waypoints;
     return { points, distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds, provider: leg.source };
   });
 
