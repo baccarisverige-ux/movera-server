@@ -24,6 +24,8 @@ export type DispatchDoc = {
   limits?: { maxPickupKm?: number; maxPickupEtaMin?: number; farReachKm?: number };
   /** v0.18.39 §63 (N2): "No driver nearby" shown once to the rider of a live ride, afterSec from search start. */
   noDriverNearby?: { on: boolean; afterSec: number; message?: string };
+  /** v0.18.39 §63 (boss 1 for the owner): offers one driver may let pass in a search before he is not asked again (1–5, default 2). */
+  reaskLimit?: number;
   /** v0.18.11: drivers of these zones are candidates too from search step afterStep (1-based, missing = last step). */
   neighbours?: { on: boolean; zoneIds: string[]; afterStep?: number };
   choose: { how: "auto" | "manual"; radarAbove: number; main: Mode; backup?: string; times: Array<{ id: string; on: boolean; from: string; to: string; mode: Mode }> };
@@ -329,9 +331,14 @@ export function searchEndSec(doc: DispatchDoc): number {
 /* ---------------------------------------------------------------- v0.18.39 §63 (N2 + far rider) */
 
 type NoDriverNearby = { on: boolean; afterSec: number; message: string };
-const ND = (contract as unknown as { noDriverNearby: { defaults: { noDriverNearby: NoDriverNearby; farReachKm: number }; ranges: { afterSec: [number, number]; farReachKm: [number, number] }; reaskLimit_value: number; texts: Record<string, Record<string, string>> } }).noDriverNearby;
-/** A driver who let this many offers of a trip pass (declined, ran out) is not asked again in that search. */
-export const REASK_LIMIT = ND.reaskLimit_value;
+const ND = (contract as unknown as { noDriverNearby: { defaults: { noDriverNearby: NoDriverNearby; farReachKm: number; reaskLimit: number }; ranges: { afterSec: [number, number]; farReachKm: [number, number]; reaskLimit: [number, number] }; reaskLimit_value: number; texts: Record<string, Record<string, string>> } }).noDriverNearby;
+/** DispatchDocument.reaskLimit (admin, per zone): a driver who let this many offers of a trip pass (declined, ran out)
+ * is not asked again in that search. Missing or out of 1–5 = the contract default (2). */
+export function reaskLimitOf(doc: Pick<DispatchDoc, "reaskLimit"> | null | undefined): number {
+  const v = doc?.reaskLimit;
+  const [lo, hi] = ND.ranges.reaskLimit;
+  return typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi ? v : ND.defaults.reaskLimit;
+}
 export const NO_DRIVER_FOUND_TEXT = ND.texts["no_driver_found"]!["en"]!;
 
 /** DispatchDocument.noDriverNearby with the contract defaults (on, 300 s); a bad value reads as the default. */

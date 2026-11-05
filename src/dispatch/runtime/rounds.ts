@@ -6,7 +6,7 @@ import { liveDocument } from "../../config/service.js";
 import { pickupPayMinor, type PickupPayRate } from "../../rules/pickupPay.js";
 import { applyCommand } from "../../trips/commands.js";
 import { sql } from "kysely";
-import { farDoc, farReachKm, maxPickupKm, newSearch, nobodyNew, planRound, rank, REASK_LIMIT, startOf, type DispatchDoc, type SearchState } from "../engine.js";
+import { farDoc, farReachKm, maxPickupKm, newSearch, nobodyNew, planRound, rank, reaskLimitOf, startOf, type DispatchDoc, type SearchState } from "../engine.js";
 import { ROUND, OPEN_STATUSES, lockTripNow, localTime, controlOf } from "./shared.js";
 import { candidatesFor, lockAndRecheck } from "./candidates.js";
 import { exclusiveOnlyDoc } from "./start.js";
@@ -78,12 +78,12 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     if (start === null) return;
     state = newSearch(start.mode, start.pending);
   }
-  // v0.18.39 §63 (far rider, fix plan A2 "Proof: far rider"): a driver who let REASK_LIMIT offers of this trip pass in
+  // v0.18.39 §63 (far rider, fix plan A2 "Proof: far rider"): a driver who let reaskLimit (admin, default 2) offers of this trip pass in
   // this search (declined, ran out; withdrawn ones do not count) is not asked again in it — one busy driver is not asked
   // forever. The counts are read from the offers table (rule 33: no server copy keeps them).
   const passedRows = await trx.selectFrom("offers").select(["driver_id", sql<string>`count(*)`.as("n")]).where("trip_id", "=", tripId).where("status", "in", ["declined", "expired"]).where("sent_at", ">=", search.started_at).groupBy("driver_id").execute();
   const passed = new Set(passedRows.map((r) => r.driver_id));
-  const spent = new Set(passedRows.filter((r) => Number(r.n) >= REASK_LIMIT).map((r) => r.driver_id));
+  const spent = new Set(passedRows.filter((r) => Number(r.n) >= reaskLimitOf(doc)).map((r) => r.driver_id));
   const far = farReachKm(doc);
   // Job 1 (fix plan R1 d): drivers beyond the widest step are never read (they are out of range for every round).
   // v0.18.39 §63: once the search took its far step (state.far), the widest step is limits.farReachKm.

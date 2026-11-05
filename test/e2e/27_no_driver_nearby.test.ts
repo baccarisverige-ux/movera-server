@@ -135,6 +135,16 @@ describe("far rider (fix plan A2 / A11-FR)", () => {
     expect(toA.length).toBeLessThanOrEqual(2);
     expect((await rider.trip(tripId)).status).toMatch(/^(searching|offered)$/);
   });
+
+  it("the busy-driver limit is an admin setting per zone (DispatchDocument.reaskLimit): 1 = asked once", async () => {
+    await setDispatch({ reaskLimit: 1 }, { farReachKm: 8 });
+    await offline(b);
+    const { tripId } = await rider.book();
+    await sim.advance(600);
+    const toA = await offersOf(tripId, a.id);
+    expect(toA.length).toBe(1);
+    expect((await rider.trip(tripId)).status).toMatch(/^(searching|offered)$/);
+  });
 });
 
 describe("P17: a booked ride with no driver stops at pickup + 15 min", () => {
