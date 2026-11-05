@@ -1,5 +1,8 @@
 import { addTripNote, flagTrip, openTripCase, revealTripContact, tripNotes } from "./tripTools.js";
 import { adminDriverPay, adminReceipt, resendReceipt } from "../trips/finish.js";
+import { ModerationBody } from "../riders/moderation.js";
+import { WalletCreditBody, creditRiderWallet } from "../riders/walletCredit.js";
+import { FeeMarkPaidBody, markRiderFeePaid } from "../riders/feeMarkPaid.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -12,7 +15,7 @@ import { chooseRefundDestination, getWallet, payoutsToMake, riderRefunds, wallet
 import { tripProjection } from "../trips/projection.js";
 import { withDriverPosition } from "../trips/service.js";
 import { activeSendOf } from "../dispatch/radarSends.js";
-import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus } from "./lists.js";
+import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus, moderateRider } from "./lists.js";
 import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminReverseNoShow, adminPinUnlock, adminRadarGroup, adminReassign, adminStopRadarZone, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
 
 /** contract §3.1, §7: the admin's trip tools, lists, account status, audit; the rider's wallet and refunds. */
@@ -201,6 +204,30 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
     const body = parseBody(RiderStatusBody, request.body);
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await setRiderStatus(trx, who, riderId, body, deps.currency, now()) }))).body;
+  });
+
+  // v0.18.39 A2 (owner G16 Q16-2): Warn → Pause → Ban with a reason; level none undoes it.
+  app.post(`${API_PREFIX}/admin/riders/:riderId/moderation`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "riders.block");
+    const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
+    const body = parseBody(ModerationBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await moderateRider(trx, who, riderId, body, deps.currency, now()) }))).body;
+  });
+
+  // v0.18.39 A2 (owner G12 Q5, build-spec Q2): Add money to wallet, the one way to give a rider money.
+  app.post(`${API_PREFIX}/admin/riders/:riderId/wallet-credit`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
+    const body = parseBody(WalletCreditBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await creditRiderWallet(trx, who, riderId, body, now()) }))).body;
+  });
+
+  // v0.18.39 fix job 0 (owner A2-2): Mark as paid on an owed fee, with a reason (no "Ask rider to pay").
+  app.post(`${API_PREFIX}/admin/riders/:riderId/fees/:tripId/mark-paid`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const { riderId, tripId } = parseBody(z.object({ riderId: ID, tripId: ID }), request.params);
+    const body = parseBody(FeeMarkPaidBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await markRiderFeePaid(trx, who, riderId, tripId, body, deps.currency, now()) }))).body;
   });
 
   /* ---- the rider's wallet and refunds */

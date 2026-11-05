@@ -44,6 +44,9 @@ export type DriverRow = {
   driver_id: string;
   /** v0.18.17 (owner BL-Q4). */
   home_area?: unknown;
+  payout_hold_at?: Date | null;
+  payout_hold_reason?: string | null;
+  payout_hold_by?: string | null;
   phone: string;
   first_name: string;
   account_status: string;
@@ -98,6 +101,8 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
   return {
     driverId: row.driver_id,
     accountStatus: row.account_status,
+    // v0.18.39 A2 (owner Q4, contract.json#payoutHold): admin view only.
+    ...(viewer === "admin" && row.payout_hold_at ? { payoutHold: { reason: row.payout_hold_reason ?? "", at: row.payout_hold_at.toISOString(), ...(row.payout_hold_by ? { by: row.payout_hold_by } : {}) } } : {}),
     onlineStatus: row.online_status,
     // v0.18.6 (owner "Send the real reason"): why the server set him offline, while he is offline.
     ...(row.online_status === "offline" && row.offline_reason ? { offlineReason: row.offline_reason, ...(row.offline_note ? { offlineNote: row.offline_note } : {}), ...(row.offline_at ? { offlineAt: row.offline_at.toISOString() } : {}) } : {}),

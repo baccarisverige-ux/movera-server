@@ -10,6 +10,7 @@ import { rideHandlers } from "../../src/trips/ride.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 import { adminSession } from "../support/admin.js";
+import { liftEndedPauses } from "../../src/riders/moderation.js";
 
 let database: TestDatabase;
 let app: FastifyInstance;
@@ -427,6 +428,96 @@ describe("refunds and the wallet", () => {
   });
 });
 
+describe("v0.18.39 fix job 0 (A2): Add money to wallet (owner G12 Q5, Q-D, build-spec Q1/Q2)", () => {
+  it("SE: finance adds kr with a reason; history, push and audit; limits and currency are checked", async () => {
+    await completedTrip();
+    await clearFees();
+    const credit = (body: Record<string, unknown>, who = finance, id = riderId) => adminPost(`/riders/${id}/wallet-credit`, body, who);
+    expect((await credit({ amount: { amountMinor: 5000, currency: "SEK" }, reason: "Long wait" }, dispatcher)).statusCode).toBe(403);
+    expect((await credit({ amount: { amountMinor: 5000, currency: "SEK" }, reason: " " })).statusCode).toBe(400);
+    expect((await credit({ amount: { amountMinor: -100, currency: "SEK" }, reason: "x" })).statusCode).toBe(400);
+    expect((await credit({ amount: { amountMinor: 5000, currency: "EUR" }, reason: "x" })).json()).toMatchObject({ reason: "wallet_currency_mismatch" });
+    expect((await credit({ amount: { amountMinor: 290_001, currency: "SEK" }, reason: "x" })).json()).toMatchObject({ reason: "wallet_credit_too_large" });
+    const done = await credit({ amount: { amountMinor: 290_000, currency: "SEK" }, reason: "Long wait" });
+    expect(done.statusCode, done.body).toBe(200);
+    expect(done.json().wallet).toEqual({ amountMinor: 290_000, currency: "SEK" });
+    expect((await call(app, "GET", "/wallet", rider)).json().balance.amountMinor).toBe(290_000);
+    expect((await call(app, "GET", "/wallet/entries", rider)).json().items[0]).toMatchObject({ kind: "adjustment", amount: { amountMinor: 290_000, currency: "SEK" } });
+    const note = await database.db.selectFrom("notifications").select(["kind", "title", "body"]).where("subject_id", "=", riderId).where("kind", "=", "wallet_credit").executeTakeFirstOrThrow();
+    expect(note.title).toBe("Pengar i din plånbok");
+    expect(note.body).toMatch(/^Movera har lagt till 2\s900 kr i din plånbok\.$/);
+    expect((await audits(riderId)).filter((a: string) => a === "rider.wallet_credit")).toHaveLength(1);
+    // The admin's own country limit (country standard) wins over the default.
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "standard-SE", version: 9, document: JSON.stringify({ country: "SE", walletCreditMax: { amountMinor: 10_000, currency: "SEK" } }), published_at: clock.now, published_by: null })
+      .onConflict((c) => c.columns(["doc", "zone_id"]).doUpdateSet({ document: JSON.stringify({ country: "SE", walletCreditMax: { amountMinor: 10_000, currency: "SEK" } }) })).execute();
+    expect((await credit({ amount: { amountMinor: 10_001, currency: "SEK" }, reason: "x" })).json()).toMatchObject({ reason: "wallet_credit_too_large" });
+    expect((await credit({ amount: { amountMinor: 10_000, currency: "SEK" }, reason: "Sorry" })).statusCode).toBe(200);
+    // Fix job 0 (owner A2-1 "Per country, in Pricing"): a zone's own value is ignored; the country Standard's limit counts.
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "Z001", version: 9, document: JSON.stringify({ country: "SE", walletCreditMax: { amountMinor: 5_000, currency: "SEK" } }), published_at: clock.now, published_by: null }).execute();
+    expect((await credit({ amount: { amountMinor: 5_001, currency: "SEK" }, reason: "Per country" })).statusCode).toBe(200);
+    expect((await credit({ amount: { amountMinor: 10_001, currency: "SEK" }, reason: "x" })).json()).toMatchObject({ reason: "wallet_credit_too_large" });
+    // A limit saved in another currency is not this country's limit: the default (2 900 kr) applies.
+    await database.db.updateTable("config_live").set({ document: JSON.stringify({ country: "SE", walletCreditMax: { amountMinor: 1_000, currency: "EUR" } }) }).where("doc", "=", "country_rules").where("zone_id", "=", "standard-SE").execute();
+    expect((await credit({ amount: { amountMinor: 20_000, currency: "SEK" }, reason: "Default limit" })).statusCode).toBe(200);
+    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").where("zone_id", "in", ["standard-SE", "Z001"]).execute();
+    await clearFees();
+  });
+
+  it("FR: a rider seen only in Paris gets €; a rider with no country is refused", async () => {
+    const { headers } = await signIn(app, TEST_PHONES[5]!, "rider");
+    const id = (await call(app, "GET", "/rider/profile", headers)).json().riderId as string;
+    expect((await adminPost(`/riders/${id}/wallet-credit`, { amount: { amountMinor: 1000, currency: "EUR" }, reason: "Goodwill" }, finance)).json()).toMatchObject({ reason: "rider_country_unknown" });
+    await database.db.updateTable("riders").set({ last_seen_zone_id: "FR-PC" }).where("rider_id", "=", id).execute();
+    expect((await adminPost(`/riders/${id}/wallet-credit`, { amount: { amountMinor: 1000, currency: "SEK" }, reason: "x" }, finance)).json()).toMatchObject({ reason: "wallet_currency_mismatch" });
+    expect((await adminPost(`/riders/${id}/wallet-credit`, { amount: { amountMinor: 25_001, currency: "EUR" }, reason: "x" }, finance)).json()).toMatchObject({ reason: "wallet_credit_too_large" });
+    const ok = await adminPost(`/riders/${id}/wallet-credit`, { amount: { amountMinor: 25_000, currency: "EUR" }, reason: "Goodwill" }, finance);
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(ok.json().wallet).toEqual({ amountMinor: 25_000, currency: "EUR" });
+    const note = await database.db.selectFrom("notifications").select(["title", "body"]).where("subject_id", "=", id).where("kind", "=", "wallet_credit").executeTakeFirstOrThrow();
+    expect(note.title).toBe("Argent dans votre portefeuille");
+    expect(note.body).toMatch(/^Movera a ajouté 250\s€ à votre portefeuille\.$/);
+  });
+});
+
+describe("v0.18.39 fix job 0 (owner A2-2): Mark as paid on an owed fee, with a reason", () => {
+  beforeEach(clearFees);
+  const owedNoShow = async () => {
+    const ns = await accepted();
+    await step(ns.tripId, "head-to-pickup", ns.version);
+    await step(ns.tripId, "arrive", ns.version + 1);
+    await advance(5 * 60);
+    await step(ns.tripId, "no-show", ns.version + 2);
+    return ns.tripId;
+  };
+  it("SE: finance marks it paid with a reason (audited); the next quote no longer carries it; no second mark", async () => {
+    const tripId = await owedNoShow();
+    const owed = (await call(app, "GET", "/rider/profile", rider)).json().outstanding;
+    expect(owed).toMatchObject({ currency: "SEK" });
+    const mark = (body: Record<string, unknown>, who = finance, trip = tripId) => adminPost(`/riders/${riderId}/fees/${trip}/mark-paid`, body, who);
+    expect((await mark({ reason: "Paid by Swish" }, dispatcher)).statusCode).toBe(403);
+    expect((await mark({ reason: "  " })).json()).toMatchObject({ reason: "reason_required" });
+    expect((await mark({})).json()).toMatchObject({ reason: "reason_required" });
+    const done = await mark({ reason: "Paid by Swish" });
+    expect(done.statusCode, done.body).toBe(200);
+    expect(done.json().outstanding ?? null).toBeNull();
+    expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toBeNull();
+    const fee = await database.db.selectFrom("rider_fees").select(["status", "carried_by"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(fee).toEqual({ status: "paid", carried_by: null });
+    const trip = await database.db.selectFrom("trips").select("cancellation").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect((trip.cancellation as { feeStatus?: string }).feeStatus).toBe("paid");
+    const row = await database.db.selectFrom("admin_audit").select(["action", "detail"]).where("action", "=", "rider.fee_mark_paid").where("target_id", "=", riderId).executeTakeFirstOrThrow();
+    expect(row.detail).toMatchObject({ tripId, reason: "Paid by Swish", currency: "SEK" });
+    const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+    expect(JSON.stringify(quote.fareLines ?? [])).not.toContain("outstanding_fee");
+    expect((await mark({ reason: "Again" })).json()).toMatchObject({ reason: "fee_not_owed" });
+  });
+  it("an owed fee left alone is still added by itself to the next trip (no 'Ask rider to pay')", async () => {
+    await owedNoShow();
+    const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+    expect(JSON.stringify(quote.fareLines)).toContain("outstanding_fee");
+  });
+});
+
 describe("account status", () => {
   it("a suspended driver goes offline and gets no offers; a suspended rider cannot book", async () => {
     const me = (await call(app, "GET", "/admin/drivers?q=" + drivers.B.id, admin)).json().items[0];
@@ -442,6 +533,57 @@ describe("account status", () => {
     const trip = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash" });
     expect(trip.json()).toMatchObject({ reason: "account_suspended" });
     await adminPost(`/riders/${riderId}/status`, { expectedVersion: blocked.json().version, status: "active", note: "Cleared" });
-    expect(await audits(riderId)).toEqual(["rider.status", "rider.status"]);
+    expect((await audits(riderId)).filter((a: string) => a === "rider.status")).toEqual(["rider.status", "rider.status"]);
+  });
+
+  it("v0.18.39 fix job 0 (A2, G16 Q16-2): Warn → Pause → Ban with reasons; the pause ends by itself; none undoes it", async () => {
+    const book = async () => {
+      const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+      return call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash" });
+    };
+    let r = (await call(app, "GET", `/admin/riders?q=${riderId}`, admin)).json().items[0];
+    expect(r.moderation).toEqual({ level: "none", until: null });
+    // Only riders.block; a pause needs its days, other levels none.
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "warning", reason: "x" }, finance)).statusCode).toBe(403);
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "paused", reason: "Unpaid fees" })).json()).toMatchObject({ reason: "pause_days_required" });
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "banned", reason: "x", pauseDays: 3 })).json()).toMatchObject({ reason: "pause_days_not_allowed" });
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "paused", reason: "x", pauseDays: 366 })).statusCode).toBe(400);
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "warning", reason: " " })).statusCode).toBe(400);
+
+    // Warning: the rider still rides and sees the notice.
+    r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "warning", reason: "Repeated cancellations" })).json();
+    expect(r).toMatchObject({ status: "active", moderation: { level: "warning", reason: "Repeated cancellations", until: null } });
+    expect((await call(app, "GET", "/rider/profile", rider)).json().moderation).toMatchObject({ level: "warning", reason: "Repeated cancellations" });
+    expect((await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version - 1, level: "none", reason: "x" })).json()).toMatchObject({ code: "version_mismatch" });
+
+    // Pause for 2 days: no booking and no sign-in, with the reason and the end.
+    r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "paused", reason: "Unpaid fees", pauseDays: 2 })).json();
+    const until = new Date(clock.now.getTime() + 2 * 86_400_000).toISOString();
+    expect(r).toMatchObject({ status: "suspended", moderation: { level: "paused", reason: "Unpaid fees", until } });
+    expect((await book()).json()).toMatchObject({ reason: "account_suspended", projection: { level: "paused", reason: "Unpaid fees", until } });
+    clock.now = new Date(clock.now.getTime() + 5 * 60_000);
+    const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone: TEST_PHONES[0]!, app: "rider" }, remoteAddress: "10.9.9.9" });
+    expect(challenge.statusCode, challenge.body).toBe(200);
+    const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone: TEST_PHONES[0]!, sessionId: challenge.json().sessionId, code: "1234" } });
+    expect(verify.statusCode, verify.body).toBe(403);
+    expect(verify.json()).toMatchObject({ reason: "account_suspended", projection: { level: "paused" } });
+
+    // After the end the rider can book again at once; the hourly sweep clears the row.
+    clock.now = new Date(clock.now.getTime() + 2 * 86_400_000 + 1000);
+    expect(await liftEndedPauses(database.db, clock.now)).toBe(1);
+    // Tokens ran out over the two days: the rider signs in again (allowed now), the admin too.
+    rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+    expect((await call(app, "GET", "/rider/profile", rider)).json()).toMatchObject({ riderId, status: "active" });
+    admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    r = (await call(app, "GET", `/admin/riders?q=${riderId}`, admin)).json().items[0];
+    expect(r).toMatchObject({ status: "active", moderation: { level: "none", until: null } });
+
+    // Ban until undone; none undoes it.
+    r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "banned", reason: "Suspected fraud" })).json();
+    expect(r).toMatchObject({ status: "suspended", moderation: { level: "banned", reason: "Suspected fraud", until: null } });
+    expect((await book()).json()).toMatchObject({ reason: "account_suspended", projection: { level: "banned" } });
+    r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "none", reason: "Cleared after call" })).json();
+    expect(r).toMatchObject({ status: "active", moderation: { level: "none" } });
+    expect((await audits(riderId)).filter((a: string) => a === "rider.moderation")).toHaveLength(4);
   });
 });
