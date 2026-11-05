@@ -6,7 +6,7 @@ import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
-import { driverCancelReasonsOf, rideHandlers } from "../../src/trips/ride.js";
+import { driverCancelReasonsOf, rideHandlers, takeBackNotHeading } from "../../src/trips/ride.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -267,21 +267,63 @@ describe("the rider's cancel after accept", () => {
     expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toEqual({ amountMinor: 3500, currency: "SEK" });
   });
 
-  it("v0.18.13 (G5-8): standing still for 2 minutes after the free minutes → free cancel; the trip is taken back from him", async () => {
+  it("v0.18.35 (owner Q-A): standing still for 2 minutes → free cancel and a 'not driving to the rider' notice every minute; a LIVE trip is never taken back, even with reassign on in an old admin document", async () => {
+    // The admin panel published reassign: true until v0.18.35; the server must ignore it for live trips.
+    const old = JSON.stringify({ ...sample("driver_app_config"), headingCheck: { on: true, headingPct: 80, notHeadingMinutes: 2, reassign: true } });
+    await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: old, published_at: clock.now, published_by: null }).execute();
+    try {
     const { tripId } = await accepted();
     // The server's check runs with every 30 s ETA tick; a car that does not move is not heading to the pickup.
     // 2 km away (not within the arrive radius, which counts as heading).
     const FAR = { lat: SPOTS.A.lat + 0.018, lng: SPOTS.A.lng };
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 10; i++) {
       await moveTo("A", FAR);
       await advance(30);
     }
     const seen = await riderView(tripId);
-    expect(["searching", "offered", "accepted"]).toContain(seen.status);
-    expect(seen.driverId === undefined || seen.driverId !== drivers.A.id).toBe(true);
+    expect(seen.status).toBe("accepted");
+    expect(seen.driverId).toBe(drivers.A.id);
+    expect(seen.headingCheck).toMatchObject({ heading: false, freeCancel: true });
     const counted = await database.db.selectFrom("driver_cancels").select("reason_code").where("trip_id", "=", tripId).where("driver_id", "=", drivers.A.id).execute();
+    expect(counted).toEqual([]);
+    // Owner job-4 Q4 "On every minutes": not heading since ~30 s, free (notice) from ~150 s, then every 60 s until 300 s.
+    const notices = await database.db.selectFrom("notifications").select("kind").where("subject_id", "=", drivers.A.id).where("trip_id", "=", tripId).where("kind", "=", "heading_not_to_rider").execute();
+    expect(notices.length).toBeGreaterThanOrEqual(2);
+    expect(notices.length).toBeLessThanOrEqual(3);
+    expect((await cancel(tripId)).json().cancellation.fee).toBeNull();
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    }
+  });
+
+  it("v0.18.35: the old live take-back stays (rule 21, never deleted) but nothing calls it; called directly it still works", async () => {
+    const { tripId } = await accepted();
+    await database.db.transaction().execute(async (trx) => {
+      const trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forUpdate().executeTakeFirstOrThrow();
+      await takeBackNotHeading(trx, trip, clock.now);
+      await takeBackNotHeading(trx, { ...trip, driver_id: null }, clock.now);
+    });
+    const counted = await database.db.selectFrom("driver_cancels").select("reason_code").where("trip_id", "=", tripId).execute();
     expect(counted.map((r) => r.reason_code)).toEqual(["not_heading_to_pickup"]);
-    if (seen.status !== "accepted") expect((await cancel(tripId)).json().cancellation.fee).toBeNull();
+  });
+
+  it("v0.18.35: notice off in the zone → no 'not driving to the rider' notice, the trip stays his", async () => {
+    const off = JSON.stringify({ ...sample("driver_app_config"), headingCheck: { on: true, headingPct: 80, notHeadingMinutes: 2, reassign: false, notice: false } });
+    await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: off, published_at: clock.now, published_by: null }).execute();
+    try {
+      const { tripId } = await accepted();
+      const FAR = { lat: SPOTS.A.lat + 0.018, lng: SPOTS.A.lng };
+      for (let i = 0; i < 8; i++) {
+        await moveTo("A", FAR);
+        await advance(30);
+      }
+      expect((await riderView(tripId)).driverId).toBe(drivers.A.id);
+      expect(await database.db.selectFrom("notifications").select("kind").where("trip_id", "=", tripId).where("kind", "=", "heading_not_to_rider").execute()).toEqual([]);
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    }
   });
 
   it("checker 1: no heading check yet (a trip accepted before the deploy) → the normal fee rules, not a free cancel", async () => {
