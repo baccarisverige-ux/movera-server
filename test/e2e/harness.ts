@@ -14,6 +14,7 @@ import { seedTestPhones, TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONFIG_CHANNEL } from "../../src/config/service.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "../../src/db/tripLog.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
+import { createDb, createPool, type Db } from "../../src/db/db.js";
 import { readEnv } from "../../src/env.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import type { Router } from "../../src/maps/routing.js";
@@ -49,7 +50,8 @@ export type Res = { status: number; body: Json; headers: Headers };
 
 export const BOOTSTRAP_EMAIL = "owner@movera.test";
 
-export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date };
+/** poolMax: the server gets its own pool of this size (the test's own reads keep the default pool). */
+export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date; poolMax?: number };
 
 let keyCounter = 0;
 export const newKey = (prefix = "e2e") => `${prefix}-key-${String(++keyCounter).padStart(12, "0")}-${process.pid}`;
@@ -57,6 +59,8 @@ export const newKey = (prefix = "e2e") => `${prefix}-key-${String(++keyCounter).
 export class Sim {
   readonly clock: { now: Date };
   database!: TestDatabase;
+  /** The server's own small pool (SimOptions.poolMax), else none. */
+  private serverDb: Db | undefined;
   app!: FastifyInstance;
   hub!: NotificationHub;
   worker!: TimerWorker;
@@ -93,7 +97,8 @@ export class Sim {
     await prepareTestWeek(db, env, { info: (data, message) => sim.startLog.push({ data, message }) }, { now: sim.clock.now });
     sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL]);
     await sim.hub.start();
-    sim.app = await buildApp({ env, logger: false, db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : {}) });
+    if (options.poolMax !== undefined) sim.serverDb = createDb(createPool(sim.database.url, options.poolMax));
+    sim.app = await buildApp({ env, logger: false, db: sim.serverDb ?? db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : {}) });
     // Phase 7: every HTTP response's route, status and server time (Fastify's elapsedTime), for the timing budgets
     // (15_timing.test.ts). E2E_TIMING_OUT=<file> also appends them as JSON lines for the timing report.
     const timingOut = process.env.E2E_TIMING_OUT;
@@ -116,6 +121,7 @@ export class Sim {
     for (const s of this.streams) s.close();
     await this.app.close();
     await this.hub.stop();
+    await this.serverDb?.destroy();
     await this.database.drop();
   }
 
