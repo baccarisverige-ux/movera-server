@@ -2,6 +2,7 @@ import { pricingRoutes } from "./pricing/routes.js";
 import { contentRoutes } from "./content/routes.js";
 import { legalRoutes } from "./legal/routes.js";
 import { zoneRoutes } from "./zones/routes.js";
+import { airportQueueRoutes } from "./airportQueue/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
@@ -222,6 +223,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // v0.18.5 (G1-B2): terms and privacy per country.
     await legalRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await zoneRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    // v0.18.36 §60 (fix job 9): the airport queue.
+    await airportQueueRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??

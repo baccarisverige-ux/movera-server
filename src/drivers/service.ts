@@ -19,6 +19,7 @@ import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers 
 import { signUpView } from "./reminders.js";
 import { DRIVER_HOME, areaView, hasFreshPosition } from "./presence.js";
 import { RIDERS_ONLINE_WINDOW_SECONDS, ridersOnlineByZone } from "../riders/presence.js";
+import { onDriverPosition } from "../airportQueue/service.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -343,6 +344,9 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     .values(values)
     .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<=", latest.at))
     .execute();
+
+  // v0.18.36 §60 (fix job 9, contract.json#airportQueue): join, stay in or leave an airport queue.
+  await onDriverPosition(trx, driverId, latest.fix, now);
 
   // On a trip, the trip is the one the server knows, whatever tripId the app sent.
   const active = await activeTripOf(trx, driverId);
