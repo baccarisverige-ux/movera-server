@@ -169,7 +169,7 @@ async function push(ex: Executor, trip: TripRow, to: { audience: "rider" | "driv
     : await ex.selectFrom("drivers").select("language").where("driver_id", "=", to.id).executeTakeFirst();
   if (!person) return;
   const lang: Lang = isLang(person.language) ? person.language : COUNTRY_LANGUAGE[facts.country] ?? "en";
-  const fill = (text: string) => Object.entries({ time: trip.scheduled_at ? clock(trip.scheduled_at, facts.timeZone) : "", ...extra }).reduce((t, [k, v]) => t.replaceAll(`{${k}}`, v), text);
+  const fill = (text: string) => Object.entries({ time: trip.scheduled_at ? clock(trip.scheduled_at, facts.timeZone) : "", ...extra }).reduce((t, [k, v]) => t.replaceAll(`{${k}}`, v), text).replace(/ · $/, "");
   const text = BL.push.texts[kind];
   await notify(ex, {
     audience: to.audience,
@@ -179,7 +179,8 @@ async function push(ex: Executor, trip: TripRow, to: { audience: "rider" | "driv
     body: fill(text.body[lang]),
     deepLink: to.audience === "rider" ? `movera://trips/${trip.trip_id}` : `movera-driver://reservations/${trip.trip_id}`,
     tripId: trip.trip_id,
-    data: { tripId: trip.trip_id, texts: { title: Object.fromEntries(Object.entries(text.title).map(([l, v]) => [l, fill(v)])), body: Object.fromEntries(Object.entries(text.body).map(([l, v]) => [l, fill(v)])) } },
+    // v0.18.32 (bookedRideSeen.leaveNowName): the leave-now popup shows the rider's first name.
+    data: { tripId: trip.trip_id, ...(extra["riderFirstName"] !== undefined ? { riderFirstName: extra["riderFirstName"] } : {}), texts: { title: Object.fromEntries(Object.entries(text.title).map(([l, v]) => [l, fill(v)])), body: Object.fromEntries(Object.entries(text.body).map(([l, v]) => [l, fill(v)])) } },
   }, now);
 }
 
@@ -382,7 +383,8 @@ export async function driverReservations(ex: Executor, driverId: string, scope: 
   if (scope === "accepted") {
     const rows = await ex.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("kind", "=", "scheduled").where("status", "=", "accepted").orderBy("scheduled_at").execute();
     const items = [];
-    for (const row of rows) items.push(await itemOf(ex, row, await settingsFor(ex, row.zone_id)));
+    // v0.18.32 (bookedRideSeen.leaveNowName): his own accepted rides carry the rider's first name for the leave-now popup.
+    for (const row of rows) items.push({ ...(await itemOf(ex, row, await settingsFor(ex, row.zone_id))), riderFirstName: riderFirstNameOf(row) });
     return { items, nextCursor: null };
   }
   const zones = driver.zone_ids;
@@ -773,6 +775,12 @@ async function driveSecondsOf(ex: Executor, driverId: string, trip: TripRow): Pr
   return Math.max(60, Math.round(leg.durationSeconds));
 }
 
+/** v0.18.32 (contract.json#bookedRideSeen.leaveNowName): the rider's first name the trip keeps since accept, else "". */
+function riderFirstNameOf(trip: TripRow): string {
+  const summary = (typeof trip.rider_summary === "string" ? JSON.parse(trip.rider_summary) : trip.rider_summary) as { firstName?: unknown } | null;
+  return typeof summary?.firstName === "string" ? summary.firstName : "";
+}
+
 /** Owner (v0.18.19 leaveOnTime): leaveAt, the "start now" notice, and the late-risk alert. */
 async function leaveCheck(trx: Trx, trip: TripRow, state: ReservationState, s: ReservationSettings, now: Date): Promise<void> {
   const at = trip.scheduled_at!;
@@ -783,7 +791,7 @@ async function leaveCheck(trx: Trx, trip: TripRow, state: ReservationState, s: R
     next = { ...next, leaveAt: leaveAt.toISOString(), driveSeconds: drive };
     if (!next.leaveNotified && now.getTime() >= leaveAt.getTime()) {
       next.leaveNotified = true;
-      await push(trx, trip, { audience: "driver", id: trip.driver_id! }, "reservation_leave_now", now, { early: String(s.arriveEarlyMin) });
+      await push(trx, trip, { audience: "driver", id: trip.driver_id! }, "reservation_leave_now", now, { early: String(s.arriveEarlyMin), riderFirstName: riderFirstNameOf(trip) });
     }
     const late = now.getTime() >= leaveAt.getTime() + 5 * 60_000 || now.getTime() + drive * 1000 > at.getTime();
     if (late && !next.atRisk) {
