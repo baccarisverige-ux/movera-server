@@ -509,27 +509,37 @@ export async function addVehicle(trx: Trx, driverId: string, body: unknown, now:
 /** Job 1 (stress M4): the admin map's visible box (all four, degrees); with it only the drivers inside are read. */
 export type MapBox = { minLat: number; minLng: number; maxLat: number; maxLng: number };
 
-export async function liveDrivers(ex: Executor, zoneId: string | undefined, zones: string[], now: Date, box?: MapBox) {
-  let query = ex
-    .selectFrom("drivers")
-    .leftJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
+/** v0.18.34 §65 (A8/A10, rule 33): one page of live drivers, keyset by driverId (stateless, safe with several copies). */
+export type LivePage = { limit: number; cursor?: string };
+
+/** The zone a live driver counts in: the zone of his latest fix, else his first zone (contract §12 / §29). */
+const LIVE_ZONE = sql<string | null>`coalesce(driver_locations.zone_id, drivers.zone_ids[1])`;
+
+export async function liveDrivers(ex: Executor, zoneId: string | undefined, zones: string[], now: Date, box?: MapBox, page?: LivePage) {
+  // Every driver not offline, inside the admin's zones (exact rule in SQL, so a page and the count agree), in the box.
+  const scoped = () => {
+    let query = ex
+      .selectFrom("drivers")
+      .leftJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
+      .where("drivers.online_status", "!=", "offline");
+    if (zoneId) query = query.where("driver_locations.zone_id", "=", zoneId);
+    if (box) query = query.where("driver_locations.lat", ">=", box.minLat).where("driver_locations.lat", "<=", box.maxLat).where("driver_locations.lng", ">=", box.minLng).where("driver_locations.lng", "<=", box.maxLng);
+    if (!zones.includes("*")) query = query.where(sql<boolean>`${LIVE_ZONE} = any(${sql.val(zones.length ? zones : ["-"])}::text[])`);
+    return query;
+  };
+  let rowsQuery = scoped()
     .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
     .select([
       "drivers.driver_id", "drivers.first_name", "drivers.online_status", "drivers.vehicle_id", "drivers.zone_ids",
       "driver_locations.lat", "driver_locations.lng", "driver_locations.accuracy", "driver_locations.heading", "driver_locations.speed_mps", "driver_locations.moving", "driver_locations.measured_at", "driver_locations.received_at", "driver_locations.zone_id",
       "vehicles.plate",
     ])
-    .where("drivers.online_status", "!=", "offline");
-  if (zoneId) query = query.where("driver_locations.zone_id", "=", zoneId);
-  if (box) query = query.where("driver_locations.lat", ">=", box.minLat).where("driver_locations.lat", "<=", box.maxLat).where("driver_locations.lng", ">=", box.minLng).where("driver_locations.lng", "<=", box.maxLng);
-  // Job 1 (fix plan R23, stress M4): an admin limited to some zones reads only drivers who may be in them (the exact
-  // zone rule below stays), and the drivers' current trips come in ONE query instead of one per driver.
-  if (!zones.includes("*")) query = query.where((eb) => eb.or([eb("driver_locations.zone_id", "in", zones.length ? zones : ["-"]), sql<boolean>`drivers.zone_ids && ${sql.val(zones)}::text[]`]));
-  const rows = await query.execute();
-  const shown = rows.filter((r) => {
-    const where = r.zone_id ?? r.zone_ids[0] ?? null;
-    return zones.includes("*") || (where !== null && zones.includes(where));
-  });
+    .orderBy("drivers.driver_id");
+  if (page?.cursor) rowsQuery = rowsQuery.where("drivers.driver_id", ">", page.cursor);
+  if (page) rowsQuery = rowsQuery.limit(page.limit + 1);
+  const read = await rowsQuery.execute();
+  const more = page !== undefined && read.length > page.limit;
+  const shown = more ? read.slice(0, page.limit) : read;
   const activeRows = shown.length ? await ex.selectFrom("trips").select(["driver_id", "trip_id", "status"]).where("driver_id", "in", shown.map((r) => r.driver_id)).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).execute() : [];
   const activeOf = new Map(activeRows.map((t) => [t.driver_id as string, t]));
   const items = [];
@@ -550,13 +560,25 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
       ...(where ? { zoneId: where } : {}),
     });
   }
+  const paging = { nextCursor: more ? shown[shown.length - 1]!.driver_id : null };
+  // v0.18.34 §65: counts per zone over EVERY matching driver (not only this page), one grouped query.
+  const perZone = await scoped()
+    .select((eb) => [
+      LIVE_ZONE.as("zone"),
+      eb.fn.countAll<string>().as("online"),
+      sql<string>`count(*) filter (where drivers.online_status = 'online' and not exists (select 1 from trips where trips.driver_id = drivers.driver_id and trips.status = any(${sql.val([...DRIVER_ASSIGNED])}::text[]) and ${NOT_HELD}))`.as("free"),
+    ])
+    .groupBy(LIVE_ZONE)
+    .execute();
+  const total = perZone.reduce((sum, row) => sum + Number(row.online), 0);
   // Job 1 (stress M4): a map-box read is for the map only: the zone counts below need every driver, so they are left out.
-  if (box) return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString() };
+  if (box) return { items, total, ...paging, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString() };
   // v0.18.4 (G3-R4): real riders online per zone, for the Dashboard.
   const ridersOnline = await ridersOnlineByZone(ex, zones, now);
   // v0.18.4 (G3-D5): supply and demand per zone, one rule for the Dashboard's rows and its shortage alert.
-  const zoneSupply = await zoneSupplyOf(ex, items, [...ridersOnline.map((r) => r.zoneId), ...items.flatMap((d) => (d.zoneId ? [d.zoneId] : []))], zones);
-  return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString(), ridersOnline, ridersOnlineWindowSeconds: RIDERS_ONLINE_WINDOW_SECONDS, zoneSupply };
+  const counted = perZone.flatMap((row) => (row.zone ? [{ zoneId: row.zone, online: Number(row.online), free: Number(row.free) }] : []));
+  const zoneSupply = await zoneSupplyOf(ex, counted, [...ridersOnline.map((r) => r.zoneId), ...counted.map((row) => row.zoneId)], zones);
+  return { items, total, ...paging, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString(), ridersOnline, ridersOnlineWindowSeconds: RIDERS_ONLINE_WINDOW_SECONDS, zoneSupply };
 }
 
 export async function tripTrace(ex: Executor, tripId: string) {
@@ -597,7 +619,7 @@ export async function seedDriver(
  * counts in his LiveDriver.zoneId, stale or not; free = online with no active trip; waiting = live requests with no
  * driver yet; short when waiting > free.
  */
-async function zoneSupplyOf(ex: Executor, drivers: Array<{ onlineStatus: string; activeTripId?: string; zoneId?: string }>, shown: string[], zones: string[]) {
+async function zoneSupplyOf(ex: Executor, counted: Array<{ zoneId: string; online: number; free: number }>, shown: string[], zones: string[]) {
   const waitingRows = await ex
     .selectFrom("trips")
     .select(["zone_id", (eb) => eb.fn.countAll<string>().as("n")])
@@ -609,10 +631,10 @@ async function zoneSupplyOf(ex: Executor, drivers: Array<{ onlineStatus: string;
   const inScope = (z: string) => zones.includes("*") || zones.includes(z);
   const list = [...new Set([...shown, ...waitingRows.map((r) => r.zone_id)])].filter(inScope).sort();
   return list.map((zoneId) => {
-    const here = drivers.filter((d) => d.zoneId === zoneId);
-    const free = here.filter((d) => d.onlineStatus === "online" && !d.activeTripId).length;
+    const here = counted.find((row) => row.zoneId === zoneId) ?? { online: 0, free: 0 };
+    const free = here.free;
     const waiting = Number(waitingRows.find((r) => r.zone_id === zoneId)?.n ?? 0);
     const level = waiting === 0 ? "ok" : waiting <= free ? "tight" : "short";
-    return { zoneId, online: here.length, free, busy: here.length - free, waiting, level, shortage: level === "short" };
+    return { zoneId, online: here.online, free, busy: here.online - free, waiting, level, shortage: level === "short" };
   });
 }
