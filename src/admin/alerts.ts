@@ -101,7 +101,7 @@ async function bookRow(ex: Executor, country: string, lock = false) {
   return (await q.executeTakeFirst()) ?? { country, rev: 1, settings: {}, rules: [], mutes: {}, updated_at: new Date(0) };
 }
 
-type LiveRow = { alert_id: string; cause_key: string; kind: string; country: string; zone_id: string | null; level: string; title: string; title_t: unknown; detail: string; detail_t: unknown; since: Date; state: string; solved_at: Date | null; solved_t: unknown; ref: unknown };
+type LiveRow = { alert_id: string; cause_key: string; kind: string; country: string; zone_id: string | null; level: string; title: string; title_t: unknown; detail: string; detail_t: unknown; since: Date; state: string; solved_at: Date | null; solved_t: unknown; ref: unknown; old_since: Date | null };
 
 const render = (text: unknown) => {
   const t = text as { t?: string; a?: unknown[] } | null;
@@ -144,6 +144,8 @@ async function liveAlerts(ex: Executor, who: Principal, country: string) {
       state: r.state,
       ...(r.solved_at ? { solvedAt: r.solved_at.toISOString() } : {}),
       ...(r.solved_t ? { solvedText: render(r.solved_t), solvedT: r.solved_t } : {}),
+      // v0.18.29 contract.json#alertsOldList: an old SOS / safety case (trip ended + 24 h), still open.
+      ...(r.old_since ? { old: true, oldSince: r.old_since.toISOString() } : {}),
       ref: r.ref ?? {},
     }));
 }

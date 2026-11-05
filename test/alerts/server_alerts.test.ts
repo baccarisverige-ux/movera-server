@@ -194,6 +194,43 @@ for (const c of COUNTRIES) {
       expect(row.title).toBe("Ride check: Possible crash");
       expect(row.title_t).toMatchObject({ t: "Ride check: {0}", x: [0] });
     });
+
+    it("B-j/P20: a ride_check alert turns solved by itself (green, kept) once its trip ended", async () => {
+      const id = await incident(c.zone, "ride_check", { ride_check: JSON.stringify({ trigger: "stop" }) });
+      await raised("ride_check");
+      const tripId = (await db().selectFrom("incidents").select("trip_id").where("incident_id", "=", id).executeTakeFirstOrThrow()).trip_id!;
+      await db().updateTable("trips").set({ status: "completed", ended_at: NOW } as never).where("trip_id", "=", tripId).execute();
+      const row = await solved("ride_check");
+      expect(text(row.solved_t)).toBe(`Trip ended ${c.local}`);
+      // The incident itself is untouched (only the admin closes it).
+      expect((await db().selectFrom("incidents").select("status").where("incident_id", "=", id).executeTakeFirstOrThrow()).status).toBe("open");
+    });
+
+    it("owner Q-Bj: SOS / car lost never close by themselves; trip ended + 24 h -> Old list (still open)", async () => {
+      const sosId = await incident(c.zone, "sos");
+      const lostId = await incident(c.zone, "driver_silent", { raised_by: "system" });
+      await raised("sos");
+      await raised("car_lost");
+      const tripOf = async (iid: string) => (await db().selectFrom("incidents").select("trip_id").where("incident_id", "=", iid).executeTakeFirstOrThrow()).trip_id!;
+      for (const iid of [sosId, lostId]) await db().updateTable("trips").set({ status: "completed", ended_at: NOW } as never).where("trip_id", "=", await tripOf(iid)).execute();
+      // Trip ended: still open, not old yet.
+      await sweep(later(60));
+      expect(await one("sos")).toMatchObject({ state: "open", old_since: null });
+      expect(await one("car_lost")).toMatchObject({ state: "open", old_since: null });
+      // 24 h after the trip ended: still open, now on the Old list; same alert.
+      const first = (await one("sos")).alert_id;
+      await sweep(later(24 * 60 + 1));
+      const sos = await one("sos");
+      expect(sos).toMatchObject({ state: "open", alert_id: first });
+      expect(sos.old_since?.toISOString()).toBe(later(24 * 60).toISOString());
+      expect((await one("car_lost")).old_since?.toISOString()).toBe(later(24 * 60).toISOString());
+      // Days later: never closed by the server.
+      await sweep(later(10 * 24 * 60));
+      expect((await one("sos")).state).toBe("open");
+      // The admin closes it in Incidents -> green as before.
+      await db().updateTable("incidents").set({ status: "resolved", resolved_at: NOW }).where("incident_id", "=", sosId).execute();
+      expect(text((await solved("sos", later(10 * 24 * 60))).solved_t)).toMatch(/^Closed in Incidents/);
+    });
   });
 
   describe(`${c.country}: drivers, money, riders, system`, () => {

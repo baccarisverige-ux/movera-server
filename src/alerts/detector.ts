@@ -20,7 +20,8 @@ import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS,
 export const ALERT_SWEEP = "alert_sweep";
 
 type Ref = { tripId?: string; driverId?: string; riderId?: string; incidentId?: string; ticketId?: string; payoutId?: string; refundId?: string; ruleId?: string; documentId?: string };
-export type Cause = { key: string; kind: string; country: string; zoneId: string | null; level: Level; title: Text; detail?: Text; ref: Ref };
+/** oldSince (v0.18.29, owner Q-Bj): an SOS / safety alert whose trip ended more than OLD_AFTER_MS ago — kept open, listed as old. */
+export type Cause = { key: string; kind: string; country: string; zoneId: string | null; level: Level; title: Text; detail?: Text; ref: Ref; oldSince?: Date };
 type Zone = { zone_id: string; country: string; time_zone: string; name: string };
 
 type Ctx = {
@@ -33,6 +34,10 @@ type Ctx = {
 
 const MIN = 60_000;
 const DAY = 86_400_000;
+/** v0.18.29 contract.json#alertsOldList.oldAfterHours: an SOS / safety case moves to the Old list 24 h after its trip ended. */
+export const OLD_AFTER_MS = 24 * 3600_000;
+/** A trip that has ended (contract TripStatus terminal set, or its end time set). */
+const TRIP_ENDED_SQL = sql`(t.ended_at IS NOT NULL OR t.status IN ('completed', 'no_show', 'expired') OR t.status LIKE 'cancelled%')`;
 const TRIGGER_LABEL: Record<string, string> = { far: "Dropped far away", stop: "Long stop", route: "Off the route", longer: "Longer than expected", crash: "Possible crash", help: "Asked for help", sos: "SOS" };
 
 /** Key order does not count (jsonb stores keys in its own order). */
@@ -48,10 +53,12 @@ const name = (first: string | null | undefined, fallback: string) => (first && f
 /* ------------------------------------------------------------------ causes, one function per group of kinds */
 
 async function safetyCauses(ctx: Ctx): Promise<Cause[]> {
-  const rows = await sql<{ incident_id: string; kind: string; zone_id: string | null; raised_by: string; taken_at: Date | null; status: string; alarm: boolean; trip_id: string | null; trigger: string | null; rider: string | null; driver: string | null; driver_id: string | null }>`
-    SELECT i.incident_id, i.kind, i.zone_id, i.raised_by, i.taken_at, i.status, i.alarm, i.trip_id, i.driver_id,
+  const rows = await sql<{ incident_id: string; kind: string; zone_id: string | null; raised_by: string; taken_at: Date | null; status: string; alarm: boolean; trip_id: string | null; trigger: string | null; rider: string | null; driver: string | null; driver_id: string | null; trip_ended: boolean | null; trip_ended_at: Date | null }>`
+    SELECT ${TRIP_ENDED_SQL} AS trip_ended, CASE WHEN ${TRIP_ENDED_SQL} THEN coalesce(t.ended_at, t.updated_at) END AS trip_ended_at,
+           i.incident_id, i.kind, i.zone_id, i.raised_by, i.taken_at, i.status, i.alarm, i.trip_id, i.driver_id,
            i.ride_check->>'trigger' AS trigger, r.first_name AS rider, d.first_name AS driver
       FROM incidents i LEFT JOIN riders r ON r.rider_id = i.rider_id LEFT JOIN drivers d ON d.driver_id = i.driver_id
+                       LEFT JOIN trips t ON t.trip_id = i.trip_id
      WHERE i.status IN ('open', 'investigating') AND i.kind IN ('sos', 'driver_silent', 'ride_check')`.execute(ctx.ex);
   const out: Cause[] = [];
   for (const r of rows.rows) {
@@ -59,18 +66,22 @@ async function safetyCauses(ctx: Ctx): Promise<Cause[]> {
     const s = settingsOf(ctx, country);
     const ref: Ref = { incidentId: r.incident_id, ...(r.trip_id ? { tripId: r.trip_id } : {}), ...(r.driver_id ? { driverId: r.driver_id } : {}) };
     const detail = T("{0} · {1}", [zoneName(ctx, r.zone_id), r.incident_id]);
+    // Owner Q-Bj: SOS / safety cases never close by themselves; 24 h after the trip ended they move to the Old list.
+    const oldAt = r.trip_ended && r.trip_ended_at ? new Date(r.trip_ended_at.getTime() + OLD_AFTER_MS) : null;
+    const old = oldAt && oldAt.getTime() <= ctx.now.getTime() ? { oldSince: oldAt } : {};
     const who = r.raised_by === "rider" ? name(r.rider, "Rider") : r.raised_by === "driver" ? name(r.driver, "Driver") : name(r.driver, "Driver");
     if (r.kind === "sos") {
-      if (s.kind("sos").on) out.push({ key: `sos:${r.incident_id}`, kind: "sos", country, zoneId: r.zone_id, level: s.kind("sos").level, title: T("SOS from {0}", [who]), detail, ref });
+      if (s.kind("sos").on) out.push({ key: `sos:${r.incident_id}`, kind: "sos", country, zoneId: r.zone_id, level: s.kind("sos").level, title: T("SOS from {0}", [who]), detail, ref, ...old });
       const slow = s.kind("sos_slow");
       if (slow.on && r.taken_at) {
         const minutes = minutesBetween(r.taken_at, ctx.now);
         const level = levelFor(minutes, slow.limits, "up");
-        if (level) out.push({ key: `sos_slow:${r.incident_id}`, kind: "sos_slow", country, zoneId: r.zone_id, level, title: T("SOS from {0} not solved after {1} min", [who, minutes]), detail, ref });
+        if (level) out.push({ key: `sos_slow:${r.incident_id}`, kind: "sos_slow", country, zoneId: r.zone_id, level, title: T("SOS from {0} not solved after {1} min", [who, minutes]), detail, ref, ...old });
       }
     } else if (r.kind === "driver_silent") {
-      if (s.kind("car_lost").on) out.push({ key: `car_lost:${r.incident_id}`, kind: "car_lost", country, zoneId: r.zone_id, level: s.kind("car_lost").level, title: T("Car lost: {0}", [name(r.driver, "Driver")]), detail, ref });
-    } else if (r.alarm && s.kind("ride_check").on) {
+      if (s.kind("car_lost").on) out.push({ key: `car_lost:${r.incident_id}`, kind: "car_lost", country, zoneId: r.zone_id, level: s.kind("car_lost").level, title: T("Car lost: {0}", [name(r.driver, "Driver")]), detail, ref, ...old });
+    } else if (r.alarm && !r.trip_ended && s.kind("ride_check").on) {
+      // B-j/P20: a ride check is about a ride in progress; once its trip ended the alert is solved by itself (green, kept).
       const label = TRIGGER_LABEL[r.trigger ?? ""] ?? "Asked for help";
       out.push({ key: `ride_check:${r.incident_id}`, kind: "ride_check", country, zoneId: r.zone_id, level: s.kind("ride_check").level, title: T("Ride check: {0}", [label], [0]), detail, ref });
     }
@@ -327,8 +338,8 @@ async function ruleCauses(ctx: Ctx): Promise<Cause[]> {
 
 /* ------------------------------------------------------------------ what happened when a cause ended (owner A2) */
 
-type LiveRow = { alert_id: string; cause_key: string; kind: string; country: string; zone_id: string | null; level: string; title: string; detail: string; ref: unknown; state: string; cause_live: boolean };
-type TripFacts = { status: string; accepted_at: Date | null; updated_at: Date; payment_status: string | null; driver: string | null };
+type LiveRow = { alert_id: string; cause_key: string; kind: string; country: string; zone_id: string | null; level: string; title: string; detail: string; ref: unknown; state: string; cause_live: boolean; old_since: Date | null };
+type TripFacts = { status: string; accepted_at: Date | null; updated_at: Date; ended_at: Date | null; payment_status: string | null; driver: string | null };
 type Lookups = { trips: Map<string, TripFacts>; incidents: Map<string, { status: string; resolved_at: Date | null }> };
 
 /** Checker MED 4: what every alert about to turn green needs, read in two queries (not one per alert). */
@@ -338,7 +349,7 @@ async function lookupsFor(ctx: Ctx, rows: readonly LiveRow[]): Promise<Lookups> 
   const incidentIds = [...new Set(refs.flatMap((r) => (r.incidentId ? [r.incidentId] : [])))];
   const trips = tripIds.length
     ? (await sql<TripFacts & { trip_id: string }>`
-        SELECT t.trip_id, t.status, t.accepted_at, t.updated_at, t.payment_status, d.first_name AS driver
+        SELECT t.trip_id, t.status, t.accepted_at, t.updated_at, t.ended_at, t.payment_status, d.first_name AS driver
           FROM trips t LEFT JOIN drivers d ON d.driver_id = t.driver_id WHERE t.trip_id = ANY(${tripIds})`.execute(ctx.ex)).rows
     : [];
   const incidents = incidentIds.length ? await ctx.ex.selectFrom("incidents").select(["incident_id", "status", "resolved_at"]).where("incident_id", "in", incidentIds).execute() : [];
@@ -351,6 +362,10 @@ function solvedText(ctx: Ctx, row: LiveRow, look: Lookups): Text {
   if (ref.incidentId && ["sos", "sos_slow", "car_lost", "ride_check"].includes(row.kind)) {
     const i = look.incidents.get(ref.incidentId);
     if (i && (i.status === "resolved" || i.status === "dismissed")) return T("Closed in Incidents {0}", [at(i.resolved_at)]);
+    if (row.kind === "ride_check" && ref.tripId) {
+      const trip = look.trips.get(ref.tripId);
+      if (trip) return T("Trip ended {0}", [at(trip.ended_at ?? trip.updated_at)]);
+    }
     if (row.kind === "car_lost") return T("The car's position came back {0}", [at(ctx.now)]);
   }
   if (ref.tripId && ["long_wait", "late_reservation", "booked_at_risk", "booked_late", "booked_not_started", "payment_failed"].includes(row.kind)) {
@@ -414,7 +429,7 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
   const causes = new Map((await findAll(ctx)).map((c) => [c.key, c]));
   const rows = (await trx
     .selectFrom("admin_alerts_live")
-    .select(["alert_id", "cause_key", "kind", "country", "zone_id", "level", "title", "detail", "ref", "state", "cause_live"])
+    .select(["alert_id", "cause_key", "kind", "country", "zone_id", "level", "title", "detail", "ref", "state", "cause_live", "old_since"])
     .where((eb) => eb.or([eb("state", "!=", "closed"), eb("cause_live", "=", true)]))
     .execute()) as LiveRow[];
   const handled = new Set<string>();
@@ -437,7 +452,7 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
       const detail = cause.detail ? render(cause.detail) : "";
       const ref = JSON.stringify(cause.ref);
       // Checker MED 4: write only what changed (an unchanged open alert costs no write).
-      const same = !reopen && row.level === cause.level && row.title === title && row.detail === detail && row.zone_id === cause.zoneId && row.country === cause.country && stable(row.ref ?? {}) === stable(cause.ref);
+      const same = !reopen && row.level === cause.level && row.title === title && row.detail === detail && row.zone_id === cause.zoneId && row.country === cause.country && stable(row.ref ?? {}) === stable(cause.ref) && (row.old_since?.getTime() ?? null) === (cause.oldSince?.getTime() ?? null);
       if (same) continue;
       if (reopen) result.reopened += 1;
       await trx
@@ -452,6 +467,7 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
           zone_id: cause.zoneId,
           country: cause.country,
           ref,
+          old_since: cause.oldSince ?? null,
           seen_at: now,
           cause_live: true,
           updated_at: now,
@@ -491,6 +507,7 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
         state: "open" as const,
         cause_live: true,
         ref: JSON.stringify(cause.ref),
+        old_since: cause.oldSince ?? null,
         seen_at: now,
         updated_at: now,
       })))
