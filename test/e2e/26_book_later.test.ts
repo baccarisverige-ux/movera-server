@@ -509,7 +509,9 @@ describe("book later (owner Q1–Q7)", () => {
     expect(profile.activeTripId).toBe(trip.tripId);
     expect(profile.onlineStatus).toBe("on_trip");
     const off = await holder.post("/driver/availability", { expectedVersion: profile.version, onlineStatus: "offline" });
-    expect(off.body).toMatchObject({ reason: "on_trip" });
+    // v0.18.37 §61 (owner 2026-11-05): Go offline on a trip is offline after his trips (was 409 on_trip); undone here.
+    expect(off.body).toMatchObject({ onlineStatus: "on_trip", offlineAfterTrip: true });
+    expect((await holder.post("/driver/availability", { expectedVersion: off.body.version, onlineStatus: "online" })).body).toMatchObject({ offlineAfterTrip: false });
     // The index keeps him to one current trip: a second current trip for him is refused by the database.
     const second = await book(minutes(25));
     await expect(sim.db.updateTable("trips").set({ status: "accepted", driver_id: holder.id }).where("trip_id", "=", second.tripId).execute()).rejects.toThrow(/trips_one_active_per_driver/);

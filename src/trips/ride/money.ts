@@ -1,6 +1,7 @@
 import { sql } from "kysely";
 import type { OfflineReason } from "../../db/schema.js";
 import { markSetOffline } from "../../drivers/offlineReason.js";
+import { settleOfflineAfterTrip } from "../../drivers/presence.js";
 import { offlineIfDocumentsExpired } from "../../drivers/reminders.js";
 import type { Executor, Trx } from "../../db/db.js";
 import type { TripRow } from "../../db/tripLog.js";
@@ -67,6 +68,8 @@ export async function releaseDriver(trx: Trx, driverId: string | null, now: Date
   // v0.18.33 (owner Q4 2026-11-05): a held booked ride whose time to drive has come (reservation.leaveAt reached)
   // starts now; else he is simply free. Only when he was on a trip and may still drive.
   if (blockedBy === null && before?.online_status === "on_trip") await startDueBooked(trx, driverId, now);
+  // v0.18.37 §61: he tapped Go offline during the trip: offline now unless a due booked ride just started.
+  await settleOfflineAfterTrip(trx, driverId, now);
 }
 
 async function startDueBooked(trx: Trx, driverId: string, now: Date): Promise<void> {
