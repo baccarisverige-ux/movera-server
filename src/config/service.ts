@@ -198,6 +198,7 @@ async function zonesUsingStandard(ex: Executor, doc: ConfigDoc, country: string)
 
 /** config_published for a scope: a standard's goes to every zone of its country that uses it (§6.4). */
 async function notifyPublished(trx: Trx, doc: ConfigDoc, key: string, version: number, publishedAt: string): Promise<void> {
+  forgetLiveDocuments();
   const country = countryOfKey(key);
   const zones = country === null ? [key] : APP_DOCS.includes(doc) ? await zonesUsingStandard(trx, doc, country) : [];
   for (const zoneId of zones) await sql`SELECT pg_notify(${CONFIG_CHANNEL}, ${JSON.stringify({ doc, zoneId, version, publishedAt })})`.execute(trx);
@@ -549,6 +550,37 @@ export type LiveDocument<T> = { version: number; document: T; usesStandard: bool
  * usesStandard: true; a zone with its own document never does.
  */
 export async function liveDocument<T = Record<string, unknown>>(ex: Executor, doc: ConfigDoc, zoneId: string): Promise<LiveDocument<T> | null> {
+  if (liveCache.ttlMs <= 0) return readLiveDocument<T>(ex, doc, zoneId);
+  const key = `${doc}\u0000${zoneId}`;
+  const now = Date.now();
+  const hit = liveCache.entries.get(key);
+  if (hit !== undefined && hit.until > now) return hit.value as LiveDocument<T> | null;
+  const generation = liveCache.generation;
+  const value = await readLiveDocument<T>(ex, doc, zoneId);
+  // A publish that happened while this read ran must not be hidden by the older value it read.
+  if (generation === liveCache.generation) liveCache.entries.set(key, { value, until: now + liveCache.ttlMs });
+  return value;
+}
+
+/**
+ * Job 1 (fix plan R23, audits/stress-test-2026-11-04.md M5: config_live was read 141 000 times in 10 min): the live
+ * documents are kept in memory. Off until `cacheLiveDocuments` turns it on (main.ts, with the realtime hub); then an
+ * entry lives at most `ttlMs` and EVERY config_published notification (any instance, any document) empties the cache,
+ * as does any publish made by this instance (at once, before its commit and again on the notification after it).
+ */
+const liveCache = { ttlMs: 0, generation: 0, entries: new Map<string, { value: unknown; until: number }>() };
+
+export function cacheLiveDocuments(ttlMs: number): void {
+  liveCache.ttlMs = Math.max(0, ttlMs);
+  forgetLiveDocuments();
+}
+
+export function forgetLiveDocuments(): void {
+  liveCache.generation += 1;
+  liveCache.entries.clear();
+}
+
+async function readLiveDocument<T>(ex: Executor, doc: ConfigDoc, zoneId: string): Promise<LiveDocument<T> | null> {
   const row = await ex.selectFrom("config_live").select(["version", "document"]).where("doc", "=", doc).where("zone_id", "=", zoneId).executeTakeFirst();
   if (row !== undefined) return { version: row.version, document: row.document as T, usesStandard: false, scope: zoneId };
   if (countryOfKey(zoneId) !== null) return null;

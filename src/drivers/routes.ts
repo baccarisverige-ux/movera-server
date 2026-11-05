@@ -3,12 +3,12 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, adminCoversZone } from "../auth/guard.js";
 import type { Db } from "../db/db.js";
-import { ApiError } from "../http/errors.js";
+import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, ZoneFilterQuery } from "../admin/zoneFilter.js";
-import { addVehicle, getDriverProfile, liveDrivers, listVehicles, loadDriver, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
+import { addVehicle, getDriverProfile, liveDrivers, type MapBox, listVehicles, loadDriver, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
 import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, startOwnCompany, submitOnboarding } from "./onboarding.js";
 import { listReminders } from "./reminders.js";
 import { documentTypes, onboardingSettings } from "./onboardingSettings.js";
@@ -19,6 +19,7 @@ import type { DocumentKey } from "../documents/files.js";
 import { ONBOARDING } from "./onboardingRules.js";
 import { riderDriverPhoto } from "../trips/driverPhoto.js";
 import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
+import { phoneDataRoutes } from "../accounts/phoneDataRoutes.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
@@ -42,6 +43,9 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
   const now = () => deps.clock?.() ?? new Date();
   const idem = (request: FastifyRequest, subjectId: string) => ({ actor: "driver" as const, subjectId, key: keyOf(request), method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null });
+  // BASE B13 (contract v0.18.26 §47): saved places, ride preferences and emergency contacts on the server. Registered
+  // here so app.ts stays as it is.
+  await phoneDataRoutes(app, { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) });
 
   app.get(`${API_PREFIX}/driver/profile`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
@@ -199,8 +203,17 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
 
   app.get(`${API_PREFIX}/admin/live/drivers`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
-    const narrowed = await narrowToZones(deps.db, who, parseQuery(ZoneFilterQuery, request.query));
-    return liveDrivers(deps.db, undefined, narrowed.zones, now());
+    const { minLat, minLng, maxLat, maxLng, ...filter } = request.query as Record<string, unknown>;
+    const narrowed = await narrowToZones(deps.db, who, parseQuery(ZoneFilterQuery, filter));
+    // Job 1 (stress M4): optional map box; all four or none, lat -90..90, lng -180..180, min <= max.
+    const given = [minLat, minLng, maxLat, maxLng].filter((v) => v !== undefined);
+    let box: MapBox | undefined;
+    if (given.length > 0) {
+      const b = parseQuery(MapBoxQuery, { minLat, minLng, maxLat, maxLng });
+      if (b.minLat > b.maxLat || b.minLng > b.maxLng) throw badRequest("minLat/minLng must not be above maxLat/maxLng.", "invalid_map_box");
+      box = b;
+    }
+    return liveDrivers(deps.db, undefined, narrowed.zones, now(), box);
   });
 
   app.get(`${API_PREFIX}/admin/trips/:tripId/trace`, async (request) => {
@@ -213,6 +226,8 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
 }
 
 /** The multipart upload of POST /driver/documents: the fields and the one file, read into memory (at most 10 MB). */
+const MapBoxQuery = { minLat: z.coerce.number().min(-90).max(90), minLng: z.coerce.number().min(-180).max(180), maxLat: z.coerce.number().min(-90).max(90), maxLng: z.coerce.number().min(-180).max(180) };
+
 export async function readUpload(request: FastifyRequest): Promise<Upload> {
   if (!request.isMultipart()) throw new ApiError("invalid_request", "Send multipart/form-data with a file.", { reason: "unsupported_media_type" });
   const fields: Record<string, string> = {};

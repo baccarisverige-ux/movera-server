@@ -27,7 +27,28 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
-  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  /**
+   * B12 (architecture audit item 14): database connections. Render basic-1gb Postgres allows about 100 connections;
+   * the web service has 1 CPU. 20 per instance + 1 LISTEN client leaves room for a second instance during a deploy
+   * (2 × 21), migrations and the admin CLI. Raise only together with the database plan.
+   */
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(20),
+  /** An idle pooled connection is closed after this many ms (0: never). */
+  DATABASE_POOL_IDLE_MS: z.coerce.number().int().min(0).max(3_600_000).default(30_000),
+  /** A query waits at most this long for a free pooled connection, then fails (0: wait forever). */
+  DATABASE_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(0).max(120_000).default(10_000),
+  /**
+   * The realtime LISTEN client (realtime/hub.ts): a separate connection string, e.g. a direct (non-pooler) address.
+   * Unset: DATABASE_URL. Never logged.
+   */
+  DATABASE_LISTEN_URL: z.string().url().optional(),
+  /**
+   * B11 (architecture audit item 9, contract.json#rateLimit): writes (POST/PUT/PATCH/DELETE) per minute per signed-in
+   * user, and per address for callers without a token. 0 turns that limit off. Unset: 120 / 60 in production,
+   * 1200 / 600 on staging and development (the load test signs in many accounts from a few addresses).
+   */
+  RATE_LIMIT_WRITES_PER_USER_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).optional(),
+  RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).optional(),
   /** Signs access tokens. At least 32 characters; required on staging and production (a laptop gets a random one). */
   JWT_SECRET: z.string().min(32).optional(),
   /** Movera's own OSRM (owner decision 4), e.g. http://osrm:5000. Unset: distances are estimated. */
@@ -123,6 +144,17 @@ const schema = z.object({
     .optional()
     .transform((value) => (value ?? "").split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean))
     .pipe(z.array(z.string().regex(/^https?:\/\/[^/\s]+$/, "an origin like https://example.github.io"))),
+  /**
+   * Job 1 (fast dispatch, fix plan R1): timer loops per instance. One loop runs only dispatch rounds and offer
+   * withdrawals (rides are offered in seconds even while other timers pile up); the others take any timer.
+   */
+  TIMER_LANES: z.coerce.number().int().min(1).max(16).default(4),
+  /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
+  SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
+  /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
+  SHED_LOOP_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1000),
+  /** Job 1 (fix plan R22): a single SQL statement of a request is stopped after this many ms (0: no limit). */
+  DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).max(600_000).default(30_000),
 }).superRefine((env, ctx) => {
   if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
@@ -147,6 +179,22 @@ const schema = z.object({
 });
 
 export type Env = z.infer<typeof schema>;
+
+/**
+ * The write limit's env part (B11, contract.json#rateLimit). `fallback` is used while no admin setting is known; `floor`
+ * is the least the admin setting may give (0: none). An env value that is set is both; unset in production the
+ * fallback is the contract default (120 / 60) and the admin may go lower; unset on staging and development 1200 / 600
+ * are both (the load test). `off`: env 0 turns that limit off whatever the admin says.
+ */
+export type WriteLimitEnv = { fallback: number; floor: number; off: boolean };
+export function writeLimitsFrom(env: Env): { user: WriteLimitEnv; address: WriteLimitEnv } {
+  const production = env.MOVERA_ENV === "production";
+  const part = (given: number | undefined, prodDefault: number, testDefault: number): WriteLimitEnv => {
+    if (given !== undefined) return { fallback: given, floor: given, off: given === 0 };
+    return production ? { fallback: prodDefault, floor: 0, off: false } : { fallback: testDefault, floor: testDefault, off: false };
+  };
+  return { user: part(env.RATE_LIMIT_WRITES_PER_USER_PER_MINUTE, 120, 1200), address: part(env.RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE, 60, 600) };
+}
 
 export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
   // A host's dashboard may keep a variable that was left blank as an empty string: that means "not set".
