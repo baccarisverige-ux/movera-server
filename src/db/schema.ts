@@ -26,6 +26,11 @@ export interface RidersTable {
   rating_sum: Generated<number>;
   rating_count: Generated<number>;
   wallet_minor: ColumnType<string, number | string | undefined, number | string>;
+  /** v0.18.39 A2 (G16 Q16-2): Warn → Pause → Ban; paused / banned = status suspended. */
+  moderation_level: Generated<"none" | "warning" | "paused" | "banned">;
+  moderation_reason: string | null;
+  moderation_until: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  moderation_set_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   version: Generated<number>;
   created_at: Timestamp;
   updated_at: Timestamp;
@@ -33,6 +38,10 @@ export interface RidersTable {
 
 export interface DriversTable {
   driver_id: string;
+  /** v0.18.39 A2 (owner Q4): this driver's scheduled payouts are paused. */
+  payout_hold_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  payout_hold_reason: string | null;
+  payout_hold_by: string | null;
   phone: string;
   first_name: Generated<string>;
   account_status: Generated<"pending" | "active" | "on_hold" | "suspended">;
@@ -808,7 +817,10 @@ export interface PayoutsTable {
   lines: ColumnType<unknown, string, string>;
   trip_count: number;
   source: "weekly" | "manual";
-  status: ColumnType<"pending" | "paid", "pending" | "paid" | undefined, "pending" | "paid">;
+  /** v0.18.39 A2 (owner Q4): pending_approval = a manual country's run waiting for an admin. */
+  status: ColumnType<"pending" | "pending_approval" | "paid", "pending" | "pending_approval" | "paid" | undefined, "pending" | "pending_approval" | "paid">;
+  approved_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  approved_by: ColumnType<string | null, string | null | undefined, string | null>;
   period_start: Timestamp;
   period_end: Timestamp;
   note: string | null;

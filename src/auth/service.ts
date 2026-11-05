@@ -3,6 +3,7 @@ import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
+import { riderBlocked, suspendedError } from "../riders/moderation.js";
 import { newId } from "../ids.js";
 import { signAccessToken, type Actor } from "./jwt.js";
 import { splitName, type Provider, type ProviderIdentity, type ProviderVerifier } from "./provider.js";
@@ -292,8 +293,8 @@ async function findOrCreateAccount(trx: Trx, app: App, phone: string, now: Date)
       .returning("rider_id")
       .executeTakeFirst();
     if (inserted !== undefined) return { id: inserted.rider_id, created: true, zones: [] };
-    const rider = await trx.selectFrom("riders").select(["rider_id", "status"]).where("phone", "=", phone).executeTakeFirstOrThrow();
-    if (rider.status === "suspended") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
+    const rider = await trx.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("phone", "=", phone).executeTakeFirstOrThrow();
+    if (riderBlocked(rider, now)) throw suspendedError(rider);
     return { id: rider.rider_id, created: false, zones: [] };
   }
   const inserted = await trx
@@ -337,7 +338,7 @@ export async function signInWithProvider(
   return deps.db.transaction().execute(async (trx): Promise<AuthTokens | PhoneRequired> => {
     const link = await trx.selectFrom("auth_provider_links").selectAll().where("provider", "=", input.provider).where("provider_subject", "=", identity.subject).where("actor", "=", input.app).executeTakeFirst();
     if (link !== undefined) {
-      const account = await existingAccount(trx, input.app, link.subject_id);
+      const account = await existingAccount(trx, input.app, link.subject_id, now);
       if (account !== undefined) {
         const { sessionId: _sid, ...tokens } = await startSession(trx, deps, { actor: input.app, subjectId: account.id, zones: account.zones }, client, now);
         void _sid;
@@ -373,11 +374,11 @@ export async function signInWithProvider(
   });
 }
 
-async function existingAccount(ex: Executor, app: App, subjectId: string): Promise<{ id: string; zones: string[] } | undefined> {
+async function existingAccount(ex: Executor, app: App, subjectId: string, now: Date): Promise<{ id: string; zones: string[] } | undefined> {
   if (app === "rider") {
-    const rider = await ex.selectFrom("riders").select(["rider_id", "status"]).where("rider_id", "=", subjectId).executeTakeFirst();
+    const rider = await ex.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("rider_id", "=", subjectId).executeTakeFirst();
     if (rider === undefined) return undefined;
-    if (rider.status === "suspended") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
+    if (riderBlocked(rider, now)) throw suspendedError(rider);
     return { id: rider.rider_id, zones: [] };
   }
   const driver = await ex.selectFrom("drivers").select(["driver_id", "zone_ids"]).where("driver_id", "=", subjectId).executeTakeFirst();
