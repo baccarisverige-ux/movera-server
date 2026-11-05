@@ -4,16 +4,55 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { parseBody } from "../http/validate.js";
+import "./walletSchema.js";
 
 /**
- * The rider's wallet (contract §1 "wallet": one balance, used first) and where a refund goes (owner decision 30):
+ * The rider's wallet (contract §1 "wallet": one balance per currency, used first; v0.18.28 owner Q4) and where a refund goes (owner decision 30):
  * the wallet at once, or Swish / a bank account, paid by hand by an admin. Sweden: Swish or bank; France and
  * Tunisia: bank (IBAN) only.
  */
 
-export async function getWallet(ex: Executor, riderId: string, currency: string) {
-  const row = await ex.selectFrom("riders").select(["wallet_minor", "updated_at"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
-  return { ownerId: riderId, balance: { amountMinor: Number(row.wallet_minor), currency }, updatedAt: row.updated_at.toISOString() };
+/** Every balance the rider holds (rider_wallets, migration 0070): one per currency, never converted (owner Q4). */
+export async function walletBalances(ex: Executor, riderId: string): Promise<Array<{ amountMinor: number; currency: string }>> {
+  const rows = await ex.selectFrom("rider_wallets").select(["currency", "balance_minor"]).where("rider_id", "=", riderId).where("balance_minor", "<>", "0").orderBy("currency").execute();
+  return rows.map((r) => ({ amountMinor: Number(r.balance_minor), currency: r.currency }));
+}
+
+/** The rider's balance in one currency (0 when he holds none). */
+export async function walletBalance(ex: Executor, riderId: string, currency: string, lock = false): Promise<number> {
+  let q = ex.selectFrom("rider_wallets").select("balance_minor").where("rider_id", "=", riderId).where("currency", "=", currency);
+  if (lock) q = q.forUpdate();
+  const row = await q.executeTakeFirst();
+  return row ? Number(row.balance_minor) : 0;
+}
+
+/** Adds (or, negative, takes) money in one currency's balance. */
+export async function moveWallet(trx: Trx, riderId: string, currency: string, deltaMinor: number, now: Date) {
+  await trx
+    .insertInto("rider_wallets")
+    .values({ rider_id: riderId, currency, balance_minor: deltaMinor, updated_at: now })
+    .onConflict((oc) => oc.columns(["rider_id", "currency"]).doUpdateSet({ balance_minor: sql`rider_wallets.balance_minor + ${deltaMinor}`, updated_at: now }))
+    .execute();
+}
+
+/** The currency of the rider's zone (where he last looked at the map or prices), else the given fallback. */
+async function riderCurrency(ex: Executor, riderId: string, fallback: string): Promise<string> {
+  const row = await ex.selectFrom("riders").leftJoin("zones", "zones.zone_id", "riders.last_seen_zone_id").select("zones.currency").where("riders.rider_id", "=", riderId).executeTakeFirstOrThrow();
+  return row.currency ?? fallback;
+}
+
+/**
+ * GET /wallet (v0.18.28): `balance` is the balance in `currency` (the query), else in the currency of the rider's zone;
+ * `balances` lists every non-zero balance, one per currency.
+ */
+export async function getWallet(ex: Executor, riderId: string, fallbackCurrency: string, asked?: string) {
+  const row = await ex.selectFrom("riders").select(["updated_at"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
+  const currency = asked ?? (await riderCurrency(ex, riderId, fallbackCurrency));
+  const balances = await walletBalances(ex, riderId);
+  const amountMinor = balances.find((b) => b.currency === currency)?.amountMinor ?? 0;
+  const last = await ex.selectFrom("rider_wallets").select(sql<Date>`max(updated_at)`.as("at")).where("rider_id", "=", riderId).executeTakeFirst();
+  const updatedAt = last?.at && last.at > row.updated_at ? last.at : row.updated_at;
+  return { ownerId: riderId, balance: { amountMinor, currency }, balances, updatedAt: updatedAt.toISOString() };
 }
 
 export async function walletEntries(ex: Executor, riderId: string, input: { cursor?: string; limit: number; from?: string; to?: string }) {
@@ -31,7 +70,8 @@ export async function walletEntries(ex: Executor, riderId: string, input: { curs
 
 /** Puts money in the wallet (a refund the rider chose to keep there). */
 export async function creditWallet(trx: Trx, riderId: string, amount: { amountMinor: number; currency: string }, tripId: string | null, now: Date) {
-  await trx.updateTable("riders").set({ wallet_minor: sql`wallet_minor + ${amount.amountMinor}`, updated_at: now }).where("rider_id", "=", riderId).execute();
+  // v0.18.28 (owner Q4): into the balance of the money's own currency (a France refund is EUR), never another.
+  await moveWallet(trx, riderId, amount.currency, amount.amountMinor, now);
   await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: riderId, kind: "refund", currency: amount.currency, amount_minor: amount.amountMinor, trip_id: tripId, at: now }).execute();
 }
 
