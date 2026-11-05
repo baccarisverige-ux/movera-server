@@ -15,6 +15,8 @@ export type CountryLimits = {
   /** v0.18.24 (owner 2026-11-04 "Yes, admin setting"): the general write limit (http/rateLimit.ts). */
   writesPerUserPerMinute: number;
   writesPerAddressPerMinute: number;
+  savedPlacesPerPerson: number;
+  emergencyContactsPerPerson: number;
 };
 type Spec = { defaults: CountryLimits; ranges: Record<keyof CountryLimits, [number, number]> };
 export const COUNTRY_LIMITS = (contract as unknown as { countryLimits: Spec }).countryLimits;

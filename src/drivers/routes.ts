@@ -19,6 +19,7 @@ import type { DocumentKey } from "../documents/files.js";
 import { ONBOARDING } from "./onboardingRules.js";
 import { riderDriverPhoto } from "../trips/driverPhoto.js";
 import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
+import { phoneDataRoutes } from "../accounts/phoneDataRoutes.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
@@ -42,6 +43,9 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
   const now = () => deps.clock?.() ?? new Date();
   const idem = (request: FastifyRequest, subjectId: string) => ({ actor: "driver" as const, subjectId, key: keyOf(request), method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null });
+  // BASE B13 (contract v0.18.26 §47): saved places, ride preferences and emergency contacts on the server. Registered
+  // here so app.ts stays as it is.
+  await phoneDataRoutes(app, { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) });
 
   app.get(`${API_PREFIX}/driver/profile`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
