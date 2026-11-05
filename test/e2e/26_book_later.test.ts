@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { fakeOsrm, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
+import { drive, fakeOsrm, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
 /**
  * v0.18.17 Book later (CONTRACT.md §41, contract.json#bookLater; owner 2026-11-03 Q1–Q7, Rules decisions/driver-g15.md):
@@ -233,9 +233,10 @@ describe("book later (owner Q1–Q7)", () => {
     expect(late.body.cancellation.fee).toBeNull();
   });
 
-  it("job 5 (R28, owner Q7): a driver on a trip gets a booked ride starting within 60 min as Exclusive (held as his next); not when it clashes (fail-before: never)", async () => {
+  it("job 5 (R28, owner Q7 + answer 2026-11-05): an on-trip driver gets Exclusives (booked and live) only after 70 % of his route; a live one is queued and starts when his trip ends (fail-before: never)", async () => {
     // Only A is around: B is offline for this case.
     await sim.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", b.id).execute();
+    const NEAR_DROP = { lat: 59.318, lng: 18.0718 }; // ~80 % of Sergels torg → Medborgarplatsen
     try {
       const other = await sim.rider(1);
       const live = await other.book();
@@ -243,11 +244,15 @@ describe("book later (owner Q1–Q7)", () => {
       const liveOffer = await a.offerFor(live.tripId);
       expect(liveOffer).toBeDefined();
       expect((await a.accept(liveOffer!)).status).toBe(200);
-      expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
+      await drive(a, live.tripId, "in_trip");
 
-      // Booked 25 min ahead (sent at once): A ends his trip and drives over in time → an Exclusive offer, never Radar.
+      // Booked 25 min ahead (sent at once). At the start of his trip (0 %): no offer yet.
       const next = await book(minutes(25));
       await sim.tick();
+      expect(await a.offerFor(next.tripId), "not before 70 % of the route").toBeUndefined();
+      // 80 % of the way to the drop-off: the next round offers it as Exclusive, never Radar.
+      await a.moveTo(NEAR_DROP);
+      await jump(31);
       const offer = await a.offerFor(next.tripId);
       expect(offer, "on-trip driver gets the booked ride").toBeDefined();
       expect(offer!["kind"]).toBe("exclusive");
@@ -255,17 +260,55 @@ describe("book later (owner Q1–Q7)", () => {
       expect(took.status, JSON.stringify(took.body)).toBe(200);
       const held = await sim.db.selectFrom("trips").select(["status", "driver_id", "reservation"]).where("trip_id", "=", next.tripId).executeTakeFirstOrThrow();
       expect(held).toMatchObject({ status: "accepted", driver_id: a.id, reservation: { held: true } });
-      // He stays on his current trip; the booked one waits for him.
       expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
-      expect((await sim.db.selectFrom("trips").select("driver_id").where("trip_id", "=", live.tripId).executeTakeFirstOrThrow()).driver_id).toBe(a.id);
       await sim.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", next.tripId).execute();
 
-      // His current trip runs an hour longer than the booked time → no offer (it clashes).
-      await sim.db.updateTable("trips").set({ duration_seconds: 3600 }).where("trip_id", "=", live.tripId).execute();
-      const clash = await book(minutes(20));
+      // Admin › Dispatch: booked rides only within 10 min for on-trip drivers → a ride in 25 min is not offered.
+      await sim.publish(owner, "dispatch", "Z001", (d) => ({ ...d, bookedNext: { on: true, withinMin: 10 } }));
+      const far = await book(minutes(25));
       await sim.tick();
-      expect(await a.offerFor(clash.tripId)).toBeUndefined();
+      expect(await a.offerFor(far.tripId)).toBeUndefined();
+      await sim.publish(owner, "dispatch", "Z001", (d) => ({ ...d, bookedNext: { on: true, withinMin: 60 } }));
+      await sim.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", far.tripId).execute();
+
+      // A LIVE ride (owner 2026-11-05 "any kind of exclusive"): offered as Exclusive and queued behind his trip.
+      const third = await sim.rider(2);
+      const queued = await third.book();
+      await sim.tick();
+      const liveNext = await a.offerFor(queued.tripId);
+      expect(liveNext, "live Exclusive to the on-trip driver").toBeDefined();
+      expect(liveNext!["kind"]).toBe("exclusive");
+      expect((await a.accept(liveNext!)).status).toBe(200);
+      const waiting = await sim.db.selectFrom("trips").select(["status", "next_after_trip_id"]).where("trip_id", "=", queued.tripId).executeTakeFirstOrThrow();
+      expect(waiting).toEqual({ status: "accepted", next_after_trip_id: live.tripId });
+      // His current trip ends → the queued one is his current trip; he stays on a trip.
+      await a.moveTo(PLACES.medborgar);
+      const pv = (await a.get(`/driver/trips/${live.tripId}/complete-preview`)).body;
+      const done = await a.command(live.tripId, "complete", { previewId: pv.previewId, cashCollected: pv.cashDue });
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      const startedRow = await sim.db.selectFrom("trips").select(["status", "next_after_trip_id"]).where("trip_id", "=", queued.tripId).executeTakeFirstOrThrow();
+      expect(startedRow).toEqual({ status: "accepted", next_after_trip_id: null });
+      expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
     } finally {
+      await sim.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", b.id).execute();
+    }
+  });
+
+  it("job 5 (owner 2026-11-05): CountryRules.onTripOffers.minRouteDonePct 100 → no offer to an on-trip driver at 80 %", async () => {
+    await sim.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", b.id).execute();
+    await sim.publish(owner, "country_rules", "SE", (d) => ({ ...d, onTripOffers: { minRouteDonePct: 100 } }));
+    try {
+      const other = await sim.rider(1);
+      const cur = await other.book();
+      await sim.tick();
+      expect((await a.accept((await a.offerFor(cur.tripId))!)).status).toBe(200);
+      await drive(a, cur.tripId, "in_trip");
+      await a.moveTo({ lat: 59.318, lng: 18.0718 });
+      const next = await rider.book();
+      await sim.tick();
+      expect(await a.offerFor(next.tripId)).toBeUndefined();
+    } finally {
+      await sim.publish(owner, "country_rules", "SE", (d) => ({ ...d, onTripOffers: { minRouteDonePct: 70 } }));
       await sim.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", b.id).execute();
     }
   });

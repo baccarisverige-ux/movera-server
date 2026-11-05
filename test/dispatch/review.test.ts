@@ -77,7 +77,7 @@ const offline = (key: K) => database.db.updateTable("drivers").set({ online_stat
 
 // Regression tests from the dispatch review (each was a failing proof before the fix).
 describe("dispatch runtime review", () => {
-  it("H1: a driver who still has a rider gets no offer in the test week (next trips come later), so no impossible accept", async () => {
+  it("H1, changed by owner answer 2026-11-05 (fix job 5): a driver with a rider, almost at the drop-off, gets only an Exclusive, and accepting it queues it", async () => {
     // A is in_trip on trip0, dropping off right next to the new pickup.
     const trip0 = await create(rider2);
     await database.db.deleteFrom("timers").execute();
@@ -88,8 +88,12 @@ describe("dispatch runtime review", () => {
     await offline("C");
     const trip1 = await create(rider);
     await worker.runDue();
-    expect(await openOffers("A")).toEqual([]);
-    expect((await call(app, "GET", `/trips/${trip1}`, rider)).json().status).toBe("searching");
+    const offers = await openOffers("A");
+    expect(offers.map((o) => o.kind)).toEqual(["exclusive"]);
+    const took = await call(app, "POST", `/offers/${offers[0]!.offerId}/accept`, drivers.A.headers, { expectedVersion: offers[0]!.version });
+    expect(took.statusCode, took.body).toBe(200);
+    const row = await database.db.selectFrom("trips").select(["status", "next_after_trip_id"]).where("trip_id", "=", trip1).executeTakeFirstOrThrow();
+    expect(row).toEqual({ status: "accepted", next_after_trip_id: trip0 });
   });
 
   it("H2: after accepting one Radar trip the driver's other offers are withdrawn, and accepting one is 409", async () => {

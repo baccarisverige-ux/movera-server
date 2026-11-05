@@ -321,6 +321,8 @@ export interface TripsTable {
   cash_collected_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   driver_rating_status: Generated<string>;
   accept_pickup_meters: ColumnType<number | null, number | null | undefined, number | null>;
+  /** v0.18.33 (migration 0082): a live trip queued behind this driver's current trip, until it ends. */
+  next_after_trip_id: ColumnType<string | null, string | null | undefined, string | null>;
   wallet_applied_minor: ColumnType<string, number | string | undefined, number | string>;
   cancelled_driver_ids: ColumnType<string[], string[] | undefined, string[] | RawBuilder<string[]>>;
   created_at: Timestamp;

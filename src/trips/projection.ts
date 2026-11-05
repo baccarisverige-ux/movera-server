@@ -286,6 +286,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
       radar: { amountMinor: bonusFor(row, "radar"), currency, priority: priorityFor(row, "radar") },
     };
   }
+  // v0.18.33 (owner answer 2026-11-05): a live trip queued behind its driver's current trip (driver and admin views).
+  if (viewer !== "rider" && row.next_after_trip_id) projection["nextAfterTripId"] = row.next_after_trip_id;
   // v0.18.33 (owner Q6, contract.json#afterTestRules.walletFirst): the rider's per-ride wallet switch (rider and admin views).
   if (viewer !== "driver") projection["walletFirst"] = (row.booking_rules as { walletFirst?: boolean } | null)?.walletFirst !== false;
   // The wallet pays first; the driver collects the rest in cash (shown once the wallet covers part of it).

@@ -35,10 +35,25 @@ export function bookedNextOf(doc: Pick<DispatchDoc, "bookedNext"> | null | undef
 export function bookedNextOpen(trip: Pick<TripRow, "kind" | "scheduled_at">, settings: BookedNext, now: Date): boolean {
   return settings.on && trip.kind === "scheduled" && trip.scheduled_at !== null && trip.scheduled_at.getTime() - now.getTime() <= settings.withinMin * 60_000;
 }
-/** At accept (owner Q7): this driver, on a trip, may still take this booked ride as his next one. */
-export async function bookedNextFits(trx: Trx, trip: TripRow, driverId: string, now: Date): Promise<boolean> {
+/**
+ * Owner answer 2026-11-05 (contract.json#afterTestRules.bookedNext): may drivers on a trip get this trip as an Exclusive?
+ * A booked ride: bookedNext on and its pickup within withinMin. A live ride: the zone's exclusiveWhileDriving is on.
+ */
+export function onTripOpen(trip: Pick<TripRow, "kind" | "scheduled_at">, doc: Pick<DispatchDoc, "bookedNext" | "exclusiveWhileDriving"> | null | undefined, now: Date): boolean {
+  if (trip.kind === "scheduled") return bookedNextOpen(trip, bookedNextOf(doc), now);
+  return doc?.exclusiveWhileDriving?.on === true;
+}
+const ON_TRIP_DEFAULT = (contract as unknown as { configDefaults: { onTripOffers: { minRouteDonePct: number } } }).configDefaults.onTripOffers.minRouteDonePct;
+/** CountryRules.onTripOffers.minRouteDonePct of the zone (its own, else its country's Standard), else 70. */
+export async function onTripMinDonePct(ex: Trx, zoneId: string): Promise<number> {
+  const rules = await liveDocument<{ onTripOffers?: { minRouteDonePct?: unknown } }>(ex, "country_rules", zoneId);
+  const v = rules?.document.onTripOffers?.minRouteDonePct;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100 ? v : ON_TRIP_DEFAULT;
+}
+/** At accept: this driver, on a trip, may still take this trip (an Exclusive) as his next one. */
+export async function onTripFits(trx: Trx, trip: TripRow, driverId: string, now: Date): Promise<boolean> {
   const live = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
-  if (!bookedNextOpen(trip, bookedNextOf(live?.document), now)) return false;
+  if (!onTripOpen(trip, live?.document, now)) return false;
   const at = await trx.selectFrom("driver_locations").select(["driver_id", "lat", "lng"]).where("driver_id", "=", driverId).executeTakeFirst();
   if (!at) return false;
   return (await onTripReach(trx, trip, [at], now)).has(driverId);
@@ -46,27 +61,34 @@ export async function bookedNextFits(trx: Trx, trip: TripRow, driverId: string, 
 const ON_BOARD = new Set(["rider_onboard", "in_trip", "approaching_dropoff"]);
 const hoursMs = (km: number) => (km / PICKUP_KMH) * 3600_000;
 /**
- * Owner Q7: for each driver on a trip, when he can be at this booked ride's pickup: the end of his current trip (its start
- * + booked minutes once the rider is on board; else now + the drive to its pickup + its booked minutes) + the drive from
- * its drop-off to the booked pickup. Only drivers who make it by the booked time are returned, with km from the drop-off.
+ * Owner Q7 + answer 2026-11-05: the drivers on a trip who may get this trip next. The rider must be on board and he must
+ * have driven at least minRouteDonePct % of the route: done = 1 − (dispatchKm to its drop-off) / (its booked km). He
+ * holds no other queued trip. A booked ride also needs the end of his trip (now + the drive to its drop-off) + the drive
+ * from there to the booked pickup by the booked time. km (and the ETA) are counted from the current drop-off.
  */
 export async function onTripReach(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: string; lat: number; lng: number }>, now: Date): Promise<Map<string, { dropKm: number; inMin: number }>> {
   const out = new Map<string, { dropKm: number; inMin: number }>();
-  if (drivers.length === 0 || trip.scheduled_at === null) return out;
-  const current = await trx.selectFrom("trips").select(["trip_id", "driver_id", "status", "started_at", "boarded_at", "duration_seconds", "pickup", "dropoff"])
+  if (drivers.length === 0) return out;
+  const minPct = await onTripMinDonePct(trx, trip.zone_id);
+  const current = await trx.selectFrom("trips").select(["trip_id", "driver_id", "status", "distance_meters", "dropoff"])
     .where("driver_id", "in", drivers.map((d) => d.driver_id)).where("trip_id", "!=", trip.trip_id)
     .where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).where(NOT_HELD).execute();
+  const queued = current.length
+    ? new Set((await trx.selectFrom("trips").select("next_after_trip_id").where("next_after_trip_id", "in", current.map((c) => c.trip_id)).where("status", "=", "accepted").execute()).map((q) => q.next_after_trip_id))
+    : new Set<string | null>();
   const pickup = trip.pickup as Place;
   for (const d of drivers) {
     const mine = current.filter((c) => c.driver_id === d.driver_id);
     if (mine.length !== 1) continue;
     const c = mine[0]!;
-    const tripMs = Number(c.duration_seconds ?? 0) * 1000;
-    const endMs = ON_BOARD.has(c.status)
-      ? Math.max(now.getTime(), (c.started_at ?? c.boarded_at ?? now).getTime() + tripMs)
-      : now.getTime() + hoursMs(dispatchKm({ lat: d.lat, lng: d.lng }, c.pickup as Place)) + tripMs;
+    if (!ON_BOARD.has(c.status) || queued.has(c.trip_id)) continue;
+    const leftKm = dispatchKm({ lat: d.lat, lng: d.lng }, c.dropoff as Place);
+    const totalKm = Number(c.distance_meters ?? 0) / 1000;
+    const donePct = totalKm > 0 ? Math.max(0, 1 - leftKm / totalKm) * 100 : 0;
+    if (donePct < minPct) continue;
+    const endMs = now.getTime() + hoursMs(leftKm);
     const dropKm = dispatchKm(c.dropoff as Place, pickup);
-    if (endMs + hoursMs(dropKm) > trip.scheduled_at.getTime()) continue;
+    if (trip.kind === "scheduled" && (trip.scheduled_at === null || endMs + hoursMs(dropKm) > trip.scheduled_at.getTime())) continue;
     out.set(d.driver_id, { dropKm, inMin: Math.max(0, Math.round((endMs - now.getTime()) / 60_000)) });
   }
   return out;
@@ -107,11 +129,11 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     // Next trips (an offer to a driver who still has a rider) are a later round (owner decision 10): only free
     // (online) drivers get live offers. v0.18.33 (owner Q7): a booked ride within bookedNext.withinMin also reads the
     // drivers on a trip (Exclusive only; checked below with onTripReach).
-    .where("drivers.online_status", "in", bookedNextOpen(trip, bookedNextOf(doc), now) ? ["online", "on_trip"] : ["online"])
+    .where("drivers.online_status", "in", onTripOpen(trip, doc, now) ? ["online", "on_trip"] : ["online"])
     .where(inZones)
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
     .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000));
-  if (options.reachKm !== undefined && Number.isFinite(options.reachKm) && !bookedNextOpen(trip, bookedNextOf(doc), now)) {
+  if (options.reachKm !== undefined && Number.isFinite(options.reachKm) && !onTripOpen(trip, doc, now)) {
     // dispatchKm = straight line × roadFactor (≥ 1), so a box of reachKm straight-line km holds every driver in reach.
     const dLat = options.reachKm / 111.32;
     const dLng = dLat / Math.max(0.01, Math.cos((pickup.lat * Math.PI) / 180));

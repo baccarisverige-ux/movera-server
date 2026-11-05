@@ -70,6 +70,8 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   // freeChangeBeforeMin before pickup costs the fee even when no driver took it yet (Movera keeps it, owner Q5).
   const bookedNoDriver = trip.kind === "scheduled" && trip.scheduled_at !== null && (trip.accepted_at === null || trip.driver_id === null);
   if (!bookedNoDriver && (trip.accepted_at === null || trip.driver_id === null)) return null;
+  // v0.18.33: a live trip queued behind the driver's current trip: he is not on his way yet, the cancel is free.
+  if (trip.next_after_trip_id) return null;
   // Its pickup time passed with no driver: Movera did not deliver it, always free (rider app terms, owner P17 "no fee").
   if (bookedNoDriver && now.getTime() >= trip.scheduled_at!.getTime()) return null;
   // v0.18.17 (contract.json#bookLater.rider.cancel, owner Q6): more than freeChangeBeforeMin before pickup = free.

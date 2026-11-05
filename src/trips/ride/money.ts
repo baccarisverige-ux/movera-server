@@ -8,11 +8,28 @@ import { newId } from "../../ids.js";
 import type { Money } from "./shared.js";
 import { outstandingLine } from "./settings.js";
 import { moveWallet, walletBalance } from "../../riders/wallet.js";
+import { appendTripEvent } from "../../db/tripLog.js";
+import { scheduleTimer } from "../../jobs/timers.js";
+import { NOT_HELD } from "../../reservations/view.js";
+import { tripProjection } from "../projection.js";
 
 /* ---------------------------------------------------------------- money records */
 
 export async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Promise<void> {
   if (driverId === null) return;
+  // v0.18.33 (owner answer 2026-11-05): he still drives a current trip (a queued or held one just ended): he stays on it.
+  const still = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId)
+    .where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).where(NOT_HELD).executeTakeFirst();
+  if (still) return;
+  // A live trip he took as an Exclusive while on that trip starts now: it is his current trip, the ETA starts ticking.
+  const queued = await trx.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("status", "=", "accepted").where("next_after_trip_id", "is not", null).orderBy("accepted_at").executeTakeFirst();
+  if (queued) {
+    const started = await trx.updateTable("trips").set({ next_after_trip_id: null, version: sql`version + 1`, updated_at: now }).where("trip_id", "=", queued.trip_id).returningAll().executeTakeFirstOrThrow();
+    await appendTripEvent(trx, { tripId: started.trip_id, kind: "trip_projection", version: started.version, occurredAt: now, projection: tripProjection(started, "admin", { sequence: Number(started.sequence) + 1 }) });
+    await scheduleTimer(trx, { kind: "trip_eta", refId: started.trip_id, dueAt: now, payload: {} });
+    await trx.updateTable("drivers").set({ online_status: "on_trip", updated_at: now }).where("driver_id", "=", driverId).execute();
+    return;
+  }
   // A driver, car or fleet blocked during the trip kept the trip to its end (DECISIONS.md): at the end the driver goes
   // offline instead of back online, as if the block had come when they were free (lists.ts, peopleRoutes.ts).
   const mayDrive = sql<boolean>`account_status = 'active'
