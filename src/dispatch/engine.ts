@@ -21,7 +21,9 @@ export type DispatchDoc = {
   /** v0.18.9 (owner 2026-11-01, rule 16): which offer goes out first; missing = auto (choose decides, as before). */
   start?: { mode: StartChoice; nearKm?: number };
   /** v0.18.9: farthest pickup (km, missing = widest step) and longest pickup ETA (min, 0 / missing = off). */
-  limits?: { maxPickupKm?: number; maxPickupEtaMin?: number };
+  limits?: { maxPickupKm?: number; maxPickupEtaMin?: number; farReachKm?: number };
+  /** v0.18.39 §63 (N2): "No driver nearby" shown once to the rider of a live ride, afterSec from search start. */
+  noDriverNearby?: { on: boolean; afterSec: number; message?: string };
   /** v0.18.11: drivers of these zones are candidates too from search step afterStep (1-based, missing = last step). */
   neighbours?: { on: boolean; zoneIds: string[]; afterStep?: number };
   choose: { how: "auto" | "manual"; radarAbove: number; main: Mode; backup?: string; times: Array<{ id: string; on: boolean; from: string; to: string; mode: Mode }> };
@@ -198,7 +200,7 @@ function inRange(doc: DispatchDoc, ranked: Ranked[], mode: Mode, km: number, ste
 }
 
 /** Where a search is in its steps (stored per trip by the runtime). */
-export type SearchState = { cur: Mode; step: number; tried: number; asked: string[]; switched: Mode[]; repeat: boolean; pending?: "both" | "byDistance"; again?: boolean };
+export type SearchState = { cur: Mode; step: number; tried: number; asked: string[]; switched: Mode[]; repeat: boolean; pending?: "both" | "byDistance"; again?: boolean; far?: boolean };
 
 export function newSearch(mode: Mode, pending?: "both" | "byDistance"): SearchState {
   return { cur: mode, step: 0, tried: 0, asked: [], switched: [], repeat: false, ...(pending ? { pending } : {}) };
@@ -322,4 +324,56 @@ export function waitingSteps(doc: DispatchDoc) {
 /** Search end in seconds from start: the first of maxWaitMin and the first busy step. */
 export function searchEndSec(doc: DispatchDoc): number {
   return Math.min(doc.radius.maxWaitMin * 60, ...waitingSteps(doc).filter((w) => w.kind === "busy").map((w) => w.atSec));
+}
+
+/* ---------------------------------------------------------------- v0.18.39 §63 (N2 + far rider) */
+
+type NoDriverNearby = { on: boolean; afterSec: number; message: string };
+const ND = (contract as unknown as { noDriverNearby: { defaults: { noDriverNearby: NoDriverNearby; farReachKm: number }; ranges: { afterSec: [number, number]; farReachKm: [number, number] }; reaskLimit_value: number; texts: Record<string, Record<string, string>> } }).noDriverNearby;
+/** A driver who let this many offers of a trip pass (declined, ran out) is not asked again in that search. */
+export const REASK_LIMIT = ND.reaskLimit_value;
+export const NO_DRIVER_FOUND_TEXT = ND.texts["no_driver_found"]!["en"]!;
+
+/** DispatchDocument.noDriverNearby with the contract defaults (on, 300 s); a bad value reads as the default. */
+export function noDriverNearbyOf(doc: Pick<DispatchDoc, "noDriverNearby"> | null | undefined): NoDriverNearby {
+  const d = ND.defaults.noDriverNearby;
+  const v = doc?.noDriverNearby;
+  const [lo, hi] = ND.ranges.afterSec;
+  return {
+    on: typeof v?.on === "boolean" ? v.on : d.on,
+    afterSec: typeof v?.afterSec === "number" && v.afterSec >= lo && v.afterSec <= hi ? v.afterSec : d.afterSec,
+    message: typeof v?.message === "string" && v.message.trim() ? v.message : d.message,
+  };
+}
+
+/** The far step (limits.farReachKm, default 12) when it reaches past the normal reach; null = off. */
+export function farReachKm(doc: DispatchDoc): number | null {
+  const v = doc.limits?.farReachKm;
+  const [lo, hi] = ND.ranges.farReachKm;
+  const km = typeof v === "number" && v > lo && v <= hi ? v : ND.defaults.farReachKm;
+  return km > maxPickupKm(doc) ? km : null;
+}
+
+/** The zone's rules with ONE more step at `km` for every mode (no maxPickupKm cap; maxPickupEtaMin still applies). */
+export function farDoc(doc: DispatchDoc, km: number): DispatchDoc {
+  const more = (steps: number[] | undefined) => (steps && steps.length ? [...steps, km] : steps);
+  const { maxPickupKm: _cap, ...limits } = doc.limits ?? {};
+  return {
+    ...doc,
+    radius: { ...doc.radius, steps: [...doc.radius.steps, km] },
+    radar: { ...doc.radar, ...(doc.radar.steps?.length ? { steps: more(doc.radar.steps) } : {}) },
+    exclusive: { ...doc.exclusive, ...(doc.exclusive.steps?.length ? { steps: more(doc.exclusive.steps) } : {}) },
+    limits,
+  };
+}
+
+/**
+ * Far rider (fix plan A2): the steps are used up and the round found NOBODY NEW inside the widest step — it waits, or
+ * it would only ask again drivers who already let an offer of this trip pass.
+ */
+export function nobodyNew(planned: { state: SearchState; round: Round }, passed: Set<string>): boolean {
+  if (!planned.state.repeat) return false;
+  if (planned.round.type === "wait") return true;
+  const ids = [...planned.round.driverIds, ...(planned.round.alsoRadar?.driverIds ?? [])];
+  return ids.every((id) => passed.has(id));
 }

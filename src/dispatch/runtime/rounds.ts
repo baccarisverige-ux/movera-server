@@ -5,7 +5,8 @@ import { scheduleTimer, type TimerHandler } from "../../jobs/timers.js";
 import { liveDocument } from "../../config/service.js";
 import { pickupPayMinor, type PickupPayRate } from "../../rules/pickupPay.js";
 import { applyCommand } from "../../trips/commands.js";
-import { maxPickupKm, newSearch, planRound, rank, startOf, type DispatchDoc, type SearchState } from "../engine.js";
+import { sql } from "kysely";
+import { farDoc, farReachKm, maxPickupKm, newSearch, nobodyNew, planRound, rank, REASK_LIMIT, startOf, type DispatchDoc, type SearchState } from "../engine.js";
 import { ROUND, OPEN_STATUSES, lockTripNow, localTime, controlOf } from "./shared.js";
 import { candidatesFor, lockAndRecheck } from "./candidates.js";
 import { exclusiveOnlyDoc } from "./start.js";
@@ -77,16 +78,37 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     if (start === null) return;
     state = newSearch(start.mode, start.pending);
   }
+  // v0.18.39 §63 (far rider, fix plan A2 "Proof: far rider"): a driver who let REASK_LIMIT offers of this trip pass in
+  // this search (declined, ran out; withdrawn ones do not count) is not asked again in it — one busy driver is not asked
+  // forever. The counts are read from the offers table (rule 33: no server copy keeps them).
+  const passedRows = await trx.selectFrom("offers").select(["driver_id", sql<string>`count(*)`.as("n")]).where("trip_id", "=", tripId).where("status", "in", ["declined", "expired"]).where("sent_at", ">=", search.started_at).groupBy("driver_id").execute();
+  const passed = new Set(passedRows.map((r) => r.driver_id));
+  const spent = new Set(passedRows.filter((r) => Number(r.n) >= REASK_LIMIT).map((r) => r.driver_id));
+  const far = farReachKm(doc);
   // Job 1 (fix plan R1 d): drivers beyond the widest step are never read (they are out of range for every round).
-  const pool = await candidatesFor(trx, trip, doc, now, { reachKm: maxPickupKm(doc) });
+  // v0.18.39 §63: once the search took its far step (state.far), the widest step is limits.farReachKm.
+  const poolFor = async (rules: DispatchDoc) => {
+    const p = await candidatesFor(trx, trip, rules, now, { reachKm: maxPickupKm(rules) });
+    return { ...p, candidates: p.candidates.filter((c) => !spent.has(c.driverId)) };
+  };
+  let rules = state.far && far !== null ? farDoc(doc, far) : doc;
+  let pool = await poolFor(rules);
   // Owner smart assign (v0.18.19): a booked ride asks first the drivers who can arrive early.
   // v0.18.36 §60 (fix job 9, contract.json#airportQueue.dispatch): an airport pickup goes first, as an Exclusive, to the
   // first driver in the airport queue (DB order) who passed this round's filter; the round then locks and re-checks him.
   const queued = await queuePick(trx, trip, pool.candidates.map((c) => c.driverId), now);
   const queueOk = queued !== null && (await lockAndRecheck(trx, [queued.driverId], pool.bookedNext)).size === 0;
-  const planned = queueOk
+  const plan = async (r: DispatchDoc, s: SearchState) => planRound(r, s, await smartOrder(trx, trip, rank(r, pool.candidates, trip.category_id), now));
+  let planned = queueOk
     ? { state, round: { type: "offer" as const, kind: "exclusive" as const, radiusKm: pool.meta.get(queued.driverId)!.km, driverIds: [queued.driverId], reasonCode: QUEUE_REASON } }
-    : planRound(doc, state, await smartOrder(trx, trip, rank(doc, pool.candidates, trip.category_id), now));
+    : await plan(rules, state);
+  if (!queueOk && !state.far && far !== null && nobodyNew(planned, passed)) {
+    // v0.18.39 §63: the steps are used up and nobody new is inside the widest step: ONE extra step at farReachKm, and
+    // the repeat rounds go on at that reach from now on (SearchState.far, stored with the trip row locked).
+    rules = farDoc(doc, far);
+    pool = await poolFor(rules);
+    planned = await plan(rules, { ...state, repeat: true, far: true });
+  }
   await trx.updateTable("searches").set({ state: JSON.stringify(planned.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
   let round: typeof planned.round = planned.round;
   if (round.type === "offer" && !queueOk) {

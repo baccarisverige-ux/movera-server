@@ -21,6 +21,13 @@ export type Place = { lat: number; lng: number };
 export type Step = { id: string; kind: string; message: string; extraMin?: number | null; atSec: number };
 
 export const OPEN_STATUSES = ["searching", "offered"];
+/**
+ * v0.18.39 §63 (owner N2 "search keeps going until the rider cancels"): a live ride's search has no end time. Its
+ * searches.end_at holds this far date (the column is NOT NULL) and no search_end timer is scheduled.
+ */
+export const NO_END = new Date("9999-12-31T00:00:00Z");
+/** v0.18.39 §63: the id of the "No driver nearby" step in searches.steps / fired. */
+export const NO_DRIVER_NEARBY_STEP = "nd";
 export const PICKUP_KMH = DISPATCH.score.pickupKmh;
 /** At most this many open Radar offers per driver (DriverAppConfig.offers.radarApp.full default, §3.3). */
 export const RADAR_LIST_MAX = 8;

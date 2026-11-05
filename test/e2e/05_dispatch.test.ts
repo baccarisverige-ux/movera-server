@@ -77,7 +77,9 @@ describe("scenario 5: decline, offer timeout, reassignment, no drivers, search e
     feed.close();
   });
 
-  it("no driver online: the rider waits through the steps; the sample document ends the search at 8 min as busy", async () => {
+  // v0.18.39 §63 (owner N2 "search keeps going until the rider cancels"): a live search no longer ends at the busy step
+  // (8 min) or maxWaitMin (10 min); "No driver nearby" shows once at 5 min instead of the keep_waiting question.
+  it("no driver online: the rider waits through the steps, sees 'No driver nearby' at 5 min, and the search goes on past 8 and 10 min", async () => {
     await setOnline(a, false);
     await setOnline(b, false);
     try {
@@ -86,20 +88,20 @@ describe("scenario 5: decline, offer timeout, reassignment, no drivers, search e
       await sim.advance(3 * 60 + 5);
       expect((await rider.trip(tripId)).searchStep).toMatchObject({ kind: "alert_admin" });
       await sim.advance(2 * 60);
-      expect((await rider.trip(tripId)).searchStep).toMatchObject({ kind: "keep_waiting" });
-      await sim.advance(3 * 60);
-      const ended = await rider.trip(tripId);
-      expect(ended.status).toBe("expired");
-      expect(ended.searchStep).toMatchObject({ kind: "busy" });
-      await events.reach("expired");
+      expect((await rider.trip(tripId)).searchStep).toMatchObject({ kind: "no_driver_nearby" });
+      await sim.advance(6 * 60);
+      const still = await rider.trip(tripId);
+      expect(["searching", "offered"]).toContain(still.status);
+      expect(still.searchStep).toMatchObject({ kind: "no_driver_nearby" });
       events.close();
+      expect((await rider.command(tripId, "cancel", { reasonCode: "plans_changed" })).body).toMatchObject({ status: "cancelled_by_rider" });
     } finally {
       await setOnline(a, true);
       await setOnline(b, true);
     }
   });
 
-  it("with only the search end (no busy step), the search expires after exactly 10 minutes, not before", async () => {
+  it("with only the search end (no busy step), a live search goes on past maxWaitMin (10 min) until the rider cancels", async () => {
     await sim.publish(owner, "dispatch", "Z001", (doc) => ({ ...doc, waiting: doc["waiting"].map((w: { kind: string }) => (w.kind === "busy" || w.kind === "keep_waiting" ? { ...w, on: false } : w)) }));
     await setOnline(a, false);
     await setOnline(b, false);
@@ -107,12 +109,12 @@ describe("scenario 5: decline, offer timeout, reassignment, no drivers, search e
       const { tripId } = await rider.book();
       await sim.advance(10 * 60 - 5);
       expect(["searching", "offered"]).toContain((await rider.trip(tripId)).status);
-      await sim.advance(10);
-      const ended = await rider.trip(tripId);
-      expect(ended.status).toBe("expired");
-      // An expired trip is not active: the rider can book again.
+      await sim.advance(5 * 60);
+      expect(["searching", "offered"]).toContain((await rider.trip(tripId)).status);
+      expect(await sim.db.selectFrom("timers").select("kind").where("ref_id", "=", tripId).where("kind", "=", "search_end").execute()).toEqual([]);
+      await rider.command(tripId, "cancel", { reasonCode: "plans_changed" });
+      // A cancelled trip is not active: the rider can book again; Keep waiting on it is refused.
       expect((await rider.get("/rider/trips/active")).status).toBe(204);
-      // Keep waiting on an expired trip is refused.
       const late = await rider.command(tripId, "keep-waiting", { answer: "wait" });
       expect(late.status).toBe(409);
     } finally {
@@ -121,8 +123,8 @@ describe("scenario 5: decline, offer timeout, reassignment, no drivers, search e
     }
   });
 
-  it("keep waiting (+3 min) moves the end", async () => {
-    await sim.publish(owner, "dispatch", "Z001", (doc) => ({ ...doc, waiting: doc["waiting"].map((w: { kind: string }) => (w.kind === "busy" ? { ...w, on: false } : { ...w, on: w.kind === "keep_waiting" || w.kind === "alert_admin" })) }));
+  it("keep waiting on a live ride: 200, the search simply goes on (it has no end to move)", async () => {
+    await sim.publish(owner, "dispatch", "Z001", (doc) => ({ ...doc, noDriverNearby: { on: false, afterSec: 300 }, waiting: doc["waiting"].map((w: { kind: string }) => (w.kind === "busy" ? { ...w, on: false } : { ...w, on: w.kind === "keep_waiting" || w.kind === "alert_admin" })) }));
     await setOnline(a, false);
     await setOnline(b, false);
     try {
@@ -133,7 +135,8 @@ describe("scenario 5: decline, offer timeout, reassignment, no drivers, search e
       await sim.advance(5 * 60);
       expect(["searching", "offered"]).toContain((await rider.trip(tripId)).status);
       await sim.advance(3 * 60);
-      expect((await rider.trip(tripId)).status).toBe("expired");
+      expect(["searching", "offered"]).toContain((await rider.trip(tripId)).status);
+      await rider.command(tripId, "cancel", { reasonCode: "plans_changed" });
     } finally {
       await setOnline(a, true);
       await setOnline(b, true);

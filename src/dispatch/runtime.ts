@@ -24,13 +24,13 @@ export { offerView, riderRatingForOffer, FeedQueue } from "./runtime/offers.js";
 export { roundHandler, runRound } from "./runtime/rounds.js";
 export { positiveSeconds, sendAdminOffers, refreshOpenOffers } from "./runtime/adminOffers.js";
 export { acceptOffer, declineOffer } from "./runtime/answers.js";
-export { stopSearch, stepHandler, endHandler, keepWaiting, withdrawHandler } from "./runtime/end.js";
+export { stopSearch, stopBookedNoDriver, stepHandler, endHandler, keepWaiting, withdrawHandler } from "./runtime/end.js";
 
 // Kept here, not in runtime/end.ts, so the map is built only after every runtime/*.ts module has loaded (as before the split).
 // v0.18.7: the ETA tick booked at accept rides with the dispatch handlers (straight-line estimate here; main.ts sets the
 // server's real router over it, [TRIP_ETA]: etaHandler(router)).
 export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler,
   // v0.18.17 (contract.json#bookLater.timers): the booked-ride timers (kinds spelled out: reservations/service.ts imports this module).
-  ...Object.fromEntries(["resv_popup", "resv_open_all", "resv_dispatch", "resv_no_driver", "resv_rider_reminder", "resv_driver_reminder", "resv_go_online", "resv_offline_check", "resv_change_ask", "resv_overdue", "resv_leave_check"].map((kind) => [kind, (trx: Trx, timer: Timer) => reservationTimer(trx, timer)])), // "trip_eta" spelled out and the handler made on first use: trips/eta.ts imports this module, so when eta.ts loads
+  ...Object.fromEntries(["resv_popup", "resv_open_all", "resv_dispatch", "resv_no_driver", "resv_rider_reminder", "resv_driver_reminder", "resv_go_online", "resv_offline_check", "resv_change_ask", "resv_overdue", "resv_leave_check", "resv_no_driver_stop"].map((kind) => [kind, (trx: Trx, timer: Timer) => reservationTimer(trx, timer)])), // "trip_eta" spelled out and the handler made on first use: trips/eta.ts imports this module, so when eta.ts loads
 // first (main.ts), TRIP_ETA is not initialised yet while this line runs (Render deploy of 48e587e crashed on it).
   trip_eta: (trx, timer) => etaHandler(new EstimateRouter())(trx, timer) };

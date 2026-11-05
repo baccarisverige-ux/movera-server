@@ -6,7 +6,9 @@ import { cancelTimer, scheduleTimer, type TimerHandler } from "../../jobs/timers
 import { endTripSends } from "../radarSends.js";
 import { applyCommand } from "../../trips/commands.js";
 import { tripProjection } from "../../trips/projection.js";
-import { ROUND, STEP, END, type Step, OPEN_STATUSES, lockTripNow } from "./shared.js";
+import { ROUND, STEP, END, NO_END, NO_DRIVER_NEARBY_STEP, type Step, OPEN_STATUSES, lockTripNow } from "./shared.js";
+import { pokeAlerts } from "../../alerts/detector.js";
+import { NO_DRIVER_FOUND_TEXT } from "../engine.js";
 import { startSearch } from "./start.js";
 import { offerView, FeedQueue, closeOpenOffers } from "./offers.js";
 import { loadSearch } from "./rounds.js";
@@ -48,13 +50,20 @@ export const stepHandler: TimerHandler = async (trx, timer) => {
   if (!step || (search.fired as string[]).includes(stepId)) return;
   // Only busy ends the search at its own time; any other step at or after the end never shows.
   if (step.kind !== "busy" && now.getTime() >= search.end_at.getTime()) return;
-  await trx.updateTable("searches").set({ fired: JSON.stringify([...(search.fired as string[]), stepId]), updated_at: now }).where("trip_id", "=", tripId).execute();
-  if (step.kind === "busy") {
+  const fired = search.fired as string[];
+  await trx.updateTable("searches").set({ fired: JSON.stringify([...fired, stepId]), updated_at: now }).where("trip_id", "=", tripId).execute();
+  // v0.18.39 §63 (owner N2): a live search never ends (end_at NO_END): busy is a message only. Neither busy nor
+  // keep_waiting replaces "No driver nearby" once it was shown (it already asks Keep waiting / Cancel free).
+  const live = search.end_at.getTime() >= NO_END.getTime();
+  if (live && fired.includes(NO_DRIVER_NEARBY_STEP) && (step.kind === "busy" || step.kind === "keep_waiting")) return;
+  if (step.kind === "busy" && !live) {
     await showStep(trx, trip, step, now);
     await expireSearch(trx, tripId, now);
     return;
   }
   await showStep(trx, trip, step, now);
+  // v0.18.39 §63: the admin alert no_driver_nearby at the same moment (the sweep reads trips.search_step).
+  if (step.kind === "no_driver_nearby") await pokeAlerts(trx, now);
 };
 
 export const endHandler: TimerHandler = async (trx, timer) => {
@@ -88,6 +97,19 @@ async function expireSearch(trx: Trx, tripId: string, now: Date) {
   await endTripSends(trx, tripId, "search_ended", null, now);
 }
 
+/**
+ * v0.18.39 §63 (P17, owner "15 min after pickup past"): a booked ride with no driver at pickup + noDriverStopAfterMin.
+ * Offers withdrawn, every search timer gone, the trip expired (system expire, no fee) with searchStep no_driver_found.
+ * Called by the reservation timer with the trip row locked; `mark` saves reservation.noDriverFound first.
+ */
+export async function stopBookedNoDriver(trx: Trx, trip: TripRow, now: Date, mark: () => Promise<void>): Promise<TripRow> {
+  await stopSearch(trx, trip, now);
+  await mark();
+  const current = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+  const searchStep = { id: "nf", kind: "no_driver_found", message: NO_DRIVER_FOUND_TEXT, extraMin: null, at: now.toISOString() };
+  return applyCommand(trx, current, { command: "expire", actor: "system", now, set: { ended_by_command: "expire", ended_at: now, search_step: JSON.stringify(searchStep) } });
+}
+
 /** POST /trips/{tripId}/keep-waiting (owner decision 24). */
 export async function keepWaiting(trx: Trx, riderId: string, tripId: string, answer: "wait" | "stop", now: Date, cancel: (trip: TripRow) => Promise<TripRow>, expectedVersion?: number): Promise<TripRow> {
   const trip = await lockTrip(trx, tripId);
@@ -98,11 +120,14 @@ export async function keepWaiting(trx: Trx, riderId: string, tripId: string, ans
   const search = await loadSearch(trx, tripId);
   const step = trip.search_step as { id: string; kind: string; extraMin: number | null } | null;
   const answered = (search?.answered as string[] | undefined) ?? [];
-  if (!search || !OPEN_STATUSES.includes(trip.status) || step?.kind !== "keep_waiting" || answered.includes(step.id)) {
+  // v0.18.39 §63: "No driver nearby" asks the same (Keep waiting / Cancel free).
+  if (!search || !OPEN_STATUSES.includes(trip.status) || (step?.kind !== "keep_waiting" && step?.kind !== "no_driver_nearby") || answered.includes(step.id)) {
     throw new ApiError("invalid_transition", "There is no question to answer now.", { projection: tripProjection(trip, "rider") });
   }
   await trx.updateTable("searches").set({ answered: JSON.stringify([...answered, step.id]), updated_at: now }).where("trip_id", "=", tripId).execute();
   if (answer === "stop") return cancel(trip);
+  // v0.18.39 §63: a live search has no end to move; Keep waiting changes nothing else.
+  if (search.end_at.getTime() >= NO_END.getTime()) return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   const endAt = new Date(search.end_at.getTime() + (step.extraMin ?? 0) * 60_000);
   const steps = (search.steps as Step[]).map((s) => (s.kind === "busy" && !(search.fired as string[]).includes(s.id) ? { ...s, atSec: Math.max(s.atSec, (endAt.getTime() - search.started_at.getTime()) / 1000) } : s));
   await trx.updateTable("searches").set({ end_at: endAt, steps: JSON.stringify(steps), updated_at: now }).where("trip_id", "=", tripId).execute();

@@ -1,11 +1,11 @@
 import { exclusiveOnly } from "../../reservations/service.js";
 import type { Executor, Trx } from "../../db/db.js";
 import type { TripRow } from "../../db/tripLog.js";
-import { scheduleTimer } from "../../jobs/timers.js";
+import { cancelTimer, scheduleTimer } from "../../jobs/timers.js";
 import { liveDocument } from "../../config/service.js";
 import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../../drivers/service.js";
-import { busyOf, newSearch, searchEndSec, startOf, waitingSteps, type DispatchDoc, type SearchState } from "../engine.js";
-import { ROUND, STEP, END, type Step, localTime, controlOf } from "./shared.js";
+import { busyOf, newSearch, noDriverNearbyOf, searchEndSec, startOf, waitingSteps, type DispatchDoc, type SearchState } from "../engine.js";
+import { ROUND, STEP, END, NO_END, NO_DRIVER_NEARBY_STEP, type Step, localTime, controlOf } from "./shared.js";
 
 /* ---------------------------------------------------------------- start */
 
@@ -34,7 +34,13 @@ export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<v
   const start = forced ? { mode: forced } : startOf(doc, control, busy, localTime(doc.timeZone, now));
   const mode = start?.mode ?? null;
   const steps: Step[] = waitingSteps(doc).map((w) => ({ id: w.id, kind: w.kind, message: w.message, extraMin: w.extraMin ?? null, atSec: w.atSec }));
-  const endAt = new Date(now.getTime() + searchEndSec(doc) * 1000);
+  // v0.18.39 §63 (owner N2): a live ride's search never ends by itself (no maxWaitMin end, busy is a message only) and
+  // shows "No driver nearby" once at noDriverNearby.afterSec. A booked ride keeps its search rounds (it restarts at
+  // the end) and stops at pickup + noDriverStopAfterMin (P17, reservations/service.ts).
+  const liveRide = trip.kind !== "scheduled";
+  const nd = noDriverNearbyOf(doc);
+  if (liveRide && nd.on) steps.push({ id: NO_DRIVER_NEARBY_STEP, kind: "no_driver_nearby", message: nd.message, extraMin: null, atSec: nd.afterSec });
+  const endAt = liveRide ? NO_END : new Date(now.getTime() + searchEndSec(doc) * 1000);
   const values = {
     trip_id: trip.trip_id,
     started_at: now,
@@ -58,7 +64,8 @@ export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<v
   for (const step of steps) {
     await scheduleTimer(trx, { kind: STEP, refId: `${trip.trip_id}:${step.id}`, dueAt: new Date(now.getTime() + step.atSec * 1000), payload: { tripId: trip.trip_id, stepId: step.id } });
   }
-  await scheduleTimer(trx, { kind: END, refId: trip.trip_id, dueAt: endAt, payload: {} });
+  if (liveRide) await cancelTimer(trx, END, trip.trip_id);
+  else await scheduleTimer(trx, { kind: END, refId: trip.trip_id, dueAt: endAt, payload: {} });
   await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: now, payload: {} });
 }
 
