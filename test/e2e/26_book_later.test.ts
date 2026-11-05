@@ -272,7 +272,9 @@ describe("book later (owner Q1–Q7)", () => {
       await sim.publish(owner, "dispatch", "Z001", (d) => ({ ...d, bookedNext: { on: true, withinMin: 60 } }));
       await sim.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", far.tripId).execute();
 
-      // A LIVE ride (owner 2026-11-05 "any kind of exclusive"): offered as Exclusive and queued behind his trip.
+      // A LIVE ride (owner 2026-11-05 "any kind of exclusive", no switch): offered as Exclusive and queued behind his
+      // trip even with the zone's "Exclusive while driving" off (fail-before: the switch gated it).
+      await sim.publish(owner, "dispatch", "Z001", (d) => ({ ...d, exclusiveWhileDriving: { ...(d["exclusiveWhileDriving"] as object), on: false } }));
       const third = await sim.rider(2);
       const queued = await third.book();
       await sim.tick();
@@ -282,6 +284,7 @@ describe("book later (owner Q1–Q7)", () => {
       expect((await a.accept(liveNext!)).status).toBe(200);
       const waiting = await sim.db.selectFrom("trips").select(["status", "next_after_trip_id"]).where("trip_id", "=", queued.tripId).executeTakeFirstOrThrow();
       expect(waiting).toEqual({ status: "accepted", next_after_trip_id: live.tripId });
+      await sim.publish(owner, "dispatch", "Z001", (d) => ({ ...d, exclusiveWhileDriving: { ...(d["exclusiveWhileDriving"] as object), on: true } }));
       // His current trip ends → the queued one is his current trip; he stays on a trip.
       await a.moveTo(PLACES.medborgar);
       const pv = (await a.get(`/driver/trips/${live.tripId}/complete-preview`)).body;

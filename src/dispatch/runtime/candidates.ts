@@ -37,11 +37,12 @@ export function bookedNextOpen(trip: Pick<TripRow, "kind" | "scheduled_at">, set
 }
 /**
  * Owner answer 2026-11-05 (contract.json#afterTestRules.bookedNext): may drivers on a trip get this trip as an Exclusive?
- * A booked ride: bookedNext on and its pickup within withinMin. A live ride: the zone's exclusiveWhileDriving is on.
+ * A booked ride: bookedNext on and its pickup within withinMin. A live ride: always (no zone switch).
  */
 export function onTripOpen(trip: Pick<TripRow, "kind" | "scheduled_at">, doc: Pick<DispatchDoc, "bookedNext" | "exclusiveWhileDriving"> | null | undefined, now: Date): boolean {
   if (trip.kind === "scheduled") return bookedNextOpen(trip, bookedNextOf(doc), now);
-  return doc?.exclusiveWhileDriving?.on === true;
+  // Owner 2026-11-05 "any kind of exclusive", no switch: every live trip, whatever the zone's exclusiveWhileDriving.
+  return true;
 }
 const ON_TRIP_DEFAULT = (contract as unknown as { configDefaults: { onTripOffers: { minRouteDonePct: number } } }).configDefaults.onTripOffers.minRouteDonePct;
 /** CountryRules.onTripOffers.minRouteDonePct of the zone (its own, else its country's Standard), else 70. */
