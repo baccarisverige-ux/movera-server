@@ -150,6 +150,8 @@ describe("in-app calls (v0.18.38 §62)", () => {
     expect(answered.statusCode).toBe(200);
     expect(schemaProblem("CallView", answered.json())).toBeNull();
     expect(answered.json()).toMatchObject({ callId, state: "answered" });
+    // The callee gets its own ICE servers with the answer.
+    expect(answered.json().ice.servers.length).toBeGreaterThan(0);
     expect((await call(copy2, "POST", `/calls/${callId}/signal`, driver.headers, { type: "answer", sdp: "v=0 answer" })).statusCode).toBe(202);
     expect((await call(app, "POST", `/calls/${callId}/signal`, driver.headers, { type: "ice", candidate: { candidate: "candidate:1 1 udp 1 10.0.0.1 9 typ host", sdpMid: "0", sdpMLineIndex: 0 } })).statusCode).toBe(202);
     await advance(42);

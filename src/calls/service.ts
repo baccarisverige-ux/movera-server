@@ -92,8 +92,8 @@ async function finish(trx: Trx, row: CallRow, trip: TripRow, state: "ended" | "m
   return view;
 }
 
-/** POST /calls/{callId}/answer: only the callee, only while ringing. */
-export async function answerCall(trx: Trx, who: CallWho, callId: string, now: Date): Promise<CallView> {
+/** POST /calls/{callId}/answer: only the callee, only while ringing. The answer carries the callee's ICE servers. */
+export async function answerCall(trx: Trx, who: CallWho, callId: string, now: Date): Promise<CallView & { ice: ReturnType<typeof iceServers> }> {
   const { row, trip } = await lockOwnCall(trx, callId, who);
   if (row.state !== "ringing" || row.callee !== who.actor) throw notLive(row);
   const settings = await callSettingsFor(trx, trip.zone_id);
@@ -102,7 +102,7 @@ export async function answerCall(trx: Trx, who: CallWho, callId: string, now: Da
   await scheduleTimer(trx, { kind: CALL_MAX_LENGTH, refId: callId, dueAt: new Date(now.getTime() + settings.maxCallMin * 60_000) });
   const view = callView(answered);
   await appendTripEvent(trx, { tripId: trip.trip_id, kind: "call_answered", version: trip.version, occurredAt: now, call: view });
-  return view;
+  return { ...view, ice: iceServers(callId, now, settings.maxCallMin * 60) };
 }
 
 const END_REASONS = new Set(["hangup", "declined", "failed"]);
