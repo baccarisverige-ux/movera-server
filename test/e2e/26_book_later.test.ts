@@ -224,6 +224,13 @@ describe("book later (owner Q1–Q7)", () => {
     expect(earnings).toEqual([]);
     // The fee is settled before the next ride (outstandingFee); clear it so later cases start clean.
     await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", trip.tripId).execute();
+    await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();
+    // Its pickup time passed and still no driver: Movera did not deliver it → free.
+    const missed = await book(minutes(180));
+    await sim.db.updateTable("trips").set({ scheduled_at: new Date(sim.clock.now.getTime() - 60_000) }).where("trip_id", "=", missed.tripId).execute();
+    const late = await rider.command(missed.tripId, "cancel", { reasonCode: "plans_changed" });
+    expect(late.status, JSON.stringify(late.body)).toBe(200);
+    expect(late.body.cancellation.fee).toBeNull();
   });
 
   it("job 5 (R28, owner Q7): a driver on a trip gets a booked ride starting within 60 min as Exclusive (held as his next); not when it clashes (fail-before: never)", async () => {
