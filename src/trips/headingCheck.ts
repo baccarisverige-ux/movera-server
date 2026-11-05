@@ -16,10 +16,16 @@ import { notify } from "../notifications/service.js";
  * that driver (counted against him). The first free minutes after accept stay free for the rider whatever this says.
  */
 
-export type HeadingSettings = { on: boolean; headingPct: number; notHeadingMinutes: number; reassign: boolean };
-export type HeadingState = { heading: boolean; checkedAt: string; notHeadingSince?: string; freeAfter?: string; meters?: number; speedMps?: number };
+/**
+ * v0.18.35 (owner Q-A, job 4 Q4; contract.json#bookedTakeBack): reassign is read-only and ignored for LIVE trips (never
+ * taken back); notice / noticeEveryMin = the driver's "not driving to the rider" notice every minute while not heading.
+ */
+export type HeadingSettings = { on: boolean; headingPct: number; notHeadingMinutes: number; reassign: boolean; notice: boolean; noticeEveryMin: number };
+/** noticeAt (v0.18.35): the last "not driving to the rider" notice, kept on the trip row so server copies never repeat it. */
+export type HeadingState = { heading: boolean; checkedAt: string; notHeadingSince?: string; freeAfter?: string; meters?: number; speedMps?: number; noticeAt?: string };
 
-type Spec = { driverNotice: { kind: string; deepLink: string; title: Record<string, string>; body: Record<string, string> } };
+type Notice = { kind: string; deepLink: string; title: Record<string, string>; body: Record<string, string> };
+type Spec = { driverNotice: Notice; notHeadingNotice: Notice };
 const DEFAULTS = (contract as unknown as { configDefaults: { headingCheck: HeadingSettings } }).configDefaults.headingCheck;
 const SPEC = (contract as unknown as { pickupWaiting: { headingCheck: Spec } }).pickupWaiting.headingCheck;
 /** "Arrived" is accepted within this distance (ride.ts ARRIVE_MAX_METERS): a driver this close is heading. */
@@ -37,6 +43,8 @@ export function headingSettingsOf(doc: { headingCheck?: Partial<HeadingSettings>
     headingPct: num(h.headingPct, 50, 100, DEFAULTS.headingPct),
     notHeadingMinutes: num(h.notHeadingMinutes, 1, 30, DEFAULTS.notHeadingMinutes),
     reassign: typeof h.reassign === "boolean" ? h.reassign : DEFAULTS.reassign,
+    notice: typeof h.notice === "boolean" ? h.notice : DEFAULTS.notice,
+    noticeEveryMin: num(h.noticeEveryMin, 1, 10, DEFAULTS.noticeEveryMin),
   };
 }
 
@@ -81,14 +89,15 @@ export function nextHeading(
 }
 
 /** TripProjection.headingCheck (all views) from accept until arrival. */
-export function headingView(trip: Pick<TripRow, "status" | "heading_check">, now: Date): Record<string, unknown> | null {
+export function headingView(trip: Pick<TripRow, "status" | "heading_check"> & { kind?: string }, now: Date): Record<string, unknown> | null {
   const state = trip.heading_check as HeadingState | null;
   if (!state || !TO_PICKUP.has(trip.status)) return null;
   return {
     heading: state.heading,
     checkedAt: state.checkedAt,
     ...(state.notHeadingSince ? { notHeadingSince: state.notHeadingSince } : {}),
-    freeCancel: !state.heading && !!state.freeAfter && now.getTime() >= Date.parse(state.freeAfter),
+    // The free cancel of this rule is for live trips (a booked ride keeps its own cancel rules).
+    freeCancel: trip.kind !== "scheduled" && !state.heading && !!state.freeAfter && now.getTime() >= Date.parse(state.freeAfter),
   };
 }
 
@@ -97,14 +106,19 @@ type Place = { lat: number; lng: number };
 /**
  * The check of one ETA tick (inside the tick's transaction, trip locked). Returns true when the trip was taken back
  * from the driver. `leg` is the route just computed (null without a fresh position).
+ *
+ * v0.18.35 (owner Q-A + job 4, contract.json#bookedTakeBack): a LIVE trip is never taken back (reassign is ignored).
+ * Not heading for notHeadingMinutes in a row = the driver's "not driving to the rider" notice every noticeEveryMin
+ * minutes (live and booked); a BOOKED trip (driver_to_pickup) is then handed to `takeBackBooked`, which takes it only
+ * when the take-back rule says so (late > takeBackLateMin, drive > takeBackKeepIfDriveMin, ≥ untilMinBeforePickup).
  */
 export async function headingTick(
   trx: Trx,
   trip: TripRow,
   input: { fix: Place | null; leg: { distanceMeters: number; durationSeconds: number } | null; now: Date },
-  reassign: (trx: Trx, trip: TripRow, now: Date) => Promise<void>,
+  takeBackBooked: (trx: Trx, trip: TripRow, now: Date, driveSeconds: number) => Promise<boolean>,
 ): Promise<boolean> {
-  if (!trip.driver_id || !TO_PICKUP.has(trip.status) || trip.kind !== "live") return false;
+  if (!trip.driver_id || !TO_PICKUP.has(trip.status) || (trip.kind !== "live" && trip.kind !== "scheduled")) return false;
   const settings = await headingSettingsFor(trx, trip.zone_id);
   if (!settings.on) {
     if (trip.heading_check !== null) await trx.updateTable("trips").set({ heading_check: null }).where("trip_id", "=", trip.trip_id).execute();
@@ -114,14 +128,30 @@ export async function headingTick(
   const meters = input.leg ? input.leg.distanceMeters : null;
   const speedMps = input.leg && input.leg.durationSeconds > 0 ? input.leg.distanceMeters / input.leg.durationSeconds : null;
   const previous = trip.heading_check as HeadingState | null;
-  const state = nextHeading(previous, { now: input.now, settings, meters, speedMps, atPickup });
+  let state = nextHeading(previous, { now: input.now, settings, meters, speedMps, atPickup });
   if (state === null) return false;
-  if (state !== previous) await trx.updateTable("trips").set({ heading_check: JSON.stringify(state) }).where("trip_id", "=", trip.trip_id).execute();
-  if (settings.reassign && isFreeCancel(state, settings, input.now)) {
-    await reassign(trx, { ...trip, heading_check: state }, input.now);
-    return true;
+  // The notice clock stays while he keeps not heading; heading again starts it over.
+  if (state !== previous && !state.heading && previous && !previous.heading && previous.noticeAt) state = { ...state, noticeAt: previous.noticeAt };
+  const notHeading = isFreeCancel(state, settings, input.now);
+  if (notHeading && settings.notice && (!state.noticeAt || input.now.getTime() - Date.parse(state.noticeAt) >= settings.noticeEveryMin * 60_000)) {
+    state = { ...state, noticeAt: input.now.toISOString() };
+    await noticeNotHeading(trx, trip.driver_id, trip.trip_id, input.now);
   }
+  if (state !== previous) await trx.updateTable("trips").set({ heading_check: JSON.stringify(state) }).where("trip_id", "=", trip.trip_id).execute();
+  if (notHeading && trip.kind === "scheduled" && input.leg) return takeBackBooked(trx, { ...trip, heading_check: state }, input.now, input.leg.durationSeconds);
   return false;
+}
+
+async function driverLang(ex: Executor, driverId: string, texts: Record<string, string>): Promise<string> {
+  const driver = await ex.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
+  return driver?.language && driver.language in texts ? driver.language : "en";
+}
+
+/** v0.18.35 (owner Q-A, job 4 Q4): "You are not driving towards the rider" (bell + push, his language, else English). */
+export async function noticeNotHeading(ex: Executor, driverId: string, tripId: string, now: Date): Promise<void> {
+  const n = SPEC.notHeadingNotice;
+  const lang = await driverLang(ex, driverId, n.title);
+  await notify(ex, { audience: "driver", subjectId: driverId, kind: n.kind, title: n.title[lang]!, body: n.body[lang]!, deepLink: n.deepLink.replace("{tripId}", tripId), tripId, data: { tripId, reason: "not_heading_to_rider" } }, now);
 }
 
 /** The driver's notice when the trip is taken back (bell + push, his language, else English). */
