@@ -6,7 +6,7 @@ import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
-import { driverCancelReasonsOf, rideHandlers } from "../../src/trips/ride.js";
+import { driverCancelReasonsOf, rideHandlers, takeBackNotHeading } from "../../src/trips/ride.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -292,6 +292,35 @@ describe("the rider's cancel after accept", () => {
     expect(notices.length).toBeGreaterThanOrEqual(2);
     expect(notices.length).toBeLessThanOrEqual(3);
     expect((await cancel(tripId)).json().cancellation.fee).toBeNull();
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    }
+  });
+
+  it("v0.18.35: the old live take-back stays (rule 21, never deleted) but nothing calls it; called directly it still works", async () => {
+    const { tripId } = await accepted();
+    await database.db.transaction().execute(async (trx) => {
+      const trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forUpdate().executeTakeFirstOrThrow();
+      await takeBackNotHeading(trx, trip, clock.now);
+      await takeBackNotHeading(trx, { ...trip, driver_id: null }, clock.now);
+    });
+    const counted = await database.db.selectFrom("driver_cancels").select("reason_code").where("trip_id", "=", tripId).execute();
+    expect(counted.map((r) => r.reason_code)).toEqual(["not_heading_to_pickup"]);
+  });
+
+  it("v0.18.35: notice off in the zone → no 'not driving to the rider' notice, the trip stays his", async () => {
+    const off = JSON.stringify({ ...sample("driver_app_config"), headingCheck: { on: true, headingPct: 80, notHeadingMinutes: 2, reassign: false, notice: false } });
+    await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: off, published_at: clock.now, published_by: null }).execute();
+    try {
+      const { tripId } = await accepted();
+      const FAR = { lat: SPOTS.A.lat + 0.018, lng: SPOTS.A.lng };
+      for (let i = 0; i < 8; i++) {
+        await moveTo("A", FAR);
+        await advance(30);
+      }
+      expect((await riderView(tripId)).driverId).toBe(drivers.A.id);
+      expect(await database.db.selectFrom("notifications").select("kind").where("trip_id", "=", tripId).where("kind", "=", "heading_not_to_rider").execute()).toEqual([]);
     } finally {
       await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
     }
