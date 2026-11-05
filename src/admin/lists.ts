@@ -7,6 +7,7 @@ import { activationBlockers } from "../drivers/readiness.js";
 
 export { activationBlockers };
 import { ApiError, badRequest } from "../http/errors.js";
+import { moderationColumns, type ModerationInput } from "../riders/moderation.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { markSetOffline } from "../drivers/offlineReason.js";
 import { riderView } from "../riders/service.js";
@@ -261,8 +262,29 @@ export async function setRiderStatus(trx: Trx, who: Principal, riderId: string, 
     if (!seen) throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
   }
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The rider changed since you last saw them.", { projection: adminRiderView(row, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId)) });
-  // A suspended rider cannot book; a ride already going runs to its end.
-  await trx.updateTable("riders").set({ status: body.status, version: row.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
+  // A suspended rider cannot book; a ride already going runs to its end. v0.18.39 A2: active = level none,
+  // suspended = banned with the note as reason (contract.json#riderModeration.statusCommand).
+  const level = moderationColumns({ level: body.status === "active" ? "none" : "banned", reason: body.note }, now);
+  await trx.updateTable("riders").set({ ...level, version: row.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
   await audit(trx, { adminId: who.subjectId, action: "rider.status", targetType: "rider", targetId: riderId, detail: { from: row.status, to: body.status, note: body.note }, at: now });
+  return adminRiderView((await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow()), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId));
+}
+
+/** v0.18.39 A2 (owner G16 Q16-2, contract.json#riderModeration): Warn → Pause → Ban with a reason; none undoes it. */
+export async function moderateRider(trx: Trx, who: Principal, riderId: string, body: ModerationInput, currency: string, now: Date) {
+  const row = await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).forUpdate().executeTakeFirst();
+  if (!row) throw new ApiError("not_found", "No such rider.", { reason: "rider_not_found" });
+  const zones = zonesOf(who);
+  if (zones) {
+    const seen = await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).where(riderInZones(zones)).executeTakeFirst();
+    if (!seen) throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
+  }
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The rider changed since you last saw them.", { projection: adminRiderView(row, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId)) });
+  const columns = moderationColumns(body, now);
+  await trx.updateTable("riders").set({ ...columns, version: row.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
+  await audit(trx, {
+    adminId: who.subjectId, action: "rider.moderation", targetType: "rider", targetId: riderId,
+    detail: { from: row.moderation_level, to: body.level, reason: body.reason, ...(body.pauseDays !== undefined ? { pauseDays: body.pauseDays } : {}), until: columns.moderation_until?.toISOString() ?? null }, at: now,
+  });
   return adminRiderView((await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow()), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId));
 }

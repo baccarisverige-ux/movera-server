@@ -69,10 +69,13 @@ export async function walletEntries(ex: Executor, riderId: string, input: { curs
 }
 
 /** Puts money in the wallet (a refund the rider chose to keep there). */
-export async function creditWallet(trx: Trx, riderId: string, amount: { amountMinor: number; currency: string }, tripId: string | null, now: Date) {
+export async function creditWallet(trx: Trx, riderId: string, amount: { amountMinor: number; currency: string }, tripId: string | null, now: Date, kind: "refund" | "adjustment" = "refund"): Promise<string> {
   // v0.18.28 (owner Q4): into the balance of the money's own currency (a France refund is EUR), never another.
+  // v0.18.29 fix job 0: an admin's Add money to wallet uses this same path (kind adjustment).
   await moveWallet(trx, riderId, amount.currency, amount.amountMinor, now);
-  await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: riderId, kind: "refund", currency: amount.currency, amount_minor: amount.amountMinor, trip_id: tripId, at: now }).execute();
+  const entryId = newId("wlt", now.getTime());
+  await trx.insertInto("wallet_entries").values({ entry_id: entryId, rider_id: riderId, kind, currency: amount.currency, amount_minor: amount.amountMinor, trip_id: tripId, at: now }).execute();
+  return entryId;
 }
 
 const Destination = z.discriminatedUnion("method", [
