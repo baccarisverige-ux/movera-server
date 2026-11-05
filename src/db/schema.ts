@@ -360,6 +360,21 @@ export interface TripEventsTable {
   eta: Json | null;
   cancel_fee: Json | null;
   message: Json | null;
+  /** v0.18.38 §62 (migration 0085): the CallView of a call_* event, or the relayed signal of call_signal. */
+  call: ColumnType<unknown, string | null | undefined, string | null>;
+}
+
+/** v0.18.38 §62 (migration 0085): one in-app call between a trip's rider and driver. */
+export interface TripCallsTable {
+  call_id: string;
+  trip_id: string;
+  caller: "rider" | "driver";
+  callee: "rider" | "driver";
+  state: "ringing" | "answered" | "ended" | "missed";
+  started_at: Timestamp;
+  answered_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  ended_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  ended_reason: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface IdempotencyKeysTable {
@@ -1251,6 +1266,7 @@ export interface Database {
   trips: TripsTable;
   trip_events: TripEventsTable;
   trip_messages: TripMessagesTable;
+  trip_calls: TripCallsTable;
   idempotency_keys: IdempotencyKeysTable;
   timers: TimersTable;
   test_phones: TestPhonesTable;

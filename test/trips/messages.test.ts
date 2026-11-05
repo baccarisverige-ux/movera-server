@@ -247,9 +247,10 @@ describe("the trip chat", () => {
     const admin = await adminSession(app, database.db, "support", { now: clock.now });
     expect((await list(tripId, admin.headers)).items.map((m: { text: string }) => m.text)).toEqual(["I'm at the main door"]);
     expect((await send(tripId, admin.headers, "Movera here: we found your umbrella.")).statusCode).toBe(201);
+    // v0.18.38 §62 (owner G15): calls stay open 60 min after drop-off (in-app), the chat does not.
     const callAfter = await call(app, "POST", `/trips/${tripId}/call`, rider, {});
-    expect(callAfter.statusCode).toBe(409);
-    expect(callAfter.json()).toMatchObject({ reason: "chat_closed" });
+    expect(callAfter.statusCode).toBe(200);
+    expect(callAfter.json()).toMatchObject({ tripId, mode: "in_app" });
   });
 
   it("M9 admins: support.reply is needed to read and write; only trips of the admin's zones (zone_out_of_scope)", async () => {
@@ -270,13 +271,15 @@ describe("the trip chat", () => {
     expect((await send(tripId, local.headers, "Movera here")).statusCode).toBe(201);
   });
 
-  it("M10 a masked call: 503 call_unavailable while no telephony provider is set; never a phone number", async () => {
+  it("M10 v0.18.38 §62: with no telephony provider the call is in-app (was 503 call_unavailable); one live call per trip; never a phone number", async () => {
     const { tripId } = await accepted();
-    for (const side of [rider, drivers.A.headers]) {
-      const res = await call(app, "POST", `/trips/${tripId}/call`, side, {});
-      expect(res.statusCode).toBe(503);
-      expect(res.json()).toMatchObject({ code: "unavailable", reason: "call_unavailable" });
-    }
+    const first = await call(app, "POST", `/trips/${tripId}/call`, rider, {});
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ tripId, mode: "in_app" });
+    expect(first.json().proxyNumber).toBeUndefined();
+    const second = await call(app, "POST", `/trips/${tripId}/call`, drivers.A.headers, {});
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toMatchObject({ code: "invalid_transition", reason: "call_busy" });
     expect((await call(app, "POST", `/trips/${tripId}/call`, stranger, {})).statusCode).toBe(404);
     // No real number of the other side in either view of the trip or the chat.
     await send(tripId, rider, "hello");
@@ -284,19 +287,23 @@ describe("the trip chat", () => {
     for (const phone of [TEST_PHONES[0]!, TEST_PHONES[1]!]) expect(bodies).not.toContain(phone.slice(1));
   });
 
-  it("M10b with a telephony provider: the caller gets the proxy number, the provider gets both real numbers, null is 503", async () => {
+  it("M10b mode phone with a telephony provider: the caller gets the proxy number, the provider gets both real numbers; null falls back to in-app", async () => {
+    // v0.18.38 §62: the masked number is used only when CountryRules.calls.mode is phone.
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "Z001", version: 1, document: JSON.stringify({ calls: { mode: "phone" } }), published_at: clock.now, published_by: null }).onConflict((c) => c.doNothing()).execute();
     const { tripId } = await accepted();
     const trip = await database.db.selectFrom("trips").select(["rider_id", "driver_id"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
     const asked: MaskedCallRequest[] = [];
     const expiresAt = new Date(clock.now.getTime() + 600_000);
     const provider: TelephonyProvider = { name: "fake", maskedCall: (request) => { asked.push(request); return Promise.resolve({ proxyNumber: "+46700000999", expiresAt }); } };
-    const got = await callTripPeer(database.db, { actor: "driver", subjectId: trip.driver_id! }, tripId, provider, clock.now);
-    expect(got).toEqual({ tripId, proxyNumber: "+46700000999", expiresAt: expiresAt.toISOString() });
+    const got = await database.db.transaction().execute((trx) => callTripPeer(trx, { actor: "driver", subjectId: trip.driver_id! }, tripId, provider, clock.now));
+    expect(got).toEqual({ tripId, mode: "phone", proxyNumber: "+46700000999", expiresAt: expiresAt.toISOString() });
     expect(asked[0]).toMatchObject({ tripId, caller: { actor: "driver" }, callee: { actor: "rider" } });
     expect(asked[0]!.caller.phone).toBeTruthy();
     expect(asked[0]!.callee.phone).toBeTruthy();
     const none: TelephonyProvider = { name: "fake", maskedCall: () => Promise.resolve(null) };
-    await expect(callTripPeer(database.db, { actor: "rider", subjectId: trip.rider_id }, tripId, none, clock.now)).rejects.toMatchObject({ code: "unavailable" });
+    const fallback = await database.db.transaction().execute((trx) => callTripPeer(trx, { actor: "rider", subjectId: trip.rider_id }, tripId, none, clock.now));
+    expect(fallback).toMatchObject({ tripId, mode: "in_app" });
+    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").execute();
   });
 
   it("M11 retention: messages older than 90 days go, also from the message events; a trip with a safety case keeps them", async () => {

@@ -198,7 +198,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     return reply.status(result.status).send(result.body);
   });
 
-  // contract v0.13.0 §22: a masked call between the trip's rider and driver (503 call_unavailable without a provider).
+  // v0.18.38 §62: an in-app call (default) or, with mode phone and a provider, a masked number (contract v0.13.0 §22).
   app.post(`${API_PREFIX}/trips/:tripId/call`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
