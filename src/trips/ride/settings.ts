@@ -66,12 +66,16 @@ export type BookingRules = {
   stopWaitPerMin?: Money;
   /** v0.18.10 (contract.json#finish.earlyEnd.driver): the zone's re-price limits at booking time (absent before v0.18.10). */
   earlyEnd?: EarlyEndSettings;
+  /** v0.18.33 (contract.json#afterTestRules.walletFirst): the wallet pays first on this trip (absent before v0.18.33 = true). */
+  walletFirst?: boolean;
 };
+/** v0.18.33 (owner Q6): does the rider's wallet pay first on this trip? Trips booked before v0.18.33 keep the old rule (yes). */
+export const walletFirstOf = (trip: Pick<TripRow, "booking_rules">): boolean => (trip.booking_rules as BookingRules | null)?.walletFirst !== false;
 export type EarlyEndSettings = { repriceOverKm: number; repriceOverMin: number };
 const EARLY_END = contract as unknown as { configDefaults: { earlyEnd: EarlyEndSettings }; finish: { earlyEnd: { settings: { ranges: Record<keyof EarlyEndSettings, [number, number]> } } } };
 const EARLY_END_DEFAULTS = EARLY_END.configDefaults.earlyEnd;
 const EARLY_END_RANGES = EARLY_END.finish.earlyEnd.settings.ranges;
-/** DriverAppConfig.cancelFees.earlyEnd of a driver document; a missing or out-of-range number takes the default (2 km, 8 min). */
+/** DriverAppConfig.cancelFees.earlyEnd of a driver document; a missing or out-of-range number takes the default (2 km, 10 min; v0.18.33). */
 export function earlyEndSettingsOf(doc: unknown): EarlyEndSettings {
   const e = (doc as { cancelFees?: { earlyEnd?: Record<string, unknown> } } | undefined)?.cancelFees?.earlyEnd;
   const pick = (k: keyof EarlyEndSettings) => {
@@ -94,7 +98,7 @@ export function pinSettingsOf(doc: unknown): PinSettings {
   };
 }
 type AppDocs = {
-  rider: { cancelFees?: { live?: Record<string, FeeRule>; reservation?: Record<string, FeeRule> } } | undefined;
+  rider: { cancelFees?: { live?: Record<string, FeeRule>; reservation?: Record<string, FeeRule> }; features?: { wallet?: unknown }; wallet?: { usedFirst?: unknown } } | undefined;
   driver:
     | { currency?: unknown; cancelFees?: { driverSharePct?: unknown }; waiting?: { driverSharePct?: unknown; driverShareWaitPct?: unknown; cancelAfterArrivedIsNoShow?: unknown }; booking?: { maxPickupMoveMeters?: unknown }; pickupPin?: unknown }
     | undefined;
@@ -113,11 +117,15 @@ function cancelRuleOf(docs: AppDocs, kind: string, categoryId: string): FeeRule 
 }
 
 /** At POST /trips (contract.json#bookingSnapshot): the rules of this moment, kept on the trip. */
-export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string, categoryId: string, pricing: PricingDocument | null): Promise<BookingRules> {
+export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string, categoryId: string, pricing: PricingDocument | null, walletAsked?: boolean): Promise<BookingRules> {
   const docs = await appDocs(ex, zoneId);
+  // v0.18.33 (owner Q6, contract.json#afterTestRules.walletFirst): the rider's per-ride switch (missing = on), unless the
+  // zone turned the wallet or "Use wallet first" off (Admin › Payments).
+  const walletFirst = walletAsked !== false && docs.rider?.features?.wallet !== false && docs.rider?.wallet?.usedFirst !== false;
   // v0.18.7: the waiting terms always get kept (TripProjection.terms): the quoted pricing document, else the live one.
   const priced = pricing ?? (await liveDocument<PricingDocument>(ex, "pricing", zoneId))?.document ?? null;
   return {
+    walletFirst,
     cancelRule: cancelRuleOf(docs, kind, categoryId),
     cancelDriverSharePct: sharePct(docs.driver?.cancelFees?.driverSharePct, DEFAULT_CANCEL_SHARE),
     waiting: priced?.categories[categoryId]?.waiting ?? null,
