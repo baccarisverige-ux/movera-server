@@ -7799,7 +7799,7 @@
     "answer": "POST /calls/{callId}/answer by the callee while ringing → 200 CallView (state answered), event call_answered.",
     "end": "POST /calls/{callId}/end { reason: hangup|declined|failed } by either side → 200 CallView (state ended), event call_ended. A second end is answered with the same CallView (idempotent).",
     "missed": "A ringing call not answered after ringSeconds is ended by the server (timer in the database, any server copy runs it): state missed, event call_missed. An answered call is ended at maxCallMin with reason max_length.",
-    "busy": "One live call (ringing or answered) per trip: a second POST /trips/{tripId}/call is 409 invalid_transition, reason call_busy, with the live callId.",
+    "busy": "One live call (ringing or answered) per trip: a second POST /trips/{tripId}/call is 409 invalid_transition, reason call_busy, details [the live callId].",
     "endedReasons": [
       "hangup",
       "declined",
@@ -7812,7 +7812,7 @@
     "phoneMode": "CountryRules.calls.mode phone + a configured provider (phoneProvider, keys only in the server environment) → TripCall { tripId, mode:'phone', proxyNumber, expiresAt } as before (v0.13.0). Mode phone without a provider falls back to in_app. Owner G15: in-app calls only until a phone company is chosen.",
     "ice": "ice.servers come from the server environment (STUN/TURN URLs; TURN gets time-limited credentials from a shared secret, valid ttlSeconds). No server state: any copy answers (rule 33).",
     "settings": {
-      "where": "Admin › Settings › Calls, per country (CountryRules.calls of the country standard; a zone's own country_rules may set them): Calls on, Mode (In-app / Phone — phone needs a provider), Call window after the trip (min), Ring time (s), Longest call (min). adminCallRoles stays empty: Admin Call is 'coming soon' until a phone provider is set (G9 Q6).",
+      "where": "Admin › Pricing › Tips & limits per country › Calls (CountryRules.calls of the country standard; a zone's own country_rules may set them), saved with Save tips & limits: Calls on, Mode (In the app / Phone — phone needs a phone company), Call window after the trip (min), Ring time (s), Longest call (min). adminCallRoles stays empty: Admin Call is 'coming soon' until a phone provider is set (G9 Q6).",
       "ranges": {
         "callWindowAfterTripMin": [
           0,

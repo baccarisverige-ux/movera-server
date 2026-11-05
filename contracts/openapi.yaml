@@ -2234,11 +2234,11 @@ paths:
         incoming-call sheet. Open from driver assignment (tripStatus.driverAssigned) until callWindowAfterTripMin (default
         60) minutes after the trip ended as completed (trips.ended_at). Outside it: 409 invalid_transition, reason call_window_closed.
         A cancelled trip has no window after it. The apps show the call button only inside the window. One live call (ringing
-        or answered) per trip: a second POST /trips/{tripId}/call is 409 invalid_transition, reason call_busy, with the live
-        callId. calls.on false → POST /trips/{tripId}/call is 403 forbidden, reason calls_off; the apps hide the call button.
-        CountryRules.calls.mode phone + a configured provider (phoneProvider, keys only in the server environment) → TripCall
-        { tripId, mode:''phone'', proxyNumber, expiresAt } as before (v0.13.0). Mode phone without a provider falls back to
-        in_app. Owner G15: in-app calls only until a phone company is chosen.'
+        or answered) per trip: a second POST /trips/{tripId}/call is 409 invalid_transition, reason call_busy, details [the
+        live callId]. calls.on false → POST /trips/{tripId}/call is 403 forbidden, reason calls_off; the apps hide the call
+        button. CountryRules.calls.mode phone + a configured provider (phoneProvider, keys only in the server environment)
+        → TripCall { tripId, mode:''phone'', proxyNumber, expiresAt } as before (v0.13.0). Mode phone without a provider falls
+        back to in_app. Owner G15: in-app calls only until a phone company is chosen.'
       tags:
       - Notifications & messages
       x-actor:
@@ -21610,10 +21610,10 @@ components:
               default: 10
         calls:
           type: object
-          description: 'v0.18.38 §62: Admin › Settings › Calls, per country (CountryRules.calls of the country standard; a
-            zone''s own country_rules may set them): Calls on, Mode (In-app / Phone — phone needs a provider), Call window
-            after the trip (min), Ring time (s), Longest call (min). adminCallRoles stays empty: Admin Call is ''coming soon''
-            until a phone provider is set (G9 Q6).'
+          description: 'v0.18.38 §62: Admin › Pricing › Tips & limits per country › Calls (CountryRules.calls of the country
+            standard; a zone''s own country_rules may set them), saved with Save tips & limits: Calls on, Mode (In the app
+            / Phone — phone needs a phone company), Call window after the trip (min), Ring time (s), Longest call (min). adminCallRoles
+            stays empty: Admin Call is ''coming soon'' until a phone provider is set (G9 Q6).'
           properties:
             'on':
               type: boolean
