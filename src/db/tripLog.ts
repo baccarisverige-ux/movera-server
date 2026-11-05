@@ -50,7 +50,12 @@ export type TripEventKind =
   | "payment_updated"
   | "rating_updated"
   | "message"
-  | "pickup_moved";
+  | "pickup_moved"
+  | "call_ringing"
+  | "call_answered"
+  | "call_signal"
+  | "call_ended"
+  | "call_missed";
 
 export type NewTripEvent = {
   tripId: string;
@@ -65,6 +70,8 @@ export type NewTripEvent = {
   eta?: unknown;
   cancelFee?: unknown;
   message?: unknown;
+  /** v0.18.38 §62: CallView (call_ringing / answered / ended / missed) or the signal (call_signal). */
+  call?: unknown;
 };
 
 export type AppendedEvent = { eventId: string; sequence: number };
@@ -99,6 +106,7 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
       eta: json(event.eta),
       cancel_fee: json(event.cancelFee),
       message: json(event.message),
+      ...(event.call !== undefined ? { call: json(event.call) } : {}),
     })
     .execute();
   await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify({ tripId: event.tripId, sequence, riderId: bumped.rider_id })})`.execute(trx);

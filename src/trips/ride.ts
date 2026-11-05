@@ -19,7 +19,7 @@ export { DEFAULT_MAX_PICKUP_MOVE_METERS, DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW
 export { pricingOf, DEFAULT_CANCEL_SHARE, DEFAULT_LIVE_CANCEL_RULE, type BookingRules, type EarlyEndSettings, earlyEndSettingsOf, type PinSettings, pinSettingsOf, bookingRulesFor, cancelAfterArrivedOf, pickupMoveLimitOf, rulesOf, tripTerms, fareWithWaiting, scaledFare } from "./ride/settings.js";
 export { releaseDriver, credit, refreshOutstanding, feeSplit } from "./ride/money.js";
 export { newPin, driverStep, maybeNearDropoff, nearDropoffHandler, DRIVER_SILENCE, SILENT_ALERT_MS, SILENT_FAIL_MS, SILENT_RECHECK_MS, driverSilenceHandler, bookSilenceChecks } from "./ride/steps.js";
-export { noShow, markNoShow, type RiderFee, riderCancelFee, riderFeeSharePct, riderFeeColumns, afterRiderCancel, driverCancelReasonsOf, driverCancel, backToDispatch, takeBackNotHeading } from "./ride/cancel.js";
+export { noShow, markNoShow, type RiderFee, riderCancelFee, riderFeeSharePct, riderFeeColumns, afterRiderCancel, driverCancelReasonsOf, driverCancel, backToDispatch, takeBackNotHeading, takeBackLateBooked } from "./ride/cancel.js";
 export { endEarly, creditTrip, PREVIEW_FREEZE_SECONDS, completePreview, PriceChanged, completeTrip, rateTrip } from "./ride/finish.js";
 export { driverEarnings } from "./ride/earnings.js";
 export { WAITING_PAID, WAITING_NO_SHOW } from "./ride/timers.js";

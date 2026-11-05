@@ -203,8 +203,10 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
 
   app.get(`${API_PREFIX}/admin/live/drivers`, async (request) => {
     const who = await authenticateAdmin(request, guard, "trips.read");
-    const { minLat, minLng, maxLat, maxLng, ...filter } = request.query as Record<string, unknown>;
+    const { minLat, minLng, maxLat, maxLng, limit, cursor, ...filter } = request.query as Record<string, unknown>;
     const narrowed = await narrowToZones(deps.db, who, parseQuery(ZoneFilterQuery, filter));
+    // v0.18.34 §65 (A8/A10, rule 33): optional keyset paging by driverId; without `limit` every row (older panels).
+    const page = parseQuery(LivePageQuery, { ...(limit !== undefined ? { limit } : {}), ...(cursor !== undefined ? { cursor } : {}) });
     // Job 1 (stress M4): optional map box; all four or none, lat -90..90, lng -180..180, min <= max.
     const given = [minLat, minLng, maxLat, maxLng].filter((v) => v !== undefined);
     let box: MapBox | undefined;
@@ -213,7 +215,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
       if (b.minLat > b.maxLat || b.minLng > b.maxLng) throw badRequest("minLat/minLng must not be above maxLat/maxLng.", "invalid_map_box");
       box = b;
     }
-    return liveDrivers(deps.db, undefined, narrowed.zones, now(), box);
+    return liveDrivers(deps.db, undefined, narrowed.zones, now(), box, page.limit !== undefined ? { limit: page.limit, ...(page.cursor ? { cursor: page.cursor } : {}) } : undefined);
   });
 
   app.get(`${API_PREFIX}/admin/trips/:tripId/trace`, async (request) => {
@@ -226,6 +228,8 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
 }
 
 /** The multipart upload of POST /driver/documents: the fields and the one file, read into memory (at most 10 MB). */
+/** v0.18.34 §65: the live drivers page (contract.json#liveDriversPaging). */
+const LivePageQuery = { limit: z.coerce.number().int().min(1).max(1000).optional(), cursor: z.string().min(1).max(128).optional() };
 const MapBoxQuery = { minLat: z.coerce.number().min(-90).max(90), minLng: z.coerce.number().min(-180).max(180), maxLat: z.coerce.number().min(-90).max(90), maxLng: z.coerce.number().min(-180).max(180) };
 
 export async function readUpload(request: FastifyRequest): Promise<Upload> {

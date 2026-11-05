@@ -2,6 +2,7 @@ import { pricingRoutes } from "./pricing/routes.js";
 import { contentRoutes } from "./content/routes.js";
 import { legalRoutes } from "./legal/routes.js";
 import { zoneRoutes } from "./zones/routes.js";
+import { airportQueueRoutes } from "./airportQueue/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
@@ -20,6 +21,7 @@ import { EstimateRouter, OsrmRouter, type Router } from "./maps/routing.js";
 import { quoteRoutes } from "./quotes/routes.js";
 import { mapsRoutes } from "./maps/routes.js";
 import { tripRoutes } from "./trips/routes.js";
+import { callRoutes } from "./calls/routes.js";
 import { rideRoutes } from "./trips/rideRoutes.js";
 import { supportedPaymentMethods } from "./trips/finish.js";
 import { adminTripRoutes } from "./admin/tripRoutes.js";
@@ -222,6 +224,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // v0.18.5 (G1-B2): terms and privacy per country.
     await legalRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await zoneRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    // v0.18.36 §60 (fix job 9): the airport queue.
+    await airportQueueRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??
@@ -232,6 +236,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
     await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
+    // v0.18.38 §62: in-app call steps (answer, end, signal) and the admin call log.
+    await callRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
     await driverRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });

@@ -45,6 +45,12 @@ export type ReservationSettings = {
   hideClashing: boolean;
   longTripKm: number;
   driverLateCancelHours: number;
+  /** v0.18.35 job 4 (contract.json#bookedTakeBack): take a held booked ride back only when more than this many minutes late… */
+  takeBackLateMin: number;
+  /** …and more than this many minutes' drive from the pickup… */
+  takeBackKeepIfDriveMin: number;
+  /** …and the pickup is at least this many minutes away. */
+  takeBackUntilMinBeforePickup: number;
   rideTypes: Record<RideTypeKey, RideTypeTimes>;
 };
 
@@ -101,6 +107,9 @@ export function reservationSettings(raw: unknown): ReservationSettings {
     hideClashing: bool(r["hideClashing"], d.hideClashing),
     longTripKm: num(r["longTripKm"], 10, 500, d.longTripKm, false),
     driverLateCancelHours: num(r["driverLateCancelHours"], 0.5, 72, d.driverLateCancelHours, false),
+    takeBackLateMin: num(r["takeBackLateMin"], 1, 60, d.takeBackLateMin),
+    takeBackKeepIfDriveMin: num(r["takeBackKeepIfDriveMin"], 0, 60, d.takeBackKeepIfDriveMin),
+    takeBackUntilMinBeforePickup: num(r["takeBackUntilMinBeforePickup"], 0, 180, d.takeBackUntilMinBeforePickup),
     rideTypes,
   };
 }
