@@ -66,7 +66,10 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
 export type RiderFee = { fee: Money; kind: "cancel" | "no_show" };
 
 export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<RiderFee | null> {
-  if (trip.accepted_at === null || trip.driver_id === null) return null;
+  // v0.18.33 (fix job 5, owner fix-plan Q3, contract.json#afterTestRules.bookedCancel): a BOOKED ride cancelled under
+  // freeChangeBeforeMin before pickup costs the fee even when no driver took it yet (Movera keeps it, owner Q5).
+  const bookedNoDriver = trip.kind === "scheduled" && trip.scheduled_at !== null && (trip.accepted_at === null || trip.driver_id === null);
+  if (!bookedNoDriver && (trip.accepted_at === null || trip.driver_id === null)) return null;
   // v0.18.17 (contract.json#bookLater.rider.cancel, owner Q6): more than freeChangeBeforeMin before pickup = free.
   if (await freeCancelByTime(ex, trip, now)) return null;
   const rules = await rulesOf(ex, trip);
@@ -74,7 +77,7 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   if (rule === null) return null;
   const owed = outstandingLine(trip);
   const fare = { amountMinor: Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0), currency: trip.currency };
-  const minutesSinceAccept = (now.getTime() - trip.accepted_at.getTime()) / 60_000;
+  const minutesSinceAccept = trip.accepted_at ? (now.getTime() - trip.accepted_at.getTime()) / 60_000 : 0;
   const minutesBeforePickup = trip.scheduled_at ? (trip.scheduled_at.getTime() - now.getTime()) / 60_000 : 0;
   const kind = trip.kind === "scheduled" ? "reservation" : "live";
   // v0.18.7 (Q2, contract.json#pickupWaiting.cancelAfterArrived): inside the free minutes the rider always cancels free,
@@ -105,6 +108,8 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
 
 /** The driver's share of a rider fee: the cancel share, or the no-show share when the cancel counted as a no-show (v0.18.7). */
 export async function riderFeeSharePct(ex: Executor, trip: TripRow, kind: RiderFee["kind"]): Promise<number> {
+  // v0.18.33 (owner Q5): with no driver Movera keeps the whole fee.
+  if (trip.driver_id === null) return 0;
   const rules = await rulesOf(ex, trip);
   return kind === "no_show" ? rules.noShowDriverSharePct : rules.cancelDriverSharePct;
 }
@@ -119,6 +124,9 @@ export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: Tri
     const share = await riderFeeSharePct(trx, before, charged.kind);
     await chargeRiderFee(trx, cancelled, charged.kind, charged.fee, now);
     await credit(trx, { driverId: before.driver_id, tripId: before.trip_id, kind: "fee_share", currency: charged.fee.currency, amount: feeSplit(charged.fee, share).driver }, now);
+  } else if (charged) {
+    // v0.18.33 (owner Q3 + Q5): a booked ride with no driver yet: the rider owes the fee, all of it Movera's.
+    await chargeRiderFee(trx, cancelled, charged.kind, charged.fee, now);
   }
   await releaseDriver(trx, before.driver_id, now);
 }

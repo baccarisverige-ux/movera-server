@@ -201,6 +201,68 @@ describe("book later (owner Q1–Q7)", () => {
     await rider.command(soon.tripId, "cancel", { reasonCode: "plans_changed" });
   });
 
+  it("job 5 (L36, owner fix-plan Q3 + Q5): under 1 h before pickup the cancel costs the fee even with no driver; Movera keeps it (fail-before: free)", async () => {
+    // More than 1 h before, no driver → free (unchanged).
+    const early = await book(minutes(180));
+    const free = await rider.command(early.tripId, "cancel", { reasonCode: "plans_changed" });
+    expect(free.status).toBe(200);
+    expect(free.body.cancellation.fee).toBeNull();
+    // Booked 3 h ahead, nobody takes it; 45 min before pickup (before the search starts) the rider cancels.
+    const trip = await book(minutes(180));
+    await until(trip.scheduledAt, -45 * 60);
+    expect((await rider.trip(trip.tripId)).driver).toBeUndefined();
+    const res = await rider.command(trip.tripId, "cancel", { reasonCode: "plans_changed" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.cancellation.fee.amountMinor).toBeGreaterThan(0);
+    expect(res.body.cancellation).toMatchObject({ feeStatus: "owed", feeKind: "cancel" });
+    const stored = await sim.db.selectFrom("trips").select(["cancellation", "driver_earnings_minor"]).where("trip_id", "=", trip.tripId).executeTakeFirstOrThrow();
+    expect(stored.cancellation).toMatchObject({ driverShare: { amountMinor: 0 } });
+    expect(Number(stored.driver_earnings_minor)).toBe(0);
+    const owed = await sim.db.selectFrom("rider_fees").select(["amount_minor", "status"]).where("trip_id", "=", trip.tripId).execute();
+    expect(owed.map((o) => [Number(o.amount_minor), o.status])).toEqual([[res.body.cancellation.fee.amountMinor, "owed"]]);
+    const earnings = await sim.db.selectFrom("earnings_entries").select("entry_id").where("trip_id", "=", trip.tripId).execute();
+    expect(earnings).toEqual([]);
+    // The fee is settled before the next ride (outstandingFee); clear it so later cases start clean.
+    await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", trip.tripId).execute();
+  });
+
+  it("job 5 (R28, owner Q7): a driver on a trip gets a booked ride starting within 60 min as Exclusive (held as his next); not when it clashes (fail-before: never)", async () => {
+    // Only A is around: B is offline for this case.
+    await sim.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", b.id).execute();
+    try {
+      const other = await sim.rider(1);
+      const live = await other.book();
+      await sim.tick();
+      const liveOffer = await a.offerFor(live.tripId);
+      expect(liveOffer).toBeDefined();
+      expect((await a.accept(liveOffer!)).status).toBe(200);
+      expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
+
+      // Booked 25 min ahead (sent at once): A ends his trip and drives over in time → an Exclusive offer, never Radar.
+      const next = await book(minutes(25));
+      await sim.tick();
+      const offer = await a.offerFor(next.tripId);
+      expect(offer, "on-trip driver gets the booked ride").toBeDefined();
+      expect(offer!["kind"]).toBe("exclusive");
+      const took = await a.accept(offer!);
+      expect(took.status, JSON.stringify(took.body)).toBe(200);
+      const held = await sim.db.selectFrom("trips").select(["status", "driver_id", "reservation"]).where("trip_id", "=", next.tripId).executeTakeFirstOrThrow();
+      expect(held).toMatchObject({ status: "accepted", driver_id: a.id, reservation: { held: true } });
+      // He stays on his current trip; the booked one waits for him.
+      expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
+      expect((await sim.db.selectFrom("trips").select("driver_id").where("trip_id", "=", live.tripId).executeTakeFirstOrThrow()).driver_id).toBe(a.id);
+      await sim.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", next.tripId).execute();
+
+      // His current trip runs an hour longer than the booked time → no offer (it clashes).
+      await sim.db.updateTable("trips").set({ duration_seconds: 3600 }).where("trip_id", "=", live.tripId).execute();
+      const clash = await book(minutes(20));
+      await sim.tick();
+      expect(await a.offerFor(clash.tripId)).toBeUndefined();
+    } finally {
+      await sim.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", b.id).execute();
+    }
+  });
+
   it("the admin's zone settings decide: 45 min soon limit, open list to a group only", async () => {
     await sim.publish(owner, "driver_app_config", "Z001", (doc) => ({ ...doc, reservations: { ...(doc.reservations ?? {}), soonBeforeMin: 45, listTo: "group", listGroupId: "grp_none", listOpenAll: false } }));
     const soon = await book(minutes(40));

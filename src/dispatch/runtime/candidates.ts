@@ -12,10 +12,65 @@ import { zoneChecker } from "../../drivers/presence.js";
 import { dispatchKm, type Candidate, type DispatchDoc } from "../engine.js";
 import { type Place, PICKUP_KMH, RADAR_LIST_MAX } from "./shared.js";
 import { driversWithCategoryOff } from "../../accounts/phoneData.js";
+import { NOT_HELD } from "../../reservations/view.js";
+import { contract } from "../../contract/contract.js";
 
 /* ---------------------------------------------------------------- candidates */
 
-type Pool = { candidates: Candidate[]; meta: Map<string, { km: number; etaSeconds: number; meters: number }> };
+type Pool = { candidates: Candidate[]; meta: Map<string, { km: number; etaSeconds: number; meters: number }>; bookedNext: Set<string> };
+
+/* ---------------------------------------------------------------- v0.18.33 booked ride next (owner Q7) */
+
+type BookedNext = { on: boolean; withinMin: number };
+const BOOKED_NEXT_DEFAULT = (contract as unknown as { configDefaults: { dispatch: { zone: { bookedNext: BookedNext } } } }).configDefaults.dispatch.zone.bookedNext;
+/** DispatchDocument.bookedNext with the defaults (on, 60 min); a bad value reads as the default. */
+export function bookedNextOf(doc: Pick<DispatchDoc, "bookedNext"> | null | undefined): BookedNext {
+  const b = doc?.bookedNext;
+  return {
+    on: typeof b?.on === "boolean" ? b.on : BOOKED_NEXT_DEFAULT.on,
+    withinMin: typeof b?.withinMin === "number" && Number.isFinite(b.withinMin) && b.withinMin >= 0 && b.withinMin <= 240 ? b.withinMin : BOOKED_NEXT_DEFAULT.withinMin,
+  };
+}
+/** The booked ride's pickup is close enough for drivers on a trip (contract.json#afterTestRules.bookedNext). */
+export function bookedNextOpen(trip: Pick<TripRow, "kind" | "scheduled_at">, settings: BookedNext, now: Date): boolean {
+  return settings.on && trip.kind === "scheduled" && trip.scheduled_at !== null && trip.scheduled_at.getTime() - now.getTime() <= settings.withinMin * 60_000;
+}
+/** At accept (owner Q7): this driver, on a trip, may still take this booked ride as his next one. */
+export async function bookedNextFits(trx: Trx, trip: TripRow, driverId: string, now: Date): Promise<boolean> {
+  const live = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
+  if (!bookedNextOpen(trip, bookedNextOf(live?.document), now)) return false;
+  const at = await trx.selectFrom("driver_locations").select(["driver_id", "lat", "lng"]).where("driver_id", "=", driverId).executeTakeFirst();
+  if (!at) return false;
+  return (await onTripReach(trx, trip, [at], now)).has(driverId);
+}
+const ON_BOARD = new Set(["rider_onboard", "in_trip", "approaching_dropoff"]);
+const hoursMs = (km: number) => (km / PICKUP_KMH) * 3600_000;
+/**
+ * Owner Q7: for each driver on a trip, when he can be at this booked ride's pickup: the end of his current trip (its start
+ * + booked minutes once the rider is on board; else now + the drive to its pickup + its booked minutes) + the drive from
+ * its drop-off to the booked pickup. Only drivers who make it by the booked time are returned, with km from the drop-off.
+ */
+export async function onTripReach(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: string; lat: number; lng: number }>, now: Date): Promise<Map<string, { dropKm: number; inMin: number }>> {
+  const out = new Map<string, { dropKm: number; inMin: number }>();
+  if (drivers.length === 0 || trip.scheduled_at === null) return out;
+  const current = await trx.selectFrom("trips").select(["trip_id", "driver_id", "status", "started_at", "boarded_at", "duration_seconds", "pickup", "dropoff"])
+    .where("driver_id", "in", drivers.map((d) => d.driver_id)).where("trip_id", "!=", trip.trip_id)
+    .where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).where(NOT_HELD).execute();
+  const pickup = trip.pickup as Place;
+  for (const d of drivers) {
+    const mine = current.filter((c) => c.driver_id === d.driver_id);
+    if (mine.length !== 1) continue;
+    const c = mine[0]!;
+    const tripMs = Number(c.duration_seconds ?? 0) * 1000;
+    const endMs = ON_BOARD.has(c.status)
+      ? Math.max(now.getTime(), (c.started_at ?? c.boarded_at ?? now).getTime() + tripMs)
+      : now.getTime() + hoursMs(dispatchKm({ lat: d.lat, lng: d.lng }, c.pickup as Place)) + tripMs;
+    const dropKm = dispatchKm(c.dropoff as Place, pickup);
+    if (endMs + hoursMs(dropKm) > trip.scheduled_at.getTime()) continue;
+    out.set(d.driver_id, { dropKm, inMin: Math.max(0, Math.round((endMs - now.getTime()) / 60_000)) });
+  }
+  return out;
+}
 
 /** v0.18.11: of `zoneIds`, those with the same country and currency as `zoneId` (neighbours never cross a border). */
 async function sameCountryZones(trx: Trx, zoneId: string, zoneIds: string[]): Promise<string[]> {
@@ -50,30 +105,35 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     .select(["drivers.driver_id", "drivers.online_status", "drivers.category_ids", "drivers.zone_ids", "drivers.rating_sum", "drivers.rating_count", "drivers.last_free_at", "drivers.driving_since", "driver_locations.lat", "driver_locations.lng", "vehicles.category_ids as vehicle_category_ids", "vehicles.status as vehicle_status", "drivers.country", "drivers.account_type", "drivers.vehicle_id"])
     .where("drivers.account_status", "=", "active")
     // Next trips (an offer to a driver who still has a rider) are a later round (owner decision 10): only free
-    // (online) drivers get offers.
-    .where("drivers.online_status", "=", "online")
+    // (online) drivers get live offers. v0.18.33 (owner Q7): a booked ride within bookedNext.withinMin also reads the
+    // drivers on a trip (Exclusive only; checked below with onTripReach).
+    .where("drivers.online_status", "in", bookedNextOpen(trip, bookedNextOf(doc), now) ? ["online", "on_trip"] : ["online"])
     .where(inZones)
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
     .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000));
-  if (options.reachKm !== undefined && Number.isFinite(options.reachKm)) {
+  if (options.reachKm !== undefined && Number.isFinite(options.reachKm) && !bookedNextOpen(trip, bookedNextOf(doc), now)) {
     // dispatchKm = straight line × roadFactor (≥ 1), so a box of reachKm straight-line km holds every driver in reach.
     const dLat = options.reachKm / 111.32;
     const dLng = dLat / Math.max(0.01, Math.cos((pickup.lat * Math.PI) / 180));
     query = query.where("driver_locations.lat", ">=", pickup.lat - dLat).where("driver_locations.lat", "<=", pickup.lat + dLat).where("driver_locations.lng", ">=", pickup.lng - dLng).where("driver_locations.lng", "<=", pickup.lng + dLng);
   }
   const rows = await query.execute();
-  const pool: Pool = { candidates: [], meta: new Map() };
+  const pool: Pool = { candidates: [], meta: new Map(), bookedNext: new Set() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
   const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
   // v0.18.26 (contract.json#phoneDataToServer.driverPreferences.dispatch): a category the driver switched off in Ride
   // preferences is not sent to him (one query for the whole round).
   const switchedOff = await driversWithCategoryOff(trx, rows.map((r) => r.driver_id), trip.category_id);
   const kept: Array<(typeof rows)[number] & { km: number; neighbour: boolean }> = [];
+  // v0.18.33 (owner Q7): drivers on a trip who reach this booked ride in time, km counted from their drop-off.
+  const reach = await onTripReach(trx, trip, rows.filter((r) => r.online_status === "on_trip"), now);
   for (const d of rows) {
+    const next = d.online_status === "on_trip" ? reach.get(d.driver_id) : undefined;
+    if (d.online_status === "on_trip" && next === undefined) continue;
     const own = d.zone_ids.includes(trip.zone_id);
     const neighbour = !own && d.zone_ids.some((z) => neighbourZones.includes(z));
     if (!own && !neighbour) continue;
-    if (!insideOwn({ lat: d.lat, lng: d.lng }, d.zone_ids)) continue;
+    if (!next && !insideOwn({ lat: d.lat, lng: d.lng }, d.zone_ids)) continue;
     // A driver who cancelled this trip is not offered it again.
     if (trip.cancelled_driver_ids.includes(d.driver_id)) continue;
     if (!d.category_ids.includes(trip.category_id)) continue;
@@ -83,18 +143,20 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     // Checker MED 9: an approved car with no categories stored (older rows) does not narrow his own chosen types.
     const carTypes = d.vehicle_category_ids ?? [];
     if (d.vehicle_status !== null && (d.vehicle_status !== "approved" || (carTypes.length > 0 && !carTypes.includes(trip.category_id)))) continue;
-    const km = dispatchKm({ lat: d.lat, lng: d.lng }, pickup);
+    const km = next ? next.dropKm : dispatchKm({ lat: d.lat, lng: d.lng }, pickup);
     if (options.reachKm !== undefined && km > options.reachKm) continue;
     kept.push({ ...d, km, neighbour });
   }
-  const facts = await roundFacts(trx, trip, kept, now);
+  const facts = await roundFacts(trx, trip, kept, now, new Set(reach.keys()));
   for (const d of kept) {
     if (!facts.free(d.driver_id)) continue;
+    const next = reach.get(d.driver_id);
     const candidate: Candidate = {
       driverId: d.driver_id,
       km: d.km,
       categoryIds: d.category_ids,
       ...(d.neighbour ? { neighbour: true } : {}),
+      ...(next ? { finishing: { inMin: next.inMin, dropKm: next.dropKm }, bookedNext: true } : {}),
       idleMin: d.last_free_at ? (now.getTime() - d.last_free_at.getTime()) / 60_000 : 0,
       // v0.18.4 (G3-D2): the driver's real numbers (contract.json#driverHome.performance); a null one is left out
       // and the engine uses the §3.6 default.
@@ -102,6 +164,7 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     };
     pool.candidates.push(candidate);
     pool.meta.set(d.driver_id, metaOf(d.km));
+    if (next) pool.bookedNext.add(d.driver_id);
   }
   return pool;
 }
@@ -109,7 +172,7 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
 const metaOf = (km: number) => ({ km, etaSeconds: Math.max(60, Math.round((km / PICKUP_KMH) * 3600)), meters: Math.round(km * 1000) });
 
 /** The per-driver checks of a round, each one query for all `drivers`. */
-async function roundFacts(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: string; zone_ids: string[]; driving_since: Date | null; country: string | null; account_type: string | null; vehicle_id: string | null; km: number }>, now: Date) {
+async function roundFacts(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: string; zone_ids: string[]; driving_since: Date | null; country: string | null; account_type: string | null; vehicle_id: string | null; km: number }>, now: Date, onTrip: Set<string> = new Set()) {
   const ids = drivers.map((d) => d.driver_id);
   const out = new Set<string>();
   if (ids.length > 0) {
@@ -117,7 +180,8 @@ async function roundFacts(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: s
     const open = await trx.selectFrom("offers").select(["driver_id", sql<string>`count(*) FILTER (WHERE kind IN ('exclusive', 'assigned'))`.as("ex"), sql<string>`count(*) FILTER (WHERE kind = 'radar')`.as("radar")]).where("driver_id", "in", ids).where("status", "=", "open").groupBy("driver_id").execute();
     for (const o of open) if (Number(o.ex) >= 1 || Number(o.radar) >= RADAR_LIST_MAX) out.add(o.driver_id);
     // v0.18.17: a booked ride he holds for later (scheduled, accepted) is not his current trip.
-    for (const id of await driversWithCurrentTrip(trx, ids)) out.add(id);
+    // v0.18.33 (owner Q7): a driver on a trip who reaches this booked ride in time (onTripReach) is not left out for it.
+    for (const id of await driversWithCurrentTrip(trx, ids)) if (!onTrip.has(id)) out.add(id);
     // Job 1 (fix plan R10): a driver holding a booked ride gets no live ride that would clash with it.
     const etaOf = new Map(drivers.map((d) => [d.driver_id, metaOf(d.km).etaSeconds]));
     for (const id of await driversWithClashingBooking(trx, trip, ids, (id) => etaOf.get(id) ?? 0, now)) out.add(id);
@@ -159,7 +223,7 @@ async function roundFacts(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: s
  * is still online, free, without an open Exclusive and without a current trip. Returns the drivers that no longer may
  * get this offer.
  */
-export async function lockAndRecheck(trx: Trx, driverIds: string[]): Promise<Set<string>> {
+export async function lockAndRecheck(trx: Trx, driverIds: string[], onTrip: Set<string> = new Set()): Promise<Set<string>> {
   const ids = [...new Set(driverIds)].sort();
   const gone = new Set<string>();
   if (ids.length === 0) return gone;
@@ -170,11 +234,12 @@ export async function lockAndRecheck(trx: Trx, driverIds: string[]): Promise<Set
     if ((error as { code?: string }).code === "55P03") throw new TimerBusy("a chosen driver is busy");
     throw error;
   }
-  for (const r of rows) if (r.online_status !== "online" || r.account_status !== "active") gone.add(r.driver_id);
+  // v0.18.33 (owner Q7): a booked-next driver (onTrip) may be on a trip; he still must not hold an open Exclusive.
+  for (const r of rows) if ((r.online_status !== "online" && !(onTrip.has(r.driver_id) && r.online_status === "on_trip")) || r.account_status !== "active") gone.add(r.driver_id);
   for (const id of ids) if (!rows.some((r) => r.driver_id === id)) gone.add(id);
   const open = await trx.selectFrom("offers").select("driver_id").where("driver_id", "in", ids).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).execute();
   for (const o of open) gone.add(o.driver_id);
-  for (const id of await driversWithCurrentTrip(trx, ids)) gone.add(id);
+  for (const id of await driversWithCurrentTrip(trx, ids)) if (!onTrip.has(id)) gone.add(id);
   return gone;
 }
 

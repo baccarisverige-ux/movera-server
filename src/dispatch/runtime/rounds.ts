@@ -85,7 +85,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   if (round.type === "offer") {
     // Job 1 (fix plan R1 d): only the chosen drivers are locked, then checked again under the lock. One who just took
     // another trip or offer is left out; an Exclusive whose driver is gone is planned again at the next round, at once.
-    const gone = await lockAndRecheck(trx, [...round.driverIds, ...(round.alsoRadar?.driverIds ?? [])]);
+    const gone = await lockAndRecheck(trx, [...round.driverIds, ...(round.alsoRadar?.driverIds ?? [])], pool.bookedNext);
     if (gone.size > 0) {
       const driverIds = round.driverIds.filter((id) => !gone.has(id));
       const also = round.alsoRadar ? round.alsoRadar.driverIds.filter((id) => !gone.has(id)) : [];
