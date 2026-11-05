@@ -196,6 +196,7 @@ S["Quote"] = obj(OrderedDict([
     ("expiresAt", ref("Timestamp")), ("pickup", ref("Place")), ("dropoff", ref("Place")), ("stops", arr(ref("Place"))),
     ("surgeMultiplier", n("The multiplier this quote was priced with; it stays with the quote (contract.json#surge).", minimum=1)),
     ("surge", ref("QuoteSurge")), ("etaSeconds", ref("DurationSeconds")),
+    ("pickupAt", {"description": "v0.18.32 (contract.json#smallFixes.quotePickupTime, owner Q8): the pickup time of a booked ride (kind scheduled); null on a live quote.", **nullable("Timestamp")}),
 ]), ["quoteId", "categoryId", "total", "fareLines", "expiresAt", "pickup", "dropoff", "stops"])
 S["RouteQuote"] = obj({"routeQuoteId": ref("Id"), "tripId": ref("Id"),
                        "total": {"allOf": [ref("Money")], "description": "Booked fare + the rider's offer raises + distance price of "
@@ -1133,7 +1134,10 @@ S["QuoteRequest"] = obj({"pickup": ref("Place"), "dropoff": ref("Place"), "stops
                          "categoryIds": arr(ref("CategoryId"), description="Omit for every category in the zone."),
                          "kind": ref("TripKind"), "scheduledAt": ref("Timestamp"), "paymentMethod": ref("PaymentMethod"), **PRICE_EXTRAS},
                         ["pickup", "dropoff", "stops"])
-S["QuoteList"] = obj({"quotes": arr(ref("Quote")), "zoneId": ref("Id"), "serverTime": ref("Timestamp")}, ["quotes", "zoneId"])
+S["QuoteWarning"] = obj({"reason": s(enum=["same_pickup_dropoff"]), "meters": i(minimum=0), "limitMeters": i(minimum=0)}, ["reason", "meters", "limitMeters"],
+                         "v0.18.32 (contract.json#smallFixes.samePoint, owner Q9): a warning only; the quote can still be booked.")
+S["QuoteList"] = obj({"quotes": arr(ref("Quote")), "zoneId": ref("Id"), "serverTime": ref("Timestamp"),
+                      "warnings": arr(ref("QuoteWarning"), description="v0.18.32: warnings for the rider (may be absent or empty).")}, ["quotes", "zoneId"])
 S["CreateTripRequest"] = obj({"quoteId": ref("Id"), "categoryId": ref("CategoryId"), "pickup": ref("Place"),
                               "dropoff": ref("Place"), "stops": arr(ref("Place")), "kind": ref("TripKind"),
                               "scheduledAt": ref("Timestamp"), "paymentMethod": ref("PaymentMethod"),
