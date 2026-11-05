@@ -15,8 +15,9 @@ const speed = 10; // m/s on this route (36 km/h)
 const start = (): HeadingState => nextHeading(null, { now: t0, settings: SE, meters: 5000, speedMps: speed, atPickup: false })!;
 
 describe("heading to pickup = 80 % of what normal road speed allows (G5-8)", () => {
-  it("defaults: on, 80 %, 2 min, reassign on; bad admin values fall back", () => {
-    expect(SE).toEqual({ on: true, headingPct: 80, notHeadingMinutes: 2, reassign: true });
+  it("defaults: on, 80 %, 2 min, reassign OFF (v0.18.35, owner Q-A: live never taken back), notice every 1 min; bad admin values fall back", () => {
+    expect(SE).toEqual({ on: true, headingPct: 80, notHeadingMinutes: 2, reassign: false, notice: true, noticeEveryMin: 1 });
+    expect(headingSettingsOf({ headingCheck: { notice: false, noticeEveryMin: 0 } })).toMatchObject({ notice: false, noticeEveryMin: 1 });
     expect(headingSettingsOf({ headingCheck: { headingPct: 20, notHeadingMinutes: 0 } })).toMatchObject({ headingPct: 80, notHeadingMinutes: 2 });
   });
 
@@ -71,7 +72,7 @@ describe("heading to pickup = 80 % of what normal road speed allows (G5-8)", () 
     expect(nextHeading(first, { now: t0, settings: SE, meters: 5000, speedMps: speed, atPickup: false })!.heading).toBe(true);
   });
 
-  it("the tick does nothing (no settings read, no write, no reassign) without a driver, after arrival or for a booked trip", async () => {
+  it("the tick does nothing (no settings read, no write, no reassign) without a driver, after arrival or for an unknown trip kind", async () => {
     const untouched = new Proxy({}, { get: () => { throw new Error("the transaction must not be used"); } }) as never;
     const reassign = async () => { throw new Error("must not reassign"); };
     const input = { fix: { lat: 59.33, lng: 18.06 }, leg: { distanceMeters: 5000, durationSeconds: 500 }, now: t0 };
