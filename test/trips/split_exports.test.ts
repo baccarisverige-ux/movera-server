@@ -14,7 +14,7 @@ describe("split modules keep their public names", () => {
       "driverCancelReasonsOf", "driverEarnings", "driverSilenceHandler", "driverStep", "earlyEndSettingsOf", "endEarly", "fareWithWaiting", "feeSplit",
       "markNoShow", "maybeNearDropoff", "nearDropoffHandler", "newPin", "noShow", "pickupMoveLimitOf", "pinSettingsOf", "positionMaxAge", "pricingOf",
       "rateTrip", "refreshOutstanding", "releaseDriver", "rideHandlers", "riderCancelFee", "riderFeeColumns", "riderFeeSharePct", "rulesOf", "scaledFare",
-      "takeBackNotHeading", "tripTerms", "validPickupMoveMeters",
+      "takeBackLateBooked", "takeBackNotHeading", "tripTerms", "validPickupMoveMeters",
     ].sort());
     for (const kind of [ride.NEAR_DROPOFF, ride.DRIVER_SILENCE, ride.WAITING_PAID, ride.WAITING_NO_SHOW, "ride_check_scan", "route_change_expire"]) {
       expect(typeof ride.rideHandlers[kind]).toBe("function");

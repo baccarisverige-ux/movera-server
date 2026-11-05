@@ -137,10 +137,12 @@ async function dispatchCauses(ctx: Ctx): Promise<Cause[]> {
 
 async function bookedCauses(ctx: Ctx): Promise<Cause[]> {
   const out: Cause[] = [];
-  const rows = await sql<{ trip_id: string; zone_id: string; status: string; driver_id: string | null; scheduled_at: Date; rider: string | null; rider_id: string; driver: string | null; leave_at: string | null; held: string | null }>`
+  const rows = await sql<{ trip_id: string; zone_id: string; status: string; driver_id: string | null; scheduled_at: Date; rider: string | null; rider_id: string; driver: string | null; leave_at: string | null; held: string | null; taken_from: string | null; taken_name: string | null }>`
     SELECT t.trip_id, t.zone_id, t.status, t.driver_id, t.scheduled_at, t.rider_id, r.first_name AS rider, d.first_name AS driver,
-           t.reservation->>'leaveAt' AS leave_at, t.reservation->>'held' AS held
+           t.reservation->>'leaveAt' AS leave_at, t.reservation->>'held' AS held,
+           t.reservation->'takenBack'->>'driverId' AS taken_from, tb.first_name AS taken_name
       FROM trips t JOIN riders r ON r.rider_id = t.rider_id LEFT JOIN drivers d ON d.driver_id = t.driver_id
+      LEFT JOIN drivers tb ON tb.driver_id = t.reservation->'takenBack'->>'driverId'
      WHERE t.kind = 'scheduled' AND t.scheduled_at IS NOT NULL AND t.scheduled_at <= ${new Date(ctx.now.getTime() + 4 * 3600_000)}
        AND t.status IN ('requested', 'searching', 'offered', 'accepted')`.execute(ctx.ex);
   for (const t of rows.rows) {
@@ -152,6 +154,9 @@ async function bookedCauses(ctx: Ctx): Promise<Cause[]> {
     const ref: Ref = { tripId: t.trip_id, riderId: t.rider_id, ...(t.driver_id ? { driverId: t.driver_id } : {}) };
     const left = Math.ceil((t.scheduled_at.getTime() - ctx.now.getTime()) / MIN);
     if (!t.driver_id) {
+      // v0.18.35 job 4 (contract.json#bookedTakeBack.alert): taken back from a late driver, no new driver yet.
+      const taken = s.kind("booked_taken_back");
+      if (t.taken_from && taken.on) out.push({ key: `booked_taken_back:${t.trip_id}`, kind: "booked_taken_back", country, zoneId: t.zone_id, level: taken.level, title: T("{0}'s booked ride at {1} was taken from {2} (late)", [rider, time, name(t.taken_name, "Driver")]), detail, ref: { ...ref, driverId: t.taken_from } });
       if (left <= 0) {
         const k = s.kind("booked_late");
         if (k.on) out.push({ key: `booked_late:${t.trip_id}`, kind: "booked_late", country, zoneId: t.zone_id, level: k.level, title: T("{0}'s booked ride: pickup time {1} passed, no driver", [rider, time]), detail, ref });
@@ -368,7 +373,7 @@ function solvedText(ctx: Ctx, row: LiveRow, look: Lookups): Text {
     }
     if (row.kind === "car_lost") return T("The car's position came back {0}", [at(ctx.now)]);
   }
-  if (ref.tripId && ["long_wait", "late_reservation", "booked_at_risk", "booked_late", "booked_not_started", "payment_failed"].includes(row.kind)) {
+  if (ref.tripId && ["long_wait", "late_reservation", "booked_at_risk", "booked_late", "booked_not_started", "booked_taken_back", "payment_failed"].includes(row.kind)) {
     const trip = look.trips.get(ref.tripId);
     if (trip) {
       if (row.kind === "payment_failed") return trip.payment_status === "failed" ? T("Solved by itself {0}", [at(ctx.now)]) : T("Paid {0}", [at(trip.updated_at)]);
