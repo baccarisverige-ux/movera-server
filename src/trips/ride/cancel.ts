@@ -14,6 +14,8 @@ import { tripProjection, type EndInfo } from "../projection.js";
 import { headingSettingsFor, isFreeCancel as headingFreeCancel, NOT_HEADING_REASON, noticeTakenBack, type HeadingState } from "../headingCheck.js";
 import { type Money, type Waiting, REASONS, ONBOARD } from "./shared.js";
 import { rulesOf, waitingOf, outstandingLine } from "./settings.js";
+import { notify } from "../../notifications/service.js";
+import { contract } from "../../contract/contract.js";
 import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet } from "./money.js";
 import { newPin } from "./steps.js";
 import { creditTrip, earlyEndPrice, type FrozenMoney } from "./finish.js";
@@ -70,8 +72,10 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   // freeChangeBeforeMin before pickup costs the fee even when no driver took it yet (Movera keeps it, owner Q5).
   const bookedNoDriver = trip.kind === "scheduled" && trip.scheduled_at !== null && (trip.accepted_at === null || trip.driver_id === null);
   if (!bookedNoDriver && (trip.accepted_at === null || trip.driver_id === null)) return null;
-  // v0.18.33: a live trip queued behind the driver's current trip: he is not on his way yet, the cancel is free.
+  // v0.18.33 (owner Q3): a live trip queued behind the driver's current trip: he is not on his way yet, the cancel is free.
   if (trip.next_after_trip_id) return null;
+  // Owner Q5: a chained trip whose rider has waited more than lateFreeCancelMin since accept may cancel free.
+  if (trip.chained && trip.chain_free_cancel_at && now.getTime() >= trip.chain_free_cancel_at.getTime()) return null;
   // Its pickup time passed with no driver: Movera did not deliver it, always free (rider app terms, owner P17 "no fee").
   if (bookedNoDriver && now.getTime() >= trip.scheduled_at!.getTime()) return null;
   // v0.18.17 (contract.json#bookLater.rider.cancel, owner Q6): more than freeChangeBeforeMin before pickup = free.
@@ -132,6 +136,8 @@ export async function afterRiderCancel(trx: Trx, before: TripRow, cancelled: Tri
     // v0.18.33 (owner Q3 + Q5): a booked ride with no driver yet: the rider owes the fee, all of it Movera's.
     await chargeRiderFee(trx, cancelled, charged.kind, charged.fee, now);
   }
+  // Owner Q3 (2026-11-05): the driver is told when the rider of his queued next trip cancels (his card goes away).
+  if (before.next_after_trip_id && before.driver_id) await noticeQueuedCancelled(trx, before.driver_id, before.trip_id, now);
   await releaseDriver(trx, before.driver_id, now);
 }
 
@@ -256,4 +262,12 @@ export async function takeBackNotHeading(trx: Trx, trip: TripRow, now: Date): Pr
   await trx.insertInto("driver_cancels").values({ trip_id: trip.trip_id, driver_id: driverId, at: now, from_status: trip.status, reason_code: NOT_HEADING_REASON, note: null }).execute();
   await backToDispatch(trx, trip, { command: "cancel", actor: "driver", now, exclude: driverId });
   await noticeTakenBack(trx, driverId, trip.trip_id, now);
+}
+
+/** Owner Q3 (2026-11-05, contract.json#afterTestRules.onTripOffers.queuedCancelNotice): bell + push to the driver. */
+const QUEUED_CANCEL = (contract as unknown as { afterTestRules: { onTripOffers: { queuedCancelNotice: { kind: string; title: Record<string, string>; body: Record<string, string> } } } }).afterTestRules.onTripOffers.queuedCancelNotice;
+async function noticeQueuedCancelled(ex: Executor, driverId: string, tripId: string, now: Date): Promise<void> {
+  const driver = await ex.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
+  const lang = driver?.language && driver.language in QUEUED_CANCEL.title ? driver.language : "en";
+  await notify(ex, { audience: "driver", subjectId: driverId, kind: QUEUED_CANCEL.kind, title: QUEUED_CANCEL.title[lang]!, body: QUEUED_CANCEL.body[lang]!, tripId, data: { tripId } }, now);
 }

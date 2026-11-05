@@ -14,7 +14,7 @@ import { nextStatus, TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { sameExtras, asksSeatOutsideChildSeat } from "../rules/priceExtras.js";
 import { fixView } from "../drivers/service.js";
 import { haversineKm } from "../maps/routing.js";
-import { etaForRead } from "./eta.js";
+import { estimateEta, etaForRead } from "./eta.js";
 import { walletCovers } from "./ride/money.js";
 import { afterRiderCancel, bookingRulesFor, newPin, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
 import type { PricingDocument } from "../rules/fare.js";
@@ -197,6 +197,17 @@ export async function withDriverPosition(ex: Executor, trip: TripRow, projection
   const over = TERMINAL.has(trip.status as TripStatus);
   if (over && (trip.ended_at === null || fix.measured_at.getTime() > trip.ended_at.getTime())) return projection;
   const out: Record<string, unknown> = { ...projection, driverLocation: fixView(fix) };
+  // v0.18.33 (owner Q1 2026-11-05): a trip queued behind the driver's current one shows the TOTAL time to arrive: the
+  // drive to the current drop-off and then on to this pickup (straight-line estimates, contract.json#dispatch.eta).
+  if (trip.next_after_trip_id) {
+    const current = await ex.selectFrom("trips").select("dropoff").where("trip_id", "=", trip.next_after_trip_id).executeTakeFirst();
+    if (current) {
+      const first = estimateEta(fix, current.dropoff as Place, "pickup", now);
+      const second = estimateEta(current.dropoff as Place, trip.pickup as Place, "pickup", now);
+      const total = { ...second, etaSeconds: first.etaSeconds + second.etaSeconds, distanceMeters: first.distanceMeters + second.distanceMeters };
+      return { ...out, eta: total, etaSeconds: total.etaSeconds };
+    }
+  }
   // v0.18.7 (Q4): the server's road-route ETA while fresh, else the straight-line estimate; the same for every viewer.
   const eta = etaForRead(trip, fix, now);
   if (eta !== null) Object.assign(out, { eta, etaSeconds: eta.etaSeconds });

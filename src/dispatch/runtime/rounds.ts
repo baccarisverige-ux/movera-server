@@ -139,6 +139,9 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
       answered_at: null,
       decline_reason: null,
       rider_rating: riderRating,
+      // v0.18.33 (owner Q2 2026-11-05): a decline or miss while he is on a trip never counts against him
+      // (acceptance, auto-offline run).
+      driver_on_trip: pool.bookedNext.has(driverId),
     };
     await trx.insertInto("offers").values(offer).execute();
     const row = (await loadOffer(trx, offer.offer_id))!;

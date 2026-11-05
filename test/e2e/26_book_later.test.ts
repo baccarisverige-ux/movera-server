@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { drive, fakeOsrm, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
@@ -288,6 +289,95 @@ describe("book later (owner Q1–Q7)", () => {
       expect(done.status, JSON.stringify(done.body)).toBe(200);
       const startedRow = await sim.db.selectFrom("trips").select(["status", "next_after_trip_id"]).where("trip_id", "=", queued.tripId).executeTakeFirstOrThrow();
       expect(startedRow).toEqual({ status: "accepted", next_after_trip_id: null });
+      expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
+    } finally {
+      await sim.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", b.id).execute();
+    }
+  });
+
+  it("job 5 on-trip chain (owner Q1-Q5 2026-11-05): total ETA, no record hit, free queued cancel + notice, start on any end, late free cancel (fail-before)", async () => {
+    await sim.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", b.id).execute();
+    const NEAR_DROP = { lat: 59.318, lng: 18.0718 };
+    const chain = async (riderIndex: 1 | 2) => {
+      const r1 = await sim.rider(riderIndex === 1 ? 1 : 2);
+      const cur = await r1.book();
+      await sim.tick();
+      expect((await a.accept((await a.offerFor(cur.tripId))!)).status).toBe(200);
+      await drive(a, cur.tripId, "in_trip");
+      await a.moveTo(NEAR_DROP);
+      const next = await rider.book();
+      await sim.tick();
+      const offer = await a.offerFor(next.tripId);
+      expect(offer?.["kind"]).toBe("exclusive");
+      expect((await a.accept(offer!)).status).toBe(200);
+      return { cur, next };
+    };
+    try {
+      // Q1: the rider of the queued trip sees the TOTAL time: to the current drop-off, then to this pickup.
+      const one = await chain(1);
+      const seen = await rider.trip(one.next.tripId);
+      expect(seen["status"]).toBe("accepted");
+      expect(seen["chain"]).toMatchObject({ queued: true });
+      expect(Date.parse(seen["chain"]["freeCancelAt"])).toBeGreaterThan(sim.clock.now.getTime());
+      const direct = (await sim.db.selectFrom("trips").select("distance_meters").where("trip_id", "=", one.cur.tripId).executeTakeFirstOrThrow());
+      expect(Number(seen["etaSeconds"])).toBeGreaterThan(120);
+      expect(direct).toBeDefined();
+      // Q3: cancelling the queued trip before it starts is free; the driver is told.
+      const cancelled = await rider.command(one.next.tripId, "cancel", { reasonCode: "plans_changed" });
+      expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+      expect(cancelled.body.cancellation.fee).toBeNull();
+      expect(await kinds(a.id, one.next.tripId)).toContain("next_trip_cancelled");
+      expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
+      // Q4: the current rider ends early during the trip → a new queued trip starts at once.
+      const again = await rider.book();
+      await sim.tick();
+      const offer2 = await a.offerFor(again.tripId);
+      expect((await a.accept(offer2!)).status).toBe(200);
+      const other = await sim.rider(1);
+      const ended = await other.command(one.cur.tripId, "end-early", { reasonCode: "plans_changed" });
+      expect([200, 201]).toContain(ended.status);
+      const started = await sim.db.selectFrom("trips").select(["next_after_trip_id", "chained", "status"]).where("trip_id", "=", again.tripId).executeTakeFirstOrThrow();
+      expect(started).toEqual({ next_after_trip_id: null, chained: true, status: "accepted" });
+      // Q5: a chained trip, 11 min after accept, may be cancelled free even after it started.
+      await jump(11 * 60);
+      const late = await rider.command(again.tripId, "cancel", { reasonCode: "plans_changed" });
+      expect(late.status, JSON.stringify(late.body)).toBe(200);
+      expect(late.body.cancellation.fee).toBeNull();
+      // Q2: a decline while on a trip does not lower his acceptance.
+      // The same count driverPerformance uses for the acceptance rate ("answerable" offers).
+      const answerable = async () => Number((await sql<{ n: string }>`SELECT count(*) FILTER (WHERE status = 'claimed' OR (status IN ('declined', 'expired') AND NOT driver_on_trip)) AS n FROM offers WHERE driver_id = ${a.id} AND kind IN ('exclusive', 'assigned')`.execute(sim.db)).rows[0]!.n);
+      const row = await sim.db.selectFrom("offers").select("offer_id").where("driver_id", "=", a.id).where("status", "=", "claimed").orderBy("sent_at", "desc").executeTakeFirstOrThrow();
+      await sim.db.updateTable("offers").set({ status: "declined", driver_on_trip: false }).where("offer_id", "=", row.offer_id).execute();
+      const counted = await answerable();
+      await sim.db.updateTable("offers").set({ driver_on_trip: true }).where("offer_id", "=", row.offer_id).execute();
+      expect(await answerable()).toBe(counted - 1);
+      const { driverPerformance } = await import("../../src/drivers/performance.js");
+      expect(await driverPerformance(sim.db, a.id, sim.clock.now)).toBeDefined();
+      // The offers he got while on this trip were marked (Offer.driverOnTrip).
+      const marked = await sim.db.selectFrom("offers").select("driver_on_trip").where("trip_id", "=", again.tripId).where("driver_id", "=", a.id).executeTakeFirstOrThrow();
+      expect(marked.driver_on_trip).toBe(true);
+    } finally {
+      await sim.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", b.id).execute();
+    }
+  });
+
+  it("job 5 (owner Q4): when the current trip ends, a held booked ride whose leave time has come starts at once; one not due yet leaves him free", async () => {
+    await sim.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", b.id).execute();
+    try {
+      const other = await sim.rider(1);
+      const cur = await other.book();
+      await sim.tick();
+      expect((await a.accept((await a.offerFor(cur.tripId))!)).status).toBe(200);
+      await drive(a, cur.tripId, "in_trip");
+      await a.moveTo({ lat: 59.318, lng: 18.0718 });
+      const booked = await book(minutes(25));
+      await sim.tick();
+      expect((await a.accept((await a.offerFor(booked.tripId))!)).status).toBe(200);
+      // Its leave time has come.
+      await sim.db.updateTable("trips").set({ reservation: sql`jsonb_set(reservation, '{leaveAt}', to_jsonb(${new Date(sim.clock.now.getTime() - 60_000).toISOString()}::text))` }).where("trip_id", "=", booked.tripId).execute();
+      const ended = await other.command(cur.tripId, "end-early", { reasonCode: "plans_changed" });
+      expect([200, 201]).toContain(ended.status);
+      expect((await sim.db.selectFrom("trips").select("status").where("trip_id", "=", booked.tripId).executeTakeFirstOrThrow()).status).toBe("driver_to_pickup");
       expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
     } finally {
       await sim.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", b.id).execute();

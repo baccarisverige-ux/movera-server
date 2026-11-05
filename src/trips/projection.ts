@@ -288,6 +288,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   }
   // v0.18.33 (owner answer 2026-11-05): a live trip queued behind its driver's current trip (driver and admin views).
   if (viewer !== "rider" && row.next_after_trip_id) projection["nextAfterTripId"] = row.next_after_trip_id;
+  // Owner Q3 + Q5: the rider's app shows a free cancel for a queued trip, and for a chained one from freeCancelAt.
+  if (row.chained) projection["chain"] = { queued: Boolean(row.next_after_trip_id), ...(row.chain_free_cancel_at ? { freeCancelAt: new Date(row.chain_free_cancel_at).toISOString() } : {}) };
   // v0.18.33 (owner Q6, contract.json#afterTestRules.walletFirst): the rider's per-ride wallet switch (rider and admin views).
   if (viewer !== "driver") projection["walletFirst"] = (row.booking_rules as { walletFirst?: boolean } | null)?.walletFirst !== false;
   // The wallet pays first; the driver collects the rest in cash (shown once the wallet covers part of it).

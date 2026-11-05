@@ -12,7 +12,7 @@ import { applyCommand } from "../../trips/commands.js";
 import { ROUND, WITHDRAW } from "./shared.js";
 import { type OfferRow, loadOffer, offerView, riderRatingForOffer, FeedQueue, closeOpenOffers } from "./offers.js";
 import { endSearchTimers } from "./end.js";
-import { onTripFits } from "./candidates.js";
+import { chainLateFreeCancelMin, onTripFits } from "./candidates.js";
 
 /* ---------------------------------------------------------------- driver answers */
 
@@ -94,6 +94,8 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       // v0.18.33 (owner Q7): held in the same change, so it never counts as a second current trip (trips_one_active_per_driver).
       ...(next && !queuedLive ? { reservation: JSON.stringify({ ...((trip.reservation as Record<string, unknown> | null) ?? {}), held: true }) } : {}),
       next_after_trip_id: queuedLive ? busy!.trip_id : null,
+      chained: queuedLive,
+      chain_free_cancel_at: queuedLive ? new Date(now.getTime() + (await chainLateFreeCancelMin(trx, trip.zone_id)) * 60_000) : null,
     },
   });
   // v0.18.19: a booked ride tells its rider "driver found" once per driver.

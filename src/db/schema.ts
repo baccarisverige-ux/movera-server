@@ -323,6 +323,10 @@ export interface TripsTable {
   accept_pickup_meters: ColumnType<number | null, number | null | undefined, number | null>;
   /** v0.18.33 (migration 0082): a live trip queued behind this driver's current trip, until it ends. */
   next_after_trip_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.33 (migration 0082, owner Q5): the trip was queued behind the driver's previous trip. */
+  chained: ColumnType<boolean, boolean | undefined, boolean>;
+  /** v0.18.33 (owner Q5): accept + lateFreeCancelMin of a chained trip. */
+  chain_free_cancel_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   wallet_applied_minor: ColumnType<string, number | string | undefined, number | string>;
   cancelled_driver_ids: ColumnType<string[], string[] | undefined, string[] | RawBuilder<string[]>>;
   created_at: Timestamp;

@@ -22,7 +22,8 @@ export async function releaseDriver(trx: Trx, driverId: string | null, now: Date
     .where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).where(NOT_HELD).executeTakeFirst();
   if (still) return;
   // A live trip he took as an Exclusive while on that trip starts now: it is his current trip, the ETA starts ticking.
-  const queued = await trx.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("status", "=", "accepted").where("next_after_trip_id", "is not", null).orderBy("accepted_at").executeTakeFirst();
+  // Rule 33: in this same transaction, with the queued row locked (FOR UPDATE), so two server copies never start it twice.
+  const queued = await trx.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("status", "=", "accepted").where("next_after_trip_id", "is not", null).orderBy("accepted_at").forUpdate().executeTakeFirst();
   if (queued) {
     const started = await trx.updateTable("trips").set({ next_after_trip_id: null, version: sql`version + 1`, updated_at: now }).where("trip_id", "=", queued.trip_id).returningAll().executeTakeFirstOrThrow();
     await appendTripEvent(trx, { tripId: started.trip_id, kind: "trip_projection", version: started.version, occurredAt: now, projection: tripProjection(started, "admin", { sequence: Number(started.sequence) + 1 }) });
@@ -63,6 +64,21 @@ export async function releaseDriver(trx: Trx, driverId: string | null, now: Date
   if (blockedBy !== null) await markSetOffline(trx, driverId, blockedBy, {}, now);
   // Deep fix 2026-11-02 (g1-g3 H1): a document that expired during the trip takes him offline at its end.
   else await offlineIfDocumentsExpired(trx, now, driverId);
+  // v0.18.33 (owner Q4 2026-11-05): a held booked ride whose time to drive has come (reservation.leaveAt reached)
+  // starts now; else he is simply free. Only when he was on a trip and may still drive.
+  if (blockedBy === null && before?.online_status === "on_trip") await startDueBooked(trx, driverId, now);
+}
+
+async function startDueBooked(trx: Trx, driverId: string, now: Date): Promise<void> {
+  const held = await trx.selectFrom("trips").select(["trip_id", "reservation"]).where("driver_id", "=", driverId).where("kind", "=", "scheduled").where("status", "=", "accepted")
+    .where(sql<boolean>`coalesce(reservation->>'held', 'false') = 'true'`).where(sql<boolean>`(reservation->>'leaveAt')::timestamptz <= ${now}`).orderBy("scheduled_at").forUpdate().executeTakeFirst();
+  if (!held) return;
+  const { startReservation } = await import("../../reservations/service.js");
+  try {
+    await startReservation(trx, driverId, held.trip_id, undefined, now);
+  } catch {
+    // Refused (offline, too early by the zone's rules…): he stays free; the leave-now notice still comes.
+  }
 }
 
 export async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share" | "bonus" | "adjustment" | "tip"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {

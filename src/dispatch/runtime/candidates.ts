@@ -4,7 +4,7 @@ import { PERFORMANCE, performanceFromCounts, scoreInputs } from "../../drivers/p
 import { TimerBusy } from "../../jobs/timers.js";
 import { sql } from "kysely";
 import { documentsExpiredFor } from "../../drivers/reminders.js";
-import type { Trx } from "../../db/db.js";
+import type { Executor, Trx } from "../../db/db.js";
 import type { TripRow } from "../../db/tripLog.js";
 import { liveDocument } from "../../config/service.js";
 import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../../drivers/service.js";
@@ -50,6 +50,14 @@ export async function onTripMinDonePct(ex: Trx, zoneId: string): Promise<number>
   const v = rules?.document.onTripOffers?.minRouteDonePct;
   return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100 ? v : ON_TRIP_DEFAULT;
 }
+/** Owner Q5 (2026-11-05): CountryRules.onTripOffers.lateFreeCancelMin, minutes after accept from which the rider of a
+ * chained trip may cancel free (default 10, 0–120). */
+export async function chainLateFreeCancelMin(ex: Trx | Executor, zoneId: string): Promise<number> {
+  const rules = await liveDocument<{ onTripOffers?: { lateFreeCancelMin?: unknown } }>(ex, "country_rules", zoneId);
+  const v = rules?.document.onTripOffers?.lateFreeCancelMin;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 120 ? v : CHAIN_LATE_DEFAULT;
+}
+const CHAIN_LATE_DEFAULT = (contract as unknown as { configDefaults: { onTripOffers: { lateFreeCancelMin: number } } }).configDefaults.onTripOffers.lateFreeCancelMin;
 /** At accept: this driver, on a trip, may still take this trip (an Exclusive) as his next one. */
 export async function onTripFits(trx: Trx, trip: TripRow, driverId: string, now: Date): Promise<boolean> {
   const live = await liveDocument<DispatchDoc>(trx, "dispatch", trip.zone_id);
@@ -226,7 +234,7 @@ async function roundFacts(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: s
   // Score numbers (contract.json#driverHome.performance), as driverPerformance, for all drivers at once.
   const since = new Date(now.getTime() - PERFORMANCE.windowDays * 24 * 3600_000);
   const free = ids.filter((id) => !out.has(id));
-  const offers = free.length ? await trx.selectFrom("offers").select(["driver_id", sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status IN ('claimed', 'declined', 'expired'))`.as("all")]).where("driver_id", "in", free).where("kind", "in", ["exclusive", "assigned"]).where("sent_at", ">", since).where("sent_at", "<=", now).groupBy("driver_id").execute() : [];
+  const offers = free.length ? await trx.selectFrom("offers").select(["driver_id", sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status = 'claimed' OR (status IN ('declined', 'expired') AND NOT driver_on_trip))`.as("all")]).where("driver_id", "in", free).where("kind", "in", ["exclusive", "assigned"]).where("sent_at", ">", since).where("sent_at", "<=", now).groupBy("driver_id").execute() : [];
   const cancels = free.length ? await trx.selectFrom("driver_cancels").select(["driver_id", (eb) => eb.fn.countAll<string>().as("n")]).where("driver_id", "in", free).where("at", ">", since).where("at", "<=", now).groupBy("driver_id").execute() : [];
   const offerOf = new Map(offers.map((o) => [o.driver_id, o]));
   const cancelOf = new Map(cancels.map((c) => [c.driver_id, Number(c.n)]));
