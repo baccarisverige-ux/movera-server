@@ -20,6 +20,8 @@ export type AccessClaims = {
   /** Admins only: the role and the fully expanded permissions (contract §9). */
   role?: string;
   perms?: string[];
+  /** v0.18.25 (contract.json#previewSession): an admin's read-only preview of the real rider / driver app. */
+  pv?: true;
 };
 
 const HEADER = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
@@ -33,7 +35,7 @@ function sign(data: string, secret: string): string {
 }
 
 export function signAccessToken(
-  claims: { sub: string; actor: Actor; sid: string; zones: string[]; role?: string; perms?: string[] },
+  claims: { sub: string; actor: Actor; sid: string; zones: string[]; role?: string; perms?: string[]; pv?: true },
   secret: string,
   ttlSeconds: number,
   now: Date = new Date(),
