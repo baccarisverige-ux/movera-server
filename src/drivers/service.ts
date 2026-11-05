@@ -13,12 +13,14 @@ import { zoneAt } from "../config/zoneLookup.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { CLEAR_OFFLINE_REASON } from "./offlineReason.js";
+import { availabilityOnTrip, offlineAfterTripView } from "./presence.js";
 import { documentSummaries } from "../documents/service.js";
 import { EXTRA_CATEGORIES, carRuleProblems, categoryProblem, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
 import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
 import { signUpView } from "./reminders.js";
 import { DRIVER_HOME, areaView, hasFreshPosition } from "./presence.js";
 import { RIDERS_ONLINE_WINDOW_SECONDS, ridersOnlineByZone } from "../riders/presence.js";
+import { onDriverPosition } from "../airportQueue/service.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -42,6 +44,8 @@ const MAX_FIX_AGE_MS = 10 * 60 * 1000;
 const MAX_FIX_AHEAD_MS = 60 * 1000;
 
 export type DriverRow = {
+  offline_after_trip?: boolean;
+  offline_after_trip_at?: Date | null;
   driver_id: string;
   /** v0.18.17 (owner BL-Q4). */
   home_area?: unknown;
@@ -105,6 +109,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     // v0.18.39 A2 (owner Q4, contract.json#payoutHold): admin view only.
     ...(viewer === "admin" && row.payout_hold_at ? { payoutHold: { reason: row.payout_hold_reason ?? "", at: row.payout_hold_at.toISOString(), ...(row.payout_hold_by ? { by: row.payout_hold_by } : {}) } } : {}),
     onlineStatus: row.online_status,
+    ...offlineAfterTripView(row),
     // v0.18.6 (owner "Send the real reason"): why the server set him offline, while he is offline.
     ...(row.online_status === "offline" && row.offline_reason ? { offlineReason: row.offline_reason, ...(row.offline_note ? { offlineNote: row.offline_note } : {}), ...(row.offline_at ? { offlineAt: row.offline_at.toISOString() } : {}) } : {}),
     ...(location ? { moving: location.moving } : {}),
@@ -249,6 +254,8 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
   const row = await loadDriver(trx, driverId, true);
   const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await stale(row, trx)() });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "Your status changed since you last saw it.", { projection: await stale(row, trx)() });
+  // v0.18.37 §61: on a trip, offline = after all his trips, online = undo (presence.ts).
+  if (await availabilityOnTrip(trx, row, body.onlineStatus, now)) return driverView(trx, await loadDriver(trx, driverId), "driver", now);
   // On a trip the driver already counts as online; "online" must not turn on_trip into free.
   if (body.onlineStatus === row.online_status || (body.onlineStatus === "online" && row.online_status === "on_trip")) return driverView(trx, row, "driver", now);
   if (body.onlineStatus === "online") {
@@ -343,6 +350,9 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     .values(values)
     .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<=", latest.at))
     .execute();
+
+  // v0.18.36 §60 (fix job 9, contract.json#airportQueue): join, stay in or leave an airport queue.
+  await onDriverPosition(trx, driverId, latest.fix, now);
 
   // On a trip, the trip is the one the server knows, whatever tripId the app sent.
   const active = await activeTripOf(trx, driverId);
@@ -526,7 +536,7 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
   let rowsQuery = scoped()
     .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
     .select([
-      "drivers.driver_id", "drivers.first_name", "drivers.online_status", "drivers.vehicle_id", "drivers.zone_ids",
+      "drivers.driver_id", "drivers.first_name", "drivers.online_status", "drivers.vehicle_id", "drivers.zone_ids", "drivers.offline_after_trip",
       "driver_locations.lat", "driver_locations.lng", "driver_locations.accuracy", "driver_locations.heading", "driver_locations.speed_mps", "driver_locations.moving", "driver_locations.measured_at", "driver_locations.received_at", "driver_locations.zone_id",
       "vehicles.plate",
     ])
@@ -547,6 +557,7 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
       driverId: r.driver_id,
       firstName: r.first_name,
       onlineStatus: r.online_status,
+      ...(r.offline_after_trip ? { offlineAfterTrip: true } : {}),
       ...(r.moving !== null ? { moving: r.moving } : {}),
       ...(hasFix ? { location: fixView({ lat: r.lat!, lng: r.lng!, accuracy: r.accuracy!, heading: r.heading, speed_mps: r.speed_mps, moving: r.moving ?? false, measured_at: r.measured_at! }), lastFixAt: r.received_at!.toISOString() } : {}),
       stale: !hasFix || now.getTime() - r.received_at!.getTime() > STALE_AFTER_SECONDS * 1000,

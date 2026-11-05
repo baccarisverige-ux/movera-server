@@ -139,3 +139,48 @@ export async function hasFreshPosition(ex: Executor, driverId: string, now: Date
     .executeTakeFirst();
   return row !== undefined;
 }
+
+/* ---------------------------------------------------------------- v0.18.37 §61: go offline after trips */
+
+/**
+ * Contract v0.18.37 §61 (contract.json#goOfflineAfterTrips, owner 2026-11-05 "go offline mean after all trips finish"):
+ * Go offline during a trip schedules offline; the state lives in drivers.offline_after_trip (rule 33, several copies).
+ */
+type AfterTripRow = { driver_id: string; online_status: string; version: number; offline_after_trip?: boolean; offline_after_trip_at?: Date | null };
+
+/** Driver.offlineAfterTrip / offlineAfterTripSince (driver and admin views). */
+export function offlineAfterTripView(row: AfterTripRow): Record<string, unknown> {
+  const on = row.offline_after_trip === true;
+  return { offlineAfterTrip: on, ...(on && row.offline_after_trip_at ? { offlineAfterTripSince: row.offline_after_trip_at.toISOString() } : {}) };
+}
+
+/**
+ * POST /driver/availability while on a trip (the caller holds the driver row lock): offline schedules it, online undoes
+ * it; a repeat changes nothing. Returns true when handled here (the caller answers the Driver view).
+ */
+export async function availabilityOnTrip(trx: Trx, row: AfterTripRow, wanted: "online" | "offline", now: Date): Promise<boolean> {
+  if (row.online_status !== "on_trip") return false;
+  const flag = wanted === "offline";
+  if ((row.offline_after_trip === true) === flag) return true;
+  await trx.updateTable("drivers").set({ offline_after_trip: flag, offline_after_trip_at: flag ? now : null, version: row.version + 1, updated_at: now }).where("driver_id", "=", row.driver_id).execute();
+  // From the tap no new offers: his open ones go at once (a job locks each trip in turn, as going offline does).
+  if (flag) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: row.driver_id, dueAt: now, payload: {} });
+  return true;
+}
+
+/**
+ * Called at the end of releaseDriver, in the trip-release transaction (rule 33: the driver row is locked FOR UPDATE).
+ * Still on a trip (a queued live trip or a due held booked ride just started): he goes after that one, flag kept.
+ * Free (online): offline now, reason after_trip. Already offline (a block won): only the flag is cleared.
+ */
+export async function settleOfflineAfterTrip(trx: Trx, driverId: string, now: Date): Promise<void> {
+  const d = await trx.selectFrom("drivers").select(["online_status", "version", "offline_after_trip"]).where("driver_id", "=", driverId).forUpdate().executeTakeFirst();
+  if (d === undefined || !d.offline_after_trip || d.online_status === "on_trip") return;
+  const off = d.online_status === "online" || d.online_status === "going_online";
+  await trx.updateTable("drivers")
+    .set({ offline_after_trip: false, offline_after_trip_at: null, ...(off ? { online_status: "offline" as const, online_since: null } : {}), version: d.version + 1, updated_at: now })
+    .where("driver_id", "=", driverId).execute();
+  if (!off) return;
+  await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
+  await markSetOffline(trx, driverId, "after_trip", {}, now);
+}
