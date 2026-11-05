@@ -59,4 +59,8 @@ describe("database values match contract v" + String((contract as { version: str
     const result = await database.pool.query<{ def: string }>("SELECT pg_get_indexdef('trips_one_active_per_driver'::regclass) AS def");
     expect(result.rows[0]!.def).toMatch(/NOT \(\(kind = 'scheduled'::text\) AND \(status = 'accepted'::text\) AND \(COALESCE\(\(reservation ->> 'held'::text\), 'false'::text\) = 'true'::text\)\)/);
   });
+  it("v0.18.33 (migration 0082): a live trip queued behind the driver's current trip is not his one active trip", async () => {
+    const result = await database.pool.query<{ def: string }>("SELECT pg_get_indexdef('trips_one_active_per_driver'::regclass) AS def");
+    expect(result.rows[0]!.def).toMatch(/next_after_trip_id IS NULL/);
+  });
 });

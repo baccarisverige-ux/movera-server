@@ -87,6 +87,7 @@ export async function streamConfig(
   doc: ConfigDoc,
   zoneId: string,
   lastSeenVersion: number,
+  riderId?: string,
 ): Promise<void> {
   const stream = openEventStream(request, reply);
   let sent = lastSeenVersion;
@@ -121,6 +122,15 @@ export async function streamConfig(
     }
   });
   stream.onClose(unsubscribe);
+  // v0.18.32 (contract.json#bookedRideSeen.riderTripEvent, P21): a trip of this rider changed, wherever it was made.
+  // The trip event's NOTIFY names its rider, so no read is needed; the id stays the document version already sent.
+  if (riderId !== undefined) {
+    stream.onClose(deps.hub.subscribe(TRIP_EVENTS_CHANNEL, (payload) => {
+      if (payload === null || payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
+      const now = deps.clock?.() ?? new Date();
+      stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
+    }));
+  }
   // A reconnect with Last-Event-ID older than the live version gets the newest at once.
   await check();
 }

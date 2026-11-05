@@ -52,7 +52,7 @@ export async function zoneDriverFacts(ex: Executor, zoneId: string, now: Date): 
   const hourAgo = new Date(now.getTime() - 3600_000);
   const offers = await ex
     .selectFrom("offers")
-    .select(["driver_id", sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status IN ('claimed', 'declined', 'expired'))`.as("all")])
+    .select(["driver_id", sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status = 'claimed' OR (status IN ('declined', 'expired') AND NOT driver_on_trip))`.as("all")])
     .where("driver_id", "in", ids)
     .where("kind", "in", ["exclusive", "assigned"])
     .where("sent_at", ">", since)

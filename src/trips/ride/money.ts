@@ -8,11 +8,29 @@ import { newId } from "../../ids.js";
 import type { Money } from "./shared.js";
 import { outstandingLine } from "./settings.js";
 import { moveWallet, walletBalance } from "../../riders/wallet.js";
+import { appendTripEvent } from "../../db/tripLog.js";
+import { scheduleTimer } from "../../jobs/timers.js";
+import { NOT_HELD } from "../../reservations/view.js";
+import { tripProjection } from "../projection.js";
 
 /* ---------------------------------------------------------------- money records */
 
 export async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Promise<void> {
   if (driverId === null) return;
+  // v0.18.33 (owner answer 2026-11-05): he still drives a current trip (a queued or held one just ended): he stays on it.
+  const still = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId)
+    .where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).where(NOT_HELD).executeTakeFirst();
+  if (still) return;
+  // A live trip he took as an Exclusive while on that trip starts now: it is his current trip, the ETA starts ticking.
+  // Rule 33: in this same transaction, with the queued row locked (FOR UPDATE), so two server copies never start it twice.
+  const queued = await trx.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("status", "=", "accepted").where("next_after_trip_id", "is not", null).orderBy("accepted_at").forUpdate().executeTakeFirst();
+  if (queued) {
+    const started = await trx.updateTable("trips").set({ next_after_trip_id: null, version: sql`version + 1`, updated_at: now }).where("trip_id", "=", queued.trip_id).returningAll().executeTakeFirstOrThrow();
+    await appendTripEvent(trx, { tripId: started.trip_id, kind: "trip_projection", version: started.version, occurredAt: now, projection: tripProjection(started, "admin", { sequence: Number(started.sequence) + 1 }) });
+    await scheduleTimer(trx, { kind: "trip_eta", refId: started.trip_id, dueAt: now, payload: {} });
+    await trx.updateTable("drivers").set({ online_status: "on_trip", updated_at: now }).where("driver_id", "=", driverId).execute();
+    return;
+  }
   // A driver, car or fleet blocked during the trip kept the trip to its end (DECISIONS.md): at the end the driver goes
   // offline instead of back online, as if the block had come when they were free (lists.ts, peopleRoutes.ts).
   const mayDrive = sql<boolean>`account_status = 'active'
@@ -46,7 +64,35 @@ export async function releaseDriver(trx: Trx, driverId: string | null, now: Date
   if (blockedBy !== null) await markSetOffline(trx, driverId, blockedBy, {}, now);
   // Deep fix 2026-11-02 (g1-g3 H1): a document that expired during the trip takes him offline at its end.
   else await offlineIfDocumentsExpired(trx, now, driverId);
+  // v0.18.33 (owner Q4 2026-11-05): a held booked ride whose time to drive has come (reservation.leaveAt reached)
+  // starts now; else he is simply free. Only when he was on a trip and may still drive.
+  if (blockedBy === null && before?.online_status === "on_trip") await startDueBooked(trx, driverId, now);
 }
+
+async function startDueBooked(trx: Trx, driverId: string, now: Date): Promise<void> {
+  const held = await trx.selectFrom("trips").select(["trip_id", "reservation"]).where("driver_id", "=", driverId).where("kind", "=", "scheduled").where("status", "=", "accepted")
+    .where(sql<boolean>`coalesce(reservation->>'held', 'false') = 'true'`).where(sql<boolean>`(reservation->>'leaveAt')::timestamptz <= ${now}`).orderBy("scheduled_at").forUpdate().executeTakeFirst();
+  if (!held) return;
+  const { startReservation } = await import("../../reservations/service.js");
+  // Rule 28/33: the start runs in a SAVEPOINT. Any failure (a refusal or a database error) rolls back only this step:
+  // the driver's release stands, he is free, the booked ride stays held, and the admin sees it as "not started".
+  await sql`SAVEPOINT start_due_booked`.execute(trx);
+  try {
+    await releaseHooks.beforeBookedStart?.(trx);
+    await startReservation(trx, driverId, held.trip_id, undefined, now);
+    await sql`RELEASE SAVEPOINT start_due_booked`.execute(trx);
+  } catch (error) {
+    await sql`ROLLBACK TO SAVEPOINT start_due_booked`.execute(trx);
+    await sql`RELEASE SAVEPOINT start_due_booked`.execute(trx);
+    await trx.updateTable("trips")
+      .set({ reservation: sql`coalesce(reservation, '{}'::jsonb) || jsonb_build_object('notStarted', true, 'startFailedAt', ${now.toISOString()}::text)` })
+      .where("trip_id", "=", held.trip_id).execute();
+    console.warn(JSON.stringify({ msg: "booked ride not started after the driver's trip", tripId: held.trip_id, error: (error as { code?: string }).code ?? String((error as Error)?.message ?? error) }));
+  }
+}
+
+/** Test seam (rule 28): lets a test make the due booked start fail with a database error. */
+export const releaseHooks: { beforeBookedStart?: (trx: Trx) => Promise<void> } = {};
 
 export async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share" | "bonus" | "adjustment" | "tip"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
   if (entry.amount === 0 && entry.kind !== "trip") return;

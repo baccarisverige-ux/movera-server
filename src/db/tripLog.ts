@@ -78,7 +78,7 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
     .updateTable("trips")
     .set({ sequence: sql`sequence + 1` })
     .where("trip_id", "=", event.tripId)
-    .returning("sequence")
+    .returning(["sequence", "rider_id"])
     .executeTakeFirst();
   if (bumped === undefined) throw notFound("No such trip.", "trip_not_found");
   const sequence = Number(bumped.sequence);
@@ -101,7 +101,7 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
       message: json(event.message),
     })
     .execute();
-  await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify({ tripId: event.tripId, sequence })})`.execute(trx);
+  await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify({ tripId: event.tripId, sequence, riderId: bumped.rider_id })})`.execute(trx);
   return { eventId, sequence };
 }
 

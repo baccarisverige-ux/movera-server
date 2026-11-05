@@ -85,7 +85,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   if (round.type === "offer") {
     // Job 1 (fix plan R1 d): only the chosen drivers are locked, then checked again under the lock. One who just took
     // another trip or offer is left out; an Exclusive whose driver is gone is planned again at the next round, at once.
-    const gone = await lockAndRecheck(trx, [...round.driverIds, ...(round.alsoRadar?.driverIds ?? [])]);
+    const gone = await lockAndRecheck(trx, [...round.driverIds, ...(round.alsoRadar?.driverIds ?? [])], pool.bookedNext);
     if (gone.size > 0) {
       const driverIds = round.driverIds.filter((id) => !gone.has(id));
       const also = round.alsoRadar ? round.alsoRadar.driverIds.filter((id) => !gone.has(id)) : [];
@@ -139,6 +139,9 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
       answered_at: null,
       decline_reason: null,
       rider_rating: riderRating,
+      // v0.18.33 (owner Q2 2026-11-05): a decline or miss while he is on a trip never counts against him
+      // (acceptance, auto-offline run).
+      driver_on_trip: pool.bookedNext.has(driverId),
     };
     await trx.insertInto("offers").values(offer).execute();
     const row = (await loadOffer(trx, offer.offer_id))!;
