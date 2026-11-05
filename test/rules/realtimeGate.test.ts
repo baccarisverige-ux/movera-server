@@ -33,7 +33,7 @@ describe("fixtures/events.json", () => {
 
 describe("contract data", () => {
   it("reads afterTerminal kinds and terminal statuses from contract.json", () => {
-    expect([...AFTER_TERMINAL_KINDS].sort()).toEqual(["message", "payment_updated", "rating_updated"]);
+    expect([...AFTER_TERMINAL_KINDS].sort()).toEqual(["call_answered", "call_ended", "call_missed", "call_ringing", "call_signal", "message", "payment_updated", "rating_updated"]);
     expect(TERMINAL_STATUSES.has("completed")).toBe(true);
     expect(TERMINAL_STATUSES.has("cancelled_by_rider")).toBe(true);
     expect(TERMINAL_STATUSES.has("in_trip")).toBe(false);

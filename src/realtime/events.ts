@@ -58,5 +58,7 @@ export function eventEnvelope(row: Selectable<TripEventsTable>, viewer: Viewer, 
     ...(row.eta ? { eta: row.eta } : {}),
     ...(row.cancel_fee ? { cancelFee: row.cancel_fee } : {}),
     ...(row.message && !options.hideMessage ? { message: row.message } : {}),
+    // v0.18.38 §62: call events carry the CallView as `call`, call_signal the relayed signal as `signal`.
+    ...(row.call ? (row.kind === "call_signal" ? { signal: row.call } : { call: row.call }) : {}),
   };
 }

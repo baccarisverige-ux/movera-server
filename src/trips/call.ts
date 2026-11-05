@@ -1,28 +1,28 @@
-import type { Executor } from "../db/db.js";
-import { ApiError } from "../http/errors.js";
+import { assertCallAllowed, startInAppCall } from "../calls/service.js";
+import { callSettingsFor } from "../calls/settings.js";
+import type { Trx } from "../db/db.js";
 import type { TelephonyProvider } from "../telephony/provider.js";
-import { readOwnTrip } from "./commands.js";
-import { chatOpen } from "./messages.js";
-import { tripProjection } from "./projection.js";
+import { lockOwnTrip } from "./commands.js";
 
 /**
- * POST /trips/{tripId}/call → 200 TripCall { tripId, proxyNumber, expiresAt } (contract v0.13.0 §22): the trip's
- * rider or driver calls the other side through a masked number while the chat is open. Neither real number leaves
- * the server; without a telephony provider the answer is 503 unavailable, reason call_unavailable.
+ * POST /trips/{tripId}/call → 200 TripCall. v0.18.38 §62 (contract.json#inAppCalls; owner G15 2026-11-05 "In-app calls
+ * only"): mode in_app by default — the server opens a call row and relays the WebRTC signalling (src/calls). Mode phone
+ * (v0.13.0 masked number) only when CountryRules.calls.mode is phone AND a telephony provider is configured; a provider
+ * that gives no number falls back to in-app. The window runs from driver assignment until callWindowAfterTripMin after
+ * drop-off (409 call_window_closed); calls.on false is 403 calls_off. Neither real number ever leaves the server.
  */
-export async function callTripPeer(ex: Executor, who: { actor: "rider" | "driver"; subjectId: string }, tripId: string, telephony: TelephonyProvider, now: Date) {
-  const trip = await readOwnTrip(ex, tripId, who);
-  if (!chatOpen(trip, who.actor) || trip.driver_id === null) {
-    throw new ApiError("invalid_transition", "Calls are open while a driver is on the trip; they close at drop-off.", { reason: "chat_closed", projection: tripProjection(trip, who.actor) });
+export async function callTripPeer(trx: Trx, who: { actor: "rider" | "driver"; subjectId: string }, tripId: string, telephony: TelephonyProvider, now: Date) {
+  const trip = await lockOwnTrip(trx, tripId, who);
+  const settings = await callSettingsFor(trx, trip.zone_id);
+  assertCallAllowed(trip, who, settings, now);
+  if (settings.mode === "phone" && telephony.name !== "disabled" && trip.driver_id !== null) {
+    const rider = await trx.selectFrom("riders").select("phone").where("rider_id", "=", trip.rider_id).executeTakeFirst();
+    const driver = await trx.selectFrom("drivers").select("phone").where("driver_id", "=", trip.driver_id).executeTakeFirst();
+    if (rider?.phone && driver?.phone) {
+      const sides = { rider: { actor: "rider" as const, phone: rider.phone }, driver: { actor: "driver" as const, phone: driver.phone } };
+      const masked = await telephony.maskedCall({ tripId, caller: sides[who.actor], callee: sides[who.actor === "rider" ? "driver" : "rider"], now });
+      if (masked !== null) return { tripId, mode: "phone" as const, proxyNumber: masked.proxyNumber, expiresAt: masked.expiresAt.toISOString() };
+    }
   }
-  if (telephony.name === "disabled") throw callUnavailable();
-  const rider = await ex.selectFrom("riders").select("phone").where("rider_id", "=", trip.rider_id).executeTakeFirst();
-  const driver = await ex.selectFrom("drivers").select("phone").where("driver_id", "=", trip.driver_id).executeTakeFirst();
-  if (!rider?.phone || !driver?.phone) throw callUnavailable();
-  const sides = { rider: { actor: "rider" as const, phone: rider.phone }, driver: { actor: "driver" as const, phone: driver.phone } };
-  const call = await telephony.maskedCall({ tripId, caller: sides[who.actor], callee: sides[who.actor === "rider" ? "driver" : "rider"], now });
-  if (call === null) throw callUnavailable();
-  return { tripId, proxyNumber: call.proxyNumber, expiresAt: call.expiresAt.toISOString() };
+  return startInAppCall(trx, trip, who, settings, now);
 }
-
-const callUnavailable = () => new ApiError("unavailable", "Calls are not available; write in the chat instead.", { reason: "call_unavailable" });
