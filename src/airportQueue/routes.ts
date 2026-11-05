@@ -60,8 +60,9 @@ export async function airportQueueRoutes(app: FastifyInstance, deps: AirportQueu
   app.put(`${API_PREFIX}/admin/zones/:zoneId/queue-area`, async (request) => {
     const who = await authenticateAdmin(request, guard, "zones.edit");
     const { zoneId } = parseBody(ZoneParam, request.params);
-    const body = parseBody(Body, request.body);
+    // Scope first: an admin outside this zone learns nothing about the body (route matrix, e2e 12).
     scope(who, zoneId);
+    const body = parseBody(Body, request.body);
     const problem = polygonProblem(body.polygon as Polygon);
     if (problem !== null) throw badRequest("The queue area is not a simple shape.", problem);
     const outcome = await runIdempotent(deps.db, idem(request, who, body), async (trx) => {
