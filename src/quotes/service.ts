@@ -12,6 +12,7 @@ import { FareError, priceFare, type FareLine, type PricingDocument } from "../ru
 import { asksSeatOutsideChildSeat, riderExtras, type PriceExtras } from "../rules/priceExtras.js";
 import { airportExtras } from "../pricing/airport.js";
 import { surgeFor, type DocSurge } from "../pricing/surge.js";
+import { haversineKm } from "../maps/routing.js";
 
 /**
  * POST /quotes (contract §3.5, §7): a price per category for one route, from the pickup zone's published pricing
@@ -44,9 +45,34 @@ export type QuoteView = {
   stops: Place[];
   surgeMultiplier: number;
   surge?: { multiplier: number; until?: string };
+  /** v0.18.30 (contract.json#smallFixes.quotePickupTime, owner Q8): the booked pickup time; null on a live quote. */
+  pickupAt: string | null;
 };
 
-export type QuoteList = { quotes: QuoteView[]; zoneId: string; serverTime: string };
+export type QuoteWarning = { reason: "same_pickup_dropoff"; meters: number; limitMeters: number };
+export type QuoteList = { quotes: QuoteView[]; zoneId: string; serverTime: string; warnings?: QuoteWarning[] };
+
+/** contract.json#configDefaults.samePointWarnMeters: the owner's Q9 default. */
+export const SAME_POINT_WARN_DEFAULT = 100;
+
+/**
+ * v0.18.30 (contract.json#smallFixes.samePoint, owner Q9 "Warn him but can accept booking"): the zone's
+ * booking.samePointWarnMeters (driver document, admin Dispatch › Rides "Shortest ride (m)"), 0-1000, 0 = never warn.
+ */
+async function samePointWarnMeters(trx: Trx, zoneId: string): Promise<number> {
+  const doc = await liveDocument<{ booking?: { samePointWarnMeters?: unknown } }>(trx, "driver_app_config", zoneId);
+  const value = doc?.document.booking?.samePointWarnMeters;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1000 ? value : SAME_POINT_WARN_DEFAULT;
+}
+
+/** A warning (never an error) when pickup and drop-off are this close and there are no stops. */
+export async function samePointWarning(trx: Trx, zoneId: string, body: Pick<QuoteRequest, "pickup" | "dropoff" | "stops">): Promise<QuoteWarning | null> {
+  if (body.stops.length > 0) return null;
+  const limitMeters = await samePointWarnMeters(trx, zoneId);
+  if (limitMeters === 0) return null;
+  const meters = Math.round(haversineKm(body.pickup, body.dropoff) * 1000);
+  return meters <= limitMeters ? { reason: "same_pickup_dropoff", meters, limitMeters } : null;
+}
 
 export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: string, request: unknown, now: Date): Promise<QuoteList> {
   const problem = schemaProblem("QuoteRequest", request);
@@ -152,10 +178,12 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
       dropoff: body.dropoff,
       stops: body.stops,
       surgeMultiplier: fare.surgeMultiplier,
+      pickupAt: kind === "scheduled" ? new Date(body.scheduledAt!).toISOString() : null,
       ...(fare.surgeMultiplier > 1 ? { surge: { multiplier: fare.surgeMultiplier, ...(surge.until ? { until: surge.until } : {}) } } : {}),
     });
   }
-  return { quotes, zoneId: zone.zoneId, serverTime: now.toISOString() };
+  const warning = await samePointWarning(trx, zone.zoneId, body);
+  return { quotes, zoneId: zone.zoneId, serverTime: now.toISOString(), ...(warning ? { warnings: [warning] } : {}) };
 }
 
 /** Sweeps quotes nobody used, a day after they expired. */

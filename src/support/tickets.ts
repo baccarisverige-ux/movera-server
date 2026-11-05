@@ -8,6 +8,7 @@ import { audit } from "../admin/audit.js";
 import { cursorOf, readCursor } from "../admin/lists.js";
 import { permissionsOf, isAdminRole } from "../admin/permissions.js";
 import * as desk from "./desk.js";
+import { pokeAlerts } from "../alerts/detector.js";
 
 /**
  * Support tickets (contract v0.9.0 §16, contract.json#support; owner, 2026-10-27): the rider and driver apps open
@@ -93,7 +94,7 @@ async function messagesOf(ex: Executor, ticketId: string): Promise<MessageRow[]>
 
 /** POST /support/tickets: a rider or driver opens a ticket; the text is its first message. */
 export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; category: string; subject: string; text: string }, now: Date) {
-  if (!TICKET_CATEGORIES.includes(body.category)) throw badRequest(`Unknown category ${body.category}.`, "invalid_body");
+  if (!TICKET_CATEGORIES.includes(body.category)) throw badRequest(`Unknown category ${body.category}.`, "invalid_ticket_category");
   let zoneId: string | null = null;
   if (body.tripId) {
     const trip = await trx.selectFrom("trips").select(["rider_id", "driver_id", "zone_id"]).where("trip_id", "=", body.tripId).executeTakeFirst();
@@ -133,6 +134,8 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
     .returningAll()
     .executeTakeFirstOrThrow();
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text: body.text, at: now }).execute();
+  // v0.18.23: the "Support ticket waiting" admin alert at once.
+  await pokeAlerts(trx, now);
   return ticketView(row as TicketRow, await messagesOf(trx, ticketId), { person: true });
 }
 

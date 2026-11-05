@@ -10,6 +10,7 @@ import { readEnv } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
 import { TimerWorker } from "./jobs/timers.js";
+import { ALERT_SWEEP, alertSweepHandler, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { dispatchHandlers, ROUND, WITHDRAW } from "./dispatch/runtime.js";
@@ -65,6 +66,8 @@ warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 if (db !== undefined) {
   await ensureMaintenanceTimers(db);
   await ensurePricingTimers(db);
+  // v0.18.23 (contract.json#alertDesk.serverDetection): the server finds the admin alerts every 30 s.
+  await ensureAlertSweep(db);
   // Test numbers exist only outside production (contract §8); production never reads them.
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db, testPhonesFor(env));
   await prepareTestWeek(db, env, app.log);
@@ -75,7 +78,7 @@ if (db !== undefined) {
   // can never starve dispatch; general lanes take everything else (dispatch too, when it is busy).
   const tripKinds = [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"];
   const lanes = [{ kinds: [ROUND, WITHDRAW] }, { kinds: tripKinds }, ...Array.from({ length: Math.max(1, env.TIMER_LANES - 2) }, () => ({ exclude: tripKinds }))];
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log, pollMs: 200, lanes });
+  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...pricingHandlers, [ALERT_SWEEP]: alertSweepHandler, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log, pollMs: 200, lanes });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
   if (push.sender !== undefined) {

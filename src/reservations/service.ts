@@ -19,6 +19,7 @@ import { DISPATCH, dispatchKm } from "../dispatch/engine.js";
 import { commissionOf } from "../rules/commission.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { driverTimes, freeByTime, leaveAtOf, planOf, reservationSettings, rideTypeOf, windowError, type Plan, type ReservationSettings, type RideTypeKey } from "./plan.js";
+import { pokeAlerts } from "../alerts/detector.js";
 
 /**
  * v0.18.17 Book later (CONTRACT.md §41, contract.json#bookLater; owner 2026-11-03 Q1–Q7). Everything a booked ride
@@ -668,11 +669,14 @@ export async function reservationTimer(trx: Trx, timer: Timer): Promise<void> {
         const marked = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
         await appendTripEvent(trx, { tripId, kind: "trip_projection", version: marked.version, occurredAt: now, projection: tripProjection(marked, "admin", { sequence: Number(marked.sequence) + 1 }) });
         await push(trx, marked, { audience: "driver", id: trip.driver_id }, "reservation_not_started", now);
+        await pokeAlerts(trx, now);
         return;
       }
       if (!NO_DRIVER.has(trip.status)) return;
       // Owner BL-Q7: never expires; the admin is alerted and it keeps going out as Exclusive offers.
       await saveState(trx, tripId, { ...state, overdue: true, noDriver: true });
+      // v0.18.23: the admin alert "pickup time passed, no driver" at once.
+      await pokeAlerts(trx, now);
       const marked = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
       await appendTripEvent(trx, { tripId, kind: "trip_projection", version: marked.version, occurredAt: now, projection: tripProjection(marked, "admin", { sequence: Number(marked.sequence) + 1 }) });
       await startSearchNow(trx, marked, now);
