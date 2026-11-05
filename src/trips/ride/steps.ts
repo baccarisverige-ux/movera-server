@@ -99,7 +99,7 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     if (waiting) set["waiting"] = JSON.stringify({ ...waiting, chargedSeconds: charged });
     if (charged > 0 && trip.status === "arrived") Object.assign(set, fareColumns(trip, await fareWithWaiting(trx, trip, charged)));
     // The wallet pays first: the driver sees the cash to collect from boarding on.
-    set.wallet_applied_minor = await walletCovers(trx, trip.rider_id, Number(set.fare_minor ?? trip.fare_minor));
+    set.wallet_applied_minor = await walletCovers(trx, trip.rider_id, trip.currency, Number(set.fare_minor ?? trip.fare_minor));
     const boarded = await applyCommand(trx, trip, { command, actor: "driver", now, set });
     // From now on the server watches for the driver going silent (owner decision 2026-10-26).
     await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: tripId, dueAt: new Date(now.getTime() + SILENT_ALERT_MS), payload: {} });

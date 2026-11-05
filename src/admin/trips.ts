@@ -167,7 +167,12 @@ async function offerTo(trx: Trx, who: Principal, tripId: string, driverIds: stri
 }
 
 export async function adminAssign(trx: Trx, who: Principal, tripId: string, body: OfferBody & { driverId: string }, now: Date): Promise<TripRow> {
-  return (await offerTo(trx, who, tripId, [body.driverId], "assigned", body, now)).trip;
+  const sent = await offerTo(trx, who, tripId, [body.driverId], "assigned", body, now);
+  // v0.18.26 (owner "Yes, respect it"): the driver switched this category off in Ride preferences; say so to the admin.
+  if (sent.offers.length === 0 && sent.skipped.some((s) => s.reason === "category_switched_off")) {
+    throw new ApiError("invalid_transition", "This driver switched this ride type off in his ride preferences.", { reason: "category_switched_off" });
+  }
+  return sent.trip;
 }
 
 export async function adminRadarGroup(trx: Trx, who: Principal, tripId: string, body: OfferBody & { driverIds?: string[]; groupId?: string; radarZoneId?: string; ruleId?: string }, now: Date) {

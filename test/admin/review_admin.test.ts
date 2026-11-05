@@ -136,6 +136,7 @@ const adminView = async (tripId: string) => (await call(app, "GET", `/admin/trip
 const clearFees = async () => {
   await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null, wallet_minor: 0 }).execute();
+  await database.db.deleteFrom("rider_wallets").execute();
 };
 
 /** A trip that A drove to the end (no waiting charge). */

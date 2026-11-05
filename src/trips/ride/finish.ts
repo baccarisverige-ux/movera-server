@@ -14,6 +14,7 @@ import { driverTotalOf, earningsLinesOf, tripProjection, type EndInfo } from "..
 import { type Money, REASONS, ONBOARD } from "./shared.js";
 import { outstandingLine, drivenFare, driven, drivenColumns, earlyEndOf, endedBeforeDropoff, scaledFare, withStopWaiting } from "./settings.js";
 import { releaseDriver, credit, settleCarriedFees, walletPart, spendWallet } from "./money.js";
+import { walletBalance } from "../../riders/wallet.js";
 
 /* ---------------------------------------------------------------- the rider ends early */
 
@@ -135,8 +136,8 @@ export async function completePreview(ex: Executor, driverId: string, tripId: st
     throw new ApiError("invalid_transition", "The rider is not on board.", { reason: "trip_not_on_board", projection: tripProjection(trip, "driver") });
   }
   const { early, fare, money } = await finalPrice(ex, trip, "driver", undefined, now);
-  const rider = await ex.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).executeTakeFirstOrThrow();
-  const wallet = walletPart(Number(rider.wallet_minor), trip, fare);
+  // v0.18.28 (owner Q4): the balance in the trip's currency.
+  const wallet = walletPart(await walletBalance(ex, trip.rider_id, trip.currency), trip, fare);
   const previewId = newId("cpv", now.getTime());
   const expiresAt = new Date(now.getTime() + PREVIEW_FREEZE_SECONDS * 1000);
   const row = { preview_id: previewId, driver_id: driverId, expires_at: expiresAt, early_end: early, fare_minor: fare, wallet_minor: wallet, money: JSON.stringify(money), created_at: now };

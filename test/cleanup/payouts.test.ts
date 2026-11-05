@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { closePeriods, payoutScheduleOf, periodOf } from "../../src/admin/payouts.js";
+import { approvePayoutRun, closePeriods, driverPayouts, holdDriverPayouts, markPayoutPaid, payoutScheduleOf, periodOf } from "../../src/admin/payouts.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver } from "../support/seed.js";
 
@@ -94,3 +94,70 @@ describe("checker 4: a late entry for a week already paid goes to the next open 
   });
 });
 
+
+describe("v0.18.39 fix job 0 (A2, owner Q4 + A2-3): pause one driver's payouts from his profile", () => {
+  const finance = { actor: "admin" as const, subjectId: "adm_f", sessionId: "s", zones: ["*"] };
+  const other = { actor: "admin" as const, subjectId: "adm_o", sessionId: "s", zones: ["FR-PC"] };
+  const hold = (driverId: string, held: boolean, who = finance) => database.db.transaction().execute((trx) => holdDriverPayouts(trx, who, driverId, { held, reason: held ? "Bank check" : "Checked" }, new Date("2026-11-01T10:00:00Z")));
+  it("held: no scheduled payout, others still paid; released: the missed weeks are paid at the next run (SE)", async () => {
+    const held = await driverIn(["Z001"], "SE");
+    const paid = await driverIn(["Z001"], "SE");
+    await entry(held, "2026-10-20T10:00:00Z", "SEK", 7_000);
+    await entry(held, "2026-10-27T10:00:00Z", "SEK", 3_000);
+    await entry(paid, "2026-10-27T10:00:00Z", "SEK", 1_000);
+    await expect(hold(held, true, other)).rejects.toMatchObject({ options: { reason: "zone_out_of_scope" } });
+    await hold(held, true);
+    await expect(hold(held, true)).rejects.toMatchObject({ options: { reason: "payout_already_held" } });
+    expect(await run("2026-11-02T08:00:00Z")).toBe(1);
+    expect(await payoutsOf(held)).toEqual([]);
+    await hold(held, false);
+    await expect(hold(held, false)).rejects.toMatchObject({ options: { reason: "payout_not_held" } });
+    expect(await run("2026-11-02T09:00:00Z")).toBe(2);
+    expect((await payoutsOf(held)).map((p) => p[1])).toEqual([7_000, 3_000]);
+    const actions = await database.db.selectFrom("admin_audit").select("action").where("target_id", "=", held).orderBy("at").execute();
+    expect(actions.map((a) => a.action)).toEqual(["payout.hold", "payout.release"]);
+  });
+});
+
+describe("v0.18.39 fix job 0 (A2, owner Q4 + A2-3): payouts Automatic or Manual per country, a manual run is approved by one admin", () => {
+  const finance = { actor: "admin" as const, subjectId: "adm_f", sessionId: "s", zones: ["*"] };
+  const paris = { actor: "admin" as const, subjectId: "adm_p", sessionId: "s", zones: ["FR-PC"] };
+  const at = new Date("2026-11-02T08:00:00Z");
+  it("SE manual: the run waits, cannot be paid, one approval makes it pending; FR automatic is paid as before", async () => {
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "standard-SE", version: 1, document: JSON.stringify({ country: "SE", payoutMode: "manual" }), published_at: new Date(), published_by: null }).execute();
+    const se = await driverIn(["Z001"], "SE");
+    const fr = await driverIn(["FR-PC"], "FR");
+    await entry(se, "2026-10-27T10:00:00Z", "SEK", 10_000);
+    await entry(fr, "2026-10-27T10:00:00Z", "EUR", 2_000);
+    expect(await run("2026-11-02T08:00:00Z")).toBe(2);
+    const rows = await database.db.selectFrom("payouts").select(["payout_id", "driver_id", "status", "period_end"]).execute();
+    const sePayout = rows.find((r) => r.driver_id === se)!;
+    expect(sePayout.status).toBe("pending_approval");
+    expect(rows.find((r) => r.driver_id === fr)!.status).toBe("pending");
+    // The driver sees it as on its way.
+    expect((await driverPayouts(database.db, se, { limit: 10 })).items[0]).toMatchObject({ status: "pending" });
+    await expect(database.db.transaction().execute((trx) => markPayoutPaid(trx, finance, sePayout.payout_id, {}, at))).rejects.toMatchObject({ options: { reason: "run_not_approved" } });
+    const periodEnd = sePayout.period_end.toISOString();
+    // Fix job 0 (owner A2-3 "Yes, reason required"): no reason, no approval.
+    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: " " }, at))).rejects.toMatchObject({ options: { reason: "reason_required" } });
+    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, paris, { country: "SE", periodEnd, reason: "Checked the bank file" }, at))).rejects.toMatchObject({ options: { reason: "zone_out_of_scope" } });
+    const done = await database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: "Checked the bank file" }, at));
+    expect(done).toEqual({ country: "SE", periodEnd, approved: 1, total: [{ amountMinor: 10_000, currency: "SEK" }] });
+    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: "Checked the bank file" }, at))).rejects.toMatchObject({ options: { reason: "nothing_to_approve" } });
+    expect((await database.db.selectFrom("payouts").select("status").where("payout_id", "=", sePayout.payout_id).executeTakeFirstOrThrow()).status).toBe("pending");
+    await database.db.transaction().execute((trx) => markPayoutPaid(trx, finance, sePayout.payout_id, {}, at));
+    const audit = await database.db.selectFrom("admin_audit").select(["action", "target_id", "detail"]).where("action", "=", "payout.run_approve").execute();
+    expect(audit).toMatchObject([{ action: "payout.run_approve", target_id: `SE:${periodEnd}`, detail: { reason: "Checked the bank file" } }]);
+  });
+
+  it("FR manual and a Paris admin: the Paris admin approves the French run (FR)", async () => {
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "standard-FR", version: 1, document: JSON.stringify({ country: "FR", payoutMode: "manual" }), published_at: new Date(), published_by: null }).execute();
+    const fr = await driverIn(["FR-PC"], "FR");
+    await entry(fr, "2026-10-27T10:00:00Z", "EUR", 3_000);
+    expect(await run("2026-11-02T08:00:00Z")).toBe(1);
+    const row = await database.db.selectFrom("payouts").select(["status", "period_end"]).where("driver_id", "=", fr).executeTakeFirstOrThrow();
+    expect(row.status).toBe("pending_approval");
+    const done = await database.db.transaction().execute((trx) => approvePayoutRun(trx, paris, { country: "FR", periodEnd: row.period_end.toISOString(), reason: "Checked" }, at));
+    expect(done.total).toEqual([{ amountMinor: 3_000, currency: "EUR" }]);
+  });
+});

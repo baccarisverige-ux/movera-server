@@ -9,7 +9,7 @@ import { readEnv } from "../../src/env.js";
 import type { LatLng, Router } from "../../src/maps/routing.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
-/** FIX JOB 7 (contract v0.18.32, contract.json#smallFixes): quote pickup time (Q8), pickup ≈ drop-off warning (Q9), ticket reasons. */
+/** FIX JOB 7 (contract v0.18.30, contract.json#smallFixes): quote pickup time (Q8), pickup ≈ drop-off warning (Q9), ticket reasons. */
 
 let database: TestDatabase;
 let app: FastifyInstance;

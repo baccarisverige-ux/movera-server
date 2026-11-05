@@ -45,7 +45,7 @@ export type QuoteView = {
   stops: Place[];
   surgeMultiplier: number;
   surge?: { multiplier: number; until?: string };
-  /** v0.18.32 (contract.json#smallFixes.quotePickupTime, owner Q8): the booked pickup time; null on a live quote. */
+  /** v0.18.30 (contract.json#smallFixes.quotePickupTime, owner Q8): the booked pickup time; null on a live quote. */
   pickupAt: string | null;
 };
 
@@ -56,7 +56,7 @@ export type QuoteList = { quotes: QuoteView[]; zoneId: string; serverTime: strin
 export const SAME_POINT_WARN_DEFAULT = 100;
 
 /**
- * v0.18.32 (contract.json#smallFixes.samePoint, owner Q9 "Warn him but can accept booking"): the zone's
+ * v0.18.30 (contract.json#smallFixes.samePoint, owner Q9 "Warn him but can accept booking"): the zone's
  * booking.samePointWarnMeters (driver document, admin Dispatch › Rides "Shortest ride (m)"), 0-1000, 0 = never warn.
  */
 async function samePointWarnMeters(trx: Trx, zoneId: string): Promise<number> {

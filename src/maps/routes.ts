@@ -44,7 +44,7 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
   }
 
   /**
-   * v0.18.32 (contract.json#smallFixes.addressLanguage, L20): address search speaks the language of the zone the bias
+   * v0.18.30 (contract.json#smallFixes.addressLanguage, L20): address search speaks the language of the zone the bias
    * point is in (SE sv, FR fr, TN fr); without a bias point or outside every zone, the asked / saved language.
    */
   async function searchLanguage(request: FastifyRequest, actor: string, subjectId: string, bias: { lat: number; lng: number } | undefined): Promise<string> {

@@ -9,6 +9,11 @@ import { ROUND, STEP, END, type Step, localTime, controlOf } from "./shared.js";
 
 /* ---------------------------------------------------------------- start */
 
+/** BL-Q7 (owner): the zone's rules with Exclusive only (widening), never Radar — for a booked ride past its pickup time. */
+export function exclusiveOnlyDoc(doc: DispatchDoc): DispatchDoc {
+  return { ...doc, exclusive: { ...doc.exclusive, on: true, then: "widen" }, radar: { ...doc.radar, on: false } };
+}
+
 /** Called in the transaction that puts a live trip into searching. */
 export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<void> {
   // v0.18.17 (owner BL-Q7): a booked ride past its pickup time goes out as Exclusive offers only.
@@ -21,7 +26,7 @@ export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<v
     return;
   }
   // BL-Q7: Exclusive only (widening), never Radar, for a booked ride past its pickup time.
-  const doc: DispatchDoc = forced ? { ...live.document, exclusive: { ...live.document.exclusive, on: true, then: "widen" }, radar: { ...live.document.radar, on: false } } : live.document;
+  const doc: DispatchDoc = forced ? exclusiveOnlyDoc(live.document) : live.document;
   const waiting = await trx.selectFrom("trips").select((eb) => eb.fn.countAll<string>().as("n")).where("zone_id", "=", trip.zone_id).where("status", "in", ["requested", "searching", "offered"]).executeTakeFirstOrThrow();
   const free = await freeDriversInZone(trx, trip.zone_id, now);
   const busy = busyOf(Number(waiting.n), free);
