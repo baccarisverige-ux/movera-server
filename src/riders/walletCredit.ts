@@ -7,7 +7,7 @@ import { notify } from "../notifications/service.js";
 import { liveDocument, standardKey } from "../config/service.js";
 import { creditWallet } from "./wallet.js";
 import { audit } from "../admin/audit.js";
-import { adminRiderView, riderInZones, zonesOf } from "../admin/lists.js";
+import { adminRiderView, riderInZones, riderWallets, zonesOf } from "../admin/lists.js";
 
 /**
  * v0.18.39 A2 (owner G12 Q5 "Real credit + limit", Q-D "Max 250 euro and equivalent", build-spec Q1 "One admin
@@ -62,9 +62,6 @@ export async function creditRiderWallet(trx: Trx, who: Principal, riderId: strin
   const currency = country ? CURRENCY[country] : undefined;
   if (!place || !country || !currency) throw new ApiError("conflict", "The rider's country is not known yet (no trip and no zone).", { reason: "rider_country_unknown" });
   if (body.amount.currency !== currency) throw badRequest(`This rider pays in ${currency}.`, "wallet_currency_mismatch");
-  // One balance per rider: money already there in another currency is never mixed with this one.
-  const last = await trx.selectFrom("wallet_entries").select("currency").where("rider_id", "=", riderId).orderBy("at", "desc").orderBy("entry_id", "desc").limit(1).executeTakeFirst();
-  if (Number(row.wallet_minor) > 0 && last && last.currency !== currency) throw badRequest(`The rider's wallet already holds ${last.currency}.`, "wallet_currency_mismatch");
   const max = await walletCreditMax(trx, country);
   if (max && body.amount.amountMinor > max.amountMinor) {
     throw new ApiError("invalid_request", "That is more than one credit may be in this country.", { reason: "wallet_credit_too_large", details: [`max ${max.amountMinor} ${max.currency}`] });
@@ -83,5 +80,5 @@ export async function creditRiderWallet(trx: Trx, who: Principal, riderId: strin
     data: { entryId },
   }, now);
   await audit(trx, { adminId: who.subjectId, action: "rider.wallet_credit", targetType: "rider", targetId: riderId, zoneId: place.zoneId, detail: { amountMinor: body.amount.amountMinor, currency, reason: body.reason, entryId, notificationId }, at: now });
-  return adminRiderView(await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow(), currency);
+  return adminRiderView(await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow(), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId));
 }
