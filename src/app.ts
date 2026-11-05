@@ -223,7 +223,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // v0.18.5 (G1-B2): terms and privacy per country.
     await legalRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await zoneRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    // v0.18.39 §63 (fix job 9): the airport queue.
+    // v0.18.36 §60 (fix job 9): the airport queue.
     await airportQueueRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =

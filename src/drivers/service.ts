@@ -345,7 +345,7 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<=", latest.at))
     .execute();
 
-  // v0.18.39 §63 (fix job 9, contract.json#airportQueue): join, stay in or leave an airport queue.
+  // v0.18.36 §60 (fix job 9, contract.json#airportQueue): join, stay in or leave an airport queue.
   await onDriverPosition(trx, driverId, latest.fix, now);
 
   // On a trip, the trip is the one the server knows, whatever tripId the app sent.

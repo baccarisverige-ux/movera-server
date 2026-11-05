@@ -12,7 +12,7 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
 /**
- * Fix job 9 "airport queue" (v0.18.39 §63, R27, owner G15 Q5 + job 9 answers 2026-11-05). Each test fails on main
+ * Fix job 9 "airport queue" (v0.18.36 §60, R27, owner G15 Q5 + job 9 answers 2026-11-05). Each test fails on main
  * before the job: there is no queue, so an airport pickup goes to the nearest driver (A) and the routes are 404.
  */
 let database: TestDatabase;
@@ -105,7 +105,7 @@ async function decline(tripId: string): Promise<Key> {
   return key;
 }
 
-describe("airport queue — fix job 9 (v0.18.39 §63)", () => {
+describe("airport queue — fix job 9 (v0.18.36 §60)", () => {
   it("3 drivers join in order C, B, A: the airport pickup is offered to C first (Exclusive airport-queue), not to the nearest A", async () => {
     await queueUp(["C", "B", "A"]);
     expect(await place("C")).toMatchObject({ status: "in_queue", position: 1, ahead: 0 });

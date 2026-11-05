@@ -5,7 +5,7 @@ import { zoneAt } from "../config/zoneLookup.js";
 import { inPolygon, type Polygon } from "../zones/geometry.js";
 
 /**
- * v0.18.39 §63 fix job 9 "airport queue" (R27, owner G15 Q5 2026-11-02 + job 9 answers 2026-11-05,
+ * v0.18.36 §60 fix job 9 "airport queue" (R27, owner G15 Q5 2026-11-02 + job 9 answers 2026-11-05,
  * contract.json#airportQueue). Rule 33: every fact lives in the database (airport_queue_entries, one open row per
  * driver by a unique index; the place is joined_at then entry_id), so any server copy reads and changes the same queue.
  */

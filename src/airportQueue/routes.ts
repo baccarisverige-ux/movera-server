@@ -11,7 +11,7 @@ import { contract } from "../contract/contract.js";
 import { boundsOf, polygonProblem, type Polygon } from "../zones/geometry.js";
 import { areaIdOf, areaView, emptyArea, queueFeed, queueStatus, type AreaRow } from "./service.js";
 
-/** v0.18.39 §63 fix job 9 (contract.json#airportQueue): the driver's place, the admin's queue area and Dashboard feed. */
+/** v0.18.36 §60 fix job 9 (contract.json#airportQueue): the driver's place, the admin's queue area and Dashboard feed. */
 
 type Ranges = { leaveGraceMin: [number, number]; offerSeconds: [number, number]; maxQueueOffers: [number, number] };
 type Defaults = { leaveGraceMin: number; offerSeconds: number; maxQueueOffers: number; keepPlaceAfterDecline: boolean };

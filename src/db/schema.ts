@@ -1367,7 +1367,7 @@ export interface ReservationPolicyTable {
   updated_by: string | null;
 }
 
-/** v0.18.39 §63 (fix job 9, migration 0086): an airport zone's queue area. */
+/** v0.18.36 §60 (fix job 9, migration 0086): an airport zone's queue area. */
 export interface AirportQueueAreasTable {
   area_id: string;
   airport_zone_id: string;
@@ -1385,7 +1385,7 @@ export interface AirportQueueAreasTable {
   updated_by: string | null;
 }
 
-/** v0.18.39 §63: one stay of a driver in an airport queue (open while left_at is null). */
+/** v0.18.36 §60: one stay of a driver in an airport queue (open while left_at is null). */
 export interface AirportQueueEntriesTable {
   entry_id: Generated<string>;
   area_id: string;

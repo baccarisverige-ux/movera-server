@@ -1,4 +1,4 @@
--- v0.18.39 §63 fix job 9 (R27, owner G15 Q5 2026-11-02 + job 9 answers 2026-11-05, contract.json#airportQueue):
+-- v0.18.36 §60 fix job 9 (R27, owner G15 Q5 2026-11-02 + job 9 answers 2026-11-05, contract.json#airportQueue):
 -- the airport queue. Rule 33: the queue and its order live here, never in one server copy's memory.
 CREATE TABLE IF NOT EXISTS airport_queue_areas (
   area_id                  text PRIMARY KEY,

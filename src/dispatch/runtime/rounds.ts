@@ -80,7 +80,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   // Job 1 (fix plan R1 d): drivers beyond the widest step are never read (they are out of range for every round).
   const pool = await candidatesFor(trx, trip, doc, now, { reachKm: maxPickupKm(doc) });
   // Owner smart assign (v0.18.19): a booked ride asks first the drivers who can arrive early.
-  // v0.18.39 §63 (fix job 9, contract.json#airportQueue.dispatch): an airport pickup goes first, as an Exclusive, to the
+  // v0.18.36 §60 (fix job 9, contract.json#airportQueue.dispatch): an airport pickup goes first, as an Exclusive, to the
   // first driver in the airport queue (DB order) who passed this round's filter; the round then locks and re-checks him.
   const queued = await queuePick(trx, trip, pool.candidates.map((c) => c.driverId), now);
   const queueOk = queued !== null && (await lockAndRecheck(trx, [queued.driverId], pool.bookedNext)).size === 0;
