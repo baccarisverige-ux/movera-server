@@ -5,7 +5,7 @@ import { contract } from "../contract/contract.js";
 import { scheduleTimer, cancelTimer, type TimerHandler } from "../jobs/timers.js";
 import { lockTripNow } from "../dispatch/runtime.js";
 import { haversineKm } from "../maps/routing.js";
-import type { Router } from "../maps/routing.js";
+import { prepareLegs, preparedRouter, type Router } from "../maps/routing.js";
 import { DISPATCH } from "../dispatch/engine.js";
 import { tripProjection } from "./projection.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
@@ -69,7 +69,9 @@ export async function stopEta(trx: Trx, tripId: string): Promise<void> {
 
 /** One tick: route the driver's latest fix to the target, keep it on the trip, send it, book the next tick. */
 export function etaHandler(router: Router): TimerHandler {
-  return async (trx, timer) => {
+  const handler: TimerHandler = async (trx, timer) => {
+    // Job 1 (fix plan R1 b): the road route was asked before this transaction (prepare below); nothing here waits on OSRM.
+    const routerNow = preparedRouter(timer.prepared);
     const now = timer.firedAt;
     const trip = await lockTripNow(trx, timer.refId);
     if (!trip) return;
@@ -96,7 +98,7 @@ export function etaHandler(router: Router): TimerHandler {
       eta = staleOf(previous, target, now);
     } else {
       const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
-      const routed = await router.route([{ lat: fix.lat, lng: fix.lng }, to]);
+      const routed = await routerNow.route([{ lat: fix.lat, lng: fix.lng }, to]);
       leg = routed;
       eta = { etaSeconds: Math.max(ETA_MIN_SECONDS, routed.durationSeconds), distanceMeters: routed.distanceMeters, target, at: now.toISOString(), source: routed.source };
       // v0.18.13 (G5-8): the heading-to-pickup check runs with every tick to the pickup; a driver not heading for
@@ -109,6 +111,18 @@ export function etaHandler(router: Router): TimerHandler {
     // v0.18.13 (contract.json#riderTripPush): "your driver is almost there", once per driver.
     if (target === "pickup" && leg !== null) await maybePushArriving(trx, trip, eta.etaSeconds, now);
   };
+  // Outside the transaction, no lock: the same trip and fix read plainly, the route asked from the real router.
+  handler.prepare = async (db, timer) => {
+    const trip = await db.selectFrom("trips").selectAll().where("trip_id", "=", timer.refId).executeTakeFirst();
+    if (!trip) return null;
+    const target = etaTarget(trip);
+    if (target === null) return null;
+    const fix = await db.selectFrom("driver_locations").selectAll().where("driver_id", "=", trip.driver_id!).executeTakeFirst();
+    if (!fix || isStaleFix(fix, timer.firedAt)) return null;
+    const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
+    return prepareLegs(router, [[{ lat: fix.lat, lng: fix.lng }, to]]);
+  };
+  return handler;
 }
 
 /** The ETA for a read of the trip: the stored one while fresh, else the estimate from the driver's latest fix. */

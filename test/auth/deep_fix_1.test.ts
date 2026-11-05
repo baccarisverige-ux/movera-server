@@ -22,7 +22,7 @@ const advance = (seconds: number) => (clock.now = new Date(clock.now.getTime() +
 beforeAll(async () => {
   database = await freshDatabase();
   await seedTestPhones(database.db);
-  app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: "deep-fix-1".padEnd(48, "d") }), logger: false, db: database.db, clock: () => clock.now });
+  app = await buildApp({ env: readEnv({ MOVERA_ENV: "development" /* OTP limits on test numbers; staging skips them */, DATABASE_URL: database.url, JWT_SECRET: "deep-fix-1".padEnd(48, "d") }), logger: false, db: database.db, clock: () => clock.now });
 });
 afterAll(async () => {
   await app.close();
@@ -54,8 +54,8 @@ describe("sign-in code: 6 digits, per-number daily lock, per-address limit as ad
   });
 
   it("defaults, ranges and the phone's country", () => {
-    expect(COUNTRY_LIMITS.defaults).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 60, uploadsPerHour: 30, codesPerPhonePerHour: 10 });
-    expect(countryLimitsOf({ limits: { wrongCodesPerDay: 1, codesPerAddressPerHour: 200, uploadsPerHour: "x" } })).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 200, uploadsPerHour: 30, codesPerPhonePerHour: 10 });
+    expect(COUNTRY_LIMITS.defaults).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 60, uploadsPerHour: 30, codesPerPhonePerHour: 10, writesPerUserPerMinute: 120, writesPerAddressPerMinute: 60, savedPlacesPerPerson: 50, emergencyContactsPerPerson: 10 });
+    expect(countryLimitsOf({ limits: { wrongCodesPerDay: 1, codesPerAddressPerHour: 200, uploadsPerHour: "x" } })).toEqual({ wrongCodesPerDay: 15, codesPerAddressPerHour: 200, uploadsPerHour: 30, codesPerPhonePerHour: 10, writesPerUserPerMinute: 120, writesPerAddressPerMinute: 60, savedPlacesPerPerson: 50, emergencyContactsPerPerson: 10 });
     expect([countryOfPhone("+46701740600"), countryOfPhone("+33612345678"), countryOfPhone("+4930123456")]).toEqual(["SE", "FR", null]);
   });
 
