@@ -1268,6 +1268,8 @@ export interface Database {
   admin_setup_links: AdminSetupLinksTable;
   admin_sign_in_failures: AdminSignInFailuresTable;
   zones: ZonesTable;
+  airport_queue_areas: AirportQueueAreasTable;
+  airport_queue_entries: AirportQueueEntriesTable;
   config_drafts: ConfigDraftsTable;
   config_live: ConfigLiveTable;
   config_history: ConfigHistoryTable;
@@ -1366,4 +1368,33 @@ export interface ReservationPolicyTable {
   rev: number;
   updated_at: Generated<Date>;
   updated_by: string | null;
+}
+
+/** v0.18.36 §60 (fix job 9, migration 0086): an airport zone's queue area. */
+export interface AirportQueueAreasTable {
+  area_id: string;
+  airport_zone_id: string;
+  polygon: unknown;
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+  is_on: Generated<boolean>;
+  leave_grace_min: Generated<number>;
+  offer_seconds: Generated<number>;
+  max_queue_offers: Generated<number>;
+  keep_place_after_decline: Generated<boolean>;
+  updated_at: Date;
+  updated_by: string | null;
+}
+
+/** v0.18.36 §60: one stay of a driver in an airport queue (open while left_at is null). */
+export interface AirportQueueEntriesTable {
+  entry_id: Generated<string>;
+  area_id: string;
+  driver_id: string;
+  joined_at: Date;
+  outside_since: Date | null;
+  left_at: Date | null;
+  left_reason: string | null;
 }

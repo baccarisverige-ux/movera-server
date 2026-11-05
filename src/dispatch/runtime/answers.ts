@@ -13,6 +13,7 @@ import { ROUND, WITHDRAW } from "./shared.js";
 import { type OfferRow, loadOffer, offerView, riderRatingForOffer, FeedQueue, closeOpenOffers } from "./offers.js";
 import { endSearchTimers } from "./end.js";
 import { chainLateFreeCancelMin, onTripFits } from "./candidates.js";
+import { leaveOnAccept } from "../../airportQueue/service.js";
 
 /* ---------------------------------------------------------------- driver answers */
 
@@ -54,6 +55,8 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   if (!next && (driver.account_status !== "active" || driver.online_status !== "online" || busy)) {
     throw new ApiError("conflict", busy ? "You already have a trip." : "Go online to take rides.", { reason: busy ? "driver_on_trip" : "driver_not_available", projection: offerView(offer, trip) });
   }
+  // v0.18.36 §60 (fix job 9): accepting any trip leaves the airport queue.
+  await leaveOnAccept(trx, driverId, offer.reason_code ?? null, now);
   await trx.updateTable("offers").set({ status: "claimed", version: offer.version + 1, answered_at: now }).where("offer_id", "=", offerId).execute();
   const vehicle = driver.vehicle_id ? await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", driver.vehicle_id).executeTakeFirst() : undefined;
   const summary = {

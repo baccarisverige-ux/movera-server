@@ -11,6 +11,7 @@ import { candidatesFor, lockAndRecheck } from "./candidates.js";
 import { exclusiveOnlyDoc } from "./start.js";
 import { loadOffer, offerView, riderRatingForOffer, FeedQueue } from "./offers.js";
 import { positiveSeconds } from "./adminOffers.js";
+import { QUEUE_REASON, queuePick } from "../../airportQueue/service.js";
 
 /* ---------------------------------------------------------------- rounds */
 
@@ -79,10 +80,16 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   // Job 1 (fix plan R1 d): drivers beyond the widest step are never read (they are out of range for every round).
   const pool = await candidatesFor(trx, trip, doc, now, { reachKm: maxPickupKm(doc) });
   // Owner smart assign (v0.18.19): a booked ride asks first the drivers who can arrive early.
-  const planned = planRound(doc, state, await smartOrder(trx, trip, rank(doc, pool.candidates, trip.category_id), now));
+  // v0.18.36 §60 (fix job 9, contract.json#airportQueue.dispatch): an airport pickup goes first, as an Exclusive, to the
+  // first driver in the airport queue (DB order) who passed this round's filter; the round then locks and re-checks him.
+  const queued = await queuePick(trx, trip, pool.candidates.map((c) => c.driverId), now);
+  const queueOk = queued !== null && (await lockAndRecheck(trx, [queued.driverId], pool.bookedNext)).size === 0;
+  const planned = queueOk
+    ? { state, round: { type: "offer" as const, kind: "exclusive" as const, radiusKm: pool.meta.get(queued.driverId)!.km, driverIds: [queued.driverId], reasonCode: QUEUE_REASON } }
+    : planRound(doc, state, await smartOrder(trx, trip, rank(doc, pool.candidates, trip.category_id), now));
   await trx.updateTable("searches").set({ state: JSON.stringify(planned.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
-  let round = planned.round;
-  if (round.type === "offer") {
+  let round: typeof planned.round = planned.round;
+  if (round.type === "offer" && !queueOk) {
     // Job 1 (fix plan R1 d): only the chosen drivers are locked, then checked again under the lock. One who just took
     // another trip or offer is left out; an Exclusive whose driver is gone is planned again at the next round, at once.
     const gone = await lockAndRecheck(trx, [...round.driverIds, ...(round.alsoRadar?.driverIds ?? [])], pool.bookedNext);
@@ -105,7 +112,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     return;
   }
   const expiryOf = (kind: "radar" | "exclusive") => new Date(Math.min(now.getTime() + positiveSeconds(doc[kind].seconds, 15) * 1000, search.end_at.getTime()));
-  const expiresAt = expiryOf(round.kind);
+  const expiresAt = queueOk ? new Date(Math.min(now.getTime() + queued.offerSeconds * 1000, search.end_at.getTime())) : expiryOf(round.kind);
   const driverDoc = await liveDocument<{ pickupPay?: { offers?: Record<string, boolean>; byCategory?: Record<string, PickupPayRate> } }>(trx, "driver_app_config", trip.zone_id);
   const rate = driverDoc?.document.pickupPay?.byCategory?.[trip.category_id];
   const kinds = driverDoc?.document.pickupPay?.offers ?? {};
