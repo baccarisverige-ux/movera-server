@@ -21779,6 +21779,13 @@ components:
               minimum: 0
               description: 'How far the rider may move the pickup after accept; further = cancel and rebook. v0.18.7: default
                 200, range 0–2000 (contract.json#pickupWaiting.pickupMove); the server checks it on PATCH /trips/{tripId}.'
+            samePointWarnMeters:
+              type: integer
+              minimum: 0
+              maximum: 1000
+              description: 'v0.18.32 (owner Q9, contract.json#smallFixes.samePoint): pickup ≈ drop-off warning under this
+                many metres (straight line, no stops); a warning only, the rider can still book. Default 100, 0 = never warn.
+                Admin Dispatch › Rides ''Shortest ride (m)''.'
             minAheadMin:
               type: integer
               minimum: 5
@@ -21930,6 +21937,13 @@ components:
               minimum: 0
               description: 'Pickup move limit after accept; the driver is notified of a move. v0.18.7: default 200, range
                 0–2000 (contract.json#pickupWaiting.pickupMove); the server checks it on PATCH /trips/{tripId}.'
+            samePointWarnMeters:
+              type: integer
+              minimum: 0
+              maximum: 1000
+              description: 'v0.18.32 (owner Q9, contract.json#smallFixes.samePoint): pickup ≈ drop-off warning under this
+                many metres (straight line, no stops); a warning only, the rider can still book. Default 100, 0 = never warn.
+                Admin Dispatch › Rides ''Shortest ride (m)''.'
         offers:
           type: object
           properties:

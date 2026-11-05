@@ -2348,6 +2348,8 @@ PW = C["pickupWaiting"]
 S["RiderWaiting"]["properties"]["cancelAfterArrivedIsNoShow"] = b("v0.18.7 (Q2): " + PW["servedConfig"]["cancelAfterArrivedIsNoShow"]["note"] + " Default " + str(PW["servedConfig"]["cancelAfterArrivedIsNoShow"]["default"]).lower() + ".")
 S["RiderAppConfig"]["properties"]["booking"]["properties"]["maxPickupMoveMeters"]["description"] += " v0.18.7: default 200, range 0–2000 (contract.json#pickupWaiting.pickupMove); the server checks it on PATCH /trips/{tripId}."
 S["DriverAppConfig"]["properties"]["booking"]["properties"]["maxPickupMoveMeters"]["description"] += " v0.18.7: default 200, range 0–2000 (contract.json#pickupWaiting.pickupMove); the server checks it on PATCH /trips/{tripId}."
+for _cfg in ("RiderAppConfig", "DriverAppConfig"):
+    S[_cfg]["properties"]["booking"]["properties"]["samePointWarnMeters"] = i("v0.18.32 (owner Q9, contract.json#smallFixes.samePoint): pickup ≈ drop-off warning under this many metres (straight line, no stops); a warning only, the rider can still book. Default 100, 0 = never warn. Admin Dispatch › Rides 'Shortest ride (m)'.", minimum=0, maximum=1000)
 S["RiderSummary"] = obj({"firstName": s(minLength=1), "rating": n("The rider's average (2 decimals); only while DriverAppConfig.offers.offerCard.riderRating is on and the rider has one.", minimum=0, maximum=5)},
                         ["firstName"], "v0.18.7 (Q1): " + PW["riderSummary"]["note"])
 S["TripTerms"] = obj(OrderedDict([
