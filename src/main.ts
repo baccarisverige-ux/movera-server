@@ -5,6 +5,7 @@ import { ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
 import { createDb, createPool, limitStatements, poolOptionsFrom, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
+import { guardProcess, waitForDatabase } from "./db/ready.js";
 import { readEnv } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
@@ -28,6 +29,10 @@ import { onNotify } from "./notifications/service.js";
 
 const env = readEnv();
 
+// Rule 28: a database error escaping a background promise is logged, never fatal; the logger is the app's once it exists.
+let fatalLog: { error: (data: object, message: string) => void } = { error: (data, message) => console.error(message, (data as { err?: Error }).err?.message ?? "") };
+guardProcess({ error: (data, message) => fatalLog.error(data, message) });
+
 let db: Db | undefined;
 let pool: pg.Pool | undefined;
 let hub: NotificationHub | undefined;
@@ -38,6 +43,8 @@ let warn = (error: Error) => console.warn("database connection dropped:", error.
 
 if (env.DATABASE_URL !== undefined) {
   pool = createPool(env.DATABASE_URL, poolOptionsFrom(env), (error) => warn(error));
+  // Rule 28 (Render 2026-11-05: 57P03 while the database restarted): wait up to ~2 min for it, then migrate.
+  await waitForDatabase(pool, { log: (data, message) => console.warn(message, JSON.stringify(data)) });
   if (env.MIGRATE_ON_START) await migrate(pool);
   limitStatements(pool, env.DATABASE_STATEMENT_TIMEOUT_MS);
   db = createDb(pool);
@@ -52,6 +59,7 @@ let log: (message: string) => void = (message) => console.warn(message);
 const push = pushServicesFrom(env, { warn: (message) => log(message) });
 const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}) });
 log = (message) => app.log.warn(message);
+fatalLog = app.log;
 warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 
 if (db !== undefined) {

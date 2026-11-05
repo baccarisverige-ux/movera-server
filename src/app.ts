@@ -51,6 +51,25 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices };
 
 const READY_TIMEOUT_MS = 2000;
+const HEALTH_DB_TIMEOUT_MS = 1000;
+
+/** True when the database answers SELECT 1 within `ms`; never throws. */
+async function databaseAnswers(db: Db, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      sql`SELECT 1`.execute(db),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), ms);
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
 export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push }: BuildOptions): Promise<FastifyInstance> {
@@ -165,22 +184,21 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
 
   app.addHook("preClose", async () => closeAllStreams(app));
 
-  app.get("/healthz", async () => ({ status: "ok", contract: CONTRACT_VERSION, apiVersion: API_VERSION, env: env.MOVERA_ENV, ...(db !== undefined ? { dbPool: poolStats() } : {}) }));
+  // Liveness: always 200 while the process runs. `database` says whether the database answers (rule 28: a database
+  // that is restarting shows here as "unavailable" instead of stopping the server; /readyz answers 503 meanwhile).
+  app.get("/healthz", async () => ({
+    status: "ok",
+    contract: CONTRACT_VERSION,
+    apiVersion: API_VERSION,
+    env: env.MOVERA_ENV,
+    ...(db !== undefined ? { dbPool: poolStats() } : {}),
+    database: db === undefined ? "not_configured" : (await databaseAnswers(db, HEALTH_DB_TIMEOUT_MS)) ? "ok" : "unavailable",
+  }));
   // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
   app.get("/readyz", async () => {
     if (db === undefined) return { status: "ready", database: "not_configured" };
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        sql`SELECT 1`.execute(db),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error("timeout")), READY_TIMEOUT_MS);
-        }),
-      ]);
-    } catch {
+    if (!(await databaseAnswers(db, READY_TIMEOUT_MS))) {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
-    } finally {
-      clearTimeout(timer);
     }
     return { status: "ready", database: "ok" };
   });

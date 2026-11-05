@@ -1,5 +1,6 @@
 import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
+import { isDatabaseConnectionError } from "../db/ready.js";
 
 /**
  * Durable timers: offer expiry, the next dispatch step, search expiry, no-show windows, … A timer is written in
@@ -79,6 +80,11 @@ export function backoffMs(attempts: number): number {
 
 /** Job 1: a lane is one loop of the worker; `kinds` = only these kinds (e.g. a dispatch lane), missing = any kind. */
 export type TimerLane = { kinds?: string[]; exclude?: string[] };
+/** Rule 28: while the database cannot be reached the loop waits 1 s, 2 s, 4 s, … at most 30 s between tries. */
+export const DB_DOWN_MAX_MS = 30_000;
+export function dbDownDelayMs(failures: number, pollMs: number): number {
+  return Math.min(Math.max(pollMs, 1000) * 2 ** Math.max(0, failures - 1), DB_DOWN_MAX_MS);
+}
 
 export type TimerWorkerOptions = {
   handlers: Record<string, TimerHandler>;
@@ -104,6 +110,8 @@ export class TimerWorker {
    * backlog of later timers); this worker only skips it until `until`, with a bounded backoff (busyRetryMs).
    */
   private readonly busy = new Map<string, { tries: number; until: number }>();
+  /** Rule 28: database connection errors in a row (the loop backs off while the database is down). */
+  private dbFailures = 0;
 
   constructor(
     private readonly db: Db,
@@ -196,11 +204,8 @@ export class TimerWorker {
     this.loops = this.lanes.map((lane) =>
       (async () => {
         while (!this.stopping) {
-          try {
-            await this.runDue(100, lane);
-          } catch (error) {
-            this.options.logger.error({ err: error }, "timer worker: database error");
-          }
+          // Rule 28 (#92): one round that never throws; backs off while the database is down.
+          const delay = await this.tick(() => this.runDue(100, lane));
           if (this.stopping) break;
           await new Promise<void>((resolve) => {
             const wake = () => {
@@ -208,7 +213,7 @@ export class TimerWorker {
               this.wakers.delete(wake);
               resolve();
             };
-            const handle = setTimeout(wake, this.pollMs);
+            const handle = setTimeout(wake, delay);
             this.wakers.add(wake);
           });
         }
@@ -219,6 +224,33 @@ export class TimerWorker {
   /** Job 1: a timer due now was just written (e.g. a new search): look at once instead of after the poll. */
   kick(): void {
     for (const wake of [...this.wakers]) wake();
+  }
+
+  /**
+   * One round of the loop. Never throws (rule 28): a database that is restarting (57P03, ECONNREFUSED, connection
+   * terminated) is logged and the loop waits longer each time; any other error is logged and the loop goes on.
+   * Returns how long to wait before the next round.
+   */
+  async tick(round: () => Promise<unknown>): Promise<number> {
+    try {
+      await round();
+      if (this.dbFailures > 0) this.options.logger.warn({ failures: this.dbFailures }, "timer worker: database is back");
+      this.dbFailures = 0;
+      return this.pollMs;
+    } catch (error) {
+      try {
+        if (isDatabaseConnectionError(error)) {
+          this.dbFailures += 1;
+          const delay = dbDownDelayMs(this.dbFailures, this.pollMs);
+          this.options.logger.warn({ err: error, failures: this.dbFailures, retryInMs: delay }, "timer worker: database unavailable; retrying");
+          return delay;
+        }
+        this.options.logger.error({ err: error }, "timer worker: database error");
+      } catch {
+        // A logger that throws must not stop the loop either.
+      }
+      return this.pollMs;
+    }
   }
 
   async stop(): Promise<void> {
