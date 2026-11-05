@@ -30,6 +30,9 @@ afterAll(async () => {
 beforeEach(async () => {
   // A fresh day for each case; nothing booked is left from the previous one.
   await sim.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("status", "not in", ["completed", "cancelled_by_rider", "cancelled_by_admin", "expired", "cancelled_by_system", "no_show", "failed", "cancelled_by_driver"]).execute();
+  // Job 1: the cases end their trips straight in the database, so their open offers are closed here too (an overdue
+  // booked ride now goes out as Exclusive only, and a left-over open Exclusive would keep a driver from the next case).
+  await sim.db.updateTable("offers").set({ status: "withdrawn" }).where("status", "=", "open").execute();
   await sim.db.updateTable("drivers").set({ online_status: "online" }).where("online_status", "=", "on_trip").execute();
   await jump(6 * 3600);
   // An admin session does not last the hours these cases jump; sign one in for each case.

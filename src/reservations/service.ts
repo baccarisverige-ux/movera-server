@@ -99,6 +99,39 @@ export function currentTripOf(ex: Executor, driverId: string) {
     .executeTakeFirst();
 }
 
+/**
+ * Job 1 (fix plan R1 d): currentTripOf for many drivers in one query — the drivers of `driverIds` who have a current
+ * trip now (a booked ride held for later is not one).
+ */
+export async function driversWithCurrentTrip(ex: Executor, driverIds: string[]): Promise<Set<string>> {
+  if (driverIds.length === 0) return new Set();
+  const rows = await ex.selectFrom("trips").select("driver_id").where("driver_id", "in", driverIds).where("status", "in", [...ASSIGNED]).where(NOT_HELD).execute();
+  return new Set(rows.map((r) => r.driver_id as string));
+}
+
+/**
+ * Job 1 (fix plan R10, ledger L10): the drivers of `driverIds` for whom a live ride starting now clashes with a booked
+ * ride they hold — the same smart gap as the booking list (rideTypes.normal.spareMin), always (owner Q3): the live ride
+ * [now, now + drive to pickup + trip + spareMin] overlaps the booked [scheduledAt, scheduledAt + trip + spareMin].
+ */
+export async function driversWithClashingBooking(ex: Executor, trip: TripRow, driverIds: string[], pickupSecondsOf: (driverId: string) => number, now: Date): Promise<Set<string>> {
+  if (driverIds.length === 0) return new Set();
+  const s = await settingsFor(ex, trip.zone_id);
+  // Owner Q3 2026-11-04: ALWAYS, whatever hideClashing says (that switch is only about the Scheduled rides list).
+  const held = await ex.selectFrom("trips").select(["driver_id", "scheduled_at", "duration_seconds"]).where("driver_id", "in", driverIds).where("kind", "=", "scheduled").where("status", "=", "accepted").where("trip_id", "!=", trip.trip_id).execute();
+  const spare = s.rideTypes.normal.spareMin * 60_000;
+  const out = new Set<string>();
+  for (const h of held) {
+    if (!h.scheduled_at || !h.driver_id) continue;
+    const a0 = now.getTime();
+    const a1 = a0 + (pickupSecondsOf(h.driver_id) + (trip.duration_seconds ?? 0)) * 1000 + spare;
+    const b0 = h.scheduled_at.getTime();
+    const b1 = b0 + (h.duration_seconds ?? 0) * 1000 + spare;
+    if (a0 < b1 && b0 < a1) out.add(h.driver_id);
+  }
+  return out;
+}
+
 export async function settingsFor(ex: Executor, zoneId: string): Promise<ReservationSettings> {
   const live = await liveDocument<{ reservations?: unknown }>(ex, "driver_app_config", zoneId);
   return reservationSettings(live?.document.reservations);
@@ -165,7 +198,9 @@ export async function listedDrivers(ex: Executor, trip: TripRow, s: ReservationS
     .select(["drivers.driver_id", "drivers.home_area", "drivers.rating_sum", "drivers.rating_count", "driver_locations.lat", "driver_locations.lng", "vehicles.category_ids as vehicle_category_ids", "vehicles.status as vehicle_status"])
     .where("drivers.account_status", "=", "active")
     .where(sql<boolean>`${trip.zone_id} = ANY(drivers.zone_ids)`)
-    .where(sql<boolean>`${trip.category_id} = ANY(drivers.category_ids)`);
+    .where(sql<boolean>`${trip.category_id} = ANY(drivers.category_ids)`)
+    // v0.18.26 (contract.json#phoneDataToServer.driverPreferences.dispatch): not to a driver who switched it off.
+    .where(sql<boolean>`NOT EXISTS (SELECT 1 FROM driver_phone_data p WHERE p.driver_id = drivers.driver_id AND ${trip.category_id} = ANY(p.categories_off))`);
   if (options.onlyDriverId) query = query.where("drivers.driver_id", "=", options.onlyDriverId);
   const rows = await query.execute();
   const pickup = trip.pickup as { lat: number; lng: number };

@@ -84,3 +84,39 @@ export async function drivingLimitReached(ex: Executor, driverId: string, now: D
   if (!driver) return false;
   return (await drivingTimeOf(ex, driver, now)).reached;
 }
+
+/**
+ * Job 1 (fix plan R1 d; the per-driver countedSeconds was the top query by time in the stress test): the drivers of
+ * `drivers` who reached their driving-time limit, with the very rules of drivingTimeOf, in one query for all of them.
+ */
+export async function driversAtDrivingLimit(ex: Executor, drivers: Array<{ driver_id: string; zone_ids: string[]; driving_since: Date | null }>, now: Date): Promise<Set<string>> {
+  if (drivers.length === 0) return new Set();
+  const limitOf = new Map<string, DrivingLimits>();
+  for (const zoneId of new Set(drivers.map((d) => d.zone_ids[0] ?? ""))) limitOf.set(zoneId, await drivingLimitsFor(ex, zoneId || undefined));
+  const limited = drivers.filter((d) => limitOf.get(d.zone_ids[0] ?? "")!.maxHoursPerDay > 0);
+  if (limited.length === 0) return new Set();
+  const ids = limited.map((d) => d.driver_id);
+  const froms = limited.map((d) => new Date(Math.max(now.getTime() - DAY_MS, d.driving_since?.getTime() ?? 0)).toISOString());
+  const open = sql`CASE WHEN t.status IN (${sql.join(TERMINAL)}) THEN t.updated_at ELSE ${now}::timestamptz END`;
+  const rows = await sql<{ driver_id: string; s: string | null }>`
+    WITH d AS (SELECT * FROM unnest(${ids}::text[], ${froms}::timestamptz[]) AS d(driver_id, f)),
+    legs AS (
+      SELECT d.driver_id, d.f,
+             CASE WHEN t.kind = 'scheduled' AND t.scheduled_at IS NOT NULL
+                  THEN greatest(t.accepted_at, t.scheduled_at - make_interval(secs => coalesce((t.eta->>'etaSeconds')::numeric, 0)))
+                  ELSE t.accepted_at END AS a,
+             coalesce(t.arrived_at, t.boarded_at, t.ended_at, ${open}) AS b
+        FROM trips t JOIN d ON t.driver_id = d.driver_id WHERE t.accepted_at IS NOT NULL
+      UNION ALL
+      SELECT d.driver_id, d.f, t.boarded_at AS a, coalesce(t.ended_at, ${open}) AS b
+        FROM trips t JOIN d ON t.driver_id = d.driver_id WHERE t.boarded_at IS NOT NULL)
+    SELECT driver_id, sum(extract(epoch FROM (least(b, ${now}::timestamptz) - greatest(a, f)))) AS s
+      FROM legs WHERE b > f AND a < ${now}::timestamptz AND b > a GROUP BY driver_id`.execute(ex);
+  const out = new Set<string>();
+  for (const row of rows.rows) {
+    const driver = limited.find((d) => d.driver_id === row.driver_id)!;
+    const maxMinutes = Math.round(limitOf.get(driver.zone_ids[0] ?? "")!.maxHoursPerDay * 60);
+    if (Math.max(0, Math.round(Number(row.s ?? 0))) >= maxMinutes * 60) out.add(row.driver_id);
+  }
+  return out;
+}

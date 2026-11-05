@@ -1,15 +1,15 @@
-# Render Blueprint for trying the test week for free (docs/DEPLOY_RENDER.md): the server as one Docker web service
-# plus its PostgreSQL, both in Frankfurt, on Render's free plans (the server sleeps after a while without use; the
-# free database expires after some weeks). MOVERA_ENV=staging keeps the test numbers (code 1234). The free plan has
-# no shell, so the test accounts, sample settings and first admin are made at start (SEED_TEST_ON_START,
-# ADMIN_BOOTSTRAP_EMAIL). For a real test week: plan starter and basic-256mb.
+# Render Blueprint for the test server (docs/DEPLOY_RENDER.md): the server as one Docker web service
+# plus its PostgreSQL, both in Frankfurt. Paid plans (owner 2026-11-04): web "standard" ($25, 1 CPU 2 GB, never sleeps) and
+# database "basic-1gb" ($19, never expires). MOVERA_ENV=staging keeps the test numbers.
+# The test accounts, sample settings and first admin are made at start (SEED_TEST_ON_START,
+# ADMIN_BOOTSTRAP_EMAIL).
 services:
   - type: web
     name: movera-server
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: frankfurt
-    plan: free
+    plan: standard
     healthCheckPath: /readyz
     envVars:
       - key: MOVERA_ENV
@@ -54,7 +54,7 @@ services:
 databases:
   - name: movera-db
     region: frankfurt
-    plan: free
+    plan: basic-1gb
     postgresMajorVersion: "16"
     databaseName: movera
     user: movera

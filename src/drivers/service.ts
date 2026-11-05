@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { NOT_HELD } from "../reservations/view.js";
 import { drivingTimeOf, resetOnOnline } from "./drivingTime.js";
 import { scheduleRideCheckScan } from "../safety/rideCheckServer.js";
@@ -501,7 +502,10 @@ export async function addVehicle(trx: Trx, driverId: string, body: unknown, now:
 
 /* ---------------------------------------------------------------- admin views */
 
-export async function liveDrivers(ex: Executor, zoneId: string | undefined, zones: string[], now: Date) {
+/** Job 1 (stress M4): the admin map's visible box (all four, degrees); with it only the drivers inside are read. */
+export type MapBox = { minLat: number; minLng: number; maxLat: number; maxLng: number };
+
+export async function liveDrivers(ex: Executor, zoneId: string | undefined, zones: string[], now: Date, box?: MapBox) {
   let query = ex
     .selectFrom("drivers")
     .leftJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
@@ -513,12 +517,21 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
     ])
     .where("drivers.online_status", "!=", "offline");
   if (zoneId) query = query.where("driver_locations.zone_id", "=", zoneId);
+  if (box) query = query.where("driver_locations.lat", ">=", box.minLat).where("driver_locations.lat", "<=", box.maxLat).where("driver_locations.lng", ">=", box.minLng).where("driver_locations.lng", "<=", box.maxLng);
+  // Job 1 (fix plan R23, stress M4): an admin limited to some zones reads only drivers who may be in them (the exact
+  // zone rule below stays), and the drivers' current trips come in ONE query instead of one per driver.
+  if (!zones.includes("*")) query = query.where((eb) => eb.or([eb("driver_locations.zone_id", "in", zones.length ? zones : ["-"]), sql<boolean>`drivers.zone_ids && ${sql.val(zones)}::text[]`]));
   const rows = await query.execute();
-  const items = [];
-  for (const r of rows) {
+  const shown = rows.filter((r) => {
     const where = r.zone_id ?? r.zone_ids[0] ?? null;
-    if (!zones.includes("*") && (where === null || !zones.includes(where))) continue;
-    const active = await activeTripOf(ex, r.driver_id);
+    return zones.includes("*") || (where !== null && zones.includes(where));
+  });
+  const activeRows = shown.length ? await ex.selectFrom("trips").select(["driver_id", "trip_id", "status"]).where("driver_id", "in", shown.map((r) => r.driver_id)).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).execute() : [];
+  const activeOf = new Map(activeRows.map((t) => [t.driver_id as string, t]));
+  const items = [];
+  for (const r of shown) {
+    const where = r.zone_id ?? r.zone_ids[0] ?? null;
+    const active = activeOf.get(r.driver_id);
     const hasFix = r.lat !== null && r.measured_at !== null && r.received_at !== null;
     items.push({
       driverId: r.driver_id,
@@ -533,6 +546,8 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
       ...(where ? { zoneId: where } : {}),
     });
   }
+  // Job 1 (stress M4): a map-box read is for the map only: the zone counts below need every driver, so they are left out.
+  if (box) return { items, staleAfterSeconds: STALE_AFTER_SECONDS, serverTime: now.toISOString() };
   // v0.18.4 (G3-R4): real riders online per zone, for the Dashboard.
   const ridersOnline = await ridersOnlineByZone(ex, zones, now);
   // v0.18.4 (G3-D5): supply and demand per zone, one rule for the Dashboard's rows and its shortage alert.

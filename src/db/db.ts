@@ -12,12 +12,56 @@ export type Executor = Db | Trx;
  * An idle connection that the database drops (restart, failover) is reported, not fatal: the pool opens a new
  * one on the next query, and /readyz shows whether the database is reachable.
  */
-export function createPool(url: string, max = 10, onIdleError: (error: Error) => void = () => undefined): pg.Pool {
-  const pool = new pg.Pool({ connectionString: url, max, application_name: "movera-server" });
+export type PoolOptions = { max?: number; idleMs?: number; connectTimeoutMs?: number };
+
+let current: pg.Pool | undefined;
+let currentMax = 0;
+
+export function createPool(url: string, options: number | PoolOptions = {}, onIdleError: (error: Error) => void = () => undefined): pg.Pool {
+  const { max = 10, idleMs = 30_000, connectTimeoutMs = 0 } = typeof options === "number" ? { max: options } : options;
+  const pool = new pg.Pool({ connectionString: url, max, idleTimeoutMillis: idleMs, connectionTimeoutMillis: connectTimeoutMs, application_name: "movera-server" });
   pool.on("error", onIdleError);
+  current = pool;
+  currentMax = max;
   return pool;
+}
+
+/** B12: the pool settings from the environment. */
+export function poolOptionsFrom(env: { DATABASE_POOL_MAX: number; DATABASE_POOL_IDLE_MS: number; DATABASE_POOL_CONNECT_TIMEOUT_MS: number }): PoolOptions {
+  return { max: env.DATABASE_POOL_MAX, idleMs: env.DATABASE_POOL_IDLE_MS, connectTimeoutMs: env.DATABASE_POOL_CONNECT_TIMEOUT_MS };
+}
+
+export type PoolStats = { max: number; total: number; idle: number; waiting: number };
+
+/** B12: counts only (no address, user or password), for /healthz. */
+export function poolStats(pool: pg.Pool | undefined = current): PoolStats | null {
+  if (pool === undefined) return null;
+  return { max: pool === current ? currentMax : pool.options.max ?? 0, total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount };
 }
 
 export function createDb(pool: pg.Pool): Db {
   return new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
+}
+
+/**
+ * Job 1 (fix plan R22, audits/stress-test-2026-11-04.md H3): every connection the pool opens from now on stops a single
+ * statement after `ms` (0: no limit), so one slow query can never hold a connection for ever under a spike.
+ */
+export function limitStatements(pool: pg.Pool, ms: number): void {
+  if (ms <= 0) return;
+  pool.on("connect", (client) => {
+    client.query(`SET statement_timeout = ${Math.round(ms)}`).catch(() => undefined);
+  });
+}
+
+/**
+ * Job 1 (fix plan R22): errors that mean "the database is overloaded right now", not a bug: no free pooled connection in
+ * time (pg-pool), a statement stopped by statement_timeout (57014), a lock wait stopped by lock_timeout (55P03).
+ * The API answers them 503 unavailable, reason server_busy, retryable, with Retry-After.
+ */
+export function isDatabaseBusy(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | undefined;
+  if (e === undefined || e === null) return false;
+  if (e.code === "57014" || e.code === "55P03") return true;
+  return typeof e.message === "string" && /timeout exceeded when trying to connect/i.test(e.message);
 }

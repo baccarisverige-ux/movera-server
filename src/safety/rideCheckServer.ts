@@ -1,8 +1,8 @@
 import type { Trx } from "../db/db.js";
 import { appendTripEvent, type TripRow } from "../db/tripLog.js";
 import { lockTripNow } from "../dispatch/runtime.js";
-import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
-import { haversineKm, type LatLng, type Router } from "../maps/routing.js";
+import { scheduleTimer, type Timer, type TimerHandler } from "../jobs/timers.js";
+import { haversineKm, prepareLegs, preparedRouter, type LatLng, type Router } from "../maps/routing.js";
 import { isTripStatus, TERMINAL } from "../rules/transitions.js";
 import { tripProjection } from "../trips/projection.js";
 import { rideCheckSettings, type RideCheckSettings } from "../trips/onTripSettings.js";
@@ -182,7 +182,21 @@ export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSetting
 }
 
 /** The scan job: one open server check per trip; each trigger again only after repeatMinutes. */
-export const rideCheckScanHandler = (router?: Router): TimerHandler => async (trx, timer) => {
+export const rideCheckScanHandler = (router?: Router): TimerHandler => {
+  const handler: TimerHandler = async (trx, timer) => scan(trx, timer, router ? preparedRouter(timer.prepared) : undefined);
+  // Job 1 (fix plan R1 b): the trip's road route (asked once, then kept on the trip) is fetched before the transaction.
+  handler.prepare = async (db, timer) => {
+    if (!router) return null;
+    const trip = await db.selectFrom("trips").selectAll().where("trip_id", "=", timer.refId).executeTakeFirst();
+    if (!trip || !ONBOARD.has(trip.status)) return null;
+    const kept = trip.planned_route as LatLng[] | null;
+    if (Array.isArray(kept) && kept.length >= 2) return null;
+    return prepareLegs(router, [[trip.pickup, ...((trip.stops as unknown[]) ?? []), trip.dropoff].map(pointOf)]);
+  };
+  return handler;
+};
+
+async function scan(trx: Trx, timer: Timer, router: Router | undefined): Promise<void> {
   const trip = await lockTripNow(trx, timer.refId);
   if (!trip || !ONBOARD.has(trip.status) || !trip.driver_id) return;
   const now = timer.firedAt;
@@ -192,7 +206,7 @@ export const rideCheckScanHandler = (router?: Router): TimerHandler => async (tr
   const found = await detect(trx, trip, settings, now, router);
   if (!found || recentlyAsked(trip, found.trigger, settings, now)) return;
   await askRideCheck(trx, trip, found.trigger, settings, now, found.at, found.measured);
-};
+}
 
 /**
  * Unexpected end (trigger dropped_far): the driver completed or cancelled with the rider on board farther than

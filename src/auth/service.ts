@@ -77,6 +77,12 @@ export type AuthDeps = {
   jwtSecret: string;
   /** Test numbers work only when this is true (never on production). */
   testSignInEnabled: boolean;
+  /**
+   * Owner 2026-11-04 (load test): on STAGING only, a test number (no real SMS) skips the resend wait and the hourly
+   * code limits (per number, per address); a safety cap of TEST_CODES_PER_MINUTE per number stays. app.ts sets it
+   * only when MOVERA_ENV is staging, and requestOtp also ignores it unless testSignInEnabled, so production never has it.
+   */
+  fastTestSignIn?: boolean;
   /** Apple / Google token verifiers, one per provider with client ids set. */
   providers?: Partial<Record<Provider, ProviderVerifier>> | undefined;
   clock?: () => Date;
@@ -98,6 +104,9 @@ function sameHash(a: string, b: string): boolean {
 function rateLimited(message: string, retryAfterSeconds: number, reason: string): ApiError {
   return new ApiError("rate_limited", message, { reason, retryAfterSeconds: Math.max(1, Math.ceil(retryAfterSeconds)) });
 }
+
+/** Safety cap for fastTestSignIn: codes per test number per minute. */
+export const TEST_CODES_PER_MINUTE = 30;
 
 export const PHONE = /^\+[1-9][0-9]{6,14}$/;
 
@@ -132,7 +141,16 @@ export async function requestOtp(
       .where("created_at", ">", hourAgo)
       .orderBy("created_at", "desc")
       .execute();
-    const last = recent[0];
+    const fast = isTest && deps.testSignInEnabled && deps.fastTestSignIn === true;
+    if (fast) {
+      const minuteAgo = now.getTime() - 60_000;
+      const lastMinute = recent.filter((row) => row.created_at.getTime() > minuteAgo);
+      if (lastMinute.length >= TEST_CODES_PER_MINUTE) {
+        const oldest = lastMinute[lastMinute.length - 1]!;
+        throw rateLimited("Too many codes for this number. Try again later.", (oldest.created_at.getTime() + 60_000 - now.getTime()) / 1000, "otp_too_many");
+      }
+    }
+    const last = fast ? undefined : recent[0];
     if (last !== undefined) {
       const waited = (now.getTime() - last.created_at.getTime()) / 1000;
       if (waited < OTP.retryAfterSeconds) {
@@ -140,13 +158,13 @@ export async function requestOtp(
       }
     }
     const limits = await countryLimitsFor(trx, countryOfPhone(input.phone));
-    if (recent.length >= limits.codesPerPhonePerHour) {
+    if (!fast && recent.length >= limits.codesPerPhonePerHour) {
       const oldest = recent[recent.length - 1]!;
       throw rateLimited("Too many codes for this number. Try again later.", (oldest.created_at.getTime() + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
     }
     const today = await wrongCodesToday(trx, input.phone, client.ip, now);
     if (today.wrong >= limits.wrongCodesPerDay) throw lockedToday(today.oldest, now);
-    if (client.ip !== undefined) {
+    if (client.ip !== undefined && !fast) {
       const fromIp = await trx
         .selectFrom("otp_sessions")
         .select((eb) => [eb.fn.countAll<string>().as("n"), eb.fn.min("created_at").as("oldest")])
@@ -187,7 +205,7 @@ export async function requestOtp(
         created_at: now,
       })
       .execute();
-    return { requestId: input.requestId, sessionId, expiresAt: expiresAt.toISOString(), retryAfterSeconds: OTP.retryAfterSeconds };
+    return { requestId: input.requestId, sessionId, expiresAt: expiresAt.toISOString(), retryAfterSeconds: fast ? 0 : OTP.retryAfterSeconds };
   });
 }
 
