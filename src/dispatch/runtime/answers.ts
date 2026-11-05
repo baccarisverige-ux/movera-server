@@ -42,6 +42,8 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   const driver = await trx.selectFrom("drivers").selectAll().where("driver_id", "=", driverId).executeTakeFirstOrThrow();
   // Only an active, online driver with no trip can take one (a driver who went offline keeps no offer, §3.6).
   const busy = await currentTripOf(trx, driverId);
+  // v0.18.37 §61: he tapped Go offline during his trip; an accept in the race window before the withdraw job is refused.
+  if (driver.offline_after_trip) throw new ApiError("conflict", "You are going offline after your trip.", { reason: "going_offline", projection: offerView(offer, trip) });
   // v0.18.17: an admin-assigned booked ride taken before its dispatch time is held for later (no on_trip, no ETA yet).
   // v0.18.33 (fix job 5, owner Q7, contract.json#afterTestRules.bookedNext): a driver on a trip may take a booked ride
   // offered to him as Exclusive when he still reaches it in time; it is held as his next trip (he stays on this one).
