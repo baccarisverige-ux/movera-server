@@ -7,7 +7,7 @@ import { insertRider, insertTrip } from "../support/seed.js";
 
 let database: TestDatabase;
 let listener: pg.Client;
-const notes: Array<{ tripId: string; sequence: number }> = [];
+const notes: Array<{ tripId: string; sequence: number; riderId?: string }> = [];
 
 beforeAll(async () => {
   database = await freshDatabase();
@@ -131,7 +131,7 @@ describe("appendTripEvent", () => {
     await database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId, kind: "trip_projection", version: 1 }));
     await waitUntil(() => notes.some((note) => note.tripId === tripId));
     // The committed event's notification has arrived; a rolled-back one would have been delivered before it.
-    expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1 }]);
+    expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1, riderId: expect.any(String) }]);
   });
 
   it("the notification arrives only after commit", async () => {
@@ -143,7 +143,7 @@ describe("appendTripEvent", () => {
       expect(notes.filter((note) => note.tripId === tripId)).toEqual([]);
     });
     await waitUntil(() => notes.some((note) => note.tripId === tripId));
-    expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1 }]);
+    expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1, riderId: expect.any(String) }]);
   });
 
   it("an event kind outside the contract is refused by the database", async () => {

@@ -26,7 +26,7 @@ export async function driverPerformance(ex: Executor, driverId: string, now: Dat
   const since = new Date(now.getTime() - PERFORMANCE.windowDays * 24 * 3600_000);
   const offers = await ex
     .selectFrom("offers")
-    .select([sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status IN ('claimed', 'declined', 'expired'))`.as("all")])
+    .select([sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status = 'claimed' OR (status IN ('declined', 'expired') AND NOT driver_on_trip))`.as("all")])
     .where("driver_id", "=", driverId)
     .where("kind", "in", ["exclusive", "assigned"])
     .where("sent_at", ">", since)

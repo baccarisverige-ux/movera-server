@@ -193,7 +193,9 @@ describe("the frozen price (contract v0.18.1 §26, checker findings)", () => {
     const { tripId } = await bookAndAccept(sim, rider, a);
     await drive(a, tripId, "in_trip");
     const booked = (await a.trip(tripId))["fare"];
-    await sim.advance(18 * 60);
+    // v0.18.33 (fix job 5, owner fix-plan Q1): a new price needs BOTH more than 2 km AND more than 10 min shorter, so the
+    // driver is quick here (1 min on board) and the later early end is short on both.
+    await sim.advance(60);
     await a.moveTo(PLACES.medborgar);
     const shown = await preview(a, tripId);
     expect(shown.body.total).toEqual(booked);

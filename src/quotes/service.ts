@@ -7,7 +7,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { liveDocument } from "../config/service.js";
 import { zoneAt } from "../config/zoneLookup.js";
-import type { LatLng, Router } from "../maps/routing.js";
+import { legKey, type LatLng, type RouteLeg, type Router } from "../maps/routing.js";
 import { FareError, priceFare, type FareLine, type PricingDocument } from "../rules/fare.js";
 import { asksSeatOutsideChildSeat, riderExtras, type PriceExtras } from "../rules/priceExtras.js";
 import { airportExtras } from "../pricing/airport.js";
@@ -74,6 +74,34 @@ export async function samePointWarning(trx: Trx, zoneId: string, body: Pick<Quot
   return meters <= limitMeters ? { reason: "same_pickup_dropoff", meters, limitMeters } : null;
 }
 
+/**
+ * Fix plan rerun 2026-11-05 (proof job Q1): the road route is asked BEFORE the idempotency transaction, so a quote
+ * never holds a pooled database connection while it waits up to 2.5 s for the route service (as trips/eta.ts does).
+ * Only a valid request is routed (an invalid one is refused inside, as before, with no route call). The returned
+ * router hands createQuotes that same leg for the same points (or the same error at the same step), so the answer,
+ * the stored quote and the idempotency behaviour are unchanged; any other points still go to the real router.
+ */
+export async function routeBeforeTransaction(router: Router, request: unknown): Promise<Router> {
+  if (schemaProblem("QuoteRequest", request) !== null) return router;
+  const body = request as QuoteRequest;
+  const wanted = legKey(quotePoints(body));
+  const result: { leg: RouteLeg } | { error: unknown } = await router.route(quotePoints(body)).then(
+    (leg) => ({ leg }),
+    (error: unknown) => ({ error }),
+  );
+  return {
+    async route(points: LatLng[]): Promise<RouteLeg> {
+      if (legKey(points) !== wanted) return router.route(points);
+      if ("error" in result) throw result.error;
+      return result.leg;
+    },
+  };
+}
+
+function quotePoints(body: QuoteRequest): LatLng[] {
+  return [body.pickup, ...body.stops, body.dropoff].map((p) => ({ lat: p.lat, lng: p.lng }));
+}
+
 export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: string, request: unknown, now: Date): Promise<QuoteList> {
   const problem = schemaProblem("QuoteRequest", request);
   if (problem !== null) throw badRequest(`The quote request is not valid: ${problem}.`, "invalid_body");
@@ -91,8 +119,7 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   const pricing = await liveDocument<PricingDocument>(trx, "pricing", zone.zoneId);
   if (pricing === null) throw new ApiError("unavailable", "Prices are not set for this area yet.", { reason: "pricing_not_published", retryAfterSeconds: 60 });
 
-  const points: LatLng[] = [body.pickup, ...body.stops, body.dropoff].map((p) => ({ lat: p.lat, lng: p.lng }));
-  const leg = await deps.router.route(points);
+  const leg = await deps.router.route(quotePoints(body));
   const km = leg.distanceMeters / 1000;
   // v0.18.17 (contract.json#bookLater.window): the zone's longest booked ride (demo admin: 60 km).
   if (kind === "scheduled") await checkTripLength(trx, zone.zoneId, km);

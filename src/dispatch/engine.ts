@@ -30,6 +30,8 @@ export type DispatchDoc = {
   finishing: { exclusive: boolean; withinMin: number; withinKm: number };
   favourite: { on: boolean; maxKm: number };
   exclusiveWhileDriving: { on: boolean; count: number };
+  /** v0.18.33 (fix job 5, owner Q7, contract.json#afterTestRules.bookedNext): a booked ride may go to a driver on a trip (Exclusive only). */
+  bookedNext?: { on: boolean; withinMin: number };
   waiting: Array<{ id: string; kind: string; on: boolean; afterMin: number; message: string; extraMin?: number | null }>;
 };
 
@@ -110,9 +112,11 @@ export type Candidate = {
   categoryIds?: string[];
   /** v0.18.11: a driver of a neighbour zone (doc.neighbours), asked only from neighbours.afterStep. */
   neighbour?: boolean;
+  /** v0.18.33 (owner Q7): a driver on a trip who can still reach this booked ride in time (Exclusive only, never Radar). */
+  bookedNext?: boolean;
 };
 
-export type Ranked = { id: string; km: number; score: number; fav: boolean; near: boolean; riding: boolean; out: boolean; neighbour?: boolean };
+export type Ranked = { id: string; km: number; score: number; fav: boolean; near: boolean; riding: boolean; out: boolean; neighbour?: boolean; bookedNext?: boolean };
 
 /** v0.18.9: a mode's own search steps (radar.steps / exclusive.steps), else the shared radius.steps. */
 export function stepsOf(doc: DispatchDoc, mode: Mode): number[] {
@@ -181,8 +185,8 @@ export function rank(doc: DispatchDoc, candidates: Candidate[], categoryId: stri
       const r = ratios[k];
       if (w && r !== null && r !== undefined) score += halfUp((w / wsum) * 100 * Math.max(0, Math.min(1, r)));
     }
-    const out = (!!f && !near) || !(d.categoryIds ?? [categoryId]).includes(categoryId) || km > maxKm || (maxEta > 0 && eta > maxEta);
-    return { id: d.driverId, km, score, fav: fav && !!weights.get("favourite"), near, riding: !!f, out, ...(d.neighbour ? { neighbour: true } : {}) };
+    const out = (!!f && !near && !d.bookedNext) || !(d.categoryIds ?? [categoryId]).includes(categoryId) || km > maxKm || (maxEta > 0 && eta > maxEta);
+    return { id: d.driverId, km, score, fav: fav && !!weights.get("favourite"), near, riding: !!f, out, ...(d.neighbour ? { neighbour: true } : {}), ...(d.bookedNext ? { bookedNext: true } : {}) };
   });
   return rows.sort((a, b) => b.score - a.score || a.km - b.km || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
@@ -190,7 +194,7 @@ export function rank(doc: DispatchDoc, candidates: Candidate[], categoryId: stri
 function inRange(doc: DispatchDoc, ranked: Ranked[], mode: Mode, km: number, step = Number.MAX_SAFE_INTEGER): Ranked[] {
   const n = doc.neighbours;
   const neighboursFrom = n?.on ? Math.max(1, n.afterStep ?? stepCount(doc)) - 1 : Number.MAX_SAFE_INTEGER;
-  return ranked.filter((r) => !r.out && r.km <= km && (!r.neighbour || step >= neighboursFrom) && (!r.riding || (mode === "exclusive" && doc.finishing.exclusive && doc.exclusiveWhileDriving.on)));
+  return ranked.filter((r) => !r.out && r.km <= km && (!r.neighbour || step >= neighboursFrom) && (!r.riding || (mode === "exclusive" && (r.bookedNext === true || (doc.finishing.exclusive && doc.exclusiveWhileDriving.on)))));
 }
 
 /** Where a search is in its steps (stored per trip by the runtime). */

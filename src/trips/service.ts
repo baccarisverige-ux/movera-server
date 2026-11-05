@@ -15,7 +15,8 @@ import { nextStatus, TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { sameExtras, asksSeatOutsideChildSeat } from "../rules/priceExtras.js";
 import { fixView } from "../drivers/service.js";
 import { haversineKm } from "../maps/routing.js";
-import { etaForRead } from "./eta.js";
+import { estimateEta, etaForRead } from "./eta.js";
+import { walletCovers } from "./ride/money.js";
 import { afterRiderCancel, bookingRulesFor, newPin, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
 import type { PricingDocument } from "../rules/fare.js";
 import { checkMaxStops } from "./onTripSettings.js";
@@ -40,6 +41,8 @@ type CreateTrip = {
   paymentMethod: string;
   paymentMethodId?: string;
   notes?: string;
+  /** v0.18.33 (owner Q6): the per-ride wallet switch; missing = on. */
+  walletFirst?: boolean;
 };
 
 const samePlace = (a: Place, b: Place) => Math.abs(a.lat - b.lat) < 1e-7 && Math.abs(a.lng - b.lng) < 1e-7;
@@ -102,7 +105,10 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   const tripId = newId("trp", now.getTime());
   const driverEarnings = Number(quote.driver_earnings_minor);
   // v0.8.0 (contract.json#bookingSnapshot): the trip keeps every rule of booking time; v0.18.8 also the zone's PIN switch.
-  const bookingRules = await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote));
+  const bookingRules = await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote), body.walletFirst);
+  // v0.18.33 (fix job 5 R29, contract.json#afterTestRules.walletFirst): the wallet pays first from booking on — the part
+  // of the fare the balance in the trip's currency covers is reserved now (worked out again at boarding).
+  const walletApplied = bookingRules.walletFirst ? await walletCovers(trx, riderId, quote.currency, Number(quote.total_minor)) : 0;
   try {
     await trx
       .insertInto("trips")
@@ -133,6 +139,7 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
         payment_method: body.paymentMethod,
         payment_method_id: body.paymentMethodId ?? null,
         payment_status: null,
+        wallet_applied_minor: walletApplied,
         waiting: null,
         cancellation: null,
         distance_meters: quote.distance_meters,
@@ -192,6 +199,17 @@ export async function withDriverPosition(ex: Executor, trip: TripRow, projection
   const over = TERMINAL.has(trip.status as TripStatus);
   if (over && (trip.ended_at === null || fix.measured_at.getTime() > trip.ended_at.getTime())) return projection;
   const out: Record<string, unknown> = { ...projection, driverLocation: fixView(fix) };
+  // v0.18.33 (owner Q1 2026-11-05): a trip queued behind the driver's current one shows the TOTAL time to arrive: the
+  // drive to the current drop-off and then on to this pickup (straight-line estimates, contract.json#dispatch.eta).
+  if (trip.next_after_trip_id) {
+    const current = await ex.selectFrom("trips").select("dropoff").where("trip_id", "=", trip.next_after_trip_id).executeTakeFirst();
+    if (current) {
+      const first = estimateEta(fix, current.dropoff as Place, "pickup", now);
+      const second = estimateEta(current.dropoff as Place, trip.pickup as Place, "pickup", now);
+      const total = { ...second, etaSeconds: first.etaSeconds + second.etaSeconds, distanceMeters: first.distanceMeters + second.distanceMeters };
+      return { ...out, eta: total, etaSeconds: total.etaSeconds };
+    }
+  }
   // v0.18.7 (Q4): the server's road-route ETA while fresh, else the straight-line estimate; the same for every viewer.
   const eta = etaForRead(trip, fix, now);
   if (eta !== null) Object.assign(out, { eta, etaSeconds: eta.etaSeconds });
@@ -348,13 +366,26 @@ const NOT_OVER = [...TERMINAL];
 
 /** GET /rider/trips/active: the rider's live trip that is not over (204 when none). */
 export async function activeTrip(ex: Executor, riderId: string): Promise<TripRow | undefined> {
-  return ex
+  const live = await ex
     .selectFrom("trips")
     .selectAll()
     .where("rider_id", "=", riderId)
     .where("kind", "=", "live")
     .where("status", "not in", NOT_OVER)
     .orderBy("created_at", "desc")
+    .executeTakeFirst();
+  // v0.18.32 (contract.json#bookedRideSeen.liveWins, owner Q1 "Live ride + banner"): a live trip stays on screen.
+  if (live !== undefined) return live;
+  // v0.18.32 (bookedRideSeen.activeTrip, owner fix-plan Q5 + Q2): a booked trip is a regular ride once its driver
+  // started driving to the pickup, and stays one while a new driver is found after a give-back.
+  return ex
+    .selectFrom("trips")
+    .selectAll()
+    .where("rider_id", "=", riderId)
+    .where("kind", "=", "scheduled")
+    .where("status", "not in", NOT_OVER)
+    .where((eb) => eb.exists(eb.selectFrom("trip_events as e").select(sql.lit(1).as("one")).whereRef("e.trip_id", "=", "trips.trip_id").where(sql<string>`e.projection->>'status'`, "=", "driver_to_pickup")))
+    .orderBy("scheduled_at", "asc")
     .executeTakeFirst();
 }
 

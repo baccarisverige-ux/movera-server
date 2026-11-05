@@ -2,10 +2,10 @@ import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth/guard.js";
 import type { Db } from "../db/db.js";
 import { API_PREFIX } from "../http/prefix.js";
-import { runIdempotent } from "../http/idempotency.js";
+import { readIdempotencyKey, runIdempotent } from "../http/idempotency.js";
 import type { Router } from "../maps/routing.js";
 import { markRiderSeen } from "../riders/presence.js";
-import { createQuotes } from "./service.js";
+import { createQuotes, routeBeforeTransaction } from "./service.js";
 
 export type QuoteDeps = { db: Db; jwtSecret: string; router: Router; clock?: () => Date };
 
@@ -13,11 +13,16 @@ export async function quoteRoutes(app: FastifyInstance, deps: QuoteDeps): Promis
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
   app.post(`${API_PREFIX}/quotes`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider"]);
-    const key = request.headers["idempotency-key"];
+    const header = request.headers["idempotency-key"];
+    const key = Array.isArray(header) ? header[0] : header;
+    // A missing or bad key is refused before any route call, as before.
+    readIdempotencyKey(key);
+    // The route first, with no database connection held; then the short transaction.
+    const router = await routeBeforeTransaction(deps.router, request.body ?? {});
     const result = await runIdempotent(
       deps.db,
-      { actor: "rider", subjectId: who.subjectId, key: Array.isArray(key) ? key[0] : key, method: "POST", route: request.url.split("?")[0]!, body: request.body ?? null },
-      async (trx) => ({ status: 201, body: await createQuotes(trx, { router: deps.router }, who.subjectId, request.body ?? {}, deps.clock?.() ?? new Date()) }),
+      { actor: "rider", subjectId: who.subjectId, key, method: "POST", route: request.url.split("?")[0]!, body: request.body ?? null },
+      async (trx) => ({ status: 201, body: await createQuotes(trx, { router }, who.subjectId, request.body ?? {}, deps.clock?.() ?? new Date()) }),
     );
     // v0.18.4 (G3-R4): asking a price makes the rider "online" in the pickup's zone.
     const pickup = (request.body as { pickup?: { lat?: unknown; lng?: unknown } } | undefined)?.pickup;
