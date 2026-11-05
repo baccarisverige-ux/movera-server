@@ -3,7 +3,7 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
 import type { Db, Executor } from "../db/db.js";
-import { ApiError } from "../http/errors.js";
+import { ApiError, badRequest } from "../http/errors.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { parseBody } from "../http/validate.js";
@@ -18,7 +18,8 @@ import { alertBook, alertCommand, alertHistory, saveDoc, setMute, setQuiet, type
 import { adminGetSettings, adminPutSettings, SUPPORT_COUNTRIES, topicsFor } from "../support/desk.js";
 import { kpis } from "./kpis.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
-import { createPayout, driverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
+import { approvePayoutRun, createPayout, driverPayouts, holdDriverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
+import { driverView, loadDriver } from "../drivers/service.js";
 import { listRatings, moderateRating } from "./ratings.js";
 import { riskSignals } from "./risk.js";
 
@@ -44,6 +45,15 @@ const TicketStatus = z.enum(["open", "pending", "resolved", "closed"]);
 const TicketsQuery = { ...Page, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), assignedTo: z.union([z.literal("me"), z.literal("none"), ID]).optional(), ...ZoneFilterQuery };
 const OwnTicketsQuery = z.object({ ...Page, status: TicketStatus.optional() });
 const TicketBody = z.object({ tripId: ID.optional(), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().min(1).max(200), text: z.string().min(1).max(5000) });
+/** v0.18.30 (contract.json#smallFixes.ticketReasons): a bad category or subject / text gets its own reason. */
+function ticketBody(raw: unknown): z.infer<typeof TicketBody> {
+  const parsed = TicketBody.safeParse(raw ?? {});
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0]!;
+  const field = String(issue.path[0] ?? "body");
+  const reason = field === "category" ? "invalid_ticket_category" : field === "subject" || field === "text" ? "invalid_ticket_body" : "invalid_body";
+  throw badRequest(`${field}: ${issue.message}`, reason);
+}
 /* v0.18.15 support desk (contract.json#supportDesk) */
 const PersonMessageBody = z.object({ text: z.string().min(1).max(5000) });
 const REASON = z.string().min(1).max(500);
@@ -138,11 +148,28 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await createPayout(trx, who, clean(body), now()) }));
     return reply.status(result.status).send(result.body);
   });
+  // v0.18.39 A2 (owner Q4): approve a manual country's payout run.
+  app.post(`${API_PREFIX}/admin/payouts/runs/approve`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const body = parseBody(z.object({ country: z.string().regex(/^[A-Z]{2}$/), periodEnd: z.string().datetime(), reason: z.string().max(300).optional().default("") }), request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await approvePayoutRun(trx, who, body, now()) }))).body;
+  });
   app.post(`${API_PREFIX}/admin/payouts/:payoutId/paid`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.edit");
     const payoutId = param(request, "payoutId");
     const body = parseBody(PaidBody, request.body ?? {});
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await markPayoutPaid(trx, who, payoutId, clean(body), now()) }));
+    return result.body;
+  });
+  // v0.18.39 A2 (owner Q4): pause / release one driver's payouts from his profile.
+  app.post(`${API_PREFIX}/admin/drivers/:driverId/payout-hold`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const driverId = param(request, "driverId");
+    const body = parseBody(z.object({ held: z.boolean(), reason: z.string().trim().min(1).max(300) }), request.body);
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => {
+      await holdDriverPayouts(trx, who, driverId, body, now());
+      return { status: 200, body: await driverView(trx, await loadDriver(trx, driverId), "admin", now()) };
+    });
     return result.body;
   });
   app.get(`${API_PREFIX}/driver/payouts`, async (request) => {
@@ -160,7 +187,7 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   /* ---- support tickets */
   app.post(`${API_PREFIX}/support/tickets`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);
-    const body = parseBody(TicketBody, request.body);
+    const body = ticketBody(request.body);
     const actor = who.actor as "rider" | "driver";
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await openTicket(trx, { actor, subjectId: who.subjectId }, clean(body), now()) }));
     return reply.status(result.status).send(result.body);

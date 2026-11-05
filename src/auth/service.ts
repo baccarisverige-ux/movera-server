@@ -3,6 +3,7 @@ import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
+import { riderBlocked, suspendedError } from "../riders/moderation.js";
 import { newId } from "../ids.js";
 import { signAccessToken, type Actor } from "./jwt.js";
 import { splitName, type Provider, type ProviderIdentity, type ProviderVerifier } from "./provider.js";
@@ -76,6 +77,12 @@ export type AuthDeps = {
   jwtSecret: string;
   /** Test numbers work only when this is true (never on production). */
   testSignInEnabled: boolean;
+  /**
+   * Owner 2026-11-04 (load test): on STAGING only, a test number (no real SMS) skips the resend wait and the hourly
+   * code limits (per number, per address); a safety cap of TEST_CODES_PER_MINUTE per number stays. app.ts sets it
+   * only when MOVERA_ENV is staging, and requestOtp also ignores it unless testSignInEnabled, so production never has it.
+   */
+  fastTestSignIn?: boolean;
   /** Apple / Google token verifiers, one per provider with client ids set. */
   providers?: Partial<Record<Provider, ProviderVerifier>> | undefined;
   clock?: () => Date;
@@ -97,6 +104,9 @@ function sameHash(a: string, b: string): boolean {
 function rateLimited(message: string, retryAfterSeconds: number, reason: string): ApiError {
   return new ApiError("rate_limited", message, { reason, retryAfterSeconds: Math.max(1, Math.ceil(retryAfterSeconds)) });
 }
+
+/** Safety cap for fastTestSignIn: codes per test number per minute. */
+export const TEST_CODES_PER_MINUTE = 30;
 
 export const PHONE = /^\+[1-9][0-9]{6,14}$/;
 
@@ -131,7 +141,16 @@ export async function requestOtp(
       .where("created_at", ">", hourAgo)
       .orderBy("created_at", "desc")
       .execute();
-    const last = recent[0];
+    const fast = isTest && deps.testSignInEnabled && deps.fastTestSignIn === true;
+    if (fast) {
+      const minuteAgo = now.getTime() - 60_000;
+      const lastMinute = recent.filter((row) => row.created_at.getTime() > minuteAgo);
+      if (lastMinute.length >= TEST_CODES_PER_MINUTE) {
+        const oldest = lastMinute[lastMinute.length - 1]!;
+        throw rateLimited("Too many codes for this number. Try again later.", (oldest.created_at.getTime() + 60_000 - now.getTime()) / 1000, "otp_too_many");
+      }
+    }
+    const last = fast ? undefined : recent[0];
     if (last !== undefined) {
       const waited = (now.getTime() - last.created_at.getTime()) / 1000;
       if (waited < OTP.retryAfterSeconds) {
@@ -139,13 +158,13 @@ export async function requestOtp(
       }
     }
     const limits = await countryLimitsFor(trx, countryOfPhone(input.phone));
-    if (recent.length >= limits.codesPerPhonePerHour) {
+    if (!fast && recent.length >= limits.codesPerPhonePerHour) {
       const oldest = recent[recent.length - 1]!;
       throw rateLimited("Too many codes for this number. Try again later.", (oldest.created_at.getTime() + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
     }
     const today = await wrongCodesToday(trx, input.phone, client.ip, now);
     if (today.wrong >= limits.wrongCodesPerDay) throw lockedToday(today.oldest, now);
-    if (client.ip !== undefined) {
+    if (client.ip !== undefined && !fast) {
       const fromIp = await trx
         .selectFrom("otp_sessions")
         .select((eb) => [eb.fn.countAll<string>().as("n"), eb.fn.min("created_at").as("oldest")])
@@ -186,7 +205,7 @@ export async function requestOtp(
         created_at: now,
       })
       .execute();
-    return { requestId: input.requestId, sessionId, expiresAt: expiresAt.toISOString(), retryAfterSeconds: OTP.retryAfterSeconds };
+    return { requestId: input.requestId, sessionId, expiresAt: expiresAt.toISOString(), retryAfterSeconds: fast ? 0 : OTP.retryAfterSeconds };
   });
 }
 
@@ -274,8 +293,8 @@ async function findOrCreateAccount(trx: Trx, app: App, phone: string, now: Date)
       .returning("rider_id")
       .executeTakeFirst();
     if (inserted !== undefined) return { id: inserted.rider_id, created: true, zones: [] };
-    const rider = await trx.selectFrom("riders").select(["rider_id", "status"]).where("phone", "=", phone).executeTakeFirstOrThrow();
-    if (rider.status === "suspended") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
+    const rider = await trx.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("phone", "=", phone).executeTakeFirstOrThrow();
+    if (riderBlocked(rider, now)) throw suspendedError(rider);
     return { id: rider.rider_id, created: false, zones: [] };
   }
   const inserted = await trx
@@ -319,7 +338,7 @@ export async function signInWithProvider(
   return deps.db.transaction().execute(async (trx): Promise<AuthTokens | PhoneRequired> => {
     const link = await trx.selectFrom("auth_provider_links").selectAll().where("provider", "=", input.provider).where("provider_subject", "=", identity.subject).where("actor", "=", input.app).executeTakeFirst();
     if (link !== undefined) {
-      const account = await existingAccount(trx, input.app, link.subject_id);
+      const account = await existingAccount(trx, input.app, link.subject_id, now);
       if (account !== undefined) {
         const { sessionId: _sid, ...tokens } = await startSession(trx, deps, { actor: input.app, subjectId: account.id, zones: account.zones }, client, now);
         void _sid;
@@ -355,11 +374,11 @@ export async function signInWithProvider(
   });
 }
 
-async function existingAccount(ex: Executor, app: App, subjectId: string): Promise<{ id: string; zones: string[] } | undefined> {
+async function existingAccount(ex: Executor, app: App, subjectId: string, now: Date): Promise<{ id: string; zones: string[] } | undefined> {
   if (app === "rider") {
-    const rider = await ex.selectFrom("riders").select(["rider_id", "status"]).where("rider_id", "=", subjectId).executeTakeFirst();
+    const rider = await ex.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("rider_id", "=", subjectId).executeTakeFirst();
     if (rider === undefined) return undefined;
-    if (rider.status === "suspended") throw new ApiError("forbidden", "This account is suspended.", { reason: "account_suspended" });
+    if (riderBlocked(rider, now)) throw suspendedError(rider);
     return { id: rider.rider_id, zones: [] };
   }
   const driver = await ex.selectFrom("drivers").select(["driver_id", "zone_ids"]).where("driver_id", "=", subjectId).executeTakeFirst();

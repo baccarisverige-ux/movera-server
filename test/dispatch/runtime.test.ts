@@ -119,6 +119,8 @@ describe("automatic dispatch at run time", () => {
     await advance(15);
     const late = await call(app, "POST", `/offers/${offerA.offerId}/accept`, drivers.A.headers, { expectedVersion: offerA.version + 1 });
     expect(late.statusCode).toBe(409);
+    // FIX JOB 7 (L24 re-test): a closed offer answers offer_<status> with the offer projection.
+    expect(late.json().reason).toMatch(/^offer_[a-z_]+$/);
     const [offerB] = await openOffers("B");
     const stale = await call(app, "POST", `/offers/${offerB.offerId}/accept`, drivers.B.headers, { expectedVersion: 99 });
     expect(stale.json()).toMatchObject({ code: "version_mismatch" });

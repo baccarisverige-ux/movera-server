@@ -144,7 +144,7 @@ async function liveAlerts(ex: Executor, who: Principal, country: string) {
       state: r.state,
       ...(r.solved_at ? { solvedAt: r.solved_at.toISOString() } : {}),
       ...(r.solved_t ? { solvedText: render(r.solved_t), solvedT: r.solved_t } : {}),
-      // v0.18.33 contract.json#alertsOldList: an old SOS / safety case (trip ended + 24 h), still open.
+      // v0.18.31 contract.json#alertsOldList: an old SOS / safety case (trip ended + 24 h), still open.
       ...(r.old_since ? { old: true, oldSince: r.old_since.toISOString() } : {}),
       ref: r.ref ?? {},
     }));

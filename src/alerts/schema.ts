@@ -24,7 +24,7 @@ export interface AdminAlertsLiveTable {
   solved_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   solved_t: JsonOpt;
   ref: ColumnType<unknown, string | undefined, string>;
-  /** v0.18.33 (migration 0073, owner Q-Bj): set while an SOS / safety alert is on the Old list. */
+  /** v0.18.31 (migration 0073, owner Q-Bj): set while an SOS / safety alert is on the Old list. */
   old_since: ColumnType<Date | null, Date | null | undefined, Date | null>;
   seen_at: ColumnType<Date, Date, Date>;
   updated_at: ColumnType<Date, Date, Date>;

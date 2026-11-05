@@ -25,7 +25,10 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   if (!head || head.driver_id !== driverId) throw new ApiError("not_found", "No such offer.", { reason: "offer_not_found" });
   let trip = await lockTrip(trx, head.trip_id);
   const offer = (await loadOffer(trx, offerId, true))!;
-  if (offer.version !== expectedVersion) throw staleOffer(offer, trip);
+  // Job 1 (stress M1: 28 % of accepts got 409 version_mismatch): while an offer is OPEN its version only moves for
+  // money / badge refreshes (offer_updated), never for its status — those always raise the driver's pay. An accept that
+  // names an older version of a still-open offer goes through; a newer-than-real version is still refused.
+  if (offer.version !== expectedVersion && !(offer.status === "open" && expectedVersion < offer.version)) throw staleOffer(offer, trip);
   if (offer.status !== "open" || offer.expires_at.getTime() <= now.getTime()) {
     const status = offer.status === "open" ? "expired" : offer.status;
     throw new ApiError("conflict", status === "claimed_elsewhere" ? "Another driver took this ride." : "This offer is no longer open.", { reason: `offer_${status}`, projection: offerView({ ...offer, status }, trip) });

@@ -107,6 +107,8 @@ describe("dispatch runtime review", () => {
     await worker.runDue();
     const stillOpen = (await openOffers("A")).map((o) => o.tripId);
     expect({ stillOpen, second: second.statusCode }).toEqual({ stillOpen: [], second: 409 });
+    // FIX JOB 7 (L24 re-test, contract.json#smallFixes.retested): the refusal names its reason and carries the offer.
+    expect(second.json().reason).toMatch(/^(driver_on_trip|offer_[a-z_]+)$/);
   });
 
   it("H3: two drivers accepting two different Radar trips at once do not deadlock (feed rows locked in id order)", async () => {

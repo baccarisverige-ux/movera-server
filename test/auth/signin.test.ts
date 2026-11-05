@@ -17,7 +17,7 @@ const SECRET = "test-secret-".padEnd(48, "x");
 beforeAll(async () => {
   database = await freshDatabase();
   await seedTestPhones(database.db);
-  app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: SECRET }), logger: false, db: database.db, clock: () => clock.now });
+  app = await buildApp({ env: readEnv({ MOVERA_ENV: "development" /* the OTP limits on test numbers; staging skips them (fast_test_signin.test.ts) */, DATABASE_URL: database.url, JWT_SECRET: SECRET }), logger: false, db: database.db, clock: () => clock.now });
   production = await buildApp({ env: readEnv({ MOVERA_ENV: "production", DATABASE_URL: database.url, JWT_SECRET: SECRET, DOCUMENT_FILES_KEY: Buffer.alloc(32, 7).toString("base64") }), logger: false, db: database.db, clock: () => clock.now });
 });
 afterAll(async () => {
@@ -315,7 +315,7 @@ describe("review fixes", () => {
 
   it("behind one proxy, a faked X-Forwarded-For does not change the address limits see", async () => {
     const proxied = await buildApp({
-      env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: SECRET, TRUST_PROXY_HOPS: "1" }),
+      env: readEnv({ MOVERA_ENV: "development", DATABASE_URL: database.url, JWT_SECRET: SECRET, TRUST_PROXY_HOPS: "1" }),
       logger: false,
       db: database.db,
       clock: () => clock.now,

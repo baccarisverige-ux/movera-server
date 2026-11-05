@@ -94,7 +94,7 @@ async function messagesOf(ex: Executor, ticketId: string): Promise<MessageRow[]>
 
 /** POST /support/tickets: a rider or driver opens a ticket; the text is its first message. */
 export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; category: string; subject: string; text: string }, now: Date) {
-  if (!TICKET_CATEGORIES.includes(body.category)) throw badRequest(`Unknown category ${body.category}.`, "invalid_body");
+  if (!TICKET_CATEGORIES.includes(body.category)) throw badRequest(`Unknown category ${body.category}.`, "invalid_ticket_category");
   let zoneId: string | null = null;
   if (body.tripId) {
     const trip = await trx.selectFrom("trips").select(["rider_id", "driver_id", "zone_id"]).where("trip_id", "=", body.tripId).executeTakeFirst();

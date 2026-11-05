@@ -7,6 +7,7 @@ import type { TripRow } from "../../db/tripLog.js";
 import { newId } from "../../ids.js";
 import type { Money } from "./shared.js";
 import { outstandingLine } from "./settings.js";
+import { moveWallet, walletBalance } from "../../riders/wallet.js";
 
 /* ---------------------------------------------------------------- money records */
 
@@ -132,9 +133,8 @@ export async function settleCarriedFees(trx: Trx, trip: TripRow, cash: number, n
 /* ---------------------------------------------------------------- the wallet */
 
 /** What the rider's wallet would pay of this fare now (used first, contract §1 Payment methods). */
-export async function walletCovers(ex: Executor, riderId: string, fareMinor: number): Promise<number> {
-  const rider = await ex.selectFrom("riders").select("wallet_minor").where("rider_id", "=", riderId).executeTakeFirstOrThrow();
-  return Math.max(0, Math.min(Number(rider.wallet_minor), fareMinor));
+export async function walletCovers(ex: Executor, riderId: string, currency: string, fareMinor: number): Promise<number> {
+  return Math.max(0, Math.min(await walletBalance(ex, riderId, currency), fareMinor));
 }
 
 /**
@@ -147,10 +147,10 @@ export function walletPart(walletMinor: number, trip: TripRow, fareMinor: number
 }
 
 export async function spendWallet(trx: Trx, trip: TripRow, fareMinor: number, now: Date): Promise<number> {
-  const rider = await trx.selectFrom("riders").select("wallet_minor").where("rider_id", "=", trip.rider_id).forUpdate().executeTakeFirstOrThrow();
-  const applied = walletPart(Number(rider.wallet_minor), trip, fareMinor);
+  // v0.18.28 (owner Q4): only the balance in the trip's currency pays it.
+  const applied = walletPart(await walletBalance(trx, trip.rider_id, trip.currency, true), trip, fareMinor);
   if (applied > 0) {
-    await trx.updateTable("riders").set({ wallet_minor: sql`wallet_minor - ${applied}`, updated_at: now }).where("rider_id", "=", trip.rider_id).execute();
+    await moveWallet(trx, trip.rider_id, trip.currency, -applied, now);
     await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: trip.rider_id, kind: "charge", currency: trip.currency, amount_minor: -applied, trip_id: trip.trip_id, at: now }).execute();
   }
   return applied;

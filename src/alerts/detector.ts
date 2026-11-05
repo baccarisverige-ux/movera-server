@@ -20,7 +20,7 @@ import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS,
 export const ALERT_SWEEP = "alert_sweep";
 
 type Ref = { tripId?: string; driverId?: string; riderId?: string; incidentId?: string; ticketId?: string; payoutId?: string; refundId?: string; ruleId?: string; documentId?: string };
-/** oldSince (v0.18.33, owner Q-Bj): an SOS / safety alert whose trip ended more than OLD_AFTER_MS ago — kept open, listed as old. */
+/** oldSince (v0.18.31, owner Q-Bj): an SOS / safety alert whose trip ended more than OLD_AFTER_MS ago — kept open, listed as old. */
 export type Cause = { key: string; kind: string; country: string; zoneId: string | null; level: Level; title: Text; detail?: Text; ref: Ref; oldSince?: Date };
 type Zone = { zone_id: string; country: string; time_zone: string; name: string };
 
@@ -34,7 +34,7 @@ type Ctx = {
 
 const MIN = 60_000;
 const DAY = 86_400_000;
-/** v0.18.33 contract.json#alertsOldList.oldAfterHours: an SOS / safety case moves to the Old list 24 h after its trip ended. */
+/** v0.18.31 contract.json#alertsOldList.oldAfterHours: an SOS / safety case moves to the Old list 24 h after its trip ended. */
 export const OLD_AFTER_MS = 24 * 3600_000;
 /** A trip that has ended (contract TripStatus terminal set, or its end time set). */
 const TRIP_ENDED_SQL = sql`(t.ended_at IS NOT NULL OR t.status IN ('completed', 'no_show', 'expired') OR t.status LIKE 'cancelled%')`;
