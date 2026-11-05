@@ -79,9 +79,12 @@ export interface DriversTable {
   offline_reason: ColumnType<OfflineReason | null, OfflineReason | null | undefined, OfflineReason | null>;
   offline_note: ColumnType<string | null, string | null | undefined, string | null>;
   offline_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** v0.18.37 §61 (migration 0084): he tapped Go offline during a trip; offline when his last trip ends. */
+  offline_after_trip: Generated<boolean>;
+  offline_after_trip_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
-export type OfflineReason = "no_position" | "missed_offers" | "vehicle_blocked" | "fleet_removed" | "account_status" | "admin" | "documents_expired";
+export type OfflineReason = "no_position" | "missed_offers" | "vehicle_blocked" | "fleet_removed" | "account_status" | "admin" | "documents_expired" | "after_trip";
 
 export interface FleetsTable {
   fleet_id: string;
