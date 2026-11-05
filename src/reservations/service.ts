@@ -198,7 +198,9 @@ export async function listedDrivers(ex: Executor, trip: TripRow, s: ReservationS
     .select(["drivers.driver_id", "drivers.home_area", "drivers.rating_sum", "drivers.rating_count", "driver_locations.lat", "driver_locations.lng", "vehicles.category_ids as vehicle_category_ids", "vehicles.status as vehicle_status"])
     .where("drivers.account_status", "=", "active")
     .where(sql<boolean>`${trip.zone_id} = ANY(drivers.zone_ids)`)
-    .where(sql<boolean>`${trip.category_id} = ANY(drivers.category_ids)`);
+    .where(sql<boolean>`${trip.category_id} = ANY(drivers.category_ids)`)
+    // v0.18.26 (contract.json#phoneDataToServer.driverPreferences.dispatch): not to a driver who switched it off.
+    .where(sql<boolean>`NOT EXISTS (SELECT 1 FROM driver_phone_data p WHERE p.driver_id = drivers.driver_id AND ${trip.category_id} = ANY(p.categories_off))`);
   if (options.onlyDriverId) query = query.where("drivers.driver_id", "=", options.onlyDriverId);
   const rows = await query.execute();
   const pickup = trip.pickup as { lat: number; lng: number };

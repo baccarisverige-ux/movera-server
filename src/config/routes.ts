@@ -12,6 +12,7 @@ import { ApiError } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
+import { draftForPreview, previewRoutes } from "./preview.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
 import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey, useStandard, withLivePricing } from "./service.js";
 
@@ -27,6 +28,8 @@ const COUNTRY = z.string().regex(/^[A-Z]{2}$/);
 const Scope = { zoneId: ZONE_ID.optional(), country: COUNTRY.optional() };
 const ScopeQuery = z.object(Scope);
 const OptionalZoneQuery = z.object({ zoneId: ZONE_ID.optional() });
+/** v0.18.25: ?draft=1 — honoured only for a preview token (contract.json#previewSession). */
+const AppDocQuery = z.object({ zoneId: ZONE_ID.optional(), draft: z.enum(["0", "1"]).optional() });
 const PutBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, document: z.unknown() });
 const PublishBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, note: z.string().max(1000).optional() });
 const UseStandardBody = z.object({ expectedVersion: z.number().int().min(1), zoneId: ZONE_ID });
@@ -62,15 +65,16 @@ const keyOf = (value: string | string[] | undefined) => (Array.isArray(value) ? 
 export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Promise<void> {
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
   const now = () => deps.clock?.() ?? new Date();
+  await previewRoutes(app, guard);
 
   // Apps: the live document of their zone, unchanged. A zone with nothing published is 404 config_not_published
   // and the app keeps its own seed.
   const serveAppDoc = (doc: ConfigDoc, actor: "rider" | "driver") => async (request: FastifyRequest) => {
     const who = await authenticate(request, guard, [actor]);
-    const { zoneId: asked } = parseBody(OptionalZoneQuery, request.query);
-    const zoneId = asked ?? (actor === "driver" ? who.zones[0] : undefined) ?? deps.defaultZoneId;
+    const { zoneId: asked, draft } = parseBody(AppDocQuery, request.query);
+    const zoneId = asked ?? (actor === "driver" || who.preview === true ? who.zones[0] : undefined) ?? deps.defaultZoneId;
     const zone = await getZone(deps.db, zoneId);
-    const live = await liveDocument(deps.db, doc, zoneId);
+    const live = who.preview === true && draft === "1" ? ((await draftForPreview(deps.db, doc, zoneId)) ?? (await liveDocument(deps.db, doc, zoneId))) : await liveDocument(deps.db, doc, zoneId);
     if (live === null) throw new ApiError("not_found", "No settings are published for this zone yet.", { reason: "config_not_published" });
     // v0.18.6 (owner G4-E4): the rider app always gets the raise limit the server checks (the zone's dispatch document).
     let document = doc === "rider_app_config" ? withRaiseLimit(live.document as Record<string, unknown>, await raiseMaxFactor(deps.db, zoneId)) : (live.document as Record<string, unknown>);

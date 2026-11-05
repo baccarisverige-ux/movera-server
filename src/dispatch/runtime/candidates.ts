@@ -11,6 +11,7 @@ import { DISPATCH_FIX_MAX_AGE_SECONDS, STALE_AFTER_SECONDS } from "../../drivers
 import { zoneChecker } from "../../drivers/presence.js";
 import { dispatchKm, type Candidate, type DispatchDoc } from "../engine.js";
 import { type Place, PICKUP_KMH, RADAR_LIST_MAX } from "./shared.js";
+import { driversWithCategoryOff } from "../../accounts/phoneData.js";
 
 /* ---------------------------------------------------------------- candidates */
 
@@ -64,6 +65,9 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
   const pool: Pool = { candidates: [], meta: new Map() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
   const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
+  // v0.18.26 (contract.json#phoneDataToServer.driverPreferences.dispatch): a category the driver switched off in Ride
+  // preferences is not sent to him (one query for the whole round).
+  const switchedOff = await driversWithCategoryOff(trx, rows.map((r) => r.driver_id), trip.category_id);
   const kept: Array<(typeof rows)[number] & { km: number; neighbour: boolean }> = [];
   for (const d of rows) {
     const own = d.zone_ids.includes(trip.zone_id);
@@ -73,6 +77,7 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     // A driver who cancelled this trip is not offered it again.
     if (trip.cancelled_driver_ids.includes(d.driver_id)) continue;
     if (!d.category_ids.includes(trip.category_id)) continue;
+    if (switchedOff.has(d.driver_id)) continue;
     // Deep fix 2026-11-02 (live sweep H-2, g1-g3 M5): the car he drives must be approved for the trip's category too
     // (a Komfort trip needs a Komfort car; a car re-approved without Premium no longer gets Premium trips).
     // Checker MED 9: an approved car with no categories stored (older rows) does not narrow his own chosen types.
