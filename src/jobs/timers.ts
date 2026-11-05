@@ -1,5 +1,6 @@
 import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
+import { isDatabaseConnectionError } from "../db/ready.js";
 
 /**
  * Durable timers: offer expiry, the next dispatch step, search expiry, no-show windows, … A timer is written in
@@ -59,6 +60,12 @@ export function backoffMs(attempts: number): number {
   return Math.min(1000 * 2 ** Math.max(0, attempts - 1), 5 * 60 * 1000);
 }
 
+/** Rule 28: while the database cannot be reached the loop waits 1 s, 2 s, 4 s, … at most 30 s between tries. */
+export const DB_DOWN_MAX_MS = 30_000;
+export function dbDownDelayMs(failures: number, pollMs: number): number {
+  return Math.min(Math.max(pollMs, 1000) * 2 ** Math.max(0, failures - 1), DB_DOWN_MAX_MS);
+}
+
 export type TimerWorkerOptions = {
   handlers: Record<string, TimerHandler>;
   logger: TimerLogger;
@@ -72,6 +79,8 @@ export class TimerWorker {
   private loop: Promise<void> | undefined;
   private stopping = false;
   private wake: (() => void) | undefined;
+  /** Rule 28: database connection errors in a row (the loop backs off while the database is down). */
+  private dbFailures = 0;
 
   constructor(
     private readonly db: Db,
@@ -137,14 +146,10 @@ export class TimerWorker {
     this.stopping = false;
     this.loop = (async () => {
       while (!this.stopping) {
-        try {
-          await this.runDue(100);
-        } catch (error) {
-          this.options.logger.error({ err: error }, "timer worker: database error");
-        }
+        const delay = await this.tick(() => this.runDue(100));
         if (this.stopping) break;
         await new Promise<void>((resolve) => {
-          const handle = setTimeout(resolve, this.pollMs);
+          const handle = setTimeout(resolve, delay);
           this.wake = () => {
             clearTimeout(handle);
             resolve();
@@ -153,6 +158,33 @@ export class TimerWorker {
         this.wake = undefined;
       }
     })();
+  }
+
+  /**
+   * One round of the loop. Never throws (rule 28): a database that is restarting (57P03, ECONNREFUSED, connection
+   * terminated) is logged and the loop waits longer each time; any other error is logged and the loop goes on.
+   * Returns how long to wait before the next round.
+   */
+  async tick(round: () => Promise<unknown>): Promise<number> {
+    try {
+      await round();
+      if (this.dbFailures > 0) this.options.logger.warn({ failures: this.dbFailures }, "timer worker: database is back");
+      this.dbFailures = 0;
+      return this.pollMs;
+    } catch (error) {
+      try {
+        if (isDatabaseConnectionError(error)) {
+          this.dbFailures += 1;
+          const delay = dbDownDelayMs(this.dbFailures, this.pollMs);
+          this.options.logger.warn({ err: error, failures: this.dbFailures, retryInMs: delay }, "timer worker: database unavailable; retrying");
+          return delay;
+        }
+        this.options.logger.error({ err: error }, "timer worker: database error");
+      } catch {
+        // A logger that throws must not stop the loop either.
+      }
+      return this.pollMs;
+    }
   }
 
   async stop(): Promise<void> {
