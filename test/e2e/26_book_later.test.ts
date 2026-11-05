@@ -384,6 +384,34 @@ describe("book later (owner Q1–Q7)", () => {
     }
   });
 
+  it("job 5 (rule 28): a database error while starting the due booked ride never breaks the driver's release (fail-before: the end-early failed)", async () => {
+    await sim.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", b.id).execute();
+    const { releaseHooks } = await import("../../src/trips/ride/money.js");
+    try {
+      const other = await sim.rider(1);
+      const cur = await other.book();
+      await sim.tick();
+      expect((await a.accept((await a.offerFor(cur.tripId))!)).status).toBe(200);
+      await drive(a, cur.tripId, "in_trip");
+      await a.moveTo({ lat: 59.318, lng: 18.0718 });
+      const booked = await book(minutes(25));
+      await sim.tick();
+      expect((await a.accept((await a.offerFor(booked.tripId))!)).status).toBe(200);
+      await sim.db.updateTable("trips").set({ reservation: sql`jsonb_set(reservation, '{leaveAt}', to_jsonb(${new Date(sim.clock.now.getTime() - 60_000).toISOString()}::text))` }).where("trip_id", "=", booked.tripId).execute();
+      releaseHooks.beforeBookedStart = async (trx) => {
+        await sql`SELECT 1 / 0`.execute(trx);
+      };
+      const ended = await other.command(cur.tripId, "end-early", { reasonCode: "plans_changed" });
+      expect([200, 201], JSON.stringify(ended.body)).toContain(ended.status);
+      const row = await sim.db.selectFrom("trips").select(["status", "driver_id", "reservation"]).where("trip_id", "=", booked.tripId).executeTakeFirstOrThrow();
+      expect(row).toMatchObject({ status: "accepted", driver_id: a.id, reservation: { held: true, notStarted: true } });
+      expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("online");
+    } finally {
+      releaseHooks.beforeBookedStart = undefined;
+      await sim.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", b.id).execute();
+    }
+  });
+
   it("job 5 (owner 2026-11-05): CountryRules.onTripOffers.minRouteDonePct 100 → no offer to an on-trip driver at 80 %", async () => {
     await sim.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", b.id).execute();
     await sim.publish(owner, "country_rules", "SE", (d) => ({ ...d, onTripOffers: { minRouteDonePct: 100 } }));

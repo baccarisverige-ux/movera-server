@@ -74,12 +74,25 @@ async function startDueBooked(trx: Trx, driverId: string, now: Date): Promise<vo
     .where(sql<boolean>`coalesce(reservation->>'held', 'false') = 'true'`).where(sql<boolean>`(reservation->>'leaveAt')::timestamptz <= ${now}`).orderBy("scheduled_at").forUpdate().executeTakeFirst();
   if (!held) return;
   const { startReservation } = await import("../../reservations/service.js");
+  // Rule 28/33: the start runs in a SAVEPOINT. Any failure (a refusal or a database error) rolls back only this step:
+  // the driver's release stands, he is free, the booked ride stays held, and the admin sees it as "not started".
+  await sql`SAVEPOINT start_due_booked`.execute(trx);
   try {
+    await releaseHooks.beforeBookedStart?.(trx);
     await startReservation(trx, driverId, held.trip_id, undefined, now);
-  } catch {
-    // Refused (offline, too early by the zone's rules…): he stays free; the leave-now notice still comes.
+    await sql`RELEASE SAVEPOINT start_due_booked`.execute(trx);
+  } catch (error) {
+    await sql`ROLLBACK TO SAVEPOINT start_due_booked`.execute(trx);
+    await sql`RELEASE SAVEPOINT start_due_booked`.execute(trx);
+    await trx.updateTable("trips")
+      .set({ reservation: sql`coalesce(reservation, '{}'::jsonb) || jsonb_build_object('notStarted', true, 'startFailedAt', ${now.toISOString()}::text)` })
+      .where("trip_id", "=", held.trip_id).execute();
+    console.warn(JSON.stringify({ msg: "booked ride not started after the driver's trip", tripId: held.trip_id, error: (error as { code?: string }).code ?? String((error as Error)?.message ?? error) }));
   }
 }
+
+/** Test seam (rule 28): lets a test make the due booked start fail with a database error. */
+export const releaseHooks: { beforeBookedStart?: (trx: Trx) => Promise<void> } = {};
 
 export async function credit(trx: Trx, entry: { driverId: string; tripId: string; kind: "trip" | "pickup_pay" | "fee_share" | "bonus" | "adjustment" | "tip"; currency: string; amount: number; gross?: number; commission?: number; cash?: number }, now: Date) {
   if (entry.amount === 0 && entry.kind !== "trip") return;
