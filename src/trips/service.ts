@@ -366,13 +366,26 @@ const NOT_OVER = [...TERMINAL];
 
 /** GET /rider/trips/active: the rider's live trip that is not over (204 when none). */
 export async function activeTrip(ex: Executor, riderId: string): Promise<TripRow | undefined> {
-  return ex
+  const live = await ex
     .selectFrom("trips")
     .selectAll()
     .where("rider_id", "=", riderId)
     .where("kind", "=", "live")
     .where("status", "not in", NOT_OVER)
     .orderBy("created_at", "desc")
+    .executeTakeFirst();
+  // v0.18.32 (contract.json#bookedRideSeen.liveWins, owner Q1 "Live ride + banner"): a live trip stays on screen.
+  if (live !== undefined) return live;
+  // v0.18.32 (bookedRideSeen.activeTrip, owner fix-plan Q5 + Q2): a booked trip is a regular ride once its driver
+  // started driving to the pickup, and stays one while a new driver is found after a give-back.
+  return ex
+    .selectFrom("trips")
+    .selectAll()
+    .where("rider_id", "=", riderId)
+    .where("kind", "=", "scheduled")
+    .where("status", "not in", NOT_OVER)
+    .where((eb) => eb.exists(eb.selectFrom("trip_events as e").select(sql.lit(1).as("one")).whereRef("e.trip_id", "=", "trips.trip_id").where(sql<string>`e.projection->>'status'`, "=", "driver_to_pickup")))
+    .orderBy("scheduled_at", "asc")
     .executeTakeFirst();
 }
 
