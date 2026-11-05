@@ -7,12 +7,14 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { PlacesUnavailable, type Places } from "./places.js";
 import type { Router } from "./routing.js";
+import { zoneAt } from "../config/zoneLookup.js";
 
 /** contract §10: /locations/autocomplete, /geocode, /reverse-geocode, /routes, /routes/driving/{coordinates}. Read-only: no Idempotency-Key. */
 
 export type MapsDeps = { db: Db; jwtSecret: string; places: Places; router: Router; osrmUrl?: string; clock?: () => Date };
 
 const LANGUAGES = ["sv", "en", "fr"];
+const COUNTRY_LANGUAGE: Record<string, string> = { SE: "sv", FR: "fr", TN: "fr" };
 const NAV_PER_MINUTE = 30;
 
 function check(schema: string, body: unknown): void {
@@ -41,6 +43,20 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
     return "sv";
   }
 
+  /**
+   * v0.18.30 (contract.json#smallFixes.addressLanguage, L20): address search speaks the language of the zone the bias
+   * point is in (SE sv, FR fr, TN fr); without a bias point or outside every zone, the asked / saved language.
+   */
+  async function searchLanguage(request: FastifyRequest, actor: string, subjectId: string, bias: { lat: number; lng: number } | undefined): Promise<string> {
+    if (bias) {
+      const zone = await zoneAt(deps.db, bias);
+      const row = zone ? await deps.db.selectFrom("zones").select("country").where("zone_id", "=", zone.zoneId).executeTakeFirst() : undefined;
+      const lang = row ? COUNTRY_LANGUAGE[row.country] : undefined;
+      if (lang) return lang;
+    }
+    return language(request, actor, subjectId);
+  }
+
   const guarded = async <T>(work: () => Promise<T>): Promise<T> => {
     try {
       return await work();
@@ -64,8 +80,9 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
     const bias = body.latitude !== undefined && body.longitude !== undefined ? { lat: body.latitude, lng: body.longitude } : undefined;
     // Suggestions come from the countries with an open zone (Sweden, and France since the Paris zone).
     const regions = (await deps.db.selectFrom("zones").select("country").distinct().where("open", "=", true).execute()).map((z) => z.country.toLowerCase());
+    const lang = await searchLanguage(request, who.actor, who.subjectId, bias);
     const suggestions = await guarded(() =>
-      deps.places.autocomplete({ query: body.query.trim(), ...(bias ? { bias } : {}), limit: Math.min(body.limit ?? 8, 8), language: "sv", session, regions }),
+      deps.places.autocomplete({ query: body.query.trim(), ...(bias ? { bias } : {}), limit: Math.min(body.limit ?? 8, 8), language: lang, session, regions }),
     );
     return { suggestions };
   });

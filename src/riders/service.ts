@@ -1,6 +1,7 @@
 import type { Executor, Trx } from "../db/db.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
+import { moderationView } from "./moderation.js";
 
 /** The rider's own profile (contract §2 Rider, v0.5.1 outstanding / language / consents). */
 
@@ -49,6 +50,8 @@ export function riderView(row: RiderRow, currency: string, byCurrency?: Array<{ 
     ...(byCurrency !== undefined ? { outstandingByCurrency: byCurrency } : {}),
     ...(row.language ? { language: row.language } : {}),
     consents: row.consents ?? {},
+    // v0.18.39 A2 (G16): the rider sees a warning or pause with its reason.
+    moderation: moderationView(row as never),
   };
 }
 

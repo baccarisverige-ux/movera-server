@@ -95,6 +95,7 @@ beforeEach(async () => {
   await database.db.deleteFrom("offers").execute();
   await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null, wallet_minor: 0 }).execute();
+  await database.db.deleteFrom("rider_wallets").execute();
   await publish("driver_app_config", "Z001", driverDoc());
   await publish("driver_app_config", "FR-PC", driverDoc({}, true));
   await publish("rider_app_config", "Z001", riderDoc());

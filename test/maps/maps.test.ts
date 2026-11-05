@@ -58,6 +58,13 @@ describe("address search (read-only: no Idempotency-Key)", () => {
     expect(third.session).not.toBe(a!.session);
   });
 
+  it("FR zone autocomplete language fr; SE zone sv (v0.18.30 L20, the zone's language)", async () => {
+    await post(app, "/locations/autocomplete", rider, { query: "rue de", latitude: 48.8656, longitude: 2.3212 });
+    expect((calls.filter((c) => c.kind === "a").at(-1)!.input as { language: string }).language).toBe("fr");
+    await post(app, "/locations/autocomplete", rider, { query: "sergel", latitude: 59.33, longitude: 18.06 });
+    expect((calls.filter((c) => c.kind === "a").at(-1)!.input as { language: string }).language).toBe("sv");
+  });
+
   it("autocomplete asks for the countries with an open zone", async () => {
     await post(app, "/locations/autocomplete", rider, { query: "rue de", latitude: 48.86, longitude: 2.35 });
     expect((calls.filter((c) => c.kind === "a").at(-1)!.input as { regions: string[] }).regions.sort()).toEqual(["fr", "se"]);

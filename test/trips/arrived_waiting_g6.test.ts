@@ -92,6 +92,7 @@ beforeEach(async () => {
   await database.db.deleteFrom("area_events").execute();
   await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null, wallet_minor: 0 }).execute();
+  await database.db.deleteFrom("rider_wallets").execute();
   await publish("driver_app_config", "Z001", driverDoc());
   await publish("driver_app_config", "FR-PC", driverDoc({ paris: true }));
   rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
@@ -496,6 +497,11 @@ describe("item 3: admin Reverse no-show (reason required, driver share kept unle
     expect(res.json().cancellation).toMatchObject({ fee: { amountMinor: 6500, currency: "EUR" }, feeStatus: "waived", refundedToWallet: true, refundedAt: expect.any(String) });
     expect(await database.db.selectFrom("wallet_entries").select(["kind", "amount_minor", "currency"]).where("trip_id", "=", tripId).execute()).toEqual([{ kind: "refund", amount_minor: "6500", currency: "EUR" }]);
     expect(await database.db.selectFrom("rider_fees").select("status").where("trip_id", "=", tripId).executeTakeFirst()).toEqual({ status: "refunded" });
+    // Fix job 6 (L11, owner Q4): the euro refund is a EUR balance, not 6500 "SEK".
+    const eur = (await call(app, "GET", "/wallet?currency=EUR", rider)).json();
+    expect(eur.balance).toEqual({ amountMinor: 6500, currency: "EUR" });
+    expect(eur.balances).toEqual([{ amountMinor: 6500, currency: "EUR" }]);
+    expect((await call(app, "GET", "/wallet?currency=SEK", rider)).json().balance).toEqual({ amountMinor: 0, currency: "SEK" });
   });
 
   it("paid minutes for the admin waiting box: on the trip page and on the trips list rows", async () => {
