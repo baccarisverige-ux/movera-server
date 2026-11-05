@@ -12,6 +12,7 @@ import { applyCommand } from "../../trips/commands.js";
 import { ROUND, WITHDRAW } from "./shared.js";
 import { type OfferRow, loadOffer, offerView, riderRatingForOffer, FeedQueue, closeOpenOffers } from "./offers.js";
 import { endSearchTimers } from "./end.js";
+import { chainLateFreeCancelMin, onTripFits } from "./candidates.js";
 
 /* ---------------------------------------------------------------- driver answers */
 
@@ -42,8 +43,13 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   // Only an active, online driver with no trip can take one (a driver who went offline keeps no offer, §3.6).
   const busy = await currentTripOf(trx, driverId);
   // v0.18.17: an admin-assigned booked ride taken before its dispatch time is held for later (no on_trip, no ETA yet).
-  const held = heldForLater(trip, now);
-  if (driver.account_status !== "active" || driver.online_status !== "online" || busy) {
+  // v0.18.33 (fix job 5, owner Q7, contract.json#afterTestRules.bookedNext): a driver on a trip may take a booked ride
+  // offered to him as Exclusive when he still reaches it in time; it is held as his next trip (he stays on this one).
+  const next = Boolean(busy) && offer.kind === "exclusive" && driver.online_status === "on_trip" && driver.account_status === "active" && (await onTripFits(trx, trip, driverId, now));
+  // A booked ride is held for later; a live ride is queued behind his current trip (owner answer 2026-11-05).
+  const queuedLive = next && trip.kind !== "scheduled";
+  const held = (next && !queuedLive) || heldForLater(trip, now);
+  if (!next && (driver.account_status !== "active" || driver.online_status !== "online" || busy)) {
     throw new ApiError("conflict", busy ? "You already have a trip." : "Go online to take rides.", { reason: busy ? "driver_on_trip" : "driver_not_available", projection: offerView(offer, trip) });
   }
   await trx.updateTable("offers").set({ status: "claimed", version: offer.version + 1, answered_at: now }).where("offer_id", "=", offerId).execute();
@@ -85,11 +91,18 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       search_step: null,
       // Where the driver started from: the rider cancel "came closer" check measures against it.
       accept_pickup_meters: offer.pickup_meters,
+      // v0.18.33 (owner Q7): held in the same change, so it never counts as a second current trip (trips_one_active_per_driver).
+      ...(next && !queuedLive ? { reservation: JSON.stringify({ ...((trip.reservation as Record<string, unknown> | null) ?? {}), held: true }) } : {}),
+      next_after_trip_id: queuedLive ? busy!.trip_id : null,
+      chained: queuedLive,
+      chain_free_cancel_at: queuedLive ? new Date(now.getTime() + (await chainLateFreeCancelMin(trx, trip.zone_id)) * 60_000) : null,
     },
   });
   // v0.18.19: a booked ride tells its rider "driver found" once per driver.
   if (trip.kind === "scheduled") await tellDriverFound(trx, trip, now);
-  if (held) {
+  if (queuedLive) {
+    // Queued: no ETA, heading check or pickup clock until his current trip ends (money.ts releaseDriver starts it).
+  } else if (held) {
     await afterHeldAccept(trx, trip, now);
   } else {
     await trx.updateTable("drivers").set({ online_status: "on_trip", version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();

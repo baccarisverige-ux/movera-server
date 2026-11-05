@@ -89,9 +89,10 @@ export async function earlyEndPrice(ex: Executor, trip: TripRow, now: Date, stop
     // How much shorter than booked (never negative): the booked road km and minutes against what was driven on board.
     const shortKm = Math.round(Math.max(0, (trip.distance_meters ?? 0) / 1000 - measured.km) * 100) / 100;
     const shortMin = Math.round(Math.max(0, (trip.duration_seconds ?? 0) / 60 - measured.minutes) * 100) / 100;
-    // A new price only when more than repriceOverKm or repriceOverMin shorter, and only when it is less than booked
+    // A new price only when more than repriceOverKm AND more than repriceOverMin shorter (v0.18.33, owner fix-plan Q1:
+    // BOTH; contract.json#afterTestRules.earlyEnd), and only when it is less than booked
     // (at the cap the booked fare and its lines stand as they are).
-    const repriced = (shortKm > limits.repriceOverKm || shortMin > limits.repriceOverMin) && measured.fare.total.amountMinor < Number(trip.fare_minor);
+    const repriced = (shortKm > limits.repriceOverKm && shortMin > limits.repriceOverMin) && measured.fare.total.amountMinor < Number(trip.fare_minor);
     if (repriced) money = await drivenColumns(ex, trip, measured.fare, now);
     return { money, info: { endedEarly: true, endedBy: "driver", reasonCode: "ended_before_dropoff", repriced, shortKm, shortMin } };
   }

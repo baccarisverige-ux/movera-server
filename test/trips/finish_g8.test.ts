@@ -15,6 +15,7 @@ import { redactProjection } from "../../src/realtime/events.js";
 import { commissionOf } from "../../src/rules/commission.js";
 import { adminMethodsOf, paymentOptionsOf, tipRulesOf } from "../../src/trips/finish.js";
 import { earlyEndSettingsOf, rideHandlers } from "../../src/trips/ride.js";
+import { creditWallet } from "../../src/riders/wallet.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, signIn, SODERMALM } from "../support/world.js";
@@ -317,8 +318,8 @@ describe("Q1: the rider ends early → the driver gets the finish (amount driven
 });
 
 describe("Q2: the driver ends early → stop waiting kept; a new price only over the admin's km / minutes", () => {
-  it("defaults 2 km / 8 min; out of range reads as the default", () => {
-    expect(earlyEndSettingsOf(undefined)).toEqual({ repriceOverKm: 2, repriceOverMin: 8 });
+  it("defaults 2 km / 10 min (v0.18.33, owner fix-plan Q1); out of range reads as the default", () => {
+    expect(earlyEndSettingsOf(undefined)).toEqual({ repriceOverKm: 2, repriceOverMin: 10 });
     expect(earlyEndSettingsOf({ cancelFees: { earlyEnd: { repriceOverKm: 99, repriceOverMin: 3 } } })).toEqual({ repriceOverKm: 2, repriceOverMin: 3 });
   });
 
@@ -350,6 +351,30 @@ describe("Q2: the driver ends early → stop waiting kept; a new price only over
     const second = await complete(kept.tripId, kv);
     expect(second.preview).toMatchObject({ earlyEnd: true, repriced: false });
     expect(second.done.fare.amountMinor).toBe(keptBooked);
+  });
+
+  it("job 5 (R25, owner fix-plan Q1): only BOTH km AND minutes over the limits re-price (fail-before: either one did)", async () => {
+    // Far more than 2 km shorter, but not more than 120 min shorter → the booked price stands.
+    await publish("driver_app_config", "Z001", driverDoc({ cancelFees: { earlyEnd: { repriceOverKm: 2, repriceOverMin: 120 } } }));
+    const kmOnly = await accepted(NORRMALM, BROMMA);
+    const kmBooked = (await view(kmOnly.tripId, rider)).fare.amountMinor;
+    const first = await complete(kmOnly.tripId, await onBoard(kmOnly));
+    expect(first.preview.shortKm).toBeGreaterThan(2);
+    expect(first.preview).toMatchObject({ earlyEnd: true, repriced: false });
+    expect(first.done.fare.amountMinor).toBe(kmBooked);
+    // Minutes over the limit but not the km → the booked price stands too.
+    await publish("driver_app_config", "Z001", driverDoc({ cancelFees: { earlyEnd: { repriceOverKm: 50, repriceOverMin: 1 } } }));
+    const minOnly = await accepted(NORRMALM, BROMMA);
+    const minBooked = (await view(minOnly.tripId, rider)).fare.amountMinor;
+    const second = await complete(minOnly.tripId, await onBoard(minOnly));
+    expect(second.preview.shortMin).toBeGreaterThan(1);
+    expect(second.preview).toMatchObject({ earlyEnd: true, repriced: false });
+    expect(second.done.fare.amountMinor).toBe(minBooked);
+    // Both over (2 km / 1 min) → re-priced.
+    await publish("driver_app_config", "Z001", driverDoc({ cancelFees: { earlyEnd: { repriceOverKm: 2, repriceOverMin: 1 } } }));
+    const both = await accepted(NORRMALM, BROMMA);
+    const third = await complete(both.tripId, await onBoard(both));
+    expect(third.preview).toMatchObject({ earlyEnd: true, repriced: true });
   });
 
   it("paid stop waiting is kept when the driver ends early (fail-before: it was dropped)", async () => {
@@ -763,5 +788,64 @@ describe("deep fix 2026-11-02: arrive needs a fresh position; Paris route-change
     } finally {
       await database.db.updateTable("drivers").set({ language: null }).where("driver_id", "=", driverA.id).execute();
     }
+  });
+});
+
+describe("job 5 (R29, owner Q6 'Switch per ride, starts ON'): the wallet pays first from booking, only in the trip's currency", () => {
+  const credit = (amountMinor: number, currency: string) => database.db.transaction().execute((trx) => creditWallet(trx, riderId, { amountMinor, currency }, null, clock.now));
+  async function bookWith(extra: Doc) {
+    const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+    const res = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash", ...extra });
+    expect(res.statusCode, res.body).toBe(201);
+    return res.json();
+  }
+  async function takeAndFinish(tripId: string) {
+    await worker.runDue();
+    const [offer] = (await call(app, "GET", "/driver/offers", driverA.headers)).json().items;
+    const acc = await call(app, "POST", `/offers/${offer.offerId}/accept`, driverA.headers, { expectedVersion: offer.version });
+    expect(acc.statusCode, acc.body).toBe(200);
+    const v = await onBoard({ tripId, version: acc.json().version });
+    await moveTo(SODERMALM, 600);
+    return complete(tripId, v);
+  }
+
+  it("wallet 50 kr + fare → walletApplied 50 kr at booking and cash = fare − 50 kr (fail-before: no walletApplied until boarding)", async () => {
+    await credit(5000, "SEK");
+    const trip = await bookWith({});
+    expect(trip.walletFirst).toBe(true);
+    expect(trip.walletApplied).toEqual({ amountMinor: 5000, currency: "SEK" });
+    expect(trip.cashToCollect).toEqual({ amountMinor: trip.fare.amountMinor - 5000, currency: "SEK" });
+    const { preview, done } = await takeAndFinish(trip.tripId);
+    expect(preview.cashDue.amountMinor).toBe(done.fare.amountMinor - 5000);
+    expect(done.finish.cashToCollect.amountMinor).toBe(done.fare.amountMinor - 5000);
+  });
+
+  it("walletFirst false → this ride pays nothing from the wallet (fail-before: the wallet paid at boarding)", async () => {
+    await credit(5000, "SEK");
+    const trip = await bookWith({ walletFirst: false });
+    expect(trip.walletFirst).toBe(false);
+    expect(trip.walletApplied).toBeUndefined();
+    const { preview, done } = await takeAndFinish(trip.tripId);
+    expect(preview.cashDue.amountMinor).toBe(done.fare.amountMinor);
+    expect((await call(app, "GET", "/wallet?currency=SEK", rider)).json().balance.amountMinor).toBe(5000);
+  });
+
+  it("a EUR (France) balance is never used for a SEK fare", async () => {
+    await credit(5000, "EUR");
+    const trip = await bookWith({});
+    expect(trip.walletApplied).toBeUndefined();
+    const { preview, done } = await takeAndFinish(trip.tripId);
+    expect(preview.cashDue.amountMinor).toBe(done.fare.amountMinor);
+    expect((await call(app, "GET", "/wallet?currency=EUR", rider)).json().balance.amountMinor).toBe(5000);
+  });
+
+  it("Admin › Payments 'Use wallet first' off in the zone → never used, whatever the rider's switch says", async () => {
+    await credit(5000, "SEK");
+    await publish("rider_app_config", "Z001", riderDoc({ wallet: { usedFirst: false } }));
+    const trip = await bookWith({ walletFirst: true });
+    expect(trip.walletFirst).toBe(false);
+    expect(trip.walletApplied).toBeUndefined();
+    const { preview, done } = await takeAndFinish(trip.tripId);
+    expect(preview.cashDue.amountMinor).toBe(done.fare.amountMinor);
   });
 });

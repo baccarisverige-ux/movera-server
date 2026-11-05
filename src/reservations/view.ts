@@ -25,4 +25,5 @@ export function reservationView(trip: { kind: string; reservation: unknown }, vi
  * trips.reservation.held true) is not his current trip. One accepted through a normal offer (now mode, or
  * dispatched before pickup) is. Use with trips in the query (alias trips).
  */
-export const NOT_HELD = sql<boolean>`NOT (trips.kind = 'scheduled' AND trips.status = 'accepted' AND coalesce(trips.reservation->>'held', 'false') = 'true')`;
+// v0.18.33: a live trip queued behind the driver's current trip (next_after_trip_id) is not his current trip either.
+export const NOT_HELD = sql<boolean>`(NOT (trips.kind = 'scheduled' AND trips.status = 'accepted' AND coalesce(trips.reservation->>'held', 'false') = 'true') AND trips.next_after_trip_id IS NULL)`;

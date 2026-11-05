@@ -16,7 +16,7 @@ import { RIDER_ONBOARD, type TripStatus } from "../../rules/transitions.js";
 import { tripProjection } from "../projection.js";
 import { effectiveWaiting } from "../waitingRules.js";
 import { type Money, type Place, type Waiting, NEAR_DROPOFF_METERS, NEAR_DROPOFF, ARRIVE_MAX_METERS, positionMaxAge } from "./shared.js";
-import { rulesOf, waitingOf, fareWithWaiting, fareColumns } from "./settings.js";
+import { rulesOf, waitingOf, fareWithWaiting, fareColumns, walletFirstOf } from "./settings.js";
 import { releaseDriver, feeSplit, walletCovers } from "./money.js";
 import { pickupInRunningEvent, WAITING_PAID, WAITING_NO_SHOW } from "./timers.js";
 
@@ -99,7 +99,8 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     if (waiting) set["waiting"] = JSON.stringify({ ...waiting, chargedSeconds: charged });
     if (charged > 0 && trip.status === "arrived") Object.assign(set, fareColumns(trip, await fareWithWaiting(trx, trip, charged)));
     // The wallet pays first: the driver sees the cash to collect from boarding on.
-    set.wallet_applied_minor = await walletCovers(trx, trip.rider_id, trip.currency, Number(set.fare_minor ?? trip.fare_minor));
+    // v0.18.33 (owner Q6): not when the rider switched the wallet off for this ride (or the zone did).
+    set.wallet_applied_minor = walletFirstOf(trip) ? await walletCovers(trx, trip.rider_id, trip.currency, Number(set.fare_minor ?? trip.fare_minor)) : 0;
     const boarded = await applyCommand(trx, trip, { command, actor: "driver", now, set });
     // From now on the server watches for the driver going silent (owner decision 2026-10-26).
     await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: tripId, dueAt: new Date(now.getTime() + SILENT_ALERT_MS), payload: {} });
