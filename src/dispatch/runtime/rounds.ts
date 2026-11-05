@@ -1,13 +1,14 @@
-import { smartOrder } from "../../reservations/service.js";
+import { exclusiveOnly, smartOrder } from "../../reservations/service.js";
 import type { Trx } from "../../db/db.js";
 import { newId } from "../../ids.js";
 import { scheduleTimer, type TimerHandler } from "../../jobs/timers.js";
 import { liveDocument } from "../../config/service.js";
 import { pickupPayMinor, type PickupPayRate } from "../../rules/pickupPay.js";
 import { applyCommand } from "../../trips/commands.js";
-import { newSearch, planRound, rank, startOf, type DispatchDoc, type SearchState } from "../engine.js";
+import { maxPickupKm, newSearch, planRound, rank, startOf, type DispatchDoc, type SearchState } from "../engine.js";
 import { ROUND, OPEN_STATUSES, lockTripNow, localTime, controlOf } from "./shared.js";
-import { candidatesFor } from "./candidates.js";
+import { candidatesFor, lockAndRecheck } from "./candidates.js";
+import { exclusiveOnlyDoc } from "./start.js";
 import { loadOffer, offerView, riderRatingForOffer, FeedQueue } from "./offers.js";
 import { positiveSeconds } from "./adminOffers.js";
 
@@ -48,7 +49,15 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
 
   // 2. The next round, unless the search is over, paused, or has no rules.
   if (now.getTime() >= search.end_at.getTime() || search.doc_version === 0) return;
-  const doc = search.document as DispatchDoc;
+  let doc = search.document as DispatchDoc;
+  let forcedNow = false;
+  if (exclusiveOnly(trip, now) && (doc.radar.on || !doc.exclusive.on)) {
+    // Job 1 (fix plan R9, owner BL-Q7): a booked ride whose search began before its pickup time and is still running
+    // after it goes on as Exclusive offers only, from this round on (it never gets Radar again).
+    doc = exclusiveOnlyDoc(doc);
+    forcedNow = true;
+    await trx.updateTable("searches").set({ document: JSON.stringify(doc), updated_at: now }).where("trip_id", "=", tripId).execute();
+  }
   const control = await controlOf(trx, trip.zone_id);
   if (control.paused) {
     // Paused: no new offers; look again later (the waiting steps and the end keep running).
@@ -56,17 +65,39 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     return;
   }
   let state = search.state as SearchState | null;
+  if (state !== null && forcedNow) {
+    // Carry on where the search is, as Exclusive; a pending "both" start would send Radar, so it is dropped.
+    const { pending: _pending, ...rest } = state;
+    state = { ...rest, cur: "exclusive", tried: 0 };
+  }
   if (state === null) {
     // The search started while the zone was paused: it starts its steps now that offers may go out.
     const start = startOf(doc, control, Number(search.busy), localTime(doc.timeZone, now));
     if (start === null) return;
     state = newSearch(start.mode, start.pending);
   }
-  const pool = await candidatesFor(trx, trip, doc, now);
+  // Job 1 (fix plan R1 d): drivers beyond the widest step are never read (they are out of range for every round).
+  const pool = await candidatesFor(trx, trip, doc, now, { reachKm: maxPickupKm(doc) });
   // Owner smart assign (v0.18.19): a booked ride asks first the drivers who can arrive early.
   const planned = planRound(doc, state, await smartOrder(trx, trip, rank(doc, pool.candidates, trip.category_id), now));
   await trx.updateTable("searches").set({ state: JSON.stringify(planned.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
-  const round = planned.round;
+  let round = planned.round;
+  if (round.type === "offer") {
+    // Job 1 (fix plan R1 d): only the chosen drivers are locked, then checked again under the lock. One who just took
+    // another trip or offer is left out; an Exclusive whose driver is gone is planned again at the next round, at once.
+    const gone = await lockAndRecheck(trx, [...round.driverIds, ...(round.alsoRadar?.driverIds ?? [])]);
+    if (gone.size > 0) {
+      const driverIds = round.driverIds.filter((id) => !gone.has(id));
+      const also = round.alsoRadar ? round.alsoRadar.driverIds.filter((id) => !gone.has(id)) : [];
+      if (driverIds.length === 0 && also.length === 0) {
+        await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: now, payload: {} });
+        return;
+      }
+      if (driverIds.length === 0) round = { type: "offer", kind: "radar", radiusKm: round.alsoRadar!.radiusKm, driverIds: also };
+      else round = { ...round, driverIds, ...(round.alsoRadar ? { alsoRadar: { ...round.alsoRadar, driverIds: also } } : {}) };
+      if (round.type === "offer" && round.alsoRadar && round.alsoRadar.driverIds.length === 0) delete round.alsoRadar;
+    }
+  }
   if (round.type === "wait") {
     // A wait is radar.seconds (exclusive.seconds with Radar off), contract.json ranges radar.seconds 5–120: 0 s is not a
     // contract value and would spin the round timer, so the same guard applies (checker M2, 2026-11-01).

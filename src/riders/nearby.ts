@@ -66,6 +66,9 @@ export async function nearbyVehicles(ex: Executor, point: { lat: number; lng: nu
     .where(({ not, exists, selectFrom }) =>
       not(exists(selectFrom("trips").select(sql`1`.as("one")).whereRef("trips.driver_id", "=", "drivers.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD))),
     )
+    // Job 1 (stress M4): never more than a few times the cars shown, nearest first (a busy city centre has hundreds).
+    .orderBy(sql`(driver_locations.lat - ${point.lat}) * (driver_locations.lat - ${point.lat}) + (driver_locations.lng - ${point.lng}) * (driver_locations.lng - ${point.lng}) * ${Math.cos((point.lat * Math.PI) / 180) ** 2}`)
+    .limit(RULES.maxVehicles * 4)
     .execute();
   const items = rows
     .map((r) => ({ r, meters: haversineKm(point, { lat: r.lat, lng: r.lng }) * 1000 }))

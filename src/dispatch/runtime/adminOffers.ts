@@ -38,9 +38,11 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   // v0.18.6 (G4-F4): a radar zone rule gives its own seconds.
   // Owner live test 2026-11-01: a document with 0 s sent an offer that expired unseen. 0 / missing / not a number
   // falls through to the next source, then the contract default (assign 30 s, radar 15 s).
+  // Job 1 (fix plan L17): an offer the admin sends runs on the SAME timer as the automatic one of its kind — the zone's
+  // dispatch radar.seconds / exclusive.seconds first; the app document's numbers only when the zone has no dispatch rules.
   const seconds = kind === "radar"
-    ? positiveSeconds(secondsOverride, offersDoc.radarSeconds, dispatchDoc?.document.radar.seconds, 15)
-    : positiveSeconds(secondsOverride, offersDoc.assignAcceptSeconds, offersDoc.exclusiveSeconds, dispatchDoc?.document.exclusive.seconds, 30);
+    ? positiveSeconds(secondsOverride, dispatchDoc?.document.radar.seconds, offersDoc.radarSeconds, 15)
+    : positiveSeconds(secondsOverride, dispatchDoc?.document.exclusive.seconds, offersDoc.assignAcceptSeconds, offersDoc.exclusiveSeconds, 30);
   const search = await loadSearch(trx, trip.trip_id);
   const end = search && ["searching", "offered"].includes(trip.status) ? search.end_at.getTime() : Infinity;
   // v0.18.19 (contract.json#bookLater.liveFixes.offlineGive, live MED 7): a booked ride hours ahead may be given to an

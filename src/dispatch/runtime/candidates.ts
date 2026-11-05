@@ -1,6 +1,7 @@
-import { currentTripOf } from "../../reservations/service.js";
-import { drivingLimitReached } from "../../drivers/drivingTime.js";
-import { driverPerformance, scoreInputs } from "../../drivers/performance.js";
+import { driversWithClashingBooking, driversWithCurrentTrip } from "../../reservations/service.js";
+import { driversAtDrivingLimit } from "../../drivers/drivingTime.js";
+import { PERFORMANCE, performanceFromCounts, scoreInputs } from "../../drivers/performance.js";
+import { TimerBusy } from "../../jobs/timers.js";
 import { sql } from "kysely";
 import { documentsExpiredFor } from "../../drivers/reminders.js";
 import type { Trx } from "../../db/db.js";
@@ -24,37 +25,50 @@ async function sameCountryZones(trx: Trx, zoneId: string, zoneIds: string[]): Pr
   return rows.map((r) => r.zone_id);
 }
 
-/** Drivers who may get an offer now, with what the score needs (contract §3.6; stale ones are left out, §12). */
-export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, now: Date): Promise<Pool> {
+/**
+ * Drivers who may get an offer now, with what the score needs (contract §3.6; stale ones are left out, §12).
+ *
+ * Job 1 (fast dispatch, fix plan R1 d, audits/stress-test-2026-11-04.md H2): no lock on the zone's drivers any more,
+ * and no query per driver — every check is ONE query for all drivers of the round (open offers, current trip, held
+ * booking clash, expired papers, driving-time limit, score numbers). The round locks only the drivers it picked and
+ * checks them again under that lock (lockAndRecheck), so two rounds still never give one free driver two Exclusives.
+ * `reachKm` (rounds only): drivers farther than the widest search step are not read at all (a box around the pickup).
+ */
+export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, now: Date, options: { reachKm?: number } = {}): Promise<Pool> {
   const pickup = trip.pickup as Place;
-  // Lock the online drivers in id order before counting their open offers, so two rounds at once (two server
-  // instances) cannot both give one free driver an Exclusive (lock order: trip, offers, then drivers by id).
   // v0.18.11: with neighbours on, drivers of the listed zones are candidates too (the engine asks them from afterStep).
   // Only zones of the same country and currency as the trip zone may lend drivers (a SE zone never borrows FR).
   const listed = doc?.neighbours?.on ? doc.neighbours.zoneIds.filter((z) => z !== trip.zone_id) : [];
   const neighbourZones = listed.length ? await sameCountryZones(trx, trip.zone_id, listed) : [];
-  // Deep fix 2026-11-02 (perf): only the drivers of this trip's zone (and its neighbours) are locked and read — a
-  // Stockholm round never waits for Paris drivers.
+  // Deep fix 2026-11-02 (perf): only the drivers of this trip's zone (and its neighbours) are read.
   const zones = [trip.zone_id, ...neighbourZones];
   const inZones = sql<boolean>`drivers.zone_ids && ${sql.val(zones)}::text[]`;
-  await trx.selectFrom("drivers").select("driver_id").where("account_status", "=", "active").where("online_status", "=", "online").where(inZones).orderBy("driver_id").forUpdate().execute();
-  const rows = await trx
+  let query = trx
     .selectFrom("drivers")
     .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
     .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
-    .select(["drivers.driver_id", "drivers.online_status", "drivers.category_ids", "drivers.zone_ids", "drivers.rating_sum", "drivers.rating_count", "drivers.last_free_at", "driver_locations.lat", "driver_locations.lng", "vehicles.category_ids as vehicle_category_ids", "vehicles.status as vehicle_status", "drivers.country", "drivers.account_type", "drivers.vehicle_id"])
+    .select(["drivers.driver_id", "drivers.online_status", "drivers.category_ids", "drivers.zone_ids", "drivers.rating_sum", "drivers.rating_count", "drivers.last_free_at", "drivers.driving_since", "driver_locations.lat", "driver_locations.lng", "vehicles.category_ids as vehicle_category_ids", "vehicles.status as vehicle_status", "drivers.country", "drivers.account_type", "drivers.vehicle_id"])
     .where("drivers.account_status", "=", "active")
-    .where("drivers.online_status", "in", ["online", "on_trip"])
+    // Next trips (an offer to a driver who still has a rider) are a later round (owner decision 10): only free
+    // (online) drivers get offers.
+    .where("drivers.online_status", "=", "online")
     .where(inZones)
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
-    .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000))
-    .execute();
+    .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000));
+  if (options.reachKm !== undefined && Number.isFinite(options.reachKm)) {
+    // dispatchKm = straight line × roadFactor (≥ 1), so a box of reachKm straight-line km holds every driver in reach.
+    const dLat = options.reachKm / 111.32;
+    const dLng = dLat / Math.max(0.01, Math.cos((pickup.lat * Math.PI) / 180));
+    query = query.where("driver_locations.lat", ">=", pickup.lat - dLat).where("driver_locations.lat", "<=", pickup.lat + dLat).where("driver_locations.lng", ">=", pickup.lng - dLng).where("driver_locations.lng", "<=", pickup.lng + dLng);
+  }
+  const rows = await query.execute();
   const pool: Pool = { candidates: [], meta: new Map() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
   const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
   // v0.18.26 (contract.json#phoneDataToServer.driverPreferences.dispatch): a category the driver switched off in Ride
   // preferences is not sent to him (one query for the whole round).
   const switchedOff = await driversWithCategoryOff(trx, rows.map((r) => r.driver_id), trip.category_id);
+  const kept: Array<(typeof rows)[number] & { km: number; neighbour: boolean }> = [];
   for (const d of rows) {
     const own = d.zone_ids.includes(trip.zone_id);
     const neighbour = !own && d.zone_ids.some((z) => neighbourZones.includes(z));
@@ -69,38 +83,99 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     // Checker MED 9: an approved car with no categories stored (older rows) does not narrow his own chosen types.
     const carTypes = d.vehicle_category_ids ?? [];
     if (d.vehicle_status !== null && (d.vehicle_status !== "approved" || (carTypes.length > 0 && !carTypes.includes(trip.category_id)))) continue;
-    // A free driver holds at most one open Exclusive; one with a rider at most exclusiveWhileDriving.count (§3.6).
-    const open = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).executeTakeFirstOrThrow();
-    // v0.18.17: a booked ride he holds for later (scheduled, accepted) is not his current trip.
-    const active = await currentTripOf(trx, d.driver_id);
-    // Next trips (an offer to a driver who still has a rider) are a later round (owner decision 10): only free
-    // drivers get offers in the test week.
-    if (active || d.online_status !== "online") continue;
-    if (Number(open.n) >= 1) continue;
-    const radarOpen = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("driver_id", "=", d.driver_id).where("status", "=", "open").where("kind", "=", "radar").executeTakeFirstOrThrow();
-    if (Number(radarOpen.n) >= RADAR_LIST_MAX) continue;
-    // Deep fix 2026-11-02 (g1-g3 H1, checker MED 8): no offer while one of his REQUIRED papers, or of the car he drives,
-    // is past its end date — the very rule of the offline sweep (expiredBlockers + the car's expired papers).
-    if (await documentsExpiredFor(trx, d, now)) continue;
-    // v0.18.13 (contract.json#drivingLimits.enforced): no new offers after the driving-time limit.
-    if (await drivingLimitReached(trx, d.driver_id, now)) continue;
-    const here = { lat: d.lat, lng: d.lng };
-    const km = dispatchKm(here, pickup);
+    const km = dispatchKm({ lat: d.lat, lng: d.lng }, pickup);
+    if (options.reachKm !== undefined && km > options.reachKm) continue;
+    kept.push({ ...d, km, neighbour });
+  }
+  const facts = await roundFacts(trx, trip, kept, now);
+  for (const d of kept) {
+    if (!facts.free(d.driver_id)) continue;
     const candidate: Candidate = {
       driverId: d.driver_id,
-      km,
+      km: d.km,
       categoryIds: d.category_ids,
-      ...(neighbour ? { neighbour: true } : {}),
+      ...(d.neighbour ? { neighbour: true } : {}),
       idleMin: d.last_free_at ? (now.getTime() - d.last_free_at.getTime()) / 60_000 : 0,
       // v0.18.4 (G3-D2): the driver's real numbers (contract.json#driverHome.performance); a null one is left out
       // and the engine uses the §3.6 default.
-      ...scoreInputs(await driverPerformance(trx, d.driver_id, now)),
+      ...facts.score(d.driver_id, d.rating_sum, d.rating_count),
     };
     pool.candidates.push(candidate);
-    const etaSeconds = Math.max(60, Math.round((km / PICKUP_KMH) * 3600));
-    pool.meta.set(d.driver_id, { km, etaSeconds, meters: Math.round(km * 1000) });
+    pool.meta.set(d.driver_id, metaOf(d.km));
   }
   return pool;
+}
+
+const metaOf = (km: number) => ({ km, etaSeconds: Math.max(60, Math.round((km / PICKUP_KMH) * 3600)), meters: Math.round(km * 1000) });
+
+/** The per-driver checks of a round, each one query for all `drivers`. */
+async function roundFacts(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: string; zone_ids: string[]; driving_since: Date | null; country: string | null; account_type: string | null; vehicle_id: string | null; km: number }>, now: Date) {
+  const ids = drivers.map((d) => d.driver_id);
+  const out = new Set<string>();
+  if (ids.length > 0) {
+    // A free driver holds at most one open Exclusive (§3.6) and at most RADAR_LIST_MAX open Radar offers.
+    const open = await trx.selectFrom("offers").select(["driver_id", sql<string>`count(*) FILTER (WHERE kind IN ('exclusive', 'assigned'))`.as("ex"), sql<string>`count(*) FILTER (WHERE kind = 'radar')`.as("radar")]).where("driver_id", "in", ids).where("status", "=", "open").groupBy("driver_id").execute();
+    for (const o of open) if (Number(o.ex) >= 1 || Number(o.radar) >= RADAR_LIST_MAX) out.add(o.driver_id);
+    // v0.18.17: a booked ride he holds for later (scheduled, accepted) is not his current trip.
+    for (const id of await driversWithCurrentTrip(trx, ids)) out.add(id);
+    // Job 1 (fix plan R10): a driver holding a booked ride gets no live ride that would clash with it.
+    const etaOf = new Map(drivers.map((d) => [d.driver_id, metaOf(d.km).etaSeconds]));
+    for (const id of await driversWithClashingBooking(trx, trip, ids, (id) => etaOf.get(id) ?? 0, now)) out.add(id);
+    // Deep fix 2026-11-02 (g1-g3 H1, checker MED 8): no offer while one of his REQUIRED papers, or of the car he drives,
+    // is past its end date — the very rule of the offline sweep. Only drivers with such a paper at all are checked one by one.
+    const left = drivers.filter((d) => !out.has(d.driver_id));
+    const vehicleIds = left.flatMap((d) => (d.vehicle_id ? [d.vehicle_id] : []));
+    const lapsed = await trx.selectFrom("documents").select(["owner_kind", "owner_id"])
+      .where((eb) => eb.or([eb.and([eb("owner_kind", "=", "driver"), eb("owner_id", "in", left.length ? left.map((d) => d.driver_id) : ["-"])]), eb.and([eb("owner_kind", "=", "vehicle"), eb("owner_id", "in", vehicleIds.length ? vehicleIds : ["-"])])]))
+      .where((eb) => eb.or([eb("status", "=", "expired"), eb.and([eb("status", "=", "approved"), eb("expires_at", "<=", now)])]))
+      .execute();
+    const withLapsed = new Set(lapsed.map((l) => `${l.owner_kind}:${l.owner_id}`));
+    for (const d of left) {
+      if (!withLapsed.has(`driver:${d.driver_id}`) && !(d.vehicle_id && withLapsed.has(`vehicle:${d.vehicle_id}`))) continue;
+      if (await documentsExpiredFor(trx, d, now)) out.add(d.driver_id);
+    }
+    // v0.18.13 (contract.json#drivingLimits.enforced): no new offers after the driving-time limit.
+    for (const id of await driversAtDrivingLimit(trx, drivers.filter((d) => !out.has(d.driver_id)), now)) out.add(id);
+  }
+  // Score numbers (contract.json#driverHome.performance), as driverPerformance, for all drivers at once.
+  const since = new Date(now.getTime() - PERFORMANCE.windowDays * 24 * 3600_000);
+  const free = ids.filter((id) => !out.has(id));
+  const offers = free.length ? await trx.selectFrom("offers").select(["driver_id", sql<string>`count(*) FILTER (WHERE status = 'claimed')`.as("took"), sql<string>`count(*) FILTER (WHERE status IN ('claimed', 'declined', 'expired'))`.as("all")]).where("driver_id", "in", free).where("kind", "in", ["exclusive", "assigned"]).where("sent_at", ">", since).where("sent_at", "<=", now).groupBy("driver_id").execute() : [];
+  const cancels = free.length ? await trx.selectFrom("driver_cancels").select(["driver_id", (eb) => eb.fn.countAll<string>().as("n")]).where("driver_id", "in", free).where("at", ">", since).where("at", "<=", now).groupBy("driver_id").execute() : [];
+  const offerOf = new Map(offers.map((o) => [o.driver_id, o]));
+  const cancelOf = new Map(cancels.map((c) => [c.driver_id, Number(c.n)]));
+  return {
+    free: (id: string) => !out.has(id),
+    score: (id: string, ratingSum: number | string | null, ratingCount: number | string | null) => {
+      const o = offerOf.get(id);
+      return scoreInputs(performanceFromCounts(since, Number(o?.all ?? 0), Number(o?.took ?? 0), cancelOf.get(id) ?? 0, Number(ratingSum ?? 0), Number(ratingCount ?? 0)));
+    },
+  };
+}
+
+/**
+ * Job 1 (fix plan R1 d "re-check under lock"): the round locks ONLY the drivers it is about to send to (id order,
+ * NOWAIT: a driver row held by a command makes the round busy and it is tried again shortly) and checks again that each
+ * is still online, free, without an open Exclusive and without a current trip. Returns the drivers that no longer may
+ * get this offer.
+ */
+export async function lockAndRecheck(trx: Trx, driverIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(driverIds)].sort();
+  const gone = new Set<string>();
+  if (ids.length === 0) return gone;
+  let rows: Array<{ driver_id: string; online_status: string; account_status: string }>;
+  try {
+    rows = await trx.selectFrom("drivers").select(["driver_id", "online_status", "account_status"]).where("driver_id", "in", ids).orderBy("driver_id").forUpdate().noWait().execute();
+  } catch (error) {
+    if ((error as { code?: string }).code === "55P03") throw new TimerBusy("a chosen driver is busy");
+    throw error;
+  }
+  for (const r of rows) if (r.online_status !== "online" || r.account_status !== "active") gone.add(r.driver_id);
+  for (const id of ids) if (!rows.some((r) => r.driver_id === id)) gone.add(id);
+  const open = await trx.selectFrom("offers").select("driver_id").where("driver_id", "in", ids).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).execute();
+  for (const o of open) gone.add(o.driver_id);
+  for (const id of await driversWithCurrentTrip(trx, ids)) gone.add(id);
+  return gone;
 }
 
 /**

@@ -5,7 +5,7 @@ import { zoneRoutes } from "./zones/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
-import type { Db } from "./db/db.js";
+import { isDatabaseBusy, type Db } from "./db/db.js";
 import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
 import { writeLimitsFrom, type Env } from "./env.js";
 import { registerWriteLimit, SIGN_IN_PATHS } from "./http/rateLimit.js";
@@ -51,6 +51,25 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices };
 
 const READY_TIMEOUT_MS = 2000;
+const HEALTH_DB_TIMEOUT_MS = 1000;
+
+/** True when the database answers SELECT 1 within `ms`; never throws. */
+async function databaseAnswers(db: Db, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      sql`SELECT 1`.execute(db),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), ms);
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
 export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push }: BuildOptions): Promise<FastifyInstance> {
@@ -138,6 +157,12 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     if (error.statusCode === 413) {
       return reply.status(400).send(badRequest("The body is too large.", "body_too_large").body(request.id));
     }
+    // Job 1 (fix plan R22): an overloaded database is not a bug: 503 server_busy, retry in a moment (contract.json#errors).
+    if (isDatabaseBusy(error)) {
+      request.log.warn({ err: error }, "database busy");
+      reply.header("Retry-After", "2");
+      return reply.status(503).send(new ApiError("unavailable", "The server is busy. Try again in a moment.", { reason: "server_busy", retryAfterSeconds: 2 }).body(request.id));
+    }
     request.log.error({ err: error }, "unhandled error");
     // contract v0.16.0: the server's own unhandled 5xx errors show in the admin's Crashes & errors (app server, scrubbed).
     if (db !== undefined) {
@@ -159,22 +184,21 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
 
   app.addHook("preClose", async () => closeAllStreams(app));
 
-  app.get("/healthz", async () => ({ status: "ok", contract: CONTRACT_VERSION, apiVersion: API_VERSION, env: env.MOVERA_ENV, ...(db !== undefined ? { dbPool: poolStats() } : {}) }));
+  // Liveness: always 200 while the process runs. `database` says whether the database answers (rule 28: a database
+  // that is restarting shows here as "unavailable" instead of stopping the server; /readyz answers 503 meanwhile).
+  app.get("/healthz", async () => ({
+    status: "ok",
+    contract: CONTRACT_VERSION,
+    apiVersion: API_VERSION,
+    env: env.MOVERA_ENV,
+    ...(db !== undefined ? { dbPool: poolStats() } : {}),
+    database: db === undefined ? "not_configured" : (await databaseAnswers(db, HEALTH_DB_TIMEOUT_MS)) ? "ok" : "unavailable",
+  }));
   // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
   app.get("/readyz", async () => {
     if (db === undefined) return { status: "ready", database: "not_configured" };
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        sql`SELECT 1`.execute(db),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error("timeout")), READY_TIMEOUT_MS);
-        }),
-      ]);
-    } catch {
+    if (!(await databaseAnswers(db, READY_TIMEOUT_MS))) {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
-    } finally {
-      clearTimeout(timer);
     }
     return { status: "ready", database: "ok" };
   });

@@ -144,6 +144,17 @@ const schema = z.object({
     .optional()
     .transform((value) => (value ?? "").split(",").map((o) => o.trim().replace(/\/$/, "")).filter(Boolean))
     .pipe(z.array(z.string().regex(/^https?:\/\/[^/\s]+$/, "an origin like https://example.github.io"))),
+  /**
+   * Job 1 (fast dispatch, fix plan R1): timer loops per instance. One loop runs only dispatch rounds and offer
+   * withdrawals (rides are offered in seconds even while other timers pile up); the others take any timer.
+   */
+  TIMER_LANES: z.coerce.number().int().min(1).max(16).default(4),
+  /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
+  SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
+  /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
+  SHED_LOOP_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1000),
+  /** Job 1 (fix plan R22): a single SQL statement of a request is stopped after this many ms (0: no limit). */
+  DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).max(600_000).default(30_000),
 }).superRefine((env, ctx) => {
   if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });

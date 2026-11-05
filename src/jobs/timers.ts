@@ -1,5 +1,6 @@
 import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
+import { isDatabaseConnectionError } from "../db/ready.js";
 
 /**
  * Durable timers: offer expiry, the next dispatch step, search expiry, no-show windows, … A timer is written in
@@ -18,9 +19,16 @@ export type Timer = {
   attempts: number;
   /** The worker's clock when it took the timer (handlers use this, not their own clock). */
   firedAt: Date;
+  /** Job 1 (fast dispatch): what the handler's `prepare` found outside the transaction (slow network calls). */
+  prepared?: unknown;
 };
 
-export type TimerHandler = (trx: Trx, timer: Timer) => Promise<void>;
+/**
+ * A handler runs inside the timer's transaction. Job 1 (fix plan R1, audits/stress-test-2026-11-04.md H2): a handler
+ * that needs a slow network call (road routing) gives `prepare`, which runs first with NO transaction and NO lock;
+ * its result reaches the handler as `timer.prepared`. So no row lock is ever held while waiting on the network.
+ */
+export type TimerHandler = ((trx: Trx, timer: Timer) => Promise<void>) & { prepare?: (db: Db, timer: Timer) => Promise<unknown> };
 
 export type TimerLogger = {
   warn: (data: object, message: string) => void;
@@ -36,6 +44,17 @@ export const MAX_ATTEMPTS = 8;
  */
 export class TimerBusy extends Error {}
 export const BUSY_RETRY_MS = 250;
+/** Job 1: a busy timer is tried again after 250 ms, 500 ms, 1 s, then every 2 s at most (bounded backoff). */
+export const BUSY_RETRY_MAX_MS = 2000;
+export function busyRetryMs(tries: number): number {
+  return Math.min(BUSY_RETRY_MS * 2 ** Math.max(0, tries - 1), BUSY_RETRY_MAX_MS);
+}
+/**
+ * Job 1: a timer transaction never waits long for a row lock (lock_timeout), so one stuck command cannot freeze the
+ * worker; a lock wait that runs out counts as busy (TimerBusy), not as a failure.
+ */
+export const TIMER_LOCK_TIMEOUT_MS = 2000;
+const isLockTimeout = (error: unknown) => (error as { code?: string } | undefined)?.code === "55P03";
 
 /** At most one pending timer per (kind, refId): scheduling again moves it. */
 export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }): Promise<void> {
@@ -59,19 +78,40 @@ export function backoffMs(attempts: number): number {
   return Math.min(1000 * 2 ** Math.max(0, attempts - 1), 5 * 60 * 1000);
 }
 
+/** Job 1: a lane is one loop of the worker; `kinds` = only these kinds (e.g. a dispatch lane), missing = any kind. */
+export type TimerLane = { kinds?: string[]; exclude?: string[] };
+/** Rule 28: while the database cannot be reached the loop waits 1 s, 2 s, 4 s, … at most 30 s between tries. */
+export const DB_DOWN_MAX_MS = 30_000;
+export function dbDownDelayMs(failures: number, pollMs: number): number {
+  return Math.min(Math.max(pollMs, 1000) * 2 ** Math.max(0, failures - 1), DB_DOWN_MAX_MS);
+}
+
 export type TimerWorkerOptions = {
   handlers: Record<string, TimerHandler>;
   logger: TimerLogger;
   clock?: () => Date;
   pollMs?: number;
+  /**
+   * Job 1 (fix plan R1): the loops this worker runs at the same time. Each takes due timers with FOR UPDATE SKIP LOCKED,
+   * so they never take the same one. Default: one lane for any kind (as before).
+   */
+  lanes?: TimerLane[];
 };
 
 export class TimerWorker {
   private readonly clock: () => Date;
   private readonly pollMs: number;
-  private loop: Promise<void> | undefined;
+  private readonly lanes: TimerLane[];
+  private loops: Promise<void>[] = [];
   private stopping = false;
-  private wake: (() => void) | undefined;
+  private readonly wakers = new Set<() => void>();
+  /**
+   * Job 1 (fix plan R1 a): a timer whose handler found its rows busy KEEPS its due_at (so it is not pushed behind a
+   * backlog of later timers); this worker only skips it until `until`, with a bounded backoff (busyRetryMs).
+   */
+  private readonly busy = new Map<string, { tries: number; until: number }>();
+  /** Rule 28: database connection errors in a row (the loop backs off while the database is down). */
+  private dbFailures = 0;
 
   constructor(
     private readonly db: Db,
@@ -79,87 +119,145 @@ export class TimerWorker {
   ) {
     this.clock = options.clock ?? (() => new Date());
     this.pollMs = options.pollMs ?? 500;
+    this.lanes = options.lanes && options.lanes.length > 0 ? options.lanes : [{}];
+  }
+
+  /** Timers this worker skips for now (busy, waiting for their retry time). */
+  private skipped(now: Date): string[] {
+    const ids: string[] = [];
+    for (const [id, entry] of this.busy) {
+      if (entry.until > now.getTime()) ids.push(id);
+      else if (entry.until < now.getTime() - 60_000) this.busy.delete(id);
+    }
+    return ids;
   }
 
   /** Takes and runs one due timer. Returns false when none is due (or every due one is taken by another worker). */
-  async runOne(): Promise<boolean> {
+  async runOne(lane: TimerLane = {}): Promise<boolean> {
     const now = this.clock();
+    const skip = this.skipped(now);
     let taken: Timer | undefined;
-    try {
-      const ran = await this.db.transaction().execute(async (trx) => {
-        const row = await trx
-          .selectFrom("timers")
-          .selectAll()
-          .where("due_at", "<=", now)
-          .orderBy("due_at")
-          .orderBy("timer_id")
-          .limit(1)
-          .forUpdate()
-          .skipLocked()
-          .executeTakeFirst();
-        if (row === undefined) return false;
-        taken = {
-          timerId: row.timer_id,
-          kind: row.kind,
-          refId: row.ref_id,
-          dueAt: row.due_at,
-          payload: row.payload,
-          attempts: row.attempts,
-          firedAt: now,
-        };
-        await trx.deleteFrom("timers").where("timer_id", "=", row.timer_id).execute();
+    let prepareFor: Timer | undefined;
+    const take = async (trx: Trx, timerId?: string) => {
+      let query = trx.selectFrom("timers").selectAll().where("due_at", "<=", now);
+      if (timerId !== undefined) query = query.where("timer_id", "=", timerId);
+      if (lane.kinds !== undefined) query = query.where("kind", "in", lane.kinds);
+      if (lane.exclude !== undefined && lane.exclude.length > 0) query = query.where("kind", "not in", lane.exclude);
+      if (skip.length > 0) query = query.where("timer_id", "not in", skip);
+      return query.orderBy("due_at").orderBy("timer_id").limit(1).forUpdate().skipLocked().executeTakeFirst();
+    };
+    const run = async (timerId?: string, prepared?: unknown) =>
+      this.db.transaction().execute(async (trx) => {
+        await sql`SET LOCAL lock_timeout = ${sql.lit(`${TIMER_LOCK_TIMEOUT_MS}ms`)}`.execute(trx);
+        const row = await take(trx, timerId);
+        if (row === undefined) return timerId === undefined ? false : true;
+        const timer: Timer = { timerId: row.timer_id, kind: row.kind, refId: row.ref_id, dueAt: row.due_at, payload: row.payload, attempts: row.attempts, firedAt: now };
         const handler = this.options.handlers[row.kind];
+        if (handler?.prepare !== undefined && timerId === undefined) {
+          // Slow work first, outside this transaction (it ends here having changed nothing).
+          prepareFor = timer;
+          return true;
+        }
+        taken = prepared === undefined ? timer : { ...timer, prepared };
+        await trx.deleteFrom("timers").where("timer_id", "=", row.timer_id).execute();
         if (handler === undefined) throw new Error(`No handler for timer kind ${row.kind}`);
         await handler(trx, taken);
         return true;
       });
+    try {
+      const ran = await run();
+      if (prepareFor !== undefined) {
+        const target: Timer = prepareFor;
+        let prepared: unknown = null;
+        try {
+          prepared = (await this.options.handlers[target.kind]!.prepare!(this.db, target)) ?? null;
+        } catch {
+          // Nothing prepared: the handler does its cheap fallback.
+        }
+        await run(target.timerId, prepared);
+      }
+      if (taken !== undefined) this.busy.delete(taken.timerId);
       return ran;
     } catch (error) {
       if (taken === undefined) throw error;
-      if (error instanceof TimerBusy) {
-        await this.db.updateTable("timers").set({ due_at: new Date(now.getTime() + BUSY_RETRY_MS) }).where("timer_id", "=", taken.timerId).execute();
+      if (error instanceof TimerBusy || isLockTimeout(error)) {
+        const tries = (this.busy.get(taken.timerId)?.tries ?? 0) + 1;
+        this.busy.set(taken.timerId, { tries, until: now.getTime() + busyRetryMs(tries) });
         return true;
       }
+      this.busy.delete(taken.timerId);
       await this.recordFailure(taken, error as Error, now);
       return true;
     }
   }
 
   /** Runs due timers until none is left. Returns how many were taken. */
-  async runDue(limit = 1000): Promise<number> {
+  async runDue(limit = 1000, lane: TimerLane = {}): Promise<number> {
     let count = 0;
-    while (count < limit && (await this.runOne())) count++;
+    while (count < limit && (await this.runOne(lane))) count++;
     return count;
   }
 
   start(): void {
-    if (this.loop !== undefined) return;
+    if (this.loops.length > 0) return;
     this.stopping = false;
-    this.loop = (async () => {
-      while (!this.stopping) {
-        try {
-          await this.runDue(100);
-        } catch (error) {
-          this.options.logger.error({ err: error }, "timer worker: database error");
+    this.loops = this.lanes.map((lane) =>
+      (async () => {
+        while (!this.stopping) {
+          // Rule 28 (#92): one round that never throws; backs off while the database is down.
+          const delay = await this.tick(() => this.runDue(100, lane));
+          if (this.stopping) break;
+          await new Promise<void>((resolve) => {
+            const wake = () => {
+              clearTimeout(handle);
+              this.wakers.delete(wake);
+              resolve();
+            };
+            const handle = setTimeout(wake, delay);
+            this.wakers.add(wake);
+          });
         }
-        if (this.stopping) break;
-        await new Promise<void>((resolve) => {
-          const handle = setTimeout(resolve, this.pollMs);
-          this.wake = () => {
-            clearTimeout(handle);
-            resolve();
-          };
-        });
-        this.wake = undefined;
+      })(),
+    );
+  }
+
+  /** Job 1: a timer due now was just written (e.g. a new search): look at once instead of after the poll. */
+  kick(): void {
+    for (const wake of [...this.wakers]) wake();
+  }
+
+  /**
+   * One round of the loop. Never throws (rule 28): a database that is restarting (57P03, ECONNREFUSED, connection
+   * terminated) is logged and the loop waits longer each time; any other error is logged and the loop goes on.
+   * Returns how long to wait before the next round.
+   */
+  async tick(round: () => Promise<unknown>): Promise<number> {
+    try {
+      await round();
+      if (this.dbFailures > 0) this.options.logger.warn({ failures: this.dbFailures }, "timer worker: database is back");
+      this.dbFailures = 0;
+      return this.pollMs;
+    } catch (error) {
+      try {
+        if (isDatabaseConnectionError(error)) {
+          this.dbFailures += 1;
+          const delay = dbDownDelayMs(this.dbFailures, this.pollMs);
+          this.options.logger.warn({ err: error, failures: this.dbFailures, retryInMs: delay }, "timer worker: database unavailable; retrying");
+          return delay;
+        }
+        this.options.logger.error({ err: error }, "timer worker: database error");
+      } catch {
+        // A logger that throws must not stop the loop either.
       }
-    })();
+      return this.pollMs;
+    }
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
-    this.wake?.();
-    await this.loop;
-    this.loop = undefined;
+    this.kick();
+    await Promise.all(this.loops);
+    this.loops = [];
   }
 
   private async recordFailure(timer: Timer, error: Error, now: Date): Promise<void> {

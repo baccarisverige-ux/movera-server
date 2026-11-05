@@ -889,7 +889,8 @@ S["PricingDocument"] = obj(OrderedDict([
     **{"x-server-only": True})
 S["DispatchModeRules"] = obj({"on": b(), "drivers": i(minimum=1, maximum=30, description="radar: shown at once (1-30); exclusive: tried one after the other per radius step (1-10)."),
                               "seconds": i(minimum=5, maximum=120, description="radar 5-120, exclusive 5-60."), "then": s(enum=sorted(set(DP["then"]["radar"] + DP["then"]["exclusive"]))),
-                              "steps": arr(n(exclusiveMinimum=0, maximum=50), minItems=1, maxItems=5, description="v0.18.11 dispatch start: optional own search steps (km, strictly increasing) for this mode. Missing = radius.steps.")},
+                              "steps": arr(n(exclusiveMinimum=0, maximum=50), minItems=1, maxItems=5, description="v0.18.11 dispatch start: optional own search steps (km, strictly increasing) for this mode. Missing = radius.steps."),
+                              "reaskAfterSeconds": i(minimum=5, maximum=600, description="v0.18.27 (owner Q1 2026-11-04, exclusive only): with Radar off, the wait before drivers who all said no are asked again. Missing = this mode's seconds.")},
                              ["on", "drivers", "seconds", "then"], "Radar: then is widen | exclusive | widen_then_exclusive. Exclusive: then is radar | widen | widen_then_radar.")
 S["DispatchTimeRule"] = obj({"id": s(minLength=1), "on": b(), "from": s(pattern=r"^\d\d:\d\d$"), "to": s(pattern=r"^\d\d:\d\d$"), "mode": s(enum=DP["modes"])},
                             ["id", "on", "from", "to", "mode"], "Zone-local [from, to); wraps midnight when from > to.")
