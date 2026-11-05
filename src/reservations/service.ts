@@ -20,6 +20,7 @@ import { commissionOf } from "../rules/commission.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { driverTimes, freeByTime, leaveAtOf, planOf, reservationSettings, rideTypeOf, windowError, type Plan, type ReservationSettings, type RideTypeKey } from "./plan.js";
 import { pokeAlerts } from "../alerts/detector.js";
+import { BOOKED_LATE_REASON, takeBackDecision } from "./takeBack.js";
 
 /**
  * v0.18.17 Book later (CONTRACT.md §41, contract.json#bookLater; owner 2026-11-03 Q1–Q7). Everything a booked ride
@@ -31,7 +32,7 @@ import { pokeAlerts } from "../alerts/detector.js";
 
 type Lang = "sv" | "fr" | "en";
 type Texts = Record<Lang, string>;
-type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned" | "reservation_offered" | "reservation_leave_now" | "reservation_late_risk";
+type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned" | "reservation_offered" | "reservation_leave_now" | "reservation_late_risk" | "reservation_taken_back";
 const BL = (contract as unknown as { bookLater: { push: { texts: Record<PushKind, { title: Texts; body: Texts }> } } }).bookLater;
 const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr", TN: "fr" };
 const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
@@ -85,7 +86,25 @@ export type ReservationState = {
   overdue?: boolean;
   /** BL-Q6: the rider changed a held ride; the driver answers by `until`. */
   changeAsk?: { until: string; previousAt: string } | null;
+  /** v0.18.35 job 4: the server took the ride back from this driver (late); cleared when a new driver takes it. */
+  takenBack?: { driverId: string; at: string } | null;
 };
+
+/**
+ * v0.18.35 job 4 L6 (contract.json#bookedTakeBack.newDriverState): the fields that belong to ONE driver. When a booked
+ * ride loses its driver they are cleared, so the next driver gets his own "start now" and late-risk notices.
+ */
+export function withoutDriverState(state: ReservationState): ReservationState {
+  const { leaveAt: _leaveAt, driveSeconds: _drive, leaveNotified: _notified, atRisk: _risk, notStarted: _notStarted, ...rest } = state;
+  return rest;
+}
+
+/** L6: clear the per-driver fields of a booked ride that just lost its driver (any path: give-back, cancel, take-back). */
+export async function forgetDriverState(trx: Trx, tripId: string): Promise<void> {
+  const row = await trx.selectFrom("trips").select(["kind", "reservation"]).where("trip_id", "=", tripId).executeTakeFirst();
+  const state = row && row.kind === "scheduled" ? stateOf(row) : null;
+  if (state) await saveState(trx, tripId, withoutDriverState(state));
+}
 
 export const stateOf = (trip: Pick<TripRow, "reservation">): ReservationState | null => (trip.reservation as ReservationState | null) ?? null;
 
@@ -435,8 +454,9 @@ export async function acceptReservation(trx: Trx, driverId: string, tripId: stri
   const rideType = await rideTypeFor(trx, trip, s);
   const times = driverTimes(now, trip.scheduled_at!, s.rideTypes[rideType], s.offlineBackupAfterMin);
   const state = stateOf(trip)!;
-  await saveState(trx, tripId, { ...state, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true });
-  const accepted = await applyCommand(trx, { ...trip, reservation: { ...state, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true } }, {
+  const fresh = { ...withoutDriverState(state), takenBack: null, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true };
+  await saveState(trx, tripId, fresh);
+  const accepted = await applyCommand(trx, { ...trip, reservation: fresh }, {
     command: "accept",
     actor: "driver",
     now,
@@ -466,7 +486,7 @@ async function backToList(trx: Trx, trip: TripRow, input: { command: "cancel" | 
   });
   await clearDriverTimers(trx, trip.trip_id);
   const state = stateOf(back);
-  if (state) await saveState(trx, trip.trip_id, { ...state, held: false });
+  if (state) await saveState(trx, trip.trip_id, { ...withoutDriverState(state), held: false });
   const fresh = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   if (state && Date.parse(state.dispatchAt) <= input.now.getTime()) return startSearchNow(trx, fresh, input.now);
   return fresh;
@@ -706,6 +726,7 @@ export const exclusiveOnly = (trip: Pick<TripRow, "kind" | "scheduled_at">, now:
 export async function afterBackToRequested(trx: Trx, trip: TripRow, now: Date): Promise<TripRow> {
   if (trip.kind !== "scheduled" || trip.status !== "requested") return trip;
   await clearDriverTimers(trx, trip.trip_id);
+  await forgetDriverState(trx, trip.trip_id);
   const state = stateOf(trip);
   if (state && Date.parse(state.dispatchAt) <= now.getTime()) return startSearchNow(trx, trip, now);
   return trip;
@@ -722,7 +743,7 @@ export async function afterHeldAccept(trx: Trx, trip: TripRow, now: Date): Promi
   const s = await settingsFor(trx, trip.zone_id);
   const rideType = await rideTypeFor(trx, trip, s);
   const times = driverTimes(now, trip.scheduled_at!, s.rideTypes[rideType], s.offlineBackupAfterMin);
-  await saveState(trx, trip.trip_id, { ...stateOf(trip)!, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true });
+  await saveState(trx, trip.trip_id, { ...stateOf(trip)!, takenBack: null, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true });
   for (const [index, at] of times.reminders.entries()) await scheduleTimer(trx, { kind: TIMER.driverReminder, refId: `${trip.trip_id}:${index}`, dueAt: at, payload: { tripId: trip.trip_id, driverId: trip.driver_id } });
   await scheduleTimer(trx, { kind: TIMER.goOnline, refId: trip.trip_id, dueAt: times.goOnlineAt, payload: { driverId: trip.driver_id } });
   await scheduleTimer(trx, { kind: TIMER.offlineCheck, refId: trip.trip_id, dueAt: times.offlineCheckAt, payload: { driverId: trip.driver_id } });
@@ -782,6 +803,11 @@ async function leaveCheck(trx: Trx, trip: TripRow, state: ReservationState, s: R
   const at = trip.scheduled_at!;
   const drive = await driveSecondsOf(trx, trip.driver_id!, trip);
   let next: ReservationState = { ...state };
+  // v0.18.35 job 4 (contract.json#bookedTakeBack): the one case a ride is taken from a driver.
+  if (takeBackDecision(now, at, drive, s).take) {
+    await takeBackLate(trx, trip, now);
+    return;
+  }
   if (drive !== null) {
     const leaveAt = leaveAtOf(at, drive, s.arriveEarlyMin);
     next = { ...next, leaveAt: leaveAt.toISOString(), driveSeconds: drive };
@@ -801,6 +827,39 @@ async function leaveCheck(trx: Trx, trip: TripRow, state: ReservationState, s: R
     await appendTripEvent(trx, { tripId: trip.trip_id, kind: "trip_projection", version: marked.version, occurredAt: now, projection: tripProjection(marked, "admin", { sequence: Number(marked.sequence) + 1 }) });
   }
   if (now.getTime() < at.getTime()) await scheduleTimer(trx, { kind: TIMER.leaveCheck, refId: trip.trip_id, dueAt: new Date(now.getTime() + 2 * 60_000), payload: { driverId: trip.driver_id } });
+}
+
+/**
+ * v0.18.35 job 4 (contract.json#bookedTakeBack.takeBack): a held booked ride taken back from a late driver, in the leave
+ * check's transaction (trip row locked). It counts on his cancel record (driver_cancels, never a fee), the ride goes back
+ * to the list or to dispatch like a give-back, the per-driver state is cleared and reservation.takenBack set (admin
+ * alert booked_taken_back), and he is told. The rider is told nothing (owner job-4 Q2: silent before he starts driving).
+ */
+async function takeBackLate(trx: Trx, trip: TripRow, now: Date): Promise<void> {
+  const driverId = trip.driver_id!;
+  await trx.insertInto("driver_cancels").values({ trip_id: trip.trip_id, driver_id: driverId, at: now, from_status: trip.status, reason_code: BOOKED_LATE_REASON, note: null }).execute();
+  await saveState(trx, trip.trip_id, { ...stateOf(trip)!, takenBack: { driverId, at: now.toISOString() } });
+  const back = await backToList(trx, await lockTrip(trx, trip.trip_id), { command: "release", actor: "system", now });
+  await push(trx, back, { audience: "driver", id: driverId }, "reservation_taken_back", now);
+  await pokeAlerts(trx, now);
+}
+
+/**
+ * v0.18.35 job 4: a booked ride the driver already started (driver_to_pickup) but is not heading to the pickup: the
+ * heading check asks this with the latest road drive; true = the take-back rule says take it (cancel.ts does it).
+ */
+export async function lateStartedBooked(ex: Executor, trip: TripRow, driveSeconds: number, now: Date): Promise<boolean> {
+  if (trip.kind !== "scheduled" || !trip.scheduled_at) return false;
+  return takeBackDecision(now, trip.scheduled_at, driveSeconds, await settingsFor(ex, trip.zone_id)).take;
+}
+
+/** v0.18.35 job 4: after a started booked ride was taken back: the take-back mark and the driver's notice. */
+export async function afterStartedTakeBack(trx: Trx, trip: TripRow, driverId: string, now: Date): Promise<void> {
+  const fresh = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+  const state = stateOf(fresh);
+  if (state) await saveState(trx, trip.trip_id, { ...withoutDriverState(state), held: false, takenBack: { driverId, at: now.toISOString() } });
+  await push(trx, trip, { audience: "driver", id: driverId }, "reservation_taken_back", now);
+  await pokeAlerts(trx, now);
 }
 
 /**

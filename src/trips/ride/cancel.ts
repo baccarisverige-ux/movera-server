@@ -1,4 +1,5 @@
-import { afterBackToRequested, freeCancelByTime } from "../../reservations/service.js";
+import { afterBackToRequested, afterStartedTakeBack, freeCancelByTime, lateStartedBooked } from "../../reservations/service.js";
+import { BOOKED_LATE_REASON } from "../../reservations/takeBack.js";
 import { commissionOf } from "../../rules/commission.js";
 import { askUnexpectedEnd } from "../../safety/rideCheckServer.js";
 import { sql } from "kysely";
@@ -244,4 +245,20 @@ export async function takeBackNotHeading(trx: Trx, trip: TripRow, now: Date): Pr
   await trx.insertInto("driver_cancels").values({ trip_id: trip.trip_id, driver_id: driverId, at: now, from_status: trip.status, reason_code: NOT_HEADING_REASON, note: null }).execute();
   await backToDispatch(trx, trip, { command: "cancel", actor: "driver", now, exclude: driverId });
   await noticeTakenBack(trx, driverId, trip.trip_id, now);
+}
+
+/**
+ * v0.18.35 FIX JOB 4 (contract.json#bookedTakeBack, owner job-4 Q4 "if he is late so take it from him"): a booked ride
+ * the driver started but is not heading to the pickup, and the take-back rule says he would be too late while there is
+ * still time: back to dispatch without him (the rider sees "searching for a new driver" and gets the driver_changed
+ * push, owner job-4 Q2), counted on his cancel record (reason booked_late_taken_back, never a fee), and he is told.
+ * Runs in the ETA tick's transaction with the trip row locked (rule 33: one copy takes it back once).
+ */
+export async function takeBackLateBooked(trx: Trx, trip: TripRow, now: Date, driveSeconds: number): Promise<boolean> {
+  const driverId = trip.driver_id;
+  if (!driverId || !(await lateStartedBooked(trx, trip, driveSeconds, now))) return false;
+  await trx.insertInto("driver_cancels").values({ trip_id: trip.trip_id, driver_id: driverId, at: now, from_status: trip.status, reason_code: BOOKED_LATE_REASON, note: null }).execute();
+  await backToDispatch(trx, trip, { command: "cancel", actor: "driver", now, exclude: driverId });
+  await afterStartedTakeBack(trx, trip, driverId, now);
+  return true;
 }

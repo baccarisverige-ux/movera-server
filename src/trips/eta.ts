@@ -10,7 +10,7 @@ import { DISPATCH } from "../dispatch/engine.js";
 import { tripProjection } from "./projection.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { headingTick } from "./headingCheck.js";
-import { takeBackNotHeading } from "./ride.js";
+import { takeBackLateBooked } from "./ride.js";
 import { maybePushArriving } from "../notifications/tripPush.js";
 
 /**
@@ -85,14 +85,14 @@ export function etaHandler(router: Router): TimerHandler {
     await scheduleTimer(trx, { kind: TRIP_ETA, refId: trip.trip_id, dueAt: new Date(now.getTime() + ETA_EVERY_MS), payload: {} });
     if (!fix) {
       // v0.18.13 (G5-8): no position at all is no proof the driver is coming.
-      if (target === "pickup") await headingTick(trx, trip, { fix: null, leg: null, now }, takeBackNotHeading);
+      if (target === "pickup") await headingTick(trx, trip, { fix: null, leg: null, now }, takeBackLateBooked);
       return;
     }
     const previous = trip.eta as TripEta | null;
     let eta: TripEta;
     let leg: { distanceMeters: number; durationSeconds: number } | null = null;
     if (isStaleFix(fix, now)) {
-      if (target === "pickup" && (await headingTick(trx, trip, { fix: null, leg: null, now }, takeBackNotHeading))) return;
+      if (target === "pickup" && (await headingTick(trx, trip, { fix: null, leg: null, now }, takeBackLateBooked))) return;
       // No fresh position: nothing new to route; the apps keep the last number and see it is old (source stale).
       if (!previous || previous.target !== target) return;
       eta = staleOf(previous, target, now);
@@ -101,9 +101,9 @@ export function etaHandler(router: Router): TimerHandler {
       const routed = await routerNow.route([{ lat: fix.lat, lng: fix.lng }, to]);
       leg = routed;
       eta = { etaSeconds: Math.max(ETA_MIN_SECONDS, routed.durationSeconds), distanceMeters: routed.distanceMeters, target, at: now.toISOString(), source: routed.source };
-      // v0.18.13 (G5-8): the heading-to-pickup check runs with every tick to the pickup; a driver not heading for
-      // notHeadingMinutes may lose the trip here (it is back in dispatch: no ETA to send).
-      if (target === "pickup" && (await headingTick(trx, trip, { fix, leg, now }, takeBackNotHeading))) return;
+      // v0.18.13 (G5-8): the heading-to-pickup check runs with every tick to the pickup. v0.18.35 (owner Q-A, job 4): a
+      // live trip is never taken back; only a late booked ride may be (then it is back in dispatch: no ETA to send).
+      if (target === "pickup" && (await headingTick(trx, trip, { fix, leg, now }, takeBackLateBooked))) return;
     }
     await trx.updateTable("trips").set({ eta: JSON.stringify(eta) }).where("trip_id", "=", trip.trip_id).execute();
     // A location event (no version change) with the ETA: the apps' gate never replaces the projection with it (§4).
