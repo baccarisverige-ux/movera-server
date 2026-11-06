@@ -88,6 +88,7 @@ export async function streamConfig(
   zoneId: string,
   lastSeenVersion: number,
   riderId?: string,
+  driverId?: string,
 ): Promise<void> {
   const stream = openEventStream(request, reply);
   let sent = lastSeenVersion;
@@ -129,6 +130,17 @@ export async function streamConfig(
       if (payload === null || payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
+    }));
+  }
+  // v0.18.45 §68 (contract.json#driverReservationsLive): a booked ride of this zone (or one naming this driver)
+  // changed. A hint only: the app re-reads GET /driver/reservations. Sent from the post-commit NOTIFY, so a
+  // rolled-back change sends nothing; every server copy LISTENs and fans out to its own streams (rule 33).
+  if (driverId !== undefined) {
+    stream.onClose(deps.hub.subscribe(TRIP_EVENTS_CHANNEL, (payload) => {
+      if (payload === null || payload["scheduled"] !== true || typeof payload["tripId"] !== "string" || stream.closed()) return;
+      if (payload["zoneId"] !== zoneId && payload["driverId"] !== driverId) return;
+      const now = deps.clock?.() ?? new Date();
+      stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "driver_reservations_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
     }));
   }
   // A reconnect with Last-Event-ID older than the live version gets the newest at once.
