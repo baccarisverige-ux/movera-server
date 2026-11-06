@@ -85,7 +85,7 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
     .updateTable("trips")
     .set({ sequence: sql`sequence + 1` })
     .where("trip_id", "=", event.tripId)
-    .returning(["sequence", "rider_id"])
+    .returning(["sequence", "rider_id", "zone_id", "scheduled_at", "driver_id"])
     .executeTakeFirst();
   if (bumped === undefined) throw notFound("No such trip.", "trip_not_found");
   const sequence = Number(bumped.sequence);
@@ -109,8 +109,27 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
       ...(event.call !== undefined ? { call: json(event.call) } : {}),
     })
     .execute();
-  await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify({ tripId: event.tripId, sequence, riderId: bumped.rider_id })})`.execute(trx);
+  await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify(tripNotice(event.tripId, sequence, bumped))})`.execute(trx);
   return { eventId, sequence };
+}
+
+/**
+ * The movera_trip_events NOTIFY payload. v0.18.45 §68 (contract.json#driverReservationsLive) only ADDS zoneId,
+ * scheduled and (when set) driverId; tripId, sequence and riderId are unchanged (rider_trip_changed reads them).
+ */
+export function tripNotice(
+  tripId: string,
+  sequence: number,
+  row: { rider_id: string; zone_id: string; scheduled_at: unknown; driver_id: string | null },
+): Record<string, unknown> {
+  return {
+    tripId,
+    sequence,
+    riderId: row.rider_id,
+    zoneId: row.zone_id,
+    scheduled: row.scheduled_at !== null && row.scheduled_at !== undefined,
+    ...(row.driver_id !== null ? { driverId: row.driver_id } : {}),
+  };
 }
 
 /** Events after a cursor, oldest first (stream resume and catch-up). */
