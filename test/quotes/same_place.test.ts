@@ -53,9 +53,13 @@ afterAll(async () => {
   await database.drop();
 });
 
-describe("POST /quotes refuses a drop-off too close to the pickup (minTripMeters, default 300 m)", () => {
-  it("the proven 46 m case is refused with dropoff_too_close", async () => {
+describe("POST /quotes refuses a drop-off too close to the pickup when the zone sets minTripMeters (default off, owner Q9)", () => {
+  it("default (no minTripMeters): the 48 m case is priced (owner Q9: warn but can book)", async () => {
     await setMinTrip(undefined);
+    expect((await post("/quotes", { pickup: PROBE, dropoff: SOLNA_CENTRUM, stops: [] })).statusCode).toBe(201);
+  });
+  it("the proven 48 m case is refused with dropoff_too_close when the zone sets 300 m", async () => {
+    await setMinTrip(300);
     const res = await post("/quotes", { pickup: PROBE, dropoff: SOLNA_CENTRUM, stops: [] });
     expect(res.statusCode, res.body).toBe(400);
     expect(res.json()).toMatchObject({ code: "invalid_request", reason: "dropoff_too_close", details: ["meters=48", "limitMeters=300"] });
@@ -66,6 +70,7 @@ describe("POST /quotes refuses a drop-off too close to the pickup (minTripMeters
   });
   it("a trip with a stop is not checked (round trip through a stop)", async () => {
     expect((await post("/quotes", { pickup: PROBE, dropoff: SOLNA_CENTRUM, stops: [SODERMALM] })).statusCode).toBe(201);
+    await setMinTrip(undefined);
   });
   it("the zone's pricing setting decides: 0 = off, 500 refuses 400 m", async () => {
     await setMinTrip(0);

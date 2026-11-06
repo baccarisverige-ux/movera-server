@@ -5,10 +5,11 @@ import { haversineKm, type LatLng } from "../maps/routing.js";
 
 /**
  * Same-address fix (contract v0.18.42 §67, contract.json#sameAddress.minTripMeters): the zone pricing document's
- * minTripMeters (admin Pricing page, 0-5000 m, 0 = off, missing = 300). Read from the zone's live pricing document in the
+ * minTripMeters (admin Pricing page, 0-5000 m, 0 = off, missing = 0 = off per owner Q9). Read from the zone's live pricing document in the
  * database (the shared config read, same as the prices), so every server copy applies the same value (rule 33).
  */
-export const MIN_TRIP_METERS_DEFAULT = 300;
+/** Owner Q9 (v0.18.30, "Warn him but can accept booking") overrides the boss 300 m: off unless the zone turns it on. */
+export const MIN_TRIP_METERS_DEFAULT = 0;
 
 export function minTripMetersOf(document: unknown): number {
   const value = (document as { minTripMeters?: unknown } | null | undefined)?.minTripMeters;
