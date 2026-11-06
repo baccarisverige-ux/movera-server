@@ -1286,6 +1286,7 @@ export interface Database {
   zones: ZonesTable;
   airport_queue_areas: AirportQueueAreasTable;
   airport_queue_entries: AirportQueueEntriesTable;
+  blocked_pairs: BlockedPairsTable;
   config_drafts: ConfigDraftsTable;
   config_live: ConfigLiveTable;
   config_history: ConfigHistoryTable;
@@ -1413,4 +1414,18 @@ export interface AirportQueueEntriesTable {
   outside_since: Date | null;
   left_at: Date | null;
   left_reason: string | null;
+}
+
+/** v0.18.43 §64 (fix job 10, migration 0087): a rider and a driver never matched again (active while removed_at is null). */
+export interface BlockedPairsTable {
+  pair_id: string;
+  rider_id: string;
+  driver_id: string;
+  blocked_by: "admin" | "rider" | "driver";
+  reason: string | null;
+  trip_id: string | null;
+  admin_id: string | null;
+  at: Date;
+  removed_at: Date | null;
+  removed_by: string | null;
 }

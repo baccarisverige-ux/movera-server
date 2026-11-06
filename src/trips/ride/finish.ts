@@ -1,3 +1,4 @@
+import { blockPair, dontMatchSettings } from "../../blockedPairs/service.js";
 import { applyPersonRules, hasBadWord, ratingRules } from "../../admin/reviewRules.js";
 import { checkTags } from "../../admin/ratings.js";
 import { askUnexpectedEnd } from "../../safety/rideCheckServer.js";
@@ -196,7 +197,7 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
 
 /* ---------------------------------------------------------------- ratings */
 
-type RatingBody = { stars?: number; tags?: string[]; comment?: string; skip?: boolean; tip?: Money };
+type RatingBody = { stars?: number; tags?: string[]; comment?: string; skip?: boolean; tip?: Money; dontMatchAgain?: boolean };
 
 export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subjectId: string }, tripId: string, body: unknown, now: Date): Promise<{ status: number; body: unknown }> {
   const problem = schemaProblem("RatingRequest", body);
@@ -215,6 +216,15 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
   const column = who.actor === "rider" ? "rating_status" : "driver_rating_status";
   if (!allowed || trip[column] !== "pending") {
     throw new ApiError("invalid_transition", allowed ? "This trip was already rated." : "This trip cannot be rated.", { reason: allowed ? "already_rated" : "rating_not_allowed", projection: tripProjection(trip, who.actor) });
+  }
+  // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.rating): "don't match again" only at ≤ atStars while on;
+  // the pair is written with the rating and the answer is unchanged (owner "Never told").
+  if (rating.dontMatchAgain === true) {
+    const dm = await dontMatchSettings(trx, trip.zone_id);
+    if (rating.skip || !dm.on || rating.stars === undefined || rating.stars > dm.atStars || !trip.driver_id) {
+      throw badRequest(`"Don't match again" needs ${dm.atStars} star(s) or fewer.`, "dont_match_not_allowed");
+    }
+    await blockPair(trx, { riderId: trip.rider_id, driverId: trip.driver_id, by: who.actor, tripId }, now);
   }
   let answer: Record<string, unknown> | null = null;
   if (rating.skip) {
