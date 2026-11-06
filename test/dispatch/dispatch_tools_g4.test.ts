@@ -209,10 +209,11 @@ describe("G4-F4: radar zones and rules; send again until taken", () => {
     const trip = (await call(app, "GET", `/trips/${tripId}`, rider)).json();
     expect((await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" })).statusCode).toBe(200);
     expect(await database.db.selectFrom("radar_zone_sends").select(["active", "stop_reason"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow()).toEqual({ active: false, stop_reason: "trip_over" });
-    // Search end: a send running when the 8 minutes are over.
+    // Search end: a send running when the search ends. v0.18.39 §63: a live search has no end timer of its own any
+    // more (owner N2), so the end (still used by a zone without dispatch rules) is put due here.
     const second = await book();
     expect((await call(app, "POST", `/admin/trips/${second}/radar-group`, admin, { expectedVersion: await version(second), radarZoneId: zone.radarZoneId, ruleId: rule.ruleId })).statusCode).toBe(200);
-    await database.db.updateTable("timers").set({ due_at: clock.now }).where("kind", "=", "search_end").where("ref_id", "=", second).execute();
+    await database.db.insertInto("timers").values({ kind: "search_end", ref_id: second, due_at: clock.now, payload: JSON.stringify({}), last_error: null, created_at: clock.now }).execute();
     await worker.runDue();
     expect(await database.db.selectFrom("radar_zone_sends").select(["active", "stop_reason"]).where("trip_id", "=", second).executeTakeFirstOrThrow()).toEqual({ active: false, stop_reason: "search_ended" });
     expect((await call(app, "GET", `/admin/trips/${second}`, admin)).json()).not.toHaveProperty("radarZoneSend");

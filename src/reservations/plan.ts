@@ -51,6 +51,8 @@ export type ReservationSettings = {
   takeBackKeepIfDriveMin: number;
   /** …and the pickup is at least this many minutes away. */
   takeBackUntilMinBeforePickup: number;
+  /** v0.18.39 §63 (P17, owner "15 min after pickup past"): a booked ride with no driver ends this many minutes after its pickup time. */
+  noDriverStopAfterMin: number;
   rideTypes: Record<RideTypeKey, RideTypeTimes>;
 };
 
@@ -110,6 +112,7 @@ export function reservationSettings(raw: unknown): ReservationSettings {
     takeBackLateMin: num(r["takeBackLateMin"], 1, 60, d.takeBackLateMin),
     takeBackKeepIfDriveMin: num(r["takeBackKeepIfDriveMin"], 0, 60, d.takeBackKeepIfDriveMin),
     takeBackUntilMinBeforePickup: num(r["takeBackUntilMinBeforePickup"], 0, 180, d.takeBackUntilMinBeforePickup),
+    noDriverStopAfterMin: num(r["noDriverStopAfterMin"], 1, 240, d.noDriverStopAfterMin),
     rideTypes,
   };
 }

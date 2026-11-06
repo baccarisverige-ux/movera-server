@@ -162,7 +162,8 @@ describe("dispatch runtime review", () => {
     expect({ commandError: String(commandError ?? ""), warnings: warnings.join() }).toEqual({ commandError: "", warnings: "" });
   });
 
-  it("H5: with two instances, the busy step and the search end (both at 8 min) do not deadlock", async () => {
+  // v0.18.39 §63 (owner N2): a live search has no end any more; two instances at the 8-min busy step still never deadlock.
+  it("H5: with two instances, the busy step at 8 min does not deadlock and the live search goes on", async () => {
     const tripId = await create(rider);
     const start = clock.now.getTime();
     await worker.runDue();
@@ -175,10 +176,11 @@ describe("dispatch runtime review", () => {
     clock.now = new Date(start + 481_000);
     await worker.runDue();
     const trip = await database.db.selectFrom("trips").select(["status", "search_step"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
-    // The two timers are due at the same instant, so which instance wins decides whether the last step (w5) was
-    // recorded before the search ended; either way nothing deadlocks and the search ends.
-    expect({ warnings: warnings.join(), status: trip.status }).toEqual({ warnings: "", status: "expired" });
-    expect(["w4", "w5"]).toContain((trip.search_step as { id: string } | null)?.id);
+    // The busy step and the round are due at the same instant on two instances: nothing deadlocks, the search goes on,
+    // and "No driver nearby" (shown at 5 min) is not replaced by busy.
+    // ("No driver nearby" pokes the alert sweep, whose handler this test's dispatch-only workers do not have.)
+    expect({ warnings: warnings.filter((w) => !w.includes("alert_sweep")).join(), status: ["searching", "offered"].includes(trip.status) }).toEqual({ warnings: "", status: true });
+    expect((trip.search_step as { id: string } | null)?.id).toBe("nd");
   });
 
   it("M1: two instances' rounds never give one free driver two open Exclusives", async () => {
@@ -214,14 +216,14 @@ describe("dispatch runtime review", () => {
    // ~94 simulated 5 s steps, each with 3 HTTP location posts: needs more than the default 20 s on a loaded runner.
   }, 120_000);
 
-  it("M2b: the busy step's message shows on the expired trip", async () => {
+  it("M2b (v0.18.39 §63): after the busy step a live trip still searches and keeps 'No driver nearby'", async () => {
     const tripId = await create(rider);
     const start = clock.now.getTime();
     await worker.runDue();
     while (clock.now.getTime() < start + 490_000) await advance(10);
     const t = (await call(app, "GET", `/trips/${tripId}`, rider)).json();
-    expect(t.status).toBe("expired");
-    expect(t.searchStep?.kind).toBe("busy");
+    expect(["searching", "offered"]).toContain(t.status);
+    expect(t.searchStep?.kind).toBe("no_driver_nearby");
   });
 
   it("M3: going offline withdraws the driver's offers, and an accept while offline is 409", async () => {

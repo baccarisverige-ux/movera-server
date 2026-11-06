@@ -17,7 +17,7 @@ import { EstimateRouter, type Router } from "../maps/routing.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { DISPATCH, dispatchKm } from "../dispatch/engine.js";
 import { commissionOf } from "../rules/commission.js";
-import { startSearch, stopSearch } from "../dispatch/runtime.js";
+import { startSearch, stopBookedNoDriver, stopSearch } from "../dispatch/runtime.js";
 import { driverTimes, freeByTime, leaveAtOf, planOf, reservationSettings, rideTypeOf, windowError, type Plan, type ReservationSettings, type RideTypeKey } from "./plan.js";
 import { pokeAlerts } from "../alerts/detector.js";
 import { BOOKED_LATE_REASON, takeBackDecision } from "./takeBack.js";
@@ -32,7 +32,7 @@ import { BOOKED_LATE_REASON, takeBackDecision } from "./takeBack.js";
 
 type Lang = "sv" | "fr" | "en";
 type Texts = Record<Lang, string>;
-type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned" | "reservation_offered" | "reservation_leave_now" | "reservation_late_risk" | "reservation_taken_back";
+type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned" | "reservation_offered" | "reservation_leave_now" | "reservation_late_risk" | "reservation_taken_back" | "reservation_no_driver_found";
 const BL = (contract as unknown as { bookLater: { push: { texts: Record<PushKind, { title: Texts; body: Texts }> } } }).bookLater;
 const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr", TN: "fr" };
 const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
@@ -53,6 +53,8 @@ export const TIMER = {
   changeAsk: "resv_change_ask",
   leaveCheck: "resv_leave_check",
   overdue: "resv_overdue",
+  /** v0.18.39 §63 (P17): pickup + noDriverStopAfterMin with no driver → the ride ends (no fee). */
+  noDriverStop: "resv_no_driver_stop",
 } as const;
 export const RESERVATION_TIMER_KINDS: string[] = Object.values(TIMER);
 
@@ -84,6 +86,8 @@ export type ReservationState = {
   held?: boolean;
   /** BL-Q7: the pickup time passed with no driver (admin alert). */
   overdue?: boolean;
+  /** v0.18.39 §63 (P17): the server ended it, no driver found (admin alert booked_no_driver_ended). */
+  noDriverFound?: boolean;
   /** BL-Q6: the rider changed a held ride; the driver answers by `until`. */
   changeAsk?: { until: string; previousAt: string } | null;
   /** v0.18.35 job 4: the server took the ride back from this driver (late); cleared when a new driver takes it. */
@@ -344,6 +348,7 @@ export async function planBookedRide(trx: Trx, trip: TripRow, now: Date): Promis
   await clearTimers(trx, trip.trip_id);
   await scheduleTimer(trx, { kind: TIMER.noDriver, refId: trip.trip_id, dueAt: plan.noDriverAt });
   await scheduleTimer(trx, { kind: TIMER.overdue, refId: trip.trip_id, dueAt: trip.scheduled_at });
+  await scheduleTimer(trx, { kind: TIMER.noDriverStop, refId: trip.trip_id, dueAt: stopAt(trip.scheduled_at, s) });
   if (plan.riderReminderAt) await scheduleTimer(trx, { kind: TIMER.riderReminder, refId: trip.trip_id, dueAt: plan.riderReminderAt });
   if (plan.mode === "now") return startSearchNow(trx, current, now);
   if (s.noticeOn) current = await sendNotice(trx, current, s, "reservation_new", now);
@@ -601,12 +606,16 @@ export async function keepReservation(trx: Trx, driverId: string, tripId: string
   return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
 }
 
+/** v0.18.39 §63 (P17): when a booked ride with no driver is ended. */
+const stopAt = (scheduledAt: Date, s: ReservationSettings) => new Date(scheduledAt.getTime() + s.noDriverStopAfterMin * 60_000);
+
 /** The rider's timers of a held ride at its (new) time. */
 async function planTimersOnly(trx: Trx, trip: TripRow, now: Date): Promise<void> {
   const s = await settingsFor(trx, trip.zone_id);
   const plan = planOf(now, trip.scheduled_at!, s);
   await scheduleTimer(trx, { kind: TIMER.noDriver, refId: trip.trip_id, dueAt: plan.noDriverAt });
   await scheduleTimer(trx, { kind: TIMER.overdue, refId: trip.trip_id, dueAt: trip.scheduled_at! });
+  await scheduleTimer(trx, { kind: TIMER.noDriverStop, refId: trip.trip_id, dueAt: stopAt(trip.scheduled_at!, s) });
   if (plan.riderReminderAt) await scheduleTimer(trx, { kind: TIMER.riderReminder, refId: trip.trip_id, dueAt: plan.riderReminderAt });
 }
 
@@ -702,6 +711,15 @@ export async function reservationTimer(trx: Trx, timer: Timer): Promise<void> {
       const marked = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
       await appendTripEvent(trx, { tripId, kind: "trip_projection", version: marked.version, occurredAt: now, projection: tripProjection(marked, "admin", { sequence: Number(marked.sequence) + 1 }) });
       await startSearchNow(trx, marked, now);
+      return;
+    }
+    case TIMER.noDriverStop: {
+      // v0.18.39 §63 (P17): still no driver at pickup + noDriverStopAfterMin: the ride ends, no fee, rider told, admin alert.
+      if (!NO_DRIVER.has(trip.status)) return;
+      await clearTimers(trx, tripId);
+      const ended = await stopBookedNoDriver(trx, trip, now, () => saveState(trx, tripId, { ...state, overdue: true, noDriver: true, noDriverFound: true }));
+      await push(trx, ended, { audience: "rider", id: ended.rider_id }, "reservation_no_driver_found", now);
+      await pokeAlerts(trx, now);
       return;
     }
     case TIMER.offlineCheck: {

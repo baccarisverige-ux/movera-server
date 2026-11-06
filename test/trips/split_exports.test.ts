@@ -25,11 +25,11 @@ describe("split modules keep their public names", () => {
     expect(Object.keys(runtime).sort()).toEqual([
       "END", "FeedQueue", "ROUND", "STEP", "WITHDRAW", "acceptOffer", "declineOffer", "dispatchHandlers", "endHandler", "freeCandidatesByDistance",
       "freeCandidatesDetailed", "keepWaiting", "lockTripNow", "offerView", "positiveSeconds", "refreshOpenOffers", "riderRatingForOffer", "roundHandler",
-      "runRound", "sendAdminOffers", "startSearch", "stepHandler", "stopSearch", "withdrawHandler",
+      "runRound", "sendAdminOffers", "startSearch", "stepHandler", "stopBookedNoDriver", "stopSearch", "withdrawHandler",
     ].sort());
     expect(Object.keys(runtime.dispatchHandlers).sort()).toEqual([
       runtime.ROUND, runtime.STEP, runtime.END, runtime.WITHDRAW, "resv_popup", "resv_open_all", "resv_dispatch", "resv_no_driver", "resv_rider_reminder",
-      "resv_driver_reminder", "resv_go_online", "resv_offline_check", "resv_change_ask", "resv_overdue", "resv_leave_check", "trip_eta",
+      "resv_driver_reminder", "resv_go_online", "resv_offline_check", "resv_change_ask", "resv_overdue", "resv_leave_check", "resv_no_driver_stop", "trip_eta",
     ].sort());
   });
 });

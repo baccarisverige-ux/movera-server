@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { bookAndAccept, drive, fakeOsrm, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
+import { bookAndAccept, drive, expiredBookedRide, fakeOsrm, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
 let sim: Sim;
 let osrm: Awaited<ReturnType<typeof fakeOsrm>>;
@@ -112,8 +112,8 @@ describe("scenario 11: completed, cancelled and expired trips never become activ
       const p = (await d.get("/driver/profile")).body;
       await d.post("/driver/availability", { expectedVersion: p.version, onlineStatus: "offline" });
     }
-    const { tripId } = await rider.book();
-    await sim.advance(11 * 60);
+    // v0.18.39 §63: a live search no longer ends by itself; a booked ride with no driver expires at pickup + 15 min (P17).
+    const tripId = await expiredBookedRide(sim, rider);
     expect((await rider.trip(tripId)).status).toBe("expired");
     await a.goOnline(PLACES.nearSergels);
     await b.goOnline(PLACES.odenplan);

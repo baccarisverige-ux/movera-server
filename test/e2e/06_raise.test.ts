@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { fakeOsrm, PLACES, Sim, type Admin, type Driver, type Rider } from "./harness.js";
+import { expiredBookedRide, fakeOsrm, PLACES, Sim, type Admin, type Driver, type Rider } from "./harness.js";
 
 let sim: Sim;
 let osrm: Awaited<ReturnType<typeof fakeOsrm>>;
@@ -95,14 +95,13 @@ describe("scenario 6: the rider raises the price (N4)", () => {
     expect((await raise(tripId, 5000)).body).toMatchObject({ code: "invalid_transition", projection: { status: "accepted" } });
     await rider.command(tripId, "cancel", { reasonCode: "plans_changed" });
 
-    // No driver: the search runs out (sample document: busy at 8 minutes).
+    // No driver: v0.18.39 §63, a live search never runs out; a booked ride with no driver expires at pickup + 15 min (P17).
     for (const d of [a, b]) {
       const profile = (await d.get("/driver/profile")).body;
       await d.post("/driver/availability", { expectedVersion: profile.version, onlineStatus: "offline" });
     }
     try {
-      const lonely = await rider.book();
-      await sim.advance(11 * 60);
+      const lonely = { tripId: await expiredBookedRide(sim, rider) };
       expect((await rider.trip(lonely.tripId)).status).toBe("expired");
       const late = await raise(lonely.tripId, 5000);
       expect(late.status).toBe(409);

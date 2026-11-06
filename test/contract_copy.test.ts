@@ -34,8 +34,8 @@ describe("contracts/", () => {
     }
   });
 
-  it("is contract v0.18.38, API 0.5", () => {
-    expect(CONTRACT_VERSION).toBe("0.18.38");
+  it("is contract v0.18.39, API 0.5", () => {
+    expect(CONTRACT_VERSION).toBe("0.18.39");
     expect(API_VERSION).toBe("0.5");
   });
 });
