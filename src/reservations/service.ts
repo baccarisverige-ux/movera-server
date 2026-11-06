@@ -1,3 +1,4 @@
+import { blockedDriversFor } from "../blockedPairs/service.js";
 import { NOT_HELD } from "./view.js";
 import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
@@ -229,8 +230,10 @@ export async function listedDrivers(ex: Executor, trip: TripRow, s: ReservationS
   if (options.onlyDriverId) query = query.where("drivers.driver_id", "=", options.onlyDriverId);
   const rows = await query.execute();
   const pickup = trip.pickup as { lat: number; lng: number };
+  // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.dispatch): never listed to (nor claimable by) a blocked driver.
+  const blocked = await blockedDriversFor(ex, trip.rider_id, rows.map((r) => r.driver_id));
   let seen = rows
-    .filter((r) => !trip.cancelled_driver_ids.includes(r.driver_id))
+    .filter((r) => !trip.cancelled_driver_ids.includes(r.driver_id) && !blocked.has(r.driver_id))
     .map((r) => ({ ...r, km: r.lat !== null && r.lng !== null ? dispatchKm(pickup, { lat: r.lat, lng: r.lng }) : null }));
   const rule = openAll ? "all" : s.listTo;
   if (rule === "category") seen = seen.filter((r) => r.vehicle_status === "approved" && (r.vehicle_category_ids ?? []).includes(trip.category_id));
