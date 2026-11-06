@@ -5,9 +5,15 @@
 # when GitHub is busy, and GitHub turns off schedules in a repository with no activity for 60 days.
 name: keep-awake
 
+# CI cost cut (owner 2026-11-06), WAITS FOR OWNER OK before merge (rule 21):
+# the schedule is turned off here; a free outside pinger (UptimeRobot, every
+# 5 min, GET https://movera-server.onrender.com/healthz) keeps the server
+# awake instead. Measured: GitHub ran this schedule only 10 times in 3 days
+# (planned: 432), so it did not keep the server awake anyway. The workflow
+# stays (manual run) and the old line is kept below for an easy undo:
+#   schedule:
+#     - cron: "*/10 * * * *"
 on:
-  schedule:
-    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 permissions: {}
