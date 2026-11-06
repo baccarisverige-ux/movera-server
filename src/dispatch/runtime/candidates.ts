@@ -14,6 +14,7 @@ import { type Place, PICKUP_KMH, RADAR_LIST_MAX } from "./shared.js";
 import { driversWithCategoryOff } from "../../accounts/phoneData.js";
 import { NOT_HELD } from "../../reservations/view.js";
 import { contract } from "../../contract/contract.js";
+import { blockedDriversFor } from "../../blockedPairs/service.js";
 
 /* ---------------------------------------------------------------- candidates */
 
@@ -160,7 +161,11 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
   const kept: Array<(typeof rows)[number] & { km: number; neighbour: boolean }> = [];
   // v0.18.33 (owner Q7): drivers on a trip who reach this booked ride in time, km counted from their drop-off.
   const reach = await onTripReach(trx, trip, rows.filter((r) => r.online_status === "on_trip"), now);
+  // v0.18.40 §64 (fix job 10, contract.json#blockedPairs.dispatch): a driver blocked with this rider is never a
+  // candidate — Exclusive, Radar, airport queue, admin money offer, on-trip next trip (one query for the round).
+  const blocked = await blockedDriversFor(trx, trip.rider_id, rows.map((r) => r.driver_id));
   for (const d of rows) {
+    if (blocked.has(d.driver_id)) continue;
     const next = d.online_status === "on_trip" ? reach.get(d.driver_id) : undefined;
     if (d.online_status === "on_trip" && next === undefined) continue;
     const own = d.zone_ids.includes(trip.zone_id);
