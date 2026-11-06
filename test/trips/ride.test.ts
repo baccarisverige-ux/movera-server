@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
+import { driverPerformance } from "../../src/drivers/performance.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { driverCancelReasonsOf, rideHandlers, takeBackNotHeading } from "../../src/trips/ride.js";
@@ -433,6 +434,32 @@ describe("the driver's cancel", () => {
     expect(fare).toBeLessThan(21700);
     expect((await driverRow("A")).online_status).toBe("online");
   });
+  // L-c (owner 2026-11-06 "Remove it (Safe)"): the driver app no longer says "Doesn't count" next to a reason. Every
+  // give-back counts on the driver's record, whatever the reason: also the car, safety and accident reasons that
+  // admin's Cancel reasons page can still mark "Doesn't count" (the server never reads that mark).
+  const counted = async () => (await driverPerformance(database.db, drivers.A.id, clock.now)).tripsCancelled;
+  for (const reasonCode of ["vehicle_issue_before_start", "unsafe_pickup"]) {
+    it(`a give-back before boarding with ${reasonCode} counts on the driver's record`, async () => {
+      const before = await counted();
+      const { tripId, version } = await accepted();
+      await step(tripId, "head-to-pickup", version);
+      const res = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: version + 1, reasonCode });
+      expect(res.statusCode).toBe(200);
+      expect(await counted()).toBe(before + 1);
+    });
+  }
+  for (const reasonCode of ["vehicle_issue_on_trip", "safety_concern_on_trip", "accident_or_road_emergency"]) {
+    it(`a give-back on board with ${reasonCode} counts on the driver's record`, async () => {
+      const before = await counted();
+      const { tripId, version } = await accepted();
+      const { version: v } = await toBoard(tripId, version, 60);
+      await step(tripId, "start", v);
+      await advance(60);
+      const res = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: v + 1, reasonCode });
+      expect(res.json().status).toBe("cancelled_by_driver");
+      expect(await counted()).toBe(before + 1);
+    });
+  }
 });
 
 describe("the rider ends early", () => {
