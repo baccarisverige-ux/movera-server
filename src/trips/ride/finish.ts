@@ -217,7 +217,7 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
   if (!allowed || trip[column] !== "pending") {
     throw new ApiError("invalid_transition", allowed ? "This trip was already rated." : "This trip cannot be rated.", { reason: allowed ? "already_rated" : "rating_not_allowed", projection: tripProjection(trip, who.actor) });
   }
-  // v0.18.40 §64 (fix job 10, contract.json#blockedPairs.rating): "don't match again" only at ≤ atStars while on;
+  // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.rating): "don't match again" only at ≤ atStars while on;
   // the pair is written with the rating and the answer is unchanged (owner "Never told").
   if (rating.dontMatchAgain === true) {
     const dm = await dontMatchSettings(trx, trip.zone_id);

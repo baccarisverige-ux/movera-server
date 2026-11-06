@@ -161,7 +161,7 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
   const kept: Array<(typeof rows)[number] & { km: number; neighbour: boolean }> = [];
   // v0.18.33 (owner Q7): drivers on a trip who reach this booked ride in time, km counted from their drop-off.
   const reach = await onTripReach(trx, trip, rows.filter((r) => r.online_status === "on_trip"), now);
-  // v0.18.40 §64 (fix job 10, contract.json#blockedPairs.dispatch): a driver blocked with this rider is never a
+  // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.dispatch): a driver blocked with this rider is never a
   // candidate — Exclusive, Radar, airport queue, admin money offer, on-trip next trip (one query for the round).
   const blocked = await blockedDriversFor(trx, trip.rider_id, rows.map((r) => r.driver_id));
   for (const d of rows) {

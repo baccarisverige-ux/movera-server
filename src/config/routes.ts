@@ -91,7 +91,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
       // The same rules (and presets) as POST /trips/{id}/tip checks.
       document = { ...document, tipRules: tipRulesOf(document, zone.country, zone.currency, await tipAmountsFor(deps.db, zoneId, zone.currency)) };
     }
-    // v0.18.40 §64 (fix job 10, contract.json#blockedPairs.settings): both apps get the zone's CountryRules.dontMatchAgain.
+    // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.settings): both apps get the zone's CountryRules.dontMatchAgain.
     document = { ...document, dontMatchAgain: await dontMatchSettings(deps.db, zoneId) };
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);

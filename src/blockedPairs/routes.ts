@@ -9,7 +9,7 @@ import { parseBody } from "../http/validate.js";
 import { audit } from "../admin/audit.js";
 import { blockPair, listPairs, removePair } from "./service.js";
 
-/** v0.18.40 §64 fix job 10 (contract.json#blockedPairs.admin / .undo): Admin › Trips › Block this pair; Support's undo. */
+/** v0.18.43 §64 fix job 10 (contract.json#blockedPairs.admin / .undo): Admin › Trips › Block this pair; Support's undo. */
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const BlockBody = z.object({ reason: z.string().trim().min(1).max(300).optional() }).strict();
 const ListQuery = z.object({ riderId: ID.optional(), driverId: ID.optional() });

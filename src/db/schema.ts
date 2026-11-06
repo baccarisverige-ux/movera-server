@@ -1416,7 +1416,7 @@ export interface AirportQueueEntriesTable {
   left_reason: string | null;
 }
 
-/** v0.18.40 §64 (fix job 10, migration 0087): a rider and a driver never matched again (active while removed_at is null). */
+/** v0.18.43 §64 (fix job 10, migration 0087): a rider and a driver never matched again (active while removed_at is null). */
 export interface BlockedPairsTable {
   pair_id: string;
   rider_id: string;

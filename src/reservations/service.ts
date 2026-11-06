@@ -230,7 +230,7 @@ export async function listedDrivers(ex: Executor, trip: TripRow, s: ReservationS
   if (options.onlyDriverId) query = query.where("drivers.driver_id", "=", options.onlyDriverId);
   const rows = await query.execute();
   const pickup = trip.pickup as { lat: number; lng: number };
-  // v0.18.40 §64 (fix job 10, contract.json#blockedPairs.dispatch): never listed to (nor claimable by) a blocked driver.
+  // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.dispatch): never listed to (nor claimable by) a blocked driver.
   const blocked = await blockedDriversFor(ex, trip.rider_id, rows.map((r) => r.driver_id));
   let seen = rows
     .filter((r) => !trip.cancelled_driver_ids.includes(r.driver_id) && !blocked.has(r.driver_id))

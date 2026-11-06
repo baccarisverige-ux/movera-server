@@ -1,4 +1,4 @@
--- v0.18.40 §64 fix job 10 (owner G16 Q16-4; G15 2026-11-05 "Never told", "No, only Support"; contract.json#blockedPairs):
+-- v0.18.43 §64 fix job 10 (owner G16 Q16-4; G15 2026-11-05 "Never told", "No, only Support"; contract.json#blockedPairs):
 -- a rider and a driver who are never matched again. Rule 33: the pair lives only here; every dispatch path reads it.
 CREATE TABLE IF NOT EXISTS blocked_pairs (
   pair_id    text PRIMARY KEY,

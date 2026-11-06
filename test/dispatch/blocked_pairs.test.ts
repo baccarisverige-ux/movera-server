@@ -14,7 +14,7 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
 /**
- * Fix job 10 "never match pair" (v0.18.40 §64, owner G16 Q16-4; G15 2026-11-05 "Never told", "No, only Support").
+ * Fix job 10 "never match pair" (v0.18.43 §64, owner G16 Q16-4; G15 2026-11-05 "Never told", "No, only Support").
  * Rule 36: every test fails on main — there is no blocked_pairs table, no admin route, the rating ignores
  * dontMatchAgain, and the only free driver of a blocked pair still gets the offer.
  */
@@ -100,7 +100,7 @@ async function finishedWith(key: Key): Promise<string> {
 }
 const pairs = () => database.db.selectFrom("blocked_pairs" as never).selectAll().where("removed_at" as never, "is", null).execute() as Promise<Array<Record<string, unknown>>>;
 
-describe("never match pair — fix job 10 (v0.18.40 §64)", () => {
+describe("never match pair — fix job 10 (v0.18.43 §64)", () => {
   it("admin blocks the pair: the only free driver of that pair gets no offer, the search goes on (today he is offered)", async () => {
     const done = await finishedWith("A");
     const blocked = await call(app, "POST", `/admin/trips/${done}/block-pair`, admin, { reason: "Rude to driver" });

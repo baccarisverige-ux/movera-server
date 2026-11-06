@@ -227,7 +227,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await zoneRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.36 §60 (fix job 9): the airport queue.
     await airportQueueRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    // v0.18.40 §64 fix job 10: blocked pairs (Admin › Trips › Block this pair, Support undo).
+    // v0.18.43 §64 fix job 10: blocked pairs (Admin › Trips › Block this pair, Support undo).
     await blockedPairRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =

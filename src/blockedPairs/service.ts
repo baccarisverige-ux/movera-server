@@ -4,7 +4,7 @@ import { contract } from "../contract/contract.js";
 import { newId } from "../ids.js";
 
 /**
- * v0.18.40 §64 fix job 10 (contract.json#blockedPairs; owner G16 Q16-4, G15 2026-11-05 "Never told", "No, only Support").
+ * v0.18.43 §64 fix job 10 (contract.json#blockedPairs; owner G16 Q16-4, G15 2026-11-05 "Never told", "No, only Support").
  * A blocked pair (rider + driver) is never matched again. Nothing here is ever shown to the rider or the driver.
  * Rule 33: the pair lives only in blocked_pairs (partial unique index); every server copy reads the same rows.
  */
