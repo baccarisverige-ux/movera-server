@@ -63,6 +63,8 @@ export class Sim {
   private serverDb: Db | undefined;
   app!: FastifyInstance;
   hub!: NotificationHub;
+  /** The server settings this copy runs with (a second server copy in a rule-33 test uses the same ones). */
+  env!: ReturnType<typeof readEnv>;
   worker!: TimerWorker;
   base!: string;
   /** What the server logged at start (prepareTestWeek). */
@@ -94,6 +96,7 @@ export class Sim {
       ADMIN_PANEL_URL: "https://admin.example.test/live/",
       ...(options.osrmUrl ? { OSRM_URL: options.osrmUrl } : {}),
     });
+    sim.env = env;
     await prepareTestWeek(db, env, { info: (data, message) => sim.startLog.push({ data, message }) }, { now: sim.clock.now });
     sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL]);
     await sim.hub.start();

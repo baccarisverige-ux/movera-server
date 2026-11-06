@@ -18,7 +18,7 @@ import { openEventStream, wantsEventStream } from "./sse.js";
 
 export const ADMIN_EVENTS_CHANNEL = "movera_admin_events";
 
-type LiveSpec = { path: string; permission: string; retentionHours: number; types: Record<string, { permission: string }>; limits: { maxStreamsPerAdmin: number; maxStreamsTotal: number } };
+type LiveSpec = { path: string; permission: string; retentionHours: number; replayMax: number; types: Record<string, { permission: string }>; limits: { maxStreamsPerAdmin: number; maxStreamsTotal: number } };
 export const LIVE = (contract as unknown as { adminLiveEvents: LiveSpec }).adminLiveEvents;
 
 export type AdminLiveRow = { sequence: string; type: string; entity_id: string; zone_id: string | null; occurred_at: Date };
@@ -36,6 +36,18 @@ export function liveEventOf(row: AdminLiveRow, serverTime: Date) {
 
 async function rowsAfter(ex: Executor, after: number, limit: number): Promise<AdminLiveRow[]> {
   return (await ex.selectFrom("admin_live_events").selectAll().where("sequence", ">", String(after)).orderBy("sequence").limit(limit).execute()) as AdminLiveRow[];
+}
+
+/** The newest event sequence (0 when none): where a stream without a usable cursor starts (contract v0.18.47 §69). */
+async function newestSequence(ex: Executor): Promise<number> {
+  const top = await ex.selectFrom("admin_live_events").select((eb) => eb.fn.max("sequence").as("top")).executeTakeFirst();
+  return Number(top?.top ?? 0);
+}
+
+/** More than `max` events after the cursor? Reads at most max + 1 sequences (primary key order). */
+async function moreThanAfter(ex: Executor, after: number, max: number): Promise<boolean> {
+  const rows = await ex.selectFrom("admin_live_events").select("sequence").where("sequence", ">", String(after)).orderBy("sequence").limit(max + 1).execute();
+  return rows.length > max;
 }
 
 /** Were events after the cursor pruned (contract: an older cursor gets one resync)? */
@@ -189,7 +201,9 @@ export async function adminEventRoutes(app: FastifyInstance, deps: GuardDeps & {
     const query = parseQuery(Query, request.query);
     const who = await narrowToZones(deps.db, signedIn, query);
     const lastEventId = request.headers["last-event-id"];
-    const after = query.after ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : 0);
+    const headerCursor = typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : undefined;
+    const hasCursor = query.after !== undefined || headerCursor !== undefined;
+    const after = query.after ?? headerCursor ?? 0;
     const resync = async () => ((await cursorTooOld(deps.db, after)) ? { sequence: after, type: "resync", entityId: who.subjectId, zoneId: null, occurredAt: now().toISOString(), serverTime: now().toISOString() } : undefined);
 
     if (!wantsEventStream(request)) {
@@ -203,7 +217,16 @@ export async function adminEventRoutes(app: FastifyInstance, deps: GuardDeps & {
     }
     if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available; poll the admin lists instead.", { reason: "realtime_unavailable", retryAfterSeconds: 10 });
     const feed = adminLiveFeed(deps.db, deps.hub, { warn: (data, message) => request.log.warn(data, message) });
-    const first = await resync();
+    // v0.18.47 §69 (503 proof, Rules plan/FIX-503-ADMIN-BURST-2026-11-06.md: 5571 old events per new stream filled the DB pool):
+    // no cursor = from now (no old events, no resync); a cursor too old or with more than replayMax unseen events = ONE resync,
+    // then live from the newest event. The start is a DB sequence, so it is the same on every server copy (rule 33).
+    let first: ReturnType<typeof liveEventOf> | undefined;
+    let start = after;
+    if (!hasCursor) start = await newestSequence(deps.db);
+    else if ((first = await resync()) || (await moreThanAfter(deps.db, after, LIVE.replayMax))) {
+      first ??= { sequence: after, type: "resync", entityId: who.subjectId, zoneId: null, occurredAt: now().toISOString(), serverTime: now().toISOString() };
+      start = await newestSequence(deps.db);
+    }
     // No await between the cap check and join (which counts the stream at once): two requests cannot both pass.
     feed.admit(who);
     const stream = openEventStream(request, reply);
@@ -211,7 +234,7 @@ export async function adminEventRoutes(app: FastifyInstance, deps: GuardDeps & {
     if (first) stream.send(after, first);
     const leave = await feed.join({
       who,
-      last: after,
+      last: start,
       catchingUp: true,
       send: (row) => void stream.send(Number(row.sequence), liveEventOf(row, now())),
       cursor: (sequence) => stream.cursor(sequence),
