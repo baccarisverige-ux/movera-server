@@ -28,7 +28,9 @@ const post = (url: string, payload: unknown) =>
 beforeAll(async () => {
   database = await freshDatabase();
   await seedTestPhones(database.db);
-  const pricing = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/pricing_document.json`, "utf8"));
+  // v0.18.42 §67: the Q9 warning cases (35 m) run with the zone's minTripMeters off (0); the 300 m default refuses them
+  // (dropoff_too_close, test/quotes/same_place.test.ts). Owner to confirm the Q9 "warn but can book" vs 300 m refusal.
+  const pricing = { ...JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/pricing_document.json`, "utf8")), minTripMeters: 0 };
   await database.db.insertInto("config_live").values({ doc: "pricing", zone_id: "Z001", version: 3, document: JSON.stringify(pricing), published_at: clock.now, published_by: null }).execute();
   app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: SECRET }), logger: false, db: database.db, clock: () => clock.now, router });
   const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone: TEST_PHONES[0]!, app: "rider" } });

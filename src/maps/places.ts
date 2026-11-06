@@ -4,7 +4,8 @@
  */
 
 export type Suggestion = { title: string; subtitle?: string; latitude?: number; longitude?: number; placeId?: string };
-export type GeocodeResult = { address?: string; latitude?: number; longitude?: number; placeId?: string };
+/** v0.18.42 §67: name is the place's own name (e.g. "Solna Centrum") when resolved by placeId; address is the street address. */
+export type GeocodeResult = { address?: string; name?: string; latitude?: number; longitude?: number; placeId?: string };
 
 export interface Places {
   autocomplete(input: { query: string; bias?: { lat: number; lng: number }; limit: number; language: string; session: string; regions?: string[] }): Promise<Suggestion[]>;
@@ -82,7 +83,34 @@ export class GooglePlaces implements Places {
     return url.toString();
   }
 
-  async geocode(input: { query: string; placeId?: string; language: string }): Promise<GeocodeResult> {
+  /**
+   * v0.18.42 §67 (proven same-address cause): a picked suggestion is resolved with Place Details (New), which carries the
+   * place's own name; the Geocoding API only knows its formatted street address. Null when Details has no location.
+   */
+  private async details(input: { placeId: string; language: string; session?: string }): Promise<GeocodeResult | null> {
+    const url = new URL(`https://places.googleapis.com/v1/places/${encodeURIComponent(input.placeId)}`);
+    url.searchParams.set("languageCode", input.language);
+    if (input.session) url.searchParams.set("sessionToken", input.session);
+    let data: Record<string, unknown>;
+    try {
+      data = await this.json(url.toString(), { headers: { "x-goog-api-key": this.key, "x-goog-fieldmask": "id,displayName,formattedAddress,location" } });
+    } catch (error) {
+      if (error instanceof PlacesUnavailable) return null;
+      throw error;
+    }
+    const location = data["location"] as { latitude?: number; longitude?: number } | undefined;
+    if (typeof location?.latitude !== "number" || typeof location.longitude !== "number") return null;
+    const name = (data["displayName"] as { text?: string } | undefined)?.text?.trim();
+    const address = typeof data["formattedAddress"] === "string" ? data["formattedAddress"] : undefined;
+    const id = typeof data["id"] === "string" ? data["id"] : input.placeId;
+    return { ...(name ? { name } : {}), ...(address ? { address } : {}), latitude: location.latitude, longitude: location.longitude, placeId: id };
+  }
+
+  async geocode(input: { query: string; placeId?: string; language: string; session?: string }): Promise<GeocodeResult> {
+    if (input.placeId) {
+      const found = await this.details({ placeId: input.placeId, language: input.language, ...(input.session ? { session: input.session } : {}) });
+      if (found) return found;
+    }
     const data = await this.json(this.geocodeUrl(input.placeId ? { place_id: input.placeId, language: input.language } : { address: input.query, language: input.language, region: this.region }));
     const status = data["status"];
     if (status === "ZERO_RESULTS") return {};

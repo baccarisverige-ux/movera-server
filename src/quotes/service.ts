@@ -13,6 +13,7 @@ import { asksSeatOutsideChildSeat, riderExtras, type PriceExtras } from "../rule
 import { airportExtras } from "../pricing/airport.js";
 import { surgeFor, type DocSurge } from "../pricing/surge.js";
 import { haversineKm } from "../maps/routing.js";
+import { checkMinTrip, minTripMetersOf } from "./minTrip.js";
 
 /**
  * POST /quotes (contract §3.5, §7): a price per category for one route, from the pickup zone's published pricing
@@ -118,6 +119,8 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   if (kind === "scheduled") await checkWindow(trx, zone.zoneId, new Date(body.scheduledAt!), now);
   const pricing = await liveDocument<PricingDocument>(trx, "pricing", zone.zoneId);
   if (pricing === null) throw new ApiError("unavailable", "Prices are not set for this area yet.", { reason: "pricing_not_published", retryAfterSeconds: 60 });
+  // v0.18.42 §67 (contract.json#sameAddress): a drop-off closer than the zone's minTripMeters is refused before routing.
+  checkMinTrip(minTripMetersOf(pricing.document), body);
 
   const leg = await deps.router.route(quotePoints(body));
   const km = leg.distanceMeters / 1000;

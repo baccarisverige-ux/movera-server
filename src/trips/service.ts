@@ -20,6 +20,7 @@ import { walletCovers } from "./ride/money.js";
 import { afterRiderCancel, bookingRulesFor, newPin, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
 import type { PricingDocument } from "../rules/fare.js";
 import { checkMaxStops } from "./onTripSettings.js";
+import { checkMinTripLive } from "../quotes/minTrip.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./commands.js";
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { raiseMaxFactor } from "../config/raiseLimit.js";
@@ -88,6 +89,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   if (!matches) throw badRequest("The ride does not match its price. Ask for a new one.", "quote_mismatch");
   // v0.18.9 (contract.json#onTrip.maxStops): the zone's max now (an admin may have lowered it since the quote).
   await checkMaxStops(trx, quote.zone_id, body.stops.length);
+  // v0.18.42 §67 (contract.json#sameAddress): the zone's minTripMeters now (an admin may have raised it since the quote).
+  await checkMinTripLive(trx, quote.zone_id, body);
   // v0.18.10 (contract.json#finish.paymentMethods.booking): off in the zone's admin settings, coming soon (the server does
   // not take it yet) or not a method at all, each with its own reason; never a silent fail.
   await checkPaymentMethod(trx, quote.zone_id, body.paymentMethod, options.paymentMethods);
