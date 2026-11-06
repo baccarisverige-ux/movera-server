@@ -10,7 +10,7 @@ import type { LatLng, Router } from "../../src/maps/routing.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /**
- * Same-address fix (contract v0.18.42 §67, contract.json#sameAddress). Proven case (Rules plan/FIX-PLAN-RERUN-2026-11-05.md
+ * Same-address fix (contract v0.18.44 §67, contract.json#sameAddress). Proven case (Rules plan/FIX-PLAN-RERUN-2026-11-05.md
  * "Proof: same-address booking"): the rider stood at 59.360000,18.000000 and "Solna Centrum" resolved to 59.3596729,18.0005394,
  * 46 m away; the server priced it at the minimum fare and booked it. /quotes and /trips must refuse it (dropoff_too_close).
  */

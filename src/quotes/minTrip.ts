@@ -4,7 +4,7 @@ import { liveDocument } from "../config/service.js";
 import { haversineKm, type LatLng } from "../maps/routing.js";
 
 /**
- * Same-address fix (contract v0.18.42 §67, contract.json#sameAddress.minTripMeters): the zone pricing document's
+ * Same-address fix (contract v0.18.44 §67, contract.json#sameAddress.minTripMeters): the zone pricing document's
  * minTripMeters (admin Pricing page, 0-5000 m, 0 = off, missing = 0 = off per owner Q9). Read from the zone's live pricing document in the
  * database (the shared config read, same as the prices), so every server copy applies the same value (rule 33).
  */

@@ -4,7 +4,7 @@
  */
 
 export type Suggestion = { title: string; subtitle?: string; latitude?: number; longitude?: number; placeId?: string };
-/** v0.18.42 §67: name is the place's own name (e.g. "Solna Centrum") when resolved by placeId; address is the street address. */
+/** v0.18.44 §67: name is the place's own name (e.g. "Solna Centrum") when resolved by placeId; address is the street address. */
 export type GeocodeResult = { address?: string; name?: string; latitude?: number; longitude?: number; placeId?: string };
 
 export interface Places {
@@ -84,7 +84,7 @@ export class GooglePlaces implements Places {
   }
 
   /**
-   * v0.18.42 §67 (proven same-address cause): a picked suggestion is resolved with Place Details (New), which carries the
+   * v0.18.44 §67 (proven same-address cause): a picked suggestion is resolved with Place Details (New), which carries the
    * place's own name; the Geocoding API only knows its formatted street address. Null when Details has no location.
    */
   private async details(input: { placeId: string; language: string; session?: string }): Promise<GeocodeResult | null> {

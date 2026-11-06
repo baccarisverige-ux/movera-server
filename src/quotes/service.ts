@@ -119,7 +119,7 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   if (kind === "scheduled") await checkWindow(trx, zone.zoneId, new Date(body.scheduledAt!), now);
   const pricing = await liveDocument<PricingDocument>(trx, "pricing", zone.zoneId);
   if (pricing === null) throw new ApiError("unavailable", "Prices are not set for this area yet.", { reason: "pricing_not_published", retryAfterSeconds: 60 });
-  // v0.18.42 §67 (contract.json#sameAddress): a drop-off closer than the zone's minTripMeters is refused before routing.
+  // v0.18.44 §67 (contract.json#sameAddress): a drop-off closer than the zone's minTripMeters is refused before routing.
   checkMinTrip(minTripMetersOf(pricing.document), body);
 
   const leg = await deps.router.route(quotePoints(body));

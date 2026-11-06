@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GooglePlaces } from "../../src/maps/places.js";
 
 /**
- * Same-address fix (contract v0.18.42 §67): a picked suggestion is resolved by its placeId and the answer carries the place's own
+ * Same-address fix (contract v0.18.44 §67): a picked suggestion is resolved by its placeId and the answer carries the place's own
  * name. Proven case: "Solna Centrum" came back only as Google's formatted_address "Solnavägen 13, 171 45 Solna, Sverige".
  */
 describe("geocode by placeId answers the place name", () => {
