@@ -7,6 +7,11 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+  # Owner 2026-11-06: a push to main runs a quick check only (contract,
+  # typecheck, lint, build); the full test suite runs on PRs, by hand, and
+  # every 12 hours on main (skipped when main has no new commit in 13 hours).
+  schedule:
+    - cron: '41 3,15 * * *'
   workflow_dispatch:
 
 permissions:
@@ -28,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       code: ${{ steps.diff.outputs.code }}
@@ -37,6 +43,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            since="$(date -u -d '13 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+            n="$(gh api "repos/$GITHUB_REPOSITORY/commits?sha=main&since=$since" --jq 'length')"
+            echo "commits on main since $since: $n"
+            if [ "$n" = 0 ]; then echo "code=false" >> "$GITHUB_OUTPUT"; else echo "code=true" >> "$GITHUB_OUTPUT"; fi
+            exit 0
+          fi
           if [ -z "$PR" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           files="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename')"
           # Any file that is not *.md and not under docs/ counts as code.
@@ -79,10 +92,13 @@ jobs:
       - run: npm run lint
       - name: npm audit (production deps, high and above)
         run: npm run audit:prod
+      # Quick check on a push to main (owner 2026-11-06): no tests there; the
+      # same commit already passed them on its PR, and the 12-hour run re-tests main.
       - name: Tests with coverage (floors in vitest.config.ts)
+        if: github.event_name != 'push'
         run: npm run test:coverage
       - name: Upload coverage report
-        if: always()
+        if: always() && github.event_name != 'push'
         uses: actions/upload-artifact@v4
         with:
           name: coverage
