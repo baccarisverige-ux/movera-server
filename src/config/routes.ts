@@ -108,7 +108,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available.", { reason: "realtime_unavailable", retryAfterSeconds: 5 });
     const lastEventId = request.headers["last-event-id"];
     const seen = typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : (await liveDocument(deps.db, doc, zoneId))?.version ?? 0;
-    await streamConfig(request, reply, { db: deps.db, hub: deps.hub, ...(deps.clock ? { clock: deps.clock } : {}) }, doc, zoneId, seen, actor === "rider" ? who.subjectId : undefined);
+    await streamConfig(request, reply, { db: deps.db, hub: deps.hub, ...(deps.clock ? { clock: deps.clock } : {}) }, doc, zoneId, seen, actor === "rider" ? who.subjectId : undefined, actor === "driver" ? who.subjectId : undefined);
     return reply;
   };
   app.get(`${API_PREFIX}/rider/config/stream`, streamAppDoc("rider_app_config", "rider"));

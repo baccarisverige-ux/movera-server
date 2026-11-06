@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { TEST_PHONES, seedTestPhones } from "../../src/auth/testPhones.js";
 import { CONFIG_CHANNEL } from "../../src/config/service.js";
-import { TRIP_EVENTS_CHANNEL } from "../../src/db/tripLog.js";
+import { TRIP_EVENTS_CHANNEL, appendTripEvent } from "../../src/db/tripLog.js";
 import { readEnv } from "../../src/env.js";
 import { NotificationHub } from "../../src/realtime/hub.js";
 import { adminSession } from "../support/admin.js";
@@ -292,5 +292,111 @@ describe("driver offer feed", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(sse.events).toEqual([]);
     sse.close();
+  });
+});
+
+// v0.18.45 §68 (contract.json#driverReservationsLive, Rules plan/LA-BUILD-PLAN-2026-11-06.md §2): booked-ride hint on the driver config stream.
+describe("driver_reservations_changed (v0.18.45 §68)", () => {
+  const subjectOf = (headers: Record<string, string>) =>
+    JSON.parse(Buffer.from(headers["authorization"]!.split(" ")[1]!.split(".")[1]!, "base64url").toString("utf8")).sub as string;
+  const asBooked = (tripId: string, zoneId = "Z001") =>
+    database.db.updateTable("trips").set({ scheduled_at: new Date(Date.now() + 86_400_000), zone_id: zoneId }).where("trip_id", "=", tripId).execute();
+  const touch = (tripId: string) =>
+    database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId, kind: "trip_projection", version: 1, projection: {} }));
+  const quiet = () => new Promise((r) => setTimeout(r, 300));
+  const kinds = (sse: Sse, kind: string) => sse.events.filter((e) => e.data["kind"] === kind);
+  let rider: Record<string, string>;
+  let driver: Record<string, string>;
+  beforeAll(async () => {
+    // Own numbers: the six test phones are already used above (resend limit 30 s).
+    await seedTestPhones(database.db, ["+46701740611", "+46701740612"]);
+    rider = (await signIn(app, "+46701740611", "rider")).headers;
+    driver = (await signIn(app, "+46701740612", "driver")).headers;
+  });
+
+  it("a booked ride of the zone that changes (here: cancelled) reaches the zone's driver stream; rider_trip_changed is unchanged", async () => {
+    const raw: Array<Record<string, unknown>> = [];
+    const off = hub.subscribe(TRIP_EVENTS_CHANNEL, (p) => { if (p !== null) raw.push(p); });
+    const trip = await bookTrip(rider);
+    await asBooked(trip.tripId);
+    const drv = await listen("/driver/config/stream?zoneId=Z001", driver);
+    const rid = await listen("/rider/config/stream?zoneId=Z001", rider);
+    expect(drv.status).toBe(200);
+    await quiet();
+    await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
+    expect(await until(() => kinds(drv, "driver_reservations_changed").length === 1)).toBe(true);
+    const ev = kinds(drv, "driver_reservations_changed")[0]!;
+    expect(Object.keys(ev.data).sort()).toEqual(["eventId", "kind", "occurredAt", "serverTime", "tripId"]);
+    expect(ev.data["tripId"]).toBe(trip.tripId);
+    // The rider event keeps exactly its v0.18.32 shape; the NOTIFY payload only gained fields.
+    expect(await until(() => kinds(rid, "rider_trip_changed").length >= 1)).toBe(true);
+    expect(Object.keys(kinds(rid, "rider_trip_changed").at(-1)!.data).sort()).toEqual(["eventId", "kind", "occurredAt", "serverTime", "tripId"]);
+    expect(kinds(rid, "driver_reservations_changed")).toHaveLength(0);
+    const last = raw.filter((p) => p["tripId"] === trip.tripId).at(-1)!;
+    expect(last).toMatchObject({ tripId: trip.tripId, sequence: 3, riderId: subjectOf(rider), zoneId: "Z001", scheduled: true });
+    off();
+    drv.close();
+    rid.close();
+  });
+
+  it("a now-ride sends nothing; a booked ride of another zone sends nothing unless it names the driver", async () => {
+    const drv = await listen("/driver/config/stream?zoneId=Z001", driver);
+    await quiet();
+    const now = await bookTrip(rider);
+    await call(app, "POST", `/trips/${now.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
+    const other = await bookTrip(rider);
+    await asBooked(other.tripId, "Z002");
+    await touch(other.tripId);
+    await quiet();
+    expect(kinds(drv, "driver_reservations_changed")).toHaveLength(0);
+    await database.db.updateTable("trips").set({ driver_id: subjectOf(driver) }).where("trip_id", "=", other.tripId).execute();
+    await touch(other.tripId);
+    expect(await until(() => kinds(drv, "driver_reservations_changed").length === 1)).toBe(true);
+    expect(kinds(drv, "driver_reservations_changed")[0]!.data["tripId"]).toBe(other.tripId);
+    drv.close();
+    await database.db.updateTable("trips").set({ status: "cancelled_by_rider", driver_id: null }).where("trip_id", "=", other.tripId).execute();
+  });
+
+  it("a rolled-back change sends nothing", async () => {
+    const trip = await bookTrip(rider);
+    await asBooked(trip.tripId);
+    const drv = await listen("/driver/config/stream?zoneId=Z001", driver);
+    await quiet();
+    await expect(database.db.transaction().execute(async (trx) => {
+      await appendTripEvent(trx, { tripId: trip.tripId, kind: "trip_projection", version: 1, projection: {} });
+      throw new Error("roll back");
+    })).rejects.toThrow("roll back");
+    await quiet();
+    expect(kinds(drv, "driver_reservations_changed")).toHaveLength(0);
+    await touch(trip.tripId);
+    expect(await until(() => kinds(drv, "driver_reservations_changed").length === 1)).toBe(true);
+    drv.close();
+    await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
+  });
+
+  it("rule 33: with 2 server copies (2 hubs), one commit reaches the driver streams on both copies", async () => {
+    const hub2 = new NotificationHub(database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL]);
+    await hub2.start();
+    const app2 = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: "stream-test-secret".padEnd(48, "s") }), logger: false, db: database.db, router: fixedRouter, hub: hub2 });
+    await app2.listen({ host: "127.0.0.1", port: 0 });
+    const base2 = `http://127.0.0.1:${(app2.server.address() as AddressInfo).port}/api/v1`;
+    try {
+      const trip = await bookTrip(rider);
+      await asBooked(trip.tripId);
+      const one = await listen("/driver/config/stream?zoneId=Z001", driver);
+      const saved = base;
+      base = base2;
+      const two = await listen("/driver/config/stream?zoneId=Z001", driver);
+      base = saved;
+      expect([one.status, two.status]).toEqual([200, 200]);
+      await quiet();
+      await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
+      expect(await until(() => kinds(one, "driver_reservations_changed").length === 1 && kinds(two, "driver_reservations_changed").length === 1)).toBe(true);
+      one.close();
+      two.close();
+    } finally {
+      await app2.close();
+      await hub2.stop();
+    }
   });
 });
