@@ -127,7 +127,8 @@ describe("automatic dispatch at run time", () => {
     expect((await tripOf(tripId)).status).toBe("offered");
   });
 
-  it("nobody answers: Exclusive to each in turn, then Radar to everyone; the rider sees the waiting steps; at 8 min the trip expires", async () => {
+  // v0.18.39 §63 (owner N2 "search keeps going until the rider cancels"): no end at 8 min (busy) or 10 min (maxWaitMin).
+  it("nobody answers: Exclusive to each in turn, then Radar to everyone; the rider sees the waiting steps; past 8 and 10 min the search goes on", async () => {
     const tripId = await book();
     for (let i = 0; i < 12; i++) await advance(15);
     const kinds = await database.db.selectFrom("offers").select(["kind", "driver_id", "sent_at"]).where("trip_id", "=", tripId).orderBy("sent_at").orderBy("offer_id").execute();
@@ -137,14 +138,15 @@ describe("automatic dispatch at run time", () => {
     clock.now = new Date(clock.now.getTime() + 0);
     for (let t = 0; t < 40; t++) await advance(10);
     const steps = await database.db.selectFrom("searches").select(["fired"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
-    expect(steps.fired).toEqual(expect.arrayContaining(["w3", "w4"]));
-    for (let t = 0; t < 10; t++) await advance(10);
-    const done = await tripOf(tripId);
-    expect(done.status).toBe("expired");
-    expect(await openOffers("A")).toEqual([]);
+    expect(steps.fired).toEqual(expect.arrayContaining(["w3", "nd"]));
+    for (let t = 0; t < 30; t++) await advance(10);
+    const still = await tripOf(tripId);
+    expect(["searching", "offered"]).toContain(still.status);
+    expect(still.searchStep).toMatchObject({ kind: "no_driver_nearby" });
   });
 
-  it("Keep waiting? wait adds 3 minutes; stop is a free cancel", async () => {
+  it("Keep waiting? on a live ride wait changes nothing (no end); stop is a free cancel", async () => {
+    await database.db.updateTable("config_live").set({ document: JSON.stringify({ ...sample("dispatch_document"), noDriverNearby: { on: false, afterSec: 300 } }) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
     const tripId = await book();
     for (let t = 0; t < 30; t++) await advance(10);
     const asked = await tripOf(tripId);
@@ -154,7 +156,7 @@ describe("automatic dispatch at run time", () => {
     const again = await call(app, "POST", `/trips/${tripId}/keep-waiting`, rider, { answer: "wait" });
     expect(again.json()).toMatchObject({ code: "invalid_transition" });
     const search = await database.db.selectFrom("searches").select(["started_at", "end_at"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
-    expect((search.end_at.getTime() - search.started_at.getTime()) / 1000).toBe(660);
+    expect(search.end_at.toISOString()).toBe("9999-12-31T00:00:00.000Z");
     for (let t = 0; t < 21; t++) await advance(10);
     expect(["searching", "offered"]).toContain((await tripOf(tripId)).status);
 
@@ -163,6 +165,7 @@ describe("automatic dispatch at run time", () => {
     const stop = await call(app, "POST", `/trips/${second}/keep-waiting`, rider, { answer: "stop" });
     expect(stop.json()).toMatchObject({ status: "cancelled_by_rider", cancellation: { reasonCode: "wait_too_long", fee: null } });
     expect(await openOffers("A")).toEqual([]);
+    await database.db.updateTable("config_live").set({ document: JSON.stringify(sample("dispatch_document")) }).where("doc", "=", "dispatch").where("zone_id", "=", "Z001").execute();
   });
 
   it("a paused zone sends no offers until resumed; an ops admin forces a mode at once (v0.7.2, one admin is enough)", async () => {

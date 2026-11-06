@@ -91,8 +91,8 @@ async function safetyCauses(ctx: Ctx): Promise<Cause[]> {
 
 async function dispatchCauses(ctx: Ctx): Promise<Cause[]> {
   const out: Cause[] = [];
-  const waiting = await sql<{ trip_id: string; zone_id: string; rider: string | null; rider_id: string; started: Date }>`
-    SELECT t.trip_id, t.zone_id, t.rider_id, r.first_name AS rider, coalesce(t.search_started_at, t.created_at) AS started
+  const waiting = await sql<{ trip_id: string; zone_id: string; rider: string | null; rider_id: string; started: Date; step: string | null }>`
+    SELECT t.trip_id, t.zone_id, t.rider_id, r.first_name AS rider, coalesce(t.search_started_at, t.created_at) AS started, t.search_step->>'kind' AS step
       FROM trips t JOIN riders r ON r.rider_id = t.rider_id
      WHERE t.kind = 'live' AND t.driver_id IS NULL AND t.status IN ('requested', 'searching', 'offered')`.execute(ctx.ex);
   // Owner 2026-11-04: a zone's free drivers are counted by their LIVE position (the zone of their latest fix,
@@ -110,9 +110,12 @@ async function dispatchCauses(ctx: Ctx): Promise<Cause[]> {
   for (const w of waiting.rows) {
     const country = countryOf(ctx, w.zone_id);
     const s = settingsOf(ctx, country);
+    const minutes = minutesBetween(w.started, ctx.now);
+    // v0.18.39 §63 (N2): the rider was shown "No driver nearby" (searchStep no_driver_nearby), at the same moment.
+    const nd = s.kind("no_driver_nearby");
+    if (nd.on && w.step === "no_driver_nearby") out.push({ key: `no_driver_nearby:${w.trip_id}`, kind: "no_driver_nearby", country, zoneId: w.zone_id, level: nd.level, title: T("{0} has no driver nearby ({1} min)", [name(w.rider, "Rider"), minutes]), detail: T("{0} · {1}", [zoneName(ctx, w.zone_id), w.trip_id]), ref: { tripId: w.trip_id, riderId: w.rider_id } });
     const k = s.kind("long_wait");
     if (!k.on) continue;
-    const minutes = minutesBetween(w.started, ctx.now);
     // Owner A1: Important from the zone's live at-risk minutes; Critical from the kind's own limit.
     const level = levelFor(minutes, { info: null, important: s.zone(w.zone_id).liveAtRiskMin, critical: k.limits.critical }, "up");
     if (level) out.push({ key: `long_wait:${w.trip_id}`, kind: "long_wait", country, zoneId: w.zone_id, level, title: T("{0} has waited {1} min", [name(w.rider, "Rider"), minutes]), detail: T("{0} · {1}", [zoneName(ctx, w.zone_id), w.trip_id]), ref: { tripId: w.trip_id, riderId: w.rider_id } });
@@ -145,6 +148,17 @@ async function bookedCauses(ctx: Ctx): Promise<Cause[]> {
       LEFT JOIN drivers tb ON tb.driver_id = t.reservation->'takenBack'->>'driverId'
      WHERE t.kind = 'scheduled' AND t.scheduled_at IS NOT NULL AND t.scheduled_at <= ${new Date(ctx.now.getTime() + 4 * 3600_000)}
        AND t.status IN ('requested', 'searching', 'offered', 'accepted')`.execute(ctx.ex);
+  // v0.18.39 §63 (P17): booked rides the server ended with no driver found, for 24 h (or until an admin marks it done).
+  const ended = await sql<{ trip_id: string; zone_id: string; rider_id: string; rider: string | null; scheduled_at: Date }>`
+    SELECT t.trip_id, t.zone_id, t.rider_id, r.first_name AS rider, t.scheduled_at
+      FROM trips t JOIN riders r ON r.rider_id = t.rider_id
+     WHERE t.kind = 'scheduled' AND t.status = 'expired' AND t.scheduled_at IS NOT NULL AND t.reservation->>'noDriverFound' = 'true'
+       AND t.ended_at > ${new Date(ctx.now.getTime() - 24 * 3600_000)}`.execute(ctx.ex);
+  for (const t of ended.rows) {
+    const country = countryOf(ctx, t.zone_id);
+    const k = settingsOf(ctx, country).kind("booked_no_driver_ended");
+    if (k.on) out.push({ key: `booked_no_driver_ended:${t.trip_id}`, kind: "booked_no_driver_ended", country, zoneId: t.zone_id, level: k.level, title: T("{0}'s booked ride at {1} ended: no driver found", [name(t.rider, "Rider"), hhmm(t.scheduled_at, tz(ctx, t.zone_id))]), detail: T("{0} · {1}", [zoneName(ctx, t.zone_id), t.trip_id]), ref: { tripId: t.trip_id, riderId: t.rider_id } });
+  }
   for (const t of rows.rows) {
     const country = countryOf(ctx, t.zone_id);
     const s = settingsOf(ctx, country);
@@ -373,7 +387,7 @@ function solvedText(ctx: Ctx, row: LiveRow, look: Lookups): Text {
     }
     if (row.kind === "car_lost") return T("The car's position came back {0}", [at(ctx.now)]);
   }
-  if (ref.tripId && ["long_wait", "late_reservation", "booked_at_risk", "booked_late", "booked_not_started", "booked_taken_back", "payment_failed"].includes(row.kind)) {
+  if (ref.tripId && ["long_wait", "late_reservation", "booked_at_risk", "booked_late", "booked_not_started", "booked_taken_back", "payment_failed", "no_driver_nearby"].includes(row.kind)) {
     const trip = look.trips.get(ref.tripId);
     if (trip) {
       if (row.kind === "payment_failed") return trip.payment_status === "failed" ? T("Solved by itself {0}", [at(ctx.now)]) : T("Paid {0}", [at(trip.updated_at)]);

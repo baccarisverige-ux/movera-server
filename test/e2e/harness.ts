@@ -474,6 +474,19 @@ export async function fakeOsrm(route: { distance: number; duration: number }): P
 }
 
 /** The rider books; the timers send the offers; the (first of the) `drivers` that got an offer accepts it. */
+/**
+ * v0.18.39 §63: a live ride's search never ends by itself any more (owner N2); the way a trip expires is a booked ride
+ * with no driver at pickup + noDriverStopAfterMin (P17). Books one 40 min ahead and lets time pass until it expired.
+ */
+export async function expiredBookedRide(sim: Sim, rider: Rider): Promise<string> {
+  const at = new Date(sim.clock.now.getTime() + 40 * 60_000).toISOString();
+  const quote = (await rider.quote({ categoryIds: ["economy"], kind: "scheduled", scheduledAt: at })).body["quotes"][0];
+  const res = await rider.post("/trips", { quoteId: quote.quoteId, categoryId: "economy", pickup: PLACES.sergels, dropoff: PLACES.medborgar, stops: [], kind: "scheduled", scheduledAt: at, paymentMethod: "cash" });
+  if (res.status !== 201) throw new Error(`booked ${res.status} ${JSON.stringify(res.body)}`);
+  await sim.advance((Date.parse(at) - sim.clock.now.getTime()) / 1000 + 16 * 60);
+  return res.body["tripId"];
+}
+
 export async function bookAndAccept(sim: Sim, rider: Rider, drivers: Driver | Driver[], options: Parameters<Rider["book"]>[0] = {}): Promise<{ tripId: string; quote: Json; accepted: Json; driver: Driver }> {
   const { tripId, quote } = await rider.book(options);
   await sim.tick();
