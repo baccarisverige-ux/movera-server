@@ -302,6 +302,8 @@ describe("Q2: cancel after the driver arrived counts as a no-show (admin switch,
     const soon = new Date(clock.now.getTime() + 10 * 60_000);
     const freeUntil = new Date(soon.getTime() + 5 * 60_000).toISOString();
     await database.db.updateTable("trips").set({
+      // v0.18.49 §71 (owner Q10 update): booked an hour ago, like the accept, so the 5-min booking grace is long over.
+      created_at: new Date(clock.now.getTime() - 3600_000),
       scheduled_at: soon, status: "arrived", driver_id: drivers.A.id, accepted_at: new Date(clock.now.getTime() - 3600_000), arrived_at: clock.now, version: booked.version + 1,
       waiting: JSON.stringify({ arrivedAt: clock.now.toISOString(), freeUntil, noShowAt: freeUntil, chargedSeconds: 0 }),
     }).where("trip_id", "=", booked.tripId).execute();
