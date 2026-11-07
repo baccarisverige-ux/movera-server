@@ -54,13 +54,16 @@ describe("scenario 1: sign-in for rider, driver and admin; expired session; refr
     expect(lost.status).toBe(200);
     const first = await sim.request("POST", "/auth/refresh", undefined, { refreshToken: driver.session.refreshToken }, { key: null });
     expect(first.status).toBe(200);
+    // v0.18.49 §71 (owner Q6): the old token is theft once its replacement WAS used (an unused one is a lost answer).
+    const second = await sim.request("POST", "/auth/refresh", undefined, { refreshToken: first.body["refreshToken"] }, { key: null });
+    expect(second.status).toBe(200);
     await sim.advance(61);
     const reused = await sim.request("POST", "/auth/refresh", undefined, { refreshToken: driver.session.refreshToken }, { key: null });
     expect(reused.status).toBe(401);
     expect(reused.body["reason"]).toBe("refresh_token_reused");
     // The thief's copy and the owner's newest copy are both dead now.
-    expect((await sim.request("GET", "/driver/profile", first.body["accessToken"])).body["reason"]).toBe("session_ended");
-    const newest = await sim.request("POST", "/auth/refresh", undefined, { refreshToken: first.body["refreshToken"] }, { key: null });
+    expect((await sim.request("GET", "/driver/profile", second.body["accessToken"])).body["reason"]).toBe("session_ended");
+    const newest = await sim.request("POST", "/auth/refresh", undefined, { refreshToken: second.body["refreshToken"] }, { key: null });
     expect(newest.status).toBe(401);
   });
 
@@ -68,9 +71,12 @@ describe("scenario 1: sign-in for rider, driver and admin; expired session; refr
     const admin = await sim.admin("dispatcher");
     const first = await sim.request("POST", "/admin/auth/refresh", undefined, { refreshToken: admin.session.refreshToken }, { key: null });
     expect(first.status).toBe(200);
+    // v0.18.49 §71 (owner Q6): theft = the replacement was used.
+    const second = await sim.request("POST", "/admin/auth/refresh", undefined, { refreshToken: first.body["refreshToken"] }, { key: null });
+    expect(second.status).toBe(200);
     await sim.advance(61);
     const reused = await sim.request("POST", "/admin/auth/refresh", undefined, { refreshToken: admin.session.refreshToken }, { key: null });
     expect(reused.status).toBe(401);
-    expect((await sim.request("GET", "/admin/auth/me", first.body["accessToken"])).status).toBe(401);
+    expect((await sim.request("GET", "/admin/auth/me", second.body["accessToken"])).status).toBe(401);
   });
 });

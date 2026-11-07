@@ -491,6 +491,8 @@ export interface RefreshTokensTable {
   used_at: Timestamp | null;
   replaced_by: string | null;
   created_at: Timestamp;
+  /** v0.18.49 §71 (owner Q6): when this used token was accepted once more after the retry window (lost answer). */
+  late_retry_at: Timestamp | null;
 }
 
 export interface PushDevicesTable {

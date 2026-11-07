@@ -80,9 +80,11 @@ describe("G1-D3 / G1-B6: why the app was signed out, and the retry window", () =
     const challenge = (await post("/auth/otp/request", { phone, app: "rider" })).json();
     const tokens = (await post("/auth/otp/verify", { phone, sessionId: challenge.sessionId, code: TEST_CODE })).json();
     const next = (await post("/auth/refresh", { refreshToken: tokens.refreshToken })).json();
+    // v0.18.49 §71 (owner Q6): the replacement is used, so the old token coming back is theft (not a lost answer).
+    const after = (await post("/auth/refresh", { refreshToken: next.refreshToken })).json();
     advance(REFRESH_RETRY_WINDOW_MS / 1000 + 1);
     seen.add((await post("/auth/refresh", { refreshToken: tokens.refreshToken })).json().reason);
-    seen.add((await post("/auth/refresh", { refreshToken: next.refreshToken })).json().reason);
+    seen.add((await post("/auth/refresh", { refreshToken: after.refreshToken })).json().reason);
     const other = (await post("/auth/otp/verify", { phone, sessionId: (await post("/auth/otp/request", { phone, app: "rider" })).json().sessionId, code: TEST_CODE })).json();
     advance((AUTH.tokens.refreshExpiresDays + 1) * 86400);
     seen.add((await post("/auth/refresh", { refreshToken: other.refreshToken })).json().reason);

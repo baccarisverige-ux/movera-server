@@ -66,7 +66,9 @@ export const REFRESH_TTL_MS = AUTH.tokens.refreshExpiresDays * 24 * 60 * 60 * 10
 export const TEST_CODE = AUTH.testSignIn.code;
 /**
  * A refresh answer lost on a bad connection makes the app send the same refresh token again. Within this
- * window that is a retry, not theft: the unused replacement is dropped and a new pair is issued.
+ * window that is a retry, not theft: the unused replacement is dropped and a new pair is issued. v0.18.49 §71
+ * (owner Q6): later than the window, still while the replacement was never used, it is accepted ONCE more
+ * (contract.json#auth.tokens.lostAnswer); the window then runs again from that answer.
  */
 export const REFRESH_RETRY_WINDOW_MS = AUTH.tokens.refreshRetryWindowSeconds * 1000; // v0.18.5 (G1-B6): 60 s, contract.json#auth.tokens.refreshRetry
 
@@ -473,8 +475,9 @@ const unauthenticated = (reason: string) => new ApiError("unauthenticated", "Ple
 type Rotated = { ok: true; sessionId: string; actor: Actor; subjectId: string; refreshToken: string } | { ok: false; error: ApiError };
 
 /**
- * Rotates a refresh token inside `trx`. A token used before is theft unless it is a lost-answer retry (same token
- * again within REFRESH_RETRY_WINDOW_MS while its replacement was never used); theft ends the whole session.
+ * Rotates a refresh token inside `trx`. A token used before is theft unless it is a lost answer: its replacement was
+ * never used and it comes back either within REFRESH_RETRY_WINDOW_MS of its last use (a retry, as often as needed) or,
+ * once, later than that (v0.18.49 §71 owner Q6, refresh_tokens.late_retry_at). Theft ends the whole session.
  * `actors` keeps the app and admin token families apart; `ttlMs` is the new token's lifetime.
  */
 export async function rotateRefresh(trx: Trx, refreshToken: string, now: Date, options: { actors: readonly Actor[]; ttlMs: number }): Promise<Rotated> {
@@ -495,13 +498,19 @@ export async function rotateRefresh(trx: Trx, refreshToken: string, now: Date, o
     const replacement = token.replaced_by
       ? await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", token.replaced_by).forUpdate().executeTakeFirst()
       : undefined;
-    const isRetry = now.getTime() - token.used_at.getTime() <= REFRESH_RETRY_WINDOW_MS && replacement !== undefined && replacement.used_at === null;
-    if (!isRetry) {
+    const unusedReplacement = replacement !== undefined && replacement.used_at === null;
+    // The window runs from the token's last use: its first use, or the late answer it got (owner Q6).
+    const lastUse = Math.max(token.used_at.getTime(), token.late_retry_at?.getTime() ?? 0);
+    const isRetry = unusedReplacement && now.getTime() - lastUse <= REFRESH_RETRY_WINDOW_MS;
+    // v0.18.49 §71 (owner Q6 "Accept lost answer"): later than the window, accepted once (D9: a dead zone > 60 s).
+    const isLostAnswer = unusedReplacement && !isRetry && token.late_retry_at === null;
+    if (!isRetry && !isLostAnswer) {
       await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "refresh_token_reused" }).where("session_id", "=", session.session_id).execute();
       return { ok: false, error: unauthenticated("refresh_token_reused") };
     }
     // Drop the replacement the app never received; it can no longer be used.
-    await trx.updateTable("refresh_tokens").set({ used_at: now }).where("token_sha256", "=", replacement.token_sha256).execute();
+    await trx.updateTable("refresh_tokens").set({ used_at: now }).where("token_sha256", "=", replacement!.token_sha256).execute();
+    if (isLostAnswer) await trx.updateTable("refresh_tokens").set({ late_retry_at: now }).where("token_sha256", "=", hash).execute();
   }
 
   const next = newRefreshToken();

@@ -194,7 +194,7 @@ describe("verifying the code", () => {
 });
 
 describe("tokens, refresh and sign-out", () => {
-  it("a refresh gives a new pair; the old refresh token used again later ends the session", async () => {
+  it("a refresh gives a new pair; the old refresh token used again later, after the new one was used, ends the session", async () => {
     const first = await signIn(RIDER_PHONE);
     advance(5);
     const refreshed = await post("/auth/refresh", { refreshToken: first.refreshToken });
@@ -202,12 +202,16 @@ describe("tokens, refresh and sign-out", () => {
     const second = refreshed.json();
     expect(second).toMatchObject({ actor: "rider", expiresIn: 900 });
     expect(second.refreshToken).not.toBe(first.refreshToken);
+    // v0.18.49 §71 (owner Q6): only a USED replacement makes the old token theft (an unused one is a lost answer,
+    // test/auth/lost_answer_q6.test.ts).
+    advance(5);
+    const third = (await post("/auth/refresh", { refreshToken: second.refreshToken })).json();
     advance(REFRESH_RETRY_WINDOW_MS / 1000 + 1);
     const reused = await post("/auth/refresh", { refreshToken: first.refreshToken });
     expect(reused.statusCode).toBe(401);
     expect(reused.json()).toMatchObject({ code: "unauthenticated", reason: "refresh_token_reused" });
     // Theft ends the session: even the newest token stops working.
-    const newest = await post("/auth/refresh", { refreshToken: second.refreshToken });
+    const newest = await post("/auth/refresh", { refreshToken: third.refreshToken });
     expect(newest.json()).toMatchObject({ code: "unauthenticated", reason: "session_ended" });
   });
 
