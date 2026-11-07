@@ -14,7 +14,7 @@ import { nextStatus } from "../../rules/transitions.js";
 import { tripProjection, type EndInfo } from "../projection.js";
 import { headingSettingsFor, isFreeCancel as headingFreeCancel, NOT_HEADING_REASON, noticeTakenBack, type HeadingState } from "../headingCheck.js";
 import { type Money, type Waiting, REASONS, ONBOARD } from "./shared.js";
-import { rulesOf, waitingOf, outstandingLine } from "./settings.js";
+import { rulesOf, waitingOf, outstandingLine, bookedNoShowFee } from "./settings.js";
 import { notify } from "../../notifications/service.js";
 import { contract } from "../../contract/contract.js";
 import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet } from "./money.js";
@@ -38,7 +38,11 @@ export async function noShow(trx: Trx, driverId: string, tripId: string, body: {
 /** The no-show itself (driver after the wait, or an admin who may waive the fee). */
 export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "admin", waive: boolean, now: Date): Promise<TripRow> {
   // v0.18.8: the no-show fee of the rule applied at arrive (waiting.noShowFee), else the category's.
-  const ruleFee = (trip.waiting as Waiting | null)?.noShowFee ?? (await waitingOf(trx, trip)).noShowFee;
+  // v0.18.51 §73 (owner "Booked fees"): a booked ride's no-show is the booking fee (its reservation cancel rule), worked
+  // out now from the trip's kept rules (also for a trip that arrived before, whose waiting still holds the no-show fee).
+  // Owner Q2: no booked cancel rule = the normal no-show fee (the category's, as for a live ride).
+  const normalFee = (trip.waiting as Waiting | null)?.noShowFee ?? (await waitingOf(trx, trip)).noShowFee;
+  const ruleFee = trip.kind === "scheduled" ? await bookedNoShowFee(trx, trip, normalFee) : normalFee;
   const fee: Money | null = !waive && ruleFee.amountMinor > 0 ? { amountMinor: ruleFee.amountMinor, currency: trip.currency } : null;
   const share = (await rulesOf(trx, trip)).noShowDriverSharePct;
   // v0.18.7 (Q6): feeKind and the driver's part, so both apps show the amount.
@@ -103,7 +107,9 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   // Checker M1: it is a no-show only from waiting.freeUntil on, the moment the driver himself could mark one (a
   // reservation's clock runs from the booked time); a cancel seconds after arrival is the normal cancel fee.
   const waiting = trip.waiting as Waiting | null;
-  if (trip.status === "arrived" && rules.cancelAfterArrivedIsNoShow && waiting !== null && now.getTime() >= Date.parse(waiting.freeUntil)) {
+  // v0.18.51 §73 (owner 2026-11-07 "If rider cancel do booking fee … (for only reservation)"): a booked ride's cancel
+  // after arrival is the booked late-cancel fee below (feeKind cancel), never turned into the no-show fee.
+  if (trip.kind !== "scheduled" && trip.status === "arrived" && rules.cancelAfterArrivedIsNoShow && waiting !== null && now.getTime() >= Date.parse(waiting.freeUntil)) {
     const noShow = (waiting.noShowFee ?? (await waitingOf(ex, trip)).noShowFee).amountMinor;
     return noShow > 0 ? { fee: { amountMinor: noShow, currency: trip.currency }, kind: "no_show" } : null;
   }
