@@ -178,7 +178,9 @@ describe("G3-R1: no position for 5 minutes while online → set offline by the s
       const mine = await notices(who);
       expect(mine.length).toBe(before + 1);
       expect(mine[mine.length - 1]).toMatchObject({ title: HOME.setOffline.text.title[who.language], deep_link: "movera-driver://home", audience: "driver" });
-      expect(`${mine[mine.length - 1]!.title} – ${mine[mine.length - 1]!.body.toLowerCase()}`).toBe(HOME.setOffline.text.line[who.language]);
+      const last = mine[mine.length - 1]!;
+      // v0.18.48 §70: the French line is two sentences ("Title. Body."); sv/en keep "Title – body".
+      expect(who.language === "fr" ? `${last.title}. ${last.body}.` : `${last.title} – ${last.body.toLowerCase()}`).toBe(HOME.setOffline.text.line[who.language]);
       const auditRows = await database.db.selectFrom("admin_audit").selectAll().where("target_id", "=", who.id).where("action", "=", HOME.setOffline.auditAction).execute();
       expect(auditRows.length).toBeGreaterThan(0);
       expect(auditRows[auditRows.length - 1]).toMatchObject({ target_type: "driver", admin_id: null, zone_id: who.zone });

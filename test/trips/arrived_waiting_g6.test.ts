@@ -551,7 +551,7 @@ describe("item 4: the waiting / no-show / cancel rules in the Terms (SE + FR, sv
   it("GET /legal/FR?zoneId=FR-PC: the Paris numbers in euro, in French", async () => {
     const filled = (await call(app, "GET", "/legal/FR?zoneId=FR-PC", {})).json();
     expect(filled.terms.text.fr).toContain("3.1 Attente à la prise en charge.");
-    expect(filled.terms.text.fr).toContain("puis 12,26 € par minute ; client absent après 5 min, frais 65 €.");
+    expect(filled.terms.text.fr).toContain("puis 12,26 € par minute ; absence du passager après 5 min, frais 65 €.");
     expect(filled.terms.text.en).toContain("then €12.26 per minute");
   });
 });
