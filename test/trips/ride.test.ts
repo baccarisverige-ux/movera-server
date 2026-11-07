@@ -518,6 +518,7 @@ describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTr
     expect(rows[0]).toMatchObject({ title: "Chauffeur trouvé", bell: true, audience: "rider", body: "Driver A est en route vers vous." });
     // v0.18.49 §71: owner Q12 « Votre chauffeur … » titles, owner Q9 trips/{id} link.
     expect(rows.map((r) => r.title)).toEqual(["Chauffeur trouvé", "Votre chauffeur arrive bientôt", "Votre chauffeur est arrivé"]);
+    expect(rows[1]!.body).toBe("Préparez-vous à le rejoindre.");
     for (const r of rows) expect(r.deep_link).toBe(`movera://trips/${tripId}`);
     const trip = await riderView(tripId);
     await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
