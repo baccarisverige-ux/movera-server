@@ -39,7 +39,10 @@ export async function applyCommand(
   const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   // The stored event carries the full projection; each stream redacts it for its viewer (§4).
   const sequence = Number(updated.sequence) + 1;
-  await appendTripEvent(trx, { tripId: trip.trip_id, kind: "trip_projection", version, occurredAt: input.now, projection: tripProjection(updated, "admin", { sequence }) });
+  // v0.18.50 §72 (L7, contract.json#lifecycle0_18_50.l7): a driver's give-back before boarding (his cancel and the
+  // take-backs counted as his cancel) is told as driver_cancelled, so the rider can tell it from an admin reassign.
+  const driverGaveBack = input.actor === "driver" && input.command === "cancel" && trip.driver_id !== null && (to === "searching" || to === "requested");
+  await appendTripEvent(trx, { tripId: trip.trip_id, kind: driverGaveBack ? "driver_cancelled" : "trip_projection", version, occurredAt: input.now, projection: tripProjection(updated, "admin", { sequence }) });
   // v0.18.13 (contract.json#riderTripPush): the rider's push for the key moments (never for his own cancel).
   const moment = momentOf(trip, updated);
   if (moment !== null) await pushTripMoment(trx, moment === "driver_changed" ? trip : updated, moment, input.now);
