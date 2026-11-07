@@ -18,6 +18,7 @@ import { effectiveWaiting } from "../waitingRules.js";
 import { type Money, type Place, type Waiting, NEAR_DROPOFF_METERS, NEAR_DROPOFF, ARRIVE_MAX_METERS, positionMaxAge } from "./shared.js";
 import { rulesOf, waitingOf, fareWithWaiting, fareColumns, walletFirstOf } from "./settings.js";
 import { releaseDriver, feeSplit, walletCovers } from "./money.js";
+import { backToDispatch } from "./cancel.js";
 import { pickupInRunningEvent, WAITING_PAID, WAITING_NO_SHOW } from "./timers.js";
 
 /* ---------------------------------------------------------------- the driver's steps */
@@ -188,6 +189,12 @@ async function failSilentTrip(trx: Trx, trip: TripRow, alert: SilentAlert, now: 
       driver_silent_alert: JSON.stringify(alert),
     },
   });
+  // v0.18.50 §72 (L12, contract.json#lifecycle0_18_50.l12): a live trip he queued behind this one would start for a car
+  // that is gone: it goes back to dispatch without him (the rider gets driver_changed). Same transaction, rows locked.
+  if (trip.driver_id) {
+    const queued = await trx.selectFrom("trips").selectAll().where("driver_id", "=", trip.driver_id).where("status", "=", "accepted").where("next_after_trip_id", "is not", null).forUpdate().execute();
+    for (const next of queued) await backToDispatch(trx, next, { command: "release", actor: "system", now, exclude: trip.driver_id });
+  }
   await releaseDriver(trx, trip.driver_id, now);
   return failed;
 }
