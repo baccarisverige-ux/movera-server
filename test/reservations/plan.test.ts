@@ -3,12 +3,13 @@ import { describe, expect, it } from "vitest";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { takeBackDecision } from "../../src/reservations/takeBack.js";
 import { chargedAtBooking, driverTimes, freeByTime, planOf, RESERVATION_DEFAULTS, reservationSettings, windowError } from "../../src/reservations/plan.js";
+import { isFreeCancel } from "../../src/rules/cancelFees.js";
 
 /** v0.18.17 Book later: every case of contracts/fixtures/book_later.json (owner 2026-11-03 Q1–Q6). */
 type PlanCase = { id: string; bookedAt: string; scheduledAt: string; settings: Record<string, unknown>; expect: Record<string, string | null> };
 const fx = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/book_later.json`, "utf8")) as {
   plan: PlanCase[];
-  riderCancel: { id: string; minutesBefore: number; freeChangeBeforeMin: number; expect: string }[];
+  riderCancel: { id: string; minutesBefore: number; freeChangeBeforeMin: number; freeMin: number; expect: string }[];
   driverTimes: { id: string; acceptedAt: string; scheduledAt: string; onlineBeforeMin: number; reminderMin: number[]; offlineBackupAfterMin: number; expect: { reminders: string[]; goOnlineAt: string; offlineCheckAt: string } }[];
 };
 const iso = (d: Date | null) => (d === null ? null : d.toISOString().replace(".000Z", "Z"));
@@ -26,12 +27,19 @@ describe("book later plan (fixtures/book_later.json)", () => {
       expect({ mode: p.mode, dispatchAt: iso(p.dispatchAt), popupAt: iso(p.popupAt), openAllAt: iso(p.openAllAt), noDriverAt: iso(p.noDriverAt), riderReminderAt: iso(p.riderReminderAt), freeChangeUntil: iso(p.freeChangeUntil) }).toEqual(c.expect);
     });
   }
+  // v0.18.49 §71 (owner Q10 'Category rule B only'): only the category's reservation freeMin decides a booked cancel;
+  // freeChangeBeforeMin is the free-change window (freeByTime, reschedule) and no longer makes a cancel free.
   for (const c of fx.riderCancel) {
     it(`rider cancel ${c.id}`, () => {
-      const at = new Date("2026-11-05T08:00:00Z");
-      expect(freeByTime(new Date(at.getTime() - c.minutesBefore * 60_000), at, { freeChangeBeforeMin: c.freeChangeBeforeMin }) ? "free" : "reservation_fee_rule").toBe(c.expect);
+      const rule = { freeMin: c.freeMin, type: "fixed" as const, value: 5000, min: null, max: null };
+      expect(isFreeCancel({ kind: "reservation", rule, minutesBeforePickup: c.minutesBefore }) ? "free" : "fee").toBe(c.expect);
     });
   }
+  it("freeChangeBeforeMin is still the free-change window (reschedule): more than that many minutes before pickup", () => {
+    const at = new Date("2026-11-05T08:00:00Z");
+    const before = (min: number) => new Date(at.getTime() - min * 60_000);
+    expect([freeByTime(before(61), at, { freeChangeBeforeMin: 60 }), freeByTime(before(60), at, { freeChangeBeforeMin: 60 })]).toEqual([true, false]);
+  });
   for (const c of fx.driverTimes) {
     it(`driver ${c.id}`, () => {
       const t = driverTimes(new Date(c.acceptedAt), new Date(c.scheduledAt), { onlineBeforeMin: c.onlineBeforeMin, spareMin: 15, reminderMin: c.reminderMin }, c.offlineBackupAfterMin);
