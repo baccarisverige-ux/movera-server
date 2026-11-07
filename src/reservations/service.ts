@@ -536,12 +536,6 @@ export async function startReservation(trx: Trx, driverId: string, tripId: strin
 
 /* ---------------------------------------------------------------- rider */
 
-/** Q6: more than freeChangeBeforeMin minutes before pickup a rider cancel is free (ride.ts riderCancelFee). */
-export async function freeCancelByTime(ex: Executor, trip: TripRow, now: Date): Promise<boolean> {
-  if (trip.kind !== "scheduled" || !trip.scheduled_at) return false;
-  return freeByTime(now, trip.scheduled_at, await settingsFor(ex, trip.zone_id));
-}
-
 /** POST /trips/{tripId}/reschedule (contract.json#bookLater.rider.change). */
 export async function rescheduleTrip(trx: Trx, riderId: string, tripId: string, body: { quoteId: string; expectedVersion: number }, now: Date): Promise<TripRow> {
   const trip = await lockTrip(trx, tripId).catch(() => undefined);
