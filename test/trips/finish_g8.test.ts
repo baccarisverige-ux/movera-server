@@ -165,7 +165,7 @@ describe("payment methods: cash 'Pay in car', card, Apple Pay; no Google Pay (ow
     const contract = JSON.parse(readFileSync(`${CONTRACTS_DIR}/contract.json`, "utf8"));
     expect(contract.zonePaymentMethods.values).toEqual(["cash", "card", "apple_pay"]);
     expect(contract.paymentMethods).not.toContain("google_pay");
-    expect(contract.finish.paymentMethods.texts.cash).toEqual({ sv: "Betala i bilen", fr: "Payer dans la voiture", en: "Pay in car" });
+    expect(contract.finish.paymentMethods.texts.cash).toEqual({ sv: "Betala i bilen", fr: "Payer en espèces à bord", en: "Pay in car" });
     // A document still listing google_pay (published before the change) is served without it.
     await publish("rider_app_config", "Z001", riderDoc({ paymentMethods: ["cash", "google_pay", "apple_pay", "card"] }));
     const se = (await call(app, "GET", "/rider/config?zoneId=Z001", rider)).json();

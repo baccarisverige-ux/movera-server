@@ -1084,12 +1084,12 @@
       "texts": {
         "expired": {
           "sv": "Du loggades ut – logga in igen",
-          "fr": "Vous avez été déconnecté de votre compte. Reconnectez-vous.",
+          "fr": "Vous avez été déconnecté – reconnectez-vous",
           "en": "You were signed out – please sign in again"
         },
         "revoked": {
           "sv": "Du loggades ut – logga in igen",
-          "fr": "Vous avez été déconnecté de votre compte. Reconnectez-vous.",
+          "fr": "Vous avez été déconnecté – reconnectez-vous",
           "en": "You were signed out – please sign in again"
         }
       },
@@ -4048,7 +4048,7 @@
       },
       "electric": {
         "sv": "Helt eldriven bil",
-        "fr": "Voiture 100 % électrique",
+        "fr": "Véhicule 100 % électrique",
         "en": "Fully electric car"
       },
       "pet": {
@@ -4776,7 +4776,7 @@
         },
         "driver_to_pickup": {
           "sv": "Förare till upphämtning",
-          "fr": "Chauffeur vers la prise en charge",
+          "fr": "Chauffeur en route vers le lieu de prise en charge",
           "en": "Driver to pickup"
         },
         "arrived": {
@@ -4796,7 +4796,7 @@
         },
         "approaching_dropoff": {
           "sv": "Närmar sig avlämning",
-          "fr": "Approche de la destination",
+          "fr": "Approche de la dépose",
           "en": "Approaching drop-off"
         },
         "completed": {
@@ -4816,7 +4816,7 @@
         },
         "cancelled_by_admin": {
           "sv": "Avbokad av admin",
-          "fr": "Annulée par un admin",
+          "fr": "Annulée par un administrateur",
           "en": "Cancelled by admin"
         },
         "cancelled_by_system": {
@@ -4826,7 +4826,7 @@
         },
         "no_show": {
           "sv": "Utebliven",
-          "fr": "Absence",
+          "fr": "Absence du passager",
           "en": "No show"
         },
         "expired": {
@@ -5706,7 +5706,7 @@
         },
         "cancelAfterArrived": {
           "sv": "Avbokning efter att föraren anlänt och den fria väntetiden gått ut räknas som utebliven kund",
-          "fr": "Une annulation après l’arrivée du chauffeur et la fin de l’attente gratuite est considérée comme une absence du passager.",
+          "fr": "Annuler après l’arrivée du chauffeur et la fin de l’attente gratuite compte comme un client absent",
           "en": "Cancelling after the driver has arrived and the free waiting is over counts as a no-show"
         },
         "pickupMove": {
@@ -5831,17 +5831,17 @@
       "texts": {
         "island": {
           "sv": "Upphämtningen flyttades",
-          "fr": "Le lieu de prise en charge a changé",
+          "fr": "Le point de départ a été déplacé",
           "en": "Pickup moved"
         },
         "tooFar": {
           "sv": "Du kan flytta upphämtningen högst {meters} m. Avboka och boka om för en annan plats.",
-          "fr": "Vous pouvez déplacer le point de départ de {meters} m au plus. Annulez et réservez à nouveau pour un autre endroit.",
+          "fr": "Vous pouvez déplacer le lieu de prise en charge de {meters} m au plus. Annulez et réservez à nouveau pour un autre endroit.",
           "en": "You can move the pickup at most {meters} m. Cancel and book again for another place."
         },
         "fixedAfterArrival": {
           "sv": "Föraren är redan framme – upphämtningen kan inte flyttas",
-          "fr": "Le chauffeur est déjà là – le point de départ ne peut plus être déplacé",
+          "fr": "Le chauffeur est déjà arrivé. Vous ne pouvez plus modifier le lieu de prise en charge.",
           "en": "The driver is already there – the pickup cannot be moved"
         }
       },
@@ -6038,7 +6038,7 @@
       "texts": {
         "action": {
           "sv": "Ångra utebliven kund",
-          "fr": "Annuler le client absent",
+          "fr": "Annuler une déclaration d’absence",
           "en": "Reverse no-show"
         },
         "reason": {
@@ -6077,12 +6077,12 @@
         },
         "riderPaid": {
           "sv": "Den fria väntetiden är slut",
-          "fr": "L’attente gratuite est terminée",
+          "fr": "Le délai d’attente gratuit est écoulé",
           "en": "The free waiting is over"
         },
         "riderNoShow": {
           "sv": "Föraren kan nu avsluta resan som utebliven",
-          "fr": "Le chauffeur peut maintenant clôturer la course pour absence",
+          "fr": "Le chauffeur peut maintenant clôturer la course pour absence du passager.",
           "en": "The driver may now end the ride as a no-show"
         }
       }
@@ -6231,7 +6231,7 @@
         "adminSettings": {
           "en": "Ride check",
           "sv": "Resekontroll",
-          "fr": "Contrôle de course"
+          "fr": "Vérification de sécurité de la course"
         },
         "adminHelp": {
           "en": "Movera asks the rider and the driver “Is everything OK?” when the car stops too long, leaves the route or the trip ends far from the destination. No answer in time alerts the safety team.",
@@ -6480,7 +6480,7 @@
       "texts": {
         "cash": {
           "sv": "Betala i bilen",
-          "fr": "Payer dans la voiture",
+          "fr": "Payer en espèces à bord",
           "en": "Pay in car"
         },
         "cashHint": {
@@ -6751,7 +6751,7 @@
         },
         "pickup_pay": {
           "sv": "Upphämtning",
-          "fr": "Lieu de prise en charge",
+          "fr": "Approche",
           "en": "Pickup pay"
         },
         "bonus": {
@@ -7263,7 +7263,7 @@
         "reservation_no_driver_found": {
           "title": {
             "sv": "Ingen förare hittades",
-            "fr": "Aucun chauffeur trouvé",
+            "fr": "Aucun chauffeur disponible pour le moment",
             "en": "No driver found"
           },
           "body": {

@@ -122,7 +122,7 @@ export async function verifyEmailChange(db: Db, who: Who, input: { challengeId: 
 const TEXT = {
   phone: { sv: "Ditt telefonnummer ändrades", fr: "Votre numéro de téléphone a été modifié", en: "Your phone number was changed" },
   email: { sv: "Din e-postadress ändrades", fr: "Votre adresse e-mail a été modifiée", en: "Your e-mail address was changed" },
-  body: { sv: "Var det inte du? Kontakta Movera support.", fr: "Ce n’était pas vous ? Contactez le support Movera.", en: "Not you? Contact Movera support." },
+  body: { sv: "Var det inte du? Kontakta Movera support.", fr: "Ce n’était pas vous ? Contactez l’assistance Movera.", en: "Not you? Contact Movera support." },
 } as const;
 
 /** The notice to the OLD number / address (pending until a provider sends it), the in-app notice, other sessions end. */
