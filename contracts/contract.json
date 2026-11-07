@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.49",
+  "version": "0.18.50",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -618,6 +618,16 @@
         "approaching_dropoff"
       ],
       "to": "failed"
+    },
+    {
+      "command": "release",
+      "actor": "system",
+      "from": [
+        "accepted"
+      ],
+      "to": "searching",
+      "when": "live",
+      "note": "v0.18.50 §72 (L12): a live trip queued after the driver's current trip (next_after_trip_id) whose current trip failed for silence (driverSilence, 3 h) goes back to dispatch without him; the rider gets driver_changed."
     }
   ],
   "paymentTransitions": [
@@ -671,7 +681,7 @@
     }
   ],
   "ratingAllowed": {
-    "note": "Who may rate a trip once it is over, and after what. A rating is allowed when the rater, the trip's terminal status and (if given) the command that ended the trip all match one row; anything else is 409 invalid_transition. A plain rider cancel (command cancel) is never rated.",
+    "note": "Who may rate a trip once it is over, and after what. A rating is allowed when the rater, the trip's terminal status and (if given) the command that ended the trip all match one row; anything else is 409 invalid_transition. A plain rider cancel (command cancel) is never rated. v0.18.50 §72 (L5): the driver rates a trip the rider ended early (owner G8 Q1, finish.earlyEnd.rider); the older text that said he does not is withdrawn.",
     "rules": [
       {
         "rater": "rider",
@@ -686,6 +696,12 @@
         "status": "cancelled_by_rider",
         "command": "end_early",
         "note": "the rider ended the trip early (POST /trips/{tripId}/end-early) and gets the normal rating screen"
+      },
+      {
+        "rater": "driver",
+        "status": "cancelled_by_rider",
+        "command": "end_early",
+        "note": "v0.18.50 §72 (L5, owner G8 Q1): the rider ended the trip early; the driver gets the normal finish and rates the rider"
       }
     ]
   },
@@ -3812,7 +3828,8 @@
   "headers": {
     "Idempotency-Key": "required on every mutation, 16–128 chars",
     "X-Request-Id": "sent by clients, echoed by the server",
-    "X-Api-Version": "0.5"
+    "X-Api-Version": "0.5",
+    "Date": "v0.18.50 §72 (L9): every answer carries Date (the server clock); it is listed in Access-Control-Expose-Headers with X-Request-Id, X-Api-Version and Retry-After, so the web apps can read it (the rider's server-clock correction)."
   },
   "cancelFees": {
     "note": "v0.8.0 (owner 2026-10-27): DriverAppConfig.cancelFees.driverSharePct, set in Admin › Dispatch per zone: the driver's share of a rider's cancel fee, 0–100, default 100. Movera keeps the rest.",
@@ -6859,14 +6876,18 @@
       "driver_arriving",
       "driver_arrived",
       "driver_changed",
-      "trip_cancelled"
+      "trip_cancelled",
+      "no_driver_found",
+      "trip_failed"
     ],
     "rules": {
       "driver_found": "A driver accepted (status accepted).",
       "driver_arriving": "Once per driver: the server ETA to the pickup is at most arrivingSeconds.",
       "driver_arrived": "Status arrived.",
       "driver_changed": "The trip went back to dispatch after accept (driver cancel, admin reassign, not heading to pickup): a new driver is being found.",
-      "trip_cancelled": "The trip was cancelled by the driver, an admin or the system (never pushed for the rider's own cancel)."
+      "trip_cancelled": "The trip was cancelled by the driver, an admin or the system (cancelled_by_driver, cancelled_by_admin, cancelled_by_system; never pushed for the rider's own cancel). v0.18.50 §72 L11: no longer for expired or failed.",
+      "no_driver_found": "v0.18.50 §72 (owner L11): the search ended with no driver (status expired).",
+      "trip_failed": "v0.18.50 §72 (owner L11): the trip could not go on because of a system problem (status failed)."
     },
     "arrivingSeconds": 120,
     "texts": {
@@ -6928,6 +6949,30 @@
           "sv": "Din resa har avbokats. Öppna appen för detaljer.",
           "fr": "Votre course a été annulée. Ouvrez l'application pour les détails.",
           "en": "Your trip was cancelled. Open the app for details."
+        }
+      },
+      "no_driver_found": {
+        "title": {
+          "sv": "Ingen förare tillgänglig just nu",
+          "fr": "Aucun chauffeur disponible pour le moment",
+          "en": "No driver available right now"
+        },
+        "body": {
+          "sv": "Du betalar ingenting. Försök igen om en stund.",
+          "fr": "Vous ne payez rien. Réessayez dans un moment.",
+          "en": "You pay nothing. Try again in a moment."
+        }
+      },
+      "trip_failed": {
+        "title": {
+          "sv": "Något gick fel, din resa kunde inte bokas",
+          "fr": "Un problème est survenu, votre course n’a pas pu être réservée",
+          "en": "Something went wrong, your trip could not be booked"
+        },
+        "body": {
+          "sv": "Öppna appen för att boka igen.",
+          "fr": "Ouvrez l’application pour réserver à nouveau.",
+          "en": "Open the app to book again."
         }
       }
     },
@@ -8226,5 +8271,90 @@
     "q11": "French « Course programmée » / « Courses programmées » everywhere; the word « réservée » for a booked ride is gone (sv unchanged).",
     "q12": "riderTripPush fr titles: driver_arrived « Votre chauffeur est arrivé », driver_arriving « Votre chauffeur arrive bientôt »; driver_arriving body « Préparez-vous à le rejoindre. » (sv 'Gör dig redo att möta din förare.', en 'Get ready to meet your driver.').",
     "q13": "Cash payment label fr « Payer à bord » (finish.paymentMethods.texts.cash) and every contract French that said « dans la voiture »: payment_method_coming_soon, cashHint « Payez le chauffeur à bord … », receipt paidInCar « Payé à bord », tip_cash_after_trip_off « … seulement à bord. »."
+  },
+  "driverTripPush": {
+    "note": "v0.18.50 §72 (owner, lifecycle supervisor 2026-11-07, Rules plan/finders-2026-11-07/LIFECYCLE.md L1): the driver gets a push AND a Notifications-list entry (bell true) when his current trip ends or leaves him because of someone else: the rider cancels or ends early, or an admin cancels, reassigns or marks a no-show. In the driver's language (else the trip country's: SE sv, FR fr, else English). Written in the same transaction as the command (sent after commit; rule 33: one notice per change, any server copy). Not sent for his own steps, nor for the rider's cancel of a queued next trip (afterTestRules.onTripOffers.queuedCancelNotice already tells him), nor for a booked ride he holds that is unassigned or reassigned (bookLater push reservation_unassigned).",
+    "kind": "driver_trip_update",
+    "deepLink": "movera-driver://trips/{tripId}",
+    "bell": true,
+    "moments": [
+      "rider_cancelled",
+      "rider_ended_early",
+      "admin_cancelled",
+      "admin_reassigned",
+      "admin_no_show"
+    ],
+    "data": "{ tripId, moment, fee?: Money (his share of a cancel or no-show fee, when there is one) }",
+    "title": {
+      "sv": "Resan är avbokad",
+      "fr": "Course annulée",
+      "en": "Trip cancelled"
+    },
+    "texts": {
+      "rider_cancelled": {
+        "sv": "Resenären avbokade resan.",
+        "fr": "Le passager a annulé la course.",
+        "en": "The rider cancelled the trip."
+      },
+      "rider_ended_early": {
+        "sv": "Resenären avslutade resan i förtid.",
+        "fr": "Le passager a terminé la course plus tôt.",
+        "en": "The rider ended the trip early."
+      },
+      "admin_cancelled": {
+        "sv": "Movera avbokade resan.",
+        "fr": "Movera a annulé la course.",
+        "en": "Movera cancelled the trip."
+      },
+      "admin_reassigned": {
+        "sv": "Movera gav resan till en annan förare.",
+        "fr": "Movera a confié la course à un autre chauffeur.",
+        "en": "Movera gave the trip to another driver."
+      },
+      "admin_no_show": {
+        "sv": "Movera markerade resenären som utebliven.",
+        "fr": "Movera a marqué une absence du passager.",
+        "en": "Movera marked the rider as a no-show."
+      },
+      "fee": {
+        "sv": "Du får {amount}.",
+        "fr": "Vous recevez {amount}.",
+        "en": "You get {amount}."
+      }
+    },
+    "body": "body = texts.<moment>, then ' ' + texts.fee with {amount} = his share (cancellation.driverShare) when it is above 0.",
+    "driverApp": "Shows the push even in the foreground (owner Q1); a tap opens the trip link: the trip screen closes to Home with the ended trip's outcome; the Notifications list shows the entry."
+  },
+  "lifecycle0_18_50": {
+    "note": "v0.18.50 §72 (owner, lifecycle supervisor 2026-11-07, Rules plan/finders-2026-11-07/LIFECYCLE.md). X-Api-Version stays 0.5; no migration. Not L3 (owner: no push for the no-show fee); L8 is a driver-app fix (no contract change).",
+    "l1": "driverTripPush: the driver's push + bell when the rider cancels or ends early, or an admin cancels, reassigns or marks a no-show.",
+    "l4": {
+      "rule": "A driver may cancel a live trip queued after his current trip (status accepted with a next trip link, the Next-trip card) with a cancelReasons.driverNextTrip code (also a driverBeforeTrip code from an older app): POST /trips/{tripId}/cancel { expectedVersion, reasonCode }. The trip goes back to dispatch without him (searching, the rider gets driver_changed and keeps searching), no rider fee, his current trip is not touched, and it counts on his cancel record (driver_cancels) like every give-back. Any other code → 400 invalid_reason_code.",
+      "driverApp": "The Next-trip card gets Cancel with the driverNextTrip reasons (DriverAppConfig.cancelReasons.driverNextTrip, else the contract list)."
+    },
+    "l6": {
+      "rule": "Admin Reassign (POST /admin/trips/{tripId}/reassign) on a BOOKED ride (kind scheduled) a driver holds (status accepted, not started) does what Reservations › Unassign does: back to the Scheduled rides list (status requested; searched at once if its dispatch time has passed), the driver gets reservation_unassigned; as with Unassign he is NOT barred from it (owner 2026-11-07: re-offer allowed, no cancelled_driver_ids). Audit trip.reassign.",
+      "admin": "Trips page: Reassign on such a ride says 'Back to the Scheduled rides list' (same words as Unassign)."
+    },
+    "l7": {
+      "rule": "A trip a driver gives back before boarding (his cancel, and the server's take-backs counted as his cancel: not heading, booked late) is told to the rider's stream with the event kind driver_cancelled (with the projection, as trip_projection); an admin reassign stays trip_projection. realtime.kinds already lists it.",
+      "riderApp": "driver_cancelled → the 'Your driver cancelled, we are finding you another one' notice; trip_projection to searching → silent (admin reassign).",
+      "driverApp": "driver_cancelled on his own former trip is his own echo: ignore it like trip_projection."
+    },
+    "l10": {
+      "rule": "After the driver ends the trip with the rider on board (endedEarly, endedBy driver), the rider's sheet shows ONLY the amount to pay, from the server: TripProjection.fare (cashToCollect when paid in the car), with texts.youPay. No explanation line (owner 2026-11-07). finish.earlyEnd texts are unchanged.",
+      "texts": {
+        "youPay": {
+          "sv": "Du betalar {amount}.",
+          "fr": "Vous payez {amount}.",
+          "en": "You pay {amount}."
+        }
+      },
+      "server": "No new field: the rider projection already carries fare, cashToCollect and endedEarly / endedBy."
+    },
+    "l11": "riderTripPush moments no_driver_found (expired) and trip_failed (failed) with their own words; trip_cancelled is only for a real cancel.",
+    "l12": "A live trip queued behind a trip that failed for silence goes back to dispatch without that driver (transitions: release, system, accepted → searching, live).",
+    "l5": "ratingAllowed: the driver rates a rider-ended-early trip (owner G8 Q1).",
+    "l9": "headers.Date: exposed to browsers."
   }
 }

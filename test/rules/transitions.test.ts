@@ -201,7 +201,8 @@ describe("mayRate (contract.json#ratingAllowed)", () => {
     expect(mayRate("rider", "completed", "complete")).toBe(true);
     expect(mayRate("driver", "completed", "complete")).toBe(true);
     expect(mayRate("rider", "cancelled_by_rider", "end_early")).toBe(true);
-    expect(mayRate("driver", "cancelled_by_rider", "end_early")).toBe(false);
+    // v0.18.50 §72 (L5, owner G8 Q1): the driver rates a trip the rider ended early.
+    expect(mayRate("driver", "cancelled_by_rider", "end_early")).toBe(true);
     expect(mayRate("rider", "cancelled_by_rider", "cancel")).toBe(false);
     expect(mayRate("rider", "cancelled_by_rider", null)).toBe(false);
     expect(mayRate("admin", "completed", "complete")).toBe(false);
