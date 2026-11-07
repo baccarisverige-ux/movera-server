@@ -37,7 +37,7 @@ afterEach(async () => {
 
 const notes = async (audience: "rider" | "driver", subjectId: string, tripId: string) =>
   await sim.db.selectFrom("notifications").select(["kind", "data", "title", "body", "bell", "deep_link"]).where("audience", "=", audience).where("subject_id", "=", subjectId).where("trip_id", "=", tripId).where("kind", "!=", "new_offer").orderBy("created_at").execute();
-void notes; void drive; void bookAndAccept; void expect;
+void notes; void drive; void bookAndAccept; void expect; void owner;
 
 describe("L7: the rider can tell a driver cancel from an admin reassign", () => {
   it("driver cancel → event kind driver_cancelled; admin reassign → trip_projection (fail-before: both trip_projection)", async () => {
