@@ -1084,12 +1084,12 @@
       "texts": {
         "expired": {
           "sv": "Du loggades ut – logga in igen",
-          "fr": "Vous avez été déconnecté – reconnectez-vous",
+          "fr": "Vous avez été déconnecté de votre compte. Reconnectez-vous.",
           "en": "You were signed out – please sign in again"
         },
         "revoked": {
           "sv": "Du loggades ut – logga in igen",
-          "fr": "Vous avez été déconnecté – reconnectez-vous",
+          "fr": "Vous avez été déconnecté de votre compte. Reconnectez-vous.",
           "en": "You were signed out – please sign in again"
         }
       },
@@ -4796,7 +4796,7 @@
         },
         "approaching_dropoff": {
           "sv": "Närmar sig avlämning",
-          "fr": "Approche de la dépose",
+          "fr": "Approche de la destination",
           "en": "Approaching drop-off"
         },
         "completed": {
@@ -5706,7 +5706,7 @@
         },
         "cancelAfterArrived": {
           "sv": "Avbokning efter att föraren anlänt och den fria väntetiden gått ut räknas som utebliven kund",
-          "fr": "Annuler après l’arrivée du chauffeur et la fin de l’attente gratuite compte comme un client absent",
+          "fr": "Une annulation après l’arrivée du chauffeur et la fin de l’attente gratuite est considérée comme une absence du passager.",
           "en": "Cancelling after the driver has arrived and the free waiting is over counts as a no-show"
         },
         "pickupMove": {
@@ -5831,7 +5831,7 @@
       "texts": {
         "island": {
           "sv": "Upphämtningen flyttades",
-          "fr": "Le point de départ a été déplacé",
+          "fr": "Le lieu de prise en charge a été déplacé",
           "en": "Pickup moved"
         },
         "tooFar": {
@@ -6751,7 +6751,7 @@
         },
         "pickup_pay": {
           "sv": "Upphämtning",
-          "fr": "Approche",
+          "fr": "Rémunération d’approche",
           "en": "Pickup pay"
         },
         "bonus": {
