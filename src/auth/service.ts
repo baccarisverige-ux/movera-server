@@ -11,6 +11,8 @@ import { attachInvitesToNewDriver } from "../drivers/invitations.js";
 import { notify } from "../notifications/service.js";
 import { audit } from "../admin/audit.js";
 import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
+import { NOT_HELD } from "../reservations/view.js";
+import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -552,9 +554,35 @@ async function currentZones(ex: Executor, actor: Actor, subjectId: string): Prom
   return driver?.zone_ids ?? [];
 }
 
-/** Ends the session and forgets its push devices. Repeating it is fine. */
-export async function signOut(db: Db, sessionId: string, now: Date = new Date()): Promise<void> {
+type SignOutOnTrip = { status: number; reason: string; texts: { finishTripFirst: Record<string, string> } };
+const SIGN_OUT_ON_TRIP = (contract as unknown as { auth: { signOutOnTrip: SignOutOnTrip } }).auth.signOutOnTrip;
+const LANG_OF_COUNTRY: Record<string, string> = { SE: "sv", FR: "fr" };
+
+/**
+ * v0.18.49 §71 (owner Q8 "Server refuses too", contract.json#auth.signOutOnTrip): a driver whose session is still
+ * active cannot sign out while he has a current trip (the trip GET /driver/profile names as activeTripId: a
+ * driverAssigned status, not a held booked ride, not a queued next trip). 409 conflict sign_out_on_trip, the text in
+ * his language (else his country's, else English). Inside the sign-out transaction, with the driver row locked.
+ */
+async function refuseDriverSignOutOnTrip(trx: Trx, sessionId: string, driverId: string, now: Date): Promise<void> {
+  const session = await trx.selectFrom("auth_sessions").select(["revoked_at", "expires_at"]).where("session_id", "=", sessionId).executeTakeFirst();
+  if (session === undefined || session.revoked_at !== null || session.expires_at.getTime() <= now.getTime()) return;
+  const driver = await trx.selectFrom("drivers").select(["language", "country"]).where("driver_id", "=", driverId).forUpdate().executeTakeFirst();
+  if (driver === undefined) return;
+  const trip = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
+  if (trip === undefined) return;
+  const texts = SIGN_OUT_ON_TRIP.texts.finishTripFirst;
+  const lang = [driver.language?.slice(0, 2), LANG_OF_COUNTRY[driver.country ?? ""], "en"].find((l) => l !== undefined && l in texts)!;
+  throw new ApiError("conflict", texts[lang]!, { reason: SIGN_OUT_ON_TRIP.reason });
+}
+
+/**
+ * Ends the session and forgets its push devices. Repeating it is fine. A driver with a current trip is refused first
+ * (v0.18.49 §71, owner Q8) when `driverId` is given (POST /auth/sign-out); nothing is ended then.
+ */
+export async function signOut(db: Db, sessionId: string, now: Date = new Date(), driverId?: string): Promise<void> {
   await db.transaction().execute(async (trx) => {
+    if (driverId !== undefined) await refuseDriverSignOutOnTrip(trx, sessionId, driverId, now);
     await trx
       .updateTable("auth_sessions")
       .set({ revoked_at: now, revoked_reason: "signed_out" })
