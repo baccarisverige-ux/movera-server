@@ -214,7 +214,7 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
  * The trip leaves its driver and goes back to dispatch (driver cancel before boarding, admin reassign): the
  * driver is free, open offers are withdrawn and a new search starts (§3.6 "One search per driver cancel").
  */
-export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: "cancel" | "reassign"; actor: "driver" | "admin"; now: Date; exclude?: string }): Promise<TripRow> {
+export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: "cancel" | "reassign" | "release"; actor: "driver" | "admin" | "system"; now: Date; exclude?: string }): Promise<TripRow> {
   const now = input.now;
   const quote = trip.quote_id ? await trx.selectFrom("quotes").select("driver_earnings_minor").where("quote_id", "=", trip.quote_id).executeTakeFirst() : undefined;
   const booked = Number(trip.booked_fare_minor);
