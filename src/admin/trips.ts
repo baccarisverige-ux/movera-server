@@ -133,11 +133,10 @@ export async function adminReassign(trx: Trx, who: Principal, tripId: string, bo
   if (!ADMIN_REASONS.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not an admin reason.`, "invalid_reason_code");
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   await payLostDriver(trx, trip, body.driverBonus, now);
-  // v0.18.50 §72 (L6): a booked ride a driver holds goes back to the list like Unassign; any booked ride reassigned is
-  // never offered again to the driver taken off.
+  // v0.18.50 §72 (L6): a booked ride a driver holds goes back to the list like Unassign (he is not barred from it).
   const back = trip.kind === "scheduled" && trip.status === "accepted" && trip.next_after_trip_id === null
     ? await reassignHeldBooked(trx, trip, now)
-    : await backToDispatch(trx, trip, { command: "reassign", actor: "admin", now, ...(trip.kind === "scheduled" && trip.driver_id ? { exclude: trip.driver_id } : {}) });
+    : await backToDispatch(trx, trip, { command: "reassign", actor: "admin", now });
   await audit(trx, { adminId: who.subjectId, action: "trip.reassign", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { reasonCode: body.reasonCode, note: body.note, from: trip.status, driverId: trip.driver_id, driverBonus: body.driverBonus ?? null }, at: now });
   return back;
 }

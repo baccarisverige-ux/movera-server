@@ -40,7 +40,7 @@ const notes = async (audience: "rider" | "driver", subjectId: string, tripId: st
 void notes; void drive; void bookAndAccept; void expect;
 
 describe("L6: Reassign on a held booked ride", () => {
-  it("back to the Scheduled rides list, the driver is told, never offered or listed to him again (fail-before: live search + Exclusive to the same driver)", async () => {
+  it("back to the Scheduled rides list, the driver is told, no live search; like Unassign he may take it again (fail-before: live search + Exclusive to the same driver)", async () => {
     const at = new Date(sim.clock.now.getTime() + 240 * 60_000).toISOString();
     const quote = (await rider.quote({ categoryIds: ["economy"], kind: "scheduled", scheduledAt: at })).body["quotes"][0];
     const booked = await rider.post("/trips", { quoteId: quote.quoteId, categoryId: "economy", pickup: PLACES.sergels, dropoff: PLACES.medborgar, stops: [], kind: "scheduled", scheduledAt: at, paymentMethod: "cash" });
@@ -54,9 +54,10 @@ describe("L6: Reassign on a held booked ride", () => {
     const offers = await sim.db.selectFrom("offers").select(["driver_id", "kind", "status"]).where("trip_id", "=", tripId).execute();
     const told = (await notes("driver", a.id, tripId)).map((n) => n.kind);
     expect({ status: re.body.status, liveOffers: offers.filter((o) => o.kind !== "reservation").length, told: told.includes("reservation_unassigned") }).toEqual({ status: "requested", liveOffers: 0, told: true });
-    // Not listed to him again; another driver sees it.
+    // Owner 2026-11-07: as with Unassign he is not barred (re-offer allowed); it is on the list for him and others.
     const list = async (d: typeof a) => ((await d.get("/driver/reservations?scope=open")).body.items as Array<{ tripId: string }>).map((i) => i.tripId);
-    expect(await list(a)).not.toContain(tripId);
+    expect((await sim.db.selectFrom("trips").select("cancelled_driver_ids").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).cancelled_driver_ids).not.toContain(a.id);
+    expect(await list(a)).toContain(tripId);
     expect(await list(b)).toContain(tripId);
     const audited = await sim.db.selectFrom("admin_audit").select("action").where("target_id", "=", tripId).execute();
     expect(audited.map((r) => r.action)).toContain("trip.reassign");
