@@ -23,13 +23,24 @@ const iso = (value: Date | null | undefined) => (value ? value.toISOString() : u
 
 const ETA_STATUSES = new Set(["accepted", "driver_to_pickup", "rider_onboard", "in_trip", "approaching_dropoff"]);
 
-type WaitingRow = { arrivedAt: string; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money };
+type WaitingRow = { arrivedAt: string; waitFrom?: string; freeWaitMin?: number; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money };
 
 /**
  * v0.18.7 (Q5, contract.json#pickupWaiting.runningTotal): while the driver waits, the paid seconds and cost so far at
  * read time (no version change): seconds after freeUntil × the trip's per-minute waiting price.
  */
-function waitingNow(row: TripRow, waiting: WaitingRow, now: Date): WaitingRow & { chargedSecondsNow?: number; chargedSoFar?: Money; paidMinutes?: number } {
+/**
+ * v0.18.51 §73 (contract.json#bookedRide0_18_51.waitFrom): when the free waiting starts. Set at arrive from v0.18.51; a
+ * trip that arrived before has the clock it is charged by: freeUntil − freeWaitMin (else arrivedAt).
+ */
+function withWaitFrom(waiting: WaitingRow): WaitingRow {
+  if (typeof waiting.waitFrom === "string") return waiting;
+  const from = typeof waiting.freeWaitMin === "number" ? new Date(Date.parse(waiting.freeUntil) - waiting.freeWaitMin * 60_000).toISOString() : waiting.arrivedAt;
+  return { ...waiting, waitFrom: from };
+}
+
+function waitingNow(row: TripRow, stored: WaitingRow, now: Date): WaitingRow & { chargedSecondsNow?: number; chargedSoFar?: Money; paidMinutes?: number } {
+  const waiting = withWaitFrom(stored);
   // v0.18.8 (contract.json#arrivedWaiting.projection.waiting): whole paid minutes, rounded up, for the admin waiting box.
   // G6 live fix 7: a trip that ended while the driver was waiting (no-show / cancel from arrived) never boarded, so
   // chargedSeconds stayed 0: count the paid seconds up to the end (freeUntil → ended_at).

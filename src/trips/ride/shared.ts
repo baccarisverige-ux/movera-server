@@ -14,7 +14,7 @@ export type Place = { lat: number; lng: number };
 export type WaitingAlert = { kind: "paid_waiting_started" | "no_show_possible"; at: string };
 /** v0.18.8 (contract.json#arrivedWaiting): the effective rule numbers set at arrive, and the island alerts sent. */
 export type Waiting = {
-  arrivedAt: string; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money;
+  arrivedAt: string; /** v0.18.51 §73: when the free waiting starts (live: arrivedAt; booked: the later of arrivedAt and scheduledAt). */ waitFrom?: string; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money;
   rules?: WaitingRuleId[]; freeWaitMin?: number; perMin?: Money; noShowAfterMin?: number; alerts?: WaitingAlert[];
 };
 export type Who = { actor: "rider" | "driver" | "admin"; subjectId: string };
