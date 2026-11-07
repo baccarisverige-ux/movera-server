@@ -13,13 +13,14 @@ import { notify } from "./service.js";
 
 type Lang = "sv" | "fr" | "en";
 type Texts = Record<Lang, string>;
-export type TripMoment = "driver_found" | "driver_arriving" | "driver_arrived" | "driver_changed" | "trip_cancelled";
+export type TripMoment = "driver_found" | "driver_arriving" | "driver_arrived" | "driver_changed" | "trip_cancelled" | "no_driver_found" | "trip_failed";
 type Spec = { kind: string; deepLink: string; arrivingSeconds: number; texts: Record<TripMoment, { title: Texts; body: Texts }>; driverFallback: Texts };
 
 export const RIDER_TRIP_PUSH: Spec = (contract as unknown as { riderTripPush: Spec }).riderTripPush;
 const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
 const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
-const CANCELLED_NOT_BY_RIDER = new Set(["cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system", "expired", "failed"]);
+// v0.18.50 §72 (owner L11): expired and failed have their own words (no_driver_found, trip_failed).
+const CANCELLED_NOT_BY_RIDER = new Set(["cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system"]);
 const HAD_DRIVER = new Set(["accepted", "driver_to_pickup", "arrived"]);
 
 /** The moment a lifecycle step is for the rider, or null (most steps are not pushed). */
@@ -33,6 +34,8 @@ export function momentOf(before: Pick<TripRow, "status" | "driver_id">, after: P
   if (after.status === "arrived") return "driver_arrived";
   if (after.status === "searching" && before.driver_id && HAD_DRIVER.has(before.status)) return "driver_changed";
   if (CANCELLED_NOT_BY_RIDER.has(after.status)) return "trip_cancelled";
+  if (after.status === "expired") return "no_driver_found";
+  if (after.status === "failed") return "trip_failed";
   return null;
 }
 
