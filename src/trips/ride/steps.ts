@@ -16,7 +16,7 @@ import { RIDER_ONBOARD, type TripStatus } from "../../rules/transitions.js";
 import { tripProjection } from "../projection.js";
 import { effectiveWaiting } from "../waitingRules.js";
 import { type Money, type Place, type Waiting, NEAR_DROPOFF_METERS, NEAR_DROPOFF, ARRIVE_MAX_METERS, positionMaxAge } from "./shared.js";
-import { rulesOf, waitingOf, fareWithWaiting, fareColumns, walletFirstOf } from "./settings.js";
+import { rulesOf, waitingOf, fareWithWaiting, fareColumns, walletFirstOf, bookedNoShowFee } from "./settings.js";
 import { releaseDriver, feeSplit, walletCovers } from "./money.js";
 import { backToDispatch } from "./cancel.js";
 import { pickupInRunningEvent, WAITING_PAID, WAITING_NO_SHOW } from "./timers.js";
@@ -68,7 +68,8 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     const start = trip.kind === "scheduled" && trip.scheduled_at ? trip.scheduled_at : now;
     const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
     // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
-    const noShowFee: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
+    // v0.18.51 §73 (owner "Booked fees"): a booked ride's no-show costs the booking fee, so the confirm shows that.
+    const noShowFee: Money = trip.kind === "scheduled" ? (await bookedNoShowFee(trx, trip)) ?? { amountMinor: 0, currency: trip.currency } : { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
     const noShowShare = kept.noShowDriverSharePct;
     const waiting: Waiting = {
       arrivedAt: now.toISOString(),
