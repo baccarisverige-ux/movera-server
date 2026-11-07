@@ -23,6 +23,7 @@ import { creditWallet } from "../riders/wallet.js";
 import { adminUnlockPin } from "../trips/pin.js";
 import { registerApprovalHandler, runOrRequest, type PendingApproval } from "./approvals.js";
 import { resumTripDay } from "./kpis.js";
+import { reassignHeldBooked } from "../reservations/service.js";
 
 /**
  * The admin's trip tools (contract §3, §3.1; owner decisions 30–34): cancel, reassign, direct assign, radar
@@ -132,7 +133,10 @@ export async function adminReassign(trx: Trx, who: Principal, tripId: string, bo
   if (!ADMIN_REASONS.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not an admin reason.`, "invalid_reason_code");
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   await payLostDriver(trx, trip, body.driverBonus, now);
-  const back = await backToDispatch(trx, trip, { command: "reassign", actor: "admin", now });
+  // v0.18.50 §72 (L6): a booked ride a driver holds goes back to the list like Unassign (he is not barred from it).
+  const back = trip.kind === "scheduled" && trip.status === "accepted" && trip.next_after_trip_id === null
+    ? await reassignHeldBooked(trx, trip, now)
+    : await backToDispatch(trx, trip, { command: "reassign", actor: "admin", now });
   await audit(trx, { adminId: who.subjectId, action: "trip.reassign", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { reasonCode: body.reasonCode, note: body.note, from: trip.status, driverId: trip.driver_id, driverBonus: body.driverBonus ?? null }, at: now });
   return back;
 }
