@@ -7,7 +7,7 @@ import { notify } from "./service.js";
 /**
  * v0.18.13 (G13 recheck, audit 2026-11-02 H5, contract.json#riderTripPush): the rider hears about the key moments of
  * his trip even with the app closed — driver found, almost there, arrived, a new driver is being found, trip cancelled
- * (never for the rider's own cancel). Push only (bell false), in the rider's language (else the trip country's, else
+ * (never for the rider's own cancel). Push + bell (v0.18.51 §73: riderTripPush bell true), in the rider's language (else the trip country's, else
  * English), and only while Rider.consents.rideUpdates is not false (the rider's notification setting, default on).
  */
 
