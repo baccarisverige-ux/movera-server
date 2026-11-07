@@ -313,7 +313,10 @@ export async function adminNoShow(trx: Trx, who: Principal, tripId: string, body
   // pickup time plus its no-show wait; before that the rider has not missed anything.
   if (trip.kind === "scheduled" && trip.scheduled_at) {
     const wait = Number(tripTerms(trip)?.["noShowAfterMin"] ?? 0);
-    const from = trip.scheduled_at.getTime() + (Number.isFinite(wait) ? wait : 0) * 60_000;
+    // v0.18.51 §73 (contract.json#bookedRide0_18_51.noShow): once the driver arrived, the trip's own no-show time
+    // (noShowAfterMin after the later of arrival and pickup time); the pickup time + the wait stays the earliest.
+    const arrivedNoShowAt = Date.parse((trip.waiting as { noShowAt?: string } | null)?.noShowAt ?? "");
+    const from = Math.max(trip.scheduled_at.getTime() + (Number.isFinite(wait) ? wait : 0) * 60_000, Number.isFinite(arrivedNoShowAt) ? arrivedNoShowAt : 0);
     if (now.getTime() < from) throw new ApiError("conflict", "A booked ride can be marked a no-show only after its pickup time and the waiting time.", { reason: "no_show_too_early", projection: tripProjection(trip, "admin") });
   }
   const ended = await markNoShow(trx, trip, "admin", body.waiveFee === true, now);

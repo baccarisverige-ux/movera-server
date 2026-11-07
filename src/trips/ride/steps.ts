@@ -63,15 +63,17 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
       rules.freeWaitMin = policy.includedWaitingMinutes;
       rules.noShowAfterMin = Math.max(rules.noShowAfterMin, rules.freeWaitMin);
     }
-    // A reservation's clock starts at the booked time, not when an early driver arrives.
-    // Owner B (v0.18.19): a booked ride's free waiting counts from the pickup time, also when the driver arrives late.
-    const start = trip.kind === "scheduled" && trip.scheduled_at ? trip.scheduled_at : now;
+    // v0.18.51 §73 (owner 2026-11-07, contract.json#bookedRide0_18_51.waitFrom): a booked ride's free waiting starts at
+    // the later of the driver's Arrived and the pickup time — an early driver's clock waits for the booked time, a late
+    // driver's starts at his Arrived (replaces Owner B "also when the driver arrives late"). A live ride: at Arrived.
+    const start = trip.kind === "scheduled" && trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
     const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
     // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
     const noShowFee: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
     const noShowShare = kept.noShowDriverSharePct;
     const waiting: Waiting = {
       arrivedAt: now.toISOString(),
+      waitFrom: start.toISOString(),
       freeUntil: at(rules.freeWaitMin),
       noShowAt: at(rules.noShowAfterMin),
       chargedSeconds: 0,
