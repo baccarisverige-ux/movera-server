@@ -18231,8 +18231,10 @@ components:
             T−12) waits for nothing to run before T; a late driver (Arrived at T+7) gets the full free minutes from his Arrived,
             so the rider is never charged or marked a no-show at once. Replaces Owner B 2026-11-03 (''from the pickup time,
             also when the driver arrives late''). A live ride: waitFrom = arrivedAt (unchanged). TripProjection.waiting.waitFrom
-            (Timestamp, optional): set by the server at arrive for every trip from v0.18.51. A trip that arrived before: waitFrom
-            = arrivedAt for a live ride, the later of arrivedAt and scheduledAt for a booked ride.'
+            (Timestamp, optional): set by the server at arrive for every trip from v0.18.51. The server fills it on every
+            read; for a trip that arrived before v0.18.51 it is the clock that trip is charged by (freeUntil − freeWaitMin,
+            else arrivedAt). Apps reading an older server without it: arrivedAt for a live ride, the later of arrivedAt and
+            scheduledAt for a booked ride.'
     Cancellation:
       type: object
       required:
