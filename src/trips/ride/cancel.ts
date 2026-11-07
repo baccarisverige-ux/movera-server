@@ -169,7 +169,10 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
   const onboard = ONBOARD.includes(trip.status);
   // v0.18.13 checker 3: the admin list (DriverAppConfig.cancelReasons, driverCancelReasonsOf) only decides what the app
   // shows; the server accepts every contract code of the sheet, so an old app showing the built-in list still works.
-  const allowed = onboard ? REASONS["driverDuringTrip"]! : trip.kind === "scheduled" ? [...REASONS["scheduled"]!, ...REASONS["driverBeforeTrip"]!] : REASONS["driverBeforeTrip"]!;
+  // v0.18.50 §72 (L4, contract.json#lifecycle0_18_50.l4): a live trip queued after his current trip (the Next-trip card)
+  // takes the driverNextTrip codes (and the before-trip codes an older app shows).
+  const queued = trip.next_after_trip_id !== null && trip.status === "accepted";
+  const allowed = onboard ? REASONS["driverDuringTrip"]! : queued ? [...REASONS["driverNextTrip"]!, ...REASONS["driverBeforeTrip"]!] : trip.kind === "scheduled" ? [...REASONS["scheduled"]!, ...REASONS["driverBeforeTrip"]!] : REASONS["driverBeforeTrip"]!;
   if (!allowed.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a reason for a driver cancel now.`, "invalid_reason_code");
   // The driver's note is for Movera only (driver_cancels); the rider sees the reason code.
   const cancellation = { actor: "driver", reasonCode: body.reasonCode, at: now.toISOString(), fee: null };
@@ -240,6 +243,8 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
       commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, earnings, 0, Number(trip.driver_bonus_minor ?? 0)),
       wallet_applied_minor: 0,
       search_step: null,
+      // v0.18.50 §72 (L4): a queued next trip that goes back to dispatch is no longer queued behind anyone.
+      next_after_trip_id: null,
       ...(input.exclude ? { cancelled_driver_ids: sql<string[]>`array_append(cancelled_driver_ids, ${input.exclude})` } : {}),
       ...(trip.status === "accepted" && trip.kind === "scheduled" ? {} : { search_started_at: now }),
     },
