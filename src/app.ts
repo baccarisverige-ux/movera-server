@@ -119,7 +119,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
       if (typeof origin !== "string" || !corsOrigins.has(origin)) return;
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Vary", "Origin");
-      reply.header("Access-Control-Expose-Headers", "X-Request-Id, X-Api-Version, Retry-After");
+      reply.header("Access-Control-Expose-Headers", "X-Request-Id, X-Api-Version, Retry-After, Date"); // v0.18.50 §72 (L9): Date for the web apps' server clock
       if (request.method === "OPTIONS" && request.headers["access-control-request-method"] !== undefined) {
         reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE");
         reply.header("Access-Control-Allow-Headers", CORS_HEADERS);
