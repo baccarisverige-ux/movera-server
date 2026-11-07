@@ -7,6 +7,7 @@ import { nextStatus, isTripStatus, TERMINAL, type Actor } from "../rules/transit
 import { tripProjection, type Viewer } from "./projection.js";
 import type { Updateable } from "kysely";
 import { momentOf, pushTripMoment } from "../notifications/tripPush.js";
+import { driverMomentOf, pushDriverTripMoment } from "../notifications/driverTripPush.js";
 
 /**
  * Every lifecycle change goes through here (contract §3): the transition table decides (else 409
@@ -42,6 +43,9 @@ export async function applyCommand(
   // v0.18.13 (contract.json#riderTripPush): the rider's push for the key moments (never for his own cancel).
   const moment = momentOf(trip, updated);
   if (moment !== null) await pushTripMoment(trx, moment === "driver_changed" ? trip : updated, moment, input.now);
+  // v0.18.50 §72 (owner L1, contract.json#driverTripPush): the driver hears when someone else ends or takes his trip.
+  const driverMoment = driverMomentOf(trip, input.command, input.actor);
+  if (driverMoment !== null) await pushDriverTripMoment(trx, trip.driver_id!, updated, driverMoment, input.now);
   return { ...updated, sequence: String(sequence) };
 }
 
