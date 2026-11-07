@@ -46,6 +46,13 @@ describe("cross-site browser calls", () => {
     expect(res.headers.vary).toContain("Origin");
   });
 
+  it("v0.18.50 §72 (L9): exposes Date, so the web apps can read the server clock (fail-before: hidden)", async () => {
+    const res = await app.inject({ method: "GET", url: "/healthz", headers: { origin: PAGES } });
+    const exposed = String(res.headers["access-control-expose-headers"]).split(",").map((h) => h.trim());
+    expect(exposed).toEqual(expect.arrayContaining(["X-Request-Id", "X-Api-Version", "Retry-After", "Date"]));
+    expect(res.headers.date).toBeDefined();
+  });
+
   it("gives any other origin nothing", async () => {
     const res = await app.inject({ method: "OPTIONS", url: "/api/v1/trips", headers: { origin: "https://evil.example", "access-control-request-method": "POST" } });
     expect(res.headers["access-control-allow-origin"]).toBeUndefined();
