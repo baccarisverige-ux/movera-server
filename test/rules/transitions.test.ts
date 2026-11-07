@@ -190,6 +190,13 @@ describe("contract.json#transitions sanity", () => {
       for (const kind of TRIP_KINDS) expect(nextStatus(s, "assign", "admin", kind), `assign (admin) ${kind} from ${s}`).toBeNull();
   });
 
+  it("v0.18.51 §73 (L6): admin reassign of an accepted booked ride goes back to the list; a live one to searching", () => {
+    expect(nextStatus("accepted", "reassign", "admin", "scheduled")).toBe("requested");
+    expect(nextStatus("accepted", "reassign", "admin", "live")).toBe("searching");
+    for (const s of ["offered", "driver_to_pickup", "arrived"] as const)
+      for (const kind of TRIP_KINDS) expect(nextStatus(s, "reassign", "admin", kind), `reassign ${kind} from ${s}`).toBe("searching");
+  });
+
   it("unknown commands and wrong actors are invalid", () => {
     expect(nextStatus("draft", "teleport", "system", "live")).toBeNull();
     expect(nextStatus("draft", "quote", "rider", "live")).toBeNull();
