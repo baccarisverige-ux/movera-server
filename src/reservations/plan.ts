@@ -161,7 +161,10 @@ export function planOf(bookedAt: Date, scheduledAt: Date, s: ReservationSettings
   };
 }
 
-/** Q6: a rider cancel more than freeChangeBeforeMin minutes before pickup is always free. */
+/**
+ * Q6: a booking may be changed (reschedule) more than freeChangeBeforeMin minutes before pickup. v0.18.49 §71 (owner
+ * Q10): this no longer makes a cancel free; a booked cancel follows the category's cancel fee rule only.
+ */
 export const freeByTime = (now: Date, scheduledAt: Date, s: Pick<ReservationSettings, "freeChangeBeforeMin">): boolean =>
   (scheduledAt.getTime() - now.getTime()) / 60_000 > s.freeChangeBeforeMin;
 

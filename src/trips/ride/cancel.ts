@@ -1,4 +1,4 @@
-import { afterBackToRequested, afterStartedTakeBack, freeCancelByTime, lateStartedBooked } from "../../reservations/service.js";
+import { afterBackToRequested, afterStartedTakeBack, lateStartedBooked } from "../../reservations/service.js";
 import { BOOKED_LATE_REASON } from "../../reservations/takeBack.js";
 import { commissionOf } from "../../rules/commission.js";
 import { askUnexpectedEnd } from "../../safety/rideCheckServer.js";
@@ -68,9 +68,12 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
  */
 export type RiderFee = { fee: Money; kind: "cancel" | "no_show" };
 
+/** v0.18.49 §71 (owner Q10 update, contract.json#afterTestRules.bookedCancel.graceAfterBookingMin): 5 min, fixed. */
+const BOOKED_GRACE_MS = (contract as unknown as { afterTestRules: { bookedCancel: { graceAfterBookingMin: number } } }).afterTestRules.bookedCancel.graceAfterBookingMin * 60_000;
+
 export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<RiderFee | null> {
-  // v0.18.33 (fix job 5, owner fix-plan Q3, contract.json#afterTestRules.bookedCancel): a BOOKED ride cancelled under
-  // freeChangeBeforeMin before pickup costs the fee even when no driver took it yet (Movera keeps it, owner Q5).
+  // v0.18.33 (fix job 5, owner fix-plan Q3, contract.json#afterTestRules.bookedCancel): a BOOKED ride cancelled after
+  // the category's free minutes costs the fee even when no driver took it yet (Movera keeps it, owner Q5).
   const bookedNoDriver = trip.kind === "scheduled" && trip.scheduled_at !== null && (trip.accepted_at === null || trip.driver_id === null);
   if (!bookedNoDriver && (trip.accepted_at === null || trip.driver_id === null)) return null;
   // v0.18.33 (owner Q3): a live trip queued behind the driver's current trip: he is not on his way yet, the cancel is free.
@@ -79,8 +82,12 @@ export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Pr
   if (trip.chained && trip.chain_free_cancel_at && now.getTime() >= trip.chain_free_cancel_at.getTime()) return null;
   // Its pickup time passed with no driver: Movera did not deliver it, always free (rider app terms, owner P17 "no fee").
   if (bookedNoDriver && now.getTime() >= trip.scheduled_at!.getTime()) return null;
-  // v0.18.17 (contract.json#bookLater.rider.cancel, owner Q6): more than freeChangeBeforeMin before pickup = free.
-  if (await freeCancelByTime(ex, trip, now)) return null;
+  // v0.18.49 §71 (owner Q10 update): the first graceAfterBookingMin minutes after booking a booked ride cancels free, so a
+  // short-notice booking does not owe the fee at once.
+  if (trip.kind === "scheduled" && now.getTime() - trip.created_at.getTime() < BOOKED_GRACE_MS) return null;
+  // v0.18.49 §71 (owner Q10 "Category rule B only", contract.json#bookLater.rider.cancel): only the category's free
+  // minutes (isFreeCancel below) make a booked cancel free; freeChangeBeforeMin is the change window only (before:
+  // more than freeChangeBeforeMin before pickup was always free, finding B6).
   const rules = await rulesOf(ex, trip);
   const rule = rules.cancelRule;
   if (rule === null) return null;
