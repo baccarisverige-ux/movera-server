@@ -1,4 +1,6 @@
-# Movera shared contract v0.18.47
+# Movera shared contract v0.18.48
+
+v0.18.48: owner French wording for 24 texts (client absent → absence du passager, point de départ → lieu de prise en charge, …), no API change. Owner "PR contrat maintenant" (2026-11-07), Rules `plan/FRENCH-TEXTS-TO-CHANGE-2026-11-07.md`; X-Api-Version stays `0.5`, no migration; only `fr` values change (en/sv untouched, placeholders kept). §70.
 
 v0.18.47 (503 fix, proven cause, Rules `plan/FIX-503-ADMIN-BURST-2026-11-06.md`, owner "Build both rules"; X-Api-Version stays `0.5`, no migration; 0.18.46 stays reserved for G12): **`GET /admin/events` without a cursor starts from now; a cursor with more than `replayMax` (500) unseen events gets one `resync` instead of the backlog.** §69.
 
@@ -1328,3 +1330,10 @@ Proven cause (rule 36, rider-app main 10f17471, server main 129d148): (1) the ri
 - **JSON page** (not `text/event-stream`): unchanged, pages from `after` (default 0).
 - **Rule 33**: cursor and start are sequences of the one `admin_live_events` table; a Last-Event-ID from one server copy is valid on every copy; each copy LISTENs once; no shared memory. `contract.json#adminLiveEvents.replay` / `replayMax` / `rule33`.
 - **Apps**: admin — no change needed (a null cursor already meant "from now"; live events are batched, admin #249). Rider and driver apps — no change (they do not use this stream).
+
+## 70. Owner French wording — 24 texts (v0.18.48)
+
+- **What**: only `fr` values in `contract.json` change; names, codes, en and sv do not. No API change, no migration.
+- **Source**: the owner's corrected French (Rules `plan/FRENCH-TEXTS-TO-CHANGE-2026-11-07.md`, the 24 texts that driver/rider apps copy from the contract). Words now used: « absence du passager » (not « client absent »), « lieu de prise en charge » (not « point de départ »), « tentatives » (not « essais »), « paramètres » (not « réglages »), « entreprise » (not « société »), « assistance » (not « support »).
+- **Changed** (`…/fr`): `statusWords.families.tripStatus.approaching_dropoff` « Approche de la destination »; `statusWords.families.driverOnlineStatus.going_online`; `driverOnboarding.reminders.texts.actions.start_company`; `driverHome.backgroundLocation.notification.body`; `driverHome.locationRequired.text.openSettings`; `driverHome.setOffline.text.line`; `driverHome.setOffline.reasons.account_status`; `auth.signedOut.texts.expired` and `.revoked` (same sentence); `dispatchTools.events.texts.pickupNote`; `pickupWaiting.feeAmountsShown.texts.noShowConfirm` / `noShowConfirmNoFee` / `riderNoShowFee`; `pickupWaiting.pickupMove.texts.island`; `pickupWaiting.terms.texts.cancelAfterArrived` / `pickupMove`; `arrivedWaiting.pin.texts.driverWrong` / `driverLocked` / `driverBlocked`; `arrivedWaiting.alerts.texts.driverNoShow`; `onTrip.routeChange.texts.driverAsk`; `finish.driverMoney.texts.pickup_pay`; `finish.earlyEnd.texts.bookedPriceStands`.
+- **Apps (Rule 0)**: server, admin, driver and rider show these exact words (their contract copies and app texts are synced to v0.18.48).

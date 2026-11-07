@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.47",
+  "version": "0.18.48",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -1084,12 +1084,12 @@
       "texts": {
         "expired": {
           "sv": "Du loggades ut – logga in igen",
-          "fr": "Vous avez été déconnecté – reconnectez-vous",
+          "fr": "Vous avez été déconnecté de votre compte. Reconnectez-vous.",
           "en": "You were signed out – please sign in again"
         },
         "revoked": {
           "sv": "Du loggades ut – logga in igen",
-          "fr": "Vous avez été déconnecté – reconnectez-vous",
+          "fr": "Vous avez été déconnecté de votre compte. Reconnectez-vous.",
           "en": "You were signed out – please sign in again"
         }
       },
@@ -2637,7 +2637,7 @@
           },
           "start_company": {
             "sv": "Starta mitt eget företag",
-            "fr": "Créer ma propre société",
+            "fr": "Créer ma propre entreprise",
             "en": "Start my own company"
           },
           "accept_invitation": {
@@ -4796,7 +4796,7 @@
         },
         "approaching_dropoff": {
           "sv": "Närmar sig avlämning",
-          "fr": "Approche de la dépose",
+          "fr": "Approche de la destination",
           "en": "Approaching drop-off"
         },
         "completed": {
@@ -4870,7 +4870,7 @@
         },
         "going_online": {
           "sv": "Går online",
-          "fr": "Mise en ligne",
+          "fr": "Passage en ligne",
           "en": "Going online"
         },
         "online": {
@@ -5223,7 +5223,7 @@
         "account_status": {
           "note": "an admin put the account on hold, suspended it or set it back to pending (also seen at the end of a trip)",
           "sv": "Ditt konto är pausat – kontakta Movera",
-          "fr": "Votre compte est en pause – contactez Movera",
+          "fr": "Votre compte est temporairement suspendu. Contactez Movera.",
           "en": "Your account is paused – contact Movera"
         },
         "admin": {
@@ -5258,7 +5258,7 @@
         },
         "line": {
           "sv": "Du har satts offline – tryck för att gå online igen",
-          "fr": "Vous avez été mis hors ligne – appuyez pour repasser en ligne",
+          "fr": "Vous avez été mis hors ligne. Appuyez pour repasser en ligne.",
           "en": "You were set offline – tap to go online again"
         }
       },
@@ -5306,7 +5306,7 @@
         },
         "openSettings": {
           "sv": "Öppna inställningar",
-          "fr": "Ouvrir les réglages",
+          "fr": "Ouvrir les paramètres",
           "en": "Open Settings"
         },
         "batterySaver": {
@@ -5326,7 +5326,7 @@
         },
         "body": {
           "sv": "Din position skickas för att du ska få resor",
-          "fr": "Votre position est envoyée pour recevoir des courses",
+          "fr": "Votre position est transmise pour vous proposer des courses à proximité.",
           "en": "Your position is sent so you get trips"
         }
       }
@@ -5617,7 +5617,7 @@
         },
         "pickupNote": {
           "sv": "Upphämtning",
-          "fr": "Prise en charge",
+          "fr": "Lieu de prise en charge",
           "en": "Pickup"
         }
       }
@@ -5706,12 +5706,12 @@
         },
         "cancelAfterArrived": {
           "sv": "Avbokning efter att föraren anlänt och den fria väntetiden gått ut räknas som utebliven kund",
-          "fr": "Annuler après l’arrivée du chauffeur et la fin de l’attente gratuite compte comme un client absent",
+          "fr": "Une annulation après l’arrivée du chauffeur et la fin de l’attente gratuite est considérée comme une absence du passager.",
           "en": "Cancelling after the driver has arrived and the free waiting is over counts as a no-show"
         },
         "pickupMove": {
           "sv": "Du kan flytta upphämtningen högst {meters} m efter bokningen",
-          "fr": "Vous pouvez déplacer le point de départ de {meters} m au plus après la réservation",
+          "fr": "Vous pouvez déplacer le lieu de prise en charge de {meters} m au plus après la réservation",
           "en": "You can move the pickup at most {meters} m after booking"
         }
       },
@@ -5730,12 +5730,12 @@
       "texts": {
         "noShowConfirm": {
           "sv": "Markera som utebliven kund? Du får {amount}",
-          "fr": "Marquer comme client absent ? Vous recevez {amount}",
+          "fr": "Signaler l’absence du passager ? Vous percevrez {amount}.",
           "en": "Mark as no-show? You get {amount}"
         },
         "noShowConfirmNoFee": {
           "sv": "Markera som utebliven kund? Ingen avgift",
-          "fr": "Marquer comme client absent ? Pas de frais",
+          "fr": "Signaler l’absence du passager ? Aucun frais ne sera facturé.",
           "en": "Mark as no-show? No fee"
         },
         "riderCancelled": {
@@ -5760,7 +5760,7 @@
         },
         "riderNoShowFee": {
           "sv": "Avgift för utebliven kund {amount}",
-          "fr": "Frais de client absent {amount}",
+          "fr": "Frais de non-présentation du passager : {amount}",
           "en": "No-show fee {amount}"
         },
         "riderNoFee": {
@@ -5831,7 +5831,7 @@
       "texts": {
         "island": {
           "sv": "Upphämtningen flyttades",
-          "fr": "Le point de départ a été déplacé",
+          "fr": "Le lieu de prise en charge a changé",
           "en": "Pickup moved"
         },
         "tooFar": {
@@ -6005,12 +6005,12 @@
         },
         "driverWrong": {
           "sv": "Fel kod. {left} försök kvar",
-          "fr": "Code incorrect. Encore {left} essais",
+          "fr": "Code incorrect. Il vous reste {left} tentatives.",
           "en": "Wrong code. {left} tries left"
         },
         "driverLocked": {
           "sv": "För många försök. Försök igen om {min} min",
-          "fr": "Trop d’essais. Réessayez dans {min} min",
+          "fr": "Trop de tentatives. Réessayez dans {min} min.",
           "en": "Too many tries. Try again in {min} min"
         },
         "riderShow": {
@@ -6020,7 +6020,7 @@
         },
         "driverBlocked": {
           "sv": "För många fel koder. Ring Movera support",
-          "fr": "Trop de codes incorrects. Appelez le support Movera",
+          "fr": "Trop de tentatives avec un code erroné. Appelez l’assistance Movera",
           "en": "Too many wrong codes. Call Movera support"
         },
         "adminUnlock": {
@@ -6072,7 +6072,7 @@
         },
         "driverNoShow": {
           "sv": "Du kan nu markera utebliven kund",
-          "fr": "Vous pouvez maintenant signaler un client absent",
+          "fr": "Vous pouvez maintenant signaler l’absence du passager.",
           "en": "You can now mark a no-show"
         },
         "riderPaid": {
@@ -6330,7 +6330,7 @@
         "driverAsk": {
           "en": "The rider wants to change the route",
           "sv": "Resenären vill ändra resan",
-          "fr": "Le passager souhaite modifier l'itinéraire"
+          "fr": "Le passager souhaite modifier l’itinéraire"
         },
         "driverEarnings": {
           "en": "New earnings {earnings} ({difference})",
@@ -6672,7 +6672,7 @@
         },
         "bookedPriceStands": {
           "sv": "Det bokade priset gäller.",
-          "fr": "Le prix réservé s’applique.",
+          "fr": "Le prix confirmé lors de la réservation reste applicable.",
           "en": "The booked price applies."
         },
         "adminSettings": {
@@ -6751,7 +6751,7 @@
         },
         "pickup_pay": {
           "sv": "Upphämtning",
-          "fr": "Approche",
+          "fr": "Lieu de prise en charge",
           "en": "Pickup pay"
         },
         "bonus": {
