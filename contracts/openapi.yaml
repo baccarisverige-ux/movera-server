@@ -831,6 +831,7 @@ paths:
         and the app keeps the built-in list as the offline backup. The server accepts every contract code of the sheet (contract.json#cancelReasons),
         so an old app that shows the built-in list keeps working; a code of another sheet → 400 invalid_request, reason invalid_reason_code.
         v0.18.17: v0.18.49 §71 (owner Q10 ''Category rule B only''): POST /trips/{tripId}/cancel of a booked ride is free
+        during the first afterTestRules.bookedCancel.graceAfterBookingMin (5) minutes after booking (owner Q10 update), else
         only inside the free minutes of the reservation cancel fee rule of booking time (RiderAppConfig.cancelFees.reservation[category].freeMin:
         free while minutesBeforePickup >= freeMin); later that rule''s fee applies. freeChangeBeforeMin is the free-CHANGE
         window only (POST /trips/{tripId}/reschedule) and no longer makes a cancel free (before v0.18.49: more than freeChangeBeforeMin
@@ -22755,7 +22756,8 @@ components:
             Later → 409 conflict, reason change_too_late. Not a scheduled trip, or not before pickup → 409 not_a_reservation.
             v0.18.49 §71 (owner Q10): the free-CHANGE window only; a booked ride''s cancel is free only inside the category''s
             reservation cancel fee freeMin (v0.18.49 §71 (owner Q10 ''Category rule B only''): POST /trips/{tripId}/cancel
-            of a booked ride is free only inside the free minutes of the reservation cancel fee rule of booking time (RiderAppConfig.cancelFees.reservation[category].freeMin:
+            of a booked ride is free during the first afterTestRules.bookedCancel.graceAfterBookingMin (5) minutes after booking
+            (owner Q10 update), else only inside the free minutes of the reservation cancel fee rule of booking time (RiderAppConfig.cancelFees.reservation[category].freeMin:
             free while minutesBeforePickup >= freeMin); later that rule''s fee applies. freeChangeBeforeMin is the free-CHANGE
             window only (POST /trips/{tripId}/reschedule) and no longer makes a cancel free (before v0.18.49: more than freeChangeBeforeMin
             before pickup was always free). No rule for the category = free. This also holds before any driver took the ride:
@@ -23543,12 +23545,14 @@ components:
               description: 'v0.18.17: written by the server from the zone''s DriverAppConfig.reservations.freeChangeBeforeMin
                 v0.18.49 §71 (owner Q10): the free-CHANGE window only; a booked ride''s cancel is free only inside the category''s
                 reservation cancel fee freeMin (v0.18.49 §71 (owner Q10 ''Category rule B only''): POST /trips/{tripId}/cancel
-                of a booked ride is free only inside the free minutes of the reservation cancel fee rule of booking time (RiderAppConfig.cancelFees.reservation[category].freeMin:
-                free while minutesBeforePickup >= freeMin); later that rule''s fee applies. freeChangeBeforeMin is the free-CHANGE
-                window only (POST /trips/{tripId}/reschedule) and no longer makes a cancel free (before v0.18.49: more than
-                freeChangeBeforeMin before pickup was always free). No rule for the category = free. This also holds before
-                any driver took the ride: after the free minutes the fee is charged even with no driver, and Movera keeps
-                all of it (no driver share). A booked ride past its pickup time with no driver is always free. contract.json#afterTestRules.bookedCancel.)'
+                of a booked ride is free during the first afterTestRules.bookedCancel.graceAfterBookingMin (5) minutes after
+                booking (owner Q10 update), else only inside the free minutes of the reservation cancel fee rule of booking
+                time (RiderAppConfig.cancelFees.reservation[category].freeMin: free while minutesBeforePickup >= freeMin);
+                later that rule''s fee applies. freeChangeBeforeMin is the free-CHANGE window only (POST /trips/{tripId}/reschedule)
+                and no longer makes a cancel free (before v0.18.49: more than freeChangeBeforeMin before pickup was always
+                free). No rule for the category = free. This also holds before any driver took the ride: after the free minutes
+                the fee is charged even with no driver, and Movera keeps all of it (no driver share). A booked ride past its
+                pickup time with no driver is always free. contract.json#afterTestRules.bookedCancel.)'
               default: 60
             reservationsOn:
               type: boolean
