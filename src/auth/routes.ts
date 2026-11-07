@@ -113,8 +113,9 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
   });
   app.post(`${API_PREFIX}/auth/sign-out`, async (request, reply) => {
     // Works with an expired access token or an already-ended session, so signing out twice is fine (204).
+    // v0.18.49 §71 (owner Q8): a driver with a current trip is refused (409 sign_out_on_trip) while his session is active.
     const who = await authenticate(request, guard, ["rider", "driver"], { allowEndedSession: true });
-    await signOut(deps.db, who.sessionId, deps.clock?.() ?? new Date());
+    await signOut(deps.db, who.sessionId, deps.clock?.() ?? new Date(), who.actor === "driver" ? who.subjectId : undefined);
     return reply.status(204).send();
   });
 
