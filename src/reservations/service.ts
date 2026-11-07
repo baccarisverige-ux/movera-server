@@ -629,6 +629,17 @@ export async function adminUnassign(trx: Trx, who: { subjectId: string }, tripId
   return back;
 }
 
+/**
+ * v0.18.50 §72 (L6, contract.json#lifecycle0_18_50.l6): admin Reassign (Trips page) on a booked ride a driver holds does
+ * what Unassign does: back to the list (searched at once after its dispatch time), the driver gets
+ * reservation_unassigned, and he is never offered or listed this ride again. The caller locked the trip and audits.
+ */
+export async function reassignHeldBooked(trx: Trx, trip: TripRow, now: Date): Promise<TripRow> {
+  const back = await backToList(trx, trip, { command: "unassign", actor: "admin", now, set: trip.driver_id ? { cancelled_driver_ids: sql<string[]>`array_append(cancelled_driver_ids, ${trip.driver_id})` } : {} });
+  if (trip.driver_id) await push(trx, trip, { audience: "driver", id: trip.driver_id }, "reservation_unassigned", now);
+  return back;
+}
+
 export async function adminDispatchNow(trx: Trx, who: { subjectId: string }, tripId: string, body: { expectedVersion: number; reason?: string }, now: Date): Promise<TripRow> {
   const trip = await lockScheduled(trx, tripId);
   expectVersion(trip, body.expectedVersion, "admin");
