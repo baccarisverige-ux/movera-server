@@ -146,7 +146,7 @@ describe("book later live fixes", () => {
     expect((await rider.get("/rider/config?zoneId=Z001")).body.booking).toMatchObject({ reservationsOn: true });
   });
 
-  it("owner D: the rider sees 'driver assigned' without details until the driver drives; owner B: free waiting from the pickup time", async () => {
+  it("owner D: the rider sees 'driver assigned' without details until the driver drives; v0.18.51 §73: a late driver's free waiting starts at his arrival", async () => {
     const trip = await book(minutes(120));
     expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
     const held = await rider.trip(trip.tripId);
@@ -159,15 +159,17 @@ describe("book later live fixes", () => {
     expect((await a.post(`/driver/reservations/${trip.tripId}/start`, {})).status).toBe(200);
     const driving = await rider.trip(trip.tripId);
     expect(driving.driver?.driverId).toBe(a.id);
-    // The driver arrives 5 min late: the free wait still ends at pickup + free minutes.
+    // The driver arrives 5 min late: v0.18.51 §73 (owner 2026-11-07, replaces Owner B "also when late") the free wait
+    // starts at his arrival, the later of arrival and pickup time.
     await until(new Date(Date.parse(trip.scheduledAt) + 5 * 60_000).toISOString());
     const arrived = await a.command(trip.tripId, "arrive", { location: a.fix(PLACES.sergels) });
     expect(arrived.status, JSON.stringify(arrived.body)).toBe(200);
     const free = arrived.body.terms.freeWaitMin as number;
-    expect(Date.parse(arrived.body.waiting.freeUntil)).toBe(Date.parse(trip.scheduledAt) + free * 60_000);
+    expect(arrived.body.waiting.waitFrom).toBe(arrived.body.waiting.arrivedAt);
+    expect(Date.parse(arrived.body.waiting.freeUntil)).toBe(Date.parse(trip.scheduledAt) + 5 * 60_000 + free * 60_000);
   });
 
-  it("owner B: ONE included waiting for every zone, saved on the server, counted from the pickup time", async () => {
+  it("owner B: ONE included waiting for every zone, saved on the server, counted from the later of arrival and pickup time (v0.18.51 §73)", async () => {
     const before = await owner.get("/admin/reservations/policy");
     expect(before.status).toBe(200);
     const saved = await owner.put("/admin/reservations/policy", { expectedRev: before.body.rev, includedWaitingMinutes: 9 });
@@ -182,7 +184,8 @@ describe("book later live fixes", () => {
     const arrived = await a.command(trip.tripId, "arrive", { location: a.fix(PLACES.sergels) });
     expect(arrived.status, JSON.stringify(arrived.body)).toBe(200);
     expect(arrived.body.terms.freeWaitMin).toBe(9);
-    expect(Date.parse(arrived.body.waiting.freeUntil)).toBe(Date.parse(trip.scheduledAt) + 9 * 60_000);
+    // Arrived 2 min after the pickup time: the 9 free minutes count from the arrival.
+    expect(Date.parse(arrived.body.waiting.freeUntil)).toBe(Date.parse(trip.scheduledAt) + 2 * 60_000 + 9 * 60_000);
     await owner.put("/admin/reservations/policy", { expectedRev: saved.body.rev, includedWaitingMinutes: before.body.includedWaitingMinutes });
   });
 
