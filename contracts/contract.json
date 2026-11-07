@@ -6510,7 +6510,7 @@
         },
         "cashHint": {
           "sv": "Betala föraren i bilen när resan är klar.",
-          "fr": "Payez le chauffeur dans la voiture à la fin de la course.",
+          "fr": "Payez le chauffeur à bord à la fin de la course.",
           "en": "Pay the driver in the car when the trip ends."
         },
         "card": {
@@ -6619,7 +6619,7 @@
         },
         "tip_cash_after_trip_off": {
           "sv": "Kontant dricks går bara i bilen. Välj kort när det finns.",
-          "fr": "Le pourboire en espèces se donne seulement dans la voiture.",
+          "fr": "Le pourboire en espèces se donne seulement à bord.",
           "en": "A cash tip can only be given in the car."
         },
         "tip_above_max": {
@@ -6743,7 +6743,7 @@
         },
         "paidInCar": {
           "sv": "Betalt i bilen",
-          "fr": "Payé dans la voiture",
+          "fr": "Payé à bord",
           "en": "Paid in car"
         },
         "paidWallet": {
@@ -6889,9 +6889,9 @@
           "en": "Your driver is almost there"
         },
         "body": {
-          "sv": "Gör dig redo, föraren är strax där.",
-          "fr": "Préparez-vous, le chauffeur arrive bientôt.",
-          "en": "Get ready, your driver is about to arrive."
+          "sv": "Gör dig redo att möta din förare.",
+          "fr": "Préparez-vous à le rejoindre.",
+          "en": "Get ready to meet your driver."
         }
       },
       "driver_arrived": {
@@ -8224,7 +8224,7 @@
     "q9": "Every trip link the contract and the server send is trips/{tripId} (movera-driver://trips/{tripId}, movera-rider://trips/{tripId}, movera://trips/{tripId}, …/trips/{tripId}/receipt); the apps keep accepting trip/{id} and trips/{id}.",
     "q10": "bookLater.rider.cancel + afterTestRules.bookedCancel: a booked ride's cancel is free only inside the category's reservation freeMin, plus 5 minutes after booking (graceAfterBookingMin); freeChangeBeforeMin no longer makes it free.",
     "q11": "French « Course programmée » / « Courses programmées » everywhere; the word « réservée » for a booked ride is gone (sv unchanged).",
-    "q12": "riderTripPush fr titles: driver_arrived « Votre chauffeur est arrivé », driver_arriving « Votre chauffeur arrive bientôt ».",
-    "q13": "Cash payment label fr « Payer à bord » (finish.paymentMethods.texts.cash) and the sentence that names it (payment_method_coming_soon)."
+    "q12": "riderTripPush fr titles: driver_arrived « Votre chauffeur est arrivé », driver_arriving « Votre chauffeur arrive bientôt »; driver_arriving body « Préparez-vous à le rejoindre. » (sv 'Gör dig redo att möta din förare.', en 'Get ready to meet your driver.').",
+    "q13": "Cash payment label fr « Payer à bord » (finish.paymentMethods.texts.cash) and every contract French that said « dans la voiture »: payment_method_coming_soon, cashHint « Payez le chauffeur à bord … », receipt paidInCar « Payé à bord », tip_cash_after_trip_off « … seulement à bord. »."
   }
 }
