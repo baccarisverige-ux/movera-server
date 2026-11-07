@@ -568,7 +568,8 @@ export async function rescheduleTrip(trx: Trx, riderId: string, tripId: string, 
     await clearTimers(trx, tripId);
     await saveState(trx, tripId, { ...stateOf(changed)!, mode: plan.mode, dispatchAt: plan.dispatchAt.toISOString(), freeChangeUntil: plan.freeChangeUntil.toISOString(), noDriver: false, overdue: false, changeAsk: { until: until.toISOString(), previousAt: trip.scheduled_at.toISOString() } });
     changed = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
-    await appendTripEvent(trx, { tripId, kind: "trip_projection", version: changed.version, occurredAt: now, projection: tripProjection(changed, "admin", { sequence: Number(changed.sequence) + 1 }) });
+    // v0.18.51 §73: a held ride rescheduled is a list change (the driver's row shows "Keep it at the new time?").
+    await appendTripEvent(trx, { tripId, kind: "trip_projection", version: changed.version, occurredAt: now, projection: tripProjection(changed, "admin", { sequence: Number(changed.sequence) + 1 }), reservations: true });
     await scheduleTimer(trx, { kind: TIMER.changeAsk, refId: tripId, dueAt: until, payload: { driverId: trip.driver_id } });
     await push(trx, changed, { audience: "driver", id: trip.driver_id }, "reservation_change_ask", now);
     return changed;
