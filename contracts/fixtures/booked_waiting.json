@@ -225,15 +225,15 @@
       }
     },
     {
-      "id": "booked-no-show-no-rule-no-fee",
+      "id": "booked-no-show-no-rule-normal-no-show-fee",
       "kind": "scheduled",
       "event": "no_show",
       "minutesBeforePickup": -15,
       "cancelRule": null,
       "noShowFee": 6500,
       "expect": {
-        "fee": null,
-        "feeKind": null
+        "fee": 6500,
+        "feeKind": "no_show"
       }
     },
     {

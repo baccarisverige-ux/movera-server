@@ -853,8 +853,13 @@ paths:
         to a booked ride); (2) a no-show (driver or admin) costs the SAME booking fee — the reservation cancel rule''s fee
         on the booked fare, as charged after its free minutes — instead of the no-show fee: status no_show, cancellation.feeKind
         no_show, driver share terms.noShowDriverSharePct. Waiting.noShowFee / noShowDriverShare (set at arrive) and terms.noShowFee
-        from arrive carry that booking fee, so the driver''s no-show confirm and the rider''s terms show it. A category with
-        no reservation cancel rule: no fee. Live rides keep their rules.'
+        from arrive carry that booking fee, so the driver''s no-show confirm and the rider''s terms show it. Owner answers
+        2026-11-07: (Q1) the driver''s part of a booked no-show is the no-show share (terms.noShowDriverSharePct, default
+        80 %), not the cancel share; (Q2) a category with no reservation cancel rule (RiderAppConfig.cancelFees.reservation[category]
+        not set) charges the NORMAL no-show fee (the category''s waiting.noShowFee) on a booked no-show, also shown in waiting.noShowFee
+        / terms.noShowFee; a rule the admin sets for the category (Admin › Cancel fees › Reservation) is used instead; (Q3)
+        no special rule for a driver who arrives very early: the reservation rule''s free minutes and booking grace stay as
+        they are (a driver cannot see the booked trip that early). Live rides keep their rules.'
       tags:
       - Trips
       x-actor:
@@ -3061,8 +3066,13 @@ paths:
         (driver or admin) costs the SAME booking fee — the reservation cancel rule''s fee on the booked fare, as charged after
         its free minutes — instead of the no-show fee: status no_show, cancellation.feeKind no_show, driver share terms.noShowDriverSharePct.
         Waiting.noShowFee / noShowDriverShare (set at arrive) and terms.noShowFee from arrive carry that booking fee, so the
-        driver''s no-show confirm and the rider''s terms show it. A category with no reservation cancel rule: no fee. Live
-        rides keep their rules.'
+        driver''s no-show confirm and the rider''s terms show it. Owner answers 2026-11-07: (Q1) the driver''s part of a booked
+        no-show is the no-show share (terms.noShowDriverSharePct, default 80 %), not the cancel share; (Q2) a category with
+        no reservation cancel rule (RiderAppConfig.cancelFees.reservation[category] not set) charges the NORMAL no-show fee
+        (the category''s waiting.noShowFee) on a booked no-show, also shown in waiting.noShowFee / terms.noShowFee; a rule
+        the admin sets for the category (Admin › Cancel fees › Reservation) is used instead; (Q3) no special rule for a driver
+        who arrives very early: the reservation rule''s free minutes and booking grace stay as they are (a driver cannot see
+        the booked trip that early). Live rides keep their rules.'
   /trips/{tripId}/pin/verify:
     post:
       operationId: verifyTripPin
@@ -5365,8 +5375,13 @@ paths:
         (driver or admin) costs the SAME booking fee — the reservation cancel rule''s fee on the booked fare, as charged after
         its free minutes — instead of the no-show fee: status no_show, cancellation.feeKind no_show, driver share terms.noShowDriverSharePct.
         Waiting.noShowFee / noShowDriverShare (set at arrive) and terms.noShowFee from arrive carry that booking fee, so the
-        driver''s no-show confirm and the rider''s terms show it. A category with no reservation cancel rule: no fee. Live
-        rides keep their rules.'
+        driver''s no-show confirm and the rider''s terms show it. Owner answers 2026-11-07: (Q1) the driver''s part of a booked
+        no-show is the no-show share (terms.noShowDriverSharePct, default 80 %), not the cancel share; (Q2) a category with
+        no reservation cancel rule (RiderAppConfig.cancelFees.reservation[category] not set) charges the NORMAL no-show fee
+        (the category''s waiting.noShowFee) on a booked no-show, also shown in waiting.noShowFee / terms.noShowFee; a rule
+        the admin sets for the category (Admin › Cancel fees › Reservation) is used instead; (Q3) no special rule for a driver
+        who arrives very early: the reservation rule''s free minutes and booking grace stay as they are (a driver cannot see
+        the booked trip that early). Live rides keep their rules.'
   /admin/trips/{tripId}/complete:
     post:
       operationId: adminCompleteTrip
