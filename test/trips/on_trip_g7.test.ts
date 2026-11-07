@@ -598,7 +598,9 @@ describe("owner rule 16 (2026-11-01): the four G7 open questions as admin settin
       expect(n.data).toMatchObject({ checkId: check.checkId, trigger: "off_route", tripId: trip.tripId });
       expect(["Är allt OK?", "Is everything OK?", "Tout va bien ?"]).toContain(n.title);
     }
-    expect(pushes.find((n) => n.audience === "rider")!.deep_link).toBe(`movera-rider://trip/${trip.tripId}`);
+    // v0.18.49 §71 (owner Q9): one spelling for trip links, trips/{id}, in both apps' schemes.
+    expect(pushes.find((n) => n.audience === "rider")!.deep_link).toBe(`movera-rider://trips/${trip.tripId}`);
+    expect(pushes.find((n) => n.audience === "driver")!.deep_link).toBe(`movera-driver://trips/${trip.tripId}`);
     // Not a bell notice: never in the person's notification list.
     expect((await call(app, "GET", "/notifications", rider)).json().items.map((n: Doc) => n.kind)).not.toContain("ride_check");
     await database.db.updateTable("riders").set({ consents: JSON.stringify({}) }).execute();

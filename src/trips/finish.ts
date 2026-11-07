@@ -248,7 +248,7 @@ export async function resendReceipt(trx: Trx, who: Principal, tripId: string, bo
     kind: "receipt",
     title: TEXTS_RECEIPT["resendTitle"]![lang]!,
     body: fill(TEXTS_RECEIPT["resendBody"]![lang]!, { date, amount: amountText(receipt.total, lang) }),
-    deepLink: `movera-rider://trip/${tripId}/receipt`,
+    deepLink: `movera-rider://trips/${tripId}/receipt`, // v0.18.49 §71 (owner Q9): trips/{id}
     tripId,
     data: { tripId },
   }, now);
@@ -296,7 +296,7 @@ export async function adminDriverPay(trx: Trx, who: Principal, tripId: string, b
     kind: "driver_pay_changed",
     title: TEXTS_MONEY["yourShare"]![lang]!,
     body: fill(TEXTS_MONEY["payChanged"]![lang]!, { change: sign + amountText({ amountMinor: Math.abs(body.change.amountMinor), currency: trip.currency }, lang), reason: body.reason }),
-    deepLink: `movera-driver://trip/${tripId}`,
+    deepLink: `movera-driver://trips/${tripId}`, // v0.18.49 §71 (owner Q9): trips/{id}
     tripId,
     data: { tripId },
   }, now);

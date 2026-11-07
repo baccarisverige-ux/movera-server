@@ -165,7 +165,7 @@ describe("payment methods: cash 'Pay in car', card, Apple Pay; no Google Pay (ow
     const contract = JSON.parse(readFileSync(`${CONTRACTS_DIR}/contract.json`, "utf8"));
     expect(contract.zonePaymentMethods.values).toEqual(["cash", "card", "apple_pay"]);
     expect(contract.paymentMethods).not.toContain("google_pay");
-    expect(contract.finish.paymentMethods.texts.cash).toEqual({ sv: "Betala i bilen", fr: "Payer en espèces à bord", en: "Pay in car" });
+    expect(contract.finish.paymentMethods.texts.cash).toEqual({ sv: "Betala i bilen", fr: "Payer à bord", en: "Pay in car" });
     // A document still listing google_pay (published before the change) is served without it.
     await publish("rider_app_config", "Z001", riderDoc({ paymentMethods: ["cash", "google_pay", "apple_pay", "card"] }));
     const se = (await call(app, "GET", "/rider/config?zoneId=Z001", rider)).json();
@@ -455,6 +455,8 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
     expect(sent.statusCode, sent.body).toBe(200);
     const notice = await database.db.selectFrom("notifications").selectAll().where("notification_id", "=", sent.json().notificationId).executeTakeFirstOrThrow();
     expect(notice).toMatchObject({ audience: "rider", subject_id: riderId, kind: "receipt", title: "Ditt kvitto", trip_id: tripId });
+    // v0.18.49 §71 (owner Q9): one spelling for trip links, trips/{id}.
+    expect(notice.deep_link).toBe(`movera-rider://trips/${tripId}/receipt`);
     const log = await database.db.selectFrom("admin_audit").selectAll().where("action", "=", "trip.receipt_resend").where("target_id", "=", tripId).executeTakeFirstOrThrow();
     expect(JSON.stringify(log.detail)).toContain("Rider asked by phone");
     expect((await call(app, "GET", `/admin/trips/${tripId}/receipt`, admin.headers)).json().tripId).toBe(tripId);
@@ -476,7 +478,9 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
     const entries = await database.db.selectFrom("earnings_entries").select("amount_minor").where("trip_id", "=", tripId).where("kind", "=", "adjustment").execute();
     expect(entries.map((e) => Number(e.amount_minor))).toEqual([5000]);
     expect(await database.db.selectFrom("admin_audit").select("action").where("action", "=", "trip.driver_pay").where("target_id", "=", tripId).executeTakeFirst()).toBeDefined();
-    expect(await database.db.selectFrom("notifications").select("kind").where("kind", "=", "driver_pay_changed").where("trip_id", "=", tripId).executeTakeFirst()).toBeDefined();
+    const payNotice = await database.db.selectFrom("notifications").select(["kind", "deep_link"]).where("kind", "=", "driver_pay_changed").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    // v0.18.49 §71 (owner Q9): one spelling for trip links, trips/{id}.
+    expect(payNotice.deep_link).toBe(`movera-driver://trips/${tripId}`);
     const below = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: -90_000, currency: "SEK" }, reason: "x" });
     expect([below.statusCode, below.json().reason]).toEqual([400, "driver_pay_below_zero"]);
   });

@@ -289,8 +289,10 @@ describe("the rider's cancel after accept", () => {
     const counted = await database.db.selectFrom("driver_cancels").select("reason_code").where("trip_id", "=", tripId).where("driver_id", "=", drivers.A.id).execute();
     expect(counted).toEqual([]);
     // Owner job-4 Q4 "On every minutes": not heading since ~30 s, free (notice) from ~150 s, then every 60 s until 300 s.
-    const notices = await database.db.selectFrom("notifications").select("kind").where("subject_id", "=", drivers.A.id).where("trip_id", "=", tripId).where("kind", "=", "heading_not_to_rider").execute();
+    const notices = await database.db.selectFrom("notifications").select(["kind", "deep_link"]).where("subject_id", "=", drivers.A.id).where("trip_id", "=", tripId).where("kind", "=", "heading_not_to_rider").execute();
     expect(notices.length).toBeGreaterThanOrEqual(2);
+    // v0.18.49 §71 (owner Q9): one spelling for trip links, trips/{id}.
+    for (const n of notices) expect(n.deep_link).toBe(`movera-driver://trips/${tripId}`);
     expect(notices.length).toBeLessThanOrEqual(3);
     expect((await cancel(tripId)).json().cancellation.fee).toBeNull();
     } finally {
@@ -512,8 +514,12 @@ describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTr
     await advance(30);
     await step(tripId, "arrive", version + 1);
     expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
-    const rows = await database.db.selectFrom("notifications").select(["title", "bell", "audience", "body"]).where("trip_id", "=", tripId).where("kind", "=", "trip_update").orderBy("created_at").execute();
+    const rows = await database.db.selectFrom("notifications").select(["title", "bell", "audience", "body", "deep_link"]).where("trip_id", "=", tripId).where("kind", "=", "trip_update").orderBy("created_at").orderBy("notification_id").execute();
     expect(rows[0]).toMatchObject({ title: "Chauffeur trouvé", bell: true, audience: "rider", body: "Driver A est en route vers vous." });
+    // v0.18.49 §71: owner Q12 « Votre chauffeur … » titles, owner Q9 trips/{id} link.
+    expect(rows.map((r) => r.title)).toEqual(["Chauffeur trouvé", "Votre chauffeur arrive bientôt", "Votre chauffeur est arrivé"]);
+    expect(rows[1]!.body).toBe("Préparez-vous à le rejoindre.");
+    for (const r of rows) expect(r.deep_link).toBe(`movera://trips/${tripId}`);
     const trip = await riderView(tripId);
     await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
     expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
