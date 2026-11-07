@@ -8342,17 +8342,12 @@
       "driverApp": "driver_cancelled on his own former trip is his own echo: ignore it like trip_projection."
     },
     "l10": {
-      "rule": "After the driver ends the trip with the rider on board (endedEarly, endedBy driver), the rider's sheet shows the amount the server keeps: TripProjection.fare (cashToCollect when paid in the car), with one line for the rule (finish.earlyEnd.driver: a new price only when the trip was shorter by more than repriceOverKm km AND repriceOverMin minutes, else the booked price).",
+      "rule": "After the driver ends the trip with the rider on board (endedEarly, endedBy driver), the rider's sheet shows ONLY the amount to pay, from the server: TripProjection.fare (cashToCollect when paid in the car), with texts.youPay. No explanation line (owner 2026-11-07). finish.earlyEnd texts are unchanged.",
       "texts": {
         "youPay": {
           "sv": "Du betalar {amount}.",
           "fr": "Vous payez {amount}.",
           "en": "You pay {amount}."
-        },
-        "rule": {
-          "sv": "Priset ändras bara om resan blev mer än {km} km och {min} min kortare.",
-          "fr": "Le prix change seulement si la course a été plus courte de plus de {km} km et {min} min.",
-          "en": "The price changes only when the trip was more than {km} km and {min} min shorter."
         }
       },
       "server": "No new field: the rider projection already carries fare, cashToCollect and endedEarly / endedBy."
