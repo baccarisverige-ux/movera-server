@@ -271,6 +271,37 @@ describe("book later (owner Q1–Q7)", () => {
     }
   });
 
+  it("v0.18.49 §71 owner Q10 update: free for 5 min after booking (graceAfterBookingMin), then the category rule (fail-before: fee 2 min after a short-notice booking)", async () => {
+    const settle = async (tripId: string) => {
+      await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", tripId).execute();
+      await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();
+    };
+    // Booked 30 min before pickup (inside economy's 60 free minutes from the start): 2 min after booking → free.
+    const quick = await book(minutes(30));
+    await jump(2 * 60);
+    const graced = await rider.command(quick.tripId, "cancel", { reasonCode: "plans_changed" });
+    expect(graced.status, JSON.stringify(graced.body)).toBe(200);
+    expect(graced.body.cancellation.fee).toBeNull();
+    // The same, 6 min after booking → the category's fee.
+    const late = await book(minutes(30));
+    await jump(6 * 60);
+    const charged = await rider.command(late.tripId, "cancel", { reasonCode: "plans_changed" });
+    expect(charged.status, JSON.stringify(charged.body)).toBe(200);
+    expect(charged.body.cancellation.fee).toEqual({ amountMinor: 5000, currency: "SEK" });
+    await settle(late.tripId);
+    // Premium booked yesterday, cancelled 90 min before pickup (premium free until 120 min before) → fee.
+    const quotes = await rider.quote({ categoryIds: ["premium"], kind: "scheduled", scheduledAt: minutes(24 * 60 + 90) });
+    expect(quotes.status, JSON.stringify(quotes.body)).toBe(201);
+    const q = quotes.body["quotes"][0];
+    const premium = await rider.post("/trips", { quoteId: q.quoteId, categoryId: "premium", pickup: PLACES.sergels, dropoff: PLACES.medborgar, stops: [], kind: "scheduled", scheduledAt: q.scheduledAt ?? minutes(24 * 60 + 90), paymentMethod: "cash" });
+    expect(premium.status, JSON.stringify(premium.body)).toBe(201);
+    await until(premium.body.scheduledAt, -90 * 60);
+    const prem = await rider.command(premium.body.tripId, "cancel", { reasonCode: "plans_changed" });
+    expect(prem.status, JSON.stringify(prem.body)).toBe(200);
+    expect(prem.body.cancellation.fee?.amountMinor ?? 0).toBeGreaterThan(0);
+    await settle(premium.body.tripId);
+  });
+
   it("job 5 (R28, owner Q7 + answer 2026-11-05): an on-trip driver gets Exclusives (booked and live) only after 70 % of his route; a live one is queued and starts when his trip ends (fail-before: never)", async () => {
     // Only A is around: B is offline for this case.
     await sim.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", b.id).execute();
