@@ -301,8 +301,10 @@ describe("driver_reservations_changed (v0.18.45 §68)", () => {
     JSON.parse(Buffer.from(headers["authorization"]!.split(" ")[1]!.split(".")[1]!, "base64url").toString("utf8")).sub as string;
   const asBooked = (tripId: string, zoneId = "Z001") =>
     database.db.updateTable("trips").set({ scheduled_at: new Date(Date.now() + 86_400_000), zone_id: zoneId }).where("trip_id", "=", tripId).execute();
+  // v0.18.51 §73: a booked ride's list change (the flag applyCommand / touchTrip set for created, accepted, released,
+  // cancelled, rescheduled, started).
   const touch = (tripId: string) =>
-    database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId, kind: "trip_projection", version: 1, projection: {} }));
+    database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId, kind: "trip_projection", version: 1, projection: {}, reservations: true }));
   const quiet = () => new Promise((r) => setTimeout(r, 300));
   const kinds = (sse: Sse, kind: string) => sse.events.filter((e) => e.data["kind"] === kind);
   let rider: Record<string, string>;
@@ -355,6 +357,27 @@ describe("driver_reservations_changed (v0.18.45 §68)", () => {
     expect(kinds(drv, "driver_reservations_changed")[0]!.data["tripId"]).toBe(other.tripId);
     drv.close();
     await database.db.updateTable("trips").set({ status: "cancelled_by_rider", driver_id: null }).where("trip_id", "=", other.tripId).execute();
+  });
+
+  it("v0.18.51 §73 (S4 ISSUE 1): a booked ride's location fix, message or update without a list change sends nothing", async () => {
+    const trip = await bookTrip(rider);
+    await asBooked(trip.tripId);
+    const drv = await listen("/driver/config/stream?zoneId=Z001", driver);
+    try {
+      await quiet();
+      await database.db.transaction().execute(async (trx) => {
+        await appendTripEvent(trx, { tripId: trip.tripId, kind: "location", version: 1, location: { lat: 59.33, lng: 18.06 } });
+        await appendTripEvent(trx, { tripId: trip.tripId, kind: "trip_projection", version: 1, projection: {} });
+        await appendTripEvent(trx, { tripId: trip.tripId, kind: "message", version: 1, message: { text: "hi" } });
+      });
+      await quiet();
+      expect(kinds(drv, "driver_reservations_changed")).toHaveLength(0);
+      await touch(trip.tripId);
+      expect(await until(() => kinds(drv, "driver_reservations_changed").length === 1)).toBe(true);
+    } finally {
+      drv.close();
+      await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
+    }
   });
 
   it("a rolled-back change sends nothing", async () => {

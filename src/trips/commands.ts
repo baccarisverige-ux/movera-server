@@ -17,6 +17,16 @@ import { driverMomentOf, pushDriverTripMoment } from "../notifications/driverTri
 
 const viewerOf = (actor: Actor): Viewer => (actor === "system" ? "admin" : actor);
 
+/**
+ * v0.18.51 §73 (contract.json#driverReservationsLive.when): the statuses of the drivers' booked-ride lists (GET
+ * /driver/reservations: open = requested, accepted = held). A change into or out of them, or a change of a ride in
+ * them, is the list change the drivers' streams hear about (created, accepted, released, cancelled, rescheduled, started).
+ */
+const LISTED: ReadonlySet<string> = new Set(["requested", "accepted"]);
+/** Before the driver drives: a booked ride being searched (searching, offered) that ends is "cancelled" too. */
+const BEFORE_START: ReadonlySet<string> = new Set(["requested", "searching", "offered", "accepted"]);
+const listChange = (from: string, to: string) => LISTED.has(from) || LISTED.has(to) || (BEFORE_START.has(from) && isTripStatus(to) && TERMINAL.has(to));
+
 export async function applyCommand(
   trx: Trx,
   trip: TripRow,
@@ -42,7 +52,7 @@ export async function applyCommand(
   // v0.18.50 §72 (L7, contract.json#lifecycle0_18_50.l7): a driver's give-back before boarding (his cancel and the
   // take-backs counted as his cancel) is told as driver_cancelled, so the rider can tell it from an admin reassign.
   const driverGaveBack = input.actor === "driver" && input.command === "cancel" && trip.driver_id !== null && (to === "searching" || to === "requested");
-  await appendTripEvent(trx, { tripId: trip.trip_id, kind: driverGaveBack ? "driver_cancelled" : "trip_projection", version, occurredAt: input.now, projection: tripProjection(updated, "admin", { sequence }) });
+  await appendTripEvent(trx, { tripId: trip.trip_id, kind: driverGaveBack ? "driver_cancelled" : "trip_projection", version, occurredAt: input.now, projection: tripProjection(updated, "admin", { sequence }), reservations: listChange(trip.status, to) });
   // v0.18.13 (contract.json#riderTripPush): the rider's push for the key moments (never for his own cancel).
   const moment = momentOf(trip, updated);
   if (moment !== null) await pushTripMoment(trx, moment === "driver_changed" ? trip : updated, moment, input.now);
@@ -109,6 +119,6 @@ export async function touchTrip(trx: Trx, trip: TripRow, set: Updateable<TripsTa
   const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   const sequence = Number(updated.sequence) + 1;
   const kind = isTripStatus(updated.status) && TERMINAL.has(updated.status) ? "payment_updated" : "trip_projection";
-  await appendTripEvent(trx, { tripId: trip.trip_id, kind, version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence }) });
+  await appendTripEvent(trx, { tripId: trip.trip_id, kind, version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence }), reservations: listChange(trip.status, updated.status) });
   return { ...updated, sequence: String(sequence) };
 }

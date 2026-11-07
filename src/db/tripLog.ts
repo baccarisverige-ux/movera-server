@@ -72,6 +72,13 @@ export type NewTripEvent = {
   message?: unknown;
   /** v0.18.38 §62: CallView (call_ringing / answered / ended / missed) or the signal (call_signal). */
   call?: unknown;
+  /**
+   * v0.18.51 §73 (contract.json#driverReservationsLive.when, S4 ISSUE 1): this change moves a booked ride on or off the
+   * drivers' lists or changes a listed ride (created, accepted, released, cancelled, rescheduled, started). Only then
+   * do the zone's driver streams get driver_reservations_changed; a location fix, message, call, search step or island
+   * alert leaves it unset.
+   */
+  reservations?: boolean;
 };
 
 export type AppendedEvent = { eventId: string; sequence: number };
@@ -109,26 +116,30 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
       ...(event.call !== undefined ? { call: json(event.call) } : {}),
     })
     .execute();
-  await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify(tripNotice(event.tripId, sequence, bumped))})`.execute(trx);
+  await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify(tripNotice(event.tripId, sequence, bumped, event.reservations === true))})`.execute(trx);
   return { eventId, sequence };
 }
 
 /**
  * The movera_trip_events NOTIFY payload. v0.18.45 §68 (contract.json#driverReservationsLive) only ADDS zoneId,
  * scheduled and (when set) driverId; tripId, sequence and riderId are unchanged (rider_trip_changed reads them).
+ * v0.18.51 §73 adds reservations: true on a booked ride's list change (NewTripEvent.reservations).
  */
 export function tripNotice(
   tripId: string,
   sequence: number,
   row: { rider_id: string; zone_id: string; scheduled_at: unknown; driver_id: string | null },
+  reservations = false,
 ): Record<string, unknown> {
+  const scheduled = row.scheduled_at !== null && row.scheduled_at !== undefined;
   return {
     tripId,
     sequence,
     riderId: row.rider_id,
     zoneId: row.zone_id,
-    scheduled: row.scheduled_at !== null && row.scheduled_at !== undefined,
+    scheduled,
     ...(row.driver_id !== null ? { driverId: row.driver_id } : {}),
+    ...(scheduled && reservations ? { reservations: true } : {}),
   };
 }
 

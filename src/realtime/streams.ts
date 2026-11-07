@@ -137,7 +137,8 @@ export async function streamConfig(
   // rolled-back change sends nothing; every server copy LISTENs and fans out to its own streams (rule 33).
   if (driverId !== undefined) {
     stream.onClose(deps.hub.subscribe(TRIP_EVENTS_CHANNEL, (payload) => {
-      if (payload === null || payload["scheduled"] !== true || typeof payload["tripId"] !== "string" || stream.closed()) return;
+      // v0.18.51 §73 (S4 ISSUE 1): only a list change of a booked ride, never its location fixes or other updates.
+      if (payload === null || payload["scheduled"] !== true || payload["reservations"] !== true || typeof payload["tripId"] !== "string" || stream.closed()) return;
       if (payload["zoneId"] !== zoneId && payload["driverId"] !== driverId) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "driver_reservations_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
