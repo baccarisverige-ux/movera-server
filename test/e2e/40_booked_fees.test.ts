@@ -48,12 +48,17 @@ function bookingFee(rule: Json, fareMinor: number): number {
 }
 
 /** Booked at T; the driver takes it, starts at T−60 and arrives at T + arriveAtMin. */
-async function arriveAt(arriveAtMin: number): Promise<{ trip: Json; arrived: Json; fee: number }> {
+async function arriveAt(arriveAtMin: number, opts: { noRule?: boolean } = {}): Promise<{ trip: Json; arrived: Json; fee: number }> {
   const at = minutes(120);
   const quote = (await rider.quote({ categoryIds: ["economy"], kind: "scheduled", scheduledAt: at })).body.quotes[0];
   const made = await rider.post("/trips", { quoteId: quote.quoteId, categoryId: "economy", pickup: PLACES.sergels, dropoff: PLACES.medborgar, stops: [], kind: "scheduled", scheduledAt: at, paymentMethod: "cash" });
   expect(made.status, JSON.stringify(made.body)).toBe(201);
   const trip = made.body;
+  if (opts.noRule) {
+    // Owner Q2: a category without a booked cancel rule (Admin › Cancel fees › Reservation left empty), kept on the trip.
+    const row = await sim.db.selectFrom("trips").select("booking_rules").where("trip_id", "=", trip.tripId).executeTakeFirstOrThrow();
+    await sim.db.updateTable("trips").set({ booking_rules: JSON.stringify({ ...(row.booking_rules as Json), cancelRule: null }) as never }).where("trip_id", "=", trip.tripId).execute();
+  }
   expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
   await until(atT(trip, -60), 1);
   expect((await a.post(`/driver/reservations/${trip.tripId}/start`, {})).status).toBe(200);
@@ -61,6 +66,10 @@ async function arriveAt(arriveAtMin: number): Promise<{ trip: Json; arrived: Jso
   const res = await a.command(trip.tripId, "arrive", { location: a.fix(PLACES.sergels) });
   expect(res.status, JSON.stringify(res.body)).toBe(200);
   const rule = res.body.terms.cancelRule;
+  if (opts.noRule) {
+    expect(rule).toBeNull();
+    return { trip, arrived: res.body, fee: 0 };
+  }
   expect(rule, "the economy booked ride has a reservation cancel rule").not.toBeNull();
   const fee = bookingFee(rule, res.body.quote.total.amountMinor);
   expect(fee).toBeGreaterThan(0);
@@ -105,5 +114,19 @@ describe("v0.18.51 §73 booked fees", () => {
     const ns = await owner.post(`/admin/trips/${trip.tripId}/no-show`, { expectedVersion: version, note: "rider not there" });
     expect(ns.status, JSON.stringify(ns.body)).toBe(200);
     expect(ns.body.cancellation).toMatchObject({ feeKind: "no_show", fee: { amountMinor: fee } });
+  });
+
+  it("owner Q2: a category with no booked cancel rule charges the NORMAL no-show fee (confirm amount and charge)", async () => {
+    const { trip, arrived } = await arriveAt(-2, { noRule: true });
+    const kept = (await sim.db.selectFrom("trips").select("booking_rules").where("trip_id", "=", trip.tripId).executeTakeFirstOrThrow()).booking_rules as Json;
+    const normal = kept.waiting.noShowFee.amountMinor as number;
+    expect(normal).toBeGreaterThan(0);
+    expect(arrived.waiting.noShowFee.amountMinor).toBe(normal);
+    await until(arrived.waiting.noShowAt);
+    const ns = await a.command(trip.tripId, "no-show", { reasonCode: "rider_no_show" });
+    expect(ns.status, JSON.stringify(ns.body)).toBe(200);
+    expect(ns.body.cancellation).toMatchObject({ feeKind: "no_show", fee: { amountMinor: normal } });
+    const owed = await sim.db.selectFrom("rider_fees").select(["kind", "amount_minor"]).where("trip_id", "=", trip.tripId).execute();
+    expect(owed.map((r) => [r.kind, Number(r.amount_minor)])).toEqual([["no_show", normal]]);
   });
 });

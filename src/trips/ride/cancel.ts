@@ -40,7 +40,9 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
   // v0.18.8: the no-show fee of the rule applied at arrive (waiting.noShowFee), else the category's.
   // v0.18.51 §73 (owner "Booked fees"): a booked ride's no-show is the booking fee (its reservation cancel rule), worked
   // out now from the trip's kept rules (also for a trip that arrived before, whose waiting still holds the no-show fee).
-  const ruleFee = trip.kind === "scheduled" ? (await bookedNoShowFee(trx, trip)) ?? { amountMinor: 0, currency: trip.currency } : (trip.waiting as Waiting | null)?.noShowFee ?? (await waitingOf(trx, trip)).noShowFee;
+  // Owner Q2: no booked cancel rule = the normal no-show fee (the category's, as for a live ride).
+  const normalFee = (trip.waiting as Waiting | null)?.noShowFee ?? (await waitingOf(trx, trip)).noShowFee;
+  const ruleFee = trip.kind === "scheduled" ? await bookedNoShowFee(trx, trip, normalFee) : normalFee;
   const fee: Money | null = !waive && ruleFee.amountMinor > 0 ? { amountMinor: ruleFee.amountMinor, currency: trip.currency } : null;
   const share = (await rulesOf(trx, trip)).noShowDriverSharePct;
   // v0.18.7 (Q6): feeKind and the driver's part, so both apps show the amount.

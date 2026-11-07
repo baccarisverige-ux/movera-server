@@ -215,15 +215,16 @@ export const outstandingLine = (trip: TripRow) => ((trip.fare_lines as FareLine[
 /**
  * v0.18.51 §73 (owner 2026-11-07 "Booked fees", contract.json#bookedRide0_18_51.fees): a booked ride's no-show costs the
  * SAME booking fee as a late rider cancel — the trip's reservation cancel rule on the booked fare (without an owed fee),
- * as charged outside its free minutes. No rule for the category = no fee (null).
+ * as charged outside its free minutes. Owner 2026-11-07 (Q2): a category with no booked cancel rule charges the NORMAL
+ * no-show fee (`normal`) instead; a rule the admin set is always used.
  */
-export async function bookedNoShowFee(ex: Executor, trip: TripRow): Promise<Money | null> {
+export async function bookedNoShowFee(ex: Executor, trip: TripRow, normal: Money): Promise<Money> {
   const rule = (await rulesOf(ex, trip)).cancelRule;
-  if (rule === null) return null;
+  if (rule === null) return { amountMinor: normal.amountMinor, currency: trip.currency };
   const owed = outstandingLine(trip);
   const fare = { amountMinor: Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0), currency: trip.currency };
   const fee = cancelFee({ kind: "reservation", rule, fare: fare as Parameters<typeof cancelFee>[0]["fare"], minutesBeforePickup: rule.freeMin - 1 });
-  return fee.amountMinor > 0 ? { amountMinor: fee.amountMinor, currency: trip.currency } : null;
+  return { amountMinor: Math.max(0, fee.amountMinor), currency: trip.currency };
 }
 
 /** The fare with the quote's route and the waiting so far (§3.5 "Quote and fare"). */

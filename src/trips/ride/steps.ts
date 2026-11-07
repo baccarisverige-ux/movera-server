@@ -69,7 +69,9 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
     // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
     // v0.18.51 §73 (owner "Booked fees"): a booked ride's no-show costs the booking fee, so the confirm shows that.
-    const noShowFee: Money = trip.kind === "scheduled" ? (await bookedNoShowFee(trx, trip)) ?? { amountMinor: 0, currency: trip.currency } : { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
+    // Owner Q2: a category with no booked cancel rule shows (and charges) the normal no-show fee.
+    const normalNoShow: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
+    const noShowFee: Money = trip.kind === "scheduled" ? await bookedNoShowFee(trx, trip, normalNoShow) : normalNoShow;
     const noShowShare = kept.noShowDriverSharePct;
     const waiting: Waiting = {
       arrivedAt: now.toISOString(),
