@@ -21,6 +21,7 @@ import { signUpView } from "./reminders.js";
 import { DRIVER_HOME, areaView, hasFreshPosition } from "./presence.js";
 import { RIDERS_ONLINE_WINDOW_SECONDS, ridersOnlineByZone } from "../riders/presence.js";
 import { onDriverPosition } from "../airportQueue/service.js";
+import { etaOnPosition } from "../trips/etaNow.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -95,7 +96,7 @@ export async function loadDriver(ex: Executor, driverId: string, lock = false): 
 
 async function activeTripOf(ex: Executor, driverId: string) {
   // v0.18.17 (contract.json#bookLater): a booked ride held for later (scheduled, accepted) is not the current trip.
-  return ex.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
+  return ex.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert", "pickup", "dropoff", "eta"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
 }
 
 export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin", now: Date = new Date()): Promise<Record<string, unknown>> {
@@ -345,11 +346,15 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
   // Only a newer fix replaces the stored one (batches can arrive out of order on a bad connection).
   // G5 live re-test: the same fix sent again (a phone standing still re-sends its last OS fix with the OS's own
   // time) refreshes received_at, so the driver is neither stale (120 s) nor set offline while the app keeps sending.
-  await trx
+  // Live 5+5 2026-11-08 (problem 4): the position it replaces comes back in the same statement (a WITH reads the row
+  // as it was), so the ETA check below sees where the driver was; no row back = an older fix, nothing replaced.
+  const replaced = await trx
+    .with("prev", (db) => db.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driverId))
     .insertInto("driver_locations")
     .values(values)
     .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<=", latest.at))
-    .execute();
+    .returning([sql<number | null>`(SELECT lat FROM prev)`.as("prev_lat"), sql<number | null>`(SELECT lng FROM prev)`.as("prev_lng")])
+    .executeTakeFirst();
 
   // v0.18.36 §60 (fix job 9, contract.json#airportQueue): join, stay in or leave an airport queue.
   await onDriverPosition(trx, driverId, latest.fix, now);
@@ -357,6 +362,12 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
   // On a trip, the trip is the one the server knows, whatever tripId the app sent.
   const active = await activeTripOf(trx, driverId);
   if (active) {
+    // Live 5+5 2026-11-08 (problem 4): at the pickup / drop-off (or after a jump) the ETA tick runs now, not up to 30 s
+    // later; before the trip row is written below (lock order, trips/etaNow.ts etaOnPosition).
+    if (replaced) {
+      const previous = replaced.prev_lat !== null && replaced.prev_lng !== null ? { lat: Number(replaced.prev_lat), lng: Number(replaced.prev_lng) } : null;
+      await etaOnPosition(trx, active, previous, latest.fix, now);
+    }
     await trx
       .insertInto("trip_locations")
       .values(fresh.map(({ fix, at }) => ({ trip_id: active.trip_id, driver_id: driverId, measured_at: at, lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy, heading: fix.heading ?? null, speed_mps: fix.speedMps ?? null, moving: fix.moving ?? false })))

@@ -11,6 +11,7 @@ import { tripProjection } from "./projection.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { headingTick } from "./headingCheck.js";
 import { takeBackLateBooked } from "./ride.js";
+import { statusTarget, TRIP_ETA } from "./etaNow.js";
 import { maybePushArriving } from "../notifications/tripPush.js";
 
 /**
@@ -27,21 +28,16 @@ type Place = { lat: number; lng: number };
 export type TripEta = { etaSeconds: number; distanceMeters: number; target: "pickup" | "dropoff"; at: string; source: "osrm" | "estimate" | "stale" };
 
 const PW = (contract as unknown as { pickupWaiting: { eta: { everySeconds: number; staleAfterSeconds: number } } }).pickupWaiting.eta;
-export const TRIP_ETA = "trip_eta";
+export { TRIP_ETA };
 export const ETA_EVERY_MS = PW.everySeconds * 1000;
 export const ETA_STALE_MS = PW.staleAfterSeconds * 1000;
 /** Nobody is told "0 minutes": the ETA floor (as the old haversine ETA had). */
 export const ETA_MIN_SECONDS = 60;
 
-const TO_PICKUP = new Set(["accepted", "driver_to_pickup"]);
-const ON_BOARD = new Set(["rider_onboard", "in_trip", "approaching_dropoff"]);
-
 /** Where the car is going now, or null while it waits at the pickup or the trip is over / has no driver. */
 export function etaTarget(trip: Pick<TripRow, "status" | "driver_id">): "pickup" | "dropoff" | null {
   if (!trip.driver_id || TERMINAL.has(trip.status as TripStatus)) return null;
-  if (TO_PICKUP.has(trip.status)) return "pickup";
-  if (ON_BOARD.has(trip.status)) return "dropoff";
-  return null;
+  return statusTarget(trip.status);
 }
 
 /** The straight-line estimate at dispatch's pickup speed (what reads use when no fresh ETA is stored). */
