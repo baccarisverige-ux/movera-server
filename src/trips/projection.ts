@@ -21,7 +21,8 @@ const money = (minor: string | number | null | undefined, currency: string): Mon
   minor === null || minor === undefined ? undefined : { amountMinor: Number(minor), currency };
 const iso = (value: Date | null | undefined) => (value ? value.toISOString() : undefined);
 
-const ETA_STATUSES = new Set(["accepted", "driver_to_pickup", "rider_onboard", "in_trip", "approaching_dropoff"]);
+/** Where the stored ETA must point in each status (contract.json#pickupWaiting.eta: to the pickup until boarding, then to the drop-off). */
+const ETA_TARGET_OF: Record<string, "pickup" | "dropoff"> = { accepted: "pickup", driver_to_pickup: "pickup", rider_onboard: "dropoff", in_trip: "dropoff", approaching_dropoff: "dropoff" };
 
 type WaitingRow = { arrivedAt: string; waitFrom?: string; freeWaitMin?: number; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money };
 
@@ -188,7 +189,10 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   const lines = (row.fare_lines as Array<{ code: string; amount: Money }>) ?? [];
   const terms = tripTerms(row);
   // The stored ETA shows while the car is going somewhere (to the pickup, or to the drop-off with the rider on board).
-  const eta = row.driver_id && ETA_STATUSES.has(row.status) ? (row.eta as { etaSeconds: number } | null) : null;
+  // Live 5+5 2026-11-08 (problem 5): only an ETA to where the car goes NOW; the pickup ETA kept after boarding is not
+  // sent (the trip-start event said "there at the start time" until the next tick).
+  const stored = row.driver_id ? (row.eta as { etaSeconds: number; target?: string } | null) : null;
+  const eta = stored && ETA_TARGET_OF[row.status] !== undefined && stored.target === ETA_TARGET_OF[row.status] ? stored : null;
   const projection: Record<string, unknown> = {
     tripId: row.trip_id,
     rideId: row.trip_id,

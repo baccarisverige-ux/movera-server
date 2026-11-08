@@ -20,8 +20,12 @@ import { rulesOf, waitingOf, fareWithWaiting, fareColumns, walletFirstOf, booked
 import { releaseDriver, feeSplit, walletCovers } from "./money.js";
 import { backToDispatch } from "./cancel.js";
 import { pickupInRunningEvent, WAITING_PAID, WAITING_NO_SHOW } from "./timers.js";
+import { etaNowLocked } from "../etaNow.js";
 
 /* ---------------------------------------------------------------- the driver's steps */
+
+/** Boarding and start: an ETA that still points to the pickup is cleared (never shown once the rider is on board). */
+const noPickupEta = (trip: TripRow): Updateable<TripsTable> => ((trip.eta as { target?: string } | null)?.target === "pickup" ? { eta: null } : {});
 
 type StepCommand = "head_to_pickup" | "arrive" | "board" | "start_trip";
 
@@ -101,13 +105,16 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     // The waiting clock stops: every second after the free wait is charged, 100 % the driver's (§3.5).
     const waiting = trip.waiting as Waiting | null;
     const charged = waiting ? Math.max(0, Math.floor((now.getTime() - Date.parse(waiting.freeUntil)) / 1000)) : 0;
-    const set: Updateable<TripsTable> = { boarded_at: now };
+    // Live 5+5 2026-11-08 (problem 5): the pickup ETA ends here (the boarding event carries none) and the first ETA to
+    // the drop-off is computed right away (etaNowLocked below), not up to 30 s later.
+    const set: Updateable<TripsTable> = { boarded_at: now, ...noPickupEta(trip) };
     if (waiting) set["waiting"] = JSON.stringify({ ...waiting, chargedSeconds: charged });
     if (charged > 0 && trip.status === "arrived") Object.assign(set, fareColumns(trip, await fareWithWaiting(trx, trip, charged)));
     // The wallet pays first: the driver sees the cash to collect from boarding on.
     // v0.18.33 (owner Q6): not when the rider switched the wallet off for this ride (or the zone did).
     set.wallet_applied_minor = walletFirstOf(trip) ? await walletCovers(trx, trip.rider_id, trip.currency, Number(set.fare_minor ?? trip.fare_minor)) : 0;
     const boarded = await applyCommand(trx, trip, { command, actor: "driver", now, set });
+    await etaNowLocked(trx, tripId, now);
     // From now on the server watches for the driver going silent (owner decision 2026-10-26).
     await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: tripId, dueAt: new Date(now.getTime() + SILENT_ALERT_MS), payload: {} });
     return boarded;
@@ -116,11 +123,14 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     // v0.18.7 (Q5): the fare the rider sees from Start trip includes the charged waiting (set at board; set again here
     // so a trip boarded by an older build shows the same total the driver asks for).
     const waiting = trip.waiting as Waiting | null;
-    const set: Updateable<TripsTable> = { started_at: now };
+    const set: Updateable<TripsTable> = { started_at: now, ...noPickupEta(trip) };
     if (waiting && waiting.chargedSeconds > 0 && !((trip.fare_lines as FareLine[]) ?? []).some((l) => l.code === "waiting")) {
       Object.assign(set, fareColumns(trip, await fareWithWaiting(trx, trip, waiting.chargedSeconds)));
     }
-    return applyCommand(trx, trip, { command, actor: "driver", now, set });
+    const started = await applyCommand(trx, trip, { command, actor: "driver", now, set });
+    // Live 5+5 2026-11-08 (problem 5): no drop-off ETA yet (the tick booked at boarding has not run): it runs now.
+    if ((trip.eta as { target?: string } | null)?.target !== "dropoff") await etaNowLocked(trx, tripId, now);
+    return started;
   }
   return applyCommand(trx, trip, { command, actor: "driver", now });
 }
