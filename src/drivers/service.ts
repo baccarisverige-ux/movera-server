@@ -363,7 +363,8 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
   const active = await activeTripOf(trx, driverId);
   if (active) {
     // Live 5+5 2026-11-08 (problem 4): at the pickup / drop-off (or after a jump) the ETA tick runs now, not up to 30 s
-    // later; before the trip row is written below (lock order, trips/etaNow.ts etaOnPosition).
+    // later; run 2: also each 50 m inside the arrive radius (at most one per 5 s). Before the trip row is written below
+    // (lock order, trips/etaNow.ts etaOnPosition); the trip's earlier fixes are in trip_locations (written below).
     if (replaced) {
       const previous = replaced.prev_lat !== null && replaced.prev_lng !== null ? { lat: Number(replaced.prev_lat), lng: Number(replaced.prev_lng) } : null;
       await etaOnPosition(trx, active, previous, latest.fix, now);
