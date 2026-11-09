@@ -1,5 +1,6 @@
 import { createVerify, generateKeyPairSync } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { readEnv } from "../../src/env.js";
@@ -180,6 +181,21 @@ describe("push dispatcher (database)", () => {
     await notify(database.db, { audience: "rider", subjectId: "rdr_loud", kind: "trip_message", title: "t", body: "b" }, clock.now);
     expect(await pusher.sweep()).toBe(2);
     expect(sender.sent.map((m) => m.token)).toEqual(["loud"]);
+  });
+
+  // v0.18.53 §75 (owner Q36-Q39, contract.json#riderTripPush.consent): the switch stops only the optional moments.
+  it("rideUpdates false: driver_arrived, support_reply and reservation_no_driver are still pushed; driver_found and unknown kinds are not", async () => {
+    await database.db.insertInto("riders").values({ rider_id: "rdr_quiet2", phone: "+46700000903", first_name: "Q", email: null, language: null, consents: JSON.stringify({ rideUpdates: false }) }).execute();
+    await device("quiet2", "rider", "rdr_quiet2");
+    const rider = { audience: "rider" as const, subjectId: "rdr_quiet2", title: "t", body: "b" };
+    await notify(database.db, { ...rider, kind: "trip_update", data: { tripId: "trp_1", moment: "driver_arrived" } }, clock.now);
+    await notify(database.db, { ...rider, kind: "trip_update", data: { tripId: "trp_1", moment: "driver_found" } }, clock.now);
+    await notify(database.db, { ...rider, kind: "support_reply", data: { ticketId: "tkt_1" } }, clock.now);
+    await notify(database.db, { ...rider, kind: "reservation_no_driver", data: { tripId: "trp_2" } }, clock.now);
+    await notify(database.db, { ...rider, kind: "trip_message" }, clock.now);
+    expect(await pusher.sweep()).toBe(5);
+    expect(sender.sent.map((m) => m.data["kind"]).sort()).toEqual(["reservation_no_driver", "support_reply", "trip_update"]);
+    expect(sender.sent.find((m) => m.data["kind"] === "trip_update")!.data["notificationId"]).toBe((await database.db.selectFrom("notifications").select("notification_id").where("subject_id", "=", "rdr_quiet2").where(sql<boolean>`data->>'moment' = 'driver_arrived'`).executeTakeFirstOrThrow()).notification_id);
   });
 
   it("does not send notices older than an hour (push was off), but marks them taken", async () => {

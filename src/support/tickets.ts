@@ -9,6 +9,7 @@ import { cursorOf, readCursor } from "../admin/lists.js";
 import { permissionsOf, isAdminRole } from "../admin/permissions.js";
 import * as desk from "./desk.js";
 import { pokeAlerts } from "../alerts/detector.js";
+import { pushSupportAnswer } from "./answerPush.js";
 
 /**
  * Support tickets (contract v0.9.0 §16, contract.json#support; owner, 2026-10-27): the rider and driver apps open
@@ -281,5 +282,7 @@ export async function adminReply(trx: Trx, who: Principal, ticketId: string, bod
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: "support", admin_id: who.subjectId, text: body.text, at: now }).execute();
   await trx.updateTable("support_tickets").set({ status, updated_at: now, last_message_at: now, ...(row.first_reply_at ? {} : { first_reply_at: now }), ...(status === "resolved" ? { solved_by: who.subjectId, solved_at: now, assigned_admin_id: null } : {}) }).where("ticket_id", "=", ticketId).execute();
   await audit(trx, { adminId: who.subjectId, action: "ticket.reply", targetType: "ticket", targetId: ticketId, zoneId: row.zone_id, detail: { status }, at: now });
+  // v0.18.53 §75 (owner Q39): the answer pushes the ticket's owner at once (never for a case the person cannot see).
+  await pushSupportAnswer(trx, row, now);
   return adminTicket(trx, who, ticketId, now);
 }

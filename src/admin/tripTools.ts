@@ -3,6 +3,7 @@ import type { Principal } from "../auth/guard.js";
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
+import { pushSupportAnswer } from "../support/answerPush.js";
 import { ticketView, TICKET_CATEGORIES } from "../support/tickets.js";
 import { audit } from "./audit.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
@@ -83,6 +84,9 @@ export async function openTripCase(trx: Trx, who: Principal, tripId: string, bod
   const message = { message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: "support" as const, admin_id: who.subjectId, text: body.text, at: now };
   await trx.insertInto("ticket_messages").values(message).execute();
   await audit(trx, { adminId: who.subjectId, action: "trip.case", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { ticketId, about: body.about, visibleToPerson: body.visibleToPerson === true }, at: now });
+  // v0.18.53 §75 (owner Q39): the admin's first message on a case the person sees is pushed like an answer; an
+  // internal case (visibleToPerson false) tells nobody (pushSupportAnswer checks it).
+  await pushSupportAnswer(trx, row as never, now);
   return ticketView(row as never, [{ ...message, admin_name: null } as never]);
 }
 

@@ -1,5 +1,6 @@
 import { sql } from "kysely";
 import type { Db } from "../db/db.js";
+import { riderPushAlwaysSent } from "../notifications/tripPush.js";
 import type { PushSender, SendResult } from "./fcm.js";
 
 /**
@@ -133,7 +134,10 @@ export class PushDispatcher {
 
   private async pushOne(row: PushRow, now: Date): Promise<void> {
     // v0.18.9 owner rule 16: the ride-check push is safety and always goes, whatever the ride-updates choice.
-    if (row.audience === "rider" && row.kind !== "ride_check") {
+    // v0.18.53 §75 (owner Q36-Q39, contract.json#riderTripPush.consent): rideUpdates false stops only the optional
+    // trip moments (driver_found, driver_arriving) and kinds outside the always-sent set (riderPushAlwaysSent); arrived,
+    // a new driver, cancelled, no driver found, failed, the booked-ride no-driver kinds (to the rider) and a support answer always go.
+    if (row.audience === "rider" && !riderPushAlwaysSent(row.kind, row.data)) {
       const rider = await this.db.selectFrom("riders").select("consents").where("rider_id", "=", row.subject_id).executeTakeFirst();
       if ((rider?.consents as { rideUpdates?: unknown } | null | undefined)?.rideUpdates === false) return;
     }
