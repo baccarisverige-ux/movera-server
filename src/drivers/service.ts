@@ -318,10 +318,19 @@ export async function postLocations(trx: Trx, driverId: string, body: unknown, n
   const problem = schemaProblem("LocationBatch", body);
   if (problem !== null) throw badRequest(`The location batch is not valid: ${problem}.`, "invalid_body");
   const batch = body as { fixes: Fix[]; tripId?: string };
-  const accepted = await storeFixes(trx, driverId, batch.fixes, batch.tripId, now);
+  // v0.18.52 §74 (owner Q15 'Not stored', 2026-11-09): a batch from an offline or suspended driver with no active trip
+  // is not stored — no position on the admin map, no stale-fix work — whatever an old app or a sender not stopped sends.
+  // Only here: going online stores its own fix (availability) before the status flips.
+  const accepted = (await offlineWithNoTrip(trx, driverId)) ? 0 : await storeFixes(trx, driverId, batch.fixes, batch.tripId, now);
   // v0.18.4 (G3-R2): so the app can show "You are not eligible to drive in this area" when he drives out.
   const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids", "language"]).where("driver_id", "=", driverId).executeTakeFirst();
   return { accepted, serverTime: now.toISOString(), ...(driver ? await areaView(trx, driver) : {}) };
+}
+
+async function offlineWithNoTrip(trx: Trx, driverId: string): Promise<boolean> {
+  const status = (await trx.selectFrom("drivers").select("online_status").where("driver_id", "=", driverId).executeTakeFirst())?.online_status;
+  if (status !== "offline" && status !== "suspended") return false;
+  return (await activeTripOf(trx, driverId)) === undefined;
 }
 
 async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: string | undefined, now: Date): Promise<number> {
