@@ -448,7 +448,8 @@ describe("note check: 'Finish your sign-up' reminders and stuck applicants", () 
     await sweepSignUpReminders(database.db, new Date(clock.now.getTime() + 2 * DAY));
     expect((await notices("seOwner")).filter((n) => n.kind === "finish_sign_up")).toHaveLength(2);
     expect((await call(app, "GET", `/admin/drivers/${ID.seOwner}`, sup.headers)).json().signUp).toMatchObject({ stuck: false, remindersSent: 2 });
-    await database.db.updateTable("drivers").set({ created_at: new Date(Date.now() - 11 * DAY) }).where("driver_id", "=", ID.seOwner!).execute();
+    // One clock everywhere (2026-11-09): the server now judges "stuck" by the command's clock, as the sweeps do.
+    await database.db.updateTable("drivers").set({ created_at: new Date(clock.now.getTime() - 11 * DAY) }).where("driver_id", "=", ID.seOwner!).execute();
     expect((await call(app, "GET", `/admin/drivers/${ID.seOwner}`, sup.headers)).json().signUp).toMatchObject({ stuck: true });
     // An active driver gets none.
     expect((await call(app, "GET", `/admin/drivers/${ID.seMember}`, sup.headers)).json()).not.toHaveProperty("signUp");
