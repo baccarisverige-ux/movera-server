@@ -16,7 +16,7 @@ type Texts = Record<Lang, string>;
 type Spec = { kind: string; deepLink: { rider: string; driver: string }; texts: { title: Texts; body: Texts } };
 
 export const SUPPORT_ANSWER_PUSH: Spec = (contract as unknown as { support: { answerPush: Spec } }).support.answerPush;
-const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr", TN: "fr" };
+const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
 const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
 
 type Ticket = { ticket_id: string; opened_by: "rider" | "driver" | "admin"; visible_to_person?: boolean | null; rider_id: string | null; driver_id: string | null; zone_id: string | null; country?: string | null };
