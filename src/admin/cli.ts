@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { readEnv } from "../env.js";
 import { createDb, createPool } from "../db/db.js";
 import { migrate } from "../db/migrate.js";
-import { createAdmin, createSetupLink } from "./auth.js";
+import { changeAdminRole, createAdmin, createSetupLink } from "./auth.js";
 import { isAdminRole } from "./permissions.js";
 import { seedDriver } from "../drivers/service.js";
 import { seedTestAccounts } from "../drivers/seedTest.js";
@@ -37,6 +37,7 @@ if (env.DATABASE_URL === undefined) throw new Error("Set DATABASE_URL first.");
 const usage = [
   'npm run admin -- create --email <e-mail> --name "<name>" [--role super]',
   "npm run admin -- link --email <e-mail>",
+  "npm run admin -- role --email <e-mail> --role <role>   (step 38: ends every open session of that admin at once; he signs in again)",
   'npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123 [--year 2020] [--categories economy,comfort] [--zones Z001,Z002]',
   "npm run admin -- kpi-backfill --from YYYY-MM-DD   (rewrites the nightly KPI summary from that day to yesterday; safe to run again)",
   "npm run admin -- seed-test   (the test week's activated drivers, fleet and riders on the test numbers, and sample settings in open zones that have none; not for production)",
@@ -87,6 +88,19 @@ if (command === "driver") {
       seedDriver(trx, { phone: v.phone!, firstName: v.name!, make: v.make!, model: v.model!, year: Number(v.year), color: v.color!, plate: v.plate!, categoryIds: v.categories!.split(","), zoneIds: zones }),
     );
     console.log(`driver ${made.driverId} ready (car ${made.vehicleId}), zones ${zones.join(", ")}`);
+  } finally {
+    await db.destroy();
+  }
+  process.exit(0);
+}
+if (command === "role") {
+  if (values.email === undefined || !process.argv.includes("--role") || !isAdminRole(values.role!)) throw new Error(`usage:\n  ${usage}`);
+  try {
+    await migrate(pool);
+    const row = await db.selectFrom("admins").select("admin_id").where("email", "=", values.email.trim().toLowerCase()).executeTakeFirst();
+    if (row === undefined) throw new Error(`No admin with e-mail ${values.email}`);
+    const changed = await changeAdminRole(db, row.admin_id, values.role, new Date(), "cli");
+    console.log(`admin ${row.admin_id}: role ${changed.from} -> ${values.role}; ${changed.ended} open session(s) ended`);
   } finally {
     await db.destroy();
   }
