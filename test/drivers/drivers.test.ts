@@ -99,6 +99,30 @@ describe("location", () => {
     expect((await call(app, "POST", "/driver/location", driver, { fixes: [] })).json()).toMatchObject({ reason: "invalid_body" });
   });
 
+  it("v0.18.52 §74 (owner Q15 'Not stored'): an offline driver with no trip sends fixes — nothing is stored, accepted 0; online again, stored", async () => {
+    let me = await profile();
+    if (me.onlineStatus !== "online") me = (await call(app, "POST", "/driver/availability", driver, { expectedVersion: me.version, onlineStatus: "online", location: fix(59.3326, 18.0649) })).json();
+    await call(app, "POST", "/driver/location", driver, { fixes: [fix(59.3326, 18.0649, 2)] });
+    const before = await database.db.selectFrom("driver_locations").select(["lat", "lng", "measured_at", "received_at"]).where("driver_id", "=", driverId).executeTakeFirstOrThrow();
+    me = (await call(app, "POST", "/driver/availability", driver, { expectedVersion: me.version, onlineStatus: "offline" })).json();
+    expect(me.onlineStatus).toBe("offline");
+    advance(60);
+    const refused = await call(app, "POST", "/driver/location", driver, { fixes: [fix(59.2, 17.9, 1), fix(59.21, 17.91, 0)] });
+    expect(refused.statusCode).toBe(200);
+    expect(refused.json()).toMatchObject({ accepted: 0 });
+    const after = await database.db.selectFrom("driver_locations").select(["lat", "lng", "measured_at", "received_at"]).where("driver_id", "=", driverId).executeTakeFirstOrThrow();
+    expect(after).toEqual(before);
+    // Suspended (owner 2026-11-09 'Yes, suspended too'): the same.
+    await database.db.updateTable("drivers").set({ online_status: "suspended" }).where("driver_id", "=", driverId).execute();
+    expect((await call(app, "POST", "/driver/location", driver, { fixes: [fix(59.22, 17.92, 0)] })).json()).toMatchObject({ accepted: 0 });
+    await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", driverId).execute();
+    // Online again: stored as before.
+    me = (await call(app, "POST", "/driver/availability", driver, { expectedVersion: (await profile()).version, onlineStatus: "online", location: fix(59.3326, 18.0649) })).json();
+    expect(me.onlineStatus).toBe("online");
+    expect((await call(app, "POST", "/driver/location", driver, { fixes: [fix(59.3327, 18.065, 0)] })).json()).toMatchObject({ accepted: 1 });
+    await call(app, "POST", "/driver/availability", driver, { expectedVersion: me.version, onlineStatus: "offline" });
+  });
+
   it("on a trip, fixes go to the trace and the trip stream as location events, without changing the version", async () => {
     const tripId = await assignedTrip();
     const before = await database.db.selectFrom("trips").select(["version", "sequence"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
