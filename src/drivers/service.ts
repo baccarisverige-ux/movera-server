@@ -146,7 +146,8 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     // v0.18.4 (G3-R2): the driver is told when his latest position is outside all his zones (no trips there).
     ...(viewer === "driver" ? await areaView(ex, row) : {}),
     version: row.version,
-    ...(viewer === "admin" ? await signUpView(ex, row) : {}),
+    // 2026-11-09: the command's clock, like every other time here (the real clock made the admin "stuck" flag drift from the sweeps).
+    ...(viewer === "admin" ? await signUpView(ex, row, now) : {}),
     ...(viewer === "admin" && location
       ? {
           location: fixView(location),
