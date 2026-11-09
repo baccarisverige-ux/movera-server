@@ -67,6 +67,24 @@ describe("person replies chat-style (QO-1) and sees only the agent's first name 
     expect(closed.body["reason"]).toBe("ticket_closed");
   });
 
+  // v0.18.53 §75 (owner Q39, contract.json#support.answerPush): the answer pushes the ticket's owner at once.
+  it("an admin's reply writes a support_reply notice for the rider: bell, deep link, the rider's language (else the zone's)", async () => {
+    await sim.db.updateTable("riders").set({ language: "fr" }).where("rider_id", "=", rider.id).execute();
+    const id = await open();
+    await agent.post(`/admin/tickets/${id}/reply`, { text: "Bonjour." });
+    const row = await sim.db.selectFrom("notifications").selectAll().where("kind", "=", "support_reply").where("deep_link", "=", `movera://support/${id}`).executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ audience: "rider", bell: true, deep_link: `movera://support/${id}`, title: "Réponse de Movera Support" });
+    expect(row.data).toMatchObject({ ticketId: id, texts: { title: { sv: "Svar från Movera Support", fr: "Réponse de Movera Support", en: "Reply from Movera Support" } } });
+    await sim.db.updateTable("riders").set({ language: null }).where("rider_id", "=", rider.id).execute();
+    const id2 = await open();
+    await agent.post(`/admin/tickets/${id2}/reply`, { text: "Hej." });
+    const sv = await sim.db.selectFrom("notifications").select("title").where("kind", "=", "support_reply").where("deep_link", "=", `movera://support/${id2}`).executeTakeFirstOrThrow();
+    expect(sv.title).toBe("Svar från Movera Support");
+    // the person's own message is not pushed
+    await rider.post(`/support/tickets/${id2}/messages`, { text: "Tack" });
+    expect(await sim.db.selectFrom("notifications").select("notification_id").where("kind", "=", "support_reply").where("deep_link", "=", `movera://support/${id2}`).execute()).toHaveLength(1);
+  });
+
   it("an admin whose name is an e-mail shows no name to the person", async () => {
     const id = await open();
     await sim.db.updateTable("admins").set({ name: "agent.x@movera.test" }).where("admin_id", "=", owner.id).execute();

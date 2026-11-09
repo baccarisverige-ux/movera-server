@@ -18,6 +18,32 @@ type Spec = { kind: string; deepLink: string; arrivingSeconds: number; texts: Re
 
 export const RIDER_TRIP_PUSH: Spec = (contract as unknown as { riderTripPush: Spec }).riderTripPush;
 const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
+
+/**
+ * v0.18.53 §75 (owner Q36-Q39 2026-11-09, contract.json#riderTripPush.consent, #support.answerPush, #bookLater.push.note):
+ * Rider.consents.rideUpdates false stops ONLY the optional moments driver_found and driver_arriving. Always pushed,
+ * whatever the switch: the trip moments below, the ride check, the booked-ride no-driver kinds (reservation_no_driver,
+ * reservation_no_driver_found; reservation_lost is a DRIVER push) and a support answer.
+ * The push dispatcher applies this in ONE place (src/push/dispatcher.ts pushOne); the bell row is always stored.
+ */
+export const RIDER_OPTIONAL_MOMENTS: ReadonlySet<string> = new Set<TripMoment>(["driver_found", "driver_arriving"]);
+const ALWAYS_MOMENTS: ReadonlySet<string> = new Set<TripMoment>(["driver_arrived", "driver_changed", "trip_cancelled", "no_driver_found", "trip_failed"]);
+const SUPPORT_ANSWER_KIND = (contract as unknown as { support: { answerPush: { kind: string } } }).support.answerPush.kind;
+const BOOK_LATER_KINDS = (contract as unknown as { bookLater: { push: { kinds: string[] } } }).bookLater.push.kinds;
+const RIDER_ALWAYS_KINDS: ReadonlySet<string> = new Set([
+  "ride_check",
+  SUPPORT_ANSWER_KIND,
+  ...["reservation_no_driver", "reservation_no_driver_found"].filter((k) => BOOK_LATER_KINDS.includes(k)),
+]);
+
+/** True when a rider push goes even with rideUpdates false (unknown kinds: no, as before). */
+export function riderPushAlwaysSent(kind: string, data: Record<string, unknown> | null | undefined): boolean {
+  if (kind === RIDER_TRIP_PUSH.kind) {
+    const moment = data?.["moment"];
+    return typeof moment === "string" && ALWAYS_MOMENTS.has(moment);
+  }
+  return RIDER_ALWAYS_KINDS.has(kind);
+}
 const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
 // v0.18.50 §72 (owner L11): expired and failed have their own words (no_driver_found, trip_failed).
 const CANCELLED_NOT_BY_RIDER = new Set(["cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system"]);
@@ -43,9 +69,9 @@ export function momentOf(before: Pick<TripRow, "status" | "driver_id">, after: P
 export async function pushTripMoment(ex: Executor, trip: Pick<TripRow, "trip_id" | "rider_id" | "zone_id" | "driver_summary">, moment: TripMoment, now: Date): Promise<boolean> {
   const rider = await ex.selectFrom("riders").select(["language", "consents"]).where("rider_id", "=", trip.rider_id).executeTakeFirst();
   if (!rider) return false;
-  // Owner 2026-11-02 (decisions/driver-g13.md, last line): "ride updates" off stops only "driver found" and "arriving";
-  // "driver arrived", "a new driver" and "trip cancelled" are always sent.
-  if ((rider.consents as { rideUpdates?: unknown } | null)?.rideUpdates === false && (moment === "driver_found" || moment === "driver_arriving")) return false;
+  // Owner 2026-11-02 (decisions/driver-g13.md, last line) + v0.18.53 §75: "ride updates" off stops only "driver found"
+  // and "arriving" (no row at all for those); every other moment is stored and the dispatcher always pushes it.
+  if ((rider.consents as { rideUpdates?: unknown } | null)?.rideUpdates === false && RIDER_OPTIONAL_MOMENTS.has(moment)) return false;
   let language: Lang | undefined = isLang(rider.language) ? rider.language : undefined;
   if (language === undefined) {
     const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirst();
