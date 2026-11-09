@@ -565,7 +565,8 @@ describe("v0.18.13 driving-time limits on the server (decisions/driving-time-lim
   }
   const goOnline = async () => {
     const me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
-    return call(app, "POST", "/driver/availability", drivers.A.headers, { expectedVersion: me.version, onlineStatus: "online" });
+    // v0.18.52 §74: the position travels in the go-online request (as the app sends it); an offline driver's posted fixes are not stored.
+    return call(app, "POST", "/driver/availability", drivers.A.headers, { expectedVersion: me.version, onlineStatus: "online", location: { ...SPOTS.A, accuracy: 5, measuredAt: clock.now.toISOString() } });
   };
   const goOffline = async () => {
     const me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();

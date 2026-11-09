@@ -117,9 +117,15 @@ describe("decision 2 / G3-R5: going online needs a fresh position", () => {
       expect(ok.json()).toMatchObject({ onlineStatus: "online", outsideArea: false });
     });
 
-    it(`${who.country}: a position the app sent a moment ago (POST /driver/location) is enough`, async () => {
-      expect((await sendFix(who, who.home)).statusCode).toBe(200);
-      const ok = await goOnline(who);
+    it(`${who.country}: v0.18.52 §74 — a position the app sends while OFFLINE is not stored, so it is not enough; the one in the go-online request is`, async () => {
+      // Before v0.18.52 the fix posted a moment ago was stored and let him go online without a location in the body.
+      const posted = await sendFix(who, who.home);
+      expect(posted.statusCode).toBe(200);
+      expect(posted.json()).toMatchObject({ accepted: 0 });
+      const refused = await goOnline(who);
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({ reason: "location_required" });
+      const ok = await goOnline(who, fix(who.home));
       expect(ok.statusCode).toBe(200);
       expect(ok.json().onlineStatus).toBe("online");
     });
