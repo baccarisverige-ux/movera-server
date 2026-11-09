@@ -593,6 +593,16 @@ export async function signOut(db: Db, sessionId: string, now: Date = new Date(),
   });
 }
 
+/**
+ * Global plan step 38 (owner Q42, 2026-11-09 "Yes, at once"): an admin's rights live in the 15-minute access token, so a
+ * role change or a deactivation ends EVERY open session of that admin now (reason role_changed / admin_deactivated);
+ * the next admin call gets 401 session_ended, the refresh tokens are refused, and the admin signs in again.
+ */
+export async function endAdminSessions(ex: Executor, adminId: string, now: Date, reason: "role_changed" | "admin_deactivated"): Promise<number> {
+  const ended = await ex.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: reason }).where("actor", "=", "admin").where("subject_id", "=", adminId).where("revoked_at", "is", null).returning("session_id").execute();
+  return ended.length;
+}
+
 /** True while the session behind an access token is neither signed out nor expired. */
 export async function sessionIsActive(ex: Executor, sessionId: string, now: Date = new Date()): Promise<boolean> {
   const row = await ex.selectFrom("auth_sessions").select(["revoked_at", "expires_at"]).where("session_id", "=", sessionId).executeTakeFirst();

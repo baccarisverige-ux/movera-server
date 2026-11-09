@@ -4,7 +4,8 @@ import type { Db, Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { signAccessToken } from "../auth/jwt.js";
-import { ACCESS_TTL_SECONDS, rotateRefresh, startSession, type ClientInfo } from "../auth/service.js";
+import { ACCESS_TTL_SECONDS, endAdminSessions, rotateRefresh, startSession, type ClientInfo } from "../auth/service.js";
+import { audit } from "./audit.js";
 import { isAdminRole, permissionsOf, type AdminRole } from "./permissions.js";
 
 /** Admin sign-in (contract v0.5.1 §9; owner decisions 9 and 14): e-mail + password, one-time setup links. */
@@ -242,4 +243,21 @@ export async function createAdmin(
     .values({ admin_id: adminId, email, name: input.name, role: input.role, zone_ids: input.zoneIds ?? null, countries: null, fleet_partner_id: null, language: input.language ?? null, password_hash: null, created_at: now, updated_at: now })
     .execute();
   return { adminId, created: true };
+}
+
+/**
+ * Step 38 (owner Q42): a role change and the end of every open session of that admin in ONE transaction, so the old
+ * rights stop at once; the admin signs in again with the new role. Audited admin.role when `byAdminId` is given.
+ */
+export async function changeAdminRole(db: Db, adminId: string, role: AdminRole, now: Date = new Date(), byAdminId: string | null = null): Promise<{ from: AdminRole; ended: number }> {
+  return db.transaction().execute(async (trx) => {
+    const row = await trx.selectFrom("admins").select("role").where("admin_id", "=", adminId).forUpdate().executeTakeFirst();
+    if (row === undefined) throw new ApiError("not_found", "No such admin.", { reason: "admin_not_found" });
+    const from = isAdminRole(row.role) ? row.role : "viewer";
+    if (from === role) return { from, ended: 0 };
+    await trx.updateTable("admins").set({ role, updated_at: now }).where("admin_id", "=", adminId).execute();
+    const ended = await endAdminSessions(trx, adminId, now, "role_changed");
+    if (byAdminId !== null) await audit(trx, { adminId: byAdminId, action: "admin.role", targetType: "admin", targetId: adminId, detail: { from, to: role, sessionsEnded: ended }, at: now });
+    return { from, ended };
+  });
 }

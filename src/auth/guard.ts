@@ -2,7 +2,7 @@ import type { FastifyRequest } from "fastify";
 import type { Executor } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
 import { verifyAccessToken, type Actor } from "./jwt.js";
-import { REFRESH_TTL_MS, sessionIsActive } from "./service.js";
+import { endAdminSessions, REFRESH_TTL_MS, sessionIsActive } from "./service.js";
 
 /** Who is calling, from the access token (contract: actor and ids come from the token, never from the body). */
 export type Principal = { actor: Actor; subjectId: string; sessionId: string; zones: string[]; role?: string; perms?: string[]; preview?: true };
@@ -50,6 +50,9 @@ export async function authenticate(
     const ended = await deps.db.selectFrom("auth_sessions").select("revoked_reason").where("session_id", "=", claims.sid).executeTakeFirst();
     throw new ApiError("unauthenticated", "Please sign in again.", { reason: ended?.revoked_reason === "signed_in_elsewhere" ? "signed_in_elsewhere" : "session_ended" });
   }
+  // Step 38 (owner Q42): an admin's rights live in the token, so a role change or a deactivation ends every session
+  // of that admin at once, however the row was changed (route, CLI or hand); one select by primary key.
+  if (claims.actor === "admin" && options.allowEndedSession !== true) await assertAdminUnchanged(deps.db, claims.sub, claims.role, now);
   return {
     actor: claims.actor,
     subjectId: claims.sub,
@@ -57,6 +60,13 @@ export async function authenticate(
     zones: claims.zones,
     ...(claims.role !== undefined ? { role: claims.role, perms: claims.perms ?? [] } : {}),
   };
+}
+
+async function assertAdminUnchanged(db: Executor, adminId: string, tokenRole: string | undefined, now: Date): Promise<void> {
+  const row = await db.selectFrom("admins").select(["role", "active"]).where("admin_id", "=", adminId).executeTakeFirst();
+  if (row !== undefined && row.active && row.role === tokenRole) return;
+  await endAdminSessions(db, adminId, now, row === undefined || !row.active ? "admin_deactivated" : "role_changed");
+  throw new ApiError("unauthenticated", "Please sign in again.", { reason: "session_ended" });
 }
 
 /** An admin with this permission (contract x-permission); 403 forbidden, reason missing_permission, otherwise. */
