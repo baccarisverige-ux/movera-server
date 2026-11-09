@@ -26,15 +26,15 @@ export async function markRiderFeePaid(trx: Trx, who: Principal, riderId: string
   const trip = await trx.selectFrom("trips").select(["trip_id", "zone_id", "cancellation", "version"]).where("trip_id", "=", tripId).where("rider_id", "=", riderId).executeTakeFirst();
   if (trip && !adminCoversZone(who, trip.zone_id)) throw new ApiError("forbidden", "This trip is outside your zones.", { reason: "zone_out_of_scope" });
   const fee = trip ? await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", tripId).where("rider_id", "=", riderId).forUpdate().executeTakeFirst() : undefined;
-  if (!trip || !fee || fee.status !== "owed") throw new ApiError("invalid_transition", "This rider owes no fee for that trip.", { reason: "fee_not_owed", projection: adminRiderView(rider, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId)) });
+  if (!trip || !fee || fee.status !== "owed") throw new ApiError("invalid_transition", "This rider owes no fee for that trip.", { reason: "fee_not_owed", projection: adminRiderView(rider, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who) });
   // A ride going now already carries the fee in its price: mark it after that ride (same rule as waive).
   const carrying = await trx.selectFrom("trips").select("trip_id").where("rider_id", "=", riderId).where("status", "not in", [...TERMINAL]).where(sql<boolean>`fare_lines @> '[{"code":"outstanding_fee"}]'::jsonb`).executeTakeFirst();
-  if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; mark it as paid when that ride is over.", { reason: "fee_on_running_trip", projection: adminRiderView(rider, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId)) });
+  if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; mark it as paid when that ride is over.", { reason: "fee_on_running_trip", projection: adminRiderView(rider, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who) });
   await trx.updateTable("rider_fees").set({ status: "paid", carried_by: null, settled_at: now }).where("trip_id", "=", tripId).execute();
   // The original trip says paid too (no version change: nothing the driver or rider acts on changed).
   await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...((trip.cancellation ?? {}) as object), feeStatus: "paid" }) }).where("trip_id", "=", tripId).execute();
   await refreshOutstanding(trx, riderId, now);
   await trx.updateTable("riders").set({ version: rider.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
   await audit(trx, { adminId: who.subjectId, action: "rider.fee_mark_paid", targetType: "rider", targetId: riderId, zoneId: trip.zone_id, detail: { tripId, kind: fee.kind, amountMinor: Number(fee.amount_minor), currency: fee.currency, reason }, at: now });
-  return adminRiderView(await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow(), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId));
+  return adminRiderView(await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow(), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who);
 }

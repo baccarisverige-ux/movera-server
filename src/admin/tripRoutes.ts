@@ -16,6 +16,7 @@ import { tripProjection } from "../trips/projection.js";
 import { withDriverPosition } from "../trips/service.js";
 import { activeSendOf } from "../dispatch/radarSends.js";
 import { listAudit, listDrivers, listPayments, listRiders, listTrips, setDriverStatus, setRiderStatus, moderateRider } from "./lists.js";
+import { audit } from "./audit.js";
 import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus, adminNoShow, adminReverseNoShow, adminPinUnlock, adminRadarGroup, adminReassign, adminStopRadarZone, adminRefund, adminTrip, markRefundPaid, nearbyDrivers, tripOffers } from "./trips.js";
 
 /** contract §3.1, §7: the admin's trip tools, lists, account status, audit; the rider's wallet and refunds. */
@@ -109,7 +110,14 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   });
   app.get(`${API_PREFIX}/admin/refunds/payouts`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.read");
-    return payoutsToMake(deps.db, { status: parseBody(PayoutsQuery, request.query).payoutStatus, zones: who.zones.includes("*") ? null : who.zones });
+    const status = parseBody(PayoutsQuery, request.query).payoutStatus;
+    // v0.18.54 §76 (contract.json#adminMasking.notMasked.refundPayouts): the full account stays (the money must reach
+    // the right person) but every read writes one audit row with the count, never the numbers.
+    return deps.db.transaction().execute(async (trx) => {
+      const page = await payoutsToMake(trx, { status, zones: who.zones.includes("*") ? null : who.zones });
+      await audit(trx, { adminId: who.subjectId, action: "refunds.payouts_viewed", targetType: "refunds", targetId: "payouts", detail: { count: page.items.length }, at: now() });
+      return page;
+    });
   });
 
   /* ---- trip commands */

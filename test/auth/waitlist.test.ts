@@ -110,7 +110,12 @@ describe("GET /admin/waitlist", () => {
     await join({ phone: "+46705552222", app: "rider", locale: "sv" });
     advance(1);
     await join({ phone: "+46705553333", app: "driver" });
-    const admin = await adminSession(app, database.db, "viewer", { now: clock.now });
+    // v0.18.54 §76: the full number only with riders.viewSensitive (support); a viewer gets it masked.
+    const admin = await adminSession(app, database.db, "support", { now: clock.now });
+    const viewer = await adminSession(app, database.db, "viewer", { now: clock.now });
+    const masked = await app.inject({ method: "GET", url: "/api/v1/admin/waitlist?limit=1", headers: viewer.headers });
+    expect(masked.statusCode).toBe(200);
+    expect((masked.json() as { items: { phone: string }[] }).items.map((i) => i.phone)).toEqual(["+46\u2022\u2022\u2022\u2022\u2022\u2022\u202233"]);
     const page = await app.inject({ method: "GET", url: "/api/v1/admin/waitlist?limit=2", headers: admin.headers });
     expect(page.statusCode).toBe(200);
     const body = page.json() as { items: { phone: string; app: string; count: number; firstAt: string; lastAt: string; locale?: string }[]; nextCursor: string | null };

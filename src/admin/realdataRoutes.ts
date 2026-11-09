@@ -22,6 +22,7 @@ import { approvePayoutRun, createPayout, driverPayouts, holdDriverPayouts, listP
 import { driverView, loadDriver } from "../drivers/service.js";
 import { listRatings, moderateRating } from "./ratings.js";
 import { riskSignals } from "./risk.js";
+import { maskDriverView } from "./masking.js";
 
 /**
  * contract v0.9.0 §16 (owner real-data decisions, part 3): payouts with lines, refunds, support tickets, ratings and
@@ -168,7 +169,7 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const body = parseBody(z.object({ held: z.boolean(), reason: z.string().trim().min(1).max(300) }), request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => {
       await holdDriverPayouts(trx, who, driverId, body, now());
-      return { status: 200, body: await driverView(trx, await loadDriver(trx, driverId), "admin", now()) };
+      return { status: 200, body: maskDriverView(await driverView(trx, await loadDriver(trx, driverId), "admin", now()), who) };
     });
     return result.body;
   });

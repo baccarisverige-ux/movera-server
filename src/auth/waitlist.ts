@@ -2,6 +2,8 @@ import { sql } from "kysely";
 import type { Db, Executor } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { cursorOf, readCursor } from "../admin/lists.js";
+import { adminMasksRiders, maskPhone } from "../admin/masking.js";
+import type { Principal } from "./guard.js";
 import { PHONE, type App } from "./service.js";
 
 /**
@@ -61,7 +63,9 @@ export async function joinWaitlist(
 export type WaitlistEntry = { phone: string; app: App; locale?: string; firstAt: string; lastAt: string; count: number };
 
 /** GET /admin/waitlist: newest lastAt first, cursor pages. */
-export async function listWaitlist(ex: Executor, input: { cursor?: string | undefined; limit: number; app?: App | undefined }): Promise<{ items: WaitlistEntry[]; nextCursor: string | null }> {
+export async function listWaitlist(ex: Executor, input: { cursor?: string | undefined; limit: number; app?: App | undefined }, who?: Pick<Principal, "perms">): Promise<{ items: WaitlistEntry[]; nextCursor: string | null }> {
+  // v0.18.54 §76: the number masked for every admin without riders.viewSensitive (pre-account: no Reveal).
+  const phoneOf = adminMasksRiders(who) ? maskPhone : (phone: string) => phone;
   let query = ex.selectFrom("sign_in_waitlist").selectAll();
   if (input.app !== undefined) query = query.where("app", "=", input.app);
   if (input.cursor !== undefined) {
@@ -77,7 +81,7 @@ export async function listWaitlist(ex: Executor, input: { cursor?: string | unde
   const last = page[page.length - 1];
   return {
     items: page.map((r) => ({
-      phone: r.phone,
+      phone: phoneOf(r.phone),
       app: r.app,
       ...(r.locale !== null ? { locale: r.locale } : {}),
       firstAt: r.first_at.toISOString(),

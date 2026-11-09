@@ -75,8 +75,8 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
   }
 
   app.get(`${API_PREFIX}/admin/waitlist`, async (request) => {
-    await authenticateAdmin(request, guard, "overview.read");
-    return listWaitlist(deps.db, parseBody(WaitlistQuery, request.query));
+    const who = await authenticateAdmin(request, guard, "overview.read");
+    return listWaitlist(deps.db, parseBody(WaitlistQuery, request.query), who);
   });
 
   app.post(`${API_PREFIX}/auth/refresh`, async (request) => {

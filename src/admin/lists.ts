@@ -15,6 +15,7 @@ import "../riders/walletSchema.js";
 import { withEta } from "../trips/eta.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { audit } from "./audit.js";
+import { maskDriverView, maskRiderView } from "./masking.js";
 
 /** Admin lists (contract §7: cursor pages, newest first) and account status changes. */
 
@@ -101,7 +102,7 @@ export async function listRiders(ex: Executor, who: Principal, input: { cursor?:
     byRider.set(fee.rider_id, list);
   }
   const wallets = await riderWallets(ex, page.map((r) => r.rider_id));
-  return { items: page.map((r) => adminRiderView(r, currency, byRider.get(r.rider_id) ?? [], wallets.get(r.rider_id))), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.rider_id) : null };
+  return { items: page.map((r) => adminRiderView(r, currency, byRider.get(r.rider_id) ?? [], wallets.get(r.rider_id), who)), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.rider_id) : null };
 }
 
 type RiderWallets = { balances: Array<{ amountMinor: number; currency: string }>; zoneCurrency: string | null };
@@ -121,11 +122,12 @@ export async function riderWallets(ex: Executor, riderIds: string[]): Promise<Ma
  * `wallet` is the balance in the currency of the rider's zone (else the first he holds, else `currency`); `wallets`
  * (v0.18.28) lists every non-zero balance, one per currency (owner Q4: never added across currencies).
  */
-export function adminRiderView(row: Record<string, unknown>, currency: string, byCurrency?: Array<{ amountMinor: number; currency: string }>, wallets?: RiderWallets) {
+/* v0.18.54 §76: `who` (the admin) decides whether phone / email come back masked (riders.viewSensitive). */
+export function adminRiderView(row: Record<string, unknown>, currency: string, byCurrency: Array<{ amountMinor: number; currency: string }> | undefined, wallets: RiderWallets | undefined, who: Pick<Principal, "perms">) {
   const balances = wallets?.balances ?? [];
   const shown = wallets?.zoneCurrency ?? balances[0]?.currency ?? currency;
   const wallet = balances.find((b) => b.currency === shown)?.amountMinor ?? 0;
-  return { ...riderView(row as never, currency, byCurrency), wallet: { amountMinor: wallet, currency: shown }, wallets: balances, ...(row["deletion_requested_at"] ? { deletionRequestedAt: (row["deletion_requested_at"] as Date).toISOString() } : {}) };
+  return maskRiderView({ ...riderView(row as never, currency, byCurrency), wallet: { amountMinor: wallet, currency: shown }, wallets: balances, ...(row["deletion_requested_at"] ? { deletionRequestedAt: (row["deletion_requested_at"] as Date).toISOString() } : {}) }, who);
 }
 
 export async function listDrivers(ex: Executor, who: Principal, input: { cursor?: string; limit: number; accountStatus?: string[]; onlineStatus?: string[]; zoneId?: string; categoryId?: string; q?: string }) {
@@ -148,7 +150,7 @@ export async function listDrivers(ex: Executor, who: Principal, input: { cursor?
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   const items = [];
-  for (const r of page) items.push(await driverView(ex, r as never, "admin"));
+  for (const r of page) items.push(maskDriverView(await driverView(ex, r as never, "admin"), who));
   return { items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.driver_id) : null };
 }
 
@@ -233,11 +235,11 @@ export async function listAudit(ex: Executor, who: Principal, input: { cursor?: 
 export async function setDriverStatus(trx: Trx, who: Principal, driverId: string, body: { expectedVersion: number; accountStatus: "pending" | "active" | "on_hold" | "suspended"; note: string }, now: Date) {
   const row = await loadDriver(trx, driverId, true);
   if (!row.zone_ids.some((z) => adminCoversZone(who, z)) && !who.zones.includes("*")) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
-  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await driverView(trx, row, "admin", now) });
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: maskDriverView(await driverView(trx, row, "admin", now), who) });
   if (body.accountStatus === "active" && row.account_status !== "active") {
     // Deep fix 2026-11-02 (g1-g3 M4): a driver who never sent his details (no country, no name) cannot be activated.
     if (row.country === null && !(await isTestDriver(trx, driverId))) {
-      throw new ApiError("invalid_transition", "The driver has not sent his details yet.", { reason: "details_missing", projection: await driverView(trx, row, "admin", now) });
+      throw new ApiError("invalid_transition", "The driver has not sent his details yet.", { reason: "details_missing", projection: maskDriverView(await driverView(trx, row, "admin", now), who) });
     }
     const missing = await activationBlockers(trx, row, now);
     if (missing.length > 0) throw new ApiError("documents_not_approved", "The driver's required documents are not all approved.", { details: missing });
@@ -250,7 +252,7 @@ export async function setDriverStatus(trx: Trx, who: Principal, driverId: string
   // v0.18.6 (owner "Send the real reason"): account_status.
   if ("online_status" in online) await markSetOffline(trx, driverId, "account_status", {}, now);
   await audit(trx, { adminId: who.subjectId, action: "driver.status", targetType: "driver", targetId: driverId, zoneId: row.zone_ids[0] ?? null, detail: { from: row.account_status, to: body.accountStatus, note: body.note }, at: now });
-  return driverView(trx, await loadDriver(trx, driverId), "admin", now);
+  return maskDriverView(await driverView(trx, await loadDriver(trx, driverId), "admin", now), who);
 }
 
 export async function setRiderStatus(trx: Trx, who: Principal, riderId: string, body: { expectedVersion: number; status: "active" | "suspended"; note: string }, currency: string, now: Date) {
@@ -261,13 +263,13 @@ export async function setRiderStatus(trx: Trx, who: Principal, riderId: string, 
     const seen = await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).where(riderInZones(zones)).executeTakeFirst();
     if (!seen) throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
   }
-  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The rider changed since you last saw them.", { projection: adminRiderView(row, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId)) });
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The rider changed since you last saw them.", { projection: adminRiderView(row, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who) });
   // A suspended rider cannot book; a ride already going runs to its end. v0.18.39 A2: active = level none,
   // suspended = banned with the note as reason (contract.json#riderModeration.statusCommand).
   const level = moderationColumns({ level: body.status === "active" ? "none" : "banned", reason: body.note }, now);
   await trx.updateTable("riders").set({ ...level, version: row.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
   await audit(trx, { adminId: who.subjectId, action: "rider.status", targetType: "rider", targetId: riderId, detail: { from: row.status, to: body.status, note: body.note }, at: now });
-  return adminRiderView((await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow()), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId));
+  return adminRiderView((await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow()), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who);
 }
 
 /** v0.18.39 A2 (owner G16 Q16-2, contract.json#riderModeration): Warn → Pause → Ban with a reason; none undoes it. */
@@ -279,12 +281,12 @@ export async function moderateRider(trx: Trx, who: Principal, riderId: string, b
     const seen = await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).where(riderInZones(zones)).executeTakeFirst();
     if (!seen) throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
   }
-  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The rider changed since you last saw them.", { projection: adminRiderView(row, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId)) });
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The rider changed since you last saw them.", { projection: adminRiderView(row, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who) });
   const columns = moderationColumns(body, now);
   await trx.updateTable("riders").set({ ...columns, version: row.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
   await audit(trx, {
     adminId: who.subjectId, action: "rider.moderation", targetType: "rider", targetId: riderId,
     detail: { from: row.moderation_level, to: body.level, reason: body.reason, ...(body.pauseDays !== undefined ? { pauseDays: body.pauseDays } : {}), until: columns.moderation_until?.toISOString() ?? null }, at: now,
   });
-  return adminRiderView((await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow()), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId));
+  return adminRiderView((await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow()), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who);
 }

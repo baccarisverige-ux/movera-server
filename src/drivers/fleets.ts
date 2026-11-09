@@ -19,7 +19,8 @@ export type FleetRow = {
   created_at: Date;
 };
 
-export type Admin = { subjectId: string; zones: string[] };
+/** v0.18.54 §76: `perms` decides whether the owner e-mail comes back masked (drivers.viewSensitive). */
+export type Admin = { subjectId: string; zones: string[]; perms?: string[] };
 
 export async function loadFleet(ex: Executor, fleetId: string, lock = false): Promise<FleetRow> {
   let q = ex.selectFrom("fleets").selectAll().where("fleet_id", "=", fleetId);
