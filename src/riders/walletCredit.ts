@@ -80,5 +80,5 @@ export async function creditRiderWallet(trx: Trx, who: Principal, riderId: strin
     data: { entryId },
   }, now);
   await audit(trx, { adminId: who.subjectId, action: "rider.wallet_credit", targetType: "rider", targetId: riderId, zoneId: place.zoneId, detail: { amountMinor: body.amount.amountMinor, currency, reason: body.reason, entryId, notificationId }, at: now });
-  return adminRiderView(await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow(), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId));
+  return adminRiderView(await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow(), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who);
 }

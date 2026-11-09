@@ -10,6 +10,7 @@ import { schemaProblem } from "../contract/schemas.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { recordAcceptance } from "../documents/service.js";
 import { audit } from "../admin/audit.js";
+import { maskFleetView } from "../admin/masking.js";
 import { ONBOARDING, COUNTRY_CURRENCY, COUNTRY_TIME_ZONE, ageAt, cityOf, makeFleetCode, normalizeFleetCode } from "./onboardingRules.js";
 import { driverView, loadDriver, releaseCar, vehicleFullView, type DriverRow } from "./service.js";
 import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from "./fleets.js";
@@ -300,7 +301,9 @@ export async function fleetEarnings(ex: Executor, ownerId: string, input: { from
 export async function adminGetFleet(ex: Executor, who: Admin, fleetId: string, now: Date) {
   const fleet = await loadFleet(ex, fleetId);
   coversFleet(who, fleet);
-  return fleetFullView(ex, fleet, "admin", now);
+  // v0.18.54 §76: the owner e-mail masked without drivers.viewSensitive (FleetView.fleet).
+  const view = await fleetFullView(ex, fleet, "admin", now);
+  return { ...view, fleet: maskFleetView(view.fleet, who) };
 }
 
 async function freshCode(trx: Trx): Promise<string> {
@@ -316,7 +319,7 @@ async function freshCode(trx: Trx): Promise<string> {
 export async function reviewFleet(trx: Trx, who: Admin, fleetId: string, body: { expectedVersion: number; decision: "approved" | "rejected" | "blocked"; note?: string | undefined }, now: Date) {
   const fleet = await loadFleet(trx, fleetId, true);
   coversFleet(who, fleet);
-  if (fleet.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The fleet changed since you last saw it.", { projection: await fleetView(trx, fleet, "admin") });
+  if (fleet.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The fleet changed since you last saw it.", { projection: maskFleetView(await fleetView(trx, fleet, "admin"), who) });
   const code = body.decision === "approved" && fleet.code === null ? await freshCode(trx) : fleet.code;
   await trx
     .updateTable("fleets")
@@ -334,19 +337,19 @@ export async function reviewFleet(trx: Trx, who: Admin, fleetId: string, body: {
     }
   }
   await audit(trx, { adminId: who.subjectId, action: "fleet.review", targetType: "fleet", targetId: fleetId, zoneId: fleet.zone_id, detail: { from: fleet.status, to: body.decision, note: body.note ?? null }, at: now });
-  return fleetView(trx, await loadFleet(trx, fleetId), "admin");
+  return maskFleetView(await fleetView(trx, await loadFleet(trx, fleetId), "admin"), who);
 }
 
 /** POST /admin/fleets/{id}/code: a new code; the old one stops working at once. */
 export async function renewFleetCode(trx: Trx, who: Admin, fleetId: string, body: { expectedVersion: number }, now: Date) {
   const fleet = await loadFleet(trx, fleetId, true);
   coversFleet(who, fleet);
-  if (fleet.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The fleet changed since you last saw it.", { projection: await fleetView(trx, fleet, "admin") });
-  if (fleet.status !== "approved") throw new ApiError("invalid_transition", "Only an approved fleet has a code.", { reason: "fleet_not_approved", projection: await fleetView(trx, fleet, "admin") });
+  if (fleet.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The fleet changed since you last saw it.", { projection: maskFleetView(await fleetView(trx, fleet, "admin"), who) });
+  if (fleet.status !== "approved") throw new ApiError("invalid_transition", "Only an approved fleet has a code.", { reason: "fleet_not_approved", projection: maskFleetView(await fleetView(trx, fleet, "admin"), who) });
   const code = await freshCode(trx);
   await trx.updateTable("fleets").set({ code, version: fleet.version + 1, updated_at: now }).where("fleet_id", "=", fleetId).execute();
   await audit(trx, { adminId: who.subjectId, action: "fleet.code", targetType: "fleet", targetId: fleetId, zoneId: fleet.zone_id, detail: {}, at: now });
-  return fleetView(trx, await loadFleet(trx, fleetId), "admin");
+  return maskFleetView(await fleetView(trx, await loadFleet(trx, fleetId), "admin"), who);
 }
 
 /** POST /admin/fleets/{id}/drivers/{driverId}/remove. */
@@ -378,7 +381,7 @@ export async function listFleets(ex: Executor, who: Admin, input: { cursor?: str
   const rows = await q.orderBy("created_at", "desc").orderBy("fleet_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
   const items = [];
-  for (const r of page) items.push(await fleetView(ex, r as unknown as FleetRow, "admin"));
+  for (const r of page) items.push(maskFleetView(await fleetView(ex, r as unknown as FleetRow, "admin"), who));
   const last = page[page.length - 1];
   return { items, nextCursor: rows.length > input.limit && last ? Buffer.from(`${last.created_at.toISOString()}|${last.fleet_id}`).toString("base64url") : null };
 }

@@ -20,6 +20,7 @@ import { noticeVehicleReview } from "../drivers/reviewNotices.js";
 import { sendFile } from "../drivers/routes.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { audit } from "./audit.js";
+import { maskDriverView } from "./masking.js";
 import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminUpdateVehicle } from "./vehicleActions.js";
 
 /** contract v0.5.3 §14 (admin side): fleets, driver detail, vehicles list and review, document review and file. */
@@ -95,7 +96,8 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
     const row = await loadDriver(deps.db, param(request, "driverId"));
     if (!who.zones.includes("*") && !row.zone_ids.some((z) => who.zones.includes(z))) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
     // v0.18.4 (G3-D2): the same numbers the driver sees.
-    return { ...(await driverView(deps.db, row, "admin", now())), performance: await driverPerformance(deps.db, row.driver_id, now()) };
+    // v0.18.54 §76: e-mail and date of birth masked without drivers.viewSensitive.
+    return { ...maskDriverView(await driverView(deps.db, row, "admin", now()), who), performance: await driverPerformance(deps.db, row.driver_id, now()) };
   });
 
   /* ---- vehicles */

@@ -68,7 +68,7 @@ describe("wallet per currency", () => {
     await credit(6500, "EUR");
     await credit(1200, "SEK");
     const row = await database.db.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow();
-    const view = adminRiderView(row, "SEK", [], (await riderWallets(database.db, [riderId])).get(riderId));
+    const view = adminRiderView(row, "SEK", [], (await riderWallets(database.db, [riderId])).get(riderId), { perms: ["riders.viewSensitive"] });
     expect(view.wallets).toEqual([{ amountMinor: 6500, currency: "EUR" }, { amountMinor: 1200, currency: "SEK" }]);
     expect(view.wallet).toEqual({ amountMinor: 6500, currency: "EUR" });
   });
