@@ -1,6 +1,7 @@
 import { Kysely, PostgresDialect, type Transaction } from "kysely";
 import pg from "pg";
 import type { Database } from "./schema.js";
+import { recordQuery } from "../telemetry/load.js";
 
 export type Db = Kysely<Database>;
 export type Trx = Transaction<Database>;
@@ -40,7 +41,8 @@ export function poolStats(pool: pg.Pool | undefined = current): PoolStats | null
 }
 
 export function createDb(pool: pg.Pool): Db {
-  return new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
+  // Step 63 (T6): each statement's time goes to the request it ran for (Server-Timing `db`); nothing is logged.
+  return new Kysely<Database>({ dialect: new PostgresDialect({ pool }), log: (event) => recordQuery(event.queryDurationMillis) });
 }
 
 /**

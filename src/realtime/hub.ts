@@ -1,4 +1,5 @@
 import pg from "pg";
+import { recordNotify } from "../telemetry/load.js";
 
 /**
  * One LISTEN connection per server instance for every stream (contract §4 transport). PostgreSQL delivers a
@@ -30,6 +31,7 @@ export class NotificationHub {
   private async connect(): Promise<void> {
     const client = new pg.Client({ connectionString: this.url, application_name: "movera-server-listen" });
     client.on("notification", (message) => {
+      recordNotify();
       let payload: Record<string, unknown> | null = null;
       try {
         payload = JSON.parse(message.payload ?? "null") as Record<string, unknown>;

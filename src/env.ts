@@ -155,6 +155,14 @@ const schema = z.object({
   SHED_LOOP_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1000),
   /** Job 1 (fix plan R22): a single SQL statement of a request is stopped after this many ms (0: no limit). */
   DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).max(600_000).default(30_000),
+  /**
+   * Global plan step 63 (T6b): serve this copy's load numbers at GET /internal/load (stress test T-A only).
+   * Staging and development only: production refuses to start with it on.
+   */
+  LOAD_COUNTERS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
 }).superRefine((env, ctx) => {
   if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
@@ -168,6 +176,7 @@ const schema = z.object({
       ["ADMIN_BOOTSTRAP_EMAIL", env.ADMIN_BOOTSTRAP_EMAIL !== undefined],
       ["ADMIN_TEST_EMAIL", env.ADMIN_TEST_EMAIL !== undefined],
       ["MOVERA_EXTRA_TEST_PHONES", env.MOVERA_EXTRA_TEST_PHONES.length > 0],
+      ["LOAD_COUNTERS", env.LOAD_COUNTERS],
     ] as const;
     for (const [path, set] of stagingOnly) {
       if (set) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message: "for staging and development only" });
