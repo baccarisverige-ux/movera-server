@@ -156,6 +156,16 @@ Update the contract copy with `tools/sync_contract.sh v0.18.54` (the tag, never 
 - One LISTEN connection per instance wakes the streams; each stream reads the events itself, so nothing is
   skipped or repeated, and it reconnects on its own. Who may see a trip is checked again on every event.
 
+## How we work (pull requests and CI)
+
+- Open the PR as a **draft**; CI then runs only the cheap jobs (change detection, secret scan).
+- There is **no manual full run on a draft**: `workflow_dispatch` runs the full `checks` job on `main` only.
+- Before marking the PR Ready, run the full suite **locally with Postgres**
+  (`TEST_DATABASE_URL=... npm run test:coverage`, plus `npm run contract:verify`, `typecheck`, `lint`, `build`).
+- **Mark Ready once.** `ready_for_review` starts the full suite (and the contract-copy check); every later push
+  re-runs it, so flipping Draft/Ready back and forth or pushing fix-ups one at a time burns billed minutes.
+- Budget: each PR cycle should stay at or under about **40 billed minutes** (one full run plus a fix).
+
 ## Build plan
 
 The server lands in small pull requests, each tested:
