@@ -19,10 +19,6 @@ let database: TestDatabase;
 let app: FastifyInstance;
 let worker: TimerWorker;
 const clock = { now: new Date("2026-10-24T12:00:00Z") };
-const advance = async (seconds: number) => {
-  clock.now = new Date(clock.now.getTime() + seconds * 1000);
-  await worker.runDue();
-};
 const sample = (name: string) => JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/${name}.json`, "utf8"));
 
 const SPOTS = { A: { lat: 59.3335, lng: 18.0655 }, B: { lat: 59.3360, lng: 18.07 } };
@@ -108,7 +104,6 @@ const step = async (tripId: string, path: string, version: number, body: Record<
 
 const send = (tripId: string, who: Record<string, string>, text: unknown, key?: string) => call(app, "POST", `/trips/${tripId}/messages`, who, { text }, key);
 const list = async (tripId: string, who: Record<string, string>, query = "") => (await call(app, "GET", `/trips/${tripId}/messages${query}`, who)).json();
-const tripView = async (tripId: string, who: Record<string, string>) => (await call(app, "GET", `/trips/${tripId}`, who)).json();
 const noticesOf = async (who: Record<string, string>, kind: string) => (await call(app, "GET", "/notifications?limit=200", who)).json().items.filter((n: { kind: string }) => n.kind === kind);
 
 
