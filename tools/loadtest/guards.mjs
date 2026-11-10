@@ -128,3 +128,21 @@ export function checkLimits({ drivers, riders, seconds, spikeSeconds, steps, spi
   cap("total run time (s)", total, HARD_MAX.totalSeconds);
   return { ...out, totalSeconds: total };
 }
+
+/** Hard max for the phone tool's open arrival rate (new riders per minute) and its first access-token life. */
+export const PHONE_MAX = Object.freeze({ riderArrivalsPerMinute: 2_000, accessTtlSeconds: 900 });
+
+/**
+ * Guard (d) for phone-load.mjs (step 60): drivers, riders (the account pool) and seconds as checkLimits (explicit,
+ * capped); the Poisson rate --rider-arrivals (per minute) must be a positive number within PHONE_MAX unless unsafeMax;
+ * --access-ttl (seconds of the first access token, so the run goes through POST /auth/refresh) 10…900.
+ */
+export function checkPhoneLimits({ drivers, riders, seconds, riderArrivals, accessTtl, unsafeMax = false }) {
+  const base = checkLimits({ drivers, riders, seconds, steps: [1], unsafeMax });
+  const rate = Number(String(riderArrivals ?? "").trim());
+  if (riderArrivals === undefined || riderArrivals === "" || !Number.isFinite(rate) || rate <= 0) throw new LoadtestGuardError(`--rider-arrivals must be a positive number of new riders per minute, got "${riderArrivals ?? ""}"`);
+  if (rate > PHONE_MAX.riderArrivalsPerMinute && !unsafeMax) throw new LoadtestGuardError(`--rider-arrivals ${rate} is above the hard max ${PHONE_MAX.riderArrivalsPerMinute}; pass --unsafe-max if you really mean it`);
+  const ttl = accessTtl === undefined || accessTtl === "" ? 900 : Number(accessTtl);
+  if (!Number.isInteger(ttl) || ttl < 10 || ttl > PHONE_MAX.accessTtlSeconds) throw new LoadtestGuardError(`--access-ttl must be a whole number of seconds 10…${PHONE_MAX.accessTtlSeconds}, got "${accessTtl}"`);
+  return { drivers: base.drivers, riders: base.riders, seconds: base.seconds, riderArrivalsPerMinute: rate, accessTtlSeconds: ttl };
+}
