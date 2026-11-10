@@ -16,3 +16,12 @@ export function checkLimits(input: {
   spikes?: (string | number)[];
   unsafeMax?: boolean;
 }): { drivers: number; riders: number; seconds: number; spikeSeconds: number; steps: number[]; spikes: number[]; totalSeconds: number };
+export const PHONE_MAX: Readonly<{ riderArrivalsPerMinute: number; accessTtlSeconds: number }>;
+export function checkPhoneLimits(input: {
+  drivers?: string | number;
+  riders?: string | number;
+  seconds?: string | number;
+  riderArrivals?: string | number;
+  accessTtl?: string | number;
+  unsafeMax?: boolean;
+}): { drivers: number; riders: number; seconds: number; riderArrivalsPerMinute: number; accessTtlSeconds: number };
