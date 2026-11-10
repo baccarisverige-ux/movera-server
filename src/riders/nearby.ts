@@ -34,8 +34,10 @@ export function blurred(secret: string, driverId: string, at: { lat: number; lng
 }
 
 /** The day in Stockholm (YYYY-MM-DD): the key changes at local midnight. */
+// Stress T-A part 4: one formatter for the process (building one per vehicle per map request was ~3 % of the copy's CPU).
+const STOCKHOLM_DAY = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Stockholm", year: "numeric", month: "2-digit", day: "2-digit" });
 function stockholmDay(now: Date): string {
-  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Stockholm", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  return STOCKHOLM_DAY.format(now);
 }
 
 export function vehicleKey(secret: string, driverId: string, now: Date): string {

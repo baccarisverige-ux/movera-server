@@ -1,3 +1,4 @@
+import { timerLanes } from "./jobs/timers.js";
 import { cacheGeometry, forgetGeometry } from "./config/geometryCache.js";
 import type pg from "pg";
 import { registerLoadShedding } from "./http/shed.js";
@@ -85,7 +86,7 @@ if (db !== undefined) {
   // Stress H1: trip GPS work (ETA, ride check, near drop-off) has its own lane and never takes the other lanes, so it
   // can never starve dispatch; general lanes take everything else (dispatch too, when it is busy).
   const tripKinds = [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"];
-  const lanes = [{ kinds: [ROUND, WITHDRAW] }, { kinds: tripKinds }, ...Array.from({ length: Math.max(1, env.TIMER_LANES - 2) }, () => ({ exclude: tripKinds }))];
+  const lanes = timerLanes({ dispatchKinds: [ROUND, WITHDRAW], tripKinds, timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES });
   worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...callHandlers, ...pricingHandlers, [ALERT_SWEEP]: alertSweepHandler, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log, pollMs: 200, lanes });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.

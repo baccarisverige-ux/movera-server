@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { MAX_ATTEMPTS, TimerWorker, backoffMs, cancelTimer, scheduleTimer, type TimerHandler } from "../../src/jobs/timers.js";
+import { MAX_ATTEMPTS, TimerWorker, timerLanes, backoffMs, cancelTimer, scheduleTimer, type TimerHandler } from "../../src/jobs/timers.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 let database: TestDatabase;
@@ -230,5 +230,37 @@ describe("timers — Job 1 (fast dispatch)", () => {
     await w.stop();
     expect(seen.length).toBe(40);
     expect(new Set(seen).size).toBe(40);
+  });
+  it("stress T-A part 4: several dispatch-only lanes; two slow dispatch rounds run side by side", async () => {
+    const lanes = timerLanes({ dispatchKinds: ["dispatch_round", "withdraw_driver_offers"], tripKinds: ["trip_eta"], timerLanes: 4, dispatchLanes: 3 });
+    expect(lanes.filter((l) => l.kinds?.includes("dispatch_round")).length).toBe(3);
+    expect(lanes.filter((l) => l.exclude !== undefined).length).toBe(2);
+    const clock = { now: at(100) };
+    let running = 0;
+    let most = 0;
+    const slow: TimerHandler = async () => { running++; most = Math.max(most, running); await sleep(150); running--; };
+    const w = new TimerWorker(database.db, { handlers: { dispatch_round: slow }, logger, clock: () => clock.now, pollMs: 10, lanes: lanes.slice(0, 3) });
+    await scheduleTimer(database.db, { kind: "dispatch_round", refId: "trp_a", dueAt: at(0) });
+    await scheduleTimer(database.db, { kind: "dispatch_round", refId: "trp_b", dueAt: at(0) });
+    w.start();
+    for (let i = 0; i < 100 && (await pending()).length > 0; i++) await sleep(20);
+    await sleep(200);
+    await w.stop();
+    expect(most).toBe(2);
+  });
+
+  it("stress T-A part 4: a deadlock (40P01) is a busy timer: kept, retried soon, no failed attempt", async () => {
+    const clock = { now: at(100) };
+    let calls = 0;
+    const w = worker({ dispatch_round: async () => { calls++; if (calls === 1) throw Object.assign(new Error("deadlock detected"), { code: "40P01" }); } }, clock);
+    await scheduleTimer(database.db, { kind: "dispatch_round", refId: "trp_d", dueAt: at(0) });
+    await w.runOne();
+    const [row] = await pending();
+    expect(row?.attempts).toBe(0);
+    expect(row?.due_at.getTime()).toBe(at(0).getTime());
+    clock.now = at(103);
+    await w.runOne();
+    expect(calls).toBe(2);
+    expect(await pending()).toEqual([]);
   });
 });
