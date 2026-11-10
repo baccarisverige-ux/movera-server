@@ -8,6 +8,7 @@ import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { audit } from "../admin/audit.js";
 import { notify } from "../notifications/service.js";
 import { debtOf } from "../rules/commission.js";
+import { exponentOf, type CurrencyCode } from "../rules/money.js";
 import { lockOwnTrip, readOwnTrip, touchTrip } from "./commands.js";
 import { driverTotalOf, endInfoOf, tripProjection } from "./projection.js";
 import { credit } from "./ride.js";
@@ -224,8 +225,11 @@ export async function adminReceipt(ex: Executor, who: Principal, tripId: string)
 }
 
 const fill = (text: string, values: Record<string, string>) => text.replace(/\{(\w+)\}/g, (all, key: string) => values[key] ?? all);
-const amountText = (m: Money, lang: string) => {
-  const value = (m.amountMinor / 100).toLocaleString(lang === "en" ? "en-GB" : lang === "fr" ? "fr-FR" : "sv-SE", { minimumFractionDigits: m.amountMinor % 100 === 0 ? 0 : 2, maximumFractionDigits: 2 });
+export const amountText = (m: Money, lang: string) => {
+  // The currency's own decimals (SEK/EUR 2, TND 3; CONTRACT.md §1 "Money"), never a fixed 100.
+  const digits = exponentOf(m.currency as CurrencyCode);
+  const unit = 10 ** digits;
+  const value = (m.amountMinor / unit).toLocaleString(lang === "en" ? "en-GB" : lang === "fr" ? "fr-FR" : "sv-SE", { minimumFractionDigits: m.amountMinor % unit === 0 ? 0 : digits, maximumFractionDigits: digits });
   return m.currency === "SEK" ? `${value} kr` : m.currency === "EUR" ? `${value} €` : `${value} ${m.currency}`;
 };
 async function languageOf(ex: Executor, table: "riders" | "drivers", id: string): Promise<string> {
