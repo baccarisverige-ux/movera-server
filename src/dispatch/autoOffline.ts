@@ -69,3 +69,28 @@ export async function missedInRow(trx: Executor, driverId: string, onlineSince: 
   }
   return run;
 }
+
+/**
+ * B1.19: missedInRow for many drivers in one query (admin Dispatch page). Per driver the same newest 500 answered offers
+ * in the same order; the run is the counting misses before the newest accept, capped at `cap`. Drivers with no run: absent.
+ */
+export async function missedInRowOf(ex: Executor, drivers: Array<{ driverId: string; onlineSince: Date | null }>, cap = 500): Promise<Map<string, number>> {
+  if (drivers.length === 0) return new Map();
+  const ids = drivers.map((d) => d.driverId);
+  const sinces = drivers.map((d) => d.onlineSince?.toISOString() ?? null);
+  const rows = await sql<{ driver_id: string; run: string }>`
+    WITH d AS (SELECT * FROM unnest(${ids}::text[], ${sinces}::timestamptz[]) AS d(driver_id, since)),
+    o AS (SELECT d.driver_id, x.* FROM d CROSS JOIN LATERAL (
+            SELECT offers.status, offers.kind, offers.driver_on_trip, trips.kind AS trip_kind,
+                   row_number() OVER (ORDER BY offers.answered_at DESC, (offers.status = 'claimed') DESC, offers.offer_id DESC) AS rn
+              FROM offers INNER JOIN trips ON trips.trip_id = offers.trip_id
+             WHERE offers.driver_id = d.driver_id AND offers.status IN ('claimed', 'declined', 'expired')
+               AND (d.since IS NULL OR offers.answered_at >= d.since)
+             ORDER BY offers.answered_at DESC, (offers.status = 'claimed') DESC, offers.offer_id DESC
+             LIMIT 500) x),
+    f AS (SELECT o.*, min(rn) FILTER (WHERE status = 'claimed') OVER (PARTITION BY driver_id) AS first_claim FROM o)
+    SELECT driver_id, count(*) AS run FROM f
+     WHERE rn < coalesce(first_claim, 1000000) AND kind IN (${sql.join(COUNTING_KINDS)}) AND trip_kind = 'live' AND NOT coalesce(driver_on_trip, false)
+     GROUP BY driver_id`.execute(ex);
+  return new Map(rows.rows.map((r) => [r.driver_id, Math.min(cap, Number(r.run))]));
+}

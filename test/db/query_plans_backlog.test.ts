@@ -308,14 +308,14 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   });
 
   // ---- admin ----
-  it.fails("FAILS TODAY (new, no plan row yet): admin trip list with no filter sorts all trips, no created_at index (admin/lists.ts:33-57)", async () => {
+  it("fixed (0093 trips_created): admin trip list with no filter reads one page on an index (admin/lists.ts)", async () => {
     await noProblems(() => listTrips(traced, SUPER, { limit: 50 }, now), (s) => s.includes('from "trips"'));
   });
-  it.fails("FAILS TODAY (B1.19): Dispatch page driver facts is one query per driver (dispatch/driverFacts.ts:97-99)", async () => {
+  it("B1.19 fixed: Dispatch page driver facts reads missed-in-a-row and driving time in one query each (dispatch/driverFacts.ts)", async () => {
     const { count } = await check(() => zoneDriverFacts(traced, "Z002", now));
     expect(count, `${count} queries for one call (max 10)`).toBeLessThanOrEqual(10);
   });
-  it("B1.11 part fixed (0091; the per-driver N+1 of B1.19 stays): driver facts' per-driver driving-time reads only trips in the window (dispatch/driverFacts.ts:99 → drivers/drivingTime.ts:40-52)", async () => {
+  it("B1.11 fixed (0091): driver facts' batched driving-time reads only trips in the window (dispatch/driverFacts.ts → drivers/drivingTime.ts)", async () => {
     await noProblems(() => zoneDriverFacts(traced, "Z002", now), (s) => s.includes("legs AS ("));
   });
   it("admin payout list (admin/payouts.ts:272-284)", async () => {
@@ -323,7 +323,7 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   });
 
   // ---- money (driver app) ----
-  it.fails("FAILS TODAY (IN-G10.3): driver's own payouts page has no (driver_id, created_at) index (admin/payouts.ts:293-299)", async () => {
+  it("IN-G10.3 fixed (0093 payouts_driver_created): driver's own payouts page reads one page on an index (admin/payouts.ts)", async () => {
     await noProblems(() => driverPayouts(traced, "d7", { limit: 20 }));
   });
   it("driver earnings report, this month (trips/ride/earnings.ts:18-31)", async () => {
