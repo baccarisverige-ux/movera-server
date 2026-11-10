@@ -1,6 +1,6 @@
 import type { Executor } from "../db/db.js";
 import { bookSilenceChecks } from "../trips/ride.js";
-import { closeWeeks } from "../admin/payouts.js";
+import { closePeriodsBatch, PAYOUT_BATCH_DRIVERS } from "../admin/payouts.js";
 import { summarize } from "../admin/kpis.js";
 import { purgeOldMessages } from "../trips/messages.js";
 import { purgeOldErrorGroups } from "../telemetry/errors.js";
@@ -32,7 +32,8 @@ export function nextNightly(now: Date): Date {
 export const nightlyHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
   await summarize(trx, now);
-  await closeWeeks(trx, now);
+  // Stress T-A follow-up: one batch here too; the hourly sweep pays whatever is left, a batch at a time.
+  await closePeriodsBatch(trx, now, { maxDrivers: PAYOUT_BATCH_DRIVERS });
   // contract v0.13.0 §22: trip chat after 90 days, except trips with a safety case.
   await purgeOldMessages(trx, now);
   // v0.18.56 §78 (inAppCalls.push): open-stream rows a copy that died never removed.
@@ -48,6 +49,27 @@ export const nightlyHandler: TimerHandler = async (trx, timer) => {
 export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   // The worker's clock, like every handler (a test clock ahead of the wall clock would otherwise rerun it at once).
   const now = timer.firedAt;
+  const after = (timer.payload as { payoutAfter?: unknown } | null)?.payoutAfter;
+  // A follow-up run of a payout backlog (below) only pays the next batch; the clean-ups ran in the first run.
+  if (typeof after !== "string") await hourlyCleanups(trx, now);
+  // v0.18.13 (owner G10-2): payouts at the country's day and time (default Monday 08:00 local), within the hour.
+  // Stress T-A follow-up: one batch of drivers per run; while more are left the sweep comes back in PAYOUT_BATCH_GAP_MS
+  // with the next batch (payload.payoutAfter), so no run holds its transaction (and a pool connection) for minutes.
+  const batch = await closePeriodsBatch(trx, now, { after: typeof after === "string" ? after : null, maxDrivers: PAYOUT_BATCH_DRIVERS });
+  await trx
+    .insertInto("timers")
+    .values({
+      kind: SWEEP_IDEMPOTENCY_KEYS,
+      ref_id: "all",
+      due_at: new Date(now.getTime() + (batch.next !== null ? PAYOUT_BATCH_GAP_MS : HOUR_MS)),
+      payload: JSON.stringify(batch.next !== null ? { payoutAfter: batch.next } : {}),
+    })
+    .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
+    .execute();
+};
+
+/** The hourly clean-ups of the sweep (everything but the payouts). */
+async function hourlyCleanups(trx: Parameters<TimerHandler>[0], now: Date): Promise<void> {
   await trx.deleteFrom("idempotency_keys").where("created_at", "<", new Date(now.getTime() - IDEMPOTENCY_KEY_TTL_MS)).execute();
   // Trip GPS traces 30 days after the fix (owner decision 11); the driver's latest position stays.
   await trx.deleteFrom("trip_locations").where("measured_at", "<", new Date(now.getTime() - 30 * 24 * HOUR_MS)).execute();
@@ -72,14 +94,10 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   await sweepSignUpReminders(trx, now);
   // v0.18.39 A2 (G16 Q16-2): a rider pause that ended lifts by itself.
   await liftEndedPauses(trx, now);
-  // v0.18.13 (owner G10-2): payouts at the country's day and time (default Monday 08:00 local), within the hour.
-  await closeWeeks(trx, now);
-  await trx
-    .insertInto("timers")
-    .values({ kind: SWEEP_IDEMPOTENCY_KEYS, ref_id: "all", due_at: new Date(now.getTime() + HOUR_MS) })
-    .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
-    .execute();
-};
+}
+
+/** Stress T-A follow-up: the pause between two payout batches of the hourly sweep while a backlog is paid. */
+export const PAYOUT_BATCH_GAP_MS = 5_000;
 
 /** Books the recurring jobs if they are not booked yet (every instance calls this at start; one row wins). */
 export async function ensureMaintenanceTimers(ex: Executor, now: Date = new Date()): Promise<void> {

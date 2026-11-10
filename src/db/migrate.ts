@@ -16,6 +16,8 @@ const LOCK_KEY = 73_310_001;
  * stays, the row in schema_migrations is not written, and the next start runs the whole file again, so write
  * every statement to be re-runnable (IF NOT EXISTS, IF EXISTS).
  */
+/** How long a starting server sleeps between two tries of the migration lock. */
+export const LOCK_RETRY_MS = 200;
 export const NO_TRANSACTION_MARKER = "-- movera: no-transaction";
 
 function wantsNoTransaction(sql: string): boolean {
@@ -57,7 +59,12 @@ export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR): Prom
   const client = await pool.connect();
   const applied: string[] = [];
   try {
-    await client.query("SELECT pg_advisory_lock($1)", [LOCK_KEY]);
+    // Stress T-A follow-up (0090, the first no-transaction file): a server WAITING in pg_advisory_lock is a running
+    // statement, and CREATE INDEX CONCURRENTLY of the server holding the lock waits for every running statement to
+    // end, so two servers starting together deadlocked. Ask with pg_try_advisory_lock and sleep between tries instead.
+    while (!(await client.query<{ ok: boolean }>("SELECT pg_try_advisory_lock($1) AS ok", [LOCK_KEY])).rows[0]!.ok) {
+      await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+    }
     await client.query(
       "CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, sha256 char(64) NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())",
     );

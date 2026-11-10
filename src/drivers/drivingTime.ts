@@ -32,22 +32,33 @@ export async function drivingLimitsFor(ex: Executor, zoneId: string | undefined)
   return drivingLimitsOf(live?.document);
 }
 
+/**
+ * Stress T-A follow-up (B1.11): the trips of a driver that can count in [from, now). A finished trip's legs end at
+ * one of arrived/boarded/ended/updated_at, so it counts only when the latest of them is after `from`; a trip that is
+ * not over counts until now. Exactly the rows the old full read kept, found by trips_driver_last / trips_driver_open.
+ */
+function inWindow(t: ReturnType<typeof sql>, from: Date | ReturnType<typeof sql>) {
+  return sql`(greatest(${t}.arrived_at, ${t}.boarded_at, ${t}.ended_at, ${t}.updated_at) > ${from}::timestamptz OR ${t}.status NOT IN (${sql.join(TERMINAL.map((s) => sql.lit(s)))}))`;
+}
+
 /** Seconds of counted driving of a driver in [from, now). */
 export async function countedSeconds(ex: Executor, driverId: string, from: Date, now: Date): Promise<number> {
   // A trip that is over without an end time stops at its last change; a running one counts until now.
   const open = sql`CASE WHEN status IN (${sql.join(TERMINAL)}) THEN updated_at ELSE ${now}::timestamptz END`;
   // To the pickup: accept → arrived (else boarded / end / now). On trip: on board → end (else now). Clipped to [from, now).
+  // Stress T-A follow-up: only the trips that can reach into the window (inWindow), on indexes trips_driver_last/_open.
   const row = await sql<{ s: string | null }>`
-    WITH legs AS (
+    WITH t AS (SELECT * FROM trips WHERE driver_id = ${driverId} AND ${inWindow(sql`trips`, from)}),
+    legs AS (
       -- Checker 5: a booked ride accepted early counts from when the driver must leave (pickup time − his ETA).
       SELECT CASE WHEN kind = 'scheduled' AND scheduled_at IS NOT NULL
                   THEN greatest(accepted_at, scheduled_at - make_interval(secs => coalesce((eta->>'etaSeconds')::numeric, 0)))
                   ELSE accepted_at END AS a,
-             coalesce(arrived_at, boarded_at, ended_at, ${open}) AS b FROM trips
-       WHERE driver_id = ${driverId} AND accepted_at IS NOT NULL
+             coalesce(arrived_at, boarded_at, ended_at, ${open}) AS b FROM t
+       WHERE accepted_at IS NOT NULL
       UNION ALL
-      SELECT boarded_at AS a, coalesce(ended_at, ${open}) AS b FROM trips
-       WHERE driver_id = ${driverId} AND boarded_at IS NOT NULL)
+      SELECT boarded_at AS a, coalesce(ended_at, ${open}) AS b FROM t
+       WHERE boarded_at IS NOT NULL)
     SELECT sum(extract(epoch FROM (least(b, ${now}::timestamptz) - greatest(a, ${from}::timestamptz)))) AS s
       FROM legs WHERE b > ${from}::timestamptz AND a < ${now}::timestamptz AND b > a`.execute(ex);
   return Math.max(0, Math.round(Number(row.rows[0]?.s ?? 0)));
@@ -100,16 +111,17 @@ export async function driversAtDrivingLimit(ex: Executor, drivers: Array<{ drive
   const open = sql`CASE WHEN t.status IN (${sql.join(TERMINAL)}) THEN t.updated_at ELSE ${now}::timestamptz END`;
   const rows = await sql<{ driver_id: string; s: string | null }>`
     WITH d AS (SELECT * FROM unnest(${ids}::text[], ${froms}::timestamptz[]) AS d(driver_id, f)),
+    t AS (SELECT t.*, d.f FROM d CROSS JOIN LATERAL (SELECT * FROM trips WHERE trips.driver_id = d.driver_id AND ${inWindow(sql`trips`, sql`d.f`)} OFFSET 0) t),
     legs AS (
-      SELECT d.driver_id, d.f,
+      SELECT t.driver_id, t.f,
              CASE WHEN t.kind = 'scheduled' AND t.scheduled_at IS NOT NULL
                   THEN greatest(t.accepted_at, t.scheduled_at - make_interval(secs => coalesce((t.eta->>'etaSeconds')::numeric, 0)))
                   ELSE t.accepted_at END AS a,
              coalesce(t.arrived_at, t.boarded_at, t.ended_at, ${open}) AS b
-        FROM trips t JOIN d ON t.driver_id = d.driver_id WHERE t.accepted_at IS NOT NULL
+        FROM t WHERE t.accepted_at IS NOT NULL
       UNION ALL
-      SELECT d.driver_id, d.f, t.boarded_at AS a, coalesce(t.ended_at, ${open}) AS b
-        FROM trips t JOIN d ON t.driver_id = d.driver_id WHERE t.boarded_at IS NOT NULL)
+      SELECT t.driver_id, t.f, t.boarded_at AS a, coalesce(t.ended_at, ${open}) AS b
+        FROM t WHERE t.boarded_at IS NOT NULL)
     SELECT driver_id, sum(extract(epoch FROM (least(b, ${now}::timestamptz) - greatest(a, f)))) AS s
       FROM legs WHERE b > f AND a < ${now}::timestamptz AND b > a GROUP BY driver_id`.execute(ex);
   const out = new Set<string>();

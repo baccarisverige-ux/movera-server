@@ -143,7 +143,9 @@ export class TimerWorker {
       let query = trx.selectFrom("timers").selectAll().where("due_at", "<=", now);
       if (timerId !== undefined) query = query.where("timer_id", "=", timerId);
       if (lane.kinds !== undefined) query = query.where("kind", "in", lane.kinds);
-      if (lane.exclude !== undefined && lane.exclude.length > 0) query = query.where("kind", "not in", lane.exclude);
+      // Stress T-A follow-up (B1.13): the kinds as literals, so the general lanes' query matches the partial index
+      // timers_due_general (migration 0090) and never walks the trip lane's backlog. Kinds are code constants.
+      if (lane.exclude !== undefined && lane.exclude.length > 0) query = query.where(sql<boolean>`kind NOT IN (${sql.join(lane.exclude.map((kind) => sql.lit(kind)))})`);
       if (skip.length > 0) query = query.where("timer_id", "not in", skip);
       return query.orderBy("due_at").orderBy("timer_id").limit(1).forUpdate().skipLocked().executeTakeFirst();
     };

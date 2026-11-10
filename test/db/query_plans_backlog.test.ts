@@ -261,7 +261,7 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   it("dispatch: drivers with a current trip (reservations/service.ts:133)", async () => {
     await noProblems(() => driversWithCurrentTrip(traced, Array.from({ length: 300 }, (_, i) => `d${i + 200}`)));
   });
-  it.fails("FAILS TODAY (B1.11): driving-time limit of the round's drivers reads all trips (drivers/drivingTime.ts:101-114)", async () => {
+  it("B1.11 fixed (0090 trips_driver_last/_open): driving-time limit of the round's drivers reads only trips in the window (drivers/drivingTime.ts)", async () => {
     const drivers = Array.from({ length: 300 }, (_, i) => ({ driver_id: `d${i + 200}`, zone_ids: ["Z001"], driving_since: new Date(now.getTime() - 6 * 3600_000) }));
     await noProblems(() => driversAtDrivingLimit(traced, drivers, now), (s) => s.includes("WITH d AS"));
   });
@@ -269,7 +269,7 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   it("score aggregate of the round's drivers over 30 days of offers (dispatch/runtime/candidates.ts:245)", async () => {
     await noProblems(() => inTrx((trx) => candidatesFor(trx, searchTrip.row, null, now)), (s) => s.includes("count(*) FILTER (WHERE status = 'claimed')"));
   });
-  it.fails("FAILS TODAY (B1.11): one driver's counted driving seconds (drivers/drivingTime.ts:40-52)", async () => {
+  it("B1.11 fixed (0090): one driver's counted driving seconds (drivers/drivingTime.ts)", async () => {
     await noProblems(() => countedSeconds(traced, "d300", new Date(now.getTime() - 24 * 3600_000), now));
   });
 
@@ -278,7 +278,7 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
     const worker = new TimerWorker(traced, { handlers: { [ROUND]: async () => undefined, [WITHDRAW]: async () => undefined }, logger: { warn: () => undefined, error: () => undefined } });
     await noProblems(() => worker.runOne({ kinds: [ROUND, WITHDRAW] }), (s) => s.includes('from "timers"') && s.includes("skip locked"));
   });
-  it.fails("FAILS TODAY (B1.13): general lane (all kinds but the trip lane's) walks the trip-lane backlog (jobs/timers.ts:141-147)", async () => {
+  it("B1.13 fixed (0090 timers_due_general): general lane (all kinds but the trip lane's) skips the trip-lane backlog (jobs/timers.ts)", async () => {
     const worker = new TimerWorker(traced, { handlers: { [ROUND]: async () => undefined }, logger: { warn: () => undefined, error: () => undefined } });
     await noProblems(() => worker.runOne({ exclude: [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"] }), (s) => s.includes('from "timers"') && s.includes("skip locked"));
   });
@@ -294,7 +294,7 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   it("trip chat page (trips/messages.ts:77-83)", async () => {
     await noProblems(() => listMessages(traced, { actor: "rider", subjectId: "r0" }, "tl0", { limit: 50 }), (s) => s.includes('from "trip_messages"'));
   });
-  it.fails("FAILS TODAY (B3.8): \"almost there\" sent-check reads notifications by trip without an index (notifications/tripPush.ts:99-107)", async () => {
+  it("B3.8 fixed (0090 notifications_trip): \"almost there\" sent-check reads notifications by trip on an index (notifications/tripPush.ts)", async () => {
     await noProblems(() => inTrx((trx) => maybePushArriving(trx, { ...liveTrip, status: "driver_to_pickup" }, 30, now)), (s) => s.includes('from "notifications"'));
   });
   it("rider's notification list (notifications/service.ts:111-118)", async () => {
@@ -315,8 +315,8 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
     const { count } = await check(() => zoneDriverFacts(traced, "Z002", now));
     expect(count, `${count} queries for one call (max 10)`).toBeLessThanOrEqual(10);
   });
-  it.fails("FAILS TODAY (B1.19 + B1.11): driver facts' per-driver driving-time reads all trips (dispatch/driverFacts.ts:99 → drivers/drivingTime.ts:40-52)", async () => {
-    await noProblems(() => zoneDriverFacts(traced, "Z002", now), (s) => s.includes("WITH legs AS"));
+  it("B1.11 part fixed (0090; the per-driver N+1 of B1.19 stays): driver facts' per-driver driving-time reads only trips in the window (dispatch/driverFacts.ts:99 → drivers/drivingTime.ts:40-52)", async () => {
+    await noProblems(() => zoneDriverFacts(traced, "Z002", now), (s) => s.includes("legs AS ("));
   });
   it("admin payout list (admin/payouts.ts:272-284)", async () => {
     await noProblems(() => listPayouts(traced, SUPER, { limit: 50 }));

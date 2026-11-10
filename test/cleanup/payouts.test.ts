@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { approvePayoutRun, closePeriods, driverPayouts, holdDriverPayouts, markPayoutPaid, payoutScheduleOf, periodOf } from "../../src/admin/payouts.js";
+import { approvePayoutRun, closePeriods, closePeriodsBatch, driverPayouts, holdDriverPayouts, markPayoutPaid, payoutScheduleOf, periodOf } from "../../src/admin/payouts.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver } from "../support/seed.js";
+import { PAYOUT_BATCH_GAP_MS, SWEEP_IDEMPOTENCY_KEYS, sweepIdempotencyKeysHandler } from "../../src/jobs/maintenance.js";
 
 /**
  * Live clean-up 1 (contract v0.18.13, contract.json#payouts.schedule / payouts.currency; owner G10-2, audit M1/M2):
@@ -159,5 +160,44 @@ describe("v0.18.39 fix job 0 (A2, owner Q4 + A2-3): payouts Automatic or Manual 
     expect(row.status).toBe("pending_approval");
     const done = await database.db.transaction().execute((trx) => approvePayoutRun(trx, paris, { country: "FR", periodEnd: row.period_end.toISOString(), reason: "Checked" }, at));
     expect(done.total).toEqual([{ amountMinor: 3_000, currency: "EUR" }]);
+  });
+});
+
+describe("stress T-A follow-up: a payout backlog is paid in batches, never in one long transaction", () => {
+  it("closePeriodsBatch takes at most maxDrivers drivers and goes on after the last one it took", async () => {
+    const ids = [await driverIn(["Z001"], "SE"), await driverIn(["Z001"], "SE"), await driverIn(["Z001"], "SE")].sort();
+    for (const id of ids) await entry(id, "2026-10-27T10:00:00Z", "SEK", 1_000);
+    const now = new Date("2026-11-02T08:00:00Z");
+    const first = await database.db.transaction().execute((trx) => closePeriodsBatch(trx, now, { maxDrivers: 2 }));
+    expect(first).toEqual({ made: 2, next: ids[1] });
+    expect((await payoutsOf(ids[2]!)).length).toBe(0);
+    const second = await database.db.transaction().execute((trx) => closePeriodsBatch(trx, now, { after: first.next, maxDrivers: 2 }));
+    expect(second).toEqual({ made: 1, next: null });
+    for (const id of ids) expect((await payoutsOf(id)).length).toBe(1);
+  });
+
+  it("the hourly sweep books its next run soon with a cursor while a backlog is left, and in an hour when done", async () => {
+    await database.db.deleteFrom("timers").where("kind", "=", SWEEP_IDEMPOTENCY_KEYS).execute();
+    await database.db.updateTable("drivers").set({ payout_hold_at: new Date() }).execute(); // only this test's drivers
+    const ids: string[] = [];
+    for (let i = 0; i < 201; i++) ids.push(await driverIn(["Z001"], "SE"));
+    for (const id of ids) await entry(id, "2026-10-27T10:00:00Z", "SEK", 500);
+    const firedAt = new Date("2026-11-02T08:00:00Z");
+    const fire = (payload: unknown) =>
+      database.db.transaction().execute(async (trx) => {
+        await trx.deleteFrom("timers").where("kind", "=", SWEEP_IDEMPOTENCY_KEYS).execute();
+        await sweepIdempotencyKeysHandler(trx, { timerId: "t", kind: SWEEP_IDEMPOTENCY_KEYS, refId: "all", dueAt: firedAt, payload, attempts: 0, firedAt });
+        return trx.selectFrom("timers").select(["due_at", "payload"]).where("kind", "=", SWEEP_IDEMPOTENCY_KEYS).executeTakeFirstOrThrow();
+      });
+    const next = await fire({});
+    expect(next.due_at.getTime()).toBe(firedAt.getTime() + PAYOUT_BATCH_GAP_MS);
+    expect(typeof (next.payload as { payoutAfter?: unknown }).payoutAfter).toBe("string");
+    const paidFirst = await database.db.selectFrom("payouts").select((eb) => eb.fn.countAll<string>().as("n")).executeTakeFirstOrThrow();
+    expect(Number(paidFirst.n)).toBe(200);
+    const done = await fire(next.payload);
+    expect(done.due_at.getTime()).toBe(firedAt.getTime() + 60 * 60 * 1000);
+    expect(done.payload).toEqual({});
+    const paid = await database.db.selectFrom("payouts").select((eb) => eb.fn.countAll<string>().as("n")).executeTakeFirstOrThrow();
+    expect(Number(paid.n)).toBe(201);
   });
 });
