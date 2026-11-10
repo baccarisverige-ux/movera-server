@@ -6,6 +6,7 @@ import type { ConfigDoc } from "../db/schema.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { arrivedDistanceProblem } from "../trips/ride/settings.js";
+import { checkEmergencyNumbers } from "./emergencyNumbers.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
@@ -88,6 +89,8 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
     const arrived = arrivedDistanceProblem(document);
     if (arrived !== null) throw badRequest(`The arrived distance is not valid: ${arrived}.`, "invalid_arrived_distance");
   }
+  // v0.18.57 §79: CountryRules.emergencyNumbers (country standard only; 1-6 valid rows).
+  if (doc === "country_rules") checkEmergencyNumbers(zone.kind, document);
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
   const own = document as { zoneId?: string; currency?: string; country?: string; timeZone?: string };
