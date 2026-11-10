@@ -55,7 +55,12 @@ export function busyRetryMs(tries: number): number {
  * worker; a lock wait that runs out counts as busy (TimerBusy), not as a failure.
  */
 export const TIMER_LOCK_TIMEOUT_MS = 2000;
-const isLockTimeout = (error: unknown) => (error as { code?: string } | undefined)?.code === "55P03";
+/**
+ * 55P03 lock_not_available / lock timeout, and (stress T-A part 4) 40P01 deadlock_detected: Postgres rolled the timer's
+ * transaction back because two timers (e.g. two dispatch rounds) locked the same driver rows in turn. Like a busy row,
+ * it is tried again shortly with its due time kept, and it does not count as a failed attempt.
+ */
+const isLockTimeout = (error: unknown) => ["55P03", "40P01"].includes((error as { code?: string } | undefined)?.code ?? "");
 
 /** At most one pending timer per (kind, refId): scheduling again moves it. */
 export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }): Promise<void> {
@@ -83,6 +88,19 @@ export function backoffMs(attempts: number): number {
 export type TimerLane = { kinds?: string[]; exclude?: string[] };
 /** Rule 28: while the database cannot be reached the loop waits 1 s, 2 s, 4 s, … at most 30 s between tries. */
 export const DB_DOWN_MAX_MS = 30_000;
+/**
+ * The worker's loops: `dispatchLanes` loops for dispatch rounds and withdrawals only (stress T-A part 4: rounds of
+ * different trips run side by side), one for trip GPS work (stress H1), and TIMER_LANES − 2 (at least 1) general loops
+ * for every other kind (dispatch too, when it is busy).
+ */
+export function timerLanes(o: { dispatchKinds: string[]; tripKinds: string[]; timerLanes: number; dispatchLanes: number }): TimerLane[] {
+  return [
+    ...Array.from({ length: Math.max(1, o.dispatchLanes) }, () => ({ kinds: o.dispatchKinds })),
+    { kinds: o.tripKinds },
+    ...Array.from({ length: Math.max(1, o.timerLanes - 2) }, () => ({ exclude: o.tripKinds })),
+  ];
+}
+
 export function dbDownDelayMs(failures: number, pollMs: number): number {
   return Math.min(Math.max(pollMs, 1000) * 2 ** Math.max(0, failures - 1), DB_DOWN_MAX_MS);
 }
