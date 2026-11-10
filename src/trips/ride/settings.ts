@@ -11,7 +11,8 @@ import { paidKm, PAID_KM_RULES } from "./paidKm.js";
 import { cancelFee, type FeeRule } from "../../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../../rules/fare.js";
 import { waitingExtrasOf, type WaitingExtras } from "../waitingRules.js";
-import { type Money, type Place, type Waiting, DEFAULT_NO_SHOW_SHARE, DEFAULT_MAX_PICKUP_MOVE_METERS, DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW, validPickupMoveMeters, COMPLETE_NEAR_DROPOFF_METERS } from "./shared.js";
+import { type Money, type Place, type Waiting, DEFAULT_NO_SHOW_SHARE, DEFAULT_MAX_PICKUP_MOVE_METERS, DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW, validPickupMoveMeters } from "./shared.js";
+import { zoneAt } from "../../config/zoneLookup.js";
 
 /* ---------------------------------------------------------------- prices and settings */
 
@@ -72,7 +73,8 @@ export type BookingRules = {
 };
 /** v0.18.33 (owner Q6): does the rider's wallet pay first on this trip? Trips booked before v0.18.33 keep the old rule (yes). */
 export const walletFirstOf = (trip: Pick<TripRow, "booking_rules">): boolean => (trip.booking_rules as BookingRules | null)?.walletFirst !== false;
-export type EarlyEndSettings = { repriceOverKm: number; repriceOverMin: number };
+/** v0.18.58 §80: arrivedWithinMeters / airportArrivedWithinMeters (absent on trips booked before: 300 / 1000). */
+export type EarlyEndSettings = { repriceOverKm: number; repriceOverMin: number; arrivedWithinMeters: number; airportArrivedWithinMeters: number };
 const EARLY_END = contract as unknown as { configDefaults: { earlyEnd: EarlyEndSettings }; finish: { earlyEnd: { settings: { ranges: Record<keyof EarlyEndSettings, [number, number]> } } } };
 const EARLY_END_DEFAULTS = EARLY_END.configDefaults.earlyEnd;
 const EARLY_END_RANGES = EARLY_END.finish.earlyEnd.settings.ranges;
@@ -84,7 +86,29 @@ export function earlyEndSettingsOf(doc: unknown): EarlyEndSettings {
     const [lo, hi] = EARLY_END_RANGES[k];
     return typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : EARLY_END_DEFAULTS[k];
   };
-  return { repriceOverKm: pick("repriceOverKm"), repriceOverMin: pick("repriceOverMin") };
+  const arrived = pick("arrivedWithinMeters");
+  const airport = pick("airportArrivedWithinMeters");
+  // v0.18.58 §80: the airport limit is never below the normal one (a stored pair that breaks it takes the defaults).
+  const pair = airport >= arrived ? { arrivedWithinMeters: arrived, airportArrivedWithinMeters: airport } : { arrivedWithinMeters: EARLY_END_DEFAULTS.arrivedWithinMeters, airportArrivedWithinMeters: EARLY_END_DEFAULTS.airportArrivedWithinMeters };
+  return { repriceOverKm: pick("repriceOverKm"), repriceOverMin: pick("repriceOverMin"), ...pair };
+}
+
+/**
+ * v0.18.58 §80 (contract.json#arrivedDistance): a driver document whose cancelFees.earlyEnd arrived distances are out
+ * of range, or whose airport value is below the normal one, is 400 invalid_arrived_distance (null: fine or not set).
+ */
+export function arrivedDistanceProblem(doc: unknown): string | null {
+  const e = (doc as { cancelFees?: { earlyEnd?: Record<string, unknown> } } | undefined)?.cancelFees?.earlyEnd;
+  if (e === undefined || e === null) return null;
+  for (const k of ["arrivedWithinMeters", "airportArrivedWithinMeters"] as const) {
+    const v = e[k];
+    if (v === undefined) continue;
+    const [lo, hi] = EARLY_END_RANGES[k];
+    if (typeof v !== "number" || !Number.isInteger(v) || v < lo || v > hi) return `${k} must be a whole number from ${lo} to ${hi}`;
+  }
+  const arrived = (e["arrivedWithinMeters"] as number | undefined) ?? EARLY_END_DEFAULTS.arrivedWithinMeters;
+  const airport = (e["airportArrivedWithinMeters"] as number | undefined) ?? EARLY_END_DEFAULTS.airportArrivedWithinMeters;
+  return airport < arrived ? "airportArrivedWithinMeters must not be below arrivedWithinMeters" : null;
 }
 export type PinSettings = { required: boolean; maxAttempts: number; lockMinutes: number };
 const PIN_DEFAULTS = (contract as unknown as { configDefaults: { pickupPin: PinSettings } }).configDefaults.pickupPin;
@@ -305,12 +329,20 @@ export async function earlyEndOf(ex: Executor, trip: TripRow): Promise<EarlyEndS
   return earlyEndSettingsOf((await liveDocument(ex, "driver_app_config", trip.zone_id))?.document);
 }
 
-/** The driver's latest fix is farther than COMPLETE_NEAR_DROPOFF_METERS from the drop-off (no fix: not early). */
-export async function endedBeforeDropoff(ex: Executor, trip: TripRow): Promise<boolean> {
-  if (!trip.driver_id) return false;
+/**
+ * v0.18.58 §80: the driver's latest fix is farther than the trip's counts-as-arrived limit from the drop-off (no fix:
+ * not early). The limit is the airport one when the drop-off lies in a zone of kind airport (same lookup as
+ * fees.airportDropoff), read from the trip's priced zone (kept at booking; older trips 300 / 1000).
+ */
+export async function endedBeforeDropoff(ex: Executor, trip: TripRow): Promise<{ early: boolean; arrivedLimitMeters: number; distanceToDropoffMeters?: number }> {
+  const limits = await earlyEndOf(ex, trip);
+  const inAirport = (await zoneAt(ex, trip.dropoff as Place, { kind: "airport" })) !== null;
+  const arrivedLimitMeters = inAirport ? limits.airportArrivedWithinMeters : limits.arrivedWithinMeters;
+  if (!trip.driver_id) return { early: false, arrivedLimitMeters };
   const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", trip.driver_id).executeTakeFirst();
-  if (!fix) return false;
-  return haversineKm(fix, trip.dropoff as Place) * 1000 > COMPLETE_NEAR_DROPOFF_METERS;
+  if (!fix) return { early: false, arrivedLimitMeters };
+  const distanceToDropoffMeters = Math.round(haversineKm(fix, trip.dropoff as Place) * 1000);
+  return { early: distanceToDropoffMeters > arrivedLimitMeters, arrivedLimitMeters, distanceToDropoffMeters };
 }
 
 /** An admin sets the fare by hand: the driver's part keeps its share of the fare. */

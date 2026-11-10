@@ -5,6 +5,7 @@ import type { Executor, Trx } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
+import { arrivedDistanceProblem } from "../trips/ride/settings.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
@@ -82,6 +83,11 @@ export type ConfigDraftView = { doc: ConfigDoc; zoneId?: string; country?: strin
 
 /** A document must pass the contract schema and belong to the scope it is saved for. */
 export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): void {
+  // v0.18.58 §80: the arrived distances have their own reason (before the schema, which also has the ranges).
+  if (doc === "driver_app_config") {
+    const arrived = arrivedDistanceProblem(document);
+    if (arrived !== null) throw badRequest(`The arrived distance is not valid: ${arrived}.`, "invalid_arrived_distance");
+  }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
   const own = document as { zoneId?: string; currency?: string; country?: string; timeZone?: string };

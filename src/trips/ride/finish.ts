@@ -68,7 +68,9 @@ export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
  * booked. An admin's fare is taken as given; at the drop-off the booked fare stands.
  */
 async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin", adminFare: Money | undefined, now: Date) {
-  const early = adminFare === undefined && actor === "driver" && (await endedBeforeDropoff(ex, trip));
+  // v0.18.58 §80: the counts-as-arrived limit of the trip (airport drop-off: the larger one).
+  const near = adminFare === undefined && actor === "driver" ? await endedBeforeDropoff(ex, trip) : null;
+  const early = near?.early === true;
   // v0.7.1 (§3.8): the waiting at the middle stops is added, from each arrival to leaving. v0.18.10 (owner G8 Q2): also
   // when the driver ends early.
   const stopped = adminFare === undefined ? await withStopWaiting(ex, trip, now) : null;
@@ -78,7 +80,7 @@ async function finalPrice(ex: Executor, trip: TripRow, actor: "driver" | "admin"
     ({ money, info } = await earlyEndPrice(ex, trip, now, stopped));
   }
   const fare = money.fare_minor ?? Number(trip.fare_minor);
-  return { early, fare, money: { ...money, end_info: JSON.stringify(info) } as FrozenMoney, info };
+  return { early, fare, money: { ...money, end_info: JSON.stringify(info) } as FrozenMoney, info, near };
 }
 
 /** v0.18.10 (owner G8 Q2): the driver ended before the drop-off — driven price only over the admin's km / minutes, stop waiting kept. */
@@ -106,7 +108,7 @@ export const PREVIEW_FREEZE_SECONDS = (contract as unknown as { completePreview:
 export type FrozenMoney = { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number; end_info?: string };
 
 /** The CompletePreview body of a frozen price. */
-function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; early: boolean; fare: number; wallet: number; money: FrozenMoney }) {
+function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; early: boolean; fare: number; wallet: number; money: FrozenMoney; near: { arrivedLimitMeters: number; distanceToDropoffMeters?: number } | null }) {
   const lines = row.money.fare_lines !== undefined ? (JSON.parse(row.money.fare_lines) as FareLine[]) : ((trip.fare_lines as FareLine[]) ?? []);
   const sum = (amountMinor: number): Money => ({ amountMinor, currency: trip.currency });
   const earnings = row.money.driver_earnings_minor ?? Number(trip.driver_earnings_minor ?? 0);
@@ -124,6 +126,8 @@ function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; e
     earningsBreakdown: earningsLinesOf(asEnded).map((l) => ({ code: l.code, amount: sum(l.amountMinor) })),
     earlyEnd: row.early,
     ...(info?.endedEarly ? { repriced: info.repriced === true, shortKm: info.shortKm ?? 0, shortMin: info.shortMin ?? 0 } : {}),
+    // v0.18.58 §80: the limit used and the distance from the latest fix (absent with no fix).
+    ...(row.near ? { arrivedLimitMeters: row.near.arrivedLimitMeters, ...(row.near.distanceToDropoffMeters !== undefined ? { distanceToDropoffMeters: row.near.distanceToDropoffMeters } : {}) } : {}),
     fareLines: lines,
   };
 }
@@ -138,14 +142,14 @@ export async function completePreview(ex: Executor, driverId: string, tripId: st
   if (!ONBOARD.includes(trip.status)) {
     throw new ApiError("invalid_transition", "The rider is not on board.", { reason: "trip_not_on_board", projection: tripProjection(trip, "driver") });
   }
-  const { early, fare, money } = await finalPrice(ex, trip, "driver", undefined, now);
+  const { early, fare, money, near } = await finalPrice(ex, trip, "driver", undefined, now);
   // v0.18.28 (owner Q4): the balance in the trip's currency.
   const wallet = walletPart(await walletBalance(ex, trip.rider_id, trip.currency), trip, fare);
   const previewId = newId("cpv", now.getTime());
   const expiresAt = new Date(now.getTime() + PREVIEW_FREEZE_SECONDS * 1000);
   const row = { preview_id: previewId, driver_id: driverId, expires_at: expiresAt, early_end: early, fare_minor: fare, wallet_minor: wallet, money: JSON.stringify(money), created_at: now };
   await ex.insertInto("complete_previews").values({ trip_id: tripId, ...row }).onConflict((c) => c.column("trip_id").doUpdateSet(row)).execute();
-  return previewBody(trip, { previewId, expiresAt, early, fare, wallet, money });
+  return previewBody(trip, { previewId, expiresAt, early, fare, wallet, money, near });
 }
 
 /** Thrown inside complete's transaction; the route answers 409 price_changed with a fresh preview made after it. */

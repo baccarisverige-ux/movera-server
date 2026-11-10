@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.56",
+  "version": "0.18.58",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -3683,7 +3683,9 @@
     },
     "earlyEnd": {
       "repriceOverKm": 2,
-      "repriceOverMin": 10
+      "repriceOverMin": 10,
+      "arrivedWithinMeters": 300,
+      "airportArrivedWithinMeters": 1000
     },
     "onTripOffers": {
       "minRouteDonePct": 70,
@@ -3835,6 +3837,50 @@
           "en": "I've arrived at the pickup point."
         }
       }
+    },
+    "emergencyNumbers": {
+      "SE": [
+        {
+          "kind": "general",
+          "number": "112",
+          "label": {
+            "sv": "Nödnummer",
+            "fr": "Numéro d’urgence",
+            "en": "Emergency number"
+          }
+        }
+      ],
+      "FR": [
+        {
+          "kind": "general",
+          "number": "112",
+          "label": {
+            "sv": "Nödnummer",
+            "fr": "Numéro d’urgence",
+            "en": "Emergency number"
+          }
+        }
+      ],
+      "TN": [
+        {
+          "kind": "police",
+          "number": "197",
+          "label": {
+            "sv": "Polis",
+            "fr": "Police",
+            "en": "Police"
+          }
+        },
+        {
+          "kind": "ambulance",
+          "number": "190",
+          "label": {
+            "sv": "Ambulans (SAMU)",
+            "fr": "SAMU (ambulance)",
+            "en": "Ambulance (SAMU)"
+          }
+        }
+      ]
     }
   },
   "realtime": {
@@ -4145,7 +4191,8 @@
           "fr": "Appeler le 112",
           "en": "Call 112"
         }
-      }
+      },
+      "v0_18_57": "v0.18.57 §79: \"112\" in these texts and in safety.note / sos.note now means the country's emergency number(s) (emergencyNumbers); texts.call112 stays for older apps; new apps use emergencyNumbers.texts.callNumber."
     }
   },
   "stopWaits": {
@@ -6940,6 +6987,14 @@
           "repriceOverMin": [
             0,
             120
+          ],
+          "arrivedWithinMeters": [
+            50,
+            2000
+          ],
+          "airportArrivedWithinMeters": [
+            100,
+            3000
           ]
         }
       },
@@ -8747,5 +8802,60 @@
     },
     "export": "There is no CSV or export route today; a future export follows the same masking and the same rights.",
     "apps": "Rule 0 order: contract -> admin (accepts both full and masked values in every people view; shows Reveal with a reason dialog on sensitiveMasked; one click on an open SOS case reveals both numbers) -> server (masks in the admin projections, adds the four routes and the refunds.payouts_viewed audit row). Rider and driver apps: no change needed (own profiles stay full)."
+  },
+  "emergencyNumbers": {
+    "note": "v0.18.57 (CONTRACT.md §79, owner 2026-11-10, Rule 0): the emergency number(s) on the safety check / SOS screens of both apps come from each country's settings in admin, never a fixed 112. Additive; X-Api-Version stays 0.5; no migration.",
+    "kinds": [
+      "police",
+      "ambulance",
+      "fire",
+      "general"
+    ],
+    "item": "EmergencyNumber { kind police | ambulance | fire | general, number (digits only, optional leading +, 2-15 characters: ^\\+?[0-9]{2,15}$), label { sv, fr, en } 1-40 each }. 1-6 numbers per country; the first one is the main number.",
+    "where": "Admin › Pricing › Tips & limits per country › Emergency numbers: CountryRules.emergencyNumbers of the COUNTRY STANDARD only (emergency numbers are national; a zone's own country_rules never carries them and is 400 invalid_request, reason emergency_numbers_country_only), saved and published with the country_rules document (settings.edit / settings.publish), like CountryRules.chat. Never saved = configDefaults.emergencyNumbers[country]. Add, edit, remove and reorder rows; at least one row.",
+    "defaults": "SE: 112 (general). FR: 112 (general). TN: police 197, ambulance (SAMU) 190. A country with no default and nothing saved shows 112.",
+    "validation": "400 invalid_request, reason invalid_emergency_numbers: empty list, more than 6, a number not matching the pattern, a kind not in kinds, or a missing sv / fr / en label.",
+    "apps": "Written by the server from the zone's country into RiderAppConfig.emergencyNumbers and DriverAppConfig.emergencyNumbers (GET /rider/config, GET /driver/config, config_published) when the country standard is published, like dontMatchAgain. The apps keep the last list they got (offline) and fall back to [112 general] only if they never got one.",
+    "screens": "Rider and driver apps: (1) the safety shield with no trip — one \"Call <label> <number>\" button per row (opens the phone dialer, nothing sent to Movera) instead of \"Call 112\"; (2) SOS during a trip — the SOS dials the FIRST number and alerts Movera; the other rows show as extra call buttons on the \"SOS sent\" screen; (3) ride check \"Need help\" — the same call buttons; (4) the driver's emergency contacts screen — the built-in number shown is the country list, not 112. Labels in the app language (sv / fr / en).",
+    "admin": "Admin › Safety case page: the \"Emergency numbers\" box shows the incident country's CountryRules.emergencyNumbers (dialled from the admin's own phone, unchanged). The free-form emergency numbers inside incident settings (v0.18.15) are no longer read by the panel; they stay stored (Rule 21: nothing deleted).",
+    "texts": {
+      "callNumber": {
+        "sv": "Ring {label} {number}",
+        "fr": "Appeler {label} {number}",
+        "en": "Call {label} {number}"
+      },
+      "adminTitle": {
+        "sv": "Nödnummer",
+        "fr": "Numéros d’urgence",
+        "en": "Emergency numbers"
+      }
+    }
+  },
+  "arrivedDistance": {
+    "note": "v0.18.58 (CONTRACT.md §80, owner 2026-11-10, Rule 0): a Tunis trip was marked \"Terminée plus tôt\" when the driver completed ~940 m from the airport drop pin. The fixed pricing.completeNearDropoffMeters (300) becomes a per-zone admin setting with a larger value for airport drop-offs. Additive; X-Api-Version stays 0.5; no contract migration.",
+    "fields": "DriverAppConfig.cancelFees.earlyEnd gains arrivedWithinMeters (default 300, 50-2000) and airportArrivedWithinMeters (default 1000, 100-3000). A value outside its range, or airportArrivedWithinMeters below arrivedWithinMeters, is 400 invalid_request, reason invalid_arrived_distance on PUT / publish.",
+    "where": "Admin › Cancellation › Ended early, per zone or the country standard (same place as repriceOverKm / repriceOverMin): \"Counts as arrived within (m)\" and \"At an airport: counts as arrived within (m)\". Published with the driver document (settings.edit / settings.publish).",
+    "airport": "The airport value is used when the trip's drop-off lies inside a zone of kind airport (Zone.kind airport, the same lookup as fees.airportDropoff in pricing.requestExtras.airport). Otherwise arrivedWithinMeters. The setting is read from the trip's priced zone (the pickup zone), not from the airport zone.",
+    "rule": "POST /trips/{tripId}/complete and GET /driver/trips/{tripId}/complete-preview: with the driver's latest fix within the limit (or no fix) the trip is a normal finish (booked fare + stop waiting, endedEarly false, drop-off airport fee charged); farther than the limit it is the driver early end as before (finish.earlyEnd.driver, repriceOverKm / repriceOverMin unchanged). The limit is kept at booking time in bookingSnapshot.earlyEnd; a trip booked before v0.18.58 uses 300 / 1000.",
+    "replaces": "pricing.completeNearDropoffMeters (300) stays in the file as the old fixed value and the fallback of arrivedWithinMeters (Rule 21); the server no longer reads it directly.",
+    "projection": "CompletePreview.earlyEnd details gain arrivedLimitMeters (the limit used) and distanceToDropoffMeters (from the latest fix, absent with no fix), so the driver app can say why; TripProjection.finish unchanged.",
+    "pastTrips": "Trips already ended early are not changed; support corrects one with the existing admin tools (driver pay change, refund).",
+    "texts": {
+      "adminArrived": {
+        "sv": "Räknas som framme inom (m)",
+        "fr": "Compte comme arrivé à moins de (m)",
+        "en": "Counts as arrived within (m)"
+      },
+      "adminAirport": {
+        "sv": "Vid flygplats: räknas som framme inom (m)",
+        "fr": "À l’aéroport : compte comme arrivé à moins de (m)",
+        "en": "At an airport: counts as arrived within (m)"
+      },
+      "driverFar": {
+        "sv": "Du är {m} m från destinationen – resan avslutas tidigt",
+        "fr": "Vous êtes à {m} m de la destination – la course se termine plus tôt",
+        "en": "You are {m} m from the destination – the trip ends early"
+      }
+    }
   }
 }
