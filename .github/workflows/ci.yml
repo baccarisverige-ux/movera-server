@@ -88,6 +88,9 @@ jobs:
       TEST_DATABASE_URL: postgres://movera:movera@127.0.0.1:5432/movera
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The migration check diffs against the PR base branch.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -96,6 +99,13 @@ jobs:
         run: python3 tools/size_ratchet.py
       - run: npm ci
       - run: npm run contract:verify
+      # Owner rule 46 (step 58): new migration files must not lock a table and must carry an undo step.
+      # Pull requests only; a push to main checks nothing here (the files already passed on their PR).
+      - name: Migration safety check (new files vs base branch)
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 tools/check_migrations.py --self-test
+          python3 tools/check_migrations.py --base "origin/${{ github.base_ref }}"
       - run: npm run typecheck
       - run: npm run lint
       - name: npm audit (production deps, high and above)
