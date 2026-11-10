@@ -16,9 +16,10 @@ export interface Translator {
 }
 
 export async function translateMessage(ex: Executor, translator: Translator | undefined, who: { actor: "rider" | "driver"; subjectId: string }, tripId: string, body: unknown) {
+  // Who may see the trip first (404 for anyone else), then the body.
+  const trip = await readOwnTrip(ex, tripId, who);
   const b = (body ?? {}) as { messageId?: unknown; to?: unknown };
   if (typeof b.messageId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(b.messageId) || !isLang(b.to)) throw badRequest("messageId and to (sv, fr or en) are needed.", "invalid_body");
-  const trip = await readOwnTrip(ex, tripId, who);
   if (trip.driver_id === null || TERMINAL.has(trip.status as TripStatus)) {
     throw new ApiError("invalid_transition", "The chat is closed.", { reason: "chat_closed", projection: tripProjection(trip, who.actor) });
   }

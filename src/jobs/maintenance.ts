@@ -35,6 +35,8 @@ export const nightlyHandler: TimerHandler = async (trx, timer) => {
   await closeWeeks(trx, now);
   // contract v0.13.0 §22: trip chat after 90 days, except trips with a safety case.
   await purgeOldMessages(trx, now);
+  // v0.18.56 §78 (inAppCalls.push): open-stream rows a copy that died never removed.
+  await trx.deleteFrom("trip_stream_presence").where("seen_at", "<", new Date(now.getTime() - 60 * 60 * 1000)).execute();
   await trx
     .insertInto("timers")
     .values({ kind: NIGHTLY, ref_id: "all", due_at: nextNightly(now) })

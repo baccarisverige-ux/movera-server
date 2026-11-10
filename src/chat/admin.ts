@@ -53,8 +53,6 @@ export async function adminChats(ex: Executor, who: Principal, input: ZoneFilter
  * push yet (G13, IN-OTHER.1).
  */
 export async function adminMessagePerson(trx: Trx, who: Principal, actor: "rider" | "driver", personId: string, body: unknown, now: Date) {
-  const text = (body as { text?: unknown } | null)?.text;
-  if (typeof text !== "string" || text.trim() === "" || text.length > 2000) throw badRequest("text (1–2000 characters) is needed.", "invalid_body");
   let zoneIds: string[];
   if (actor === "driver") {
     const driver = await trx.selectFrom("drivers").select("zone_ids").where("driver_id", "=", personId).executeTakeFirst();
@@ -68,6 +66,9 @@ export async function adminMessagePerson(trx: Trx, who: Principal, actor: "rider
   }
   const covered = zoneIds.filter((z) => adminCoversZone(who, z));
   if (!who.zones.includes("*") && covered.length === 0) throw new ApiError("forbidden", "This person is outside your zones.", { reason: "zone_out_of_scope" });
+  // Authorization first (the person and the zone), then the body.
+  const text = (body as { text?: unknown } | null)?.text;
+  if (typeof text !== "string" || text.trim() === "" || text.length > 2000) throw badRequest("text (1–2000 characters) is needed.", "invalid_body");
   const zoneId = zoneIds[0] ?? null;
   const ticketId = newId("tkt", now.getTime());
   const country = (await desk.countryOfZone(trx, zoneId)) ?? (await desk.personCountry(trx, { actor, subjectId: personId }));

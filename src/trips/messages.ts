@@ -128,7 +128,7 @@ async function writeMessage(trx: Trx, trip: TripRow, m: { from: Message["from"];
  * v0.18.56 §78 (chat.autoArrived, chat.onTheWay; owner g9 Q3, Q4, Q85): the automatic message, once per trip.
  * arrived: from the driver, CountryRules.chat.autoArrived.text in the RIDER's language (off with autoArrived.on false).
  * on_my_way: from the rider, chat.onTheWay.text in the DRIVER's language. The caller holds the trip lock, so the
- * "already written?" check cannot race (the unique index trip_messages_one_auto is the backstop).
+ * "already written?" check cannot race (Rule 33: the lock is in the database).
  */
 export async function writeAutoMessage(trx: Trx, trip: TripRow, auto: "arrived" | "on_my_way", now: Date): Promise<Message | null> {
   if (trip.driver_id === null) return null;
