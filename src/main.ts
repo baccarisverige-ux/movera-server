@@ -6,7 +6,7 @@ import { buildApp } from "./app.js";
 import { createDb, createPool, limitStatements, poolOptionsFrom, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { guardProcess, waitForDatabase } from "./db/ready.js";
-import { readEnv } from "./env.js";
+import { readEnv, startupWarnings } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
 import { TimerWorker } from "./jobs/timers.js";
@@ -62,6 +62,8 @@ const push = pushServicesFrom(env, { warn: (message) => log(message) });
 const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}) });
 log = (message) => app.log.warn(message);
 fatalLog = app.log;
+// v0.18.56 §78 (G9-2.4): a missing TURN relay is visible in the start-up log.
+for (const message of startupWarnings(env)) app.log.warn(message);
 warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 
 if (db !== undefined) {
