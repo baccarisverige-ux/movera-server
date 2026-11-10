@@ -31,7 +31,7 @@ const driverIn = async (zoneIds: string[], country: string | null) => {
 };
 const run = (now: string) => database.db.transaction().execute((trx) => closePeriods(trx, new Date(now)));
 const payoutsOf = (driverId: string) =>
-  database.db.selectFrom("payouts").select(["currency", "amount_minor", "period_start", "period_end"]).where("driver_id", "=", driverId).orderBy("currency").execute()
+  database.db.selectFrom("payouts").select(["currency", "amount_minor", "period_start", "period_end"]).where("driver_id", "=", driverId).orderBy("currency").orderBy("period_start").execute()
     .then((rows) => rows.map((r) => [r.currency, Number(r.amount_minor), r.period_start.toISOString(), r.period_end.toISOString()]));
 
 describe("one payout per currency (audit M1)", () => {
