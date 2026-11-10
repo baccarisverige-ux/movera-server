@@ -20,7 +20,10 @@ import { TimerWorker } from "../../src/jobs/timers.js";
 import { ROUND, WITHDRAW } from "../../src/dispatch/runtime/shared.js";
 import { TRIP_ETA } from "../../src/trips/etaNow.js";
 import { RIDE_CHECK_SCAN } from "../../src/safety/rideCheckServer.js";
-import { freshDatabase, type TestDatabase } from "../support/db.js";
+import { randomBytes } from "node:crypto";
+import pg from "pg";
+import { createPool } from "../../src/db/db.js";
+import { TEMPLATE_DB, adminUrl, urlFor } from "../support/globalSetup.js";
 
 /**
  * Global plan step 64 (T4, audits/global-plan-2026-11-08/GLOBAL-SAFE-PLAN.md "T4 row"): plan tests of the SQL the
@@ -28,8 +31,9 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
  * whose `log` hook records every compiled statement (SQL text + parameters, exactly as node-pg gets them); each
  * recorded statement is then run again under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) inside a rolled-back transaction.
  * A statement passes when no big table is read with a Seq Scan, no plan node throws away more than MAX_REMOVED rows
- * (Rows Removed by Filter / Join Filter / Index Recheck, times loops) and it touches at most MAX_BUFFERS shared
- * blocks. Cases marked `it.fails` are the known slow queries of today (the Rule 36 proof for the later index / query
+ * (Rows Removed by Filter / Join Filter / Index Recheck, times loops) and it touches at most MAX_BUFFERS (1,000) shared
+ * blocks (both limits grow by a few per looked-up key: PER_KEY_*). Plans run with no parallel workers and no JIT, on
+ * statistics taken with default_statistics_target = 1000, so they do not flip with load or sampling. Cases marked `it.fails` are the known slow queries of today (the Rule 36 proof for the later index / query
  * fixes B1.10–B1.21, B3.8, IN-G10.3); the fix PR turns its case into a plain `it`. No index is added here (Rule 46).
  *
  * Data (generated here, fixed shape, no randomness): 3,000 drivers (2,000 in Z001), 20,000 riders, 300,000 finished
@@ -40,7 +44,10 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 const BIG = new Set(["trips", "trip_events", "offers", "notifications", "timers", "earnings_entries", "payouts", "trip_messages", "driver_cancels"]);
 const MAX_REMOVED = 5_000;
-const MAX_BUFFERS = 5_000;
+// The passing statements touch at most ~300 blocks on this data (deterministic); a walk of a whole index or heap is thousands.
+const MAX_BUFFERS = 1_000;
+const PER_KEY_BUFFERS = 4;
+const PER_KEY_REMOVED = 10;
 
 type Captured = { sql: string; parameters: readonly unknown[] };
 type PlanNode = {
@@ -57,7 +64,22 @@ type PlanNode = {
 };
 type Explained = { "Plan": PlanNode; "Execution Time": number };
 
-let database: TestDatabase;
+type PlanDatabase = { name: string; pool: pg.Pool };
+let database: PlanDatabase;
+
+/**
+ * Its own clone of the template, named movera_qp_* (not movera_t_*): the shared test teardown drops every movera_t_*
+ * database on the server, so another run finishing on the same server would drop this one mid-run.
+ */
+async function adminQuery(text: string): Promise<void> {
+  const client = new pg.Client({ connectionString: adminUrl() });
+  await client.connect();
+  try {
+    await client.query(text);
+  } finally {
+    await client.end();
+  }
+}
 let captured: Captured[] = [];
 let traced: Db;
 let now: Date;
@@ -67,24 +89,37 @@ const searchTrip = {} as { row: TripRow };
 const nodes = (n: PlanNode): PlanNode[] => [n, ...(n.Plans ?? []).flatMap(nodes)];
 
 async function explain(q: Captured): Promise<{ problems: string[]; ms: number; plan: string }> {
+  // Its own client per statement, released (destroyed on error) in finally: a broken connection never reaches the next case.
   const client = await database.pool.connect();
+  let broken: Error | undefined;
   try {
+    // A plan that does not depend on how many parallel workers are free right now, nor on JIT.
+    await client.query("SET max_parallel_workers_per_gather = 0");
+    await client.query("SET jit = off");
     await client.query("BEGIN");
     const r = await client.query<{ "QUERY PLAN": Explained[] }>(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${q.sql}`, q.parameters as unknown[]);
+    await client.query("ROLLBACK");
     const root = r.rows[0]!["QUERY PLAN"][0]!;
+    // A lookup of N keys (an IN list or array of driver ids) may cost a few blocks and rows per key: that grows with
+    // the round, not with the table.
+    const keys = q.parameters.reduce<number>((n, p) => n + (Array.isArray(p) ? p.length : 1), 0);
+    const maxRemoved = MAX_REMOVED + PER_KEY_REMOVED * keys;
+    const maxBuffers = MAX_BUFFERS + PER_KEY_BUFFERS * keys;
     const problems: string[] = [];
     for (const n of nodes(root.Plan)) {
       if (n["Node Type"] === "Seq Scan" && n["Relation Name"] && BIG.has(n["Relation Name"])) problems.push(`Seq Scan on ${n["Relation Name"]}`);
       const removed = ((n["Rows Removed by Filter"] ?? 0) + (n["Rows Removed by Join Filter"] ?? 0) + (n["Rows Removed by Index Recheck"] ?? 0)) * (n["Actual Loops"] ?? 1);
-      if (removed > MAX_REMOVED) problems.push(`${n["Node Type"]}${n["Relation Name"] ? ` on ${n["Relation Name"]}` : ""} removed ${removed} rows`);
+      if (removed > maxRemoved) problems.push(`${n["Node Type"]}${n["Relation Name"] ? ` on ${n["Relation Name"]}` : ""} removed ${removed} rows (max ${maxRemoved})`);
     }
     const buffers = (root.Plan["Shared Hit Blocks"] ?? 0) + (root.Plan["Shared Read Blocks"] ?? 0);
-    if (buffers > MAX_BUFFERS) problems.push(`${buffers} shared buffers`);
+    if (buffers > maxBuffers) problems.push(`${buffers} shared buffers (max ${maxBuffers})`);
     const plan = nodes(root.Plan).map((n) => `${n["Node Type"]}${n["Relation Name"] ? ` ${n["Relation Name"]}` : ""}${n["Index Name"] ? ` using ${n["Index Name"]}` : ""}`).join(" > ");
     return { problems, ms: root["Execution Time"], plan };
+  } catch (error) {
+    broken = error as Error;
+    throw error;
   } finally {
-    await client.query("ROLLBACK");
-    client.release();
+    client.release(broken);
   }
 }
 
@@ -93,7 +128,7 @@ async function check(run: () => Promise<unknown>, only?: (sql: string) => boolea
   captured = [];
   await run();
   const statements = captured.filter((q) => /^\s*(select|with|update|delete|insert)/i.test(q.sql) && (only === undefined || only(q.sql)));
-  expect(statements.length).toBeGreaterThan(0);
+  expect(statements.length, `${statements.length} matching statements of ${captured.length} captured`).toBeGreaterThan(0);
   const problems: string[] = [];
   const seen = new Set<string>();
   for (const q of statements) {
@@ -122,7 +157,9 @@ class Rollback extends Error {}
 const SUPER: Principal = { actor: "admin", subjectId: "adm_qp", sessionId: "s_qp", zones: ["*"], role: "super", perms: ["support.reply"] };
 
 beforeAll(async () => {
-  database = await freshDatabase();
+  const name = `movera_qp_${randomBytes(6).toString("hex")}`;
+  await adminQuery(`CREATE DATABASE ${name} TEMPLATE ${TEMPLATE_DB}`);
+  database = { name, pool: createPool(urlFor(name), 10) };
   traced = new Kysely<Database>({
     dialect: new PostgresDialect({ pool: database.pool }),
     log: (event) => {
@@ -191,6 +228,8 @@ beforeAll(async () => {
     await c.query(`INSERT INTO timers (kind, ref_id, due_at) SELECT '${TRIP_ETA}', 'tl' || g, ${at} - interval '10 minutes' + g * interval '10 ms' FROM generate_series(0, 19999) g`);
     await c.query(`INSERT INTO timers (kind, ref_id, due_at) SELECT '${ROUND}', 'ts' || g, ${at} - interval '1 second' FROM generate_series(0, 19) g`);
     await c.query("SET session_replication_role = origin");
+    // A fixed, high statistics target so the plans cannot flip with ANALYZE's random sample.
+    await c.query("SET default_statistics_target = 1000");
     await c.query("ANALYZE");
     liveTrip = (await c.query<TripRow>("SELECT * FROM trips WHERE trip_id = 'tl0'")).rows[0]!;
     searchTrip.row = (await c.query<TripRow>("SELECT * FROM trips WHERE trip_id = 'ts0'")).rows[0]!;
@@ -201,10 +240,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await traced?.destroy().catch(() => undefined);
-  await database?.drop();
+  if (database === undefined) return;
+  if (!database.pool.ended) await database.pool.end();
+  await adminQuery(`DROP DATABASE IF EXISTS ${database.name} WITH (FORCE)`);
 });
 
-const noProblems = async (run: () => Promise<unknown>, only?: (sql: string) => boolean) => expect((await check(run, only)).problems).toEqual([]);
+const noProblems = async (run: () => Promise<unknown>, only?: (sql: string) => boolean) => {
+  const { problems } = await check(run, only);
+  expect(problems, problems.join("\n")).toEqual([]);
+};
 
 describe("hot queries at backlog size (global plan step 64, T4)", () => {
   // ---- dispatch round ----
@@ -221,7 +265,8 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
     const drivers = Array.from({ length: 300 }, (_, i) => ({ driver_id: `d${i + 200}`, zone_ids: ["Z001"], driving_since: new Date(now.getTime() - 6 * 3600_000) }));
     await noProblems(() => driversAtDrivingLimit(traced, drivers, now), (s) => s.includes("WITH d AS"));
   });
-  it.fails("FAILS TODAY (B1.12): score aggregate of the round's drivers over 30 days of offers (dispatch/runtime/candidates.ts:245)", async () => {
+  // B1.12 is NOT proven at this size: ~17 offers per driver in 30 days is an index lookup per driver here.
+  it("score aggregate of the round's drivers over 30 days of offers (dispatch/runtime/candidates.ts:245)", async () => {
     await noProblems(() => inTrx((trx) => candidatesFor(trx, searchTrip.row, null, now)), (s) => s.includes("count(*) FILTER (WHERE status = 'claimed')"));
   });
   it.fails("FAILS TODAY (B1.11): one driver's counted driving seconds (drivers/drivingTime.ts:40-52)", async () => {
@@ -268,7 +313,7 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   });
   it.fails("FAILS TODAY (B1.19): Dispatch page driver facts is one query per driver (dispatch/driverFacts.ts:97-99)", async () => {
     const { count } = await check(() => zoneDriverFacts(traced, "Z002", now));
-    expect(count).toBeLessThanOrEqual(10);
+    expect(count, `${count} queries for one call (max 10)`).toBeLessThanOrEqual(10);
   });
   it.fails("FAILS TODAY (B1.19 + B1.11): driver facts' per-driver driving-time reads all trips (dispatch/driverFacts.ts:99 → drivers/drivingTime.ts:40-52)", async () => {
     await noProblems(() => zoneDriverFacts(traced, "Z002", now), (s) => s.includes("WITH legs AS"));
