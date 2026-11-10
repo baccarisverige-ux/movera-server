@@ -17,7 +17,7 @@ export const PAID_KM_RULES = { maxAccuracyM: 50, maxKmh: 200, smoothWindowS: 5, 
 export type PaidKmRules = { [K in keyof typeof PAID_KM_RULES]: number };
 
 /** A gap between two kept fixes, to be routed on the road. */
-export type TraceGap = { from: LatLng; to: LatLng };
+export type TraceGap = { from: LatLng; to: LatLng; fromAt: Date; toAt: Date };
 
 /** Road metres for a gap, or undefined (not known: straight line). */
 export type GapRoads = (gap: TraceGap) => number | undefined;
@@ -63,7 +63,7 @@ function walk(fixes: readonly TraceFix[], rules: PaidKmRules, roads?: GapRoads):
     if (speed < rules.stillSpeedMps && meters < rules.stillMaxStepM) continue;
     let paid = meters;
     if ((next.at - from.at) / 1000 > rules.gapS || meters > rules.gapM) {
-      const gap = { from: { lat: from.raw.lat, lng: from.raw.lng }, to: { lat: next.raw.lat, lng: next.raw.lng } };
+      const gap = { from: { lat: from.raw.lat, lng: from.raw.lng }, to: { lat: next.raw.lat, lng: next.raw.lng }, fromAt: from.raw.measured_at, toAt: next.raw.measured_at };
       gaps.push(gap);
       const road = roads?.(gap);
       if (road !== undefined && Number.isFinite(road) && road >= meters && road <= meters * rules.maxRoadFactor) paid = road;

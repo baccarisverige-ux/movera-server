@@ -3,7 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { haversineKm, type LatLng, type RouteLeg, type Router } from "../../src/maps/routing.js";
 import { prepareTestWeek } from "../../src/testWeek.js";
 import { driven } from "../../src/trips/ride/settings.js";
-import { forgetGapRoads, MAX_ROUTED_GAPS } from "../../src/trips/ride/gapRoads.js";
+import { MAX_ROUTED_GAPS } from "../../src/trips/ride/gapRoads.js";
+import { buildApp } from "../../src/app.js";
 import { bookAndAccept, drive, type Json, Sim } from "./harness.js";
 
 /**
@@ -81,7 +82,7 @@ class TraceRouter implements Router {
 /** What one trace did on the server. */
 type Run = {
   km: number[]; fares: number[]; etas: Json[]; statuses: string[]; nearDropoffAt: { remaining: number } | null;
-  transitionsToApproaching: number; finalKm: number; pathMeters: number; pathSource: string; completed: Json;
+  transitionsToApproaching: number; finalKm: number; tripId: string; pathMeters: number; pathSource: string; completed: Json;
 };
 
 let sim: Sim;
@@ -123,7 +124,7 @@ async function run(tr: Trace, index: 0 | 1 | 2): Promise<Run> {
   for (const b of tr.batches.filter((x) => x.phase === "waiting")) await send(b);
   sim.clock.now = at(tr.boardT);
   await drive(driver, tripId, "in_trip", tr.pickup);
-  const out: Run = { km: [], fares: [], etas: [], statuses: [], nearDropoffAt: null, transitionsToApproaching: 0, finalKm: 0, pathMeters: 0, pathSource: "", completed: {} };
+  const out: Run = { km: [], fares: [], etas: [], statuses: [], nearDropoffAt: null, transitionsToApproaching: 0, finalKm: 0, tripId, pathMeters: 0, pathSource: "", completed: {} };
   for (const b of tr.batches.filter((x) => x.phase === "on_board")) {
     await send(b);
     const row = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
@@ -238,12 +239,34 @@ describe("recorded-style GPS traces through the server (T13)", () => {
   traceSuite("paris_chatelet_eiffel", 1, true);
   // Owner order TN-9: Avenue Habib Bourguiba → Aéroport Tunis-Carthage.
   traceSuite("tunis_bourguiba_carthage", 2, true);
+  // Several server copies / a restart: the road km live in Postgres (trip_gap_roads, 0092), not in one copy's memory.
+  // A second app on the same database, whose router is down, pays the same km without one router call.
+  describe("stockholm_sergels_medborgar paid by a second server copy", () => {
+    const tr = trace("stockholm_sergels_medborgar");
+    it("same road-snapped km from the database alone", async () => {
+      roads.calls = 0;
+      const r = await run(tr, 0);
+      expect(roads.calls).toBeLessThanOrEqual(MAX_ROUTED_GAPS);
+      const rows = await sim.db.selectFrom("trip_gap_roads").selectAll().where("trip_id", "=", r.tripId).execute();
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThanOrEqual(MAX_ROUTED_GAPS);
+      let otherCalls = 0;
+      const other = await buildApp({ env: sim.env, logger: false, db: sim.db, clock: () => sim.clock.now, router: { route: async () => { otherCalls++; throw new Error("down"); } } });
+      try {
+        const row = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", r.tripId).executeTakeFirstOrThrow();
+        expect((await driven(sim.db, row, sim.clock.now)).km).toBe(r.finalKm);
+        expect(r.finalKm).toBeGreaterThanOrEqual((tr.roadMeters / 1000) * 0.97);
+        expect(otherCalls).toBe(0);
+      } finally {
+        await other.close();
+      }
+    }, 180_000);
+  });
   // Routing off or down: the gaps fall back to straight lines, the trip still completes (never fails).
   describe("stockholm_sergels_medborgar with routing down", () => {
     const tr = trace("stockholm_sergels_medborgar");
     let r: Run;
     beforeAll(async () => {
-      forgetGapRoads();
       roads.down = true;
       roads.calls = 0;
       r = await run(tr, 0);
