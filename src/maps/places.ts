@@ -129,8 +129,23 @@ export class GooglePlaces implements Places {
     const data = await this.json(this.geocodeUrl({ latlng: `${input.lat},${input.lng}`, language: input.language }));
     if (data["status"] === "ZERO_RESULTS") return null;
     if (data["status"] !== "OK") throw new PlacesUnavailable(`Geocoding status ${String(data["status"])}`);
-    return (data["results"] as Array<{ formatted_address?: string }>)[0]?.formatted_address ?? null;
+    return pickReverseAddress((data["results"] ?? []) as ReverseResult[]);
   }
+}
+
+type ReverseResult = { formatted_address?: string; types?: string[] };
+const STREET_OR_PLACE = ["street_address", "premise", "point_of_interest", "establishment", "route", "intersection"];
+const PLUS_CODE = /^[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\b/;
+const isPlusCode = (r: ReverseResult) => (r.types ?? []).includes("plus_code") || PLUS_CODE.test(r.formatted_address ?? "");
+
+/** Owner 2026-11-10: street or known place first, then any non-Plus-Code answer, the Plus Code only as last fallback. */
+export function pickReverseAddress(results: ReverseResult[]): string | null {
+  const usable = results.filter((r) => r.formatted_address?.trim());
+  const choice =
+    usable.find((r) => !isPlusCode(r) && (r.types ?? []).some((t) => STREET_OR_PLACE.includes(t))) ??
+    usable.find((r) => !isPlusCode(r)) ??
+    usable[0];
+  return choice?.formatted_address ?? null;
 }
 
 /** A small time-limited cache in front of any Places (answers for the same question repeat a lot while typing). */
