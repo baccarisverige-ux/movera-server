@@ -11,20 +11,17 @@ import { SHARED_ROWS, sharedServedRoutes, validBody, type Row } from "./sharedRo
  * driver, an admin of each of the 11 roles (all zones) and a Super admin limited to another zone (Z002; the trip
  * is in Z001). Each cell expects one answer: ok (passed authorization), 401, 403, or denied (403 or 404).
  * Step 25's case (an admin without trips.read, or outside the trip's zone, must not read a trip or its live events)
- * is a row of this matrix; the cells that fail today are listed in KNOWN_BUGS and proven with `it.fails`.
+ * is a row of this matrix; the cells step 25 fixed are listed in FIXED_STEP25.
  */
 
 type Caller = { name: string; actor: "none" | "rider" | "driver" | "admin"; token?: string; owner?: boolean; role?: AdminRole; outOfZone?: boolean };
 type Expect = "ok" | "401" | "403" | "denied";
 
 /**
- * Cells that fail today: real authorization bugs, not fixed in this step. Step 25 (U10, Q 34) fixes them: the trip
- * read and its live events check only "is an admin" (src/trips/routes.ts GET /trips/:tripId and /events call
- * authenticate(…, ["rider", "driver", "admin"]) and getTrip with no permission and no zone), so an admin whose role
- * has no trips.read, and a Super admin of another zone, read the trip and its events (200). When step 25 merges,
- * these `it.fails` start failing: delete the list and the matrix holds the fix.
+ * Step 25 (U10, Q 34) fixed the last known bugs of this matrix: an admin reads a trip and its live events only with
+ * trips.read and the trip's zone. These cells were `it.fails` before the fix; now they are normal expectations.
  */
-export const KNOWN_BUGS: readonly string[] = ["GET /trips/:tripId", "GET /trips/:tripId/events"].flatMap((route) => [
+export const FIXED_STEP25: readonly string[] = ["GET /trips/:tripId", "GET /trips/:tripId/events"].flatMap((route) => [
   ...["compliance", "finance", "content", "config", "fleet"].map((role) => `${route} × admin ${role}`),
   `${route} × admin super Z002`,
 ]);
@@ -103,8 +100,8 @@ async function cell(route: string, caller: Caller): Promise<{ key: string; ok: b
 }
 
 describe("T11: authorization matrix of the shared routes", () => {
-  for (const key of KNOWN_BUGS) {
-    it.fails(`known bug (step 25 / U10): ${key}`, async () => {
+  for (const key of FIXED_STEP25) {
+    it(`step 25 (U10): ${key} is refused`, async () => {
       const [route, name] = key.split(" × ") as [string, string];
       const result = await cell(route, callers.find((c) => c.name === name)!);
       expect(result.ok, result.detail).toBe(true);
@@ -121,10 +118,25 @@ describe("T11: authorization matrix of the shared routes", () => {
       for (const caller of callers) {
         const result = await cell(route, caller);
         cells += 1;
-        if (!result.ok && !KNOWN_BUGS.includes(result.key)) failures.push(result.detail);
+        if (!result.ok) failures.push(result.detail);
       }
     }
-    console.log(`T11 shared matrix: ${ordered.length} routes × ${callers.length} callers = ${cells} cells, ${KNOWN_BUGS.length} known bugs`);
+    console.log(`T11 shared matrix: ${ordered.length} routes × ${callers.length} callers = ${cells} cells, 0 known bugs`);
     expect(failures).toEqual([]);
   }, 120_000);
+
+  it("step 25: the live stream (SSE) of /events refuses an admin outside the trip's zone and one without trips.read", async () => {
+    const sse = { headers: { accept: "text/event-stream" } };
+    const out = callers.find((c) => c.name === "admin super Z002")!;
+    const outRes = await sim.request("GET", `/trips/${ids["tripId"]}/events`, out.token, undefined, sse);
+    expect(outRes.status).toBe(403);
+    expect(outRes.body).toMatchObject({ reason: "zone_out_of_scope" });
+    const finance = callers.find((c) => c.name === "admin finance")!;
+    const permRes = await sim.request("GET", `/trips/${ids["tripId"]}/events`, finance.token, undefined, sse);
+    expect(permRes.status).toBe(403);
+    expect(permRes.body).toMatchObject({ reason: "missing_permission" });
+    const ops = callers.find((c) => c.name === "admin super")!;
+    const stream = await sim.stream(`/trips/${ids["tripId"]}/events`, ops.token!);
+    expect(stream).toBeDefined();
+  });
 });
