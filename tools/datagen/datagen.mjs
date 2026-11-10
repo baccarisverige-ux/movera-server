@@ -59,7 +59,7 @@ const START = new Date(END.getTime());
 START.setUTCMonth(START.getUTCMonth() - PLAN.months);
 const WORKERS = Math.min(8, Math.max(1, Number(arg("workers", "4")) | 0));
 const TEMPLATE = arg("template", "");
-if (TEMPLATE && !/^[a-z0-9_]+$/.test(TEMPLATE)) throw new LoadtestGuardError("--template must be a plain database name");
+if (TEMPLATE && !/^(movera_test_template\w*|movera_t_\w+|movera_loadtest_\w+)$/.test(TEMPLATE)) throw new LoadtestGuardError("--template must be a test template (movera_test_template*, movera_t_*, movera_loadtest_*), never a dev or real database");
 const CREATE = flag("create");
 const WITH_TRIGGERS = flag("with-triggers");
 const OUT = arg("out", "");
