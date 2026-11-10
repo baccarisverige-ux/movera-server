@@ -155,9 +155,9 @@ function expectNoTeleportCredit(tr: Trace, r: Run) {
  * One describe per trace file: the trace runs once (beforeAll) and both checks read that run.
  * REAL BUG kept as it.fails (proof for later, behaviour not changed here): the driven km over-credits real-world GPS by
  * more than 10 % in Paris (4.765 km on a 4.290 km road) and Tunis (9.085 km on 8.171 km). Cause: kmOnBoard,
- * src/trips/ride/settings.ts:252-269 (and the same filter in cleanTrace, src/trips/path.ts:19-21 + 28-40), takes every
+ * src/trips/ride/settings.ts:252-269 (and the same filter in cleanTrace, src/trips/path.ts:28-40, constants path.ts:19-21), takes every
  * fix with accuracy <= 50 m and counts every step >= 25 m: 30–40 m urban-canyon noise (accuracy 35–45 m) and the drift
- * of a car standing at a red light zigzag into paid km. (The backwards jump is caught by the 150 km/h rule.)
+ * of a car standing at a red light zigzag into paid km. Fix target: driven km and path <= road x 1.05. (The backwards jump is caught by the 150 km/h rule.)
  */
 function traceSuite(name: string, index: 0 | 1 | 2, overCredits: boolean) {
   describe(name, () => {

@@ -31,12 +31,16 @@ describe("recorded staging answers match the contract (T14)", () => {
     expect(files).toEqual(Object.keys(SCHEMA).sort());
   });
 
-  it("no token, phone number or e-mail survived the cleaning", () => {
+  it("no token, phone number, e-mail or real id survived the cleaning", () => {
     for (const name of Object.keys(SCHEMA)) {
       const text = readFileSync(new URL(`${name}.json`, DIR), "utf8");
       expect(text, name).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}/);
       expect(text, name).not.toMatch(/\+(?!10000000000)\d{8,15}/);
       expect(text, name).not.toMatch(/[A-Za-z0-9._-]+@(?!example\.test)[A-Za-z0-9-]+\.[A-Za-z]{2,}/);
+      // A real server id (prefix_ + ULID body), under any key (updatedBy, createdBy, …).
+      expect(text, name).not.toMatch(/"[a-z]{2,6}_[0-9A-Z]{20,}"/);
+      // Any uuid must be one of the 00000000-… fakes.
+      expect(text, name).not.toMatch(/"(?!00000000-)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i);
     }
   });
 

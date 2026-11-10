@@ -1,6 +1,6 @@
 # Recorded-style GPS traces (step 72, T13)
 
-Used by `test/e2e/44_gps_traces.test.ts` (one suite per file). Regenerate with `node test/fixtures/traces/generate.mjs`
+Used by `test/e2e/45_gps_traces.test.ts` (one suite per file). Regenerate with `node test/fixtures/traces/generate.mjs`
 (deterministic: seeded PRNG, same bytes every run).
 
 **No real person's data.** Each trace is generated, not recorded from a phone:

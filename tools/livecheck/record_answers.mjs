@@ -49,7 +49,9 @@ async function call(method, path, token, body) {
 
 /* ---------------------------------------------------------------- cleaning */
 const ids = new Map();
-const ID_KEY = /(^id$|Id$|Ids$|^sequence$|Key$)/;
+const ID_KEY = /(^id$|Id$|Ids$|^sequence$|Key$|By$)/;
+/** A server id (prefix_ + ULID-like body) is faked whatever key it sits under (updatedBy, createdBy, …). */
+const SERVER_ID = /^[a-z]{2,6}_[0-9A-Z]{20,}$/;
 const SECRET_KEY = /token|secret|password|otp|code$/i;
 const PERSON_KEY = /phone|email|^name$|firstName|lastName|displayName|plate|licen[cs]e|photo|avatar|url$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -72,7 +74,7 @@ function clean(value, key = "") {
   if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) return "user@example.test";
   if (PERSON_KEY.test(key)) return /url$/i.test(key) ? "https://example.test/redacted" : "[REDACTED]";
   if (ID_KEY.test(key) && !ZONE_IDS.test(value) && !/^(economy|comfort|xl|premium|van|green|cash|card)$/.test(value)) return fakeId(value);
-  if (UUID.test(value)) return fakeId(value);
+  if (UUID.test(value) || SERVER_ID.test(value)) return fakeId(value);
   return value;
 }
 const saved = [];
