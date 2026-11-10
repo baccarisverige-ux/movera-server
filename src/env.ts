@@ -155,7 +155,7 @@ const schema = z.object({
    * rounds per second than it can run and new searches queue behind overdue rounds. Rounds of different trips are
    * safe side by side (each locks its own trip row; chosen drivers are locked NOWAIT and checked again).
    */
-  DISPATCH_LANES: z.coerce.number().int().min(1).max(16).default(4),
+  DISPATCH_LANES: z.coerce.number().int().min(1).max(16).default(1),
   /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
