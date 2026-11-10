@@ -8,8 +8,10 @@ on:
       - '**.md'
       - 'docs/**'
   # Owner 2026-11-06: a push to main runs a quick check only (contract,
-  # typecheck, lint, build); the full test suite runs on PRs, by hand, and
+  # typecheck, lint, build); the full test suite runs on PRs (not drafts) and
   # every 12 hours on main (skipped when main has no new commit in 13 hours).
+  # Step 48 (2026-11-09): a manual run is allowed on main only; there is no
+  # manual full run on a draft branch (run the suite locally, then mark Ready once).
   schedule:
     - cron: '41 3,15 * * *'
   workflow_dispatch:
@@ -62,7 +64,11 @@ jobs:
 
   checks:
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && github.event.pull_request.draft != true
+    # Not on drafts; a manual run (workflow_dispatch) only on main (step 48).
+    if: >-
+      needs.changes.outputs.code == 'true'
+      && github.event.pull_request.draft != true
+      && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -86,6 +92,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: File size ratchet (Rule 25)
+        run: python3 tools/size_ratchet.py
       - run: npm ci
       - run: npm run contract:verify
       - run: npm run typecheck

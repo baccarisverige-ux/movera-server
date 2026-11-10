@@ -37,7 +37,7 @@ live web pages. `keep-awake.yml` is manual only (owner 2026-11-06; an outside pi
 
 `.github/workflows/ci.yml` ("CI"): job `checks` (contract copy, typecheck, lint, audit, tests with coverage,
 build) and `secret-scan` (gitleaks). On a pull request the full suite runs; on a push to `main` only the quick
-check without tests; the full suite also runs every 12 hours on `main` when it has new commits, and by hand.
+check without tests; the full suite also runs every 12 hours on `main` when it has new commits, and by hand on `main` only (step 48: never on a draft branch).
 Docs-only PRs (`*.md`, `docs/`) and drafts skip `checks`. There is no `gate` job here; a PR shows the two
 checks `checks` and `secret-scan`. `.github/workflows/contract-copy.yml` ("Contract copy") runs
 `tools/check_contract_copy.sh` on every PR and push, and once a day opens or closes the issue
@@ -155,6 +155,16 @@ Update the contract copy with `tools/sync_contract.sh v0.18.54` (the tag, never 
   gets an in-app notice (`GET /notifications`, kind `trip_message`).
 - One LISTEN connection per instance wakes the streams; each stream reads the events itself, so nothing is
   skipped or repeated, and it reconnects on its own. Who may see a trip is checked again on every event.
+
+## How we work (pull requests and CI)
+
+- Open the PR as a **draft**; CI then runs only the cheap jobs (change detection, secret scan).
+- There is **no manual full run on a draft**: `workflow_dispatch` runs the full `checks` job on `main` only.
+- Before marking the PR Ready, run the full suite **locally with Postgres**
+  (`TEST_DATABASE_URL=... npm run test:coverage`, plus `npm run contract:verify`, `typecheck`, `lint`, `build`).
+- **Mark Ready once.** `ready_for_review` starts the full suite (and the contract-copy check); every later push
+  re-runs it, so flipping Draft/Ready back and forth or pushing fix-ups one at a time burns billed minutes.
+- Budget: each PR cycle should stay at or under about **40 billed minutes** (one full run plus a fix).
 
 ## Build plan
 
