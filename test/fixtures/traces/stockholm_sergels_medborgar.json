@@ -1,0 +1,852 @@
+{
+ "name": "stockholm_sergels_medborgar",
+ "city": "Stockholm",
+ "zoneId": "Z001",
+ "description": "Sergels torg → Centralbron → Slussen → Söderledstunneln → Ringvägen → Götgatan → Medborgarplatsen",
+ "generatedBy": "test/fixtures/traces/generate.mjs (deterministic, seed 4601)",
+ "pickup": {
+  "address": "Sergels torg",
+  "lat": 59.3326,
+  "lng": 18.0649
+ },
+ "dropoff": {
+  "address": "Medborgarplatsen",
+  "lat": 59.3143,
+  "lng": 18.0735
+ },
+ "roadMeters": 3503,
+ "road": [
+  {
+   "lat": 59.3326,
+   "lng": 18.0649
+  },
+  {
+   "lat": 59.3312,
+   "lng": 18.061
+  },
+  {
+   "lat": 59.33,
+   "lng": 18.0585
+  },
+  {
+   "lat": 59.3275,
+   "lng": 18.061
+  },
+  {
+   "lat": 59.324,
+   "lng": 18.065
+  },
+  {
+   "lat": 59.3215,
+   "lng": 18.069
+  },
+  {
+   "lat": 59.3195,
+   "lng": 18.0722
+  },
+  {
+   "lat": 59.316,
+   "lng": 18.074
+  },
+  {
+   "lat": 59.312,
+   "lng": 18.076
+  },
+  {
+   "lat": 59.3105,
+   "lng": 18.0745
+  },
+  {
+   "lat": 59.3112,
+   "lng": 18.0712
+  },
+  {
+   "lat": 59.3135,
+   "lng": 18.0722
+  },
+  {
+   "lat": 59.3143,
+   "lng": 18.0735
+  }
+ ],
+ "tunnel": {
+  "name": "Söderledstunneln",
+  "fromMeters": 1874,
+  "toMeters": 2735
+ },
+ "boardT": 120,
+ "arriveT": 530,
+ "defects": [
+  "backwards_jump",
+  "duplicate_timestamp",
+  "duplicate_timestamp_other_place",
+  "gap_45s",
+  "gap_90s",
+  "late_batch_out_of_order",
+  "low_accuracy",
+  "out_of_order_in_batch",
+  "parked_drift",
+  "stopped_drift",
+  "tunnel",
+  "urban_canyon_noise"
+ ],
+ "fixes": [
+  {
+   "t": 0,
+   "lat": 59.332803,
+   "lng": 18.064508,
+   "accuracy": 23,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 10,
+   "lat": 59.332663,
+   "lng": 18.064789,
+   "accuracy": 19,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 20,
+   "lat": 59.332695,
+   "lng": 18.064611,
+   "accuracy": 21,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 30,
+   "lat": 59.332559,
+   "lng": 18.064926,
+   "accuracy": 16,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 40,
+   "lat": 59.332605,
+   "lng": 18.065007,
+   "accuracy": 19,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 50,
+   "lat": 59.332489,
+   "lng": 18.06522,
+   "accuracy": 32,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 60,
+   "lat": 59.332659,
+   "lng": 18.064681,
+   "accuracy": 13,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 70,
+   "lat": 59.332654,
+   "lng": 18.064784,
+   "accuracy": 22,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 80,
+   "lat": 59.33244,
+   "lng": 18.065324,
+   "accuracy": 29,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 90,
+   "lat": 59.332882,
+   "lng": 18.065121,
+   "accuracy": 16,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 100,
+   "lat": 59.332525,
+   "lng": 18.064975,
+   "accuracy": 22,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 110,
+   "lat": 59.332446,
+   "lng": 18.06534,
+   "accuracy": 17,
+   "speedMps": 0,
+   "heading": 235,
+   "truthM": 0,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 125,
+   "lat": 59.332384,
+   "lng": 18.064384,
+   "accuracy": 9,
+   "speedMps": 8.3,
+   "heading": 235,
+   "truthM": 42
+  },
+  {
+   "t": 130,
+   "lat": 59.332027,
+   "lng": 18.063499,
+   "accuracy": 9,
+   "speedMps": 12.6,
+   "heading": 235,
+   "truthM": 105
+  },
+  {
+   "t": 135,
+   "lat": 59.331729,
+   "lng": 18.062445,
+   "accuracy": 14,
+   "speedMps": 13.6,
+   "heading": 235,
+   "truthM": 173
+  },
+  {
+   "t": 140,
+   "lat": 59.331758,
+   "lng": 18.061282,
+   "accuracy": 44,
+   "speedMps": 8.8,
+   "heading": 235,
+   "truthM": 217,
+   "defect": "urban_canyon_noise"
+  },
+  {
+   "t": 145,
+   "lat": 59.330938,
+   "lng": 18.061291,
+   "accuracy": 40,
+   "speedMps": 11.9,
+   "heading": 227,
+   "truthM": 276,
+   "defect": "urban_canyon_noise"
+  },
+  {
+   "t": 150,
+   "lat": 59.33122,
+   "lng": 18.060258,
+   "accuracy": 42,
+   "speedMps": 9.1,
+   "heading": 227,
+   "truthM": 321,
+   "defect": "urban_canyon_noise"
+  },
+  {
+   "t": 155,
+   "lat": 59.330551,
+   "lng": 18.059222,
+   "accuracy": 43,
+   "speedMps": 11.7,
+   "heading": 227,
+   "truthM": 380,
+   "defect": "urban_canyon_noise"
+  },
+  {
+   "t": 160,
+   "lat": 59.329922,
+   "lng": 18.058024,
+   "accuracy": 41,
+   "speedMps": 12.5,
+   "heading": 227,
+   "truthM": 443,
+   "defect": "urban_canyon_noise"
+  },
+  {
+   "t": 165,
+   "lat": 59.329828,
+   "lng": 18.058549,
+   "accuracy": 8,
+   "speedMps": 6.2,
+   "heading": 153,
+   "truthM": 474
+  },
+  {
+   "t": 170,
+   "lat": 59.329417,
+   "lng": 18.05924,
+   "accuracy": 6,
+   "speedMps": 13.8,
+   "heading": 153,
+   "truthM": 543
+  },
+  {
+   "t": 170,
+   "lat": 59.329417,
+   "lng": 18.05924,
+   "accuracy": 6,
+   "speedMps": 13.8,
+   "heading": 153,
+   "truthM": 543,
+   "defect": "duplicate_timestamp"
+  },
+  {
+   "t": 175,
+   "lat": 59.329055,
+   "lng": 18.059397,
+   "accuracy": 8,
+   "speedMps": 9.8,
+   "heading": 153,
+   "truthM": 592
+  },
+  {
+   "t": 175,
+   "lat": 59.329055,
+   "lng": 18.059397,
+   "accuracy": 8,
+   "speedMps": 9.8,
+   "heading": 153,
+   "truthM": 592,
+   "defect": "duplicate_timestamp"
+  },
+  {
+   "t": 175,
+   "lat": 59.329163,
+   "lng": 18.059239,
+   "accuracy": 8,
+   "speedMps": 9.8,
+   "heading": 153,
+   "truthM": 592,
+   "defect": "duplicate_timestamp_other_place"
+  },
+  {
+   "t": 180,
+   "lat": 59.328674,
+   "lng": 18.059757,
+   "accuracy": 8,
+   "speedMps": 7.7,
+   "heading": 153,
+   "truthM": 631
+  },
+  {
+   "t": 180,
+   "lat": 59.328674,
+   "lng": 18.059757,
+   "accuracy": 8,
+   "speedMps": 7.7,
+   "heading": 153,
+   "truthM": 631,
+   "defect": "duplicate_timestamp"
+  },
+  {
+   "t": 185,
+   "lat": 59.328251,
+   "lng": 18.060284,
+   "accuracy": 8,
+   "speedMps": 10.4,
+   "heading": 153,
+   "truthM": 683
+  },
+  {
+   "t": 190,
+   "lat": 59.328027,
+   "lng": 18.060403,
+   "accuracy": 14,
+   "speedMps": 7,
+   "heading": 153,
+   "truthM": 718
+  },
+  {
+   "t": 195,
+   "lat": 59.327612,
+   "lng": 18.060913,
+   "accuracy": 10,
+   "speedMps": 10.6,
+   "heading": 153,
+   "truthM": 771
+  },
+  {
+   "t": 200,
+   "lat": 59.32714,
+   "lng": 18.06142,
+   "accuracy": 6,
+   "speedMps": 10.1,
+   "heading": 150,
+   "truthM": 822
+  },
+  {
+   "t": 205,
+   "lat": 59.326812,
+   "lng": 18.061764,
+   "accuracy": 6,
+   "speedMps": 7.7,
+   "heading": 150,
+   "truthM": 860
+  },
+  {
+   "t": 255,
+   "lat": 59.326351,
+   "lng": 18.062364,
+   "accuracy": 20,
+   "speedMps": 10,
+   "heading": 141,
+   "truthM": 1376,
+   "defect": "backwards_jump"
+  },
+  {
+   "t": 260,
+   "lat": 59.32309,
+   "lng": 18.066507,
+   "accuracy": 162,
+   "heading": 141,
+   "truthM": 1436,
+   "defect": "low_accuracy"
+  },
+  {
+   "t": 265,
+   "lat": 59.322848,
+   "lng": 18.066043,
+   "accuracy": 135,
+   "heading": 141,
+   "truthM": 1482,
+   "defect": "low_accuracy"
+  },
+  {
+   "t": 270,
+   "lat": 59.323395,
+   "lng": 18.065085,
+   "accuracy": 268,
+   "heading": 141,
+   "truthM": 1550,
+   "defect": "low_accuracy"
+  },
+  {
+   "t": 275,
+   "lat": 59.320758,
+   "lng": 18.068904,
+   "accuracy": 136,
+   "heading": 141,
+   "truthM": 1610,
+   "defect": "low_accuracy"
+  },
+  {
+   "t": 280,
+   "lat": 59.320891,
+   "lng": 18.070061,
+   "accuracy": 14,
+   "speedMps": 13,
+   "heading": 141,
+   "truthM": 1674
+  },
+  {
+   "t": 285,
+   "lat": 59.320592,
+   "lng": 18.070273,
+   "accuracy": 7,
+   "speedMps": 8.1,
+   "heading": 141,
+   "truthM": 1715
+  },
+  {
+   "t": 290,
+   "lat": 59.320182,
+   "lng": 18.071172,
+   "accuracy": 15,
+   "speedMps": 12.2,
+   "heading": 141,
+   "truthM": 1776
+  },
+  {
+   "t": 295,
+   "lat": 59.320383,
+   "lng": 18.071467,
+   "accuracy": 11,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 300,
+   "lat": 59.320231,
+   "lng": 18.071066,
+   "accuracy": 13,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 305,
+   "lat": 59.32024,
+   "lng": 18.070988,
+   "accuracy": 6,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 310,
+   "lat": 59.320189,
+   "lng": 18.070765,
+   "accuracy": 13,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 315,
+   "lat": 59.319993,
+   "lng": 18.071375,
+   "accuracy": 10,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 320,
+   "lat": 59.320401,
+   "lng": 18.071104,
+   "accuracy": 7,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 325,
+   "lat": 59.320183,
+   "lng": 18.070726,
+   "accuracy": 14,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 330,
+   "lat": 59.320227,
+   "lng": 18.071186,
+   "accuracy": 6,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 335,
+   "lat": 59.320195,
+   "lng": 18.071192,
+   "accuracy": 14,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 340,
+   "lat": 59.3202,
+   "lng": 18.071161,
+   "accuracy": 14,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 345,
+   "lat": 59.32024,
+   "lng": 18.071067,
+   "accuracy": 12,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776,
+   "defect": "stopped_drift"
+  },
+  {
+   "t": 350,
+   "lat": 59.320172,
+   "lng": 18.070543,
+   "accuracy": 14,
+   "speedMps": 0,
+   "heading": 141,
+   "truthM": 1776
+  },
+  {
+   "t": 355,
+   "lat": 59.319697,
+   "lng": 18.071848,
+   "accuracy": 7,
+   "speedMps": 13.2,
+   "heading": 141,
+   "truthM": 1842
+  },
+  {
+   "t": 360,
+   "lat": 59.319468,
+   "lng": 18.072174,
+   "accuracy": 9,
+   "speedMps": 6.1,
+   "heading": 141,
+   "truthM": 1873
+  },
+  {
+   "t": 455,
+   "lat": 59.311757,
+   "lng": 18.075909,
+   "accuracy": 14,
+   "speedMps": 13.3,
+   "heading": 207,
+   "truthM": 2772
+  },
+  {
+   "t": 460,
+   "lat": 59.311159,
+   "lng": 18.075336,
+   "accuracy": 14,
+   "speedMps": 13.2,
+   "heading": 207,
+   "truthM": 2838
+  },
+  {
+   "t": 540,
+   "lat": 59.31449,
+   "lng": 18.073622,
+   "accuracy": 21,
+   "speedMps": 0,
+   "heading": 40,
+   "truthM": 3503,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 550,
+   "lat": 59.314313,
+   "lng": 18.073358,
+   "accuracy": 15,
+   "speedMps": 0,
+   "heading": 40,
+   "truthM": 3503,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 560,
+   "lat": 59.314309,
+   "lng": 18.073363,
+   "accuracy": 17,
+   "speedMps": 0,
+   "heading": 40,
+   "truthM": 3503,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 570,
+   "lat": 59.3142,
+   "lng": 18.073696,
+   "accuracy": 23,
+   "speedMps": 0,
+   "heading": 40,
+   "truthM": 3503,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 580,
+   "lat": 59.314447,
+   "lng": 18.073369,
+   "accuracy": 21,
+   "speedMps": 0,
+   "heading": 40,
+   "truthM": 3503,
+   "defect": "parked_drift"
+  },
+  {
+   "t": 590,
+   "lat": 59.314273,
+   "lng": 18.073187,
+   "accuracy": 21,
+   "speedMps": 0,
+   "heading": 40,
+   "truthM": 3503,
+   "defect": "parked_drift"
+  }
+ ],
+ "batches": [
+  {
+   "phase": "waiting",
+   "sendT": 22,
+   "fixes": [
+    0,
+    1,
+    2
+   ]
+  },
+  {
+   "phase": "waiting",
+   "sendT": 52,
+   "fixes": [
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "phase": "waiting",
+   "sendT": 82,
+   "fixes": [
+    6,
+    7,
+    8
+   ]
+  },
+  {
+   "phase": "waiting",
+   "sendT": 112,
+   "fixes": [
+    9,
+    10,
+    11
+   ]
+  },
+  {
+   "phase": "on_board",
+   "sendT": 152,
+   "fixes": [
+    12,
+    13,
+    14,
+    15,
+    16,
+    17
+   ]
+  },
+  {
+   "phase": "on_board",
+   "sendT": 182,
+   "fixes": [
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+   ]
+  },
+  {
+   "phase": "on_board",
+   "sendT": 207,
+   "fixes": [
+    28,
+    29,
+    30,
+    31,
+    32
+   ]
+  },
+  {
+   "phase": "on_board",
+   "sendT": 282,
+   "fixes": [
+    35,
+    38,
+    34,
+    33,
+    37,
+    36
+   ],
+   "defect": "out_of_order_in_batch"
+  },
+  {
+   "phase": "on_board",
+   "sendT": 312,
+   "fixes": [
+    39,
+    40,
+    41,
+    42,
+    43,
+    44
+   ]
+  },
+  {
+   "phase": "on_board",
+   "sendT": 342,
+   "fixes": [
+    45,
+    46,
+    47,
+    48,
+    49,
+    50
+   ]
+  },
+  {
+   "phase": "on_board",
+   "sendT": 462,
+   "fixes": [
+    55,
+    56
+   ]
+  },
+  {
+   "phase": "on_board",
+   "sendT": 467,
+   "fixes": [
+    51,
+    52,
+    53,
+    54
+   ],
+   "defect": "late_batch_out_of_order"
+  },
+  {
+   "phase": "on_board",
+   "sendT": 562,
+   "fixes": [
+    57,
+    58,
+    59
+   ]
+  },
+  {
+   "phase": "on_board",
+   "sendT": 592,
+   "fixes": [
+    60,
+    61,
+    62
+   ]
+  }
+ ]
+}

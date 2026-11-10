@@ -1,0 +1,206 @@
+{
+  "route": "GET /trips/{tripId} (driver, in_trip)",
+  "status": 200,
+  "recordedAt": "2026-11-10",
+  "server": "staging",
+  "apiVersion": "0.5",
+  "body": {
+    "tripId": "trp_fake0014",
+    "rideId": "trp_fake0014",
+    "status": "approaching_dropoff",
+    "version": 10,
+    "sequence": 20,
+    "kind": "live",
+    "createdAt": "2026-11-10T11:40:52.967Z",
+    "updatedAt": "2026-11-10T11:41:05.423Z",
+    "acceptedAt": "2026-11-10T11:40:53.327Z",
+    "riderId": "rdr_fake0015",
+    "driverId": "drv_fake0016",
+    "vehicleId": "veh_fake0017",
+    "zoneId": "TN-TC",
+    "categoryId": "economy",
+    "pickup": {
+      "lat": 36.8008,
+      "lng": 10.18,
+      "address": "Avenue Habib Bourguiba, Tunis"
+    },
+    "dropoff": {
+      "lat": 36.851,
+      "lng": 10.2272,
+      "address": "Aéroport Tunis-Carthage"
+    },
+    "stops": [],
+    "fare": {
+      "amountMinor": 5350,
+      "currency": "TND"
+    },
+    "fareLines": [
+      {
+        "code": "base",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 800
+        }
+      },
+      {
+        "code": "distance",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 3047
+        }
+      },
+      {
+        "code": "time",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 1012
+        }
+      },
+      {
+        "code": "app_fee",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 486
+        }
+      },
+      {
+        "code": "rounding",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 5
+        }
+      }
+    ],
+    "paymentMethod": "cash",
+    "ratingStatus": "not_requested",
+    "pinRequired": false,
+    "driver": {
+      "rating": 4.83,
+      "vehicle": {
+        "make": "Volvo",
+        "color": "Black",
+        "model": "V60",
+        "plate": "[REDACTED]",
+        "vehicleId": "veh_fake0017",
+        "categoryId": "economy"
+      },
+      "driverId": "drv_fake0016",
+      "photoUrl": "https://example.test/redacted",
+      "firstName": "[REDACTED]"
+    },
+    "rider": {
+      "rating": 4.43,
+      "firstName": "[REDACTED]"
+    },
+    "terms": {
+      "currency": "TND",
+      "freeWaitMin": 5,
+      "waitPerMin": {
+        "currency": "TND",
+        "amountMinor": 350
+      },
+      "noShowAfterMin": 5,
+      "noShowFee": {
+        "currency": "TND",
+        "amountMinor": 1800
+      },
+      "waitingRules": [],
+      "stopFreeWaitMin": 0,
+      "stopWaitPerMin": {
+        "currency": "TND",
+        "amountMinor": 150
+      },
+      "noShowDriverSharePct": 80,
+      "cancelRule": {
+        "max": null,
+        "min": null,
+        "type": "fixed",
+        "value": 3500,
+        "freeMin": 2
+      },
+      "cancelDriverSharePct": 100,
+      "cancelAfterArrivedIsNoShow": true,
+      "maxPickupMoveMeters": 200
+    },
+    "eta": {
+      "at": "2026-11-10T11:41:03.757Z",
+      "source": "osrm",
+      "target": "dropoff",
+      "etaSeconds": 170,
+      "distanceMeters": 1193
+    },
+    "etaSeconds": 170,
+    "waiting": {
+      "rules": [],
+      "alerts": [],
+      "perMin": {
+        "currency": "TND",
+        "amountMinor": 350
+      },
+      "noShowAt": "2026-11-10T11:45:58.086Z",
+      "waitFrom": "2026-11-10T11:40:58.086Z",
+      "arrivedAt": "2026-11-10T11:40:58.086Z",
+      "freeUntil": "2026-11-10T11:45:58.086Z",
+      "noShowFee": {
+        "currency": "TND",
+        "amountMinor": 1800
+      },
+      "freeWaitMin": 5,
+      "chargedSeconds": 0,
+      "noShowAfterMin": 5,
+      "noShowDriverShare": {
+        "currency": "TND",
+        "amountMinor": 1440
+      },
+      "paidMinutes": 0
+    },
+    "quote": {
+      "quoteId": "qte_fake0002",
+      "total": {
+        "amountMinor": 5350,
+        "currency": "TND"
+      },
+      "expiresAt": "2026-11-10T11:45:52.797Z"
+    },
+    "driverEarnings": {
+      "amountMinor": 3887,
+      "currency": "TND"
+    },
+    "commission": {
+      "amountMinor": 1423,
+      "currency": "TND"
+    },
+    "pickupPay": {
+      "amountMinor": 40,
+      "currency": "TND"
+    },
+    "driverTotal": {
+      "amountMinor": 3927,
+      "currency": "TND"
+    },
+    "earningsBreakdown": [
+      {
+        "code": "trip",
+        "amount": {
+          "amountMinor": 3887,
+          "currency": "TND"
+        }
+      },
+      {
+        "code": "pickup_pay",
+        "amount": {
+          "amountMinor": 40,
+          "currency": "TND"
+        }
+      }
+    ],
+    "sosAvailable": true,
+    "driverLocation": {
+      "lat": 36.851,
+      "lng": 10.2272,
+      "accuracy": 5,
+      "moving": false,
+      "measuredAt": "2026-11-10T11:41:05.328Z"
+    }
+  }
+}

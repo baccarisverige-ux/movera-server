@@ -1,0 +1,83 @@
+{
+  "route": "GET /trips/{tripId}/receipt",
+  "status": 200,
+  "recordedAt": "2026-11-10",
+  "server": "staging",
+  "apiVersion": "0.5",
+  "body": {
+    "tripId": "trp_fake0014",
+    "issuedAt": "2026-11-10T11:41:07.505Z",
+    "zoneId": "TN-TC",
+    "country": "TN",
+    "currency": "TND",
+    "categoryId": "economy",
+    "pickup": {
+      "lat": 36.8008,
+      "lng": 10.18,
+      "address": "Avenue Habib Bourguiba, Tunis"
+    },
+    "dropoff": {
+      "lat": 36.851,
+      "lng": 10.2272,
+      "address": "Aéroport Tunis-Carthage"
+    },
+    "stops": [],
+    "paymentMethod": "cash",
+    "fareLines": [
+      {
+        "code": "base",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 800
+        }
+      },
+      {
+        "code": "distance",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 3047
+        }
+      },
+      {
+        "code": "time",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 1012
+        }
+      },
+      {
+        "code": "app_fee",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 486
+        }
+      },
+      {
+        "code": "rounding",
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 5
+        }
+      }
+    ],
+    "total": {
+      "amountMinor": 5350,
+      "currency": "TND"
+    },
+    "walletPaid": {
+      "amountMinor": 0,
+      "currency": "TND"
+    },
+    "cashPaid": {
+      "amountMinor": 5350,
+      "currency": "TND"
+    },
+    "refunds": [],
+    "refunded": {
+      "amountMinor": 0,
+      "currency": "TND"
+    },
+    "endedEarly": false,
+    "distanceMeters": 8707
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "route": "GET /driver/offers",
+  "status": 200,
+  "recordedAt": "2026-11-10",
+  "server": "staging",
+  "apiVersion": "0.5",
+  "body": {
+    "items": [
+      {
+        "offerId": "ofr_fake0013",
+        "tripId": "trp_fake0014",
+        "kind": "exclusive",
+        "status": "open",
+        "version": 1,
+        "expiresAt": "2026-11-10T11:41:08.030Z",
+        "fare": {
+          "amountMinor": 5350,
+          "currency": "TND"
+        },
+        "driverEarnings": {
+          "amountMinor": 3887,
+          "currency": "TND"
+        },
+        "pickupPay": {
+          "amountMinor": 40,
+          "currency": "TND"
+        },
+        "priority": false,
+        "source": "system",
+        "pickup": {
+          "lat": 36.8008,
+          "lng": 10.18,
+          "address": "Avenue Habib Bourguiba, Tunis"
+        },
+        "dropoff": {
+          "lat": 36.851,
+          "lng": 10.2272,
+          "address": "Aéroport Tunis-Carthage"
+        },
+        "stops": [],
+        "categoryId": "economy",
+        "paymentMethod": "cash",
+        "pickupEtaSeconds": 120,
+        "pickupMeters": 800,
+        "tripSeconds": 607,
+        "tripMeters": 8707,
+        "riderRating": 4.43
+      }
+    ],
+    "nextCursor": null
+  }
+}

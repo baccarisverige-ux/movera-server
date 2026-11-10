@@ -1,0 +1,510 @@
+{
+  "route": "GET /rider/config?zoneId=TN-TC",
+  "status": 200,
+  "recordedAt": "2026-11-10",
+  "server": "staging",
+  "apiVersion": "0.5",
+  "body": {
+    "tips": [
+      {
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 1000
+        },
+        "enabled": true
+      },
+      {
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 2000
+        },
+        "enabled": true
+      },
+      {
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 3000
+        },
+        "enabled": true
+      }
+    ],
+    "wallet": {
+      "usedFirst": true
+    },
+    "zoneId": "TN-TC",
+    "booking": {
+      "maxStops": 3,
+      "minAheadMin": 15,
+      "maxAheadDays": 90,
+      "bookingHorizonDays": 90,
+      "freeChangeBeforeMin": 60,
+      "maxPickupMoveMeters": 200,
+      "reservationsOn": true
+    },
+    "catalog": {
+      "categories": [
+        {
+          "id": "economy",
+          "line": {
+            "sv": "Vardagsresa",
+            "fr": "Course du quotidien",
+            "en": "Everyday ride"
+          },
+          "sort": 1,
+          "label": "Movera",
+          "seats": 4
+        },
+        {
+          "id": "comfort",
+          "line": {
+            "sv": "Nyare bilar, mer plats",
+            "fr": "Voitures récentes, plus d’espace",
+            "en": "Newer cars, more room"
+          },
+          "sort": 2,
+          "label": "Comfort",
+          "seats": 4
+        },
+        {
+          "id": "premium",
+          "line": {
+            "sv": "Exklusiva bilar, toppförare",
+            "fr": "Voitures haut de gamme, meilleurs chauffeurs",
+            "en": "High-end cars, top drivers"
+          },
+          "sort": 3,
+          "label": "Premium",
+          "seats": 4
+        },
+        {
+          "id": "xl",
+          "line": {
+            "sv": "Upp till 6 platser",
+            "fr": "Jusqu’à 6 places",
+            "en": "Up to 6 seats"
+          },
+          "sort": 4,
+          "label": "Movera XL",
+          "seats": 6
+        },
+        {
+          "id": "fake0001",
+          "line": {
+            "sv": "Helt eldriven bil",
+            "fr": "Véhicule 100 % électrique",
+            "en": "Fully electric car"
+          },
+          "sort": 5,
+          "label": "Electric",
+          "seats": 4
+        }
+      ]
+    },
+    "country": "TN",
+    "version": 2,
+    "waiting": {
+      "perMin": {
+        "currency": "TND",
+        "amountMinor": 350
+      },
+      "farPickup": {
+        "km": 5,
+        "on": true,
+        "perMin": null,
+        "noShowFee": {
+          "currency": "TND",
+          "amountMinor": 2400
+        },
+        "freeWaitMin": 1,
+        "noShowAfterMin": null
+      },
+      "noShowFee": {
+        "currency": "TND",
+        "amountMinor": 1800
+      },
+      "rideTypes": {
+        "event": {
+          "on": true,
+          "perMin": null,
+          "noShowFee": null,
+          "freeWaitMin": 3,
+          "noShowAfterMin": null
+        },
+        "airport": {
+          "on": true,
+          "perMin": null,
+          "noShowFee": null,
+          "freeWaitMin": 15,
+          "noShowAfterMin": 20
+        },
+        "scheduled": {
+          "on": true,
+          "perMin": null,
+          "noShowFee": null,
+          "freeWaitMin": null,
+          "noShowAfterMin": null
+        }
+      },
+      "byCategory": {
+        "xl": {
+          "perMin": {
+            "currency": "TND",
+            "amountMinor": 350
+          },
+          "noShowFee": {
+            "currency": "TND",
+            "amountMinor": 1800
+          },
+          "freeWaitMin": 3,
+          "noShowAfterMin": 3
+        },
+        "pet": {
+          "perMin": {
+            "currency": "TND",
+            "amountMinor": 350
+          },
+          "noShowFee": {
+            "currency": "TND",
+            "amountMinor": 1800
+          },
+          "freeWaitMin": 5,
+          "noShowAfterMin": 5
+        },
+        "comfort": {
+          "perMin": {
+            "currency": "TND",
+            "amountMinor": 350
+          },
+          "noShowFee": {
+            "currency": "TND",
+            "amountMinor": 1800
+          },
+          "freeWaitMin": 5,
+          "noShowAfterMin": 5
+        },
+        "economy": {
+          "perMin": {
+            "currency": "TND",
+            "amountMinor": 350
+          },
+          "noShowFee": {
+            "currency": "TND",
+            "amountMinor": 1800
+          },
+          "freeWaitMin": 5,
+          "noShowAfterMin": 5
+        },
+        "premium": {
+          "perMin": {
+            "currency": "TND",
+            "amountMinor": 450
+          },
+          "noShowFee": {
+            "currency": "TND",
+            "amountMinor": 1800
+          },
+          "freeWaitMin": 5,
+          "noShowAfterMin": 5
+        },
+        "electric": {
+          "perMin": {
+            "currency": "TND",
+            "amountMinor": 350
+          },
+          "noShowFee": {
+            "currency": "TND",
+            "amountMinor": 1800
+          },
+          "freeWaitMin": 5,
+          "noShowAfterMin": 5
+        },
+        "priority": {
+          "perMin": {
+            "currency": "TND",
+            "amountMinor": 350
+          },
+          "noShowFee": {
+            "currency": "TND",
+            "amountMinor": 1800
+          },
+          "freeWaitMin": 5,
+          "noShowAfterMin": 5
+        },
+        "child_seat": {
+          "perMin": {
+            "currency": "TND",
+            "amountMinor": 350
+          },
+          "noShowFee": {
+            "currency": "TND",
+            "amountMinor": 1800
+          },
+          "freeWaitMin": 5,
+          "noShowAfterMin": 5
+        }
+      },
+      "freeWaitMin": 5,
+      "noShowAfterMin": 5,
+      "stopFreeWaitMin": 0,
+      "cancelAfterArrivedIsNoShow": true
+    },
+    "currency": "TND",
+    "features": {
+      "pin": false,
+      "wallet": true,
+      "shareTrip": true,
+      "scheduledRides": true
+    },
+    "promoCap": null,
+    "timeZone": "Africa/Tunis",
+    "tipRules": {
+      "cashAfterTrip": false,
+      "cashInCarMinutes": 5,
+      "customAmount": false,
+      "customMax": {
+        "currency": "TND",
+        "amountMinor": 5600
+      }
+    },
+    "appUpdate": {
+      "latestVersion": "1.2.0",
+      "minimumVersion": "1.0.0"
+    },
+    "languages": {
+      "default": {
+        "admin": "sv",
+        "rider": "sv",
+        "driver": "sv"
+      },
+      "available": [
+        "en",
+        "fr",
+        "sv"
+      ]
+    },
+    "pickupFee": {
+      "byCategory": {
+        "xl": {
+          "live": null,
+          "reservation": null
+        },
+        "pet": {
+          "live": null,
+          "reservation": null
+        },
+        "comfort": {
+          "live": null,
+          "reservation": null
+        },
+        "economy": {
+          "live": null,
+          "reservation": null
+        },
+        "premium": {
+          "live": null,
+          "reservation": null
+        },
+        "electric": {
+          "live": null,
+          "reservation": null
+        },
+        "priority": {
+          "live": null,
+          "reservation": null
+        },
+        "child_seat": {
+          "live": null,
+          "reservation": null
+        }
+      }
+    },
+    "rideCheck": {
+      "on": true,
+      "offRouteKm": 2,
+      "stopMinutes": 2,
+      "endFarMeters": 500,
+      "noAnswerAlarm": false,
+      "repeatMinutes": 10,
+      "noAnswerSeconds": 120
+    },
+    "cancelFees": {
+      "live": {
+        "xl": {
+          "max": {
+            "currency": "TND",
+            "amountMinor": 4200
+          },
+          "min": {
+            "currency": "TND",
+            "amountMinor": 1400
+          },
+          "type": "percent",
+          "value": 15,
+          "freeMin": 3
+        },
+        "comfort": {
+          "max": null,
+          "min": null,
+          "type": "fixed",
+          "value": 4500,
+          "freeMin": 2
+        },
+        "economy": {
+          "max": null,
+          "min": null,
+          "type": "fixed",
+          "value": 3500,
+          "freeMin": 2
+        },
+        "premium": {
+          "max": {
+            "currency": "TND",
+            "amountMinor": 4200
+          },
+          "min": {
+            "currency": "TND",
+            "amountMinor": 1400
+          },
+          "type": "percent",
+          "value": 15,
+          "freeMin": 3
+        },
+        "electric": {
+          "max": null,
+          "min": null,
+          "type": "fixed",
+          "value": 3500,
+          "freeMin": 2
+        }
+      },
+      "reservation": {
+        "xl": {
+          "max": {
+            "currency": "TND",
+            "amountMinor": 8400
+          },
+          "min": {
+            "currency": "TND",
+            "amountMinor": 2250
+          },
+          "type": "percent",
+          "value": 25,
+          "freeMin": 120
+        },
+        "comfort": {
+          "max": null,
+          "min": null,
+          "type": "fixed",
+          "value": 6000,
+          "freeMin": 60
+        },
+        "economy": {
+          "max": null,
+          "min": null,
+          "type": "fixed",
+          "value": 5000,
+          "freeMin": 60
+        },
+        "premium": {
+          "max": {
+            "currency": "TND",
+            "amountMinor": 8400
+          },
+          "min": {
+            "currency": "TND",
+            "amountMinor": 2250
+          },
+          "type": "percent",
+          "value": 25,
+          "freeMin": 120
+        },
+        "electric": {
+          "max": null,
+          "min": null,
+          "type": "fixed",
+          "value": 5000,
+          "freeMin": 60
+        }
+      }
+    },
+    "raisePrice": {
+      "maxFactor": 2
+    },
+    "raiseSteps": [
+      {
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 2000
+        },
+        "enabled": true
+      },
+      {
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 4000
+        },
+        "enabled": true
+      },
+      {
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 6000
+        },
+        "enabled": true
+      },
+      {
+        "amount": {
+          "currency": "TND",
+          "amountMinor": 8000
+        },
+        "enabled": true
+      }
+    ],
+    "publishedAt": "2026-11-10T10:18:58.887Z",
+    "routeChange": {
+      "on": true,
+      "beforePickup": true,
+      "answerSeconds": 60,
+      "driverCanRefuse": true,
+      "fixedPriceTrips": "block"
+    },
+    "cancelReasons": [
+      {
+        "code": "pickup_incorrect",
+        "title": "Pickup point is incorrect"
+      },
+      {
+        "code": "plans_changed",
+        "title": "Plans changed"
+      },
+      {
+        "code": "something_else",
+        "title": "Something else"
+      }
+    ],
+    "paymentMethods": [
+      "cash",
+      "card",
+      "apple_pay"
+    ],
+    "usesStandard": true,
+    "paymentOptions": [
+      {
+        "method": "cash",
+        "status": "available"
+      },
+      {
+        "method": "card",
+        "status": "coming_soon"
+      },
+      {
+        "method": "apple_pay",
+        "status": "coming_soon"
+      }
+    ],
+    "dontMatchAgain": {
+      "on": true,
+      "atStars": 1
+    }
+  }
+}
