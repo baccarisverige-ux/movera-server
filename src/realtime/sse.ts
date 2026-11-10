@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { streamClosed, streamOpened } from "../telemetry/load.js";
 
 /** Server-sent events (contract §4): `id:` is the sequence, `data:` one JSON event, a comment every 15 s. */
 
@@ -41,11 +42,13 @@ export function openEventStream(request: FastifyRequest, reply: FastifyReply, he
     "x-accel-buffering": "no",
   });
   raw.write(": stream open\n\n");
+  streamOpened();
   let done = false;
   const closers: Array<() => void> = [];
   const finish = () => {
     if (done) return;
     done = true;
+    streamClosed();
     open.delete(finish);
     clearInterval(beat);
     for (const fn of closers) fn();

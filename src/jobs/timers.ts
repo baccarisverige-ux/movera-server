@@ -1,6 +1,7 @@
 import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { isDatabaseConnectionError } from "../db/ready.js";
+import { laneName, recordTimerLag, recordTimerParked } from "../telemetry/load.js";
 
 /**
  * Durable timers: offer expiry, the next dispatch step, search expiry, no-show windows, … A timer is written in
@@ -159,6 +160,7 @@ export class TimerWorker {
           return true;
         }
         taken = prepared === undefined ? timer : { ...timer, prepared };
+        recordTimerLag(laneName(lane), now.getTime() - row.due_at.getTime());
         await trx.deleteFrom("timers").where("timer_id", "=", row.timer_id).execute();
         if (handler === undefined) throw new Error(`No handler for timer kind ${row.kind}`);
         await handler(trx, taken);
@@ -276,6 +278,7 @@ export class TimerWorker {
       .where("attempts", "=", timer.attempts)
       .execute();
     const data = { kind: timer.kind, refId: timer.refId, attempts, err: message };
+    if (parked) recordTimerParked(timer.kind);
     if (parked) this.options.logger.error(data, "timer parked after repeated failures");
     else this.options.logger.warn(data, "timer failed; will retry");
   }

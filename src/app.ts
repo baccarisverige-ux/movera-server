@@ -34,6 +34,7 @@ import { revealRoutes } from "./admin/revealRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
 import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
 import { recordServerError } from "./telemetry/errors.js";
+import { loadSnapshot, registerServerTiming } from "./telemetry/load.js";
 import { telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
@@ -74,6 +75,15 @@ async function databaseAnswers(db: Db, ms: number): Promise<boolean> {
     clearTimeout(timer);
   }
 }
+/** Step 63 (T6b): one read-only aggregate, asked only by GET /internal/load. */
+async function timerBacklog(db: Db): Promise<Record<string, { parked: number; overdue: number; overdueOldestMs: number }>> {
+  const { rows } = await sql<{ kind: string; parked: string; overdue: string; oldest_ms: string | null }>`
+    SELECT kind, count(*) FILTER (WHERE due_at = 'infinity') AS parked,
+           count(*) FILTER (WHERE due_at <= now()) AS overdue,
+           (extract(epoch FROM now() - min(due_at) FILTER (WHERE due_at <= now())) * 1000)::bigint AS oldest_ms
+    FROM timers WHERE due_at <= now() OR due_at = 'infinity' GROUP BY kind`.execute(db);
+  return Object.fromEntries(rows.map((r) => [r.kind, { parked: Number(r.parked), overdue: Number(r.overdue), overdueOldestMs: Number(r.oldest_ms ?? 0) }]));
+}
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
 export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push }: BuildOptions): Promise<FastifyInstance> {
@@ -99,6 +109,9 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // Trust exactly TRUST_PROXY_HOPS proxies: the address is the one the nearest trusted proxy saw.
     trustProxy: env.TRUST_PROXY_HOPS > 0 ? (_address: string, hop: number) => hop < env.TRUST_PROXY_HOPS : false,
   });
+
+  // Step 63 (T6): Server-Timing on every answer; first, so `total` covers every other hook.
+  registerServerTiming(app);
 
   // An empty body with Content-Type: application/json (the apps' sign-out) is "no body", not bad JSON.
   const json = app.getDefaultJsonParser("error", "error");
@@ -206,6 +219,17 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     }
     return { status: "ready", database: "ok" };
   });
+
+  // Step 63 (T6b): this copy's load numbers for the stress test; only with LOAD_COUNTERS (never in production).
+  if (env.LOAD_COUNTERS) {
+    app.get("/internal/load", async () => ({
+      ...loadSnapshot(),
+      // The whole fleet's timers (shared table), by kind: parked (due 'infinity') and overdue (due, not yet taken).
+      ...(db !== undefined ? { timersInDatabase: await timerBacklog(db) } : {}),
+      ...(db !== undefined ? { dbPool: poolStats() } : {}),
+      ...(hub !== undefined ? { listenSubscribers: hub.subscriberCount() } : {}),
+    }));
+  }
 
   // Push (contract v0.18.3 R7): GET /push/config needs no token and no database.
   const pushServices = push ?? pushServicesFrom(env, { ...(clock ? { clock } : {}), warn: (message) => app.log.warn(message) });
