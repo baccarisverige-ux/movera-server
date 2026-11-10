@@ -2,42 +2,67 @@
 // Job 1 "Fast dispatch" load test — PRIVATE local copy only, never a live server.
 //
 //   LOADTEST_ADMIN_URL="postgres://movera:movera@localhost/movera?host=/var/tmp/movera-pg" \
-//   node tools/loadtest/dispatch-load.mjs --dist dist --db movera_load_job1 --steps 50,75,100,200,400 --seconds 90 \
-//        --spikes 800,1200 --spike-seconds 45 --out /tmp/load-result.json
+//   node tools/loadtest/dispatch-load.mjs --dist dist --db movera_loadtest_job1 --drivers 300 --riders 4000 \
+//        --steps 50,75,100,200,400 --seconds 90 --spikes 800,1200 --spike-seconds 45 --out /tmp/load-result.json \
+//        --i-know-this-drops movera_loadtest_job1
 //
-// It makes a NEW database (refuses a name not starting with movera_load_), migrates it with the server build, writes the
+// Guards (global plan step 59, tools/loadtest/guards.mjs) run before anything else and exit 2 with "LOADTEST GUARD: …":
+//   (a) the admin url must point at localhost / 127.0.0.1 / *.test (or exactly MOVERA_LOADTEST_ALLOW_HOST) and --db must be
+//       movera_loadtest_<name>; (b) the database is dropped (before and after the run) only with
+//       --i-know-this-drops <that exact name>, otherwise an existing database is refused and the new one is kept;
+//   (c) the started server gets an allow-list of variables, never a copy of this environment, and all output is redacted;
+//   (d) --drivers, --riders and --seconds are required and capped (HARD_MAX in guards.mjs) unless --unsafe-max.
+//
+// It makes a NEW database, migrates it with the server build, writes the
 // contract sample settings for Z001 (Stockholm), seeds drivers (online, inside Z001) and riders with sessions straight
 // in the database, starts that build on 127.0.0.1 and drives traffic at each step's rate: rider quotes + bookings
 // (≈ 0.8 trips/min per req/s, as the 2026-11-04 stress test), driver GPS, offer lists, accept / decline, rider map,
 // trip reads, admin live map. A spike step is followed by a "rest" step at 100 req/s (recovery while load goes on).
 // Measured per step: request → first offer (offers.sent_at − trips.created_at, from the database), HTTP p95 and status
 // counts, overdue timers (sampled), offer-feed (SSE) delay for 20 drivers. The test passes when the first-offer p95 is
-// under --target-ms (5000) at every non-spike step up to 200 req/s. The database is dropped at the end (--keep keeps it).
+// under --target-ms (5000) at every non-spike step up to 200 req/s. The database is dropped at the end only with
+// --i-know-this-drops (and not with --keep).
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import pg from "pg";
+import { checkLimits, checkTarget, dropAllowed, LoadtestGuardError, redact, serverEnv } from "./guards.mjs";
+
+// Every refused run prints one line and exits 2 before any database or server is touched.
+process.on("uncaughtException", (e) => {
+  if (e instanceof LoadtestGuardError) {
+    console.error(redact(e.message));
+    process.exit(2);
+  }
+  console.error(redact(e?.stack ?? String(e)));
+  process.exit(1);
+});
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : fallback;
 };
 const DIST = path.resolve(arg("dist", "dist"));
-const DB = arg("db", "movera_load_job1");
-const STEPS = arg("steps", "50,100,200").split(",").map(Number);
-const SPIKES = (arg("spikes", "") || "").split(",").filter(Boolean).map(Number);
-const SECONDS = Number(arg("seconds", "90"));
-const SPIKE_SECONDS = Number(arg("spike-seconds", "45"));
-const DRIVERS = Number(arg("drivers", "300"));
-const RIDERS = Number(arg("riders", "4000"));
+const DB = arg("db", "movera_loadtest_job1");
 const PORT = Number(arg("port", "18181"));
 const TARGET_MS = Number(arg("target-ms", "5000"));
 const OUT = arg("out", "");
 const KEEP = process.argv.includes("--keep");
 const ADMIN_URL = process.env.LOADTEST_ADMIN_URL;
-if (!ADMIN_URL) throw new Error("set LOADTEST_ADMIN_URL (a LOCAL postgres admin url)");
-if (!/^movera_load_[a-z0-9_]+$/.test(DB)) throw new Error("--db must start with movera_load_ (a private copy)");
+checkTarget(ADMIN_URL, DB, process.env); // guard (a)
+const MAY_DROP = dropAllowed(process.argv, DB); // guard (b)
+const LIMITS = checkLimits({
+  // guard (d)
+  drivers: arg("drivers"),
+  riders: arg("riders"),
+  seconds: arg("seconds"),
+  spikeSeconds: arg("spike-seconds"),
+  steps: arg("steps", "50,100,200").split(",").filter(Boolean),
+  spikes: (arg("spikes", "") || "").split(",").filter(Boolean),
+  unsafeMax: process.argv.includes("--unsafe-max"),
+});
+const { STEPS, SPIKES, SECONDS, SPIKE_SECONDS, DRIVERS, RIDERS } = { STEPS: LIMITS.steps, SPIKES: LIMITS.spikes, SECONDS: LIMITS.seconds, SPIKE_SECONDS: LIMITS.spikeSeconds, DRIVERS: LIMITS.drivers, RIDERS: LIMITS.riders };
 const urlFor = (db) => {
   const u = new URL(ADMIN_URL);
   u.pathname = `/${db}`;
@@ -50,7 +75,11 @@ const imp = (p) => import(path.join(DIST, p));
 /* ------------------------------------------------------------ database + seed */
 const admin = new pg.Client({ connectionString: ADMIN_URL });
 await admin.connect();
-await admin.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+if (MAY_DROP) await admin.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+else if ((await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [DB])).rowCount) {
+  await admin.end();
+  throw new LoadtestGuardError(`database "${DB}" exists; pass --i-know-this-drops ${DB} to drop and recreate it`);
+}
 await admin.query(`CREATE DATABASE ${DB}`);
 const { createPool, createDb } = await imp("db/db.js");
 const { migrate } = await imp("db/migrate.js");
@@ -95,7 +124,8 @@ console.log(`seeded ${drivers.length} drivers, ${riders.length} riders`);
 
 /* ------------------------------------------------------------ server */
 const server = spawn(process.execPath, [path.join(DIST, "main.js")], {
-  env: { ...process.env, DATABASE_URL: urlFor(DB), PORT: String(PORT), HOST: "127.0.0.1", MOVERA_ENV: "development", JWT_SECRET: JWT, MIGRATE_ON_START: "false", LOG_LEVEL: "warn", OSRM_URL: "", FIREBASE_SERVICE_ACCOUNT: "" },
+  // guard (c): allow-listed inherited variables only, never a copy of this process's environment
+  env: serverEnv(process.env, { DATABASE_URL: urlFor(DB), PORT: String(PORT), HOST: "127.0.0.1", MOVERA_ENV: "development", JWT_SECRET: JWT, MIGRATE_ON_START: "false", LOG_LEVEL: "warn", OSRM_URL: "", FIREBASE_SERVICE_ACCOUNT: "" }),
   stdio: ["ignore", "ignore", "pipe"],
 });
 let serverErr = "";
@@ -283,8 +313,9 @@ console.log(JSON.stringify(result, null, 2));
 if (OUT) fs.writeFileSync(OUT, JSON.stringify(result, null, 2));
 server.kill("SIGTERM");
 await sleep(1000);
-if (serverErr && process.env.LOADTEST_SHOW_STDERR) console.error(serverErr);
+if (serverErr && process.env.LOADTEST_SHOW_STDERR) console.error(redact(serverErr));
 await db.destroy();
-if (!KEEP) await admin.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+if (MAY_DROP && !KEEP) await admin.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+else console.log(`database ${DB} kept (${KEEP ? "--keep" : `drop it with --i-know-this-drops ${DB} on the next run`})`);
 await admin.end();
 process.exit(result.pass ? 0 : 1);
