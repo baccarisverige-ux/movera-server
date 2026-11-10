@@ -148,6 +148,12 @@ export class PushDispatcher {
       const offer = await this.db.selectFrom("offers").select(["status", "expires_at"]).where("offer_id", "=", offerId).executeTakeFirst();
       if (offer === undefined || offer.status !== "open" || offer.expires_at.getTime() <= now.getTime()) return;
     }
+    // v0.18.56 §78 (inAppCalls.push): an incoming-call push goes only while that call still rings.
+    const callId = row.kind === "call_ringing" ? row.data?.["callId"] : undefined;
+    if (typeof callId === "string") {
+      const ringing = await this.db.selectFrom("trip_calls").select("state").where("call_id", "=", callId).executeTakeFirst();
+      if (ringing?.state !== "ringing") return;
+    }
     const devices = await this.db.selectFrom("push_devices").select(["token", "platform"]).where("actor", "=", row.audience).where("subject_id", "=", row.subject_id).where("provider", "=", "fcm").execute();
     // v0.18.6 (contract.json#driverOffers.push.data): a push-only row (the new-offer push) carries its own data too,
     // as strings, and the sound rule; bell notices keep the v0.18.3 data.

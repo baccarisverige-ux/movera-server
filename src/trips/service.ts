@@ -1,3 +1,4 @@
+import { writeAutoMessage } from "./messages.js";
 import { checkWindow, planBookedRide } from "../reservations/service.js";
 import { appendTripEvent } from "../db/tripLog.js";
 import { checkPaymentMethod } from "./finish.js";
@@ -365,6 +366,8 @@ export async function riderOnTheWay(trx: Trx, riderId: string, tripId: string, n
     throw new ApiError("invalid_transition", "You can tell the driver once a driver is on the way.", { projection: tripProjection(trip, "rider") });
   }
   await appendTripEvent(trx, { tripId, kind: "rider_on_the_way", version: trip.version, occurredAt: now, projection: tripProjection(trip, "admin", { sequence: Number(trip.sequence) + 1 }) });
+  // v0.18.56 §78 (chat.onTheWay, owner g9 Q4): also one chat message in the driver's language, once per trip.
+  await writeAutoMessage(trx, trip, "on_my_way", now);
   return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
 }
 

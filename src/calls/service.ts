@@ -7,6 +7,7 @@ import { newId } from "../ids.js";
 import { cancelTimer, scheduleTimer, type TimerHandler } from "../jobs/timers.js";
 import { DRIVER_ASSIGNED, type TripStatus } from "../rules/transitions.js";
 import { tripProjection } from "../trips/projection.js";
+import { pushIncomingCall } from "./push.js";
 import { callSettingsFor, iceServers, type CallSettings } from "./settings.js";
 
 /**
@@ -64,6 +65,7 @@ export async function startInAppCall(trx: Trx, trip: TripRow, who: CallWho, sett
   }).returningAll().executeTakeFirstOrThrow();
   await appendTripEvent(trx, { tripId: trip.trip_id, kind: "call_ringing", version: trip.version, occurredAt: now, call: callView(row) });
   await scheduleTimer(trx, { kind: CALL_RING_TIMEOUT, refId: callId, dueAt: new Date(now.getTime() + settings.ringSeconds * 1000) });
+  await pushIncomingCall(trx, trip, callId, row.callee, settings.ringSeconds, now);
   const expiresAt = new Date(now.getTime() + settings.maxCallMin * 60_000);
   const ttl = Math.round((expiresAt.getTime() - now.getTime()) / 1000) + settings.ringSeconds;
   return {

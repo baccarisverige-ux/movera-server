@@ -33,6 +33,8 @@ const BOOK_LATER_KINDS = (contract as unknown as { bookLater: { push: { kinds: s
 const RIDER_ALWAYS_KINDS: ReadonlySet<string> = new Set([
   "ride_check",
   SUPPORT_ANSWER_KIND,
+  // v0.18.56 §78 (inAppCalls.push.when, owner A2): an incoming call always rings, whatever the ride-updates switch.
+  "call_ringing",
   ...["reservation_no_driver", "reservation_no_driver_found"].filter((k) => BOOK_LATER_KINDS.includes(k)),
 ]);
 

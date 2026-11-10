@@ -1,3 +1,4 @@
+import { writeAutoMessage } from "./messages.js";
 import { sql } from "kysely";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -78,7 +79,12 @@ const tripId = (request: FastifyRequest) => parseBody(z.object({ tripId: ID }), 
       }
       // Checker MED 11: a driver app before 0.18.14 (no measuredAt on its positions) keeps the old arrive check.
       const legacy = !contractAtLeast(request.headers["x-contract-version"], "0.18.14");
-      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await driverStep(trx, who.subjectId, id, command, expected, now(), body.location, { legacyPosition: legacy }), "driver") }))).body;
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => {
+        const trip = await driverStep(trx, who.subjectId, id, command, expected, now(), body.location, { legacyPosition: legacy });
+        // v0.18.56 §78 (chat.autoArrived, owner g9 Q3 + Q85): tap and auto-arrive both call this route; once per trip.
+        if (command === "arrive" && trip.status === "arrived") await writeAutoMessage(trx, trip, "arrived", now());
+        return { status: 200, body: tripProjection(trip, "driver") };
+      })).body;
     });
   }
 

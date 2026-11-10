@@ -355,8 +355,10 @@ describe("Q6 / Q5: the amounts the apps show while waiting", () => {
     expect(view.waiting).toMatchObject({ chargedSeconds: 0, noShowFee: { amountMinor: 6500, currency: "SEK" }, noShowDriverShare: { amountMinor: 5200, currency: "SEK" } });
     expect((await riderView(tripId)).waiting).toMatchObject({ noShowFee: { amountMinor: 6500, currency: "SEK" } });
     expect((await riderView(tripId)).waiting).not.toHaveProperty("noShowDriverShare");
-    expect((await events(tripId)).at(-1)!["projection"]).not.toHaveProperty("rider");
-    expect(((await events(tripId)).at(-1)!["projection"] as Doc)["waiting"]).not.toHaveProperty("noShowDriverShare");
+    // v0.18.56 §78 (chat.autoArrived): arrive is followed by the automatic chat message; read the arrive event.
+    const arriveEvent = (await events(tripId)).filter((e) => e["projection"] !== undefined).at(-1)!;
+    expect(arriveEvent["projection"]).not.toHaveProperty("rider");
+    expect((arriveEvent["projection"] as Doc)["waiting"]).not.toHaveProperty("noShowDriverShare");
     await advance(5 * 60 + 1);
     const noShow = await call(app, "POST", `/trips/${tripId}/no-show`, drivers.A.headers, { expectedVersion: v });
     expect(noShow.json().cancellation).toMatchObject({ fee: { amountMinor: 6500, currency: "SEK" }, feeKind: "no_show", driverShare: { amountMinor: 5200, currency: "SEK" } });

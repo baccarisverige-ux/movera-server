@@ -28,6 +28,9 @@ export const SHARED_ROWS: Record<string, Row> = {
   "POST /notifications/:notificationId/read": { scope: "notification" },
   "GET /trips/:tripId/messages": { scope: "trip", admin: "support.reply" },
   "POST /trips/:tripId/messages": { scope: "trip", admin: "support.reply" },
+  // v0.18.56 §78: the trip's rider and driver only (no admin).
+  "GET /trips/:tripId/messages/options": { scope: "trip" },
+  "POST /trips/:tripId/messages/translate": { scope: "trip" },
   "POST /trips/:tripId/call": { scope: "trip" },
   "GET /support/tickets": { scope: "self" },
   "POST /support/tickets": { scope: "self" },

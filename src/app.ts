@@ -22,6 +22,8 @@ import { EstimateRouter, OsrmRouter, type Router } from "./maps/routing.js";
 import { quoteRoutes } from "./quotes/routes.js";
 import { mapsRoutes } from "./maps/routes.js";
 import { tripRoutes } from "./trips/routes.js";
+import { chatRoutes } from "./chat/routes.js";
+import type { Translator } from "./chat/translate.js";
 import { callRoutes } from "./calls/routes.js";
 import { rideRoutes } from "./trips/rideRoutes.js";
 import { supportedPaymentMethods } from "./trips/finish.js";
@@ -53,7 +55,7 @@ export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
@@ -86,7 +88,7 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
 }
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger
       ? {
@@ -266,6 +268,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
     // v0.18.38 §62: in-app call steps (answer, end, signal) and the admin call log.
     await callRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    // v0.18.56 §78 (G9 part 2): chat options, translate (503 coming_soon without a provider), admin chats + Message.
+    await chatRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}), ...(translator ? { translator } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
     await driverRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });

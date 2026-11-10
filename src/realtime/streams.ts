@@ -77,7 +77,32 @@ export async function streamTrip(
     if (payload === null || payload["tripId"] === tripId) void pump();
   });
   stream.onClose(unsubscribe);
+  if (viewer !== "admin") markPresence(request, deps, stream, tripId, who);
   await pump();
+}
+
+/** A stream not refreshed for this long belongs to a copy that died (inAppCalls.push: "no open trip stream"). */
+export const PRESENCE_STALE_MS = 90_000;
+const PRESENCE_EVERY_MS = 30_000;
+
+/**
+ * v0.18.56 §78 (inAppCalls.push, Q79): the rider's / driver's open trip stream is written to trip_stream_presence
+ * (Rule 33: any copy can see it), refreshed every 30 s and removed on close, so a call push goes only to a callee
+ * whose app has no open stream for the trip.
+ */
+function markPresence(request: FastifyRequest, deps: { db: Db; clock?: () => Date }, stream: ReturnType<typeof openEventStream>, tripId: string, who: Who): void {
+  const streamId = newId("sse", Date.now());
+  const at = () => deps.clock?.() ?? new Date();
+  const warn = (error: unknown) => request.log.warn({ err: error, tripId }, "trip stream presence write failed");
+  void deps.db.insertInto("trip_stream_presence").values({ stream_id: streamId, trip_id: tripId, actor: who.actor, subject_id: who.subjectId, seen_at: at() }).execute().catch(warn);
+  const beat = setInterval(() => {
+    void deps.db.updateTable("trip_stream_presence").set({ seen_at: at() }).where("stream_id", "=", streamId).execute().catch(warn);
+  }, PRESENCE_EVERY_MS);
+  beat.unref();
+  stream.onClose(() => {
+    clearInterval(beat);
+    void deps.db.deleteFrom("trip_stream_presence").where("stream_id", "=", streamId).execute().catch(warn);
+  });
 }
 
 export async function streamConfig(

@@ -163,7 +163,19 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
+  /**
+   * v0.18.56 §78 (contract.json#inAppCalls.turnEnv, G9-2.4): STUN / TURN servers of in-app calls, names only here
+   * (values on the hosting service, never in git). Comma lists of stun: / turn: / turns: URLs; MOVERA_TURN_URLS and
+   * MOVERA_TURN_SECRET go together. src/calls/settings.ts reads them.
+   */
+  MOVERA_STUN_URLS: z.string().optional().pipe(z.string().regex(/^\s*stuns?:[^,\s]+(\s*,\s*stuns?:[^,\s]+)*\s*$/, "a comma list of stun: URLs").optional()),
+  MOVERA_TURN_URLS: z.string().optional().pipe(z.string().regex(/^\s*turns?:[^,\s]+(\s*,\s*turns?:[^,\s]+)*\s*$/, "a comma list of turn: / turns: URLs").optional()),
+  MOVERA_TURN_SECRET: z.string().min(16, "at least 16 characters").optional(),
 }).superRefine((env, ctx) => {
+  if ((env.MOVERA_TURN_URLS === undefined) !== (env.MOVERA_TURN_SECRET === undefined)) {
+    const missing = env.MOVERA_TURN_URLS === undefined ? "MOVERA_TURN_URLS" : "MOVERA_TURN_SECRET";
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [missing], message: "MOVERA_TURN_URLS and MOVERA_TURN_SECRET are set together" });
+  }
   if (env.MOVERA_ENV !== "development" && env.DATABASE_URL === undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: `required when MOVERA_ENV is ${env.MOVERA_ENV}` });
   }
@@ -214,4 +226,16 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new Error(`Invalid environment:\n${lines.join("\n")}`);
   }
   return parsed.data;
+}
+
+/**
+ * v0.18.56 §78 (inAppCalls.turnEnv, G9-2.4): start-up warnings that do not stop the server. Without TURN, in-app
+ * calls work only on open networks (owner to-do: set MOVERA_TURN_URLS + MOVERA_TURN_SECRET on the hosting service).
+ */
+export function startupWarnings(env: Env): string[] {
+  const out: string[] = [];
+  if (env.MOVERA_ENV !== "development" && env.MOVERA_TURN_URLS === undefined) {
+    out.push("MOVERA_TURN_URLS and MOVERA_TURN_SECRET are not set: in-app calls work only on open networks (no TURN relay).");
+  }
+  return out;
 }
