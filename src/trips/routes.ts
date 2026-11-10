@@ -84,7 +84,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     app.get(`${API_PREFIX}/${base}/:${param}`, async (request) => {
       const who = await authenticate(request, guard, base === "rides" ? ["rider"] : ["rider", "driver", "admin"]);
       const id = parseBody(z.object({ [param]: ID }), request.params)[param] as string;
-      return getTrip(deps.db, id, { actor: who.actor as "rider" | "driver" | "admin", subjectId: who.subjectId }, now());
+      return getTrip(deps.db, id, chatWho(who), now());
     });
 
     app.post(`${API_PREFIX}/${base}/:${param}/cancel`, async (request) => {
@@ -167,7 +167,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const lastEventId = request.headers["last-event-id"];
     const after = query.after ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : 0);
     const viewer = who.actor as "rider" | "driver" | "admin";
-    const seen = await getTrip(deps.db, tripId, { actor: viewer, subjectId: who.subjectId });
+    const seen = await getTrip(deps.db, tripId, chatWho(who));
     // v0.18.5 (G9, chat.appStorage.afterTrip): after the trip the apps get no chat text.
     const hideMessage = viewer !== "admin" && TERMINAL.has(seen["status"] as TripStatus);
     if (wantsEventStream(request)) {

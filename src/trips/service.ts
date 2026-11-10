@@ -25,6 +25,7 @@ import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./command
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { raiseMaxFactor } from "../config/raiseLimit.js";
 import { tripProjection, type Viewer } from "./projection.js";
+import { assertAdminTripScope, type MessageWho } from "./messages.js";
 
 /** Trip requests, reads and the rider's cancel (contract §3, §7). */
 
@@ -181,8 +182,10 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   return trip;
 }
 
-export async function getTrip(ex: Executor, tripId: string, who: { actor: "rider" | "driver" | "admin"; subjectId: string }, now: Date = new Date()): Promise<Record<string, unknown>> {
+export async function getTrip(ex: Executor, tripId: string, who: MessageWho, now: Date = new Date()): Promise<Record<string, unknown>> {
   const trip = await readOwnTrip(ex, tripId, who);
+  // Step 25 (Q34): an admin reads a trip (and its live events) only with trips.read and the trip's zone.
+  assertAdminTripScope(who, trip, "trips.read");
   return withDriverPosition(ex, trip, tripProjection(trip, who.actor, { now }), now);
 }
 

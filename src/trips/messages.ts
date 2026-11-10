@@ -41,8 +41,17 @@ export function chatOpen(trip: Pick<TripRow, "driver_id" | "status">, actor: Mes
 
 /** An admin needs support.reply (to read too) and the trip's zone in their zones; a Super admin ("*") has all. */
 export function assertSupportScope(who: MessageWho, trip: Pick<TripRow, "zone_id">): void {
+  assertAdminTripScope(who, trip, "support.reply");
+}
+
+/**
+ * The admin side of a trip route: the permission and the trip's zone in the admin's zones ("*" has all). Riders and
+ * drivers pass (their own-trip rule is checked by the read). Global plan step 25 (Q34): trip read and events use it
+ * with trips.read, with the same answers as the trip chat.
+ */
+export function assertAdminTripScope(who: MessageWho, trip: Pick<TripRow, "zone_id">, permission: string): void {
   if (who.actor !== "admin") return;
-  if (!(who.perms ?? []).includes("support.reply")) throw new ApiError("forbidden", "You do not have permission to do that.", { reason: "missing_permission" });
+  if (!(who.perms ?? []).includes(permission)) throw new ApiError("forbidden", "You do not have permission to do that.", { reason: "missing_permission" });
   const zones = who.zones ?? [];
   if (!zones.includes("*") && (trip.zone_id === null || !zones.includes(trip.zone_id))) throw new ApiError("forbidden", "This trip is outside your zones.", { reason: "zone_out_of_scope" });
 }
