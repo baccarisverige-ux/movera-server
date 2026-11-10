@@ -1,0 +1,492 @@
+{
+  "route": "POST /quotes",
+  "status": 201,
+  "recordedAt": "2026-11-10",
+  "server": "staging",
+  "apiVersion": "0.5",
+  "body": {
+    "quotes": [
+      {
+        "quoteId": "qte_fake0002",
+        "categoryId": "economy",
+        "total": {
+          "amountMinor": 5350,
+          "currency": "TND"
+        },
+        "fareLines": [
+          {
+            "code": "base",
+            "amount": {
+              "amountMinor": 800,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "distance",
+            "amount": {
+              "amountMinor": 3047,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "time",
+            "amount": {
+              "amountMinor": 1012,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "app_fee",
+            "amount": {
+              "amountMinor": 486,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "rounding",
+            "amount": {
+              "amountMinor": 5,
+              "currency": "TND"
+            }
+          }
+        ],
+        "expiresAt": "2026-11-10T11:45:52.797Z",
+        "pickup": {
+          "address": "Avenue Habib Bourguiba, Tunis",
+          "lat": 36.8008,
+          "lng": 10.18
+        },
+        "dropoff": {
+          "address": "Aéroport Tunis-Carthage",
+          "lat": 36.851,
+          "lng": 10.2272
+        },
+        "stops": [],
+        "surgeMultiplier": 1,
+        "pickupAt": null
+      },
+      {
+        "quoteId": "qte_fake0003",
+        "categoryId": "comfort",
+        "total": {
+          "amountMinor": 6600,
+          "currency": "TND"
+        },
+        "fareLines": [
+          {
+            "code": "base",
+            "amount": {
+              "amountMinor": 1000,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "distance",
+            "amount": {
+              "amountMinor": 3483,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "time",
+            "amount": {
+              "amountMinor": 1518,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "app_fee",
+            "amount": {
+              "amountMinor": 600,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "rounding",
+            "amount": {
+              "amountMinor": -1,
+              "currency": "TND"
+            }
+          }
+        ],
+        "expiresAt": "2026-11-10T11:45:52.797Z",
+        "pickup": {
+          "address": "Avenue Habib Bourguiba, Tunis",
+          "lat": 36.8008,
+          "lng": 10.18
+        },
+        "dropoff": {
+          "address": "Aéroport Tunis-Carthage",
+          "lat": 36.851,
+          "lng": 10.2272
+        },
+        "stops": [],
+        "surgeMultiplier": 1,
+        "pickupAt": null
+      },
+      {
+        "quoteId": "qte_fake0004",
+        "categoryId": "premium",
+        "total": {
+          "amountMinor": 9750,
+          "currency": "TND"
+        },
+        "fareLines": [
+          {
+            "code": "base",
+            "amount": {
+              "amountMinor": 1450,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "distance",
+            "amount": {
+              "amountMinor": 5224,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "time",
+            "amount": {
+              "amountMinor": 2023,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "app_fee",
+            "amount": {
+              "amountMinor": 1044,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "rounding",
+            "amount": {
+              "amountMinor": 9,
+              "currency": "TND"
+            }
+          }
+        ],
+        "expiresAt": "2026-11-10T11:45:52.797Z",
+        "pickup": {
+          "address": "Avenue Habib Bourguiba, Tunis",
+          "lat": 36.8008,
+          "lng": 10.18
+        },
+        "dropoff": {
+          "address": "Aéroport Tunis-Carthage",
+          "lat": 36.851,
+          "lng": 10.2272
+        },
+        "stops": [],
+        "surgeMultiplier": 1,
+        "pickupAt": null
+      },
+      {
+        "quoteId": "qte_fake0005",
+        "categoryId": "fake0006",
+        "total": {
+          "amountMinor": 7200,
+          "currency": "TND"
+        },
+        "fareLines": [
+          {
+            "code": "base",
+            "amount": {
+              "amountMinor": 1100,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "distance",
+            "amount": {
+              "amountMinor": 3918,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "time",
+            "amount": {
+              "amountMinor": 1518,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "app_fee",
+            "amount": {
+              "amountMinor": 654,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "rounding",
+            "amount": {
+              "amountMinor": 10,
+              "currency": "TND"
+            }
+          }
+        ],
+        "expiresAt": "2026-11-10T11:45:52.797Z",
+        "pickup": {
+          "address": "Avenue Habib Bourguiba, Tunis",
+          "lat": 36.8008,
+          "lng": 10.18
+        },
+        "dropoff": {
+          "address": "Aéroport Tunis-Carthage",
+          "lat": 36.851,
+          "lng": 10.2272
+        },
+        "stops": [],
+        "surgeMultiplier": 1,
+        "pickupAt": null
+      },
+      {
+        "quoteId": "qte_fake0007",
+        "categoryId": "xl",
+        "total": {
+          "amountMinor": 7850,
+          "currency": "TND"
+        },
+        "fareLines": [
+          {
+            "code": "base",
+            "amount": {
+              "amountMinor": 1250,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "distance",
+            "amount": {
+              "amountMinor": 4354,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "time",
+            "amount": {
+              "amountMinor": 1518,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "app_fee",
+            "amount": {
+              "amountMinor": 712,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "rounding",
+            "amount": {
+              "amountMinor": 16,
+              "currency": "TND"
+            }
+          }
+        ],
+        "expiresAt": "2026-11-10T11:45:52.797Z",
+        "pickup": {
+          "address": "Avenue Habib Bourguiba, Tunis",
+          "lat": 36.8008,
+          "lng": 10.18
+        },
+        "dropoff": {
+          "address": "Aéroport Tunis-Carthage",
+          "lat": 36.851,
+          "lng": 10.2272
+        },
+        "stops": [],
+        "surgeMultiplier": 1,
+        "pickupAt": null
+      },
+      {
+        "quoteId": "qte_fake0008",
+        "categoryId": "fake0001",
+        "total": {
+          "amountMinor": 5450,
+          "currency": "TND"
+        },
+        "fareLines": [
+          {
+            "code": "base",
+            "amount": {
+              "amountMinor": 900,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "distance",
+            "amount": {
+              "amountMinor": 3047,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "time",
+            "amount": {
+              "amountMinor": 1012,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "app_fee",
+            "amount": {
+              "amountMinor": 496,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "rounding",
+            "amount": {
+              "amountMinor": -5,
+              "currency": "TND"
+            }
+          }
+        ],
+        "expiresAt": "2026-11-10T11:45:52.797Z",
+        "pickup": {
+          "address": "Avenue Habib Bourguiba, Tunis",
+          "lat": 36.8008,
+          "lng": 10.18
+        },
+        "dropoff": {
+          "address": "Aéroport Tunis-Carthage",
+          "lat": 36.851,
+          "lng": 10.2272
+        },
+        "stops": [],
+        "surgeMultiplier": 1,
+        "pickupAt": null
+      },
+      {
+        "quoteId": "qte_fake0009",
+        "categoryId": "fake0010",
+        "total": {
+          "amountMinor": 6500,
+          "currency": "TND"
+        },
+        "fareLines": [
+          {
+            "code": "base",
+            "amount": {
+              "amountMinor": 900,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "distance",
+            "amount": {
+              "amountMinor": 3483,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "time",
+            "amount": {
+              "amountMinor": 1518,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "app_fee",
+            "amount": {
+              "amountMinor": 590,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "rounding",
+            "amount": {
+              "amountMinor": 9,
+              "currency": "TND"
+            }
+          }
+        ],
+        "expiresAt": "2026-11-10T11:45:52.797Z",
+        "pickup": {
+          "address": "Avenue Habib Bourguiba, Tunis",
+          "lat": 36.8008,
+          "lng": 10.18
+        },
+        "dropoff": {
+          "address": "Aéroport Tunis-Carthage",
+          "lat": 36.851,
+          "lng": 10.2272
+        },
+        "stops": [],
+        "surgeMultiplier": 1,
+        "pickupAt": null
+      },
+      {
+        "quoteId": "qte_fake0011",
+        "categoryId": "child_fake0012",
+        "total": {
+          "amountMinor": 7050,
+          "currency": "TND"
+        },
+        "fareLines": [
+          {
+            "code": "base",
+            "amount": {
+              "amountMinor": 1000,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "distance",
+            "amount": {
+              "amountMinor": 3483,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "time",
+            "amount": {
+              "amountMinor": 1518,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "extras",
+            "amount": {
+              "amountMinor": 400,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "app_fee",
+            "amount": {
+              "amountMinor": 640,
+              "currency": "TND"
+            }
+          },
+          {
+            "code": "rounding",
+            "amount": {
+              "amountMinor": 9,
+              "currency": "TND"
+            }
+          }
+        ],
+        "expiresAt": "2026-11-10T11:45:52.797Z",
+        "pickup": {
+          "address": "Avenue Habib Bourguiba, Tunis",
+          "lat": 36.8008,
+          "lng": 10.18
+        },
+        "dropoff": {
+          "address": "Aéroport Tunis-Carthage",
+          "lat": 36.851,
+          "lng": 10.2272
+        },
+        "stops": [],
+        "surgeMultiplier": 1,
+        "pickupAt": null
+      }
+    ],
+    "zoneId": "TN-TC",
+    "serverTime": "2026-11-10T11:40:52.797Z"
+  }
+}
