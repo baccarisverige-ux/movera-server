@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parse } from "yaml";
 import { ADMIN_ROLES, permissionsOf, type AdminRole } from "../../src/admin/permissions.js";
 import { newId } from "../../src/ids.js";
 import { bookAndAccept, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
+import { contractOps as contractOpsOf, serverRoutes, type Op } from "./routeMatrix.js";
 
 /**
  * Audit Phase 4: the route-by-route authorization matrix. Every route the server really registers (read from
@@ -14,52 +14,12 @@ import { bookAndAccept, PLACES, Sim, type Admin, type Driver, type Json, type Ri
  * fails the test until someone decides who may call it.
  */
 
-type Op = { actors: string[]; permission?: string; public?: boolean; optionalAuth?: boolean };
-
 /**
  * Routes the server serves that the contract does not (yet) list, with who may call them. v0.18.13 (audit M4): the four
  * refund routes are in openapi.yaml now, so nothing is left here.
  */
 const EXTRA: Record<string, Op> = {};
-
-function contractOps(): Map<string, Op> {
-  const doc = parse(readFileSync(new URL("../../contracts/openapi.yaml", import.meta.url), "utf8")) as Json;
-  const ops = new Map<string, Op>();
-  for (const [path, methods] of Object.entries(doc["paths"] as Json)) {
-    for (const [method, op] of Object.entries(methods as Json)) {
-      if (!["get", "post", "put", "patch", "delete"].includes(method)) continue;
-      const security = (op as Json)["security"] as Json[] | undefined;
-      const key = `${method.toUpperCase()} ${path.replace(/\{(\w+)\}/g, ":$1")}`;
-      ops.set(key, {
-        actors: (op as Json)["x-actor"] as string[],
-        ...((op as Json)["x-permission"] ? { permission: (op as Json)["x-permission"] as string } : {}),
-        ...(Array.isArray(security) && security.length === 0 ? { public: true } : {}),
-        ...(Array.isArray(security) && security.some((s) => Object.keys(s).length === 0) && security.length > 0 ? { optionalAuth: true } : {}),
-      });
-    }
-  }
-  for (const [key, op] of Object.entries(EXTRA)) ops.set(key, op);
-  return ops;
-}
-
-/** Every method + path Fastify serves under /api/v1, from its route tree. */
-function serverRoutes(sim: Sim): string[] {
-  const tree = sim.app.printRoutes({ commonPrefix: false });
-  const stack: string[] = [];
-  const out: string[] = [];
-  for (const line of tree.split("\n")) {
-    const m = /^([│ ]*)[├└]── (\S+)(?: \(([^)]*)\))?/.exec(line);
-    if (!m) continue;
-    const depth = m[1]!.length / 4;
-    stack.length = depth;
-    stack.push(m[2]!);
-    const full = stack.join("");
-    for (const method of (m[3] ?? "").split(",").map((s) => s.trim()).filter((s) => s && s !== "HEAD")) {
-      if (full.startsWith("/api/v1/")) out.push(`${method} ${full.slice("/api/v1".length)}`);
-    }
-  }
-  return out;
-}
+const contractOps = () => contractOpsOf(EXTRA);
 
 let sim: Sim;
 let rider: Rider;
