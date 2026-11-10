@@ -441,6 +441,9 @@ async function findAll(ctx: Ctx): Promise<Cause[]> {
   return [...seen.values()];
 }
 
+/** Rows per INSERT of new alerts (17 values each: far below the 65,535 bind parameters of one statement). */
+export const ALERT_INSERT_CHUNK = 500;
+
 /** One sweep: find every cause and make the stored alerts match. Returns what changed (for tests and logs). */
 export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number; solved: number; reopened: number }> {
   // One sweep at a time across instances (a poke and the periodic run may meet).
@@ -509,9 +512,12 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
   if (fresh.length) {
     // Checker MED 3: a clash on the one-open-alert-per-cause index is skipped, never an error that undoes the sweep;
     // only rows really written count as opened.
-    const inserted = await trx
+    // Stress T-A follow-up: in chunks; one INSERT of ~4,400 new causes (17 values each) passed 65,535 bind parameters
+    // and failed every sweep until the timer was parked.
+    const inserted: { alert_id: string }[] = [];
+    for (let i = 0; i < fresh.length; i += ALERT_INSERT_CHUNK) inserted.push(...(await trx
       .insertInto("admin_alerts_live")
-      .values(fresh.map((cause) => ({
+      .values(fresh.slice(i, i + ALERT_INSERT_CHUNK).map((cause) => ({
         // The admin routes take [A-Za-z0-9_:.-] ids (realdataRoutes ALERT_ID).
         alert_id: `${cause.key.replace(/[^A-Za-z0-9_:.-]/g, "_").slice(0, 180)}.${now.getTime().toString(36)}`,
         cause_key: cause.key,
@@ -533,7 +539,7 @@ export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number
       })))
       .onConflict((oc) => oc.doNothing())
       .returning("alert_id")
-      .execute();
+      .execute()));
     result.opened += inserted.length;
   }
   return result;

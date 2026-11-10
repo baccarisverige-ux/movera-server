@@ -226,6 +226,20 @@ export async function periodOf(ex: Executor, at: Date, timeZone: string, schedul
  * country), the payouts of that period, one per currency. Safe to run again: paid entries are never taken twice.
  */
 export async function closePeriods(trx: Trx, now: Date): Promise<number> {
+  return (await closePeriodsBatch(trx, now)).made;
+}
+
+/** Stress T-A follow-up: drivers per payout batch of the hourly job (one transaction never pays a whole backlog). */
+export const PAYOUT_BATCH_DRIVERS = 200;
+
+/**
+ * closePeriods for at most `maxDrivers` drivers after `after` (driver_id order). Returns the payouts made and the last
+ * driver taken when more may follow (null = the list is done). Stress T-A follow-up: the hourly sweep paid six months
+ * of backlog for 5,000 drivers in ONE transaction that ran for the whole 10-minute step and held a pool connection;
+ * now each run pays one batch and the sweep books the next batch soon (jobs/maintenance.ts).
+ */
+export async function closePeriodsBatch(trx: Trx, now: Date, options: { after?: string | null; maxDrivers?: number } = {}): Promise<{ made: number; next: string | null }> {
+  const limit = options.maxDrivers;
   const rows = await sql<{ driver_id: string; time_zone: string | null; country: string | null; first_at: Date }>`
     SELECT e.driver_id, z.time_zone, coalesce(z.country, d.country) AS country, min(e.at) AS first_at
       FROM earnings_entries e
@@ -233,8 +247,10 @@ export async function closePeriods(trx: Trx, now: Date): Promise<number> {
       LEFT JOIN zones z ON z.zone_id = d.zone_ids[1]
      WHERE e.payout_id IS NULL
        AND d.payout_hold_at IS NULL -- v0.18.39 A2 (owner Q4): a held driver is paid after release
+       ${options.after ? sql`AND e.driver_id > ${options.after}` : sql``}
      GROUP BY e.driver_id, z.time_zone, coalesce(z.country, d.country)
-     ORDER BY 1`.execute(trx);
+     ORDER BY 1
+     ${limit !== undefined ? sql`LIMIT ${limit}` : sql``}`.execute(trx);
   const schedules = new Map<string, PayoutSchedule>();
   const manual = new Map<string, boolean>();
   let made = 0;
@@ -260,7 +276,8 @@ export async function closePeriods(trx: Trx, now: Date): Promise<number> {
       period = await periodOf(trx, period.end, timeZone, schedule);
     }
   }
-  return made;
+  const next = limit !== undefined && rows.rows.length >= limit ? rows.rows.at(-1)!.driver_id : null;
+  return { made, next };
 }
 
 /** Kept name for the jobs (v0.9.0): the schedule now comes from the country (closePeriods). */
