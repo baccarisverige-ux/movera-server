@@ -39,6 +39,9 @@ export function checkTarget(adminUrl, dbName, env = {}) {
   if (!/^postgres(ql)?:$/.test(url.protocol)) throw new LoadtestGuardError(`LOADTEST_ADMIN_URL must be a postgres:// url, got ${url.protocol}`);
   const allow = String(env.MOVERA_LOADTEST_ALLOW_HOST ?? "").trim().toLowerCase();
   const host = url.hostname.toLowerCase();
+  if (/(^|\.)render\.com$|(^|\.)onrender\.com$/.test(host)) {
+    throw new LoadtestGuardError(`refusing host "${host}": a Render database is never a load-test target, not even with MOVERA_LOADTEST_ALLOW_HOST`);
+  }
   if (!isLocalHost(host) && !(allow && host === allow)) {
     throw new LoadtestGuardError(`refusing host "${host}": only localhost / 127.0.0.1 / *.test are allowed (or set MOVERA_LOADTEST_ALLOW_HOST=${host} on purpose)`);
   }
@@ -100,8 +103,8 @@ export function checkLimits({ drivers, riders, seconds, spikeSeconds, steps, spi
       if (required) throw new LoadtestGuardError(`--${name} is required (give an explicit number; hard max ${HARD_MAX[name] ?? "-"} without --unsafe-max)`);
       return undefined;
     }
-    const n = Number(raw);
-    if (!Number.isInteger(n) || n <= 0) throw new LoadtestGuardError(`--${name} must be a positive whole number, got "${raw}"`);
+    const n = /^\d+$/.test(String(raw).trim()) ? Number(String(raw).trim()) : NaN;
+    if (!Number.isInteger(n) || n <= 0 || n > Number.MAX_SAFE_INTEGER) throw new LoadtestGuardError(`--${name} must be a positive whole number, got "${raw}"`);
     return n;
   };
   const cap = (name, value, max) => {

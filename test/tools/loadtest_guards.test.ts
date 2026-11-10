@@ -32,6 +32,9 @@ describe("load tool guard (a): target host + database name", () => {
     expect(() => checkTarget("postgres://u:p@staging.internal/movera", "movera_loadtest_x", {})).toThrow(/refusing host/);
     expect(() => checkTarget(prod, "movera_loadtest_x", { MOVERA_LOADTEST_ALLOW_HOST: "other.example.com" })).toThrow(/refusing host/);
     expect(checkTarget(prod, "movera_loadtest_x", { MOVERA_LOADTEST_ALLOW_HOST: "db.prod.example.com" }).host).toBe("db.prod.example.com");
+    const render = "postgres://u:hunter2@dpg-abc.frankfurt-postgres.render.com/movera";
+    expect(() => checkTarget(render, "movera_loadtest_x", { MOVERA_LOADTEST_ALLOW_HOST: "dpg-abc.frankfurt-postgres.render.com" })).toThrow(/Render database is never/);
+    expect(() => checkTarget("postgres://u:p@x.onrender.com/movera", "movera_loadtest_x", { MOVERA_LOADTEST_ALLOW_HOST: "x.onrender.com" })).toThrow(/Render database is never/);
     expect(() => checkTarget("postgres://u:p@localhost/movera?host=db.prod.example.com", "movera_loadtest_x")).toThrow(/refusing \?host=/);
   });
   it("refuses a database name without test / loadtest in it, and a missing or non-postgres url", () => {
@@ -125,6 +128,7 @@ describe("load tool guard (d): explicit, capped riders / drivers / duration", ()
     expect(() => checkLimits({ ...ok, steps: [] })).toThrow(/--steps must list/);
     expect(() => checkLimits({ ...ok, riders: "lots" })).toThrow(/--riders must be a positive whole number/);
     expect(() => checkLimits({ ...ok, drivers: "0" })).toThrow(/--drivers must be a positive whole number/);
+    for (const raw of ["1e3", "0x10", "5.0", " 7 x"]) expect(() => checkLimits({ ...ok, riders: raw })).toThrow(/--riders must be a positive whole number/);
   });
   it("refuses numbers above the hard max unless --unsafe-max", () => {
     expect(() => checkLimits({ ...ok, riders: String(HARD_MAX.riders + 1) })).toThrow(/--riders 20001 is above the hard max 20000; pass --unsafe-max/);
