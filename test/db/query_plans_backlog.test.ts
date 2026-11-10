@@ -1,0 +1,287 @@
+import { Kysely, PostgresDialect, type CompiledQuery } from "kysely";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Database } from "../../src/db/schema.js";
+import type { Db, Trx } from "../../src/db/db.js";
+import type { TripRow } from "../../src/db/tripLog.js";
+import { tripEventsAfter } from "../../src/db/tripLog.js";
+import type { Principal } from "../../src/auth/guard.js";
+import { candidatesFor } from "../../src/dispatch/runtime/candidates.js";
+import { zoneDriverFacts } from "../../src/dispatch/driverFacts.js";
+import { countedSeconds, driversAtDrivingLimit } from "../../src/drivers/drivingTime.js";
+import { driversWithCurrentTrip } from "../../src/reservations/service.js";
+import { nearbyVehicles } from "../../src/riders/nearby.js";
+import { maybePushArriving } from "../../src/notifications/tripPush.js";
+import { listNotifications } from "../../src/notifications/service.js";
+import { listMessages } from "../../src/trips/messages.js";
+import { driverEarnings } from "../../src/trips/ride/earnings.js";
+import { driverPayouts, listPayouts } from "../../src/admin/payouts.js";
+import { listTrips } from "../../src/admin/lists.js";
+import { TimerWorker } from "../../src/jobs/timers.js";
+import { ROUND, WITHDRAW } from "../../src/dispatch/runtime/shared.js";
+import { TRIP_ETA } from "../../src/trips/etaNow.js";
+import { RIDE_CHECK_SCAN } from "../../src/safety/rideCheckServer.js";
+import { freshDatabase, type TestDatabase } from "../support/db.js";
+
+/**
+ * Global plan step 64 (T4, audits/global-plan-2026-11-08/GLOBAL-SAFE-PLAN.md "T4 row"): plan tests of the SQL the
+ * server REALLY runs on its hot paths, on backlog-size tables. Each case calls the real server function on a Kysely
+ * whose `log` hook records every compiled statement (SQL text + parameters, exactly as node-pg gets them); each
+ * recorded statement is then run again under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) inside a rolled-back transaction.
+ * A statement passes when no big table is read with a Seq Scan, no plan node throws away more than MAX_REMOVED rows
+ * (Rows Removed by Filter / Join Filter / Index Recheck, times loops) and it touches at most MAX_BUFFERS shared
+ * blocks. Cases marked `it.fails` are the known slow queries of today (the Rule 36 proof for the later index / query
+ * fixes B1.10–B1.21, B3.8, IN-G10.3); the fix PR turns its case into a plain `it`. No index is added here (Rule 46).
+ *
+ * Data (generated here, fixed shape, no randomness): 3,000 drivers (2,000 in Z001), 20,000 riders, 300,000 finished
+ * trips over 180 days + 200 live trips, 600,000 trip events, 300,000 offers, 400,000 notifications, 300,000 earnings
+ * rows, 30,000 payouts, 150,000 chat messages, 20,000 overdue trip-lane timers. Foreign keys and triggers are skipped
+ * while loading (session_replication_role = replica), then every table is ANALYZEd.
+ */
+
+const BIG = new Set(["trips", "trip_events", "offers", "notifications", "timers", "earnings_entries", "payouts", "trip_messages", "driver_cancels"]);
+const MAX_REMOVED = 5_000;
+const MAX_BUFFERS = 5_000;
+
+type Captured = { sql: string; parameters: readonly unknown[] };
+type PlanNode = {
+  "Node Type": string;
+  "Relation Name"?: string;
+  "Index Name"?: string;
+  "Actual Loops"?: number;
+  "Rows Removed by Filter"?: number;
+  "Rows Removed by Join Filter"?: number;
+  "Rows Removed by Index Recheck"?: number;
+  "Shared Hit Blocks"?: number;
+  "Shared Read Blocks"?: number;
+  Plans?: PlanNode[];
+};
+type Explained = { "Plan": PlanNode; "Execution Time": number };
+
+let database: TestDatabase;
+let captured: Captured[] = [];
+let traced: Db;
+let now: Date;
+let liveTrip: TripRow;
+const searchTrip = {} as { row: TripRow };
+
+const nodes = (n: PlanNode): PlanNode[] => [n, ...(n.Plans ?? []).flatMap(nodes)];
+
+async function explain(q: Captured): Promise<{ problems: string[]; ms: number; plan: string }> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const r = await client.query<{ "QUERY PLAN": Explained[] }>(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${q.sql}`, q.parameters as unknown[]);
+    const root = r.rows[0]!["QUERY PLAN"][0]!;
+    const problems: string[] = [];
+    for (const n of nodes(root.Plan)) {
+      if (n["Node Type"] === "Seq Scan" && n["Relation Name"] && BIG.has(n["Relation Name"])) problems.push(`Seq Scan on ${n["Relation Name"]}`);
+      const removed = ((n["Rows Removed by Filter"] ?? 0) + (n["Rows Removed by Join Filter"] ?? 0) + (n["Rows Removed by Index Recheck"] ?? 0)) * (n["Actual Loops"] ?? 1);
+      if (removed > MAX_REMOVED) problems.push(`${n["Node Type"]}${n["Relation Name"] ? ` on ${n["Relation Name"]}` : ""} removed ${removed} rows`);
+    }
+    const buffers = (root.Plan["Shared Hit Blocks"] ?? 0) + (root.Plan["Shared Read Blocks"] ?? 0);
+    if (buffers > MAX_BUFFERS) problems.push(`${buffers} shared buffers`);
+    const plan = nodes(root.Plan).map((n) => `${n["Node Type"]}${n["Relation Name"] ? ` ${n["Relation Name"]}` : ""}${n["Index Name"] ? ` using ${n["Index Name"]}` : ""}`).join(" > ");
+    return { problems, ms: root["Execution Time"], plan };
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+}
+
+/** Runs the real function, then checks every statement it sent (or those `only` keeps). */
+async function check(run: () => Promise<unknown>, only?: (sql: string) => boolean): Promise<{ count: number; problems: string[] }> {
+  captured = [];
+  await run();
+  const statements = captured.filter((q) => /^\s*(select|with|update|delete|insert)/i.test(q.sql) && (only === undefined || only(q.sql)));
+  expect(statements.length).toBeGreaterThan(0);
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const q of statements) {
+    if (seen.has(q.sql)) continue;
+    seen.add(q.sql);
+    const r = await explain(q);
+    if (r.problems.length) problems.push(`${r.problems.join(", ")} (${r.ms.toFixed(1)} ms) [${r.plan}] :: ${q.sql.slice(0, 160)}`);
+  }
+  return { count: captured.length, problems };
+}
+
+/** The work of a rolled-back transaction (functions that take a Trx). */
+async function inTrx(run: (trx: Trx) => Promise<unknown>): Promise<void> {
+  await traced
+    .transaction()
+    .execute(async (trx) => {
+      await run(trx);
+      throw new Rollback();
+    })
+    .catch((e: unknown) => {
+      if (!(e instanceof Rollback)) throw e;
+    });
+}
+class Rollback extends Error {}
+
+const SUPER: Principal = { actor: "admin", subjectId: "adm_qp", sessionId: "s_qp", zones: ["*"], role: "super", perms: ["support.reply"] };
+
+beforeAll(async () => {
+  database = await freshDatabase();
+  traced = new Kysely<Database>({
+    dialect: new PostgresDialect({ pool: database.pool }),
+    log: (event) => {
+      if (event.level === "query") captured.push({ sql: event.query.sql, parameters: (event.query as CompiledQuery).parameters });
+    },
+  });
+  const c = await database.pool.connect();
+  try {
+    await c.query("SET session_replication_role = replica");
+    await c.query("SET synchronous_commit = off");
+    now = (await c.query<{ n: Date }>("SELECT date_trunc('second', now()) AS n")).rows[0]!.n;
+    const at = `'${now.toISOString()}'::timestamptz`;
+    await c.query(`INSERT INTO riders (rider_id, phone) SELECT 'r' || g, '+4670' || lpad(g::text, 7, '0') FROM generate_series(0, 19999) g`);
+    // Drivers 0–199 on a trip, 200–1499 online (Z001), 2000–2019 online (Z002), the rest offline; 0–1999 in Z001, 2000–2999 in Z002.
+    await c.query(`INSERT INTO drivers (driver_id, phone, account_status, online_status, zone_ids, category_ids, country, rating_sum, rating_count, driving_since)
+      SELECT 'd' || g, '+4673' || lpad(g::text, 7, '0'), 'active', CASE WHEN g < 200 THEN 'on_trip' WHEN g < 1500 OR g BETWEEN 2000 AND 2019 THEN 'online' ELSE 'offline' END,
+             CASE WHEN g < 2000 THEN '{Z001}'::text[] ELSE '{Z002}'::text[] END, '{economy}', 'SE', 4.8 * 20, 20, ${at} - interval '6 hours'
+        FROM generate_series(0, 2999) g`);
+    await c.query(`INSERT INTO driver_locations (driver_id, lat, lng, accuracy, measured_at, received_at, zone_id)
+      SELECT 'd' || g, 59.334 + ((g % 50) - 25) * 0.002, 18.063 + ((g / 50) - 20) * 0.003, 5, ${at} - interval '3 seconds', ${at} - interval '2 seconds', CASE WHEN g < 2000 THEN 'Z001' ELSE 'Z002' END
+        FROM generate_series(0, 2999) g`);
+    const place = `jsonb_build_object('lat', 59.334, 'lng', 18.063, 'address', 'A')`;
+    // 300,000 finished trips, 100 per driver, over 180 days.
+    await c.query(`INSERT INTO trips (trip_id, rider_id, driver_id, zone_id, kind, category_id, status, pickup, dropoff, currency, fare_minor, booked_fare_minor, payment_method,
+                                      created_at, updated_at, accepted_at, arrived_at, boarded_at, ended_at)
+      SELECT 't' || g, 'r' || (g % 20000), 'd' || (g % 3000), CASE WHEN g % 3000 < 2000 THEN 'Z001' ELSE 'Z002' END, 'live', 'economy', 'completed', ${place}, ${place}, 'SEK', 10000, 10000, 'card',
+             ${at} - (g * interval '51 seconds') - interval '1 hour', ${at} - (g * interval '51 seconds') - interval '30 minutes',
+             ${at} - (g * interval '51 seconds') - interval '58 minutes', ${at} - (g * interval '51 seconds') - interval '50 minutes',
+             ${at} - (g * interval '51 seconds') - interval '48 minutes', ${at} - (g * interval '51 seconds') - interval '30 minutes'
+        FROM generate_series(1, 300000) g`);
+    // 200 live trips: driver dN with rider rN on board; 50 searching trips without a driver.
+    await c.query(`INSERT INTO trips (trip_id, rider_id, driver_id, zone_id, kind, category_id, status, pickup, dropoff, currency, fare_minor, booked_fare_minor, payment_method,
+                                      created_at, updated_at, accepted_at, arrived_at, boarded_at, sequence)
+      SELECT 'tl' || g, 'r' || g, 'd' || g, 'Z001', 'live', 'economy', 'in_trip', ${place}, ${place}, 'SEK', 10000, 10000, 'card',
+             ${at} - interval '20 minutes', ${at} - interval '5 minutes', ${at} - interval '19 minutes', ${at} - interval '12 minutes', ${at} - interval '10 minutes', 300
+        FROM generate_series(0, 199) g`);
+    await c.query(`INSERT INTO trips (trip_id, rider_id, zone_id, kind, category_id, status, pickup, dropoff, currency, fare_minor, booked_fare_minor, payment_method, created_at, updated_at, search_started_at)
+      SELECT 'ts' || g, 'r' || (10000 + g), 'Z001', 'live', 'economy', 'searching', ${place}, ${place}, 'SEK', 10000, 10000, 'card', ${at} - interval '1 minute', ${at}, ${at} - interval '1 minute'
+        FROM generate_series(0, 49) g`);
+    await c.query(`INSERT INTO trip_events (trip_id, sequence, event_id, kind, version, occurred_at)
+      SELECT 't' || (g / 2 + 1), g % 2 + 1, 'e' || g, 'trip_projection', 1, ${at} - (g * interval '25 seconds') FROM generate_series(0, 599999) g`);
+    await c.query(`INSERT INTO trip_events (trip_id, sequence, event_id, kind, version, occurred_at)
+      SELECT 'tl0', g, 'el' || g, 'location', 1, ${at} - interval '20 minutes' + g * interval '4 seconds' FROM generate_series(1, 300) g`);
+    await c.query(`INSERT INTO offers (offer_id, trip_id, driver_id, kind, status, round, sent_at, expires_at, pickup_eta_seconds, pickup_meters, fare_minor, driver_earnings_minor, currency)
+      SELECT 'o' || g, 't' || (g + 1), 'd' || (g % 3000), CASE WHEN g % 4 = 0 THEN 'radar' ELSE 'exclusive' END, CASE WHEN g % 3 = 0 THEN 'declined' ELSE 'claimed' END, 1,
+             ${at} - (g * interval '51 seconds') - interval '1 hour', ${at} - (g * interval '51 seconds') - interval '59 minutes', 300, 2000, 10000, 8000, 'SEK'
+        FROM generate_series(0, 299999) g`);
+    await c.query(`INSERT INTO driver_cancels (trip_id, driver_id, reason_code, from_status, at)
+      SELECT 't' || (g * 15 + 1), 'd' || (g % 3000), 'other', 'accepted', ${at} - g * interval '12 minutes' FROM generate_series(0, 19999) g`);
+    // Notifications: 2 per finished trip for the rider (one "almost there"), plus driver rows.
+    await c.query(`INSERT INTO notifications (notification_id, audience, subject_id, kind, title, body, trip_id, data, created_at, bell)
+      SELECT 'n' || g, CASE WHEN g % 4 = 3 THEN 'driver' ELSE 'rider' END, CASE WHEN g % 4 = 3 THEN 'd' || (g % 3000) ELSE 'r' || (g % 20000) END, 'trip_moment', 'T', 'B',
+             't' || (g / 2 + 1), CASE WHEN g % 2 = 0 THEN '{"moment":"driver_arriving"}'::jsonb ELSE '{"moment":"driver_arrived"}'::jsonb END, ${at} - g * interval '38 seconds', true
+        FROM generate_series(0, 399999) g`);
+    await c.query(`INSERT INTO earnings_entries (entry_id, driver_id, trip_id, kind, currency, amount_minor, gross_minor, commission_minor, cash_minor, at)
+      SELECT 'ee' || g, 'd' || (g % 3000), 't' || (g + 1), 'trip', 'SEK', 7500, 10000, 2500, 0, ${at} - (g * interval '51 seconds') - interval '30 minutes' FROM generate_series(0, 299999) g`);
+    await c.query(`INSERT INTO payouts (payout_id, driver_id, currency, amount_minor, lines, trip_count, source, status, period_start, period_end, created_at)
+      SELECT 'p' || g, 'd' || (g % 3000), 'SEK', 75000, '[]', 10, 'weekly', CASE WHEN g < 3000 THEN 'pending' ELSE 'paid' END,
+             ${at} - ((g / 3000) + 1) * interval '7 days', ${at} - (g / 3000) * interval '7 days', ${at} - (g / 3000) * interval '7 days' + (g % 3000) * interval '1 second'
+        FROM generate_series(0, 29999) g`);
+    await c.query(`INSERT INTO trip_messages (message_id, trip_id, sequence, sender, sender_id, text, created_at)
+      SELECT 'm' || g, 't' || (g / 3 + 1), g % 3 + 1, 'rider', 'r1', 'Hi', ${at} - g * interval '1 minute' FROM generate_series(0, 149999) g`);
+    await c.query(`INSERT INTO trip_messages (message_id, trip_id, sequence, sender, sender_id, text, created_at)
+      SELECT 'ml' || g, 'tl0', g, 'rider', 'r0', 'Hi', ${at} - interval '15 minutes' + g * interval '1 second' FROM generate_series(1, 30) g`);
+    // A trip-lane backlog: 20,000 overdue ETA timers, and 20 dispatch rounds due behind them.
+    await c.query(`INSERT INTO timers (kind, ref_id, due_at) SELECT '${TRIP_ETA}', 'tl' || g, ${at} - interval '10 minutes' + g * interval '10 ms' FROM generate_series(0, 19999) g`);
+    await c.query(`INSERT INTO timers (kind, ref_id, due_at) SELECT '${ROUND}', 'ts' || g, ${at} - interval '1 second' FROM generate_series(0, 19) g`);
+    await c.query("SET session_replication_role = origin");
+    await c.query("ANALYZE");
+    liveTrip = (await c.query<TripRow>("SELECT * FROM trips WHERE trip_id = 'tl0'")).rows[0]!;
+    searchTrip.row = (await c.query<TripRow>("SELECT * FROM trips WHERE trip_id = 'ts0'")).rows[0]!;
+  } finally {
+    c.release();
+  }
+}, 300_000);
+
+afterAll(async () => {
+  await traced?.destroy().catch(() => undefined);
+  await database?.drop();
+});
+
+const noProblems = async (run: () => Promise<unknown>, only?: (sql: string) => boolean) => expect((await check(run, only)).problems).toEqual([]);
+
+describe("hot queries at backlog size (global plan step 64, T4)", () => {
+  // ---- dispatch round ----
+  it("dispatch candidate search: drivers in the zone with a fresh position (dispatch/runtime/candidates.ts:133-154)", async () => {
+    await noProblems(() => inTrx((trx) => candidatesFor(trx, searchTrip.row, null, now)), (s) => s.includes('inner join "driver_locations"'));
+  });
+  it("dispatch candidate search: open offers of the round's drivers (dispatch/runtime/candidates.ts:218)", async () => {
+    await noProblems(() => inTrx((trx) => candidatesFor(trx, searchTrip.row, null, now)), (s) => /from "offers" where "driver_id" in .* and "status" = \$\d+ group by/.test(s));
+  });
+  it("dispatch: drivers with a current trip (reservations/service.ts:133)", async () => {
+    await noProblems(() => driversWithCurrentTrip(traced, Array.from({ length: 300 }, (_, i) => `d${i + 200}`)));
+  });
+  it.fails("FAILS TODAY (B1.11): driving-time limit of the round's drivers reads all trips (drivers/drivingTime.ts:101-114)", async () => {
+    const drivers = Array.from({ length: 300 }, (_, i) => ({ driver_id: `d${i + 200}`, zone_ids: ["Z001"], driving_since: new Date(now.getTime() - 6 * 3600_000) }));
+    await noProblems(() => driversAtDrivingLimit(traced, drivers, now), (s) => s.includes("WITH d AS"));
+  });
+  it.fails("FAILS TODAY (B1.12): score aggregate of the round's drivers over 30 days of offers (dispatch/runtime/candidates.ts:245)", async () => {
+    await noProblems(() => inTrx((trx) => candidatesFor(trx, searchTrip.row, null, now)), (s) => s.includes("count(*) FILTER (WHERE status = 'claimed')"));
+  });
+  it.fails("FAILS TODAY (B1.11): one driver's counted driving seconds (drivers/drivingTime.ts:40-52)", async () => {
+    await noProblems(() => countedSeconds(traced, "d300", new Date(now.getTime() - 24 * 3600_000), now));
+  });
+
+  // ---- timers ----
+  it("dispatch lane takes its timer past a trip-lane backlog (jobs/timers.ts:141-147)", async () => {
+    const worker = new TimerWorker(traced, { handlers: { [ROUND]: async () => undefined, [WITHDRAW]: async () => undefined }, logger: { warn: () => undefined, error: () => undefined } });
+    await noProblems(() => worker.runOne({ kinds: [ROUND, WITHDRAW] }), (s) => s.includes('from "timers"') && s.includes("skip locked"));
+  });
+  it.fails("FAILS TODAY (B1.13): general lane (all kinds but the trip lane's) walks the trip-lane backlog (jobs/timers.ts:141-147)", async () => {
+    const worker = new TimerWorker(traced, { handlers: { [ROUND]: async () => undefined }, logger: { warn: () => undefined, error: () => undefined } });
+    await noProblems(() => worker.runOne({ exclude: [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"] }), (s) => s.includes('from "timers"') && s.includes("skip locked"));
+  });
+  it("trip lane takes the oldest due timer (jobs/timers.ts:141-147)", async () => {
+    const worker = new TimerWorker(traced, { handlers: { [TRIP_ETA]: async () => undefined }, logger: { warn: () => undefined, error: () => undefined } });
+    await noProblems(() => worker.runOne({ kinds: [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"] }), (s) => s.includes('from "timers"') && s.includes("skip locked"));
+  });
+
+  // ---- active trip ----
+  it("trip events since a sequence (db/tripLog.ts:148-156)", async () => {
+    await noProblems(() => tripEventsAfter(traced, "tl0", 100));
+  });
+  it("trip chat page (trips/messages.ts:77-83)", async () => {
+    await noProblems(() => listMessages(traced, { actor: "rider", subjectId: "r0" }, "tl0", { limit: 50 }), (s) => s.includes('from "trip_messages"'));
+  });
+  it.fails("FAILS TODAY (B3.8): \"almost there\" sent-check reads notifications by trip without an index (notifications/tripPush.ts:99-107)", async () => {
+    await noProblems(() => inTrx((trx) => maybePushArriving(trx, { ...liveTrip, status: "driver_to_pickup" }, 30, now)), (s) => s.includes('from "notifications"'));
+  });
+  it("rider's notification list (notifications/service.ts:111-118)", async () => {
+    await noProblems(() => listNotifications(traced, { audience: "rider", subjectId: "r5" }, { limit: 20 }), (s) => s.includes('from "notifications"'));
+  });
+
+  // ---- rider app ----
+  // B1.21 (no zone filter) is NOT proven here: driver_locations has one row per driver (3,000), not a big table.
+  it("nearby cars around a point (riders/nearby.ts:53-72)", async () => {
+    await noProblems(() => nearbyVehicles(traced, { lat: 59.334, lng: 18.063 }, "secret", now));
+  });
+
+  // ---- admin ----
+  it.fails("FAILS TODAY (new, no plan row yet): admin trip list with no filter sorts all trips, no created_at index (admin/lists.ts:33-57)", async () => {
+    await noProblems(() => listTrips(traced, SUPER, { limit: 50 }, now), (s) => s.includes('from "trips"'));
+  });
+  it.fails("FAILS TODAY (B1.19): Dispatch page driver facts is one query per driver (dispatch/driverFacts.ts:97-99)", async () => {
+    const { count } = await check(() => zoneDriverFacts(traced, "Z002", now));
+    expect(count).toBeLessThanOrEqual(10);
+  });
+  it.fails("FAILS TODAY (B1.19 + B1.11): driver facts' per-driver driving-time reads all trips (dispatch/driverFacts.ts:99 → drivers/drivingTime.ts:40-52)", async () => {
+    await noProblems(() => zoneDriverFacts(traced, "Z002", now), (s) => s.includes("WITH legs AS"));
+  });
+  it("admin payout list (admin/payouts.ts:272-284)", async () => {
+    await noProblems(() => listPayouts(traced, SUPER, { limit: 50 }));
+  });
+
+  // ---- money (driver app) ----
+  it.fails("FAILS TODAY (IN-G10.3): driver's own payouts page has no (driver_id, created_at) index (admin/payouts.ts:293-299)", async () => {
+    await noProblems(() => driverPayouts(traced, "d7", { limit: 20 }));
+  });
+  it("driver earnings report, this month (trips/ride/earnings.ts:18-31)", async () => {
+    await noProblems(() => driverEarnings(traced, "d7", { period: "month", timeZone: "Europe/Stockholm", currency: "SEK" }, now), (s) => s.includes("earnings_entries"));
+  });
+});
