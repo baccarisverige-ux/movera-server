@@ -237,7 +237,7 @@ const fill = (text: string, values: Record<string, string>) => text.replace(/\{(
 export const amountText = (m: Money, lang: string) => {
   // The currency's own decimals (SEK/EUR 2, TND 3; CONTRACT.md §1 "Money"), never a fixed 100.
   const value = localAmount(m, lang);
-  return m.currency === "SEK" ? `${value} kr` : m.currency === "EUR" ? `${value} €` : `${value} ${m.currency}`;
+  return m.currency === "SEK" ? `${value} kr` : m.currency === "EUR" ? `${value} €` : m.currency === "TND" ? `${value} DT` : `${value} ${m.currency}`;
 };
 async function languageOf(ex: Executor, table: "riders" | "drivers", id: string): Promise<string> {
   const row = table === "riders"

@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { amountText } from "../../src/trips/finish.js";
 
 // Notification texts (receipt resend, driver pay changed) use the currency's own decimals: SEK/EUR 2, TND 3.
+  // v0.18.59 §81: TND with a dot in every language, symbol DT; 12350 → "12.350 DT".
 describe("amountText", () => {
   it("TND keeps 3 decimals", () => {
-    expect(amountText({ amountMinor: 5350, currency: "TND" }, "fr")).toBe("5,350 TND");
-    expect(amountText({ amountMinor: 1000, currency: "TND" }, "fr")).toBe("1 TND");
-    expect(amountText({ amountMinor: 40, currency: "TND" }, "en")).toBe("0.040 TND");
+    expect(amountText({ amountMinor: 5350, currency: "TND" }, "fr")).toBe("5.350 DT");
+    expect(amountText({ amountMinor: 1000, currency: "TND" }, "fr")).toBe("1 DT");
+    expect(amountText({ amountMinor: 40, currency: "TND" }, "en")).toBe("0.040 DT");
+    expect(amountText({ amountMinor: 12350, currency: "TND" }, "sv")).toBe("12.350 DT");
   });
   it("SEK and EUR are unchanged", () => {
     expect(amountText({ amountMinor: 12675, currency: "SEK" }, "sv")).toBe("126,75 kr");

@@ -235,7 +235,7 @@ async function driverCauses(ctx: Ctx): Promise<Cause[]> {
   return out;
 }
 
-export const major = (minor: string | number, currency: string) => `${majorText({ amountMinor: Number(minor), currency: currency as CurrencyCode })} ${currency === "SEK" ? "kr" : currency === "EUR" ? "€" : currency}`;
+export const major = (minor: string | number, currency: string) => `${majorText({ amountMinor: Number(minor), currency: currency as CurrencyCode })} ${currency === "SEK" ? "kr" : currency === "EUR" ? "€" : currency === "TND" ? "DT" : currency}`;
 
 async function moneyCauses(ctx: Ctx): Promise<Cause[]> {
   const out: Cause[] = [];
