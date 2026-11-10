@@ -86,6 +86,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: File size ratchet (Rule 25)
+        run: python3 tools/size_ratchet.py
       - run: npm ci
       - run: npm run contract:verify
       - run: npm run typecheck
