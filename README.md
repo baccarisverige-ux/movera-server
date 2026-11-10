@@ -2,7 +2,7 @@
 
 The Movera backend: one server for the **rider** and **driver** apps (Flutter) and the **admin** panel (React).
 It implements the shared contract in [`movera-contracts`](https://github.com/baccarisverige-ux/movera-contracts);
-`contracts/` here is a byte-for-byte copy of a tagged version (now **v0.5.6**).
+`contracts/` here is a byte-for-byte copy of a tagged version (now **v0.18.54**).
 
 Long-term server, built first for the real test week: Stockholm zones, 2–3 drivers and riders, cash only, push
 off, and test phone numbers that sign in with a fixed code instead of SMS (outside production only).
@@ -17,12 +17,31 @@ TypeScript on Node 22, Fastify, PostgreSQL 16. One stateless container; the data
 npm ci
 npm run dev            # http://localhost:8080/healthz
 npm test               # unit, API and database tests (needs PostgreSQL, see below)
-npm run contract:verify
+npm run contract:verify   # contracts/ matches its CHECKSUMS
+npm run typecheck
+npm run lint
+npm run test:coverage  # what CI runs on a pull request (coverage floors in vitest.config.ts)
+npm run audit:prod     # npm audit, production dependencies, high and above
+npm run build          # dist/
 npm run migrate        # apply new migrations to DATABASE_URL
 docker compose up --build   # server + PostgreSQL
 ```
 
-Test week on Render: `render.yaml` and [`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md).
+Tests need PostgreSQL 16 (`docker compose up` gives one). A single file: `npx vitest run test/app.test.ts`.
+
+The live test server runs on Render: `render.yaml` and [`docs/DEPLOY_RENDER.md`](docs/DEPLOY_RENDER.md). Its
+address is the `MOVERA_LIVE_API_URL` repository variable the admin and the two apps read when they build their
+live web pages. `keep-awake.yml` is manual only (owner 2026-11-06; an outside pinger keeps the free plan awake).
+
+## CI
+
+`.github/workflows/ci.yml` ("CI"): job `checks` (contract copy, typecheck, lint, audit, tests with coverage,
+build) and `secret-scan` (gitleaks). On a pull request the full suite runs; on a push to `main` only the quick
+check without tests; the full suite also runs every 12 hours on `main` when it has new commits, and by hand.
+Docs-only PRs (`*.md`, `docs/`) and drafts skip `checks`. There is no `gate` job here; a PR shows the two
+checks `checks` and `secret-scan`. `.github/workflows/contract-copy.yml` ("Contract copy") runs
+`tools/check_contract_copy.sh` on every PR and push, and once a day opens or closes the issue
+"Contract copy behind movera-contracts main".
 
 Settings come from the environment (`src/env.ts`):
 
@@ -48,6 +67,7 @@ Settings come from the environment (`src/env.ts`):
 | `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_NAME` | At start, make this Super admin and write its password link to the log while it has no password (not in production) | none |
 | `ADMIN_TEST_EMAIL`, `ADMIN_TEST_NAME`, `ADMIN_TEST_PASSWORD_RESET` | A second Super admin for automated checks, made at start the same way: kept if it exists, password link in the log while it has no password, any new reset text gives one new link (not in production) | none |
 | `MOVERA_EXTRA_TEST_PHONES` | Big test: more test numbers than the six built in, comma list of numbers and ranges (`+46701740611-+46701740660,+33639980001`), both ends included, at most 1000; seeded at start for both apps with the fixed code (not in production) | none |
+| `RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE`, `RATE_LIMIT_WRITES_PER_USER_PER_MINUTE` | Write-request limits per signed-in user and per address, per minute (`src/env.ts`; `0` = off) | `120` / `60` in production, `1200` / `600` elsewhere |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
 Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).
@@ -61,7 +81,9 @@ The run builds a template database with every migration, and each test file gets
 - Errors are the contract's `Error`: `{ code, message, requestId, retryable, reason?, projection? }`.
 - An operation the server does not serve yet answers `404 not_found`, reason `operation_not_enabled`.
 
-Update the contract copy with `tools/sync_contract.sh <tag>`; `test/contract_copy.test.ts` fails on any drift.
+Update the contract copy with `tools/sync_contract.sh v0.18.54` (the tag, never `main`; Rule 43(4)) and commit
+`contracts/` exactly as it comes out; never edit `contracts/` by hand. `test/contract_copy.test.ts` and
+`tools/check_contract_copy.sh` fail on any drift. The contract's own README names the full flow.
 
 ## Database rules
 
@@ -149,6 +171,18 @@ The server lands in small pull requests, each tested:
 8. Live updates (SSE). *(done: trip events and config_published streams, resume, per-viewer redaction)*
 9. Driver availability and location. *(done: online/offline, location batches, trip traces, cars, admin live map)*
 10. Dispatch: offers, accept, decline, admin assign and radar groups. *(done: automatic dispatch, offers, accept/decline, offer feed, keep-waiting, dispatch control; admin assign and radar groups come with step 12)*
-11. Trip steps, cancel, fees, waiting, no-show, rating.
-12. Admin lists, commands and audit.
-13. Staging deploy, seed data, end-to-end run with all three apps.
+11. Trip steps, cancel, fees, waiting, no-show, rating. *(done: `src/trips/ride/`, `src/admin/ratings.ts`)*
+12. Admin lists, commands and audit. *(done: `src/admin/`)*
+13. Staging deploy, seed data, end-to-end run with all three apps. *(done: Render, `SEED_TEST_ON_START`, the
+    live test since November 2026)*
+
+Later contract versions up to 0.18.54 (reservations, support, safety, airport queue, blocked pairs, admin masking,
+…) are listed at the top of `contracts/CONTRACT.md`; owner decisions are in `docs/DECISIONS.md`.
+
+## Working rules
+
+- The owner's memory for the project is the Rules repository (`Movera-team/Rules`: `RULES.md`, `decisions/`,
+  `plan/`). Read it first.
+- Rule 25: a hand-written file over 1,500 lines is split before it is changed. Rule 21: never delete anything
+  without asking the owner.
+- Pull requests use `.github/pull_request_template.md`; security problems go through `SECURITY.md`.
