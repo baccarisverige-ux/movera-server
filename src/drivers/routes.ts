@@ -1,3 +1,4 @@
+import { geometry } from "../config/geometryCache.js";
 import { driverPerformance } from "./performance.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -88,6 +89,8 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
 
   app.post(`${API_PREFIX}/driver/location`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
+    // Stress T-A part 3: the zone / area geometry is loaded (when the cache is on and cold) before the transaction opens.
+    await geometry(deps.db);
     const body = (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await postLocations(trx, who.subjectId, request.body ?? {}, now()) }))).body;
     // Owner decision 2026-11-10: road snapping of GPS gaps, after the transaction (no row locked).
     if (deps.router) await snapDriverGaps(deps.db, deps.router, who.subjectId);

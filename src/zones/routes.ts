@@ -1,3 +1,4 @@
+import { forgetGeometry } from "../config/geometryCache.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { sql } from "kysely";
 import { z } from "zod";
@@ -106,6 +107,8 @@ function shape(polygon: Polygon) {
 
 /** config_published { doc: zones } on commit (contract.json#zones.notify). */
 async function notifyZone(trx: Trx, row: ZoneRow, at: Date): Promise<void> {
+  // Stress T-A part 3: this copy's zone geometry in memory goes at once; every copy drops it again on the notification.
+  forgetGeometry();
   await sql`SELECT pg_notify(${CONFIG_CHANNEL}, ${JSON.stringify({ doc: "zones", zoneId: row.zone_id, version: row.version, publishedAt: at.toISOString() })})`.execute(trx);
 }
 

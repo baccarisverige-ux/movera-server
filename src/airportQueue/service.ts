@@ -2,6 +2,7 @@ import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
 import { zoneAt } from "../config/zoneLookup.js";
+import { geometry } from "../config/geometryCache.js";
 import { inPolygon, type Polygon } from "../zones/geometry.js";
 
 /**
@@ -50,6 +51,9 @@ const inside = (area: Pick<AreaRow, "south" | "west" | "north" | "east" | "polyg
 
 /** The queue area that is on and holds this point, if any. */
 async function areaAt(ex: Executor, p: { lat: number; lng: number }): Promise<AreaRow | undefined> {
+  // Stress T-A part 3: from memory when the geometry cache is on (config/geometryCache.ts).
+  const cached = await geometry(ex);
+  if (cached !== null) return (cached.areas as unknown as AreaRow[]).find((a) => a.is_on && a.south <= p.lat && a.north >= p.lat && a.west <= p.lng && a.east >= p.lng && inside(a, p));
   const rows = (await ex.selectFrom("airport_queue_areas").selectAll().where("is_on", "=", true)
     .where("south", "<=", p.lat).where("north", ">=", p.lat).where("west", "<=", p.lng).where("east", ">=", p.lng).execute()) as AreaRow[];
   return rows.find((a) => inside(a, p));
@@ -77,10 +81,17 @@ async function prune(ex: Executor, area: AreaRow, now: Date): Promise<void> {
  * POST /driver/location (after the fix is stored): join, stay or leave. Join = inside an area that is on, online and
  * free; a driver who dropped a rider at the airport joins with his next position (owner job 9 Q5 "Yes, join at once").
  */
-export async function onDriverPosition(trx: Trx, driverId: string, p: { lat: number; lng: number }, now: Date): Promise<void> {
-  const driver = await trx.selectFrom("drivers").select(["online_status", "online_since"]).where("driver_id", "=", driverId).executeTakeFirst();
+export async function onDriverPosition(
+  trx: Trx,
+  driverId: string,
+  p: { lat: number; lng: number },
+  now: Date,
+  // Stress T-A part 3: POST /driver/location read the driver row (and whether he has an open entry) already.
+  known?: { driver: { online_status: string; online_since: Date | null }; hasOpenEntry: boolean },
+): Promise<void> {
+  const driver = known?.driver ?? (await trx.selectFrom("drivers").select(["online_status", "online_since"]).where("driver_id", "=", driverId).executeTakeFirst());
   if (!driver) return;
-  const open = await trx.selectFrom("airport_queue_entries as e").innerJoin("airport_queue_areas as a", "a.area_id", "e.area_id")
+  const open = known?.hasOpenEntry === false ? undefined : await trx.selectFrom("airport_queue_entries as e").innerJoin("airport_queue_areas as a", "a.area_id", "e.area_id")
     .select(["e.entry_id", "e.joined_at", "e.outside_since", "a.area_id", "a.is_on", "a.south", "a.west", "a.north", "a.east", "a.polygon", "a.leave_grace_min"])
     .where("e.driver_id", "=", driverId).where("e.left_at", "is", null).forUpdate("e").executeTakeFirst();
   const free = driver.online_status === "online";
