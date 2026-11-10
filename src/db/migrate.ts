@@ -59,7 +59,7 @@ export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR): Prom
   const client = await pool.connect();
   const applied: string[] = [];
   try {
-    // Stress T-A follow-up (0090, the first no-transaction file): a server WAITING in pg_advisory_lock is a running
+    // Stress T-A follow-up (0091, the first no-transaction file): a server WAITING in pg_advisory_lock is a running
     // statement, and CREATE INDEX CONCURRENTLY of the server holding the lock waits for every running statement to
     // end, so two servers starting together deadlocked. Ask with pg_try_advisory_lock and sleep between tries instead.
     while (!(await client.query<{ ok: boolean }>("SELECT pg_try_advisory_lock($1) AS ok", [LOCK_KEY])).rows[0]!.ok) {
