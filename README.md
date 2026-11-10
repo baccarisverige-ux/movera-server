@@ -37,7 +37,7 @@ live web pages. `keep-awake.yml` is manual only (owner 2026-11-06; an outside pi
 
 `.github/workflows/ci.yml` ("CI"): job `checks` (contract copy, typecheck, lint, audit, tests with coverage,
 build) and `secret-scan` (gitleaks). On a pull request the full suite runs; on a push to `main` only the quick
-check without tests; the full suite also runs every 12 hours on `main` when it has new commits, and by hand.
+check without tests; the full suite also runs every 12 hours on `main` when it has new commits, and by hand on `main` only (step 48: never on a draft branch).
 Docs-only PRs (`*.md`, `docs/`) and drafts skip `checks`. There is no `gate` job here; a PR shows the two
 checks `checks` and `secret-scan`. `.github/workflows/contract-copy.yml` ("Contract copy") runs
 `tools/check_contract_copy.sh` on every PR and push, and once a day opens or closes the issue
