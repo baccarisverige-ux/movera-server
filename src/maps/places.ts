@@ -130,11 +130,15 @@ export class GooglePlaces implements Places {
     const data = await this.json(this.geocodeUrl({ latlng: `${input.lat},${input.lng}`, language: input.language }));
     if (data["status"] === "ZERO_RESULTS") return null;
     if (data["status"] !== "OK") throw new PlacesUnavailable(`Geocoding status ${String(data["status"])}`);
-    return pickReverseAddress((data["results"] ?? []) as ReverseResult[], { lat: input.lat, lng: input.lng });
+    // One warning line per skipped wrong result, so a new kind of bad Google answer shows in the logs (no coordinates).
+    return pickReverseAddress((data["results"] ?? []) as ReverseResult[], { lat: input.lat, lng: input.lng }, (skipped) =>
+      console.warn(JSON.stringify({ msg: "reverse_geocode_skipped", ...skipped })),
+    );
   }
 }
 
-type ReverseResult = { formatted_address?: string; types?: string[]; geometry?: { location?: { lat: number; lng: number } } };
+type AddressPart = { long_name?: string; short_name?: string; types?: string[] };
+type ReverseResult = { formatted_address?: string; types?: string[]; geometry?: { location?: { lat: number; lng: number } }; address_components?: AddressPart[] };
 /** Tunis trip 2026-11-10: Google listed a street address ~300 km away (Mareth) for a point on Av. Habib Bourguiba. */
 const REVERSE_MAX_KM = 1;
 const STREET_OR_PLACE = ["street_address", "premise", "point_of_interest", "establishment", "route", "intersection"];
@@ -142,11 +146,29 @@ const PLUS_CODE = /^[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\b/;
 const isPlusCode = (r: ReverseResult) => (r.types ?? []).includes("plus_code") || PLUS_CODE.test(r.formatted_address ?? "");
 
 /** Owner 2026-11-10: street or known place first, then any non-Plus-Code answer, the Plus Code only as last fallback. */
-export function pickReverseAddress(results: ReverseResult[], at?: { lat: number; lng: number }): string | null {
+const townOf = (r: ReverseResult) =>
+  (r.address_components ?? []).find((c) => (c.types ?? []).includes("locality"))?.long_name?.trim().toLowerCase();
+const isStreetOrPlace = (r: ReverseResult) => (r.types ?? []).some((t) => STREET_OR_PLACE.includes(t));
+
+export function pickReverseAddress(
+  results: ReverseResult[],
+  at?: { lat: number; lng: number },
+  onSkip?: (skipped: { address: string; types: string[]; town?: string; areaTown?: string; km?: number }) => void,
+): string | null {
   const near = (r: ReverseResult) => !at || !r.geometry?.location || haversineKm(at, r.geometry.location) <= REVERSE_MAX_KM;
   const named = results.filter((r) => r.formatted_address?.trim());
-  // A street/place result far from the point is wrong data, never the answer; broader areas (city) still count.
-  const usable = named.filter((r) => near(r) || !(r.types ?? []).some((t) => STREET_OR_PLACE.includes(t)));
+  // Tunis re-check 2026-11-10: the Mareth result was not caught by distance alone. The town Google gives for the
+  // area itself (the "locality" result) wins over a street result that names another town.
+  const areaTown = named.filter((r) => (r.types ?? []).includes("locality")).map(townOf).find(Boolean);
+  const sameTown = (r: ReverseResult) => !areaTown || !townOf(r) || townOf(r) === areaTown;
+  // A street/place result far from the point, or in another town, is wrong data; broader areas (city) still count.
+  const usable = named.filter((r) => {
+    if (!isStreetOrPlace(r) || (near(r) && sameTown(r))) return true;
+    const km = at && r.geometry?.location ? Math.round(haversineKm(at, r.geometry.location) * 10) / 10 : undefined;
+    const town = townOf(r);
+    onSkip?.({ address: r.formatted_address ?? "", types: r.types ?? [], ...(town ? { town } : {}), ...(areaTown ? { areaTown } : {}), ...(km !== undefined ? { km } : {}) });
+    return false;
+  });
   const choice =
     usable.find((r) => !isPlusCode(r) && (r.types ?? []).some((t) => STREET_OR_PLACE.includes(t))) ??
     usable.find((r) => !isPlusCode(r)) ??
