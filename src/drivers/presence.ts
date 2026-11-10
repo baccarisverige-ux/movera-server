@@ -1,6 +1,7 @@
 import { NOT_HELD } from "../reservations/view.js";
 import { audit } from "../admin/audit.js";
 import { liveDocument } from "../config/service.js";
+import { geometry } from "../config/geometryCache.js";
 import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
@@ -101,6 +102,8 @@ function inside(point: { lat: number; lng: number }, z: ZoneShape): boolean {
 /** Is the point inside any of these zones (bounds first, the outline decides)? */
 export async function insideZones(ex: Executor, point: { lat: number; lng: number }, zoneIds: string[]): Promise<boolean> {
   if (zoneIds.length === 0) return false;
+  const cached = await geometry(ex);
+  if (cached !== null) return zoneIds.some((id) => { const z = cached.byId.get(id); return z !== undefined && inside(point, z); });
   const zones = await ex.selectFrom("zones").select(["zone_id", "south", "west", "north", "east", "polygon"]).where("zone_id", "in", zoneIds).execute();
   return zones.some((z) => inside(point, z));
 }
@@ -112,12 +115,14 @@ export async function zoneChecker(ex: Executor, zoneIds: string[]): Promise<(poi
 }
 
 /** Driver.outsideArea / areaZones (driver view, location ack): missing while the server has no position. */
-export async function areaView(ex: Executor, driver: { driver_id: string; zone_ids: string[]; language?: string | null }): Promise<Record<string, unknown>> {
-  const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driver.driver_id).executeTakeFirst();
+export async function areaView(ex: Executor, driver: { driver_id: string; zone_ids: string[]; language?: string | null }, stored?: { lat: number; lng: number }): Promise<Record<string, unknown>> {
+  // `stored`: the caller already knows the stored position (POST /driver/location just wrote it), so it is not read again.
+  const fix = stored ?? (await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driver.driver_id).executeTakeFirst());
   if (fix === undefined) return {};
   if (await insideZones(ex, fix, driver.zone_ids)) return { outsideArea: false };
   const language = lang(driver.language);
-  const zones = driver.zone_ids.length ? await ex.selectFrom("zones").select(["zone_id", "name", "names"]).where("zone_id", "in", driver.zone_ids).execute() : [];
+  const cached = await geometry(ex);
+  const zones = !driver.zone_ids.length ? [] : cached !== null ? driver.zone_ids.flatMap((id) => cached.byId.get(id) ?? []) : await ex.selectFrom("zones").select(["zone_id", "name", "names"]).where("zone_id", "in", driver.zone_ids).execute();
   const named = driver.zone_ids.flatMap((id) => {
     const z = zones.find((x) => x.zone_id === id);
     if (!z) return [];

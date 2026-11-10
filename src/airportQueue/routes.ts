@@ -1,3 +1,4 @@
+import { forgetGeometry } from "../config/geometryCache.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { adminCoversZone, authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -84,10 +85,13 @@ export async function airportQueueRoutes(app: FastifyInstance, deps: AirportQueu
       };
       const row = (await trx.insertInto("airport_queue_areas").values({ area_id: areaIdOf(zoneId), airport_zone_id: zoneId, ...values })
         .onConflict((c) => c.column("airport_zone_id").doUpdateSet(values)).returningAll().executeTakeFirstOrThrow()) as AreaRow;
+      // Stress T-A part 3: the area geometry in memory goes (again after the commit below; other copies within its TTL).
+      forgetGeometry();
       if (!row.is_on) await emptyArea(trx, row.area_id, at);
       await audit(trx, { adminId: who.subjectId, action: "zone.queue_area", targetType: "zone", targetId: zoneId, zoneId, detail: { on: row.is_on, points: body.polygon.length, leaveGraceMin: row.leave_grace_min, offerSeconds: row.offer_seconds, maxQueueOffers: row.max_queue_offers, keepPlaceAfterDecline: row.keep_place_after_decline }, at });
       return { status: 200, body: areaView(row) };
     });
+    forgetGeometry();
     return outcome.body;
   });
 

@@ -252,7 +252,10 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
 /** POST /driver/availability: online or offline (contract: 409 with the Driver when it cannot be). */
 export async function setAvailability(trx: Trx, driverId: string, body: { expectedVersion: number; onlineStatus: "online" | "offline"; location?: Fix }, now: Date) {
   // The fix first: on a trip it locks the trip row, and the lock order is trip, then driver.
-  if (body.location) await storeFixes(trx, driverId, [body.location], undefined, now);
+  if (body.location) {
+    const facts = await locationFacts(trx, driverId);
+    if (facts) await storeFixes(trx, driverId, [body.location], undefined, now, facts);
+  }
   const row = await loadDriver(trx, driverId, true);
   const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await stale(row, trx)() });
   if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "Your status changed since you last saw it.", { projection: await stale(row, trx)() });
@@ -318,27 +321,50 @@ export async function postLocations(trx: Trx, driverId: string, body: unknown, n
   const problem = schemaProblem("LocationBatch", body);
   if (problem !== null) throw badRequest(`The location batch is not valid: ${problem}.`, "invalid_body");
   const batch = body as { fixes: Fix[]; tripId?: string };
+  // Stress T-A part 3 (owner 2026-11-10, RESULT-3.md): the driver row, his active trip and whether he has an open
+  // airport queue entry come in ONE statement (they were read 3 + 1 times); zones and areas come from memory.
+  const facts = await locationFacts(trx, driverId);
   // v0.18.52 §74 (owner Q15 'Not stored', 2026-11-09): a batch from an offline or suspended driver with no active trip
   // is not stored — no position on the admin map, no stale-fix work — whatever an old app or a sender not stopped sends.
   // Only here: going online stores its own fix (availability) before the status flips.
-  const accepted = (await offlineWithNoTrip(trx, driverId)) ? 0 : await storeFixes(trx, driverId, batch.fixes, batch.tripId, now);
+  const offline = facts !== undefined && (facts.online_status === "offline" || facts.online_status === "suspended") && facts.active === undefined;
+  const stored = offline || facts === undefined ? { accepted: 0 } : await storeFixes(trx, driverId, batch.fixes, batch.tripId, now, facts);
   // v0.18.4 (G3-R2): so the app can show "You are not eligible to drive in this area" when he drives out.
-  const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids", "language"]).where("driver_id", "=", driverId).executeTakeFirst();
-  return { accepted, serverTime: now.toISOString(), ...(driver ? await areaView(trx, driver) : {}) };
+  return { accepted: stored.accepted, serverTime: now.toISOString(), ...(facts ? await areaView(trx, facts, stored.position) : {}) };
 }
 
-async function offlineWithNoTrip(trx: Trx, driverId: string): Promise<boolean> {
-  const status = (await trx.selectFrom("drivers").select("online_status").where("driver_id", "=", driverId).executeTakeFirst())?.online_status;
-  if (status !== "offline" && status !== "suspended") return false;
-  return (await activeTripOf(trx, driverId)) === undefined;
+type LocationFacts = {
+  driver_id: string;
+  zone_ids: string[];
+  language: string | null;
+  online_status: string;
+  online_since: Date | null;
+  has_open_entry: boolean;
+  active: Awaited<ReturnType<typeof activeTripOf>>;
+};
+
+async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts | undefined> {
+  const row = await trx
+    .selectFrom("drivers as d")
+    .leftJoinLateral(
+      (eb) => eb.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert", "pickup", "dropoff", "eta"]).whereRef("trips.driver_id", "=", "d.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).limit(1).as("t"),
+      (join) => join.onTrue(),
+    )
+    .select(["d.driver_id", "d.zone_ids", "d.language", "d.online_status", "d.online_since", "t.trip_id", "t.status", "t.version", "t.driver_silent_alert", "t.pickup", "t.dropoff", "t.eta"])
+    .select(sql<boolean>`EXISTS (SELECT 1 FROM airport_queue_entries e WHERE e.driver_id = d.driver_id AND e.left_at IS NULL)`.as("has_open_entry"))
+    .where("d.driver_id", "=", driverId)
+    .executeTakeFirst();
+  if (row === undefined) return undefined;
+  const active = row.trip_id === null ? undefined : { trip_id: row.trip_id, status: row.status!, version: row.version!, driver_silent_alert: row.driver_silent_alert!, pickup: row.pickup!, dropoff: row.dropoff!, eta: row.eta! };
+  return { driver_id: row.driver_id, zone_ids: row.zone_ids, language: row.language, online_status: row.online_status, online_since: row.online_since, has_open_entry: row.has_open_entry, active: active as LocationFacts["active"] };
 }
 
-async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: string | undefined, now: Date): Promise<number> {
+async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: string | undefined, now: Date, facts: LocationFacts): Promise<{ accepted: number; position?: { lat: number; lng: number } }> {
   const fresh = fixes
     .map((fix) => ({ fix, at: new Date(fix.measuredAt) }))
     .filter(({ at }) => !Number.isNaN(at.getTime()) && now.getTime() - at.getTime() <= MAX_FIX_AGE_MS && at.getTime() - now.getTime() <= MAX_FIX_AHEAD_MS)
     .sort((a, b) => a.at.getTime() - b.at.getTime());
-  if (fresh.length === 0) return 0;
+  if (fresh.length === 0) return { accepted: 0 };
   const latest = fresh[fresh.length - 1]!;
   const zone = await zoneAt(trx, latest.fix);
   const values = {
@@ -367,10 +393,10 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     .executeTakeFirst();
 
   // v0.18.36 §60 (fix job 9, contract.json#airportQueue): join, stay in or leave an airport queue.
-  await onDriverPosition(trx, driverId, latest.fix, now);
+  await onDriverPosition(trx, driverId, latest.fix, now, { driver: facts, hasOpenEntry: facts.has_open_entry });
 
   // On a trip, the trip is the one the server knows, whatever tripId the app sent.
-  const active = await activeTripOf(trx, driverId);
+  const active = facts.active;
   if (active) {
     // Live 5+5 2026-11-08 (problem 4): at the pickup / drop-off (or after a jump) the ETA tick runs now, not up to 30 s
     // later; run 2: also each 50 m inside the arrive radius (at most one per 5 s). Before the trip row is written below
@@ -392,7 +418,8 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     // Car lost (contract v0.7.0 §15): the position is back, so the silence check runs now and takes the alarm down.
     if (active.driver_silent_alert) await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: active.trip_id, dueAt: now });
   }
-  return fresh.length;
+  // A row back = this batch's newest fix is now the stored position; none = an older fix, the stored one is read later.
+  return { accepted: fresh.length, ...(replaced ? { position: { lat: latest.fix.lat, lng: latest.fix.lng } } : {}) };
 }
 
 /* ---------------------------------------------------------------- vehicles */
