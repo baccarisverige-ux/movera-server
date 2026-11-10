@@ -140,7 +140,8 @@ def check_file(path: str) -> list[str]:
 
 def new_files_since(base: str) -> list[str]:
     out = subprocess.run(["git", "diff", "--name-only", "--diff-filter=A", f"{base}...HEAD", "--", "migrations"], check=True, capture_output=True, text=True).stdout
-    return [p for p in out.split("\n") if p.startswith("migrations/") and NAME_RE.match(os.path.basename(p)) and os.path.isfile(p)]
+    # Only files directly in migrations/: migrations/undo/<name>.sql are undo steps, not migrations.
+    return [p for p in out.split("\n") if os.path.dirname(p) == "migrations" and NAME_RE.match(os.path.basename(p)) and os.path.isfile(p)]
 
 
 # ---------------------------------------------------------------------------------------------------------------
