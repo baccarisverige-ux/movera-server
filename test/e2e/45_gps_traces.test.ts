@@ -144,22 +144,32 @@ function expectSane(tr: Trace, r: Run) {
   expect(r.finalKm).toBeGreaterThanOrEqual(roadKm * 0.85);
 }
 
-/** No teleport credit: the km charged and the path drawn are at most 10 % over the real road length. */
+/** No teleport credit: the path drawn (contract §25 filter, unchanged) is at most 10 % over the real road length. */
 function expectNoTeleportCredit(tr: Trace, r: Run) {
   const roadKm = tr.roadMeters / 1000;
-  expect(r.finalKm, `driven km vs road ${roadKm} km`).toBeLessThanOrEqual(roadKm * 1.1);
   expect(r.pathMeters / 1000, `path km vs road ${roadKm} km`).toBeLessThanOrEqual(roadKm * 1.1);
 }
 
 /**
- * One describe per trace file: the trace runs once (beforeAll) and both checks read that run.
- * REAL BUG kept as it.fails (proof for later, behaviour not changed here): the driven km over-credits real-world GPS by
- * more than 10 % in Paris (4.765 km on a 4.290 km road) and Tunis (9.085 km on 8.171 km). Cause: kmOnBoard,
- * src/trips/ride/settings.ts:252-269 (and the same filter in cleanTrace, src/trips/path.ts:28-40, constants path.ts:19-21), takes every
- * fix with accuracy <= 50 m and counts every step >= 25 m: 30–40 m urban-canyon noise (accuracy 35–45 m) and the drift
- * of a car standing at a red light zigzag into paid km. Fix target: driven km and path <= road x 1.05. (The backwards jump is caught by the 150 km/h rule.)
+ * Paid km within ±3 % of the true road (owner decision 2026-11-10, smoothed GPS: src/trips/ride/paidKm.ts).
+ * Before: the raw sum paid 4.765 km on Paris' 4.290 km road (+11.1 %) and 9.085 km on Tunis' 8.171 km (+11.2 %).
+ * `gapBridged`: a trace whose tunnel and 90 s gap are bridged by straight lines (Stockholm: even the true positions of
+ * its fixes sum to only 3.14 km of 3.503) cannot reach -3 % without road snapping; it keeps the +3 % ceiling and the
+ * 0.85 floor of expectSane.
  */
-function traceSuite(name: string, index: 0 | 1 | 2, overCredits: boolean) {
+function expectPaidKm(tr: Trace, r: Run, gapBridged: boolean) {
+  const roadKm = tr.roadMeters / 1000;
+  console.info(`[paid km] ${tr.name}: ${r.finalKm} km on a ${roadKm} km road (${(((r.finalKm / roadKm) - 1) * 100).toFixed(1)} %)`);
+  expect(r.finalKm, `paid km vs road ${roadKm} km`).toBeLessThanOrEqual(roadKm * 1.03);
+  if (!gapBridged) expect(r.finalKm, `paid km vs road ${roadKm} km`).toBeGreaterThanOrEqual(roadKm * 0.97);
+}
+
+/**
+ * One describe per trace file: the trace runs once (beforeAll) and the checks read that run.
+ * The drawn path (contract §25 fixes its filter: accuracy <= 50 m, 25 m steps, 150 km/h) still over-draws Paris and
+ * Tunis by more than 10 % (src/trips/path.ts:28-40): kept as it.fails until the contract changes that filter.
+ */
+function traceSuite(name: string, index: 0 | 1 | 2, overDraws: boolean, gapBridged = false) {
   describe(name, () => {
     const tr = trace(name);
     let r: Run;
@@ -169,7 +179,10 @@ function traceSuite(name: string, index: 0 | 1 | 2, overCredits: boolean) {
     it("sane on real-world GPS: km >= 0 and never down, fare never down, ETA >= 0, near drop-off once and only when near, driven path", () => {
       expectSane(tr, r);
     });
-    (overCredits ? it.fails : it)(`no teleport credit: driven km and path <= road x 1.10${overCredits ? " (FAILS today: src/trips/ride/settings.ts:252-269, src/trips/path.ts:28-40)" : ""}`, () => {
+    it(`paid km within ±3 % of the road${gapBridged ? " (gaps bridged: +3 % ceiling only)" : ""}`, () => {
+      expectPaidKm(tr, r, gapBridged);
+    });
+    (overDraws ? it.fails : it)(`no teleport path: driven path <= road x 1.10${overDraws ? " (FAILS today: src/trips/path.ts:28-40, contract §25 filter)" : ""}`, () => {
       expectNoTeleportCredit(tr, r);
     });
   });
@@ -182,7 +195,7 @@ describe("recorded-style GPS traces through the server (T13)", () => {
     const files = readdirSync(new URL("../fixtures/traces/", import.meta.url)).filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, ""));
     expect(files.sort()).toEqual([...TRACES].sort());
   });
-  traceSuite("stockholm_sergels_medborgar", 0, false);
+  traceSuite("stockholm_sergels_medborgar", 0, false, true);
   traceSuite("paris_chatelet_eiffel", 1, true);
   // Owner order TN-9: Avenue Habib Bourguiba → Aéroport Tunis-Carthage.
   traceSuite("tunis_bourguiba_carthage", 2, true);
