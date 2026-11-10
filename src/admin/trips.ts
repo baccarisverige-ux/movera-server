@@ -1,3 +1,4 @@
+import { exponentOf, majorText, toMajorString, type CurrencyCode, type Money as WireMoney } from "../rules/money.js";
 import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
@@ -97,10 +98,10 @@ async function checkBonus(ex: Executor, trip: TripRow, amount: Money, scope: Bon
     const doc = await liveDocument<{ reservations?: { raiseFare?: unknown; raiseMax?: unknown } }>(ex, "driver_app_config", trip.zone_id);
     const resv = doc?.document.reservations ?? {};
     if (resv.raiseFare === false) throw new ApiError("forbidden", "Raising the driver's fare of a booked ride is switched off in this zone.", { reason: "raise_off" });
-    if (typeof resv.raiseMax === "number" && Number.isFinite(resv.raiseMax) && resv.raiseMax >= 0) limit = Math.min(limit, Math.round(resv.raiseMax * 100));
+    if (typeof resv.raiseMax === "number" && Number.isFinite(resv.raiseMax) && resv.raiseMax >= 0) limit = Math.min(limit, Math.round(resv.raiseMax * 10 ** exponentOf(trip.currency as CurrencyCode)));
   }
   if ((await bonusSoFar(ex, trip, scope)) + amount.amountMinor > limit) {
-    throw badRequest(`A trip can carry at most ${limit / 100} ${trip.currency} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
+    throw badRequest(`A trip can carry at most ${majorText({ amountMinor: limit, currency: trip.currency as CurrencyCode })} ${trip.currency} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
   }
 }
 
@@ -474,7 +475,7 @@ async function refundRoom(ex: Executor, trip: TripRow, amount: Money) {
   const done = await ex.selectFrom("refunds").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("status", "=", "done").executeTakeFirstOrThrow();
   const paid = trip.cash_collected_minor === null ? Number(trip.fare_minor) : Number(trip.cash_collected_minor) + Number(trip.wallet_applied_minor ?? 0);
   const left = paid - Number(done.n);
-  if (amount.amountMinor > left) throw badRequest(`At most ${Math.max(0, left) / 100} ${trip.currency} is left to refund.`, "refund_too_large");
+  if (amount.amountMinor > left) throw badRequest(`At most ${majorText({ amountMinor: Math.max(0, left), currency: trip.currency as CurrencyCode })} ${trip.currency} is left to refund.`, "refund_too_large");
   return { paid, left };
 }
 
@@ -515,7 +516,7 @@ const REFUND_TEXT = { sv: { title: "Återbetalning", body: "Du får tillbaka {am
 async function noticeRefund(trx: Trx, trip: TripRow, amount: Money, now: Date) {
   const rider = await trx.selectFrom("riders").select("language").where("rider_id", "=", trip.rider_id).executeTakeFirst();
   const lang = rider?.language === "sv" || rider?.language === "fr" ? rider.language : "en";
-  const text = (amount.amountMinor / 100).toFixed(2).replace(".", ",") + (amount.currency === "SEK" ? " kr" : amount.currency === "EUR" ? " €" : ` ${amount.currency}`);
+  const text = toMajorString(amount as WireMoney).replace(".", ",") + (amount.currency === "SEK" ? " kr" : amount.currency === "EUR" ? " €" : ` ${amount.currency}`);
   await notify(trx, { audience: "rider", subjectId: trip.rider_id, kind: "refund", title: REFUND_TEXT[lang].title, body: REFUND_TEXT[lang].body.replace("{amount}", text), deepLink: `movera://trips/${trip.trip_id}/receipt`, tripId: trip.trip_id, data: { tripId: trip.trip_id, amount } }, now);
 }
 

@@ -1,3 +1,4 @@
+import { localAmount, type CurrencyCode } from "../rules/money.js";
 import { contract } from "../contract/contract.js";
 import type { Executor } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
@@ -36,8 +37,8 @@ export function driverMomentOf(before: Pick<TripRow, "driver_id" | "next_after_t
   return null;
 }
 
-const amountText = (amountMinor: number, currency: string, lang: Lang) => {
-  const value = (amountMinor / 100).toLocaleString(lang === "en" ? "en-GB" : lang === "fr" ? "fr-FR" : "sv-SE", { minimumFractionDigits: amountMinor % 100 === 0 ? 0 : 2, maximumFractionDigits: 2 });
+export const amountText = (amountMinor: number, currency: string, lang: Lang) => {
+  const value = localAmount({ amountMinor, currency: currency as CurrencyCode }, lang);
   return currency === "SEK" ? `${value} kr` : currency === "EUR" ? `${value} €` : `${value} ${currency}`;
 };
 

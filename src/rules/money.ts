@@ -163,3 +163,27 @@ export function roundToStep(amountMinor: number, stepMinor: number): number {
   if (!Number.isSafeInteger(rounded)) throw new RangeError(`roundToStep result out of safe integer range`);
   return rounded === 0 ? 0 : rounded; // never -0
 }
+
+/** A Money whose currency is typed as a plain string (rows, documents); an unknown code throws a RangeError. */
+export type MoneyLike = { amountMinor: number; currency: string };
+
+/**
+ * English major-unit text for error messages: whole amounts without decimals ("20"), else every digit of the
+ * currency's exponent (12675 SEK → "126.75", 5350 TND → "5.350"). Never a fixed 100 (TND has 3 decimals).
+ */
+export function majorText(m: MoneyLike): string {
+  const unit = 10 ** exponentOf(m.currency as CurrencyCode);
+  return m.amountMinor % unit === 0 ? String(m.amountMinor / unit) : toMajorString(m as Money);
+}
+
+/** The amount for a notice in sv-SE / fr-FR / en-GB, whole amounts without decimals, else the currency's own decimals. */
+export function localAmount(m: MoneyLike, lang: string): string {
+  const digits = exponentOf(m.currency as CurrencyCode);
+  const unit = 10 ** digits;
+  return (m.amountMinor / unit).toLocaleString(lang === "en" ? "en-GB" : lang === "fr" ? "fr-FR" : "sv-SE", { minimumFractionDigits: m.amountMinor % unit === 0 ? 0 : digits, maximumFractionDigits: digits });
+}
+
+/** amountMinor in the currency's major unit as a number (for limits written in major units). */
+export function toMajorNumber(m: MoneyLike): number {
+  return m.amountMinor / 10 ** exponentOf(m.currency as CurrencyCode);
+}
