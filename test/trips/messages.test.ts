@@ -245,7 +245,8 @@ describe("the trip chat", () => {
     expect(await list(tripId, drivers.A.headers)).toEqual({ items: [], nextCursor: null, closed: true });
     expect(await list(tripId, rider)).toEqual({ items: [], nextCursor: null, closed: true });
     const admin = await adminSession(app, database.db, "support", { now: clock.now });
-    expect((await list(tripId, admin.headers)).items.map((m: { text: string }) => m.text)).toEqual(["I'm at the main door"]);
+    // v0.18.56 §78 (chat.autoArrived): arrive also wrote the automatic message (Swedish zone, rider without a language).
+    expect((await list(tripId, admin.headers)).items.map((m: { text: string }) => m.text)).toEqual(["I'm at the main door", "Jag är framme vid upphämtningsplatsen."]);
     expect((await send(tripId, admin.headers, "Movera here: we found your umbrella.")).statusCode).toBe(201);
     // v0.18.38 §62 (owner G15): calls stay open 60 min after drop-off (in-app), the chat does not.
     const callAfter = await call(app, "POST", `/trips/${tripId}/call`, rider, {});

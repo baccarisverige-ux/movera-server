@@ -191,6 +191,19 @@ export interface TripMessagesTable {
   sender_id: string;
   text: string;
   created_at: Timestamp;
+  /** v0.18.56 §78 (migration 0090): the chip id when sent from a quick reply. */
+  quick_reply_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.56 §78: arrived | on_my_way for the automatic messages (one of each per trip). */
+  auto: ColumnType<"arrived" | "on_my_way" | null, "arrived" | "on_my_way" | null | undefined, "arrived" | "on_my_way" | null>;
+}
+
+/** v0.18.56 §78 (inAppCalls.push, migration 0090): the trip streams open right now on any server copy. */
+export interface TripStreamPresenceTable {
+  stream_id: string;
+  trip_id: string;
+  actor: string;
+  subject_id: string;
+  seen_at: Timestamp;
 }
 
 /** contract v0.12.0 §22: one ride check an app reported (migration 0029). */
