@@ -10,6 +10,7 @@ import { adminCoversZone, authenticate, authenticateAdmin, type Principal } from
 import type { Db } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
 import { ApiError } from "../http/errors.js";
+import { emergencyNumbersFor } from "./emergencyNumbers.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
@@ -93,6 +94,8 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     }
     // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.settings): both apps get the zone's CountryRules.dontMatchAgain.
     document = { ...document, dontMatchAgain: await dontMatchSettings(deps.db, zoneId) };
+    // v0.18.57 §79 (contract.json#emergencyNumbers.apps): both apps get the zone country's emergency numbers.
+    document = { ...document, emergencyNumbers: await emergencyNumbersFor(deps.db, zone.country) };
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);
   };
