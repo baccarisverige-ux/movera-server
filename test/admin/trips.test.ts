@@ -163,8 +163,10 @@ describe("the rider's \"I'm on the way\" (contract v0.5.4)", () => {
     expect(told.json()).toMatchObject({ status: "arrived", version: arrived.json().version });
 
     const events = (await call(app, "GET", `/trips/${a.tripId}/events`, drivers.A.headers)).json().items;
-    expect(events).toHaveLength(before + 1);
-    expect(events[events.length - 1]).toMatchObject({ kind: "rider_on_the_way", version: arrived.json().version, projection: { status: "arrived" } });
+    // v0.18.56 §78 (chat.onTheWay): the event is followed by one chat message in the driver's language.
+    expect(events).toHaveLength(before + 2);
+    expect(events[events.length - 2]).toMatchObject({ kind: "rider_on_the_way", version: arrived.json().version, projection: { status: "arrived" } });
+    expect(events[events.length - 1]).toMatchObject({ kind: "message", version: arrived.json().version, message: { from: "rider", auto: "on_my_way" } });
     // The driver's commands still send the same expectedVersion.
     expect((await step(a.tripId, "board", arrived.json().version)).json().status).toBe("rider_onboard");
   });
