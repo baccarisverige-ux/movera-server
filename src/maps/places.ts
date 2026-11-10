@@ -2,6 +2,7 @@
  * Address search (contract §10; owner decision 4: Google Places / Geocoding through the server). The server keeps
  * the key, the provider's session tokens and a short cache, so the apps never see a Google key.
  */
+import { haversineKm } from "./routing.js";
 
 export type Suggestion = { title: string; subtitle?: string; latitude?: number; longitude?: number; placeId?: string };
 /** v0.18.44 §67: name is the place's own name (e.g. "Solna Centrum") when resolved by placeId; address is the street address. */
@@ -129,18 +130,23 @@ export class GooglePlaces implements Places {
     const data = await this.json(this.geocodeUrl({ latlng: `${input.lat},${input.lng}`, language: input.language }));
     if (data["status"] === "ZERO_RESULTS") return null;
     if (data["status"] !== "OK") throw new PlacesUnavailable(`Geocoding status ${String(data["status"])}`);
-    return pickReverseAddress((data["results"] ?? []) as ReverseResult[]);
+    return pickReverseAddress((data["results"] ?? []) as ReverseResult[], { lat: input.lat, lng: input.lng });
   }
 }
 
-type ReverseResult = { formatted_address?: string; types?: string[] };
+type ReverseResult = { formatted_address?: string; types?: string[]; geometry?: { location?: { lat: number; lng: number } } };
+/** Tunis trip 2026-11-10: Google listed a street address ~300 km away (Mareth) for a point on Av. Habib Bourguiba. */
+const REVERSE_MAX_KM = 1;
 const STREET_OR_PLACE = ["street_address", "premise", "point_of_interest", "establishment", "route", "intersection"];
 const PLUS_CODE = /^[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\b/;
 const isPlusCode = (r: ReverseResult) => (r.types ?? []).includes("plus_code") || PLUS_CODE.test(r.formatted_address ?? "");
 
 /** Owner 2026-11-10: street or known place first, then any non-Plus-Code answer, the Plus Code only as last fallback. */
-export function pickReverseAddress(results: ReverseResult[]): string | null {
-  const usable = results.filter((r) => r.formatted_address?.trim());
+export function pickReverseAddress(results: ReverseResult[], at?: { lat: number; lng: number }): string | null {
+  const near = (r: ReverseResult) => !at || !r.geometry?.location || haversineKm(at, r.geometry.location) <= REVERSE_MAX_KM;
+  const named = results.filter((r) => r.formatted_address?.trim());
+  // A street/place result far from the point is wrong data, never the answer; broader areas (city) still count.
+  const usable = named.filter((r) => near(r) || !(r.types ?? []).some((t) => STREET_OR_PLACE.includes(t)));
   const choice =
     usable.find((r) => !isPlusCode(r) && (r.types ?? []).some((t) => STREET_OR_PLACE.includes(t))) ??
     usable.find((r) => !isPlusCode(r)) ??

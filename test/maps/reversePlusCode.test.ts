@@ -25,4 +25,12 @@ describe("reverse geocode skips Plus Codes", () => {
     const google = new GooglePlaces("test-key-123456", "tn", answer([{ formatted_address: "8FQW+X2 Tunis", types: ["plus_code"] }]));
     expect(await google.reverse({ lat: 36.8, lng: 10.18, language: "fr" })).toBe("8FQW+X2 Tunis");
   });
+  it("a street result far from the point (Mareth for Av. Habib Bourguiba) is skipped", async () => {
+    const google = new GooglePlaces("test-key-123456", "tn", answer([
+      { formatted_address: "8FQW+X2 Tunis", types: ["plus_code"], geometry: { location: { lat: 36.8008, lng: 10.18 } } },
+      { formatted_address: "9 Rue d'Alger, Mareth 6080, Tunisie", types: ["street_address"], geometry: { location: { lat: 33.63, lng: 10.29 } } },
+      { formatted_address: "Avenue Habib Bourguiba, Tunis, Tunisie", types: ["route"], geometry: { location: { lat: 36.8, lng: 10.181 } } },
+    ]));
+    expect(await google.reverse({ lat: 36.8008, lng: 10.18, language: "fr" })).toBe("Avenue Habib Bourguiba, Tunis, Tunisie");
+  });
 });
