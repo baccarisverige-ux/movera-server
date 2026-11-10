@@ -167,6 +167,15 @@ export interface TripLocationsTable {
   moving: Generated<boolean>;
 }
 
+/** Owner decision 2026-11-10 (migration 0092): the road metres of a gap in a trip's trace (null: no road answer). */
+export interface TripGapRoadsTable {
+  trip_id: string;
+  from_ts: Timestamp;
+  to_ts: Timestamp;
+  road_m: number | null;
+  created_at: Timestamp;
+}
+
 export interface RatingsTable {
   trip_id: string;
   rater: "rider" | "driver";

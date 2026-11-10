@@ -20,10 +20,12 @@ import { ONBOARDING } from "./onboardingRules.js";
 import { riderDriverPhoto } from "../trips/driverPhoto.js";
 import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 import { phoneDataRoutes } from "../accounts/phoneDataRoutes.js";
+import { snapDriverGaps } from "../trips/ride/gapRoads.js";
+import type { Router } from "../maps/routing.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
-export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date };
+export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date; router?: Router };
 
 /** Document uploads a driver may start per hour by default (deep fix 2026-11-02: admin CountryRules.limits.uploadsPerHour). */
 export const UPLOADS_PER_HOUR = 30;
@@ -86,7 +88,10 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
 
   app.post(`${API_PREFIX}/driver/location`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await postLocations(trx, who.subjectId, request.body ?? {}, now()) }))).body;
+    const body = (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await postLocations(trx, who.subjectId, request.body ?? {}, now()) }))).body;
+    // Owner decision 2026-11-10: road snapping of GPS gaps, after the transaction (no row locked).
+    if (deps.router) await snapDriverGaps(deps.db, deps.router, who.subjectId);
+    return body;
   });
 
   app.get(`${API_PREFIX}/driver/vehicles`, async (request) => {

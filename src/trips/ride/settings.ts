@@ -8,6 +8,7 @@ import { stopWaitSeconds } from "../stops.js";
 import { ApiError } from "../../http/errors.js";
 import { haversineKm } from "../../maps/routing.js";
 import { paidKm, PAID_KM_RULES } from "./paidKm.js";
+import { gapRoadsOf } from "./gapRoads.js";
 import { cancelFee, type FeeRule } from "../../rules/cancelFees.js";
 import { priceFare, type Fare, type FareLine, type PricingDocument } from "../../rules/fare.js";
 import { waitingExtrasOf, type WaitingExtras } from "../waitingRules.js";
@@ -276,8 +277,9 @@ export async function fareWithWaiting(ex: Executor, trip: TripRow, chargedSecond
 /** Km driven on board: the driver's trace since boarding, else the straight line from the pickup × 1.25. */
 async function kmOnBoard(ex: Executor, trip: TripRow, since: Date): Promise<number> {
   const fixes = await ex.selectFrom("trip_locations").select(["lat", "lng", "accuracy", "measured_at", "speed_mps"]).where("trip_id", "=", trip.trip_id).where("measured_at", ">=", since).where("accuracy", "<=", PAID_KM_RULES.maxAccuracyM).orderBy("measured_at").execute();
-  // Owner decision 2026-11-10: the trace is filtered and smoothed before the km are summed (paidKm.ts).
-  if (fixes.length >= 2) return paidKm(fixes);
+  // Owner decision 2026-11-10: the trace is filtered and smoothed before the km are summed (paidKm.ts); gaps take the cached road
+  // distance (road snapping, table trip_gap_roads via gapRoads.ts), else the straight line.
+  if (fixes.length >= 2) return paidKm(fixes, PAID_KM_RULES, await gapRoadsOf(ex, trip.trip_id));
   const last = trip.driver_id ? await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", trip.driver_id).executeTakeFirst() : undefined;
   return last ? haversineKm(trip.pickup as Place, last) * 1.25 : 0;
 }

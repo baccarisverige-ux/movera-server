@@ -51,6 +51,8 @@ export const sweepIdempotencyKeysHandler: TimerHandler = async (trx, timer) => {
   await trx.deleteFrom("idempotency_keys").where("created_at", "<", new Date(now.getTime() - IDEMPOTENCY_KEY_TTL_MS)).execute();
   // Trip GPS traces 30 days after the fix (owner decision 11); the driver's latest position stays.
   await trx.deleteFrom("trip_locations").where("measured_at", "<", new Date(now.getTime() - 30 * 24 * HOUR_MS)).execute();
+  // Road-snapped gaps (0092) go with the trace they were routed from.
+  await trx.deleteFrom("trip_gap_roads").where("created_at", "<", new Date(now.getTime() - 30 * 24 * HOUR_MS)).execute();
   // App telemetry after 30 days (contract §11).
   await trx.deleteFrom("telemetry").where("at", "<", new Date(now.getTime() - 30 * 24 * HOUR_MS)).execute();
   // contract v0.16.0: an error group not seen for 30 days goes too (its devices with it).

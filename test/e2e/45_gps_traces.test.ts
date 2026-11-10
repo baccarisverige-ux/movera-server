@@ -1,8 +1,10 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { haversineKm } from "../../src/maps/routing.js";
+import { haversineKm, type LatLng, type RouteLeg, type Router } from "../../src/maps/routing.js";
 import { prepareTestWeek } from "../../src/testWeek.js";
 import { driven } from "../../src/trips/ride/settings.js";
+import { MAX_ROUTED_GAPS } from "../../src/trips/ride/gapRoads.js";
+import { buildApp } from "../../src/app.js";
 import { bookAndAccept, drive, type Json, Sim } from "./harness.js";
 
 /**
@@ -38,16 +40,57 @@ function truthAt(tr: Trace, m: number): { lat: number; lng: number } {
   return tr.road[tr.road.length - 1]!;
 }
 
+/** Metres along a road polyline to the point on it nearest `p` (flat projection per segment; fine at city scale). */
+function alongRoad(road: LatLng[], p: LatLng): { along: number; off: number } {
+  let best = { along: 0, off: Infinity };
+  let walked = 0;
+  for (let i = 1; i < road.length; i++) {
+    const a = road[i - 1]!;
+    const b = road[i]!;
+    const seg = haversineKm(a, b) * 1000;
+    const k = Math.cos((a.lat * Math.PI) / 180);
+    const dx = (b.lng - a.lng) * k, dy = b.lat - a.lat;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (((p.lng - a.lng) * k) * dx + (p.lat - a.lat) * dy) / len2));
+    const q = { lat: a.lat + dy * t, lng: a.lng + (b.lng - a.lng) * t };
+    const off = haversineKm(q, p) * 1000;
+    if (off < best.off) best = { along: walked + seg * t, off };
+    walked += seg;
+  }
+  return best;
+}
+
+/**
+ * Road snapping (owner decision 2026-11-10, src/trips/ride/gapRoads.ts): a fake OSRM that answers the distance along the
+ * trace's true road between the two points (the trace whose road is nearest). `down` = routing unavailable.
+ */
+class TraceRouter implements Router {
+  down = false;
+  calls = 0;
+  constructor(private readonly roads: LatLng[][]) {}
+  async route(points: LatLng[]): Promise<RouteLeg> {
+    this.calls++;
+    const [a, b] = [points[0]!, points[points.length - 1]!];
+    const road = this.roads.map((r) => ({ r, off: alongRoad(r, a).off })).sort((x, y) => x.off - y.off)[0]!.r;
+    const meters = Math.abs(alongRoad(road, b).along - alongRoad(road, a).along);
+    // Down: like OsrmRouter, the straight-line estimate (source "estimate"), which road snapping never uses.
+    if (this.down) return { distanceMeters: Math.round(haversineKm(a, b) * 1250), durationSeconds: 60, source: "estimate" };
+    return { distanceMeters: Math.round(meters), durationSeconds: Math.round(meters / 10), source: "osrm" };
+  }
+}
+
 /** What one trace did on the server. */
 type Run = {
   km: number[]; fares: number[]; etas: Json[]; statuses: string[]; nearDropoffAt: { remaining: number } | null;
-  transitionsToApproaching: number; finalKm: number; pathMeters: number; pathSource: string; completed: Json;
+  transitionsToApproaching: number; finalKm: number; tripId: string; pathMeters: number; pathSource: string; completed: Json;
 };
 
 let sim: Sim;
+const TRACES = ["stockholm_sergels_medborgar", "paris_chatelet_eiffel", "tunis_bourguiba_carthage"];
+const roads = new TraceRouter(TRACES.map((n) => trace(n).road));
 
 beforeAll(async () => {
-  sim = await Sim.start();
+  sim = await Sim.start({ router: roads });
   // Owner order TN-9: Tunis in every test. Grand Tunis starts closed on a fresh server: open it, then prepare the
   // test week again so the test drivers work it and it gets the sample settings (as staging did, 2026-11-10).
   const owner = await sim.owner();
@@ -81,7 +124,7 @@ async function run(tr: Trace, index: 0 | 1 | 2): Promise<Run> {
   for (const b of tr.batches.filter((x) => x.phase === "waiting")) await send(b);
   sim.clock.now = at(tr.boardT);
   await drive(driver, tripId, "in_trip", tr.pickup);
-  const out: Run = { km: [], fares: [], etas: [], statuses: [], nearDropoffAt: null, transitionsToApproaching: 0, finalKm: 0, pathMeters: 0, pathSource: "", completed: {} };
+  const out: Run = { km: [], fares: [], etas: [], statuses: [], nearDropoffAt: null, transitionsToApproaching: 0, finalKm: 0, tripId, pathMeters: 0, pathSource: "", completed: {} };
   for (const b of tr.batches.filter((x) => x.phase === "on_board")) {
     await send(b);
     const row = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
@@ -151,17 +194,16 @@ function expectNoTeleportCredit(tr: Trace, r: Run) {
 }
 
 /**
- * Paid km within ±3 % of the true road (owner decision 2026-11-10, smoothed GPS: src/trips/ride/paidKm.ts).
- * Before: the raw sum paid 4.765 km on Paris' 4.290 km road (+11.1 %) and 9.085 km on Tunis' 8.171 km (+11.2 %).
- * `gapBridged`: a trace whose tunnel and 90 s gap are bridged by straight lines (Stockholm: even the true positions of
- * its fixes sum to only 3.14 km of 3.503) cannot reach -3 % without road snapping; it keeps the +3 % ceiling and the
- * 0.85 floor of expectSane.
+ * Paid km within ±3 % of the true road (owner decision 2026-11-10, smoothed GPS: src/trips/ride/paidKm.ts, and road
+ * snapping of gaps: src/trips/ride/gapRoads.ts). Before: the raw sum paid 4.765 km on Paris' 4.290 km road (+11.1 %)
+ * and 9.085 km on Tunis' 8.171 km (+11.2 %); Stockholm's tunnel and 90 s gap bridged by straight lines paid 3.074 km
+ * of 3.503 (-12.2 %).
  */
-function expectPaidKm(tr: Trace, r: Run, gapBridged: boolean) {
+function expectPaidKm(tr: Trace, r: Run) {
   const roadKm = tr.roadMeters / 1000;
   console.info(`[paid km] ${tr.name}: ${r.finalKm} km on a ${roadKm} km road (${(((r.finalKm / roadKm) - 1) * 100).toFixed(1)} %)`);
   expect(r.finalKm, `paid km vs road ${roadKm} km`).toBeLessThanOrEqual(roadKm * 1.03);
-  if (!gapBridged) expect(r.finalKm, `paid km vs road ${roadKm} km`).toBeGreaterThanOrEqual(roadKm * 0.97);
+  expect(r.finalKm, `paid km vs road ${roadKm} km`).toBeGreaterThanOrEqual(roadKm * 0.97);
 }
 
 /**
@@ -169,7 +211,7 @@ function expectPaidKm(tr: Trace, r: Run, gapBridged: boolean) {
  * The drawn path (contract §25 fixes its filter: accuracy <= 50 m, 25 m steps, 150 km/h) still over-draws Paris and
  * Tunis by more than 10 % (src/trips/path.ts:28-40): kept as it.fails until the contract changes that filter.
  */
-function traceSuite(name: string, index: 0 | 1 | 2, overDraws: boolean, gapBridged = false) {
+function traceSuite(name: string, index: 0 | 1 | 2, overDraws: boolean) {
   describe(name, () => {
     const tr = trace(name);
     let r: Run;
@@ -179,8 +221,8 @@ function traceSuite(name: string, index: 0 | 1 | 2, overDraws: boolean, gapBridg
     it("sane on real-world GPS: km >= 0 and never down, fare never down, ETA >= 0, near drop-off once and only when near, driven path", () => {
       expectSane(tr, r);
     });
-    it(`paid km within ±3 % of the road${gapBridged ? " (gaps bridged: +3 % ceiling only)" : ""}`, () => {
-      expectPaidKm(tr, r, gapBridged);
+    it("paid km within ±3 % of the road (gaps road-snapped)", () => {
+      expectPaidKm(tr, r);
     });
     (overDraws ? it.fails : it)(`no teleport path: driven path <= road x 1.10${overDraws ? " (FAILS today: src/trips/path.ts:28-40, contract §25 filter)" : ""}`, () => {
       expectNoTeleportCredit(tr, r);
@@ -188,15 +230,56 @@ function traceSuite(name: string, index: 0 | 1 | 2, overDraws: boolean, gapBridg
   });
 }
 
-const TRACES = ["stockholm_sergels_medborgar", "paris_chatelet_eiffel", "tunis_bourguiba_carthage"];
-
 describe("recorded-style GPS traces through the server (T13)", () => {
   it("every trace file has exactly one suite below (fixtures used by one test each)", () => {
     const files = readdirSync(new URL("../fixtures/traces/", import.meta.url)).filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, ""));
     expect(files.sort()).toEqual([...TRACES].sort());
   });
-  traceSuite("stockholm_sergels_medborgar", 0, false, true);
+  traceSuite("stockholm_sergels_medborgar", 0, false);
   traceSuite("paris_chatelet_eiffel", 1, true);
   // Owner order TN-9: Avenue Habib Bourguiba → Aéroport Tunis-Carthage.
   traceSuite("tunis_bourguiba_carthage", 2, true);
+  // Several server copies / a restart: the road km live in Postgres (trip_gap_roads, 0092), not in one copy's memory.
+  // A second app on the same database, whose router is down, pays the same km without one router call.
+  describe("stockholm_sergels_medborgar paid by a second server copy", () => {
+    const tr = trace("stockholm_sergels_medborgar");
+    it("same road-snapped km from the database alone", async () => {
+      roads.calls = 0;
+      const r = await run(tr, 0);
+      expect(roads.calls).toBeLessThanOrEqual(MAX_ROUTED_GAPS);
+      const rows = await sim.db.selectFrom("trip_gap_roads").selectAll().where("trip_id", "=", r.tripId).execute();
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThanOrEqual(MAX_ROUTED_GAPS);
+      let otherCalls = 0;
+      const other = await buildApp({ env: sim.env, logger: false, db: sim.db, clock: () => sim.clock.now, router: { route: async () => { otherCalls++; throw new Error("down"); } } });
+      try {
+        const row = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", r.tripId).executeTakeFirstOrThrow();
+        expect((await driven(sim.db, row, sim.clock.now)).km).toBe(r.finalKm);
+        expect(r.finalKm).toBeGreaterThanOrEqual((tr.roadMeters / 1000) * 0.97);
+        expect(otherCalls).toBe(0);
+      } finally {
+        await other.close();
+      }
+    }, 180_000);
+  });
+  // Routing off or down: the gaps fall back to straight lines, the trip still completes (never fails).
+  describe("stockholm_sergels_medborgar with routing down", () => {
+    const tr = trace("stockholm_sergels_medborgar");
+    let r: Run;
+    beforeAll(async () => {
+      roads.down = true;
+      roads.calls = 0;
+      r = await run(tr, 0);
+      roads.down = false;
+    }, 180_000);
+    it("falls back to the straight line, bounded router calls, trip completes", () => {
+      const roadKm = tr.roadMeters / 1000;
+      console.info(`[paid km] ${tr.name} (routing down): ${r.finalKm} km on a ${roadKm} km road`);
+      expect(r.completed["status"]).toBe("completed");
+      expect(r.finalKm).toBeGreaterThanOrEqual(roadKm * 0.85);
+      expect(r.finalKm).toBeLessThan(roadKm * 0.97);
+      expect(roads.calls).toBeGreaterThan(0);
+      expect(roads.calls).toBeLessThanOrEqual(MAX_ROUTED_GAPS);
+    });
+  });
 });

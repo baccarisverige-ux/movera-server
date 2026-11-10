@@ -272,7 +272,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await chatRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}), ...(translator ? { translator } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
-    await driverRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
+    await driverRoutes(app, { db, jwtSecret, documentKey, invites, router: roads, ...(clock ? { clock } : {}) });
     await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     // v0.18.54 §76: Reveal with a reason (riders, drivers, fleets) and the one-click SOS reveal.
     await revealRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
