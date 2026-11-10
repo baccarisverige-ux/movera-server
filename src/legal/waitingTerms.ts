@@ -18,6 +18,7 @@ const LABELS = (contract as unknown as { categories: { labels: Record<string, st
 /** sv / fr '12,26 kr', '0,50 €'; en '12.26 kr', '€0.50'; whole amounts without decimals (fixtures/arrived_waiting.json#termsMoney). */
 export function termsMoney(m: Money, lang: Lang): string {
   let num = majorText(m);
+  if (m.currency === "TND") return `${num} DT`; // v0.18.59 §81: dot in every language
   if (lang !== "en") num = num.replace(".", ",");
   if (m.currency === "SEK") return `${num} kr`;
   if (m.currency === "EUR") return lang === "en" ? `€${num}` : `${num} €`;

@@ -39,7 +39,7 @@ export function driverMomentOf(before: Pick<TripRow, "driver_id" | "next_after_t
 
 export const amountText = (amountMinor: number, currency: string, lang: Lang) => {
   const value = localAmount({ amountMinor, currency: currency as CurrencyCode }, lang);
-  return currency === "SEK" ? `${value} kr` : currency === "EUR" ? `${value} €` : `${value} ${currency}`;
+  return currency === "SEK" ? `${value} kr` : currency === "EUR" ? `${value} €` : currency === "TND" ? `${value} DT` : `${value} ${currency}`;
 };
 
 /** Writes the driver's notice for `moment` on the trip as it is after the step (its cancellation carries his share). */

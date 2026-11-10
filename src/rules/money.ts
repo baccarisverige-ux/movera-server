@@ -173,11 +173,21 @@ export type MoneyLike = { amountMinor: number; currency: string };
  */
 export function majorText(m: MoneyLike): string {
   const unit = 10 ** exponentOf(m.currency as CurrencyCode);
-  return m.amountMinor % unit === 0 ? String(m.amountMinor / unit) : toMajorString(m as Money);
+  const text = m.amountMinor % unit === 0 ? String(m.amountMinor / unit) : toMajorString(m as Money);
+  return m.currency === "TND" ? groupThousands(text) : text;
 }
 
-/** The amount for a notice in sv-SE / fr-FR / en-GB, whole amounts without decimals, else the currency's own decimals. */
+/** v0.18.59 §81: a space between thousands of the integer part ("1250.500" → "1 250.500"). */
+function groupThousands(text: string): string {
+  const [whole = "", frac] = text.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return frac === undefined ? grouped : `${grouped}.${frac}`;
+}
+
+/** The amount for a notice in sv-SE / fr-FR / en-GB (TND: "12.350" in every language, §81), whole amounts without decimals, else the currency's own decimals. */
 export function localAmount(m: MoneyLike, lang: string): string {
+  // v0.18.59 §81 (owner 2026-11-10): TND is written with a dot and a space between thousands in every language ("12.350").
+  if (m.currency === "TND") return majorText(m);
   const digits = exponentOf(m.currency as CurrencyCode);
   const unit = 10 ** digits;
   return (m.amountMinor / unit).toLocaleString(lang === "en" ? "en-GB" : lang === "fr" ? "fr-FR" : "sv-SE", { minimumFractionDigits: m.amountMinor % unit === 0 ? 0 : digits, maximumFractionDigits: digits });
