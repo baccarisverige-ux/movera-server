@@ -1,3 +1,4 @@
+import { localAmount } from "../rules/money.js";
 import { z } from "zod";
 import type { Principal } from "../auth/guard.js";
 import { contract } from "../contract/contract.js";
@@ -43,9 +44,8 @@ export async function walletCreditMax(ex: Executor, country: string): Promise<Mo
   return WC.defaultMax[country] ?? null;
 }
 
-const amountText = (m: Money, lang: string) => {
-  const digits = m.currency === "TND" ? 1000 : 100;
-  const value = (m.amountMinor / digits).toLocaleString(lang === "en" ? "en-GB" : lang === "fr" ? "fr-FR" : "sv-SE", { minimumFractionDigits: m.amountMinor % digits === 0 ? 0 : 2, maximumFractionDigits: 3 });
+export const amountText = (m: Money, lang: string) => {
+  const value = localAmount(m, lang);
   return m.currency === "SEK" ? `${value} kr` : m.currency === "EUR" ? `${value} €` : `${value} DT`;
 };
 

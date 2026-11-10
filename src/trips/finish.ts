@@ -8,7 +8,7 @@ import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { audit } from "../admin/audit.js";
 import { notify } from "../notifications/service.js";
 import { debtOf } from "../rules/commission.js";
-import { exponentOf, type CurrencyCode } from "../rules/money.js";
+import { localAmount, majorText, type CurrencyCode } from "../rules/money.js";
 import { lockOwnTrip, readOwnTrip, touchTrip } from "./commands.js";
 import { driverTotalOf, endInfoOf, tripProjection } from "./projection.js";
 import { credit } from "./ride.js";
@@ -138,8 +138,8 @@ export async function giveTip(trx: Trx, riderId: string, tripId: string, body: u
   const rules = tipRulesOf((await liveDocument(trx, "rider_app_config", trip.zone_id))?.document, zone?.country ?? "", trip.currency, amounts);
   if (!amounts.includes(tip.amount.amountMinor)) {
     // Builder question 2 (admin tipRules.customAmount): any whole amount from 1 up to customMax, when on.
-    if (!rules.customAmount || tip.amount.amountMinor < 1) throw badRequest(`Choose one of the amounts: ${amounts.map((a) => a / 100).join(", ")} ${trip.currency}.`, "tip_amount_not_allowed");
-    if (tip.amount.amountMinor > rules.customMax.amountMinor) throw badRequest(`At most ${rules.customMax.amountMinor / 100} ${trip.currency}.`, "tip_above_max");
+    if (!rules.customAmount || tip.amount.amountMinor < 1) throw badRequest(TIP_TEXT.choose(amounts, trip.currency), "tip_amount_not_allowed");
+    if (tip.amount.amountMinor > rules.customMax.amountMinor) throw badRequest(TIP_TEXT.atMost(rules.customMax.amountMinor, trip.currency), "tip_above_max");
   }
   // Builder question 1 (admin tipRules.cashAfterTrip, default off): a cash tip only while the rider is in the car.
   if (tip.method === "cash" && !rules.cashAfterTrip && trip.ended_at && now.getTime() > trip.ended_at.getTime() + rules.cashInCarMinutes * 60_000) {
@@ -224,12 +224,19 @@ export async function adminReceipt(ex: Executor, who: Principal, tripId: string)
   return receiptOf(ex, await adminTripRow(ex, who, tripId), "admin");
 }
 
+/** English error texts of the tip and driver-pay checks (exported for tests). */
+export const TIP_TEXT = {
+  choose: (amounts: number[], currency: string) => `Choose one of the amounts: ${amounts.map((a) => majorText({ amountMinor: a, currency: currency as CurrencyCode })).join(", ")} ${currency}.`,
+  atMost: (max: number, currency: string) => `At most ${majorText({ amountMinor: max, currency: currency as CurrencyCode })} ${currency}.`,
+};
+export const PAY_TEXT = {
+  atMost: (max: number, currency: string) => `One change is at most ${majorText({ amountMinor: max, currency: currency as CurrencyCode })} ${currency}.`,
+  belowZero: (before: number, currency: string) => `The driver's pay on this trip is ${majorText({ amountMinor: before, currency: currency as CurrencyCode })} ${currency}; it cannot go below 0.`,
+};
 const fill = (text: string, values: Record<string, string>) => text.replace(/\{(\w+)\}/g, (all, key: string) => values[key] ?? all);
 export const amountText = (m: Money, lang: string) => {
   // The currency's own decimals (SEK/EUR 2, TND 3; CONTRACT.md §1 "Money"), never a fixed 100.
-  const digits = exponentOf(m.currency as CurrencyCode);
-  const unit = 10 ** digits;
-  const value = (m.amountMinor / unit).toLocaleString(lang === "en" ? "en-GB" : lang === "fr" ? "fr-FR" : "sv-SE", { minimumFractionDigits: m.amountMinor % unit === 0 ? 0 : digits, maximumFractionDigits: digits });
+  const value = localAmount(m, lang);
   return m.currency === "SEK" ? `${value} kr` : m.currency === "EUR" ? `${value} €` : `${value} ${m.currency}`;
 };
 async function languageOf(ex: Executor, table: "riders" | "drivers", id: string): Promise<string> {
@@ -285,10 +292,10 @@ export async function adminDriverPay(trx: Trx, who: Principal, tripId: string, b
   if (body.change.amountMinor === 0) throw badRequest("The change cannot be 0.", "invalid_amount");
   // Checker (2): one change is at most the country's (or zone's) driverPayChangeMax (Admin › Tips & limits).
   const max = await payChangeMaxOf(trx, trip.zone_id, trip.currency);
-  if (Math.abs(body.change.amountMinor) > max) throw badRequest(`One change is at most ${max / 100} ${trip.currency}.`, "driver_pay_above_max");
+  if (Math.abs(body.change.amountMinor) > max) throw badRequest(PAY_TEXT.atMost(max, trip.currency), "driver_pay_above_max");
   const before = driverTotalOf(trip);
   const after = before + body.change.amountMinor;
-  if (after < 0) throw badRequest(`The driver's pay on this trip is ${before / 100} ${trip.currency}; it cannot go below 0.`, "driver_pay_below_zero");
+  if (after < 0) throw badRequest(PAY_TEXT.belowZero(before, trip.currency), "driver_pay_below_zero");
   await credit(trx, { driverId: trip.driver_id, tripId, kind: "adjustment", currency: trip.currency, amount: body.change.amountMinor }, now);
   const updated = await touchTrip(trx, trip, { driver_adjustments_minor: Number(trip.driver_adjustments_minor ?? 0) + body.change.amountMinor }, now);
   await audit(trx, { adminId: who.subjectId, action: "trip.driver_pay", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { reason: body.reason, change: body.change, before: { amountMinor: before, currency: trip.currency }, after: { amountMinor: after, currency: trip.currency } }, at: now });

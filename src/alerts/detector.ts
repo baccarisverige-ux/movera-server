@@ -1,3 +1,4 @@
+import { majorText, toMajorNumber, type CurrencyCode } from "../rules/money.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
@@ -234,7 +235,7 @@ async function driverCauses(ctx: Ctx): Promise<Cause[]> {
   return out;
 }
 
-const major = (minor: string | number, currency: string) => `${(Number(minor) / 100).toFixed(Number(minor) % 100 === 0 ? 0 : 2)} ${currency === "SEK" ? "kr" : currency === "EUR" ? "€" : currency}`;
+export const major = (minor: string | number, currency: string) => `${majorText({ amountMinor: Number(minor), currency: currency as CurrencyCode })} ${currency === "SEK" ? "kr" : currency === "EUR" ? "€" : currency}`;
 
 async function moneyCauses(ctx: Ctx): Promise<Cause[]> {
   const out: Cause[] = [];
@@ -261,7 +262,7 @@ async function moneyCauses(ctx: Ctx): Promise<Cause[]> {
   for (const p of payouts.rows) {
     const country = countryOf(ctx, p.zone_id, p.country ?? "SE");
     const k = settingsOf(ctx, country).kind("payout_big");
-    const level = k.on ? levelFor(Number(p.amount_minor) / 100, k.limits, "up") : null;
+    const level = k.on ? levelFor(toMajorNumber({ amountMinor: Number(p.amount_minor), currency: p.currency as CurrencyCode }), k.limits, "up") : null;
     if (level) out.push({ key: `payout_big:${p.payout_id}`, kind: "payout_big", country, zoneId: p.zone_id, level, title: T("{0}'s payout is {1}", [name(p.first_name, "Driver"), major(p.amount_minor, p.currency)]), detail: T("{0}", [p.payout_id]), ref: { payoutId: p.payout_id, driverId: p.driver_id } });
   }
   return out;

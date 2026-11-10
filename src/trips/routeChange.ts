@@ -1,3 +1,4 @@
+import { toMajorString, type Money as WireMoney } from "../rules/money.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { commissionOf } from "../rules/commission.js";
 import type { Trx } from "../db/db.js";
@@ -277,8 +278,9 @@ async function pushRouteChange(trx: Trx, trip: TripRow, change: RouteChange, sec
   if (!trip.driver_id) return;
   const driver = await trx.selectFrom("drivers").select("language").where("driver_id", "=", trip.driver_id).executeTakeFirst();
   const lang: Lang = driver?.language === "sv" || driver?.language === "fr" ? driver.language : "en";
-  const amount = change.driverEarnings.amountMinor / 100;
-  const earnings = change.driverEarnings.currency === "SEK" ? `${amount.toFixed(2).replace(".", ",")} kr` : `${amount.toFixed(2).replace(".", ",")} €`;
+  const amount = toMajorString(change.driverEarnings as WireMoney).replace(".", ",");
+  const cur = change.driverEarnings.currency;
+  const earnings = cur === "SEK" ? `${amount} kr` : cur === "EUR" ? `${amount} €` : `${amount} ${cur}`;
   await notify(trx, {
     audience: "driver",
     subjectId: trip.driver_id,

@@ -1,3 +1,4 @@
+import { majorText } from "../rules/money.js";
 import { contract } from "../contract/contract.js";
 import { liveDocument } from "../config/service.js";
 import type { Executor } from "../db/db.js";
@@ -16,8 +17,7 @@ const LABELS = (contract as unknown as { categories: { labels: Record<string, st
 
 /** sv / fr '12,26 kr', '0,50 €'; en '12.26 kr', '€0.50'; whole amounts without decimals (fixtures/arrived_waiting.json#termsMoney). */
 export function termsMoney(m: Money, lang: Lang): string {
-  const v = m.amountMinor;
-  let num = v % 100 === 0 ? String(Math.trunc(v / 100)) : `${Math.trunc(v / 100)}.${String(v % 100).padStart(2, "0")}`;
+  let num = majorText(m);
   if (lang !== "en") num = num.replace(".", ",");
   if (m.currency === "SEK") return `${num} kr`;
   if (m.currency === "EUR") return lang === "en" ? `€${num}` : `${num} €`;
