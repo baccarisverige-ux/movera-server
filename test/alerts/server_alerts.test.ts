@@ -443,3 +443,14 @@ describe("live updates (migration 0068): server alerts reach admin screens as al
   });
 });
 
+
+describe("stress T-A follow-up: a sweep with thousands of new causes", () => {
+  it("opens them all (the INSERT goes in chunks; one statement passed 65,535 bind parameters and the sweep was parked)", async () => {
+    const first = await trip("Z001", "SEK", { status: "searching", scheduled_at: min(2) }, "scheduled");
+    // 4,500 booked rides past their pickup time with no driver: 4,500 booked_late causes, 17 values each.
+    await sql`INSERT INTO trips SELECT (jsonb_populate_record(t, jsonb_build_object('trip_id', t.trip_id || '_' || g))).* FROM trips t, generate_series(1, 4499) g WHERE t.trip_id = ${first.id}`.execute(db());
+    const result = await sweep();
+    expect(result.opened).toBeGreaterThanOrEqual(4_500);
+    expect((await live("booked_late")).length).toBe(4_500);
+  });
+});
