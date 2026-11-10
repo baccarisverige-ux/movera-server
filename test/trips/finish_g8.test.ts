@@ -319,8 +319,51 @@ describe("Q1: the rider ends early → the driver gets the finish (amount driven
 
 describe("Q2: the driver ends early → stop waiting kept; a new price only over the admin's km / minutes", () => {
   it("defaults 2 km / 10 min (v0.18.33, owner fix-plan Q1); out of range reads as the default", () => {
-    expect(earlyEndSettingsOf(undefined)).toEqual({ repriceOverKm: 2, repriceOverMin: 10 });
-    expect(earlyEndSettingsOf({ cancelFees: { earlyEnd: { repriceOverKm: 99, repriceOverMin: 3 } } })).toEqual({ repriceOverKm: 2, repriceOverMin: 3 });
+    expect(earlyEndSettingsOf(undefined)).toEqual({ repriceOverKm: 2, repriceOverMin: 10, arrivedWithinMeters: 300, airportArrivedWithinMeters: 1000 });
+    expect(earlyEndSettingsOf({ cancelFees: { earlyEnd: { repriceOverKm: 99, repriceOverMin: 3 } } })).toEqual({ repriceOverKm: 2, repriceOverMin: 3, arrivedWithinMeters: 300, airportArrivedWithinMeters: 1000 });
+  });
+
+  // v0.18.58 §80 (owner 2026-11-10, the Tunis airport trip): counts-as-arrived 300 m, 1000 m at an airport drop-off.
+  const metersNorth = (at: { lat: number; lng: number }, m: number) => ({ lat: at.lat + m / 111_320, lng: at.lng });
+  it("§80: 940 m from an airport drop-off → a normal finish (fail-before: ended early); the preview says the limit and distance", async () => {
+    const bma = await database.db.selectFrom("zones").select(["south", "north", "west", "east"]).where("kind", "=", "airport").where("country", "=", "SE").where("zone_id", "=", "BMA").executeTakeFirstOrThrow();
+    const airport = { address: "Bromma flygplats", lat: (bma.south + bma.north) / 2, lng: (bma.west + bma.east) / 2 };
+    const trip = await accepted(NORRMALM, airport);
+    const v = await onBoard(trip);
+    await moveTo(metersNorth(airport, 940), 600);
+    const { preview, done } = await complete(trip.tripId, v);
+    expect(preview).toMatchObject({ earlyEnd: false, arrivedLimitMeters: 1000 });
+    expect(preview.distanceToDropoffMeters).toBeGreaterThan(900);
+    expect(preview.distanceToDropoffMeters).toBeLessThan(980);
+    expect(done.finish?.endedEarly ?? false).toBe(false);
+  });
+  it("§80: 940 m from a drop-off outside an airport → driver early end; the zone's own limit is used", async () => {
+    const trip = await accepted();
+    const v = await onBoard(trip);
+    await moveTo(metersNorth(SODERMALM, 940), 600);
+    const { preview, done } = await complete(trip.tripId, v);
+    expect(preview).toMatchObject({ earlyEnd: true, arrivedLimitMeters: 300 });
+    expect(done.finish).toMatchObject({ endedEarly: true, endedBy: "driver" });
+  });
+  it("§80: the zone's own limit (admin 1200 m) → 940 m away is a normal finish", async () => {
+    await publish("driver_app_config", "Z001", driverDoc({ cancelFees: { ...driverDoc().cancelFees as Doc, earlyEnd: { repriceOverKm: 2, repriceOverMin: 10, arrivedWithinMeters: 1200, airportArrivedWithinMeters: 1500 } } }));
+    const again = await accepted();
+    const v2 = await onBoard(again);
+    await moveTo(metersNorth(SODERMALM, 940), 600);
+    expect((await complete(again.tripId, v2)).preview).toMatchObject({ earlyEnd: false, arrivedLimitMeters: 1200 });
+  });
+  it("§80: arrived distances out of range or airport below normal → 400 invalid_arrived_distance", async () => {
+    const { arrivedDistanceProblem } = await import("../../src/trips/ride/settings.js");
+    expect(arrivedDistanceProblem(driverDoc())).toBeNull();
+    for (const earlyEnd of [{ arrivedWithinMeters: 49 }, { arrivedWithinMeters: 2001 }, { airportArrivedWithinMeters: 3001 }, { arrivedWithinMeters: 800, airportArrivedWithinMeters: 500 }]) {
+      expect(arrivedDistanceProblem({ cancelFees: { earlyEnd } })).not.toBeNull();
+    }
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const draft = (await call(app, "GET", "/admin/config/driver_app_config?zoneId=Z001", admin.headers)).json();
+    const bad = merged(JSON.parse(JSON.stringify(draft.document)), { cancelFees: { ...(draft.document.cancelFees as Doc), earlyEnd: { repriceOverKm: 2, repriceOverMin: 10, arrivedWithinMeters: 800, airportArrivedWithinMeters: 500 } } });
+    const res = await call(app, "PUT", "/admin/config/driver_app_config", admin.headers, { expectedVersion: draft.version, zoneId: "Z001", document: bad });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json()).toMatchObject({ reason: "invalid_arrived_distance" });
   });
 
   it("Stockholm: 450 m short of the drop-off after the booked time → the booked price stands, marked ended early", async () => {

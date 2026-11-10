@@ -1,11 +1,11 @@
-# Movera API v0.18.56 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.58 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.56
+  version: 0.18.58
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.56 in this folder; this file must agree with them.
+    v0.18.58 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.56
+  version: 0.18.58
   source: contract.json
 paths:
   /auth/otp/request:
@@ -22706,6 +22706,19 @@ components:
               default: none
         chat:
           $ref: '#/components/schemas/ChatSettings'
+        emergencyNumbers:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmergencyNumber'
+          minItems: 1
+          maxItems: 6
+          description: 'v0.18.57 §79: Admin › Pricing › Tips & limits per country › Emergency numbers: CountryRules.emergencyNumbers
+            of the COUNTRY STANDARD only (emergency numbers are national; a zone''s own country_rules never carries them and
+            is 400 invalid_request, reason emergency_numbers_country_only), saved and published with the country_rules document
+            (settings.edit / settings.publish), like CountryRules.chat. Never saved = configDefaults.emergencyNumbers[country].
+            Add, edit, remove and reorder rows; at least one row. SE: 112 (general). FR: 112 (general). TN: police 197, ambulance
+            (SAMU) 190. A country with no default and nothing saved shows 112. 400 invalid_request, reason invalid_emergency_numbers:
+            empty list, more than 6, a number not matching the pattern, a kind not in kinds, or a missing sv / fr / en label.'
       x-server-only: true
     FeeRule:
       type: object
@@ -24269,6 +24282,20 @@ components:
             it is taken off the list.'
         tipRules:
           $ref: '#/components/schemas/TipRules'
+        emergencyNumbers:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmergencyNumber'
+          minItems: 1
+          maxItems: 6
+          description: 'v0.18.57 §79: Written by the server from the zone''s country into RiderAppConfig.emergencyNumbers
+            and DriverAppConfig.emergencyNumbers (GET /rider/config, GET /driver/config, config_published) when the country
+            standard is published, like dontMatchAgain. The apps keep the last list they got (offline) and fall back to [112
+            general] only if they never got one. Rider and driver apps: (1) the safety shield with no trip — one "Call <label>
+            <number>" button per row (opens the phone dialer, nothing sent to Movera) instead of "Call 112"; (2) SOS during
+            a trip — the SOS dials the FIRST number and alerts Movera; the other rows show as extra call buttons on the "SOS
+            sent" screen; (3) ride check "Need help" — the same call buttons; (4) the driver''s emergency contacts screen
+            — the built-in number shown is the country list, not 112. Labels in the app language (sv / fr / en).'
     DriverAppConfig:
       type: object
       description: Per-zone driver document built by Admin exporters. Unknown keys are ignored; missing keys fall back to
@@ -24572,6 +24599,20 @@ components:
             it is taken off the list.'
         headingCheck:
           $ref: '#/components/schemas/HeadingCheckSettings'
+        emergencyNumbers:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmergencyNumber'
+          minItems: 1
+          maxItems: 6
+          description: 'v0.18.57 §79: Written by the server from the zone''s country into RiderAppConfig.emergencyNumbers
+            and DriverAppConfig.emergencyNumbers (GET /rider/config, GET /driver/config, config_published) when the country
+            standard is published, like dontMatchAgain. The apps keep the last list they got (offline) and fall back to [112
+            general] only if they never got one. Rider and driver apps: (1) the safety shield with no trip — one "Call <label>
+            <number>" button per row (opens the phone dialer, nothing sent to Movera) instead of "Call 112"; (2) SOS during
+            a trip — the SOS dials the FIRST number and alerts Movera; the other rows show as extra call buttons on the "SOS
+            sent" screen; (3) ride check "Need help" — the same call buttons; (4) the driver''s emergency contacts screen
+            — the built-in number shown is the country list, not 112. Labels in the app language (sv / fr / en).'
     CategoryPricingWaiting:
       type: object
       description: Waiting at pickup for one category; RiderAppConfig / DriverAppConfig waiting.byCategory carry the same
@@ -25990,7 +26031,11 @@ components:
           description: The driver's part of total (TripProjection.driverEarnings after complete).
         earlyEnd:
           type: boolean
-          description: 'The driver is farther than 300 m from the drop-off: priced as what was driven (owner decision 28).'
+          description: 'v0.18.58 §80: POST /trips/{tripId}/complete and GET /driver/trips/{tripId}/complete-preview: with
+            the driver''s latest fix within the limit (or no fix) the trip is a normal finish (booked fare + stop waiting,
+            endedEarly false, drop-off airport fee charged); farther than the limit it is the driver early end as before (finish.earlyEnd.driver,
+            repriceOverKm / repriceOverMin unchanged). The limit is kept at booking time in bookingSnapshot.earlyEnd; a trip
+            booked before v0.18.58 uses 300 / 1000.'
         fareLines:
           type: array
           items:
@@ -26026,6 +26071,16 @@ components:
         shortMin:
           type: number
           description: 'v0.18.10: booked minutes − minutes on board (early end only).'
+        arrivedLimitMeters:
+          type: integer
+          minimum: 0
+          description: 'v0.18.58 §80: CompletePreview.earlyEnd details gain arrivedLimitMeters (the limit used) and distanceToDropoffMeters
+            (from the latest fix, absent with no fix), so the driver app can say why; TripProjection.finish unchanged.'
+        distanceToDropoffMeters:
+          type: integer
+          minimum: 0
+          description: 'v0.18.58 §80: CompletePreview.earlyEnd details gain arrivedLimitMeters (the limit used) and distanceToDropoffMeters
+            (from the latest fix, absent with no fix), so the driver app can say why; TripProjection.finish unchanged.'
       additionalProperties: false
     RouteRequest:
       type: object
@@ -32296,6 +32351,29 @@ components:
           minimum: 0
           maximum: 120
           default: 10
+        arrivedWithinMeters:
+          type: integer
+          minimum: 50
+          maximum: 2000
+          description: 'v0.18.58 §80: DriverAppConfig.cancelFees.earlyEnd gains arrivedWithinMeters (default 300, 50-2000)
+            and airportArrivedWithinMeters (default 1000, 100-3000). A value outside its range, or airportArrivedWithinMeters
+            below arrivedWithinMeters, is 400 invalid_request, reason invalid_arrived_distance on PUT / publish. POST /trips/{tripId}/complete
+            and GET /driver/trips/{tripId}/complete-preview: with the driver''s latest fix within the limit (or no fix) the
+            trip is a normal finish (booked fare + stop waiting, endedEarly false, drop-off airport fee charged); farther
+            than the limit it is the driver early end as before (finish.earlyEnd.driver, repriceOverKm / repriceOverMin unchanged).
+            The limit is kept at booking time in bookingSnapshot.earlyEnd; a trip booked before v0.18.58 uses 300 / 1000.'
+          default: 300
+        airportArrivedWithinMeters:
+          type: integer
+          minimum: 100
+          maximum: 3000
+          description: 'v0.18.58 §80: DriverAppConfig.cancelFees.earlyEnd gains arrivedWithinMeters (default 300, 50-2000)
+            and airportArrivedWithinMeters (default 1000, 100-3000). A value outside its range, or airportArrivedWithinMeters
+            below arrivedWithinMeters, is 400 invalid_request, reason invalid_arrived_distance on PUT / publish. The airport
+            value is used when the trip''s drop-off lies inside a zone of kind airport (Zone.kind airport, the same lookup
+            as fees.airportDropoff in pricing.requestExtras.airport). Otherwise arrivedWithinMeters. The setting is read from
+            the trip''s priced zone (the pickup zone), not from the airport zone.'
+          default: 1000
     TipRules:
       type: object
       description: 'v0.18.10: RiderAppConfig.tipRules { cashAfterTrip (default false), cashInCarMinutes (default 5, 0–60),
@@ -34637,3 +34715,42 @@ components:
           type: string
           minLength: 1
           maxLength: 2000
+    EmergencyNumber:
+      type: object
+      description: 'v0.18.57 §79: EmergencyNumber { kind police | ambulance | fire | general, number (digits only, optional
+        leading +, 2-15 characters: ^\+?[0-9]{2,15}$), label { sv, fr, en } 1-40 each }. 1-6 numbers per country; the first
+        one is the main number.'
+      required:
+      - kind
+      - number
+      - label
+      properties:
+        kind:
+          type: string
+          enum:
+          - police
+          - ambulance
+          - fire
+          - general
+        number:
+          type: string
+          pattern: ^\+?[0-9]{2,15}$
+        label:
+          type: object
+          required:
+          - sv
+          - fr
+          - en
+          properties:
+            sv:
+              type: string
+              minLength: 1
+              maxLength: 40
+            fr:
+              type: string
+              minLength: 1
+              maxLength: 40
+            en:
+              type: string
+              minLength: 1
+              maxLength: 40
