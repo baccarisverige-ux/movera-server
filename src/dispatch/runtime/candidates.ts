@@ -77,8 +77,7 @@ const hoursMs = (km: number) => (km / PICKUP_KMH) * 3600_000;
  * from there to the booked pickup by the booked time. km (and the ETA) are counted from the current drop-off.
  */
 export async function onTripReach(trx: Trx, trip: TripRow, drivers: Array<{ driver_id: string; lat: number; lng: number }>, now: Date): Promise<Map<string, { dropKm: number; inMin: number }>> {
-  const out = new Map<string, { dropKm: number; inMin: number }>();
-  if (drivers.length === 0) return out;
+  if (drivers.length === 0) return new Map();
   const minPct = await onTripMinDonePct(trx, trip.zone_id);
   const current = await trx.selectFrom("trips").select(["trip_id", "driver_id", "status", "distance_meters", "dropoff"])
     .where("driver_id", "in", drivers.map((d) => d.driver_id)).where("trip_id", "!=", trip.trip_id)
@@ -86,10 +85,25 @@ export async function onTripReach(trx: Trx, trip: TripRow, drivers: Array<{ driv
   const queued = current.length
     ? new Set((await trx.selectFrom("trips").select("next_after_trip_id").where("next_after_trip_id", "in", current.map((c) => c.trip_id)).where("status", "=", "accepted").execute()).map((q) => q.next_after_trip_id))
     : new Set<string | null>();
+  return reachFrom(trip, drivers, current, queued, minPct, now);
+}
+
+type CurrentTrip = { trip_id: string; driver_id: string | null; status: string; distance_meters: number | string | null; dropoff: unknown };
+/** The pure part of onTripReach (exported for the S01 A4 test): which of `drivers` may take `trip` next. */
+export function reachFrom(trip: Pick<TripRow, "pickup" | "kind" | "scheduled_at">, drivers: Array<{ driver_id: string; lat: number; lng: number }>, current: CurrentTrip[], queued: Set<string | null>, minPct: number, now: Date): Map<string, { dropKm: number; inMin: number }> {
+  const out = new Map<string, { dropKm: number; inMin: number }>();
   const pickup = trip.pickup as Place;
+  // S01 A4: the current trips grouped by driver once (was one filter over all of them per driver: O(n²)).
+  const byDriver = new Map<string, Array<(typeof current)[number]>>();
+  for (const c of current) {
+    if (c.driver_id === null) continue;
+    const list = byDriver.get(c.driver_id);
+    if (list) list.push(c);
+    else byDriver.set(c.driver_id, [c]);
+  }
   for (const d of drivers) {
-    const mine = current.filter((c) => c.driver_id === d.driver_id);
-    if (mine.length !== 1) continue;
+    const mine = byDriver.get(d.driver_id);
+    if (mine === undefined || mine.length !== 1) continue;
     const c = mine[0]!;
     if (!ON_BOARD.has(c.status) || queued.has(c.trip_id)) continue;
     const leftKm = dispatchKm({ lat: d.lat, lng: d.lng }, c.dropoff as Place);
