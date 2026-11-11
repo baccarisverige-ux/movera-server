@@ -8,7 +8,7 @@ import { offerSound } from "../../src/dispatch/offerPush.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker, type Timer } from "../../src/jobs/timers.js";
-import { SWEEP_IDEMPOTENCY_KEYS, sweepIdempotencyKeysHandler } from "../../src/jobs/maintenance.js";
+import { CLEANUP_OFFER_PUSHES, housekeepingHandlers } from "../../src/jobs/housekeeping.js";
 import { FcmSender, type PushMessage, type PushSender, type SendResult } from "../../src/push/fcm.js";
 import { PushDispatcher } from "../../src/push/dispatcher.js";
 import { adminSession } from "../support/admin.js";
@@ -170,7 +170,7 @@ describe("G4 checker LOW 9 / LOW 10: no push for a closed offer; old push rows a
     await database.db.deleteFrom("push_devices").where("token", "=", "g4-closed").execute();
   });
 
-  it("the hourly sweep deletes new-offer push rows a day after they ran out; bell notices and fresh pushes stay", async () => {
+  it("the hourly offer-push clean-up deletes new-offer push rows a day after they ran out; bell notices and fresh pushes stay", async () => {
     const old = new Date(clock.now.getTime() - 2 * 86_400_000);
     const row = (id: string, bell: boolean, kind: string, pushUntil: Date | null, created: Date) => ({ notification_id: id, audience: "driver" as const, subject_id: drivers.A.id, kind, title: "t", body: "b", data: "{}", created_at: created, pushed_at: created, bell, push_until: pushUntil });
     await database.db.insertInto("notifications").values([
@@ -178,7 +178,8 @@ describe("G4 checker LOW 9 / LOW 10: no push for a closed offer; old push rows a
       row("ntf_g4_fresh_push", false, "new_offer", new Date(clock.now.getTime() - 60_000), clock.now),
       row("ntf_g4_old_bell", true, "set_offline", null, old),
     ]).execute();
-    await database.db.transaction().execute((trx) => sweepIdempotencyKeysHandler(trx, { timerId: "t", kind: SWEEP_IDEMPOTENCY_KEYS, refId: "all", payload: {}, attempts: 0, firedAt: clock.now } as unknown as Timer));
+    // S4 0.14b: the offer-push clean-up has its own hourly timer (it ran inside the hourly sweep before).
+    await database.db.transaction().execute((trx) => housekeepingHandlers[CLEANUP_OFFER_PUSHES]!(trx, { timerId: "t", kind: CLEANUP_OFFER_PUSHES, refId: "all", payload: {}, attempts: 0, firedAt: clock.now } as unknown as Timer));
     const left = (await database.db.selectFrom("notifications").select("notification_id").where("notification_id", "like", "ntf_g4_%").execute()).map((r) => r.notification_id).sort();
     expect(left).toEqual(["ntf_g4_fresh_push", "ntf_g4_old_bell"]);
   });

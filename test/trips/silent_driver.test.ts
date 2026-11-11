@@ -263,10 +263,11 @@ describe("a driver silent with the rider on board (owner decision 2026-10-26)", 
     }
   });
 
-  it("S7 a trip already on board when the check did not exist gets one from the hourly maintenance sweep", async () => {
+  it("S7 a trip already on board when the check did not exist gets one from the hourly maintenance job", async () => {
     const { tripId } = await onBoard();
     await database.db.deleteFrom("timers").where("kind", "=", DRIVER_SILENCE).execute();
-    await database.db.insertInto("timers").values({ kind: "sweep_idempotency_keys", ref_id: "all", due_at: clock.now }).onConflict((c) => c.columns(["kind", "ref_id"]).doNothing()).execute();
+    // S4 0.14b: booking the missing checks is its own hourly job (it ran inside the hourly sweep before).
+    await database.db.insertInto("timers").values({ kind: "book_silence_checks", ref_id: "all", due_at: clock.now }).onConflict((c) => c.columns(["kind", "ref_id"]).doNothing()).execute();
     await advance(31 * MIN);
     expect((await adminView(tripId)).driverSilentAlert?.kind).toBe("driver_silent");
   });

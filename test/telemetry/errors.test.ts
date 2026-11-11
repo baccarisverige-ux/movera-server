@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { contract } from "../../src/contract/contract.js";
 import { readEnv } from "../../src/env.js";
-import { sweepIdempotencyKeysHandler } from "../../src/jobs/maintenance.js";
+import { CLEANUP_ERROR_GROUPS, housekeepingHandlers } from "../../src/jobs/housekeeping.js";
 import { MAX_EVENTS_PER_GROUP, fingerprint, normalizeMessage, topFrame } from "../../src/telemetry/errors.js";
 import { ADMIN_ROLES } from "../../src/admin/permissions.js";
 import { adminSession } from "../support/admin.js";
@@ -214,7 +214,8 @@ describe("cap and retention", () => {
 
   it("groups not seen for 30 days go with their reports", async () => {
     const later = new Date(clock.now.getTime() + 31 * 24 * 3600_000);
-    await database.db.transaction().execute((trx) => sweepIdempotencyKeysHandler(trx, { firedAt: later } as never));
+    // S4 0.14b: the error-group clean-up has its own hourly timer.
+    await database.db.transaction().execute((trx) => housekeepingHandlers[CLEANUP_ERROR_GROUPS]!(trx, { firedAt: later } as never));
     expect(await database.db.selectFrom("error_groups").selectAll().execute()).toEqual([]);
     expect(await database.db.selectFrom("error_group_devices").selectAll().execute()).toEqual([]);
   });

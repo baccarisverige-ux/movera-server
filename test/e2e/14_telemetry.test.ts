@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { sweepIdempotencyKeysHandler } from "../../src/jobs/maintenance.js";
+import { CLEANUP_TELEMETRY, housekeepingHandlers } from "../../src/jobs/housekeeping.js";
 import { Sim } from "./harness.js";
 
 /**
@@ -65,7 +65,8 @@ describe("Phase 4: telemetry", () => {
 
   it("keeps entries 30 days", async () => {
     const later = new Date(sim.clock.now.getTime() + 31 * 24 * 3600_000);
-    await sim.db.transaction().execute((trx) => sweepIdempotencyKeysHandler(trx, { firedAt: later } as never));
+    // S4 0.14b: the telemetry clean-up has its own hourly timer.
+    await sim.db.transaction().execute((trx) => housekeepingHandlers[CLEANUP_TELEMETRY]!(trx, { firedAt: later } as never));
     expect(await sim.db.selectFrom("telemetry").selectAll().execute()).toEqual([]);
   });
 });

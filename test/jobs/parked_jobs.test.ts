@@ -160,5 +160,26 @@ describe("B1.6b: the worker never waits on a running alert sweep (supervisor F2)
       await holder.end();
     }
   }, 20_000);
+
+  it("G10: a skipped parked-job alert pokes a sweep, so the alert appears right after the lock holder finishes", async () => {
+    const holder = new pg.Client({ connectionString: database.url });
+    await holder.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT pg_advisory_xact_lock(hashtext('movera_alert_sweep'))");
+      await db().insertInto("timers").values({ kind: "incident_escalate", ref_id: "inc_g10", due_at: sql<Date>`'infinity'::timestamptz`, attempts: MAX_ATTEMPTS + 1, last_error: "boom" }).execute();
+      await raiseParkedAlert(db(), {}, NOW);
+      expect(await live()).toHaveLength(0);
+      await holder.query("ROLLBACK");
+    } finally {
+      await holder.end();
+    }
+    // A one-off sweep (alert_sweep "poke") is due now, and running it raises the alert naming the parked job.
+    const poke = await db().selectFrom("timers").selectAll().where("kind", "=", "alert_sweep").where("ref_id", "=", "poke").executeTakeFirst();
+    expect(poke?.due_at.getTime()).toBeLessThanOrEqual(NOW.getTime());
+    await worker({ now: NOW }, {}).runDue();
+    const rows = await live();
+    expect(rows.map((r) => `${r.title} ${r.detail}`).join(" ")).toContain("inc_g10");
+  }, 20_000);
 });
 

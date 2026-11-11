@@ -62,9 +62,12 @@ async function cursorTooOld(ex: Executor, after: number): Promise<boolean> {
 // S05 A2: deleted in batches with the highest sequence taken in SQL (no rows come back to JavaScript, so no
 // Math.max(...huge array) RangeError that rolled back the whole hourly sweep).
 export const PRUNE_BATCH = 10_000;
-export async function pruneAdminLiveEvents(ex: Executor, now: Date, batch: number = PRUNE_BATCH): Promise<void> {
+// S4 0.14b: `maxBatches` = stop after that many statements (the housekeeping timer comes back soon while more are
+// left). Returns how many events were dropped.
+export async function pruneAdminLiveEvents(ex: Executor, now: Date, batch: number = PRUNE_BATCH, maxBatches: number = Infinity): Promise<number> {
   const cut = new Date(now.getTime() - LIVE.retentionHours * 3_600_000);
-  for (;;) {
+  let dropped = 0;
+  for (let round = 0; round < maxBatches; round++) {
     const { rows } = await sql<{ top: string | null; n: string }>`
       WITH gone AS (
         DELETE FROM admin_live_events WHERE sequence IN (
@@ -73,10 +76,12 @@ export async function pruneAdminLiveEvents(ex: Executor, now: Date, batch: numbe
       )
       SELECT max(sequence)::text AS top, count(*)::text AS n FROM gone`.execute(ex);
     const row = rows[0];
-    if (row === undefined || row.top === null) return;
+    if (row === undefined || row.top === null) return dropped;
     await ex.updateTable("admin_live_pruned").set({ up_to: sql<string>`greatest(up_to, ${row.top}::bigint)` }).where("id", "=", 1).execute();
-    if (Number(row.n) < batch) return;
+    dropped += Number(row.n);
+    if (Number(row.n) < batch) return dropped;
   }
+  return dropped;
 }
 
 type Subscriber = { who: Principal; last: number; own?: SettledCursor; catchingUp: boolean; send: (row: AdminLiveRow) => void; cursor: (sequence: number) => void };
