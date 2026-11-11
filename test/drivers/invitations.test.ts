@@ -245,3 +245,35 @@ describe("the driver asks with the code", () => {
     expect((await call(app, "GET", "/driver/fleet/invitations", bo)).json().items).toEqual([]);
   });
 });
+
+describe("J13: a closed invitation's 409 projection is the caller's own view", () => {
+  it("the owner gets his view (no name of the driver who declined); the driver no number; a masked admin a masked number", async () => {
+    // The fleet was blocked above; approve it again so the owner may invite.
+    const fleet = (await call(app, "GET", `/admin/fleets/${fleetId}`, admin.headers)).json().fleet;
+    await call(app, "POST", `/admin/fleets/${fleetId}/review`, admin.headers, { expectedVersion: fleet.version, decision: "approved" });
+    const sent = await call(app, "POST", "/driver/fleet/invite", owner, { phone: TEST_PHONES[2] });
+    expect(sent.json()).toMatchObject({ status: "pending" });
+    const id = sent.json().invitationId;
+    expect((await call(app, "POST", `/driver/fleet/invitations/${id}/decline`, bo)).json()).toMatchObject({ status: "declined" });
+
+    const ownerSees = (await call(app, "POST", `/driver/fleet/invitations/${id}/cancel`, owner)).json();
+    expect(ownerSees).toMatchObject({ reason: "invitation_closed", projection: { status: "declined", phone: TEST_PHONES[2] } });
+    expect(ownerSees.projection).not.toHaveProperty("driverId");
+    expect(ownerSees.projection).not.toHaveProperty("driverName");
+
+    const driverSees = (await call(app, "POST", `/driver/fleet/invitations/${id}/accept`, bo)).json();
+    expect(driverSees).toMatchObject({ reason: "invitation_closed", projection: { status: "declined", driverId: boId } });
+    expect(driverSees.projection).not.toHaveProperty("phone");
+
+    // No built-in role holds drivers.activate without drivers.viewSensitive, so the masked admin is called directly.
+    const { adminDecideInvitation } = await import("../../src/drivers/invitations.js");
+    const masked = await database.db
+      .transaction()
+      .execute((trx) => adminDecideInvitation(trx, {} as never, { subjectId: admin.adminId, zones: ["*"], perms: ["drivers.activate"] }, fleetId, id, "cancel", clock.now))
+      .catch((e: { options?: { projection?: Record<string, unknown> } }) => e.options?.projection);
+    expect(masked).toMatchObject({ status: "declined", phone: maskPhone(TEST_PHONES[2]!), sensitiveMasked: true });
+
+    const full = (await call(app, "POST", `/admin/fleets/${fleetId}/invitations/${id}/cancel`, admin.headers)).json();
+    expect(full.projection).toMatchObject({ phone: TEST_PHONES[2], driverName: "Bo Ek" });
+  });
+});
