@@ -56,10 +56,15 @@ function invalidIndexHint(names: string[]): string {
  */
 const WAITS_WITHOUT_LIMIT = /\bCONCURRENTLY\b|\bVALIDATE\s+CONSTRAINT\b/i;
 
+/** The statement without string literals and comments, so a header or a string naming these words never matches (supervisor #189 F1b). */
+function sqlCodeOnly(statement: string): string {
+  return statement.replace(/'(?:[^']|'')*'/g, "''").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+}
+
 async function runWithoutTransaction(client: pg.PoolClient, name: string, sql: string, lockTimeoutMs: number): Promise<void> {
   try {
     for (const statement of splitSql(sql)) {
-      if (!WAITS_WITHOUT_LIMIT.test(statement)) {
+      if (!WAITS_WITHOUT_LIMIT.test(sqlCodeOnly(statement))) {
         await client.query(statement);
         continue;
       }

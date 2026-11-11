@@ -133,6 +133,22 @@ describe("B1.4: migrations run without the app statement limit, with a lock limi
     await holder.query("ROLLBACK");
   }, 20_000);
 
+  it("a comment or string that names CONCURRENTLY / VALIDATE CONSTRAINT does not lift the limit from another statement (supervisor #189 F1b)", async () => {
+    const database = await migratedDb();
+    const pool = appPool(database);
+    const holder = new pg.Client({ connectionString: database.url });
+    await holder.connect();
+    cleanups.push(() => holder.end());
+    await holder.query("BEGIN");
+    await holder.query("LOCK TABLE riders IN ACCESS SHARE MODE");
+    const sql = `${NO_TRANSACTION_MARKER}\n-- Rule 46: CHECK added NOT VALID, then VALIDATE CONSTRAINT (light lock); indexes are built CONCURRENTLY.\n` +
+      `ALTER TABLE riders ADD CONSTRAINT b14_nv2_chk CHECK ('CONCURRENTLY' <> '') NOT VALID;\n`;
+    const started = Date.now();
+    await expect(migrate(pool, migrationsWith({ "9999_b14_nv2.sql": sql }), { lockTimeoutMs: 500 })).rejects.toThrow(/lock timeout/);
+    expect(Date.now() - started).toBeLessThan(3000);
+    await holder.query("ROLLBACK");
+  }, 20_000);
+
   it("a transactional file after a no-transaction file gets the lock limit back (supervisor #189 F2)", async () => {
     const database = await migratedDb();
     const check = (want: string) =>
