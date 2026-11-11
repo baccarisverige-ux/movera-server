@@ -14,10 +14,10 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { CLEAR_OFFLINE_REASON } from "./offlineReason.js";
 import { availabilityOnTrip, offlineAfterTripView } from "./presence.js";
-import { documentSummaries } from "../documents/service.js";
-import { EXTRA_CATEGORIES, carRuleProblems, categoryProblem, liveRequiredDocuments, onboardingSettings, type Fuel } from "./onboardingSettings.js";
+import { documentSummaries, documentSummariesOf } from "../documents/service.js";
+import { EXTRA_CATEGORIES, carRuleProblems, categoryProblem, liveRequiredDocuments, onboardingSettings, onboardingSettingsOf, requiredOf, type Fuel, type OnboardingSettings } from "./onboardingSettings.js";
 import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
-import { signUpView } from "./reminders.js";
+import { signUpOf } from "./reminders.js";
 import { DRIVER_HOME, areaView, hasFreshPosition } from "./presence.js";
 import { RIDERS_ONLINE_WINDOW_SECONDS, ridersOnlineByZone } from "../riders/presence.js";
 import { onDriverPosition } from "../airportQueue/service.js";
@@ -99,10 +99,90 @@ async function activeTripOf(ex: Executor, driverId: string) {
   return ex.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert", "pickup", "dropoff", "eta"]).where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
 }
 
-export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin", now: Date = new Date()): Promise<Record<string, unknown>> {
-  const location = await ex.selectFrom("driver_locations").selectAll().where("driver_id", "=", row.driver_id).executeTakeFirst();
-  const active = await activeTripOf(ex, row.driver_id);
-  const fleet = row.fleet_id ? await ex.selectFrom("fleets").select(["fleet_id", "name", "status", "owner_driver_id", "created_at"]).where("fleet_id", "=", row.fleet_id).executeTakeFirst() : undefined;
+type LocationRow = { lat: number; lng: number; accuracy: number; heading: number | null; speed_mps: number | null; moving: boolean; measured_at: Date; received_at: Date };
+type FleetRow = { fleet_id: string; name: string; status: string; owner_driver_id: string | null; created_at: Date };
+type Summaries = Awaited<ReturnType<typeof documentSummariesOf>> extends Map<string, infer V> ? V : never;
+
+/** What driverView reads besides the driver row, per driver. */
+type ViewParts = { location: LocationRow | undefined; active: { trip_id: string } | undefined; fleet: FleetRow | undefined; documents: Summaries; pendingInvitations: number; settings: OnboardingSettings; signUp: Record<string, unknown> };
+
+const firstBy = <T,>(list: T[], key: (t: T) => string | null) => {
+  const m = new Map<string, T>();
+  for (const t of list) {
+    const k = key(t);
+    if (k !== null && !m.has(k)) m.set(k, t);
+  }
+  return m;
+};
+
+/**
+ * S06 F9: driverView's reads for many drivers, a fixed number of queries whatever their count (each kind with IN).
+ * The admin drivers list used to cost ~10 queries per driver. One after another, not Promise.all: one request must not
+ * take nine pool connections at once.
+ */
+async function viewParts(ex: Executor, rows: DriverRow[], viewer: "driver" | "admin", now: Date): Promise<Map<string, ViewParts>> {
+  const ids = rows.map((r) => r.driver_id);
+  const out = new Map<string, ViewParts>();
+  if (ids.length === 0) return out;
+  const fleetIds = [...new Set(rows.flatMap((r) => (r.fleet_id ? [r.fleet_id] : [])))];
+  const members = rows.filter((r) => r.account_type === "driver").map((r) => r.driver_id);
+  const owners = rows.filter((r) => r.account_type === "fleet").map((r) => r.driver_id);
+  const signingUp = viewer === "admin" ? rows.filter((r) => r.account_status === "pending" || r.account_status === "on_hold") : [];
+  const noCreated = signingUp.filter((r) => !(r as { created_at?: Date }).created_at).map((r) => r.driver_id);
+  const locations = await ex.selectFrom("driver_locations").selectAll().where("driver_id", "in", ids).execute();
+  // v0.18.17 (contract.json#bookLater): a booked ride held for later (scheduled, accepted) is not the current trip.
+  const active = await ex.selectFrom("trips").select(["trip_id", "driver_id"]).where("driver_id", "in", ids).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).execute();
+  const fleets = fleetIds.length ? await ex.selectFrom("fleets").select(["fleet_id", "name", "status", "owner_driver_id", "created_at"]).where("fleet_id", "in", fleetIds).execute() : [];
+  const documents = await documentSummariesOf(ex, "driver", ids);
+  // v0.5.3: invitations waiting for this account's answer (a driver's incoming invites, an owner's incoming requests),
+  // by the command's clock, not the database's (a test clock or a slow request must not change the answer).
+  const memberInvites = members.length
+    ? await ex.selectFrom("fleet_invitations").select(["fleet_invitations.driver_id as id", (eb) => eb.fn.countAll<string>().as("n")])
+        .where("fleet_invitations.driver_id", "in", members).where("fleet_invitations.direction", "=", "owner_invite")
+        .where("fleet_invitations.status", "=", "pending").where("fleet_invitations.expires_at", ">", now).groupBy("fleet_invitations.driver_id").execute()
+    : [];
+  const ownerInvites = owners.length
+    ? await ex.selectFrom("fleet_invitations").innerJoin("fleets", "fleets.fleet_id", "fleet_invitations.fleet_id").select(["fleets.owner_driver_id as id", (eb) => eb.fn.countAll<string>().as("n")])
+        .where("fleets.owner_driver_id", "in", owners).where("fleet_invitations.direction", "=", "driver_request")
+        .where("fleet_invitations.status", "=", "pending").where("fleet_invitations.expires_at", ">", now).groupBy("fleets.owner_driver_id").execute()
+    : [];
+  const settings = await onboardingSettingsOf(ex, rows.map((r) => r.country));
+  const sent = signingUp.length ? await ex.selectFrom("sign_up_reminders").select(["driver_id", "sent_at"]).where("driver_id", "in", signingUp.map((r) => r.driver_id)).orderBy("sent_at", "desc").execute() : [];
+  const created = noCreated.length ? await ex.selectFrom("drivers").select(["driver_id", "created_at"]).where("driver_id", "in", noCreated).execute() : [];
+  const locationOf = firstBy(locations, (l) => l.driver_id);
+  const activeOf = firstBy(active, (t) => t.driver_id);
+  const fleetOf = firstBy(fleets, (f) => f.fleet_id);
+  const invites = new Map<string, number>([...memberInvites, ...ownerInvites].map((r) => [r.id ?? "", Number(r.n)]));
+  const createdOf = new Map(created.map((r) => [r.driver_id, r.created_at]));
+  const sentOf = new Map<string, Date[]>();
+  for (const r of sent) sentOf.set(r.driver_id, [...(sentOf.get(r.driver_id) ?? []), r.sent_at]);
+  const signingUpIds = new Set(signingUp.map((r) => r.driver_id));
+  for (const row of rows) {
+    const rowSettings = settings.get(row.country ?? "")!;
+    const createdAt = (row as { created_at?: Date }).created_at ?? createdOf.get(row.driver_id);
+    out.set(row.driver_id, {
+      location: locationOf.get(row.driver_id) as LocationRow | undefined,
+      active: activeOf.get(row.driver_id),
+      fleet: row.fleet_id ? (fleetOf.get(row.fleet_id) as FleetRow | undefined) : undefined,
+      documents: documents.get(row.driver_id) ?? [],
+      pendingInvitations: invites.get(row.driver_id) ?? 0,
+      settings: rowSettings,
+      signUp: signingUpIds.has(row.driver_id) && createdAt ? signUpOf(createdAt, rowSettings, sentOf.get(row.driver_id) ?? [], now) : {},
+    });
+  }
+  return out;
+}
+
+/** S06 F9: driverView of many drivers (the admin drivers list); the same output, a fixed number of queries. */
+export async function driverViews(ex: Executor, rows: DriverRow[], viewer: "driver" | "admin", now: Date = new Date()): Promise<Array<Record<string, unknown>>> {
+  const parts = await viewParts(ex, rows, viewer, now);
+  const out = [];
+  for (const row of rows) out.push(await driverView(ex, row, viewer, now, parts.get(row.driver_id)));
+  return out;
+}
+
+export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" | "admin", now: Date = new Date(), parts?: ViewParts): Promise<Record<string, unknown>> {
+  const { location, active, fleet, documents, pendingInvitations, settings, signUp } = parts ?? (await viewParts(ex, [row], viewer, now)).get(row.driver_id)!;
   const dob = row.date_of_birth;
   return {
     driverId: row.driver_id,
@@ -119,7 +199,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     zoneIds: row.zone_ids,
     categoryIds: row.category_ids,
     ...(row.vehicle_id ? { vehicleId: row.vehicle_id } : {}),
-    documents: await documentSummaries(ex, "driver", row.driver_id),
+    documents,
     // v0.5.3 (§14): the sign-up details, the fleet and the documents this account needs.
     ...(row.account_type ? { accountType: row.account_type } : {}),
     ...(row.last_name ? { lastName: row.last_name } : {}),
@@ -135,10 +215,10 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     // v0.18.13 (contract.json#drivingLimits.projection): counted driving time against the limit.
     ...(viewer === "driver" ? { drivingTime: await drivingTimeOf(ex, { driver_id: row.driver_id, zone_ids: row.zone_ids, driving_since: row.driving_since ?? null }, now) } : {}),
     ...(row.account_type === "fleet" ? { payoutTo: "self" } : row.account_type === "driver" && fleet ? { payoutTo: "fleet" } : {}),
-    ...(row.account_type ? { pendingFleetInvitations: await pendingInvitations(ex, row, now) } : {}),
+    ...(row.account_type ? { pendingFleetInvitations: pendingInvitations } : {}),
     // v0.18.0 (§27): the lists of the country's onboarding settings (the admin's), else the contract defaults.
-    requiredDocuments: await liveRequiredDocuments(ex, row.country, "driver"),
-    ...(row.account_type === "fleet" ? { requiredFleetDocuments: await liveRequiredDocuments(ex, row.country, "fleet") } : {}),
+    requiredDocuments: row.country ? requiredOf(settings, "driver") : [],
+    ...(row.account_type === "fleet" ? { requiredFleetDocuments: row.country ? requiredOf(settings, "fleet") : [] } : {}),
     ...(active ? { activeTripId: active.trip_id } : {}),
     // v0.18.17 (owner BL-Q4): the driver's home area, set in the driver app; admins see it too.
     ...(row.home_area ? { homeArea: row.home_area } : {}),
@@ -147,7 +227,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     ...(viewer === "driver" ? await areaView(ex, row) : {}),
     version: row.version,
     // 2026-11-09: the command's clock, like every other time here (the real clock made the admin "stuck" flag drift from the sweeps).
-    ...(viewer === "admin" ? await signUpView(ex, row, now) : {}),
+    ...(viewer === "admin" ? signUp : {}),
     ...(viewer === "admin" && location
       ? {
           location: fixView(location),
@@ -155,25 +235,6 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
         }
       : {}),
   };
-}
-
-/** v0.5.3: invitations waiting for this account's answer (a driver's incoming invites, an owner's incoming requests). */
-async function pendingInvitations(ex: Executor, row: Pick<DriverRow, "driver_id" | "account_type">, now: Date): Promise<number> {
-  const q =
-    row.account_type === "fleet"
-      ? ex
-          .selectFrom("fleet_invitations")
-          .innerJoin("fleets", "fleets.fleet_id", "fleet_invitations.fleet_id")
-          .where("fleets.owner_driver_id", "=", row.driver_id)
-          .where("fleet_invitations.direction", "=", "driver_request")
-      : ex.selectFrom("fleet_invitations").where("fleet_invitations.driver_id", "=", row.driver_id).where("fleet_invitations.direction", "=", "owner_invite");
-  const n = await q
-    .select((eb) => eb.fn.countAll<string>().as("n"))
-    .where("fleet_invitations.status", "=", "pending")
-    // The command's clock, not the database's (a test clock or a slow request must not change the answer).
-    .where("fleet_invitations.expires_at", ">", now)
-    .executeTakeFirstOrThrow();
-  return Number(n.n);
 }
 
 export function fixView(row: { lat: number; lng: number; accuracy: number; heading: number | null; speed_mps: number | null; moving: boolean; measured_at: Date }) {

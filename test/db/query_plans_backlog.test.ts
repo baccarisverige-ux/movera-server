@@ -69,8 +69,8 @@ type PlanDatabase = { name: string; pool: pg.Pool };
 let database: PlanDatabase;
 
 /**
- * Its own clone of the template, named movera_qp_* (not movera_t_*): the shared test teardown drops every movera_t_*
- * database on the server, so another run finishing on the same server would drop this one mid-run.
+ * Its own clone of the template, named movera_qp_* (not movera_t_*): kept apart from the per-file clones that the
+ * shared test teardown drops (only this run's, by RUN_DB_PREFIX).
  */
 async function adminQuery(text: string): Promise<void> {
   const client = new pg.Client({ connectionString: adminUrl() });

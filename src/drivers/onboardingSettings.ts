@@ -55,9 +55,38 @@ export function defaultSettings(country: string): OnboardingSettings {
 
 /** The live settings of a country: the published onboarding document, else the defaults. */
 export async function onboardingSettings(ex: Executor, country: string | null | undefined): Promise<OnboardingSettings> {
-  if (!country) return { ...defaultSettings("--"), documents: { ...EMPTY }, expiringTypes: [] };
+  if (!country) return settingsFrom(country, undefined);
   const row = await ex.selectFrom("config_live").select("document").where("doc", "=", "onboarding").where("zone_id", "=", `standard-${country}`).executeTakeFirst();
-  return row === undefined ? defaultSettings(country) : (row.document as OnboardingSettings);
+  return settingsFrom(country, row?.document as OnboardingSettings | undefined);
+}
+
+/** onboardingSettings from the country's published document already read (undefined: none published). */
+export function settingsFrom(country: string | null | undefined, live: OnboardingSettings | undefined): OnboardingSettings {
+  if (!country) return { ...defaultSettings("--"), documents: { ...EMPTY }, expiringTypes: [] };
+  return live ?? defaultSettings(country);
+}
+
+/** S05 A4: every country's published onboarding document, keyed by country, in one query. */
+export async function publishedOnboarding(ex: Executor): Promise<Map<string, OnboardingSettings>> {
+  const rows = await ex.selectFrom("config_live").select(["zone_id", "document"]).where("doc", "=", "onboarding").where("zone_id", "like", "standard-%").execute();
+  return new Map(rows.map((r) => [r.zone_id.slice("standard-".length), r.document as OnboardingSettings]));
+}
+
+/** S05 A4: the largest expiry warning (people or cars) of any country's settings, published or default, in days. */
+export function largestWarnDays(published: Iterable<OnboardingSettings>): number {
+  const all = [...Object.keys(SETTINGS.defaults).map((c) => defaultSettings(c)), defaultSettings("--"), ...published];
+  return Math.max(0, ...all.flatMap((s) => [...(s.expiry?.warnDays ?? []), s.vehicles?.warnDays ?? 0]));
+}
+
+/** S06 F9: onboardingSettings of many countries in one query, keyed by country ("" for none). */
+export async function onboardingSettingsOf(ex: Executor, countries: Array<string | null | undefined>): Promise<Map<string, OnboardingSettings>> {
+  const wanted = [...new Set(countries.map((c) => c ?? ""))];
+  const named = wanted.filter((c) => c !== "");
+  const rows = named.length ? await ex.selectFrom("config_live").select(["zone_id", "document"]).where("doc", "=", "onboarding").where("zone_id", "in", named.map((c) => `standard-${c}`)).execute() : [];
+  const live = new Map(rows.map((r) => [r.zone_id, r.document as OnboardingSettings]));
+  const out = new Map<string, OnboardingSettings>();
+  for (const c of wanted) out.set(c, settingsFrom(c, live.get(`standard-${c}`)));
+  return out;
 }
 
 /** The required documents of a scope; a car also needs the four photos while photosNeeded is on (item 11). */

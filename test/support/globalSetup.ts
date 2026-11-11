@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import pg from "pg";
 import { migrate } from "../../src/db/migrate.js";
 
@@ -7,6 +8,12 @@ import { migrate } from "../../src/db/migrate.js";
  */
 /** Several test runs on one server (parallel worktrees) each set their own TEST_TEMPLATE_DB. */
 export const TEMPLATE_DB = process.env.TEST_TEMPLATE_DB ?? "movera_test_template";
+
+/**
+ * Per-run prefix for the databases test files clone (test/support/db.ts). It is derived from TEMPLATE_DB, so two
+ * runs with different templates never share a prefix and teardown drops only this run's databases.
+ */
+export const RUN_DB_PREFIX = `movera_t_${createHash("sha256").update(TEMPLATE_DB).digest("hex").slice(0, 8)}_`;
 
 export function adminUrl(): string {
   return process.env.TEST_DATABASE_URL ?? "postgres://movera:movera@127.0.0.1:5432/movera";
@@ -37,7 +44,10 @@ export default async function setup(): Promise<() => Promise<void>> {
     const cleanup = new pg.Client({ connectionString: adminUrl() });
     await cleanup.connect();
     try {
-      const left = await cleanup.query<{ datname: string }>("SELECT datname FROM pg_database WHERE datname LIKE 'movera_t\\_%'");
+      const left = await cleanup.query<{ datname: string }>(
+        "SELECT datname FROM pg_database WHERE datname LIKE $1",
+        [`${RUN_DB_PREFIX.replace(/_/g, "\\_")}%`],
+      );
       for (const row of left.rows) await cleanup.query(`DROP DATABASE IF EXISTS ${row.datname} WITH (FORCE)`);
       await cleanup.query(`DROP DATABASE IF EXISTS ${TEMPLATE_DB} WITH (FORCE)`);
     } finally {

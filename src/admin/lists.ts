@@ -2,7 +2,7 @@ import { isTestDriver } from "../drivers/readiness.js";
 import { sql } from "kysely";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import type { Executor, Trx } from "../db/db.js";
-import { driverView, fixView, loadDriver } from "../drivers/service.js";
+import { driverView, driverViews, fixView, loadDriver } from "../drivers/service.js";
 import { activationBlockers } from "../drivers/readiness.js";
 
 export { activationBlockers };
@@ -150,7 +150,7 @@ export async function listDrivers(ex: Executor, who: Principal, input: { cursor?
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   const items = [];
-  for (const r of page) items.push(maskDriverView(await driverView(ex, r as never, "admin"), who));
+  for (const view of await driverViews(ex, page as never, "admin")) items.push(maskDriverView(view, who));
   return { items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.driver_id) : null };
 }
 
