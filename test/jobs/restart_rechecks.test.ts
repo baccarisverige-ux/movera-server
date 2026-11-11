@@ -68,7 +68,7 @@ describe("B1.6b gate: every restart-once handler re-checks the trip or case befo
     const t = await onTrip("in_trip");
     const check = (checkId: string, answer: "ok" | null) => db().insertInto("ride_checks").values({ trip_id: t.id, side: "rider", check_id: checkId, trigger: "long_stop", subject_id: t.riderId, shown_at: at(-120), answer, answered_at: answer ? at(-60) : null, created_at: at(-120) } as never).execute();
     await check("c1", null);
-    await run(noAnswerHandler, timer(kind(RIDE_CHECK_NO_ANSWER), `${t.id}|rider|c1`, NOW));
+    await run(noAnswerHandler, timer(RIDE_CHECK_NO_ANSWER, `${t.id}|rider|c1`, NOW));
     const before = await snapshot(t.id);
     expect(before.incidents).toHaveLength(1);
     await run(noAnswerHandler, timer(RIDE_CHECK_NO_ANSWER, `${t.id}|rider|c1`, at(60)));
@@ -152,9 +152,14 @@ describe("B1.6b gate: every restart-once handler re-checks the trip or case befo
     expect(await snapshot(id)).toEqual(before);
   });
 
+  it("ride_check_no_answer is NOT restarted (its handler does not look at the trip state: an ended trip would get a new safety case) but stays loud (supervisor B1.6b F1)", () => {
+    expect(RESTART_ONCE_KINDS).not.toContain(RIDE_CHECK_NO_ANSWER);
+    expect(LOUD_PARKED_KINDS).toContain(RIDE_CHECK_NO_ANSWER);
+  });
+
   it("every restart-once kind has its test above (add the test first, then the kind)", () => {
     expect([...RESTART_ONCE_KINDS].sort()).toEqual([...tested].sort());
-    // Loud (critical) when parked: every restart-once kind, and the trip kinds not restarted (yet): withdrawals, rounds.
-    expect([...LOUD_PARKED_KINDS].sort()).toEqual([...tested, WITHDRAW, ROUND].sort());
+    // Loud (critical) when parked: every restart-once kind, and the trip kinds not restarted: no-answer checks, withdrawals, rounds.
+    expect([...LOUD_PARKED_KINDS].sort()).toEqual([...tested, RIDE_CHECK_NO_ANSWER, WITHDRAW, ROUND].sort());
   });
 });

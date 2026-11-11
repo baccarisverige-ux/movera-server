@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "kysely";
-import { sweepAlerts } from "../../src/alerts/detector.js";
+import { raiseParkedAlert, sweepAlerts } from "../../src/alerts/detector.js";
+import pg from "pg";
 import * as timers from "../../src/jobs/timers.js";
 import { MAX_ATTEMPTS, TimerWorker, type TimerHandler, type TimerWorkerOptions } from "../../src/jobs/timers.js";
 import { buildWorkerConfig } from "../../src/jobs/workerConfig.js";
@@ -143,3 +144,21 @@ describe("B1.6b: a parked trip or safety timer restarts once", () => {
     expect(await restart!(db(), RESTART_ONCE_KINDS, logger, at(60))).toBe(0);
   });
 });
+
+describe("B1.6b: the worker never waits on a running alert sweep (supervisor F2)", () => {
+  it("raiseParkedAlert skips at once when another sweep holds the sweep lock (that sweep sees the row on its next run)", async () => {
+    const holder = new pg.Client({ connectionString: database.url });
+    await holder.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT pg_advisory_xact_lock(hashtext('movera_alert_sweep'))");
+      const started = Date.now();
+      await raiseParkedAlert(db(), {}, NOW);
+      expect(Date.now() - started).toBeLessThan(1000);
+      await holder.query("ROLLBACK");
+    } finally {
+      await holder.end();
+    }
+  }, 20_000);
+});
+

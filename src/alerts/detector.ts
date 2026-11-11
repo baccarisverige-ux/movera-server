@@ -465,8 +465,14 @@ export const ALERT_INSERT_CHUNK = 500;
  * parks a timer, so that alert never waits on a sweep that may itself be parked).
  */
 export async function sweepAlerts(trx: Trx, now: Date, scope: "all" | "system" = "all"): Promise<{ opened: number; solved: number; reopened: number }> {
-  // One sweep at a time across instances (a poke and the periodic run may meet).
-  await sql`SELECT pg_advisory_xact_lock(hashtext('movera_alert_sweep'))`.execute(trx);
+  // One sweep at a time across instances (a poke and the periodic run may meet). The worker's scoped sweep never waits
+  // (supervisor B1.6b F2): if a sweep runs now, it skips — that sweep, or the next one, sees the parked row.
+  if (scope === "system") {
+    const got = await sql<{ ok: boolean }>`SELECT pg_try_advisory_xact_lock(hashtext('movera_alert_sweep')) AS ok`.execute(trx);
+    if (!got.rows[0]?.ok) return { opened: 0, solved: 0, reopened: 0 };
+  } else {
+    await sql`SELECT pg_advisory_xact_lock(hashtext('movera_alert_sweep'))`.execute(trx);
+  }
   const ctx = await loadCtx(trx, now);
   const causes = new Map((scope === "system" ? await systemCauses(ctx) : await findAll(ctx)).map((c) => [c.key, c]));
   let live = trx
