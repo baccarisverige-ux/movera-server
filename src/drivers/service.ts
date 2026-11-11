@@ -46,6 +46,7 @@ const MAX_FIX_AHEAD_MS = 60 * 1000;
 
 export type DriverRow = {
   offline_after_trip?: boolean;
+  next_trips_off?: boolean;
   offline_after_trip_at?: Date | null;
   driver_id: string;
   /** v0.18.17 (owner BL-Q4). */
@@ -191,6 +192,8 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     ...(viewer === "admin" && row.payout_hold_at ? { payoutHold: { reason: row.payout_hold_reason ?? "", at: row.payout_hold_at.toISOString(), ...(row.payout_hold_by ? { by: row.payout_hold_by } : {}) } } : {}),
     onlineStatus: row.online_status,
     ...offlineAfterTripView(row),
+    // v0.18.65 §86: next-trip offers stopped for his current trip.
+    nextTripsOff: row.next_trips_off === true,
     // v0.18.6 (owner "Send the real reason"): why the server set him offline, while he is offline.
     ...(row.online_status === "offline" && row.offline_reason ? { offlineReason: row.offline_reason, ...(row.offline_note ? { offlineNote: row.offline_note } : {}), ...(row.offline_at ? { offlineAt: row.offline_at.toISOString() } : {}) } : {}),
     ...(location ? { moving: location.moving } : {}),
@@ -649,7 +652,7 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
   let rowsQuery = scoped()
     .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
     .select([
-      "drivers.driver_id", "drivers.first_name", "drivers.online_status", "drivers.vehicle_id", "drivers.zone_ids", "drivers.offline_after_trip",
+      "drivers.driver_id", "drivers.first_name", "drivers.online_status", "drivers.vehicle_id", "drivers.zone_ids", "drivers.offline_after_trip", "drivers.next_trips_off",
       "driver_locations.lat", "driver_locations.lng", "driver_locations.accuracy", "driver_locations.heading", "driver_locations.speed_mps", "driver_locations.moving", "driver_locations.measured_at", "driver_locations.received_at", "driver_locations.zone_id",
       "vehicles.plate",
     ])
@@ -671,6 +674,7 @@ export async function liveDrivers(ex: Executor, zoneId: string | undefined, zone
       firstName: r.first_name,
       onlineStatus: r.online_status,
       ...(r.offline_after_trip ? { offlineAfterTrip: true } : {}),
+      ...(r.next_trips_off ? { nextTripsOff: true } : {}),
       ...(r.moving !== null ? { moving: r.moving } : {}),
       ...(hasFix ? { location: fixView({ lat: r.lat!, lng: r.lng!, accuracy: r.accuracy!, heading: r.heading, speed_mps: r.speed_mps, moving: r.moving ?? false, measured_at: r.measured_at! }), lastFixAt: r.received_at!.toISOString() } : {}),
       stale: !hasFix || now.getTime() - r.received_at!.getTime() > STALE_AFTER_SECONDS * 1000,

@@ -9,7 +9,8 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, ZoneFilterQuery } from "../admin/zoneFilter.js";
-import { addVehicle, getDriverProfile, liveDrivers, type MapBox, listVehicles, loadDriver, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
+import { addVehicle, driverView, getDriverProfile, liveDrivers, type MapBox, listVehicles, loadDriver, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
+import { setNextTrips } from "./presence.js";
 import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, startOwnCompany, submitOnboarding } from "./onboarding.js";
 import { listReminders } from "./reminders.js";
 import { documentTypes, onboardingSettings } from "./onboardingSettings.js";
@@ -33,6 +34,8 @@ export const UPLOADS_PER_HOUR = 30;
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const FixSchema = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracy: z.number().min(0), heading: z.number().min(0).lt(360).optional(), speedMps: z.number().min(0).optional(), moving: z.boolean().optional(), measuredAt: z.string().datetime() });
+// v0.18.65 §86 (contract.json#nextTripsSwitch): the trip sheet's radar, stop / start next trips.
+const NextTripsBody = z.object({ on: z.boolean() });
 const AvailabilityBody = z.object({ expectedVersion: z.number().int().min(1), onlineStatus: z.enum(["online", "offline"]), location: FixSchema.optional() });
 const When = z.object({ from: z.string().datetime().optional(), to: z.string().datetime().optional() });
 const DocumentsQuery = z.object({ status: z.union([z.string(), z.array(z.string())]).optional() });
@@ -85,6 +88,15 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const who = await authenticate(request, guard, ["driver"]);
     const body = parseBody(AvailabilityBody, request.body);
     return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await setAvailability(trx, who.subjectId, body, now()) }))).body;
+  });
+
+  app.post(`${API_PREFIX}/driver/next-trips`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const body = parseBody(NextTripsBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => {
+      await setNextTrips(trx, who.subjectId, body.on, now());
+      return { status: 200, body: await driverView(trx, await loadDriver(trx, who.subjectId), "driver", now()) };
+    })).body;
   });
 
   app.post(`${API_PREFIX}/driver/location`, async (request) => {

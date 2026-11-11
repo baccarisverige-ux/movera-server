@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { NOT_HELD } from "../reservations/view.js";
 import { audit } from "../admin/audit.js";
 import { liveDocument } from "../config/service.js";
@@ -188,4 +189,23 @@ export async function settleOfflineAfterTrip(trx: Trx, driverId: string, now: Da
   if (!off) return;
   await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
   await markSetOffline(trx, driverId, "after_trip", {}, now);
+}
+
+/* ---------------------------------------------------------------- v0.18.65 §86: stop next trips during a trip */
+
+/**
+ * POST /driver/next-trips (contract.json#nextTripsSwitch, owner phone test 2026-11-11): the trip sheet's radar. On a
+ * trip, on false stops next-trip offers for this trip (his open ones go at once), on true starts them again; the same
+ * state again changes nothing. Off a trip nothing changes. The driver row is locked (rule 33).
+ */
+export async function setNextTrips(trx: Trx, driverId: string, on: boolean, now: Date): Promise<void> {
+  const d = await trx.selectFrom("drivers").select(["online_status", "version", "next_trips_off"]).where("driver_id", "=", driverId).forUpdate().executeTakeFirst();
+  if (d === undefined || d.online_status !== "on_trip" || d.next_trips_off === !on) return;
+  await trx.updateTable("drivers").set({ next_trips_off: !on, version: d.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
+  if (!on) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
+}
+
+/** Each trip starts with next trips on: called when a trip of his ends (releaseDriver, the driver row is his). */
+export async function clearNextTripsOff(trx: Trx, driverId: string, now: Date): Promise<void> {
+  await trx.updateTable("drivers").set({ next_trips_off: false, version: sql`version + 1`, updated_at: now }).where("driver_id", "=", driverId).where("next_trips_off", "=", true).execute();
 }

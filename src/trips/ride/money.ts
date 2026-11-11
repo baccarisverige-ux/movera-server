@@ -1,7 +1,7 @@
 import { sql } from "kysely";
 import type { OfflineReason } from "../../db/schema.js";
 import { markSetOffline } from "../../drivers/offlineReason.js";
-import { settleOfflineAfterTrip } from "../../drivers/presence.js";
+import { clearNextTripsOff, settleOfflineAfterTrip } from "../../drivers/presence.js";
 import { offlineIfDocumentsExpired } from "../../drivers/reminders.js";
 import type { Executor, Trx } from "../../db/db.js";
 import type { TripRow } from "../../db/tripLog.js";
@@ -18,6 +18,8 @@ import { tripProjection } from "../projection.js";
 
 export async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Promise<void> {
   if (driverId === null) return;
+  // v0.18.65 §86: the trip sheet's "stop next trips" belongs to the trip that just ended; the next one starts with it on.
+  await clearNextTripsOff(trx, driverId, now);
   // v0.18.33 (owner answer 2026-11-05): he still drives a current trip (a queued or held one just ended): he stays on it.
   const still = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId)
     .where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).where(NOT_HELD).executeTakeFirst();
