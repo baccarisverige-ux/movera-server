@@ -303,3 +303,27 @@ export class TimerWorker {
     else this.options.logger.warn(data, "timer failed; will retry");
   }
 }
+
+/**
+ * S05 A1: a RECURRING job (one row per kind, booked again by its own handler) that failed MAX_ATTEMPTS times is
+ * parked at 'infinity', and the start-up booking (insert … do nothing) never touches it again. At start every
+ * parked timer of these kinds runs again now with a fresh attempt count, with one warning each. One-off timers
+ * (offers, trips, …) stay parked.
+ */
+export async function rearmParkedRecurringTimers(
+  ex: Executor,
+  kinds: readonly string[],
+  logger: { warn: (data: object, message: string) => void },
+  now: Date = new Date(),
+): Promise<number> {
+  if (kinds.length === 0) return 0;
+  const rows = await ex
+    .updateTable("timers")
+    .set({ due_at: now, attempts: 0 })
+    .where("kind", "in", [...kinds])
+    .where("due_at", "=", sql<Date>`'infinity'::timestamptz`)
+    .returning(["kind", "ref_id", "last_error"])
+    .execute();
+  for (const row of rows) logger.warn({ kind: row.kind, refId: row.ref_id, lastError: row.last_error }, "parked recurring timer re-armed at start");
+  return rows.length;
+}

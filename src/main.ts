@@ -3,15 +3,16 @@ import { cacheGeometry, forgetGeometry } from "./config/geometryCache.js";
 import type pg from "pg";
 import { registerLoadShedding } from "./http/shed.js";
 import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "./safety/rideCheckServer.js";
-import { ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
+import { SMART_SURGE_CHECK, ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
 import { createDb, createPool, limitStatements, poolOptionsFrom, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { guardProcess, waitForDatabase } from "./db/ready.js";
 import { readEnv, startupWarnings } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
-import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
-import { TimerWorker } from "./jobs/timers.js";
+import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
+import { NO_FIX_OFFLINE } from "./drivers/presence.js";
+import { TimerWorker, rearmParkedRecurringTimers } from "./jobs/timers.js";
 import { ALERT_SWEEP, alertSweepHandler, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
@@ -73,6 +74,8 @@ for (const message of startupWarnings(env)) app.log.warn(message);
 warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 
 if (db !== undefined) {
+  // S05 A1: a recurring job parked after repeated failures runs again at every start (one warning each).
+  await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, SMART_SURGE_CHECK, ALERT_SWEEP], app.log);
   await ensureMaintenanceTimers(db);
   await ensurePricingTimers(db);
   // v0.18.23 (contract.json#alertDesk.serverDetection): the server finds the admin alerts every 30 s.
