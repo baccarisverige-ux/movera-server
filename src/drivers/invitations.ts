@@ -3,6 +3,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "../admin/audit.js";
+import { maskInvitationView } from "../admin/masking.js";
 import { notify } from "../notifications/service.js";
 import { sendSms, type SmsDeps } from "../sms/sms.js";
 import { loadFleet, ownedFleet, coversFleet, type Admin, type FleetRow } from "./fleets.js";
@@ -347,7 +348,7 @@ export async function adminDecideInvitation(trx: Trx, deps: InviteDeps, who: Adm
     await notify(trx, { audience: "driver", subjectId: owner.driver_id, kind: KIND, title: words("cancelled_title", language(owner), ""), body: words("cancelled_body_owner", language(owner), named), data: { invitationId, status: "cancelled" } }, now);
   }
   await audit(trx, { adminId: who.subjectId, action: `fleet.invitation.${action}`, targetType: "fleet", targetId: fleetId, zoneId: fleet.zone_id, detail: { invitationId, direction: row.direction, driverId: row.driver_id }, at: now });
-  return viewOf(trx, await load(trx, invitationId), "admin", now);
+  return maskInvitationView(await viewOf(trx, await load(trx, invitationId), "admin", now), who);
 }
 
 /** A rejected or blocked fleet keeps no open invitations. */

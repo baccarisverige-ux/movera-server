@@ -73,3 +73,9 @@ export function maskFleetView<T extends View>(view: T, who: Perms): T {
   if (!adminMasksDrivers(who)) return view;
   return maskFields(view, [["ownerEmail", maskEmail]]) as T;
 }
+
+/** FleetInvitation for an admin (FleetView.invitations, the admin accept/cancel answer): phone masked without drivers.viewSensitive. */
+export function maskInvitationView<T extends View>(view: T, who: Perms): T {
+  if (!adminMasksDrivers(who)) return view;
+  return maskFields(view, [["phone", maskPhone]]) as T;
+}

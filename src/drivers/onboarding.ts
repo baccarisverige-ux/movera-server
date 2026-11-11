@@ -10,7 +10,7 @@ import { schemaProblem } from "../contract/schemas.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { recordAcceptance } from "../documents/service.js";
 import { audit } from "../admin/audit.js";
-import { maskFleetView } from "../admin/masking.js";
+import { maskFleetView, maskInvitationView } from "../admin/masking.js";
 import { ONBOARDING, COUNTRY_CURRENCY, COUNTRY_TIME_ZONE, ageAt, cityOf, makeFleetCode, normalizeFleetCode } from "./onboardingRules.js";
 import { driverView, loadDriver, releaseCar, vehicleFullView, type DriverRow } from "./service.js";
 import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from "./fleets.js";
@@ -303,7 +303,7 @@ export async function adminGetFleet(ex: Executor, who: Admin, fleetId: string, n
   coversFleet(who, fleet);
   // v0.18.54 §76: the owner e-mail masked without drivers.viewSensitive (FleetView.fleet).
   const view = await fleetFullView(ex, fleet, "admin", now);
-  return { ...view, fleet: maskFleetView(view.fleet, who) };
+  return { ...view, fleet: maskFleetView(view.fleet, who), ...(view.invitations ? { invitations: view.invitations.map((i) => maskInvitationView(i, who)) } : {}) };
 }
 
 async function freshCode(trx: Trx): Promise<string> {

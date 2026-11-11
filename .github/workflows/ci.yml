@@ -96,7 +96,7 @@ jobs:
           node-version: 22
           cache: npm
       - name: File size ratchet (Rule 25)
-        run: python3 tools/size_ratchet.py
+        run: python3 tools/size_ratchet.py --self-test && python3 tools/size_ratchet.py
       - run: npm ci
       - run: npm run contract:verify
       # Owner rule 46 (step 58): new migration files must not lock a table and must carry an undo step.
