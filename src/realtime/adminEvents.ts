@@ -57,11 +57,24 @@ async function cursorTooOld(ex: Executor, after: number): Promise<boolean> {
 }
 
 /** Drops events older than retentionHours (hourly sweep; safe to run any time) and remembers how far it went. */
-export async function pruneAdminLiveEvents(ex: Executor, now: Date): Promise<void> {
-  const gone = await ex.deleteFrom("admin_live_events").where("occurred_at", "<", new Date(now.getTime() - LIVE.retentionHours * 3_600_000)).returning("sequence").execute();
-  if (!gone.length) return;
-  const top = Math.max(...gone.map((row) => Number(row.sequence)));
-  await ex.updateTable("admin_live_pruned").set({ up_to: sql<string>`greatest(up_to, ${String(top)}::bigint)` }).where("id", "=", 1).execute();
+// S05 A2: deleted in batches with the highest sequence taken in SQL (no rows come back to JavaScript, so no
+// Math.max(...huge array) RangeError that rolled back the whole hourly sweep).
+export const PRUNE_BATCH = 10_000;
+export async function pruneAdminLiveEvents(ex: Executor, now: Date, batch: number = PRUNE_BATCH): Promise<void> {
+  const cut = new Date(now.getTime() - LIVE.retentionHours * 3_600_000);
+  for (;;) {
+    const { rows } = await sql<{ top: string | null; n: string }>`
+      WITH gone AS (
+        DELETE FROM admin_live_events WHERE sequence IN (
+          SELECT sequence FROM admin_live_events WHERE occurred_at < ${cut} ORDER BY sequence LIMIT ${batch}
+        ) RETURNING sequence
+      )
+      SELECT max(sequence)::text AS top, count(*)::text AS n FROM gone`.execute(ex);
+    const row = rows[0];
+    if (row === undefined || row.top === null) return;
+    await ex.updateTable("admin_live_pruned").set({ up_to: sql<string>`greatest(up_to, ${row.top}::bigint)` }).where("id", "=", 1).execute();
+    if (Number(row.n) < batch) return;
+  }
 }
 
 type Subscriber = { who: Principal; last: number; catchingUp: boolean; send: (row: AdminLiveRow) => void; cursor: (sequence: number) => void };
