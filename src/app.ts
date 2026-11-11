@@ -156,6 +156,15 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     }
   });
 
+  // S06 F13: API answers are never cached by a browser or proxy (unless the route chose a cache header itself) and
+  // are never content-sniffed. SSE streams are hijacked, so they set their own headers (realtime/sse.ts).
+  app.addHook("onSend", async (request, reply, payload) => {
+    if (!request.url.startsWith(API_PREFIX)) return payload;
+    if (!reply.hasHeader("cache-control")) reply.header("Cache-Control", "no-store");
+    reply.header("X-Content-Type-Options", "nosniff");
+    return payload;
+  });
+
   // B11: the general write limit (contract.json#rateLimit), before any route reads the body or the database.
   registerWriteLimit(app, writeLimitsFrom(env), { jwtSecret: db !== undefined ? (env.JWT_SECRET ?? DEV_JWT_SECRET) : env.JWT_SECRET, db, defaultZoneId: env.DEFAULT_ZONE_ID, exemptPaths: env.MOVERA_ENV === "production" ? [] : SIGN_IN_PATHS, ...(clock ? { clock } : {}) });
 

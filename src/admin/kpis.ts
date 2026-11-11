@@ -54,10 +54,12 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
      WHERE zone_id = ${zone.zone_id} AND coalesce(ended_at, updated_at) >= ${bounds} AND coalesce(ended_at, updated_at) < ${next}
        AND status IN ('completed', 'no_show', 'cancelled_by_rider', 'cancelled_by_driver', 'cancelled_by_admin', 'cancelled_by_system')`.execute(ex);
   // A new rider: their first trip ever was booked that day in this zone. A new driver: signed up that day, this zone first.
+  // S05 A5: the day's trips in this zone (trips_zone_created) that no earlier trip of the same rider precedes, ordered
+  // by (created_at, trip_id) exactly as the first-trip rule always was (trips_rider_created), instead of every trip ever.
   const riders = await sql<{ n: string }>`
-    SELECT count(*) AS n FROM (
-      SELECT DISTINCT ON (rider_id) rider_id, zone_id, created_at FROM trips ORDER BY rider_id, created_at, trip_id) first
-     WHERE zone_id = ${zone.zone_id} AND created_at >= ${bounds} AND created_at < ${next}`.execute(ex);
+    SELECT count(*) AS n FROM trips t
+     WHERE t.zone_id = ${zone.zone_id} AND t.created_at >= ${bounds} AND t.created_at < ${next}
+       AND NOT EXISTS (SELECT 1 FROM trips e WHERE e.rider_id = t.rider_id AND (e.created_at < t.created_at OR (e.created_at = t.created_at AND e.trip_id < t.trip_id)))`.execute(ex);
   const drivers = await sql<{ n: string }>`
     SELECT count(*) AS n FROM drivers WHERE zone_ids[1] = ${zone.zone_id} AND created_at >= ${bounds} AND created_at < ${next}`.execute(ex);
   // v0.10.3 money of the same trips (the trip's day): fees charged (not waived), the driver's share of them, tips, refunds done.

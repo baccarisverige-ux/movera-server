@@ -132,6 +132,6 @@ export async function adminAuthRoutes(app: FastifyInstance, deps: AdminDeps): Pr
     if (target !== undefined && !who.zones.includes("*") && (target.zone_ids === null || !target.zone_ids.every((z) => adminCoversZone(who, z)))) {
       throw new ApiError("forbidden", "This admin's zones are outside your scope.", { reason: "zone_out_of_scope" });
     }
-    return reply.status(201).send(await createSetupLink(deps, adminId, who.subjectId));
+    return reply.status(201).send(await createSetupLink(deps, adminId, who.subjectId, { audit: true }));
   });
 }
