@@ -100,7 +100,22 @@ describe("B1.4: migrations run without the app statement limit, with a lock limi
       `DO $$ BEGIN IF current_setting('statement_timeout') <> '0' OR current_setting('lock_timeout') <> '${want}' THEN ` +
       `RAISE EXCEPTION 'statement_timeout=% lock_timeout=%', current_setting('statement_timeout'), current_setting('lock_timeout'); END IF; END $$;\n`;
     expect(await migrate(appPool(database), migrationsWith({ "9998_b14_check.sql": check("5s") }))).toEqual(["9998_b14_check.sql"]);
-    expect(await migrate(appPool(database), migrationsWith({ "9998_b14_check.sql": check("5s"), "9999_b14_check.sql": `${NO_TRANSACTION_MARKER}\n${check("1500ms")}` }), { lockTimeoutMs: 1500 })).toEqual(["9999_b14_check.sql"]);
+    expect(await migrate(appPool(database), migrationsWith({ "9998_b14_check.sql": check("5s"), "9999_b14_check.sql": `${NO_TRANSACTION_MARKER}\n${check("0")}` }), { lockTimeoutMs: 1500 })).toEqual(["9999_b14_check.sql"]);
+  }, 20_000);
+
+  it("a no-transaction CREATE INDEX CONCURRENTLY waits for an older open transaction instead of failing on the lock limit (it never blocks the app)", async () => {
+    const database = await migratedDb();
+    const pool = appPool(database);
+    const holder = new pg.Client({ connectionString: database.url });
+    await holder.connect();
+    cleanups.push(() => holder.end());
+    await holder.query("BEGIN");
+    await holder.query("LOCK TABLE riders IN ROW EXCLUSIVE MODE"); // an open write transaction, as during a deploy
+    const release = setTimeout(() => void holder.query("COMMIT"), 1500);
+    cleanups.push(() => clearTimeout(release));
+    const dir = migrationsWith({ "9999_b14_cic.sql": `${NO_TRANSACTION_MARKER}\nCREATE INDEX CONCURRENTLY IF NOT EXISTS b14_cic_idx ON riders (created_at);\n` });
+    expect(await migrate(pool, dir, { lockTimeoutMs: 500 })).toEqual(["9999_b14_cic.sql"]);
+    expect(await recorded(database, "9999_b14_cic.sql")).toBe(true);
   }, 20_000);
 
   it("two copies starting at once with the statement limit: the slow migration is applied once (Rule 33)", async () => {

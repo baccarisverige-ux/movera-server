@@ -95,7 +95,15 @@ export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR, optio
         continue;
       }
       if (wantsNoTransaction(sql)) {
-        await runWithoutTransaction(client, name, sql);
+        // No-transaction files are CREATE INDEX CONCURRENTLY / VALIDATE (Rule 46): they never block app reads or
+        // writes, but they wait for older open transactions, and that wait counts as a lock wait. With the lock limit
+        // a busy deploy would fail them and leave an INVALID index, so they wait without it.
+        await client.query("SET lock_timeout = 0");
+        try {
+          await runWithoutTransaction(client, name, sql);
+        } finally {
+          await client.query(`SET lock_timeout = ${lockTimeoutMs}`);
+        }
         await client.query("INSERT INTO schema_migrations (name, sha256) VALUES ($1, $2)", [name, sha]);
       } else {
         await client.query("BEGIN");
