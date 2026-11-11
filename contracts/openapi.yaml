@@ -1,11 +1,11 @@
-# Movera API v0.18.66 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.67 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.66
+  version: 0.18.67
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.66 in this folder; this file must agree with them.
+    v0.18.67 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.66
+  version: 0.18.67
   source: contract.json
 paths:
   /auth/otp/request:
@@ -17657,11 +17657,12 @@ paths:
         sends him no on-trip offer (contract.json#afterTestRules.bookedNext: no next-trip Exclusive, live or booked); his
         open offers are withdrawn at once (the withdraw_driver_offers job). An accept that still reaches the server is refused
         409 conflict, reason next_trips_off. Radar and lists never go to a driver on a trip anyway. The switch belongs to
-        one trip: when a trip of his ends (completed, cancelled by anyone, no-show), in the same transaction as the trip release
-        (rule 33), nextTripsOff goes back to false, also when a queued next trip or a due held booked ride starts (its trip
-        sheet starts with the radar on). Go offline during a trip (contract.json#goOfflineAfterTrips) stops every offer whatever
-        this switch says. The state is on the server: GET /driver/profile carries nextTripsOff, so the trip sheet''s radar
-        shows off again after a restart.'
+        the trip he is driving (v0.18.67 wording, server #187): when the trip he is DRIVING ends (completed, cancelled by
+        anyone, no-show), in the same transaction as the trip release (rule 33), nextTripsOff goes back to false. A queued
+        or held next trip of his that ends (for example cancelled by its rider) keeps it as it is. A queued next trip or a
+        due held booked ride that starts begins with the radar on (nextTripsOff false). Go offline during a trip (contract.json#goOfflineAfterTrips)
+        stops every offer whatever this switch says. The state is on the server: GET /driver/profile carries nextTripsOff,
+        so the trip sheet''s radar shows off again after a restart.'
       tags:
       - Driver · Session
       x-actor:
@@ -19911,10 +19912,11 @@ components:
             is true the server sends him no on-trip offer (contract.json#afterTestRules.bookedNext: no next-trip Exclusive,
             live or booked); his open offers are withdrawn at once (the withdraw_driver_offers job). An accept that still
             reaches the server is refused 409 conflict, reason next_trips_off. Radar and lists never go to a driver on a trip
-            anyway. The switch belongs to one trip: when a trip of his ends (completed, cancelled by anyone, no-show), in
-            the same transaction as the trip release (rule 33), nextTripsOff goes back to false, also when a queued next trip
-            or a due held booked ride starts (its trip sheet starts with the radar on). Go offline during a trip (contract.json#goOfflineAfterTrips)
-            stops every offer whatever this switch says.'
+            anyway. The switch belongs to the trip he is driving (v0.18.67 wording, server #187): when the trip he is DRIVING
+            ends (completed, cancelled by anyone, no-show), in the same transaction as the trip release (rule 33), nextTripsOff
+            goes back to false. A queued or held next trip of his that ends (for example cancelled by its rider) keeps it
+            as it is. A queued next trip or a due held booked ride that starts begins with the radar on (nextTripsOff false).
+            Go offline during a trip (contract.json#goOfflineAfterTrips) stops every offer whatever this switch says.'
           default: false
     DriverScheduledRides:
       type: object
