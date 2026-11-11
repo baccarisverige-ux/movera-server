@@ -8,6 +8,7 @@ import { ApiError } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { narrowToZones, parseQuery, ZoneFilterQuery } from "../admin/zoneFilter.js";
 import type { NotificationHub } from "./hub.js";
+import { SettledCursor } from "./settled.js";
 import { openEventStream, wantsEventStream } from "./sse.js";
 
 /**
@@ -77,7 +78,8 @@ export async function pruneAdminLiveEvents(ex: Executor, now: Date, batch: numbe
   }
 }
 
-type Subscriber = { who: Principal; last: number; catchingUp: boolean; send: (row: AdminLiveRow) => void; cursor: (sequence: number) => void };
+type Subscriber = { who: Principal; last: number; own?: SettledCursor; catchingUp: boolean; send: (row: AdminLiveRow) => void; cursor: (sequence: number) => void };
+const LIVE_SEQUENCE = "admin_live_events_sequence_seq";
 
 /**
  * One reader per server for every open admin stream: a notify makes ONE read of the new rows, fanned out to each
@@ -86,7 +88,10 @@ type Subscriber = { who: Principal; last: number; catchingUp: boolean; send: (ro
 export class AdminLiveFeed {
   private readonly subs = new Set<Subscriber>();
   private readonly perAdmin = new Map<string, number>();
-  private head: number | undefined;
+  /** The shared read position (S04 A1: settled floor + sequences already fanned out above it). */
+  private shared: SettledCursor | undefined;
+  /** Bumped by every fan-out: a catch-up that overlapped one reads again before it joins. */
+  private fanouts = 0;
   private running = false;
   private again = false;
   private unsubscribe: (() => void) | undefined;
@@ -122,22 +127,25 @@ export class AdminLiveFeed {
     };
     try {
       if (!this.unsubscribe) this.unsubscribe = this.hub.subscribe(ADMIN_EVENTS_CHANNEL, () => void this.pump());
-      if (this.head === undefined) {
+      if (this.shared === undefined) {
         const top = await this.db.selectFrom("admin_live_events").select((eb) => eb.fn.max("sequence").as("top")).executeTakeFirst();
-        this.head ??= Number(top?.top ?? 0);
+        this.shared ??= new SettledCursor(Number(top?.top ?? 0), LIVE_SEQUENCE);
       }
-      // Catch up alone; the shared reader skips this stream until it has read up to the shared head.
+      // Catch up alone (its own settled cursor, so a late commit is not skipped); the shared reader skips this stream
+      // until it is done. Rows the shared reader fans out later are deduped by the stream's own cursor.
+      const own = new SettledCursor(sub.last, LIVE_SEQUENCE);
+      sub.own = own;
       for (;;) {
         if (left) break;
-        const rows = await rowsAfter(this.db, sub.last, 200);
+        const before = this.fanouts;
+        const { rows, full } = await own.next(this.db, 200, (after, limit) => rowsAfter(this.db, after, limit));
         for (const row of rows) {
           if (left) break;
           if (mayHearLive(sub.who, row)) sub.send(row);
-          sub.last = Number(row.sequence);
         }
-        if (rows.length) sub.cursor(sub.last);
+        if (rows.length) sub.cursor(own.high);
         // Synchronous check: no fan-out can run between it and the switch.
-        if (rows.length < 200 && sub.last >= (this.head ?? 0)) {
+        if (!full && before === this.fanouts && own.high >= (this.shared?.high ?? 0)) {
           sub.catchingUp = false;
           break;
         }
@@ -162,22 +170,21 @@ export class AdminLiveFeed {
     try {
       do {
         this.again = false;
-        if (this.head === undefined) return;
+        const shared = this.shared;
+        if (shared === undefined) return;
         this.reads += 1;
-        const rows = await rowsAfter(this.db, this.head, 500);
+        const { rows, full } = await shared.next(this.db, 500, (after, limit) => rowsAfter(this.db, after, limit));
         if (!rows.length) break;
+        this.fanouts += 1;
         for (const sub of this.subs) {
           if (sub.catchingUp) continue;
-          for (const row of rows) {
-            const seq = Number(row.sequence);
-            if (seq <= sub.last) continue;
-            if (mayHearLive(sub.who, row)) sub.send(row);
-            sub.last = seq;
-          }
-          sub.cursor(sub.last);
+          // The stream's own cursor drops what its catch-up already sent (no duplicates).
+          const fresh = sub.own ? sub.own.take(rows) : rows;
+          for (const row of fresh) if (mayHearLive(sub.who, row)) sub.send(row);
+          sub.own?.settleTo(shared.floor);
+          if (fresh.length) sub.cursor(sub.own?.high ?? Number(fresh[fresh.length - 1]!.sequence));
         }
-        this.head = Number(rows[rows.length - 1]!.sequence);
-        if (rows.length === 500) this.again = true;
+        if (full) this.again = true;
       } while (this.again && this.subs.size);
     } catch (error) {
       this.log.warn({ err: error }, "admin events read failed");
@@ -189,8 +196,8 @@ export class AdminLiveFeed {
   private stop(): void {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
-    // Re-read the head on the next join (events may be written while nobody listens).
-    this.head = undefined;
+    // Re-read the start on the next join (events may be written while nobody listens).
+    this.shared = undefined;
   }
 }
 

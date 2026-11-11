@@ -212,8 +212,8 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
     expect(ended).toBe(true);
   });
 
-  // A1 / P4: bigserial taken at insert, head moves to the last row read; a smaller sequence committed later is skipped.
-  it.fails("A1/P4: admin live feed sends an event whose transaction commits after a later sequence (src/realtime/adminEvents.ts:154,166)", async () => {
+  // A1 / P4: bigserial taken at insert; fixed by B6 (src/realtime/settled.ts): the feed reads from a settled floor.
+  it("A1/P4: admin live feed sends an event whose transaction commits after a later sequence", async () => {
     const perms = [...new Set(Object.values(LIVE.types).map((t) => t.permission))];
     const who = { actor: "admin", subjectId: "adm_t5", sessionId: "ses_t5", zones: ["*"], perms } as Principal;
     const feed = new AdminLiveFeed(database.db, hub, { warn: () => undefined });
