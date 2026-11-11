@@ -49,6 +49,9 @@ const schema = z.object({
    */
   RATE_LIMIT_WRITES_PER_USER_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).optional(),
   RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).optional(),
+  /** How many web copies of the server run behind the load balancer (load test part 6). Each copy keeps its own write
+   * counts in memory, so each one allows 1/WEB_COPIES of the budget. Default 1 = today. */
+  WEB_COPIES: z.coerce.number().int().min(1).max(16).optional(),
   /** Signs access tokens. At least 32 characters; required on staging and production (a laptop gets a random one). */
   JWT_SECRET: z.string().min(32).optional(),
   /** Movera's own OSRM (owner decision 4), e.g. http://osrm:5000. Unset: distances are estimated. */
@@ -215,13 +218,13 @@ export type Env = z.infer<typeof schema>;
  * are both (the load test). `off`: env 0 turns that limit off whatever the admin says.
  */
 export type WriteLimitEnv = { fallback: number; floor: number; off: boolean };
-export function writeLimitsFrom(env: Env): { user: WriteLimitEnv; address: WriteLimitEnv } {
+export function writeLimitsFrom(env: Env): { user: WriteLimitEnv; address: WriteLimitEnv; copies: number } {
   const production = env.MOVERA_ENV === "production";
   const part = (given: number | undefined, prodDefault: number, testDefault: number): WriteLimitEnv => {
     if (given !== undefined) return { fallback: given, floor: given, off: given === 0 };
     return production ? { fallback: prodDefault, floor: 0, off: false } : { fallback: testDefault, floor: testDefault, off: false };
   };
-  return { user: part(env.RATE_LIMIT_WRITES_PER_USER_PER_MINUTE, 120, 1200), address: part(env.RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE, 60, 600) };
+  return { user: part(env.RATE_LIMIT_WRITES_PER_USER_PER_MINUTE, 120, 1200), address: part(env.RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE, 60, 600), copies: env.WEB_COPIES ?? 1 };
 }
 
 export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
