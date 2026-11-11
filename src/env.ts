@@ -176,6 +176,11 @@ const schema = z.object({
   /** Job 1 (fix plan R22): a single SQL statement of a request is stopped after this many ms (0: no limit). */
   DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).max(600_000).default(30_000),
   /**
+   * B1.4 (owner W1 Q68): migrations run WITHOUT the statement limit above, but a migration that waits this many ms for a
+   * table lock fails (the next start tries again) instead of holding every app query behind it (0: no limit).
+   */
+  DATABASE_MIGRATION_LOCK_TIMEOUT_MS: z.coerce.number().int().min(0).max(600_000).default(5000),
+  /**
    * Global plan step 63 (T6b): serve this copy's load numbers at GET /internal/load (stress test T-A only).
    * Staging and development only: production refuses to start with it on.
    */

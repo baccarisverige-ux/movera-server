@@ -44,7 +44,8 @@ if (env.DATABASE_URL !== undefined) {
   pool = createPool(env.DATABASE_URL, { ...poolOptionsFrom(env), statementTimeoutMs: env.DATABASE_STATEMENT_TIMEOUT_MS }, (error) => warn(error));
   // Rule 28 (Render 2026-11-05: 57P03 while the database restarted): wait up to ~2 min for it, then migrate.
   await waitForDatabase(pool, { log: (data, message) => console.warn(message, JSON.stringify(data)) });
-  if (env.MIGRATE_ON_START) await migrate(pool);
+  // B1.4: the migration connection drops the statement limit and uses DATABASE_MIGRATION_LOCK_TIMEOUT_MS instead.
+  if (env.MIGRATE_ON_START) await migrate(pool, undefined, { lockTimeoutMs: env.DATABASE_MIGRATION_LOCK_TIMEOUT_MS });
   db = createDb(pool);
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();

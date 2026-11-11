@@ -10,7 +10,7 @@ if (env.DATABASE_URL === undefined) {
 }
 const pool = createPool(env.DATABASE_URL, 1);
 try {
-  const applied = await migrate(pool);
+  const applied = await migrate(pool, undefined, { lockTimeoutMs: env.DATABASE_MIGRATION_LOCK_TIMEOUT_MS });
   console.log(applied.length ? `applied: ${applied.join(", ")}` : "nothing to apply");
 } finally {
   await pool.end();

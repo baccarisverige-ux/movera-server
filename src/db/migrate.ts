@@ -20,6 +20,16 @@ const LOCK_KEY = 73_310_001;
 export const LOCK_RETRY_MS = 200;
 export const NO_TRANSACTION_MARKER = "-- movera: no-transaction";
 
+/**
+ * B1.4 follow-up (owner W1 Q68, 2026-11-11: the database time limit "never on database changes"). The app pool has
+ * DATABASE_STATEMENT_TIMEOUT_MS on every connection, and the server migrates at start on that pool. The migration
+ * connection therefore turns the statement limit off (an index build or VALIDATE may take long) and sets lock_timeout
+ * instead: a migration that waits for a busy table fails after this long (the next start tries again) rather than
+ * queueing every app query behind its lock wait. 0 = no lock limit. Env: DATABASE_MIGRATION_LOCK_TIMEOUT_MS.
+ */
+export const MIGRATION_LOCK_TIMEOUT_MS = 5000;
+export type MigrateOptions = { lockTimeoutMs?: number };
+
 function wantsNoTransaction(sql: string): boolean {
   const eol = sql.indexOf("\n");
   return (eol === -1 ? sql : sql.slice(0, eol)).trimEnd() === NO_TRANSACTION_MARKER;
@@ -38,9 +48,39 @@ function invalidIndexHint(names: string[]): string {
 }
 
 /** Runs a `-- movera: no-transaction` file statement by statement; never leaves an INVALID index unreported. */
-async function runWithoutTransaction(client: pg.PoolClient, name: string, sql: string): Promise<void> {
+/**
+ * CREATE / DROP INDEX CONCURRENTLY and VALIDATE CONSTRAINT never block app reads or writes, but they wait for older
+ * open transactions, and that wait counts as a lock wait: with the lock limit a busy deploy would fail them (leaving an
+ * INVALID index), so they alone wait without it. Every other statement in the file (e.g. ADD CONSTRAINT … NOT VALID,
+ * which takes a lock app queries queue behind) keeps the lock limit (supervisor #189 F1).
+ */
+const WAITS_WITHOUT_LIMIT = /\bCONCURRENTLY\b|\bVALIDATE\s+CONSTRAINT\b/i;
+
+/**
+ * True when the statement itself (not a comment, string literal, quoted identifier or dollar-quoted body) is a
+ * CONCURRENTLY / VALIDATE CONSTRAINT statement. One left-to-right pass, so whichever starts first wins — an apostrophe in
+ * a comment ("driver's") never opens a string that swallows the code (supervisor #189 F1b, F1c; same rule as splitSql).
+ */
+export function waitsWithoutLimit(statement: string): boolean {
+  const code = statement.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|\/\*[\s\S]*?\*\/|--[^\n]*|\$([A-Za-z_][A-Za-z0-9_]*)?\$[\s\S]*?\$\1\$/g, " ");
+  return WAITS_WITHOUT_LIMIT.test(code);
+}
+
+async function runWithoutTransaction(client: pg.PoolClient, name: string, sql: string, lockTimeoutMs: number): Promise<void> {
   try {
-    for (const statement of splitSql(sql)) await client.query(statement);
+    for (const statement of splitSql(sql)) {
+      if (!waitsWithoutLimit(statement)) {
+        await client.query(statement);
+        continue;
+      }
+      await client.query("SET lock_timeout = 0");
+      try {
+        await client.query(statement);
+      } finally {
+        // A dead connection must not hide the real error (and the INVALID-index hint); it is destroyed anyway.
+        await client.query(`SET lock_timeout = ${lockTimeoutMs}`).catch(() => undefined);
+      }
+    }
   } catch (error) {
     const invalid = await invalidIndexes(client).catch(() => []);
     const tail = invalid.length ? ` ${invalidIndexHint(invalid)}` : "";
@@ -55,10 +95,14 @@ async function runWithoutTransaction(client: pg.PoolClient, name: string, sql: s
  * with NO_TRANSACTION_MARKER), under an advisory lock so two instances starting together never race. A migration that was applied and later edited stops the
  * server: migrations are append-only; change the schema with a new file.
  */
-export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR): Promise<string[]> {
+export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR, options: MigrateOptions = {}): Promise<string[]> {
+  const lockTimeoutMs = Math.max(0, Math.round(options.lockTimeoutMs ?? MIGRATION_LOCK_TIMEOUT_MS));
   const client = await pool.connect();
   const applied: string[] = [];
   try {
+    // B1.4: session settings of this connection only; it is closed (never handed back to the app pool) at the end.
+    await client.query("SET statement_timeout = 0");
+    await client.query(`SET lock_timeout = ${lockTimeoutMs}`);
     // Stress T-A follow-up (0091, the first no-transaction file): a server WAITING in pg_advisory_lock is a running
     // statement, and CREATE INDEX CONCURRENTLY of the server holding the lock waits for every running statement to
     // end, so two servers starting together deadlocked. Ask with pg_try_advisory_lock and sleep between tries instead.
@@ -81,7 +125,7 @@ export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR): Prom
         continue;
       }
       if (wantsNoTransaction(sql)) {
-        await runWithoutTransaction(client, name, sql);
+        await runWithoutTransaction(client, name, sql, lockTimeoutMs);
         await client.query("INSERT INTO schema_migrations (name, sha256) VALUES ($1, $2)", [name, sha]);
       } else {
         await client.query("BEGIN");
@@ -99,6 +143,7 @@ export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR): Prom
     return applied;
   } finally {
     await client.query("SELECT pg_advisory_unlock($1)", [LOCK_KEY]).catch(() => undefined);
-    client.release();
+    // B1.4: close the connection so its migration settings (no statement limit) never serve an app query.
+    client.release(true);
   }
 }
