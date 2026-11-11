@@ -250,6 +250,17 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     await authenticate(request, guard, ["rider"]);
     throw badRequest("Only cash is available for now.", "payment_method_not_available");
   });
+  // Openapi lists card methods, payment intents and wallet top-up; the test week takes cash only, so these answer the
+  // same typed 400 as POST /payment-methods instead of a plain 404 (audit B9). No money is moved. GET /payments/{paymentId}
+  // is left out: the contract gives it to rider AND admin, so it needs an owner decision and a T11 matrix row first.
+  const cashOnly = async (request: FastifyRequest): Promise<never> => {
+    await authenticate(request, guard, ["rider"]);
+    throw badRequest("Only cash is available for now.", "payment_method_not_available");
+  };
+  app.delete(`${API_PREFIX}/payment-methods/:paymentMethodId`, cashOnly);
+  app.post(`${API_PREFIX}/payments`, cashOnly);
+  app.post(`${API_PREFIX}/payments/:paymentId/confirm`, cashOnly);
+  app.post(`${API_PREFIX}/wallet/topup`, cashOnly);
   app.post(`${API_PREFIX}/payment-methods/default`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
     const body = parseBody(DefaultMethodBody, request.body);

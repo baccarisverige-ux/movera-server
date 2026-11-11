@@ -2,7 +2,7 @@
 
 The Movera backend: one server for the **rider** and **driver** apps (Flutter) and the **admin** panel (React).
 It implements the shared contract in [`movera-contracts`](https://github.com/baccarisverige-ux/movera-contracts);
-`contracts/` here is a byte-for-byte copy of a tagged version (now **v0.18.58**).
+`contracts/` here is a byte-for-byte copy of a tagged version (now **v0.18.60**).
 
 Long-term server, built first for the real test week: Stockholm zones, 2–3 drivers and riders, cash only, push
 off, and test phone numbers that sign in with a fixed code instead of SMS (outside production only).
@@ -82,7 +82,7 @@ The run builds a template database with every migration, and each test file gets
 - Errors are the contract's `Error`: `{ code, message, requestId, retryable, reason?, projection? }`.
 - An operation the server does not serve yet answers `404 not_found`, reason `operation_not_enabled`.
 
-Update the contract copy with `tools/sync_contract.sh v0.18.58` (the tag, never `main`; Rule 43(4)) and commit
+Update the contract copy with `tools/sync_contract.sh v0.18.60` (the tag, never `main`; Rule 43(4)) and commit
 `contracts/` exactly as it comes out; never edit `contracts/` by hand. `test/contract_copy.test.ts` and
 `tools/check_contract_copy.sh` fail on any drift. The contract's own README names the full flow.
 
@@ -187,7 +187,7 @@ The server lands in small pull requests, each tested:
 13. Staging deploy, seed data, end-to-end run with all three apps. *(done: Render, `SEED_TEST_ON_START`, the
     live test since November 2026)*
 
-Later contract versions up to 0.18.58 (reservations, support, safety, airport queue, blocked pairs, admin masking,
+Later contract versions up to 0.18.60 (reservations, support, safety, airport queue, blocked pairs, admin masking,
 …) are listed at the top of `contracts/CONTRACT.md`; owner decisions are in `docs/DECISIONS.md`.
 
 ## Working rules
