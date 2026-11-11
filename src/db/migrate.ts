@@ -48,9 +48,29 @@ function invalidIndexHint(names: string[]): string {
 }
 
 /** Runs a `-- movera: no-transaction` file statement by statement; never leaves an INVALID index unreported. */
-async function runWithoutTransaction(client: pg.PoolClient, name: string, sql: string): Promise<void> {
+/**
+ * CREATE / DROP INDEX CONCURRENTLY and VALIDATE CONSTRAINT never block app reads or writes, but they wait for older
+ * open transactions, and that wait counts as a lock wait: with the lock limit a busy deploy would fail them (leaving an
+ * INVALID index), so they alone wait without it. Every other statement in the file (e.g. ADD CONSTRAINT … NOT VALID,
+ * which takes a lock app queries queue behind) keeps the lock limit (supervisor #189 F1).
+ */
+const WAITS_WITHOUT_LIMIT = /\bCONCURRENTLY\b|\bVALIDATE\s+CONSTRAINT\b/i;
+
+async function runWithoutTransaction(client: pg.PoolClient, name: string, sql: string, lockTimeoutMs: number): Promise<void> {
   try {
-    for (const statement of splitSql(sql)) await client.query(statement);
+    for (const statement of splitSql(sql)) {
+      if (!WAITS_WITHOUT_LIMIT.test(statement)) {
+        await client.query(statement);
+        continue;
+      }
+      await client.query("SET lock_timeout = 0");
+      try {
+        await client.query(statement);
+      } finally {
+        // A dead connection must not hide the real error (and the INVALID-index hint); it is destroyed anyway.
+        await client.query(`SET lock_timeout = ${lockTimeoutMs}`).catch(() => undefined);
+      }
+    }
   } catch (error) {
     const invalid = await invalidIndexes(client).catch(() => []);
     const tail = invalid.length ? ` ${invalidIndexHint(invalid)}` : "";
@@ -95,15 +115,7 @@ export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR, optio
         continue;
       }
       if (wantsNoTransaction(sql)) {
-        // No-transaction files are CREATE INDEX CONCURRENTLY / VALIDATE (Rule 46): they never block app reads or
-        // writes, but they wait for older open transactions, and that wait counts as a lock wait. With the lock limit
-        // a busy deploy would fail them and leave an INVALID index, so they wait without it.
-        await client.query("SET lock_timeout = 0");
-        try {
-          await runWithoutTransaction(client, name, sql);
-        } finally {
-          await client.query(`SET lock_timeout = ${lockTimeoutMs}`);
-        }
+        await runWithoutTransaction(client, name, sql, lockTimeoutMs);
         await client.query("INSERT INTO schema_migrations (name, sha256) VALUES ($1, $2)", [name, sha]);
       } else {
         await client.query("BEGIN");

@@ -100,7 +100,7 @@ describe("B1.4: migrations run without the app statement limit, with a lock limi
       `DO $$ BEGIN IF current_setting('statement_timeout') <> '0' OR current_setting('lock_timeout') <> '${want}' THEN ` +
       `RAISE EXCEPTION 'statement_timeout=% lock_timeout=%', current_setting('statement_timeout'), current_setting('lock_timeout'); END IF; END $$;\n`;
     expect(await migrate(appPool(database), migrationsWith({ "9998_b14_check.sql": check("5s") }))).toEqual(["9998_b14_check.sql"]);
-    expect(await migrate(appPool(database), migrationsWith({ "9998_b14_check.sql": check("5s"), "9999_b14_check.sql": `${NO_TRANSACTION_MARKER}\n${check("0")}` }), { lockTimeoutMs: 1500 })).toEqual(["9999_b14_check.sql"]);
+    expect(await migrate(appPool(database), migrationsWith({ "9998_b14_check.sql": check("5s"), "9999_b14_check.sql": `${NO_TRANSACTION_MARKER}\n${check("1500ms")}` }), { lockTimeoutMs: 1500 })).toEqual(["9999_b14_check.sql"]);
   }, 20_000);
 
   it("a no-transaction CREATE INDEX CONCURRENTLY waits for an older open transaction instead of failing on the lock limit (it never blocks the app)", async () => {
@@ -116,6 +116,32 @@ describe("B1.4: migrations run without the app statement limit, with a lock limi
     const dir = migrationsWith({ "9999_b14_cic.sql": `${NO_TRANSACTION_MARKER}\nCREATE INDEX CONCURRENTLY IF NOT EXISTS b14_cic_idx ON riders (created_at);\n` });
     expect(await migrate(pool, dir, { lockTimeoutMs: 500 })).toEqual(["9999_b14_cic.sql"]);
     expect(await recorded(database, "9999_b14_cic.sql")).toBe(true);
+  }, 20_000);
+
+  it("in a no-transaction file only CONCURRENTLY / VALIDATE wait without the limit: an ADD CONSTRAINT … NOT VALID on a held table fails within the lock limit (supervisor #189 F1)", async () => {
+    const database = await migratedDb();
+    const pool = appPool(database);
+    const holder = new pg.Client({ connectionString: database.url });
+    await holder.connect();
+    cleanups.push(() => holder.end());
+    await holder.query("BEGIN");
+    await holder.query("LOCK TABLE riders IN ACCESS SHARE MODE");
+    const dir = migrationsWith({ "9999_b14_nv.sql": `${NO_TRANSACTION_MARKER}\nALTER TABLE riders ADD CONSTRAINT b14_nv_chk CHECK (true) NOT VALID;\n` });
+    const started = Date.now();
+    await expect(migrate(pool, dir, { lockTimeoutMs: 500 })).rejects.toThrow(/9999_b14_nv\.sql failed: .*lock timeout/);
+    expect(Date.now() - started).toBeLessThan(3000);
+    await holder.query("ROLLBACK");
+  }, 20_000);
+
+  it("a transactional file after a no-transaction file gets the lock limit back (supervisor #189 F2)", async () => {
+    const database = await migratedDb();
+    const check = (want: string) =>
+      `DO $$ BEGIN IF current_setting('lock_timeout') <> '${want}' THEN RAISE EXCEPTION 'lock_timeout=%', current_setting('lock_timeout'); END IF; END $$;\n`;
+    const dir = migrationsWith({
+      "9998_b14_cic2.sql": `${NO_TRANSACTION_MARKER}\nCREATE INDEX CONCURRENTLY IF NOT EXISTS b14_cic2_idx ON riders (created_at);\n`,
+      "9999_b14_after.sql": check("5s"),
+    });
+    expect(await migrate(appPool(database), dir)).toEqual(["9998_b14_cic2.sql", "9999_b14_after.sql"]);
   }, 20_000);
 
   it("two copies starting at once with the statement limit: the slow migration is applied once (Rule 33)", async () => {
