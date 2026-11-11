@@ -247,6 +247,9 @@ describe("GET /push/config and disabled mode", () => {
     const res = await off.inject({ method: "GET", url: "/api/v1/push/config?app=driver" });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ provider: "fcm", enabled: false });
+    // S06 F13: a route's own cache header wins over the API's no-store.
+    expect(res.headers["cache-control"]).toBe("public, max-age=300");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
     const withBad = await buildApp({ env: readEnv({ MOVERA_ENV: "development", FIREBASE_SERVICE_ACCOUNT: "{broken" }), logger: false });
     expect((await withBad.inject({ method: "GET", url: "/api/v1/push/config?app=rider" })).json()).toEqual({ provider: "fcm", enabled: false });
     await withBad.close();

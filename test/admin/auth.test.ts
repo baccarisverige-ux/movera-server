@@ -189,6 +189,14 @@ describe("setup links from the panel", () => {
     const ok = await post(`/admin/agents/${viewer.adminId}/setup-link`, undefined, { ...bearer(boss.session.accessToken), "idempotency-key": "k".repeat(20) });
     expect(ok.statusCode).toBe(201);
     expect(ok.json().url).toContain("/setup-password#token=");
+    // S06 F15: audited like other admin changes, without the token.
+    const rows = await database.db.selectFrom("admin_audit").selectAll().where("action", "=", "admin.setup_link").where("target_id", "=", viewer.adminId).execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.admin_id).toBe(boss.adminId);
+    expect(JSON.stringify(rows[0]!.detail)).not.toContain(tokenOf(ok.json().url));
+    // S06 F13: API answers are not cached or sniffed.
+    expect(ok.headers["cache-control"]).toBe("no-store");
+    expect(ok.headers["x-content-type-options"]).toBe("nosniff");
     const unknown = await post(`/admin/agents/adm_nope/setup-link`, undefined, { ...bearer(boss.session.accessToken), "idempotency-key": "k".repeat(21) });
     expect(unknown.statusCode).toBe(404);
   });

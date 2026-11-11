@@ -131,7 +131,7 @@ async function assertNotLocked(ex: Executor, email: string, ip: string | undefin
 
 /* ---------------------------------------------------------------- setup links */
 
-export async function createSetupLink(deps: AdminDeps, adminId: string, createdBy: string | null): Promise<{ url: string; expiresAt: string }> {
+export async function createSetupLink(deps: AdminDeps, adminId: string, createdBy: string | null, options: { audit?: boolean } = {}): Promise<{ url: string; expiresAt: string }> {
   const now = deps.clock?.() ?? new Date();
   const admin = await deps.db.selectFrom("admins").select(["admin_id", "active"]).where("admin_id", "=", adminId).executeTakeFirst();
   if (admin === undefined) throw new ApiError("not_found", "No such admin.", { reason: "admin_not_found" });
@@ -141,6 +141,8 @@ export async function createSetupLink(deps: AdminDeps, adminId: string, createdB
     // A new link replaces any earlier unused one.
     await trx.updateTable("admin_setup_links").set({ used_at: now }).where("admin_id", "=", adminId).where("used_at", "is", null).execute();
     await trx.insertInto("admin_setup_links").values({ token_sha256: sha256(token), admin_id: adminId, expires_at: expiresAt, used_at: null, created_by: createdBy, created_at: now }).execute();
+    // S06 F15: an admin making a link for another admin is audited like every admin change (never the token or its hash).
+    if (options.audit === true) await audit(trx, { adminId: createdBy, action: "admin.setup_link", targetType: "admin", targetId: adminId, detail: { expiresAt: expiresAt.toISOString() }, at: now });
   });
   // Relative to the panel's own path, so a panel under a sub-path (GitHub Pages: /<repo>/live/) keeps it.
   const url = new URL("setup-password", deps.panelUrl.endsWith("/") ? deps.panelUrl : `${deps.panelUrl}/`);

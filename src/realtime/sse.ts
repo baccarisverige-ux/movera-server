@@ -38,6 +38,7 @@ export function openEventStream(request: FastifyRequest, reply: FastifyReply, he
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive",
+    "x-content-type-options": "nosniff",
     // Proxies must not hold the stream back.
     "x-accel-buffering": "no",
   });

@@ -88,6 +88,9 @@ describe("trip stream", () => {
     const sse = await listen(`/trips/${trip.tripId}/events?after=1`, rider);
     expect(sse.status).toBe(200);
     expect(sse.headers["content-type"]).toContain("text/event-stream");
+    // S06 F13: the stream keeps its own cache header and is never sniffed.
+    expect(sse.headers["cache-control"]).toBe("no-cache, no-transform");
+    expect(sse.headers["x-content-type-options"]).toBe("nosniff");
     expect(sse.headers["x-api-version"]).toBe("0.5");
     expect(await until(() => sse.events.length === 1)).toBe(true);
     expect(sse.events[0]).toMatchObject({ id: "2", data: { tripId: trip.tripId, sequence: 2, kind: "trip_projection", projection: { status: "searching" } } });
