@@ -176,6 +176,16 @@ describe("rider account", () => {
     expect((await call(app, "POST", "/payment-methods", rider, { method: "card", pspToken: "tok" })).json()).toMatchObject({ reason: "payment_method_not_available" });
   });
 
+  it("B9: card / payment-intent / top-up paths in openapi answer the same typed cash-only 400, not a plain 404", async () => {
+    const paths: ["POST" | "DELETE", string][] = [["DELETE", "/payment-methods/card_1"], ["POST", "/payments"], ["POST", "/payments/pay_1/confirm"], ["POST", "/wallet/topup"]];
+    for (const [method, path] of paths) {
+      const res = await call(app, method, path, rider, method === "DELETE" ? undefined : {});
+      expect(res.statusCode, `${method} ${path}`).toBe(400);
+      expect(res.json(), `${method} ${path}`).toMatchObject({ reason: "payment_method_not_available" });
+      expect((await call(app, method, path, {}, method === "DELETE" ? undefined : {})).statusCode, `${method} ${path} no token`).toBe(401);
+    }
+  });
+
   it("an unpaid fee shows on the profile and rides along on the next price", async () => {
     const riderId = (await call(app, "GET", "/rider/profile", other)).json().riderId;
     // v0.18.7 (Q3): the debt is the owed fee rows themselves (per currency), not a number on the rider.
