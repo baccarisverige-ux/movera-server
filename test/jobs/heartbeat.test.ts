@@ -9,6 +9,7 @@ import { HOUSEKEEPING_KINDS, CLEANUP_QUOTES } from "../../src/jobs/housekeeping.
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers } from "../../src/jobs/maintenance.js";
 import { SMART_SURGE_CHECK, ensurePricingTimers } from "../../src/pricing/surge.js";
 import { RECURRING_JOBS } from "../../src/jobs/heartbeat.js";
+import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "../../src/jobs/payouts.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /**
@@ -125,10 +126,10 @@ describe("GET /healthz/jobs", () => {
 });
 
 describe("RECURRING_JOBS", () => {
-  it("B1.28: names every kind main.ts re-arms at start, except no_fix_sweep (booked per run)", () => {
+  it("B1.28: names every kind main.ts re-arms at start, except no_fix_sweep (booked per run) and payout_driver (one row per driver)", () => {
     // The same constants main.ts passes to rearmParkedRecurringTimers.
-    const rearmed = [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS];
-    expect(RECURRING_JOBS.map((job) => job.kind).sort()).toEqual(rearmed.filter((kind) => kind !== NO_FIX_SWEEP).sort());
+    const rearmed = [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS, PAYOUT_CLOSE, PAYOUT_DRIVER];
+    expect(RECURRING_JOBS.map((job) => job.kind).sort()).toEqual(rearmed.filter((kind) => kind !== NO_FIX_SWEEP && kind !== PAYOUT_DRIVER).sort());
     expect(new Set(RECURRING_JOBS.map((job) => job.kind)).size).toBe(RECURRING_JOBS.length);
     for (const job of RECURRING_JOBS) expect(job.everyMs).toBeGreaterThan(0);
   });

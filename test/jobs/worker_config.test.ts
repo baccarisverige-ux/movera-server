@@ -5,6 +5,7 @@ import { buildWorkerConfig, HOUSEKEEPING_LANE_KINDS, TRIP_LANE_KINDS } from "../
 import type { TimerLane } from "../../src/jobs/timers.js";
 import { HOUSEKEEPING_KINDS } from "../../src/jobs/housekeeping.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "../../src/jobs/maintenance.js";
+import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "../../src/jobs/payouts.js";
 import { ALERT_SWEEP } from "../../src/alerts/detector.js";
 import { INCIDENT_ESCALATE } from "../../src/safety/incidents.js";
 import { EstimateRouter } from "../../src/maps/routing.js";
@@ -66,9 +67,9 @@ describe("buildWorkerConfig", () => {
 
   // B1.7 (owner W1 Q71): housekeeping on its own lane; SOS escalation and the alert sweep on lanes it never uses.
   const takes = (lane: TimerLane, kind: string) => (lane.kinds !== undefined ? lane.kinds.includes(kind) : !(lane.exclude ?? []).includes(kind));
-  it("B1.7: housekeeping (12 jobs, hourly sweep, nightly run) runs only on the housekeeping lane", () => {
+  it("B1.7: housekeeping (12 jobs, hourly sweep, nightly run, S4 0.14a payout timer + driver steps) runs only on the housekeeping lane", () => {
     expect(HOUSEKEEPING_KINDS).toHaveLength(12);
-    expect([...HOUSEKEEPING_LANE_KINDS].sort()).toEqual([...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY].sort());
+    expect([...HOUSEKEEPING_LANE_KINDS].sort()).toEqual([...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER].sort());
     const housekeeping = lanes.filter((lane) => lane.name === "housekeeping");
     expect(housekeeping).toHaveLength(1);
     for (const kind of HOUSEKEEPING_LANE_KINDS) {

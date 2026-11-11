@@ -222,9 +222,10 @@ export async function periodOf(ex: Executor, at: Date, timeZone: string, schedul
 }
 
 /**
- * The payout job (each night and every hour, so the admin's payout time is kept within the hour): for every driver
- * with unpaid entries in a period that has ended (the country's schedule, the local time of his first zone or his
- * country), the payouts of that period, one per currency. Safe to run again: paid entries are never taken twice.
+ * The payout pass (S4 0.14a, owner W1 Q69: one payout job, the hourly payout timer of jobs/payouts.ts, one driver per
+ * transaction there; the admin's payout time is kept within the hour): for every driver with unpaid entries in a
+ * period that has ended (the country's schedule, the local time of his first zone or his country), the payouts of that
+ * period, one per currency. Safe to run again: paid entries are never taken twice.
  */
 export async function closePeriods(trx: Trx, now: Date): Promise<number> {
   return (await closePeriodsBatch(trx, now)).made;
@@ -233,15 +234,19 @@ export async function closePeriods(trx: Trx, now: Date): Promise<number> {
 /** Stress T-A follow-up: drivers per payout batch of the hourly job (one transaction never pays a whole backlog). */
 export const PAYOUT_BATCH_DRIVERS = 200;
 
+/** A driver with unpaid entries, as the payout pass reads him. */
+export type PayoutDriverRow = { driver_id: string; time_zone: string | null; country: string | null; first_at: Date };
+/** The countries' schedules and payout modes read during one pass (config_live once per country). */
+export type PayoutScheduleCache = { schedules: Map<string, PayoutSchedule>; manual: Map<string, boolean> };
+export const newPayoutScheduleCache = (): PayoutScheduleCache => ({ schedules: new Map(), manual: new Map() });
+
 /**
- * closePeriods for at most `maxDrivers` drivers after `after` (driver_id order). Returns the payouts made and the last
- * driver taken when more may follow (null = the list is done). Stress T-A follow-up: the hourly sweep paid six months
- * of backlog for 5,000 drivers in ONE transaction that ran for the whole 10-minute step and held a pool connection;
- * now each run pays one batch and the sweep books the next batch soon (jobs/maintenance.ts).
+ * The drivers with unpaid entries (not on hold), in driver_id order: at most `maxDrivers` after `after`, or only
+ * `driverId` (0.14a: one driver's own payout step).
  */
-export async function closePeriodsBatch(trx: Trx, now: Date, options: { after?: string | null; maxDrivers?: number } = {}): Promise<{ made: number; next: string | null }> {
+export async function payoutDrivers(ex: Executor, options: { after?: string | null; maxDrivers?: number; driverId?: string } = {}): Promise<PayoutDriverRow[]> {
   const limit = options.maxDrivers;
-  const rows = await sql<{ driver_id: string; time_zone: string | null; country: string | null; first_at: Date }>`
+  const rows = await sql<PayoutDriverRow>`
     SELECT e.driver_id, z.time_zone, coalesce(z.country, d.country) AS country, min(e.at) AS first_at
       FROM earnings_entries e
       JOIN drivers d ON d.driver_id = e.driver_id
@@ -249,35 +254,63 @@ export async function closePeriodsBatch(trx: Trx, now: Date, options: { after?: 
      WHERE e.payout_id IS NULL
        AND d.payout_hold_at IS NULL -- v0.18.39 A2 (owner Q4): a held driver is paid after release
        ${options.after ? sql`AND e.driver_id > ${options.after}` : sql``}
+       ${options.driverId !== undefined ? sql`AND e.driver_id = ${options.driverId}` : sql``}
      GROUP BY e.driver_id, z.time_zone, coalesce(z.country, d.country)
      ORDER BY 1
-     ${limit !== undefined ? sql`LIMIT ${limit}` : sql``}`.execute(trx);
-  const schedules = new Map<string, PayoutSchedule>();
-  const manual = new Map<string, boolean>();
-  let made = 0;
-  for (const row of rows.rows) {
-    const timeZone = row.time_zone ?? countryTimeZone(row.country) ?? SCHEDULE.countryTimeZones["SE"]!;
-    const key = row.country ?? "";
-    if (!schedules.has(key)) {
-      const live = row.country ? await trx.selectFrom("config_live").select("document").where("doc", "=", "country_rules").where("zone_id", "=", standardKey(row.country)).executeTakeFirst() : undefined;
-      schedules.set(key, payoutScheduleOf(live?.document as { payoutSchedule?: Partial<PayoutSchedule> } | undefined));
-      manual.set(key, (live?.document as { payoutMode?: unknown } | undefined)?.payoutMode === "manual");
-    }
-    const schedule = schedules.get(key)!;
-    // Every ended period from the oldest unpaid entry on. Checker 4: an entry that came in late for a period already
-    // paid goes into the next open period (never stuck): periods start after the driver's last weekly payout.
-    const last = await trx.selectFrom("payouts").select((eb) => eb.fn.max("period_end").as("end")).where("driver_id", "=", row.driver_id).where("source", "=", "weekly").executeTakeFirst();
-    const lastEnd = last?.end ? new Date(last.end as unknown as string) : null;
-    const firstAt = new Date(row.first_at);
-    let period = await periodOf(trx, lastEnd && lastEnd > firstAt ? lastEnd : firstAt, timeZone, schedule);
-    let entriesFrom: Date | undefined = lastEnd && lastEnd > firstAt ? new Date(0) : undefined;
-    while (period.end.getTime() <= now.getTime()) {
-      made += (await makePayouts(trx, { driverId: row.driver_id, from: period.start, to: period.end, source: "weekly", by: null, ...(entriesFrom ? { entriesFrom } : {}), ...(manual.get(key) ? { waitForApproval: true } : {}) }, now)).length;
-      entriesFrom = undefined;
-      period = await periodOf(trx, period.end, timeZone, schedule);
-    }
+     ${limit !== undefined ? sql`LIMIT ${limit}` : sql``}`.execute(ex);
+  return rows.rows;
+}
+
+/** The driver's time zone, schedule and manual mode, and his first unpaid period (from the oldest unpaid entry on). */
+async function firstUnpaidPeriod(ex: Executor, row: PayoutDriverRow, cache: PayoutScheduleCache) {
+  const timeZone = row.time_zone ?? countryTimeZone(row.country) ?? SCHEDULE.countryTimeZones["SE"]!;
+  const key = row.country ?? "";
+  if (!cache.schedules.has(key)) {
+    const live = row.country ? await ex.selectFrom("config_live").select("document").where("doc", "=", "country_rules").where("zone_id", "=", standardKey(row.country)).executeTakeFirst() : undefined;
+    cache.schedules.set(key, payoutScheduleOf(live?.document as { payoutSchedule?: Partial<PayoutSchedule> } | undefined));
+    cache.manual.set(key, (live?.document as { payoutMode?: unknown } | undefined)?.payoutMode === "manual");
   }
-  const next = limit !== undefined && rows.rows.length >= limit ? rows.rows.at(-1)!.driver_id : null;
+  const schedule = cache.schedules.get(key)!;
+  // Checker 4: an entry that came in late for a period already paid goes into the next open period (never stuck):
+  // periods start after the driver's last weekly payout.
+  const last = await ex.selectFrom("payouts").select((eb) => eb.fn.max("period_end").as("end")).where("driver_id", "=", row.driver_id).where("source", "=", "weekly").executeTakeFirst();
+  const lastEnd = last?.end ? new Date(last.end as unknown as string) : null;
+  const firstAt = new Date(row.first_at);
+  const period = await periodOf(ex, lastEnd && lastEnd > firstAt ? lastEnd : firstAt, timeZone, schedule);
+  const entriesFrom: Date | undefined = lastEnd && lastEnd > firstAt ? new Date(0) : undefined;
+  return { timeZone, schedule, manual: cache.manual.get(key) === true, period, entriesFrom };
+}
+
+/** 0.14a: whether the driver has a period that ended by `now` (read only; the payout timer books his step then). */
+export async function payoutDue(ex: Executor, row: PayoutDriverRow, now: Date, cache: PayoutScheduleCache): Promise<boolean> {
+  return (await firstUnpaidPeriod(ex, row, cache)).period.end.getTime() <= now.getTime();
+}
+
+/** One driver's payouts: every ended period from the oldest unpaid entry on. Returns the payouts made. */
+export async function closeDriverPeriods(trx: Trx, row: PayoutDriverRow, now: Date, cache: PayoutScheduleCache = newPayoutScheduleCache()): Promise<number> {
+  const first = await firstUnpaidPeriod(trx, row, cache);
+  let { period, entriesFrom } = first;
+  let made = 0;
+  while (period.end.getTime() <= now.getTime()) {
+    made += (await makePayouts(trx, { driverId: row.driver_id, from: period.start, to: period.end, source: "weekly", by: null, ...(entriesFrom ? { entriesFrom } : {}), ...(first.manual ? { waitForApproval: true } : {}) }, now)).length;
+    entriesFrom = undefined;
+    period = await periodOf(trx, period.end, first.timeZone, first.schedule);
+  }
+  return made;
+}
+
+/**
+ * closePeriods for at most `maxDrivers` drivers after `after` (driver_id order), in the caller's transaction. Returns
+ * the payouts made and the last driver taken when more may follow (null = the list is done). The job does not use it
+ * (0.14a: the payout timer gives each driver his own transaction); kept for one-transaction callers and tests.
+ */
+export async function closePeriodsBatch(trx: Trx, now: Date, options: { after?: string | null; maxDrivers?: number } = {}): Promise<{ made: number; next: string | null }> {
+  const rows = await payoutDrivers(trx, options);
+  const cache = newPayoutScheduleCache();
+  let made = 0;
+  for (const row of rows) made += await closeDriverPeriods(trx, row, now, cache);
+  const limit = options.maxDrivers;
+  const next = limit !== undefined && rows.length >= limit ? rows.at(-1)!.driver_id : null;
   return { made, next };
 }
 
