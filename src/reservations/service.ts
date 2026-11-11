@@ -42,22 +42,8 @@ const SCHEDULED_REASONS = (contract as unknown as { cancelReasons: Record<string
 const NO_DRIVER = new Set(["requested", "searching", "offered"]);
 const ASSIGNED = ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"] as const;
 
-export const TIMER = {
-  popup: "resv_popup",
-  openAll: "resv_open_all",
-  dispatch: "resv_dispatch",
-  noDriver: "resv_no_driver",
-  riderReminder: "resv_rider_reminder",
-  driverReminder: "resv_driver_reminder",
-  goOnline: "resv_go_online",
-  offlineCheck: "resv_offline_check",
-  changeAsk: "resv_change_ask",
-  leaveCheck: "resv_leave_check",
-  overdue: "resv_overdue",
-  /** v0.18.39 §63 (P17): pickup + noDriverStopAfterMin with no driver → the ride ends (no fee). */
-  noDriverStop: "resv_no_driver_stop",
-} as const;
-export const RESERVATION_TIMER_KINDS: string[] = Object.values(TIMER);
+import { TIMER, RESERVATION_TIMER_KINDS } from "./timerKinds.js";
+export { TIMER, RESERVATION_TIMER_KINDS };
 
 /** What the trip keeps (trips.reservation). */
 export type ReservationState = {

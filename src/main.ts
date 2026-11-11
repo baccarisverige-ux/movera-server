@@ -1,26 +1,20 @@
-import { timerLanes } from "./jobs/timers.js";
+import { buildWorkerConfig } from "./jobs/workerConfig.js";
 import { cacheGeometry, forgetGeometry } from "./config/geometryCache.js";
 import type pg from "pg";
 import { registerLoadShedding } from "./http/shed.js";
-import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "./safety/rideCheckServer.js";
-import { SMART_SURGE_CHECK, ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
+import { SMART_SURGE_CHECK, ensurePricingTimers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
 import { createDb, createPool, poolOptionsFrom, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { guardProcess, waitForDatabase } from "./db/ready.js";
 import { readEnv, startupWarnings } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
-import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
+import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers } from "./jobs/maintenance.js";
 import { NO_FIX_OFFLINE } from "./drivers/presence.js";
 import { TimerWorker, rearmParkedRecurringTimers } from "./jobs/timers.js";
-import { ALERT_SWEEP, alertSweepHandler, ensureAlertSweep } from "./alerts/detector.js";
+import { ALERT_SWEEP, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
-import { dispatchHandlers, ROUND, WITHDRAW } from "./dispatch/runtime.js";
-import { RADAR_ZONE_REPEAT, radarZoneRepeatHandler } from "./dispatch/tools.js";
-import { rideHandlers } from "./trips/ride.js";
-import { callHandlers } from "./calls/service.js";
-import { etaHandler, TRIP_ETA } from "./trips/eta.js";
 import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
 import { CONFIG_CHANNEL, cacheLiveDocuments, forgetLiveDocuments } from "./config/service.js";
@@ -84,12 +78,9 @@ if (db !== undefined) {
   await prepareTestWeek(db, env, app.log);
   // Owner (v0.18.19 leaveOnTime): booked rides start from the same live road-route ETA as normal rides.
   setLeaveRouter((app as unknown as { router: Router }).router);
-  // Job 1 (fast dispatch): one lane only for dispatch rounds and withdrawals, the others for any timer (TIMER_LANES).
-  // Stress H1: trip GPS work (ETA, ride check, near drop-off) has its own lane and never takes the other lanes, so it
-  // can never starve dispatch; general lanes take everything else (dispatch too, when it is busy).
-  const tripKinds = [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"];
-  const lanes = timerLanes({ dispatchKinds: [ROUND, WITHDRAW], tripKinds, timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES });
-  worker = new TimerWorker(db, { handlers: { ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...callHandlers, ...pricingHandlers, [ALERT_SWEEP]: alertSweepHandler, [TRIP_ETA]: etaHandler((app as unknown as { router: Router }).router), [RIDE_CHECK_SCAN]: rideCheckScanHandler((app as unknown as { router: Router }).router) }, logger: app.log, pollMs: 200, lanes });
+  // Job 1 / stress H1: handlers and lanes (dispatch lane, trip GPS lane, general lanes) in jobs/workerConfig.ts.
+  const { handlers, lanes } = buildWorkerConfig((app as unknown as { router: Router }).router, { timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES });
+  worker = new TimerWorker(db, { handlers, logger: app.log, pollMs: 200, lanes });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
   if (push.sender !== undefined) {
