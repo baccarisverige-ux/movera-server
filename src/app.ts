@@ -270,7 +270,13 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??
-      (env.OSRM_URL !== undefined ? new OsrmRouter(env.OSRM_URL, 2500, (error) => app.log.warn({ err: error }, "OSRM unavailable; distance estimated")) : new EstimateRouter());
+      (env.OSRM_URL !== undefined
+        ? new OsrmRouter(env.OSRM_URL, env.OSRM_TIMEOUT_MS, (error) => app.log.warn({ err: error }, "OSRM unavailable; distance estimated"), {
+            failuresToOpen: env.OSRM_BREAKER_FAILURES,
+            coolDownMs: env.OSRM_BREAKER_COOLDOWN_SECONDS * 1000,
+            log: app.log,
+          })
+        : new EstimateRouter());
     // v0.18.7: the ETA timer (trips/eta.ts) routes with the same router as the quotes; main.ts reads it here.
     app.decorate("router", roads);
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });

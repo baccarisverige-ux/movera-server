@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseExtraTestPhones } from "./auth/testPhones.js";
+import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./maps/osrmSettings.js";
 
 /**
  * Server settings, read from the environment once at start. Anything missing or malformed stops the server
@@ -56,6 +57,15 @@ const schema = z.object({
   JWT_SECRET: z.string().min(32).optional(),
   /** Movera's own OSRM (owner decision 4), e.g. http://osrm:5000. Unset: distances are estimated. */
   OSRM_URL: z.string().url().optional(),
+  /**
+   * B1.3 (owner W1 Q67, 2026-11-11): infra knobs for the OSRM client (maps/routing.ts OsrmRouter), env because they
+   * describe the route server, not a per-country rule. A route ask waits at most OSRM_TIMEOUT_MS, then the distance
+   * is estimated (2500 = the value hardcoded before). After OSRM_BREAKER_FAILURES failures in a row OSRM is not called
+   * for OSRM_BREAKER_COOLDOWN_SECONDS (estimate at once), then one probe; 0 failures turns the breaker off.
+   */
+  OSRM_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(OSRM_TIMEOUT_MS_DEFAULT),
+  OSRM_BREAKER_FAILURES: z.coerce.number().int().min(0).max(1000).default(OSRM_BREAKER_FAILURES_DEFAULT),
+  OSRM_BREAKER_COOLDOWN_SECONDS: z.coerce.number().int().min(1).max(3600).default(OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT),
   /** Google Places / Geocoding key for address search (owner decision 4). Unset: address search answers 503. */
   GOOGLE_MAPS_API_KEY: z.string().min(10).optional(),
   /**
