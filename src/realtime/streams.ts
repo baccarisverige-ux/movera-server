@@ -160,11 +160,18 @@ export async function streamConfig(
     }
   });
   stream.onClose(unsubscribe);
+  // S04 A5: the null signal (LISTEN reconnected) means hints may have been missed. A hint needs a tripId and the
+  // contract has no catch-up event, so the stream is closed: the app reconnects (same Last-Event-ID) and re-reads.
+  const missedHints = () => {
+    stream.comment("realtime reconnected; reconnect to catch up");
+    stream.close();
+  };
   // v0.18.32 (contract.json#bookedRideSeen.riderTripEvent, P21): a trip of this rider changed, wherever it was made.
   // The trip event's NOTIFY names its rider, so no read is needed; the id stays the document version already sent.
   if (riderId !== undefined) {
     stream.onClose(deps.hub.subscribe(TRIP_EVENTS_CHANNEL, (payload) => {
-      if (payload === null || payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
+      if (payload === null) return missedHints();
+      if (payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
     }));
@@ -175,7 +182,8 @@ export async function streamConfig(
   if (driverId !== undefined) {
     stream.onClose(deps.hub.subscribe(TRIP_EVENTS_CHANNEL, (payload) => {
       // v0.18.51 §73 (S4 ISSUE 1): only a list change of a booked ride, never its location fixes or other updates.
-      if (payload === null || payload["scheduled"] !== true || payload["reservations"] !== true || typeof payload["tripId"] !== "string" || stream.closed()) return;
+      if (payload === null) return missedHints();
+      if (payload["scheduled"] !== true || payload["reservations"] !== true || typeof payload["tripId"] !== "string" || stream.closed()) return;
       if (payload["zoneId"] !== zoneId && payload["driverId"] !== driverId) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "driver_reservations_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });

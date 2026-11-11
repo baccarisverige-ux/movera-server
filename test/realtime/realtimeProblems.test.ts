@@ -180,21 +180,32 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
   });
 
   // A5 / P5: the hint listeners return on the null catch-up signal after a LISTEN reconnect.
-  it.fails("A5/P5: a rider_trip_changed hint made during a LISTEN reconnect gap still reaches the rider (src/realtime/streams.ts:130)", async () => {
+  it("A5/P5: after a LISTEN reconnect the rider's settings stream closes, so the app reconnects and re-reads the trip it may have missed (src/realtime/streams.ts:155)", async () => {
     const rider = (await signIn(app, TEST_PHONES[3]!, "rider")).headers;
     const trip = await bookTrip(rider);
     const sse = await listen(base, "/rider/config/stream?zoneId=Z001", rider);
     await sleep(300);
-    const before = kinds(sse, "rider_trip_changed").length;
     await killListen(hub);
     await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
-    const got = await until(() => kinds(sse, "rider_trip_changed").length > before, 5000);
+    const ended = await until(() => sse.ended, 5000);
     sse.close();
-    expect(got).toBe(true);
+    expect(ended).toBe(true);
+  });
+
+  it("A5: after a LISTEN reconnect the driver's settings stream closes (driver_reservations_changed hint may be lost) (src/realtime/streams.ts:164)", async () => {
+    await seedTestPhones(database.db, ["+46701740621"]);
+    const driver = (await signIn(app, "+46701740621", "driver")).headers;
+    const sse = await listen(base, "/driver/config/stream?zoneId=Z001", driver);
+    expect(sse.status).toBe(200);
+    await sleep(300);
+    await killListen(hub);
+    const ended = await until(() => sse.ended, 5000);
+    sse.close();
+    expect(ended).toBe(true);
   });
 
   // Rule 33 variant of A5: two copies, only copy A's LISTEN drops; copy B delivers, copy A loses the hint silently.
-  it.fails("A5 + Rule 33: with 2 copies, the copy whose LISTEN dropped still gives its rider the hint (src/realtime/streams.ts:130, src/realtime/hub.ts:59)", async () => {
+  it("A5 + Rule 33: with 2 copies, the copy whose LISTEN dropped closes its rider stream (the app reconnects); the other keeps delivering (src/realtime/streams.ts:130, src/realtime/hub.ts:59)", async () => {
     const hub2 = new NotificationHub(database.url, CHANNELS);
     await hub2.start();
     const app2 = await buildApp({ env: ENV(), logger: false, db: database.db, router: fixedRouter, hub: hub2 });
@@ -209,10 +220,12 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
       await killListen(hub);
       await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
       expect(await until(() => kinds(onB, "rider_trip_changed").length === 1)).toBe(true);
-      const gotA = await until(() => kinds(onA, "rider_trip_changed").length === 1, 4000);
+      const endedA = await until(() => onA.ended, 4000);
+      const endedB = onB.ended;
       onA.close();
       onB.close();
-      expect(gotA).toBe(true);
+      expect(endedA).toBe(true);
+      expect(endedB).toBe(false);
     } finally {
       await app2.close();
       await hub2.stop();
