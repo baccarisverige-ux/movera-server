@@ -291,14 +291,33 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
   });
 
   // A4: no keepAlive on the LISTEN client, no ping, and /healthz says nothing about realtime.
-  it.fails("A4: the LISTEN client uses TCP keepAlive (src/realtime/hub.ts:31)", () => {
+  it("A4: the LISTEN client uses TCP keepAlive (src/realtime/hub.ts:31)", () => {
     const client = (hub as unknown as { client: { connection: { _keepAlive?: boolean } } }).client;
     expect(client.connection._keepAlive).toBe(true);
   });
 
-  it.fails("A4/E2: /healthz reports realtime (LISTEN up/down, open streams) (src/app.ts:193-199)", async () => {
+  it("A4/E2: /healthz reports realtime (LISTEN up/down, open streams) (src/app.ts:193-199)", async () => {
     const res = await fetch(`http://127.0.0.1:${(app.server.address() as AddressInfo).port}/healthz`);
-    expect(await res.json()).toHaveProperty("realtime");
+    const body = (await res.json()) as { realtime: Record<string, unknown> };
+    expect(body.realtime).toMatchObject({ status: "ok", reconnects: expect.any(Number), subscribers: expect.any(Number) });
+  });
+
+  it("A4: a LISTEN health check that hangs reconnects and tells every stream to catch up", async () => {
+    const h = new NotificationHub(database.url, CHANNELS, undefined, { everyMs: 100, timeoutMs: 50 });
+    await h.start();
+    try {
+      let catchUps = 0;
+      h.subscribe(TRIP_EVENTS_CHANNEL, (payload) => void (payload === null && (catchUps += 1)));
+      // The socket "died without a close": queries never answer.
+      const client = (h as unknown as { client: pg.Client }).client;
+      client.query = (() => new Promise(() => undefined)) as unknown as pg.Client["query"];
+      expect(await until(() => catchUps >= 1, 4000)).toBe(true);
+      expect(h.healthSnapshot()).toMatchObject({ status: "ok", reconnects: 1 });
+      expect((h as unknown as { client: pg.Client }).client).not.toBe(client);
+    } finally {
+      await h.stop();
+    }
+    expect(h.healthSnapshot().status).toBe("down");
   });
 
   // Not a problem today (passes): every NOTIFY payload is a small doorbell, far under PostgreSQL's 8000-byte limit.
