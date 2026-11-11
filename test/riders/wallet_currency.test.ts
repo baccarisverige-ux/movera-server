@@ -119,4 +119,9 @@ describe("S07 M12 / E16: a spend never takes the balance below 0", () => {
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(await bal()).toBe("20");
   });
+
+  it("the database refuses a negative balance (CHECK rider_wallets_balance_nonneg)", async () => {
+    await move(10);
+    await expect(database.db.updateTable("rider_wallets").set({ balance_minor: "-1" }).where("rider_id", "=", riderId).execute()).rejects.toThrow(/rider_wallets_balance_nonneg/);
+  });
 });
