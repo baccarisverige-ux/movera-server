@@ -186,6 +186,23 @@ describe("B1.3 OSRM circuit breaker: a hanging route server with 20 trips on boa
     expect(router.state).toBe("closed");
   });
 
+  it("bad points (OSRM answers 400 NoRoute / InvalidQuery) are not an outage: the breaker stays closed (supervisor #186)", async () => {
+    const router = new OsrmRouter(BASE, TIMEOUT_MS, () => undefined, { failuresToOpen: 3, coolDownMs: COOL_DOWN_MS });
+    fakeFetch.mockImplementation(async (input) => {
+      calls.push({ trip: tripOfUrl(String(input)), at: Date.now() });
+      return new Response(JSON.stringify({ code: "NoRoute", message: "Impossible route between points" }), { status: 400 });
+    });
+    for (let i = 0; i < 6; i++) expect((await router.route(trips[i]!.points)).source).toBe("estimate");
+    expect(router.state).toBe("closed");
+    expect(calls.length).toBe(6);
+    fakeFetch.mockImplementation(async (input) => {
+      calls.push({ trip: tripOfUrl(String(input)), at: Date.now() });
+      return new Response(JSON.stringify({ code: "InvalidQuery" }), { status: 400 });
+    });
+    for (let i = 0; i < 4; i++) await router.route(trips[i]!.points);
+    expect(router.state).toBe("closed");
+  });
+
   it("env: today's timeout (2500 ms) and the breaker defaults; 0 failures turns it off", () => {
     const base = { MOVERA_ENV: "development" };
     const env = readEnv(base);

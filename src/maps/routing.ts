@@ -55,6 +55,17 @@ export type OsrmBreakerOptions = {
 };
 
 /** OSRM v5 /route/v1/driving. Falls back to the estimate when OSRM does not answer in time, or while the breaker is open. */
+/** OSRM answered with an error (4xx = bad or unroutable points, not an outage; 5xx = server trouble). */
+export class OsrmAnsweredError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+  ) {
+    super(`OSRM answered ${status} ${code ?? ""}`);
+    this.name = "OsrmAnsweredError";
+  }
+}
+
 export class OsrmRouter implements Router {
   private readonly fallback = new EstimateRouter();
   private readonly breaker: OsrmBreakerOptions;
@@ -94,6 +105,13 @@ export class OsrmRouter implements Router {
       this.succeeded();
       return leg;
     } catch (error) {
+      if (error instanceof OsrmAnsweredError && error.status < 500) {
+        // The server answered (bad or unroutable points: 400 NoRoute / InvalidQuery): not an outage, so it counts as
+        // "up" for the breaker; this trip still gets the estimate (never stored as the road, B1.2).
+        this.onFallback(error);
+        this.succeeded();
+        return this.fallback.route(points);
+      }
       this.failed(error, probe);
       return this.fallback.route(points);
     } finally {
@@ -107,7 +125,7 @@ export class OsrmRouter implements Router {
     const response = await fetch(url, { signal: AbortSignal.timeout(this.timeoutMs) });
     const body = (await response.json()) as { code?: string; routes?: Array<{ distance: number; duration: number; geometry?: { coordinates?: number[][] } }> };
     const best = body.routes?.[0];
-    if (!response.ok || body.code !== "Ok" || best === undefined) throw new Error(`OSRM answered ${response.status} ${body.code ?? ""}`);
+    if (!response.ok || body.code !== "Ok" || best === undefined) throw new OsrmAnsweredError(response.status, body.code);
     return {
       distanceMeters: Math.round(best.distance),
       durationSeconds: Math.round(best.duration),
