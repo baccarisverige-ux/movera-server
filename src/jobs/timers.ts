@@ -122,7 +122,18 @@ export type TimerWorkerOptions = {
    * so they never take the same one. Default: one lane for any kind (as before).
    */
   lanes?: TimerLane[];
+  /**
+   * B1.6b (owner W1 Q70): kinds whose timer, on its first parking, runs once more RESTART_ONCE_AFTER_MS later instead
+   * (attempts stays MAX_ATTEMPTS; failing again parks it for good at MAX_ATTEMPTS + 1). Only kinds whose handler
+   * re-checks the trip or case first (test/jobs/restart_rechecks.test.ts).
+   */
+  restartOnce?: readonly string[];
+  /** B1.6b: runs after a timer was parked (or put on its one restart), e.g. to raise the alert without the alert sweep. */
+  onParked?: (db: Db, timer: Timer, now: Date) => Promise<void>;
 };
+
+/** B1.6b: a parked trip or safety timer runs once more after this long. */
+export const RESTART_ONCE_AFTER_MS = 60_000;
 
 export class TimerWorker {
   private readonly clock: () => Date;
@@ -164,6 +175,7 @@ export class TimerWorker {
     const skip = this.skipped(now);
     let taken: Timer | undefined;
     let prepareFor: Timer | undefined;
+    let failed: { error: Error; parked: boolean; restart: boolean } | undefined;
     const take = async (trx: Trx, timerId?: string) => {
       let query = trx.selectFrom("timers").selectAll().where("due_at", "<=", now);
       if (timerId !== undefined) query = query.where("timer_id", "=", timerId);
@@ -188,9 +200,18 @@ export class TimerWorker {
         }
         taken = prepared === undefined ? timer : { ...timer, prepared };
         recordTimerLag(laneName(lane), now.getTime() - row.due_at.getTime());
-        await trx.deleteFrom("timers").where("timer_id", "=", row.timer_id).execute();
-        if (handler === undefined) throw new Error(`No handler for timer kind ${row.kind}`);
-        await handler(trx, taken);
+        // B1.6b (Rule 33): a failure is undone to here and recorded in this same transaction, while this worker still
+        // holds the row, so no other copy can take the timer again between the failure and its record.
+        await sql`SAVEPOINT timer_handler`.execute(trx);
+        try {
+          await trx.deleteFrom("timers").where("timer_id", "=", row.timer_id).execute();
+          if (handler === undefined) throw new Error(`No handler for timer kind ${row.kind}`);
+          await handler(trx, taken);
+        } catch (error) {
+          if (error instanceof TimerBusy || isLockTimeout(error)) throw error;
+          await sql`ROLLBACK TO SAVEPOINT timer_handler`.execute(trx);
+          failed = { error: error as Error, ...(await this.recordFailure(trx, taken, error as Error, now)) };
+        }
         return true;
       });
     try {
@@ -206,6 +227,7 @@ export class TimerWorker {
         await run(target.timerId, prepared);
       }
       if (taken !== undefined) this.busy.delete(taken.timerId);
+      if (taken !== undefined && failed !== undefined) await this.afterFailure(taken, failed, now);
       return ran;
     } catch (error) {
       if (taken === undefined) throw error;
@@ -215,7 +237,8 @@ export class TimerWorker {
         return true;
       }
       this.busy.delete(taken.timerId);
-      await this.recordFailure(taken, error as Error, now);
+      // The transaction itself failed (e.g. the commit, or the savepoint after a lost connection): recorded on its own.
+      await this.afterFailure(taken, { error: error as Error, ...(await this.recordFailure(this.db, taken, error as Error, now)) }, now);
       return true;
     }
   }
@@ -289,25 +312,37 @@ export class TimerWorker {
     this.loops = [];
   }
 
-  private async recordFailure(timer: Timer, error: Error, now: Date): Promise<void> {
+  /** Writes the failure on the row this worker failed on (if another worker already took it again, leaves it alone). */
+  private async recordFailure(ex: Executor, timer: Timer, error: Error, now: Date): Promise<{ parked: boolean; restart: boolean }> {
     const attempts = timer.attempts + 1;
     const parked = attempts >= MAX_ATTEMPTS;
-    const message = error.message.slice(0, 2000);
-    // Only touch the row this worker failed on; if another worker already took it again, leave it alone.
-    await this.db
+    // B1.6b: the first parking of a restart-once kind runs it once more later; attempts > MAX_ATTEMPTS = restarted already.
+    const restart = attempts === MAX_ATTEMPTS && (this.options.restartOnce ?? []).includes(timer.kind);
+    const dueAt = restart ? new Date(now.getTime() + RESTART_ONCE_AFTER_MS) : parked ? sql<Date>`'infinity'::timestamptz` : new Date(now.getTime() + backoffMs(attempts));
+    await ex
       .updateTable("timers")
-      .set({
-        attempts,
-        last_error: message,
-        due_at: parked ? sql<Date>`'infinity'::timestamptz` : new Date(now.getTime() + backoffMs(attempts)),
-      })
+      .set({ attempts, last_error: error.message.slice(0, 2000), due_at: dueAt })
       .where("timer_id", "=", timer.timerId)
       .where("attempts", "=", timer.attempts)
       .execute();
-    const data = { kind: timer.kind, refId: timer.refId, attempts, err: message };
-    if (parked) recordTimerParked(timer.kind);
-    if (parked) this.options.logger.error(data, "timer parked after repeated failures");
-    else this.options.logger.warn(data, "timer failed; will retry");
+    return { parked, restart };
+  }
+
+  /** After the failure is committed: the log line, the parked count and (B1.6b) the onParked hook, which never throws. */
+  private async afterFailure(timer: Timer, failure: { error: Error; parked: boolean; restart: boolean }, now: Date): Promise<void> {
+    const data = { kind: timer.kind, refId: timer.refId, attempts: timer.attempts + 1, err: failure.error.message.slice(0, 2000) };
+    if (!failure.parked) {
+      this.options.logger.warn(data, "timer failed; will retry");
+      return;
+    }
+    recordTimerParked(timer.kind);
+    if (failure.restart) this.options.logger.error({ ...data, restartInMs: RESTART_ONCE_AFTER_MS }, "timer parked after repeated failures; it runs once more");
+    else this.options.logger.error(data, "timer parked after repeated failures");
+    try {
+      await this.options.onParked?.(this.db, timer, now);
+    } catch (hookError) {
+      this.options.logger.error({ kind: timer.kind, err: hookError }, "timer parked: the alert could not be raised");
+    }
   }
 }
 
@@ -332,5 +367,29 @@ export async function rearmParkedRecurringTimers(
     .returning(["kind", "ref_id", "last_error"])
     .execute();
   for (const row of rows) logger.warn({ kind: row.kind, refId: row.ref_id, lastError: row.last_error }, "parked recurring timer re-armed at start");
+  return rows.length;
+}
+
+/**
+ * B1.6b (owner W1 Q70): at start, a trip or safety timer parked before restart-once existed (attempts MAX_ATTEMPTS,
+ * due 'infinity') runs once more now, with one warning each. One statement, so several copies starting together
+ * restart it once in all; it keeps attempts MAX_ATTEMPTS, so failing again parks it for good (MAX_ATTEMPTS + 1).
+ */
+export async function restartParkedOnce(
+  ex: Executor,
+  kinds: readonly string[],
+  logger: { warn: (data: object, message: string) => void },
+  now: Date = new Date(),
+): Promise<number> {
+  if (kinds.length === 0) return 0;
+  const rows = await ex
+    .updateTable("timers")
+    .set({ due_at: now })
+    .where("kind", "in", [...kinds])
+    .where("attempts", "=", MAX_ATTEMPTS)
+    .where("due_at", "=", sql<Date>`'infinity'::timestamptz`)
+    .returning(["kind", "ref_id", "last_error"])
+    .execute();
+  for (const row of rows) logger.warn({ kind: row.kind, refId: row.ref_id, lastError: row.last_error }, "parked trip or safety timer runs once more at start");
   return rows.length;
 }

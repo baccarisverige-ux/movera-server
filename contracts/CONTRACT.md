@@ -1,4 +1,6 @@
-# Movera shared contract v0.18.66
+# Movera shared contract v0.18.67
+
+v0.18.67 (wording only, jobs G4 + G5; X-Api-Version stays `0.5`; additive; no API shape change; no migration): **§86 next trips switch**: cleared only when the trip he is driving ends (server #187); a queued or held next trip that ends (e.g. cancelled by its rider) keeps it; a queued trip that starts begins with the radar on. **Server limits**: `DATABASE_MIGRATION_LOCK_TIMEOUT_MS` (default 5000 ms, 0 = none) next to `DATABASE_STATEMENT_TIMEOUT_MS`: start-up migrations run without the statement limit, with this lock limit; `CREATE` / `DROP INDEX CONCURRENTLY` and `VALIDATE CONSTRAINT` wait without it (server #189). **Server alerts**: `system_health` is one alert per parked job kind naming the kind and refs, critical for trip and safety kinds, raised when the job parks; parked trip/safety jobs whose handler re-checks the trip run once more (server B1.6b) — see `alertDesk.serverDetection.kindDefaults.system_health.rule`.
 
 v0.18.66 (owner answers 2026-11-11 evening, Rule 0 / Rule 16; X-Api-Version stays `0.5`; additive; no migration): **the in-app call connect timeout is an admin setting** — `CountryRules.calls.connectTimeoutSeconds` (10–60, default 25, Admin › Pricing › Tips & limits › Calls), sent to the apps in `TripCall` / `CallView`; a call that cannot connect shows "Call failed" with the hint "Couldn't connect. Check your network or use chat." (sv / fr / en); speaker ON on a tablet, OFF on a phone (app only); **every push and notice uses the person's language, else the country's (SE sv, FR fr, TN fr), else en**; **the admin's trip chat shows the original text and, under it, the kept translation** (`Message.translations`, admin reads only, no new translation). App version + build number on Account ("Version 1.0.0 (583)"): app only, no contract change needed (Rule 43(1)). §87.
 
@@ -1078,7 +1080,7 @@ Owner: plan/FIX-PLAN-ORDER-2026-11-04b.md job 1, owner Q1 2026-11-04 (decliners 
 - **Decliners** (Radar off): one wait of `exclusive.reaskAfterSeconds` (owner Q1: admin setting, default `exclusive.seconds`), then a new Exclusive cycle.
 - **Admin offers**: the zone's dispatch seconds of that kind; `assignAcceptSeconds` shown read-only in the admin (owner Q2, kept).
 - **Accept**: an older `expectedVersion` of a still-open offer is accepted.
-- **Overload**: `503 unavailable`, reason `server_busy`, Retry-After 2 (pool queue / event-loop limits, statement timeout) — only for low-priority work (quotes, address search, rider map, admin lists); SOS, accept, trip changes, cash, GPS and streams are never shed. Apps treat it like 429 (wait Retry-After, retry).
+- **Overload**: `503 unavailable`, reason `server_busy`, Retry-After 2 (pool queue / event-loop limits, statement timeout `DATABASE_STATEMENT_TIMEOUT_MS`, lock timeout; v0.18.67: start-up migrations run without the statement limit, with `DATABASE_MIGRATION_LOCK_TIMEOUT_MS`, default 5000 ms, 0 = none; `CREATE` / `DROP INDEX CONCURRENTLY` and `VALIDATE CONSTRAINT` wait without it) — only for low-priority work (quotes, address search, rider map, admin lists); SOS, accept, trip changes, cash, GPS and streams are never shed. Apps treat it like 429 (wait Retry-After, retry).
 - **Admin map box**: `GET /admin/live/drivers?minLat&minLng&maxLat&maxLng` (map-only answer); nearby cars capped.
 - **Reads**: settings cached (≤ 15 s, emptied on publish); `GET /driver/offers` one trips query; `GET /admin/live/drivers` only the admin's zones.
 ## 51. Wallet per currency — fix job 6 (v0.18.28)
@@ -1423,7 +1425,7 @@ Owner (2026-11-11, phone test): "double check if he turn radar off while on trip
 
 - **Route**: `POST /driver/next-trips { on: boolean }` (driver, Idempotency-Key) → `200 Driver`. On a trip, `on: false` sets `Driver.nextTripsOff` (version up), `on: true` clears it; the same state again is idempotent. Off a trip nothing changes.
 - **Dispatch**: with `nextTripsOff` no on-trip Exclusive (live or booked) is sent to him; open ones are withdrawn at once; an accept that still arrives is `409 conflict`, reason `next_trips_off`.
-- **End**: cleared when each trip of his ends, in the trip-release transaction (rule 33), also when a queued or due booked trip starts.
+- **End** (v0.18.67 wording, server #187): cleared only when the trip he is driving ends (completed, cancelled by anyone, no-show), in the trip-release transaction (rule 33). A queued or held next trip that ends (e.g. cancelled by its rider) keeps it; a queued or due booked trip that starts begins with the radar on.
 - **Restart**: `GET /driver/profile` carries `nextTripsOff`.
 - **Order (Rule 0)**: contract → server (migration 0098 `drivers.next_trips_off`) → admin (Live: "Next trips off", sv "Nästa resor av", fr "Courses suivantes désactivées"; no setting) → driver app (the trip radar sends the switch) → rider app (no change).
 

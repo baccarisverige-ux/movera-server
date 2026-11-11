@@ -1,8 +1,9 @@
 import { majorText, toMajorNumber, type CurrencyCode } from "../rules/money.js";
 import { sql } from "kysely";
-import type { Executor, Trx } from "../db/db.js";
+import type { Db, Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
 import "./schema.js";
+import { LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
 /**
@@ -297,16 +298,30 @@ async function riderCauses(ctx: Ctx): Promise<Cause[]> {
   return out;
 }
 
+/** B1.6b: how many parked refs the alert's detail names before "…". */
+const PARKED_REFS_SHOWN = 3;
+
+/**
+ * Parked timers (attempts at the limit), one alert per kind and country book (B1.6b, owner W1 Q70): the detail names the
+ * kind and its first refs; a trip or safety kind (LOUD_PARKED_KINDS) is critical, any kind is critical from 10.
+ * Also run by the worker that parks a timer (sweepAlerts scope "system"), so it fires even when alert_sweep is parked.
+ */
 async function systemCauses(ctx: Ctx): Promise<Cause[]> {
-  const parked = await ctx.ex.selectFrom("timers").select((eb) => eb.fn.countAll<string>().as("n")).where("attempts", ">=", MAX_ATTEMPTS).executeTakeFirst();
-  const n = Number(parked?.n ?? 0);
-  if (n === 0) return [];
+  const parked = await sql<{ kind: string; n: string; refs: string[] }>`
+    SELECT kind, count(*) AS n, (array_agg(ref_id ORDER BY ref_id))[1:${sql.lit(PARKED_REFS_SHOWN)}] AS refs
+      FROM timers WHERE attempts >= ${MAX_ATTEMPTS} GROUP BY kind ORDER BY kind`.execute(ctx.ex);
+  if (parked.rows.length === 0) return [];
   // No zone: one per country book (Super admins see alerts without a zone).
   const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
   return countries.flatMap((country) => {
     const k = settingsOf(ctx, country).kind("system_health");
     if (!k.on) return [];
-    return [{ key: `system_health:timers:${country}`, kind: "system_health", country, zoneId: null, level: n >= 10 ? "critical" as const : k.level, title: T("{0} background jobs failed on the server", [n]), ref: {} }];
+    return parked.rows.map((p) => {
+      const n = Number(p.n);
+      const level = LOUD_PARKED_KINDS.includes(p.kind) || n >= 10 ? ("critical" as const) : k.level;
+      const named = `${p.kind}: ${p.refs.join(", ")}${n > p.refs.length ? ", …" : ""}`;
+      return { key: `system_health:timers:${p.kind}:${country}`, kind: "system_health", country, zoneId: null, level, title: T("{0} background jobs failed on the server", [n]), detail: T("{0}", [named]), ref: {} };
+    });
   });
 }
 
@@ -444,17 +459,28 @@ async function findAll(ctx: Ctx): Promise<Cause[]> {
 /** Rows per INSERT of new alerts (17 values each: far below the 65,535 bind parameters of one statement). */
 export const ALERT_INSERT_CHUNK = 500;
 
-/** One sweep: find every cause and make the stored alerts match. Returns what changed (for tests and logs). */
-export async function sweepAlerts(trx: Trx, now: Date): Promise<{ opened: number; solved: number; reopened: number }> {
-  // One sweep at a time across instances (a poke and the periodic run may meet).
-  await sql`SELECT pg_advisory_xact_lock(hashtext('movera_alert_sweep'))`.execute(trx);
+/**
+ * One sweep: find every cause and make the stored alerts match. Returns what changed (for tests and logs).
+ * B1.6b: scope "system" looks only at the parked-job causes and the system_health alerts (the worker runs it when it
+ * parks a timer, so that alert never waits on a sweep that may itself be parked).
+ */
+export async function sweepAlerts(trx: Trx, now: Date, scope: "all" | "system" = "all"): Promise<{ opened: number; solved: number; reopened: number }> {
+  // One sweep at a time across instances (a poke and the periodic run may meet). The worker's scoped sweep never waits
+  // (supervisor B1.6b F2): if a sweep runs now, it skips — that sweep, or the next one, sees the parked row.
+  if (scope === "system") {
+    const got = await sql<{ ok: boolean }>`SELECT pg_try_advisory_xact_lock(hashtext('movera_alert_sweep')) AS ok`.execute(trx);
+    if (!got.rows[0]?.ok) return { opened: 0, solved: 0, reopened: 0 };
+  } else {
+    await sql`SELECT pg_advisory_xact_lock(hashtext('movera_alert_sweep'))`.execute(trx);
+  }
   const ctx = await loadCtx(trx, now);
-  const causes = new Map((await findAll(ctx)).map((c) => [c.key, c]));
-  const rows = (await trx
+  const causes = new Map((scope === "system" ? await systemCauses(ctx) : await findAll(ctx)).map((c) => [c.key, c]));
+  let live = trx
     .selectFrom("admin_alerts_live")
     .select(["alert_id", "cause_key", "kind", "country", "zone_id", "level", "title", "detail", "ref", "state", "cause_live", "old_since"])
-    .where((eb) => eb.or([eb("state", "!=", "closed"), eb("cause_live", "=", true)]))
-    .execute()) as LiveRow[];
+    .where((eb) => eb.or([eb("state", "!=", "closed"), eb("cause_live", "=", true)]));
+  if (scope === "system") live = live.where("kind", "=", "system_health");
+  const rows = (await live.execute()) as LiveRow[];
   const handled = new Set<string>();
   const result = { opened: 0, solved: 0, reopened: 0 };
   const ending = rows.filter((r) => r.state === "open" && !causes.has(r.cause_key));
@@ -556,6 +582,11 @@ export async function pokeAlerts(ex: Executor, now: Date): Promise<void> {
 export const alertSweepHandler: TimerHandler = async (trx, timer) => {
   await sweepAlerts(trx, timer.firedAt);
   if (timer.refId === "all") await scheduleTimer(trx, { kind: ALERT_SWEEP, refId: "all", dueAt: new Date(timer.firedAt.getTime() + SWEEP_MS) });
+};
+
+/** B1.6b: the worker's onParked hook: the parked-job alert at once, in its own transaction. */
+export const raiseParkedAlert = async (db: Db, _timer: unknown, now: Date): Promise<void> => {
+  await db.transaction().execute((trx) => sweepAlerts(trx, now, "system"));
 };
 
 export async function ensureAlertSweep(ex: Executor, now: Date = new Date()): Promise<void> {
