@@ -35,7 +35,8 @@ const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
 
 /** The lane name of a timer lane (kinds it takes, or "general"/"any"). Kinds are code names, never data. */
-export function laneName(lane: { kinds?: string[]; exclude?: string[] }): string {
+export function laneName(lane: { kinds?: string[]; exclude?: string[]; name?: string }): string {
+  if (lane.name !== undefined) return lane.name;
   if (lane.kinds !== undefined) return lane.kinds.join("+");
   return lane.exclude !== undefined && lane.exclude.length > 0 ? "general" : "any";
 }

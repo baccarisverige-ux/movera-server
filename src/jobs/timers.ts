@@ -91,20 +91,29 @@ export function backoffMs(attempts: number): number {
   return Math.min(1000 * 2 ** Math.max(0, attempts - 1), 5 * 60 * 1000);
 }
 
-/** Job 1: a lane is one loop of the worker; `kinds` = only these kinds (e.g. a dispatch lane), missing = any kind. */
-export type TimerLane = { kinds?: string[]; exclude?: string[] };
+/**
+ * Job 1: a lane is one loop of the worker; `kinds` = only these kinds (e.g. a dispatch lane), missing = any kind.
+ * `name` (B1.7): the lane's name in the load numbers (telemetry/load.ts laneName) instead of its kinds joined.
+ */
+export type TimerLane = { kinds?: string[]; exclude?: string[]; name?: string };
 /** Rule 28: while the database cannot be reached the loop waits 1 s, 2 s, 4 s, … at most 30 s between tries. */
 export const DB_DOWN_MAX_MS = 30_000;
 /**
  * The worker's loops: `dispatchLanes` loops for dispatch rounds and withdrawals only (stress T-A part 4: rounds of
  * different trips run side by side), one for trip GPS work (stress H1), and TIMER_LANES − 2 (at least 1) general loops
  * for every other kind (dispatch too, when it is busy).
+ * B1.7 (owner W1 Q71): `housekeepingKinds` (clean-ups, hourly sweep, nightly run) run only on their own
+ * `housekeepingLanes` loops (HOUSEKEEPING_LANES, at least 1), never on the general lanes, so a long clean-up never holds
+ * the lane an SOS escalation, the alert sweep or a booked ride needs. The general lanes' query stays on the partial
+ * index timers_due_general (0091): its NOT IN list is a superset of the index's, which Postgres proves implies it.
  */
-export function timerLanes(o: { dispatchKinds: string[]; tripKinds: string[]; timerLanes: number; dispatchLanes: number }): TimerLane[] {
+export function timerLanes(o: { dispatchKinds: string[]; tripKinds: string[]; timerLanes: number; dispatchLanes: number; housekeepingKinds?: string[]; housekeepingLanes?: number }): TimerLane[] {
+  const housekeeping = o.housekeepingKinds ?? [];
   return [
     ...Array.from({ length: Math.max(1, o.dispatchLanes) }, () => ({ kinds: o.dispatchKinds })),
     { kinds: o.tripKinds },
-    ...Array.from({ length: Math.max(1, o.timerLanes - 2) }, () => ({ exclude: o.tripKinds })),
+    ...Array.from({ length: Math.max(1, o.timerLanes - 2) }, () => ({ exclude: [...o.tripKinds, ...housekeeping] })),
+    ...(housekeeping.length > 0 ? Array.from({ length: Math.max(1, o.housekeepingLanes ?? 1) }, () => ({ kinds: housekeeping, name: "housekeeping" })) : []),
   ];
 }
 
