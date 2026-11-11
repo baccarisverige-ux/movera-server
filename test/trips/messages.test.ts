@@ -153,7 +153,8 @@ describe("the trip chat", () => {
     expect(sent.json().from).toBe("support");
     expect((await list(tripId, rider)).items).toEqual([sent.json()]);
     expect((await list(tripId, drivers.A.headers)).items).toEqual([sent.json()]);
-    expect((await list(tripId, admin.headers)).items).toEqual([sent.json()]);
+    // v0.18.66 §87: an admin read carries the kept translations ([] when none); rider and driver reads never.
+    expect((await list(tripId, admin.headers)).items).toEqual([{ ...sent.json(), translations: [] }]);
     // v0.18.5 (G9): no stored notice for chat messages, support's included.
     expect(await noticesOf(rider, "trip_message")).toEqual([]);
     expect(await noticesOf(drivers.A.headers, "trip_message")).toEqual([]);

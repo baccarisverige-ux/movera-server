@@ -25,18 +25,20 @@ type CallRow = Selectable<TripCallsTable>;
 export type CallView = {
   callId: string; tripId: string; from: Side; to: Side; state: CallRow["state"];
   startedAt: string; answeredAt: string | null; endedAt: string | null; endedReason: string | null; seconds: number;
+  /** v0.18.66 §87: the trip zone's CountryRules.calls.connectTimeoutSeconds, on every CallView. */
+  connectTimeoutSeconds: number;
 };
 
 export const CALL_RING_TIMEOUT = "call_ring_timeout";
 export const CALL_MAX_LENGTH = "call_max_length";
 const LIVE = ["ringing", "answered"] as const;
 
-export function callView(row: CallRow): CallView {
+export function callView(row: CallRow, connectTimeoutSeconds: number): CallView {
   const seconds = row.answered_at && row.ended_at ? Math.max(0, Math.round((row.ended_at.getTime() - row.answered_at.getTime()) / 1000)) : 0;
   return {
     callId: row.call_id, tripId: row.trip_id, from: row.caller, to: row.callee, state: row.state,
     startedAt: row.started_at.toISOString(), answeredAt: row.answered_at?.toISOString() ?? null,
-    endedAt: row.ended_at?.toISOString() ?? null, endedReason: row.ended_reason, seconds,
+    endedAt: row.ended_at?.toISOString() ?? null, endedReason: row.ended_reason, seconds, connectTimeoutSeconds,
   };
 }
 
@@ -63,14 +65,14 @@ export async function startInAppCall(trx: Trx, trip: TripRow, who: CallWho, sett
   const row = await trx.insertInto("trip_calls").values({
     call_id: callId, trip_id: trip.trip_id, caller: who.actor, callee: who.actor === "rider" ? "driver" : "rider", state: "ringing", started_at: now,
   }).returningAll().executeTakeFirstOrThrow();
-  await appendTripEvent(trx, { tripId: trip.trip_id, kind: "call_ringing", version: trip.version, occurredAt: now, call: callView(row) });
+  await appendTripEvent(trx, { tripId: trip.trip_id, kind: "call_ringing", version: trip.version, occurredAt: now, call: callView(row, settings.connectTimeoutSeconds) });
   await scheduleTimer(trx, { kind: CALL_RING_TIMEOUT, refId: callId, dueAt: new Date(now.getTime() + settings.ringSeconds * 1000) });
   await pushIncomingCall(trx, trip, callId, row.callee, settings.ringSeconds, now);
   const expiresAt = new Date(now.getTime() + settings.maxCallMin * 60_000);
   const ttl = Math.round((expiresAt.getTime() - now.getTime()) / 1000) + settings.ringSeconds;
   return {
     tripId: trip.trip_id, mode: "in_app" as const, callId, ice: iceServers(callId, now, ttl),
-    ringSeconds: settings.ringSeconds, maxCallMin: settings.maxCallMin, expiresAt: expiresAt.toISOString(),
+    ringSeconds: settings.ringSeconds, maxCallMin: settings.maxCallMin, connectTimeoutSeconds: settings.connectTimeoutSeconds, expiresAt: expiresAt.toISOString(),
   };
 }
 
@@ -89,7 +91,7 @@ async function finish(trx: Trx, row: CallRow, trip: TripRow, state: "ended" | "m
   const done = await trx.updateTable("trip_calls").set({ state, ended_at: now, ended_reason: reason }).where("call_id", "=", row.call_id).returningAll().executeTakeFirstOrThrow();
   await cancelTimer(trx, CALL_RING_TIMEOUT, row.call_id);
   await cancelTimer(trx, CALL_MAX_LENGTH, row.call_id);
-  const view = callView(done);
+  const view = callView(done, (await callSettingsFor(trx, trip.zone_id)).connectTimeoutSeconds);
   await appendTripEvent(trx, { tripId: trip.trip_id, kind: state === "missed" ? "call_missed" : "call_ended", version: trip.version, occurredAt: now, call: view });
   return view;
 }
@@ -102,7 +104,7 @@ export async function answerCall(trx: Trx, who: CallWho, callId: string, now: Da
   const answered = await trx.updateTable("trip_calls").set({ state: "answered", answered_at: now }).where("call_id", "=", callId).returningAll().executeTakeFirstOrThrow();
   await cancelTimer(trx, CALL_RING_TIMEOUT, callId);
   await scheduleTimer(trx, { kind: CALL_MAX_LENGTH, refId: callId, dueAt: new Date(now.getTime() + settings.maxCallMin * 60_000) });
-  const view = callView(answered);
+  const view = callView(answered, settings.connectTimeoutSeconds);
   await appendTripEvent(trx, { tripId: trip.trip_id, kind: "call_answered", version: trip.version, occurredAt: now, call: view });
   return { ...view, ice: iceServers(callId, now, settings.maxCallMin * 60) };
 }
@@ -113,7 +115,7 @@ export async function endCall(trx: Trx, who: CallWho, callId: string, body: unkn
   const reason = (body as { reason?: unknown } | null)?.reason;
   if (typeof reason !== "string" || !END_REASONS.has(reason)) throw badRequest("reason must be hangup, declined or failed.", "invalid_body");
   const { row, trip } = await lockOwnCall(trx, callId, who);
-  if (row.state === "ended" || row.state === "missed") return callView(row);
+  if (row.state === "ended" || row.state === "missed") return callView(row, (await callSettingsFor(trx, trip.zone_id)).connectTimeoutSeconds);
   return finish(trx, row, trip, "ended", reason, now);
 }
 
@@ -139,7 +141,9 @@ export async function relaySignal(trx: Trx, who: CallWho, callId: string, body: 
 /** GET /admin/trips/{tripId}/calls: the caller checked the admin's permission and zone (adminTrip). Newest first. */
 export async function tripCallLog(ex: Executor, tripId: string): Promise<{ items: CallView[] }> {
   const rows = await ex.selectFrom("trip_calls").selectAll().where("trip_id", "=", tripId).orderBy("started_at", "desc").execute();
-  return { items: rows.map(callView) };
+  const trip = await ex.selectFrom("trips").select("zone_id").where("trip_id", "=", tripId).executeTakeFirst();
+  const { connectTimeoutSeconds } = await callSettingsFor(ex, trip?.zone_id ?? null);
+  return { items: rows.map((row) => callView(row, connectTimeoutSeconds)) };
 }
 
 /** Database timers (any server copy): not answered in ringSeconds → missed; answered past maxCallMin → ended. */

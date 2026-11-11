@@ -1,6 +1,7 @@
 import type { Executor, Trx } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { notify } from "../notifications/service.js";
+import { ownLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Contract v0.18.6 §31 (owner G4 decision 1 "Push + sound + vibration", E6 "Sound + vibration",
@@ -22,9 +23,6 @@ type OfferPush = {
 };
 
 export const OFFER_PUSH: OfferPush = (contract as unknown as { driverOffers: { push: OfferPush } }).driverOffers.push;
-const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
-
-const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
 
 /** The sound rule of an offer kind (E6): exclusive / assigned = offer sound + vibrate; radar and anything else quiet. */
 export function offerSound(kind: string): { sound: "offer" | "none"; vibrate: boolean } {
@@ -37,12 +35,11 @@ export async function queueOfferPush(trx: Trx, driverId: string, offer: Record<s
   const tripId = String(offer["tripId"]);
   const kind = String(offer["kind"]);
   const expiresAt = String(offer["expiresAt"]);
+  // v0.18.66 §87: the one notice-language rule (his language, else the trip country's, TN fr, else en).
+  // The trip's country is read only when he has no language (an offer push is on the dispatch path).
   const driver = await trx.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
-  let language: Lang | undefined = isLang(driver?.language) ? driver.language : undefined;
-  if (language === undefined) {
-    const zone = await trx.selectFrom("trips").innerJoin("zones", "zones.zone_id", "trips.zone_id").select("zones.country").where("trips.trip_id", "=", tripId).executeTakeFirst();
-    language = (zone && COUNTRY_LANGUAGE[zone.country]) ?? "en";
-  }
+  const language: Lang = ownLanguage(driver?.language)
+    ?? pickNoticeLanguage(null, (await trx.selectFrom("trips").innerJoin("zones", "zones.zone_id", "trips.zone_id").select("zones.country").where("trips.trip_id", "=", tripId).executeTakeFirst())?.country);
   const { sound, vibrate } = offerSound(kind);
   const title = (sound === "offer" ? OFFER_PUSH.texts.title.exclusive : OFFER_PUSH.texts.title.radar)[language];
   await notify(

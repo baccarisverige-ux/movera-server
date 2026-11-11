@@ -505,6 +505,22 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
     expect((await call(app, "GET", `/admin/trips/${tripId}/receipt`, admin.headers)).json().tripId).toBe(tripId);
   });
 
+  // v0.18.66 §87 (contract.json#noticeLanguage, owner "French for TN"): fail-before both were Swedish whatever the country.
+  it("§87 receipt and driver-pay notices of a TN trip, rider and driver with no language: French, not Swedish", async () => {
+    const { tripId } = await finished();
+    await database.db.updateTable("riders").set({ language: null }).where("rider_id", "=", riderId).execute();
+    await database.db.updateTable("drivers").set({ language: null }).where("driver_id", "=", driverA.id).execute();
+    await database.db.updateTable("trips").set({ zone_id: "TN-TC" }).where("trip_id", "=", tripId).execute();
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const sent = await call(app, "POST", `/admin/trips/${tripId}/receipt/resend`, admin.headers, { reason: "Rider asked" });
+    expect(sent.statusCode, sent.body).toBe(200);
+    expect((await database.db.selectFrom("notifications").select("title").where("notification_id", "=", sent.json().notificationId).executeTakeFirstOrThrow()).title).toBe("Votre reçu");
+    const paid = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: 1000, currency: "SEK" }, reason: "Wait" });
+    expect(paid.statusCode, paid.body).toBe(200);
+    expect((await database.db.selectFrom("notifications").select("title").where("kind", "=", "driver_pay_changed").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).title).toBe("Votre part");
+    await database.db.updateTable("trips").set({ zone_id: "Z001" }).where("trip_id", "=", tripId).execute();
+  });
+
   it("driver pay: +50 kr after the end moves his one number, an earnings entry, audit and a notice; never below 0; not before the end", async () => {
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
     const live = await accepted();

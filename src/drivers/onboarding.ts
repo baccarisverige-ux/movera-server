@@ -16,6 +16,7 @@ import { driverView, loadDriver, releaseCar, vehicleFullView, type DriverRow } f
 import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from "./fleets.js";
 import { cancelFleetInvitations, fleetInvitationViews, requestJoin, type InviteDeps } from "./invitations.js";
 import { notify } from "../notifications/service.js";
+import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 export { loadFleet, ownedFleet } from "./fleets.js";
 
@@ -244,7 +245,8 @@ const MEMBERSHIP = (ONBOARDING as unknown as { fleetLeaveNotices: { kind: string
  */
 async function noticeMembership(trx: Trx, fleet: FleetRow, driver: DriverRow, change: "removed" | "left", now: Date): Promise<void> {
   const to = change === "removed" ? driver : await loadDriver(trx, fleet.owner_driver_id);
-  const lang = ["sv", "fr", "en"].includes(to.language ?? "") ? to.language! : to.country === "FR" ? "fr" : to.country === "SE" ? "sv" : "en";
+  // v0.18.66 §87: the one notice-language rule (his language, else his country's, TN fr, else en).
+  const lang = pickNoticeLanguage(to.language, to.country);
   const values: Record<string, string> = { fleet: fleet.name, driver: `${driver.first_name} ${driver.last_name}`.trim() };
   const fill = (t: string) => t.replace(/\{(\w+)\}/g, (_, k: string) => values[k] ?? "");
   const text = MEMBERSHIP.texts[change];

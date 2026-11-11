@@ -5,6 +5,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { audit } from "./audit.js";
 import { notify } from "../notifications/service.js";
+import { ownLanguage, personCountry, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Review rules applied by the server (contract v0.18.15 §40, contract.json#reviewRules; owner 2026-11-02 G14 Q6
@@ -89,7 +90,8 @@ export async function applyPersonRules(trx: Trx, who: "driver" | "rider", person
     .execute();
   if (!worse) return;
   if (level === "warn") {
-    const lang: Lang = person.language === "sv" || person.language === "fr" ? person.language : "en";
+    // v0.18.66 §87: the one notice-language rule (his language, else the country's, TN fr, else en).
+    const lang: Lang = ownLanguage(person.language) ?? pickNoticeLanguage(null, country ?? (await personCountry(trx, who, personId)));
     const avg = average.toFixed(2).replace(".", lang === "en" ? "." : ",");
     // Owner 2026-11-02 "Softer": the country's text, the admin can edit it per language.
     await notify(trx, { audience: who, subjectId: personId, kind: "review_warning", title: rules.warningText[lang].split(".")[0] ?? "", body: rules.warningText[lang].replace("{average}", avg), data: { average, count } }, now);

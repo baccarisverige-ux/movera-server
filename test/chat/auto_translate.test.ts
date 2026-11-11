@@ -10,6 +10,7 @@ import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { purgeOldMessages } from "../../src/trips/messages.js";
 import { rideHandlers } from "../../src/trips/ride.js";
+import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -171,5 +172,31 @@ describe("v0.18.64 §85 translate", () => {
     const later = new Date(clock.now.getTime() + 3 * 24 * 3600_000);
     expect(await database.db.transaction().execute((trx) => purgeOldMessages(trx, later))).toBeGreaterThanOrEqual(1);
     expect(await database.db.selectFrom("trip_message_translations").select("lang").where("message_id", "=", msg.messageId).execute()).toEqual([]);
+  });
+});
+
+// v0.18.66 §87 (contract.json#chat.autoTranslate.adminView, owner 2026-11-11 "Original + translation").
+describe("v0.18.66 §87 the admin's trip chat: original + kept translations", () => {
+  it("T8 an admin read carries translations [{ to, text }] oldest first ([] when none), no provider call; rider and driver reads never (fail-before: no field)", async () => {
+    const { tripId } = await accepted();
+    const msg = (await send(tripId, rider, { text: "Jag står vid porten" })).json();
+    const plain = (await send(tripId, driver.headers, { text: "OK" })).json();
+    await setLanguage("driver", "fr");
+    expect((await translate(tripId, driver.headers, { messageId: msg.messageId, to: "fr", auto: true })).statusCode).toBe(200);
+    clock.now = new Date(clock.now.getTime() + 1000);
+    await setLanguage("driver", "en");
+    expect((await translate(tripId, driver.headers, { messageId: msg.messageId, to: "en", auto: false })).statusCode).toBe(200);
+    asked.length = 0;
+    const admin = await adminSession(app, database.db, "support", { now: clock.now });
+    const read = await call(app, "GET", `/trips/${tripId}/messages`, admin.headers);
+    expect(read.statusCode, read.body).toBe(200);
+    const items = read.json().items as Array<{ messageId: string; text: string; translations?: unknown }>;
+    expect(items.find((m) => m.messageId === msg.messageId)).toMatchObject({ text: "Jag står vid porten", translations: [{ to: "fr", text: "[fr] Jag står vid porten" }, { to: "en", text: "[en] Jag står vid porten" }] });
+    expect(items.find((m) => m.messageId === plain.messageId)!.translations).toEqual([]);
+    for (const m of items) expect(schemaProblem("Message", m)).toBeNull();
+    expect(asked).toEqual([]);
+    for (const who of [rider, driver.headers]) {
+      for (const m of (await call(app, "GET", `/trips/${tripId}/messages`, who)).json().items) expect(m).not.toHaveProperty("translations");
+    }
   });
 });

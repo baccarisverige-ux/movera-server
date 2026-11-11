@@ -9,6 +9,7 @@ import { liveDocument, standardKey } from "../config/service.js";
 import { creditWallet } from "./wallet.js";
 import { audit } from "../admin/audit.js";
 import { adminRiderView, riderInZones, riderWallets, zonesOf } from "../admin/lists.js";
+import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * v0.18.39 A2 (owner G12 Q5 "Real credit + limit", Q-D "Max 250 euro and equivalent", build-spec Q1 "One admin
@@ -69,7 +70,8 @@ export async function creditRiderWallet(trx: Trx, who: Principal, riderId: strin
   // Into the balance of the credit's own currency (wallet per currency, fix job 6), through the one wallet path.
   const entryId = await creditWallet(trx, riderId, { amountMinor: body.amount.amountMinor, currency }, null, now, "adjustment");
   await trx.updateTable("riders").set({ version: row.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
-  const lang = ["sv", "fr", "en"].includes((row.language ?? "").slice(0, 2)) ? row.language!.slice(0, 2) : country === "FR" ? "fr" : "sv";
+  // v0.18.66 §87: the one notice-language rule: his language, else his place's country (TN fr; was Swedish), else en.
+  const lang = pickNoticeLanguage(row.language, country);
   const notificationId = await notify(trx, {
     audience: "rider",
     subjectId: riderId,

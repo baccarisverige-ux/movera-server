@@ -1,6 +1,7 @@
 import { contract } from "../contract/contract.js";
 import type { Trx } from "../db/db.js";
 import { notify } from "../notifications/service.js";
+import { noticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * v0.18.9 owner rule 16 (2026-11-01, G7 open question 3, contract.json#onTrip.rideCheck.push): every server ride check
@@ -17,8 +18,6 @@ type RideCheckContract = {
 };
 const RC = (contract as unknown as { onTrip: { rideCheck: RideCheckContract } }).onTrip.rideCheck;
 export const RIDE_CHECK_PUSH = RC.push;
-const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
-const isLang = (v: unknown): v is Lang => v === "sv" || v === "fr" || v === "en";
 
 export async function queueRideCheckPush(
   trx: Trx,
@@ -28,15 +27,8 @@ export async function queueRideCheckPush(
   check: { checkId: string; trigger: string; answerBy: string },
   now: Date,
 ): Promise<void> {
-  const person =
-    side === "rider"
-      ? await trx.selectFrom("riders").select("language").where("rider_id", "=", subjectId).executeTakeFirst()
-      : await trx.selectFrom("drivers").select("language").where("driver_id", "=", subjectId).executeTakeFirst();
-  let language: Lang | undefined = isLang(person?.language) ? person.language : undefined;
-  if (language === undefined) {
-    const zone = await trx.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirst();
-    language = (zone && COUNTRY_LANGUAGE[zone.country]) ?? "en";
-  }
+  // v0.18.66 §87: the one notice-language rule (the person's language, else the trip country's, TN fr, else en).
+  const language: Lang = await noticeLanguage(trx, { actor: side, id: subjectId }, trip.zone_id);
   const body = RC.texts[check.trigger] ?? RC.texts["title"]!;
   await notify(
     trx,

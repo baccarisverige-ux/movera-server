@@ -13,6 +13,7 @@ import { audit } from "../admin/audit.js";
 import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 import { NOT_HELD } from "../reservations/view.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
+import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -556,7 +557,6 @@ async function currentZones(ex: Executor, actor: Actor, subjectId: string): Prom
 
 type SignOutOnTrip = { status: number; reason: string; texts: { finishTripFirst: Record<string, string> } };
 const SIGN_OUT_ON_TRIP = (contract as unknown as { auth: { signOutOnTrip: SignOutOnTrip } }).auth.signOutOnTrip;
-const LANG_OF_COUNTRY: Record<string, string> = { SE: "sv", FR: "fr" };
 
 /**
  * v0.18.49 §71 (owner Q8 "Server refuses too", contract.json#auth.signOutOnTrip): a driver whose session is still
@@ -572,7 +572,8 @@ async function refuseDriverSignOutOnTrip(trx: Trx, sessionId: string, driverId: 
   const trip = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
   if (trip === undefined) return;
   const texts = SIGN_OUT_ON_TRIP.texts.finishTripFirst;
-  const lang = [driver.language?.slice(0, 2), LANG_OF_COUNTRY[driver.country ?? ""], "en"].find((l) => l !== undefined && l in texts)!;
+  // v0.18.66 §87: the one language rule (his language, else his country's, TN fr, else en).
+  const lang = pickNoticeLanguage(driver.language, driver.country);
   throw new ApiError("conflict", texts[lang]!, { reason: SIGN_OUT_ON_TRIP.reason });
 }
 
@@ -621,7 +622,8 @@ async function signOutOtherPhones(trx: Trx, driverId: string, now: Date): Promis
     await trx.updateTable("drivers").set({ online_status: "offline", online_since: null, version: driver.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
     await trx.insertInto("timers").values({ kind: "withdraw_driver_offers", ref_id: driverId, due_at: now, payload: JSON.stringify({}) }).onConflict((c) => c.columns(["kind", "ref_id"]).doUpdateSet({ due_at: now })).execute();
   }
-  const lang = driver?.language === "sv" || driver?.language === "fr" ? driver.language : "en";
+  // v0.18.66 §87: the one notice-language rule (his language, else his zone's country, TN fr, else en).
+  const lang = await noticeLanguage(trx, { actor: "driver", id: driverId, language: driver?.language ?? null });
   await notify(trx, { audience: "driver", subjectId: driverId, kind: "signed_in_elsewhere", title: ELSEWHERE[lang].title, body: ELSEWHERE[lang].body, data: { texts: { title: { sv: ELSEWHERE.sv.title, fr: ELSEWHERE.fr.title, en: ELSEWHERE.en.title }, body: { sv: ELSEWHERE.sv.body, fr: ELSEWHERE.fr.body, en: ELSEWHERE.en.body } } } }, now);
 }
 

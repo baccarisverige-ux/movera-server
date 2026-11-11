@@ -2,6 +2,7 @@ import type { Executor } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { notify } from "../notifications/service.js";
 import { onboardingSettings, typeInfo } from "./onboardingSettings.js";
+import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Contract v0.18.3 §28 (contract.json#driverOnboarding.reviewNotices, owner R6 "Update + notice (Recommended)"): every
@@ -12,7 +13,8 @@ type Lang = "sv" | "fr" | "en";
 type Texts = Record<string, { title: Record<Lang, string>; body: Record<Lang, string>; bodyNoNote?: Record<Lang, string> }>;
 const NOTICES = (contract as unknown as { driverOnboarding: { reviewNotices: { texts: Texts } } }).driverOnboarding.reviewNotices;
 
-const lang = (language: string | null | undefined): Lang => (language === "sv" || language === "fr" ? language : "en");
+/** v0.18.66 §87: the one notice-language rule (his language, else the account's country, TN fr, else en). */
+const lang = (language: string | null | undefined, country: string | null | undefined): Lang => pickNoticeLanguage(language, country);
 const fill = (text: string, values: Record<string, string>) => text.replace(/\{(\w+)\}/g, (_, key: string) => values[key] ?? "");
 
 function words(kind: string, language: Lang, values: Record<string, string>, note: string | null) {
@@ -48,7 +50,7 @@ export async function noticeDocumentReview(
   const driver = await ex.selectFrom("drivers").select(["language", "country"]).where("driver_id", "=", to).executeTakeFirst();
   if (driver === undefined) return;
   const settings = await onboardingSettings(ex, country ?? driver.country);
-  const language = lang(driver.language);
+  const language = lang(driver.language, country ?? driver.country);
   const name = typeInfo(settings, doc.type)?.name[language] ?? doc.type;
   const scope = doc.owner_kind === "vehicle" ? "vehicle" : settings.documents.fleet.includes(doc.type) && !settings.documents.driver.includes(doc.type) ? "fleet" : "driver";
   const vehicleId = doc.owner_kind === "vehicle" ? doc.owner_id : undefined;
@@ -73,14 +75,14 @@ export async function noticeVehicleReview(
 ): Promise<void> {
   const account = await carAccount(ex, car);
   if (account === null) return;
-  const driver = await ex.selectFrom("drivers").select("language").where("driver_id", "=", account.driverId).executeTakeFirst();
+  const driver = await ex.selectFrom("drivers").select(["language", "country"]).where("driver_id", "=", account.driverId).executeTakeFirst();
   if (driver === undefined) return;
   const kind = `vehicle_${decision}`;
   await notify(ex, {
     audience: "driver",
     subjectId: account.driverId,
     kind,
-    ...words(kind, lang(driver.language), { plate: car.plate }, note),
+    ...words(kind, lang(driver.language, account.country ?? driver.country), { plate: car.plate }, note),
     deepLink: "movera-driver://fleet",
     data: { vehicleId: car.vehicle_id, plate: car.plate, decision, ...(note !== null ? { note } : {}) },
   }, now);

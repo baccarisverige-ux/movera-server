@@ -25,7 +25,9 @@ import { chatSettingsFor, languageOf, ON_MY_WAY_TEXT, type ChatSettings, type La
 
 export type MessageWho = { actor: "rider" | "driver" | "admin"; subjectId: string; zones?: readonly string[]; perms?: readonly string[] };
 /** v0.18.64 §85: lang = the language the text was written in (chat.autoTranslate.sourceLanguage); none for support. */
-export type Message = { messageId: string; tripId: string; from: "rider" | "driver" | "support"; text: string; at: string; quickReplyId?: string; auto?: "arrived" | "on_my_way"; lang?: Lang };
+export type Message = { messageId: string; tripId: string; from: "rider" | "driver" | "support"; text: string; at: string; quickReplyId?: string; auto?: "arrived" | "on_my_way"; lang?: Lang; translations?: MessageTranslation[] };
+/** v0.18.66 §87 (chat.autoTranslate.adminView): one kept translation, on admin reads only. */
+export type MessageTranslation = { to: Lang; text: string };
 
 type MessageRow = Selectable<TripMessagesTable>;
 
@@ -175,7 +177,21 @@ export async function listMessages(ex: Executor, who: MessageWho, tripId: string
   const rows = await query.orderBy("sequence").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
-  return { items: page.map(messageView), nextCursor: rows.length > input.limit && last ? Buffer.from(String(last.sequence)).toString("base64url") : null };
+  const items = who.actor === "admin" ? await withKeptTranslations(ex, page) : page.map(messageView);
+  return { items, nextCursor: rows.length > input.limit && last ? Buffer.from(String(last.sequence)).toString("base64url") : null };
+}
+
+/**
+ * v0.18.66 §87 (contract.json#chat.autoTranslate.adminView, owner 2026-11-11 "Original + translation"): an admin's read
+ * carries every translation the server already keeps for each message (trip_message_translations), oldest first, []
+ * when none. Read-only: one query for the page, never a provider call. Rider and driver reads never carry it.
+ */
+async function withKeptTranslations(ex: Executor, rows: MessageRow[]): Promise<Message[]> {
+  const ids = rows.map((r) => r.message_id);
+  const kept = ids.length === 0 ? [] : await ex.selectFrom("trip_message_translations").select(["message_id", "lang", "text"]).where("message_id", "in", ids).orderBy("created_at").orderBy("lang").execute();
+  const byMessage = new Map<string, MessageTranslation[]>();
+  for (const t of kept) byMessage.set(t.message_id, [...(byMessage.get(t.message_id) ?? []), { to: t.lang as Lang, text: t.text }]);
+  return rows.map((row) => ({ ...messageView(row), translations: byMessage.get(row.message_id) ?? [] }));
 }
 
 /**

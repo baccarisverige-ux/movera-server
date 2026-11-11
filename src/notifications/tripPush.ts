@@ -3,6 +3,7 @@ import { contract } from "../contract/contract.js";
 import type { Executor } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
 import { notify } from "./service.js";
+import { noticeLanguage } from "./noticeLanguage.js";
 
 /**
  * v0.18.13 (G13 recheck, audit 2026-11-02 H5, contract.json#riderTripPush): the rider hears about the key moments of
@@ -17,7 +18,6 @@ export type TripMoment = "driver_found" | "driver_arriving" | "driver_arrived" |
 type Spec = { kind: string; deepLink: string; arrivingSeconds: number; texts: Record<TripMoment, { title: Texts; body: Texts }>; driverFallback: Texts };
 
 export const RIDER_TRIP_PUSH: Spec = (contract as unknown as { riderTripPush: Spec }).riderTripPush;
-const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
 
 /**
  * v0.18.53 §75 (owner Q36-Q39 2026-11-09, contract.json#riderTripPush.consent, #support.answerPush, #bookLater.push.note):
@@ -46,7 +46,6 @@ export function riderPushAlwaysSent(kind: string, data: Record<string, unknown> 
   }
   return RIDER_ALWAYS_KINDS.has(kind);
 }
-const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
 // v0.18.50 §72 (owner L11): expired and failed have their own words (no_driver_found, trip_failed).
 const CANCELLED_NOT_BY_RIDER = new Set(["cancelled_by_driver", "cancelled_by_admin", "cancelled_by_system"]);
 const HAD_DRIVER = new Set(["accepted", "driver_to_pickup", "arrived"]);
@@ -74,11 +73,8 @@ export async function pushTripMoment(ex: Executor, trip: Pick<TripRow, "trip_id"
   // Owner 2026-11-02 (decisions/driver-g13.md, last line) + v0.18.53 §75: "ride updates" off stops only "driver found"
   // and "arriving" (no row at all for those); every other moment is stored and the dispatcher always pushes it.
   if ((rider.consents as { rideUpdates?: unknown } | null)?.rideUpdates === false && RIDER_OPTIONAL_MOMENTS.has(moment)) return false;
-  let language: Lang | undefined = isLang(rider.language) ? rider.language : undefined;
-  if (language === undefined) {
-    const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirst();
-    language = (zone && COUNTRY_LANGUAGE[zone.country]) ?? "en";
-  }
+  // v0.18.66 §87: the one notice-language rule (rider's language, else the trip country's, TN fr, else en).
+  const language: Lang = await noticeLanguage(ex, { actor: "rider", id: trip.rider_id, language: rider.language }, trip.zone_id);
   const text = RIDER_TRIP_PUSH.texts[moment];
   const name = (trip.driver_summary as { firstName?: string } | null)?.firstName?.trim() || RIDER_TRIP_PUSH.driverFallback[language];
   await notify(ex, {

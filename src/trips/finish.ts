@@ -12,6 +12,7 @@ import { localAmount, majorText, type CurrencyCode } from "../rules/money.js";
 import { lockOwnTrip, readOwnTrip, touchTrip } from "./commands.js";
 import { driverTotalOf, endInfoOf, tripProjection } from "./projection.js";
 import { credit } from "./ride.js";
+import { noticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * v0.18.10 (driver group 8 "Finish & cash", contract.json#finish, CONTRACT.md §36): which payment methods a zone offers
@@ -239,19 +240,15 @@ export const amountText = (m: Money, lang: string) => {
   const value = localAmount(m, lang);
   return m.currency === "SEK" ? `${value} kr` : m.currency === "EUR" ? `${value} €` : m.currency === "TND" ? `${value} DT` : `${value} ${m.currency}`;
 };
-async function languageOf(ex: Executor, table: "riders" | "drivers", id: string): Promise<string> {
-  const row = table === "riders"
-    ? await ex.selectFrom("riders").select("language").where("rider_id", "=", id).executeTakeFirst()
-    : await ex.selectFrom("drivers").select("language").where("driver_id", "=", id).executeTakeFirst();
-  const lang = (row?.language ?? "sv").slice(0, 2);
-  return ["sv", "fr", "en"].includes(lang) ? lang : "sv";
-}
+/** v0.18.66 §87: the one notice-language rule (the person's language, else the trip country's, TN fr, else en; was sv). */
+const languageOf = (ex: Executor, table: "riders" | "drivers", id: string, zoneId: string): Promise<string> =>
+  noticeLanguage(ex, { actor: table === "riders" ? "rider" : "driver", id }, zoneId);
 
 /** POST /admin/trips/{tripId}/receipt/resend { reason }: a bell + push kind receipt to the rider, audited. */
 export async function resendReceipt(trx: Trx, who: Principal, tripId: string, body: { reason: string }, now: Date) {
   const trip = await adminTripRow(trx, who, tripId);
   const receipt = await receiptOf(trx, trip, "admin");
-  const lang = await languageOf(trx, "riders", trip.rider_id);
+  const lang = await languageOf(trx, "riders", trip.rider_id, trip.zone_id);
   const date = trip.ended_at!.toISOString().slice(0, 10);
   const notificationId = await notify(trx, {
     audience: "rider",
@@ -299,7 +296,7 @@ export async function adminDriverPay(trx: Trx, who: Principal, tripId: string, b
   await credit(trx, { driverId: trip.driver_id, tripId, kind: "adjustment", currency: trip.currency, amount: body.change.amountMinor }, now);
   const updated = await touchTrip(trx, trip, { driver_adjustments_minor: Number(trip.driver_adjustments_minor ?? 0) + body.change.amountMinor }, now);
   await audit(trx, { adminId: who.subjectId, action: "trip.driver_pay", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { reason: body.reason, change: body.change, before: { amountMinor: before, currency: trip.currency }, after: { amountMinor: after, currency: trip.currency } }, at: now });
-  const lang = await languageOf(trx, "drivers", trip.driver_id);
+  const lang = await languageOf(trx, "drivers", trip.driver_id, trip.zone_id);
   const sign = body.change.amountMinor > 0 ? "+" : "−";
   await notify(trx, {
     audience: "driver",

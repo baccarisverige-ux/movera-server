@@ -1,6 +1,7 @@
 import { contract } from "../contract/contract.js";
 import type { Executor } from "../db/db.js";
 import { notify } from "../notifications/service.js";
+import { ownLanguage, personCountry, pickNoticeLanguage, zoneCountry } from "../notifications/noticeLanguage.js";
 
 /**
  * v0.18.53 §75 (owner Q39 2026-11-09, contract.json#support.answerPush): an admin's answer on a ticket (POST
@@ -16,8 +17,6 @@ type Texts = Record<Lang, string>;
 type Spec = { kind: string; deepLink: { rider: string; driver: string }; texts: { title: Texts; body: Texts } };
 
 export const SUPPORT_ANSWER_PUSH: Spec = (contract as unknown as { support: { answerPush: Spec } }).support.answerPush;
-const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
-const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
 
 type Ticket = { ticket_id: string; opened_by: "rider" | "driver" | "admin"; visible_to_person?: boolean | null; rider_id: string | null; driver_id: string | null; zone_id: string | null; country?: string | null };
 
@@ -32,12 +31,10 @@ export async function pushSupportAnswer(ex: Executor, ticket: Ticket, now: Date)
       ? await ex.selectFrom("riders").select("language").where("rider_id", "=", subjectId).executeTakeFirst()
       : await ex.selectFrom("drivers").select("language").where("driver_id", "=", subjectId).executeTakeFirst();
   if (!person) return null;
-  let language: Lang | undefined = isLang(person.language) ? person.language : undefined;
-  if (language === undefined) {
-    const zone = ticket.zone_id ? await ex.selectFrom("zones").select("country").where("zone_id", "=", ticket.zone_id).executeTakeFirst() : undefined;
-    const country = zone?.country ?? ticket.country ?? null;
-    language = (country && COUNTRY_LANGUAGE[country]) || "en";
-  }
+  // v0.18.66 §87: the one notice-language rule: the person's language, else the ticket's country (its zone's, else
+  // its own), else the person's zone's country; TN fr; else en.
+  const language: Lang = ownLanguage(person.language)
+    ?? pickNoticeLanguage(null, (await zoneCountry(ex, ticket.zone_id)) ?? ticket.country ?? (await personCountry(ex, audience, subjectId)));
   return notify(ex, {
     audience,
     subjectId,

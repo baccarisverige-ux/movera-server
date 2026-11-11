@@ -16,6 +16,7 @@ import { checkMaxStops, routeChangeSettings, type RouteChangeSettings } from "./
 import { tripProjection } from "./projection.js";
 import { pricingOf } from "./ride.js";
 import { notify } from "../notifications/service.js";
+import { noticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * v0.18.9 (contract.json#onTrip.routeChange, owner G7 decision 3 "Rider changes, driver accepts"): the rider changes
@@ -276,8 +277,8 @@ const DRIVER_PUSH = (contract as unknown as { onTrip: { routeChange: { driverPus
  */
 async function pushRouteChange(trx: Trx, trip: TripRow, change: RouteChange, seconds: number, now: Date): Promise<void> {
   if (!trip.driver_id) return;
-  const driver = await trx.selectFrom("drivers").select("language").where("driver_id", "=", trip.driver_id).executeTakeFirst();
-  const lang: Lang = driver?.language === "sv" || driver?.language === "fr" ? driver.language : "en";
+  // v0.18.66 §87: the one notice-language rule (his language, else the trip country's, TN fr, else en).
+  const lang: Lang = await noticeLanguage(trx, { actor: "driver", id: trip.driver_id }, trip.zone_id);
   const amount = toMajorString(change.driverEarnings as WireMoney).replace(".", ",");
   const cur = change.driverEarnings.currency;
   const earnings = cur === "SEK" ? `${amount} kr` : cur === "EUR" ? `${amount} €` : `${amount} ${cur}`;
