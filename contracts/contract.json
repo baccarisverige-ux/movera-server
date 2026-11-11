@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.60",
+  "version": "0.18.61",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -8891,5 +8891,12 @@
       }
     },
     "rule": "The format follows the currency, not the app language: a TND amount is always 12.350 DT (dot, 3 decimals, space between thousands), also in French or Swedish. SEK and EUR keep the comma and are unchanged. Amounts on the wire stay integer minor units (currencies.*.exponent)."
+  },
+  "paymentRead": {
+    "note": "v0.18.61 §83 (owner 2026-11-11 'Finance permission'): GET /payments/{paymentId} is shared by the rider and the admin.",
+    "rider": "The rider reads only his own payment (another rider's payment → 404 not_found).",
+    "admin": "An ADMIN caller needs finance.read (x-permission; the same id as GET /admin/payments, GET /admin/payouts and GET /admin/refunds/payouts) and the payment's trip zone in the admin's zones (\"*\" = all; a Super admin passes); otherwise 403 forbidden, reason missing_permission or zone_out_of_scope.",
+    "cashOnly": "Movera is cash-only now (finish.paymentMethods.served): no payment intent exists, so until card payments exist the route answers 400 invalid_request, reason payment_method_not_available, like POST /payment-methods (texts: finish.paymentMethods.texts.payment_method_not_available). The permission and zone checks come first.",
+    "apps": "Rule 0 order: contract -> server (finance.read + zone check for admins, own payment for riders, the typed 400 while cash-only) -> admin (no change: reads /admin/payments) -> driver app (no change) -> rider app (no change: shows texts[reason])."
   }
 }

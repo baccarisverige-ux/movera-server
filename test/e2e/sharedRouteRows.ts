@@ -8,13 +8,15 @@ import type { Op } from "./routeMatrix.js";
  * - ticket: the rider who opened the ticket owns it; anyone else gets 403 or 404.
  * - call: an in-app call between the trip's rider and driver; anyone else gets 403 or 404.
  * - notification: a notification id nobody has (the owner cell is 404; owning a real one is NOT CHECKED here).
+ * - payment: pay_<tripId>; only the trip's rider owns it (any other rider gets 404). `cashOnly` routes answer the
+ *   typed 400 payment_method_not_available to a caller who passed authorization (v0.18.61 §83).
  * - self: no id; the caller acts on their own account (every allowed actor is "owner").
  * `admin` is the permission an admin needs, when the contract lets admins call the route. For the trip read and its
  * live events the contract names none; step 25 (U10, Q 34) decided trips.read + the trip's zone.
  * `last` routes end something (a call, the session), so they run after every other row; `signOut` runs at the very end.
  */
-export type Scope = "trip" | "ticket" | "call" | "notification" | "self";
-export type Row = { scope: Scope; admin?: string; last?: true; signOut?: true };
+export type Scope = "trip" | "ticket" | "call" | "notification" | "payment" | "self";
+export type Row = { scope: Scope; admin?: string; cashOnly?: true; last?: true; signOut?: true };
 
 export const SHARED_ROWS: Record<string, Row> = {
   "POST /auth/sign-out": { scope: "self", last: true, signOut: true },
@@ -52,6 +54,8 @@ export const SHARED_ROWS: Record<string, Row> = {
   "POST /account/phone/verify": { scope: "self" },
   "POST /account/email/change": { scope: "self" },
   "POST /account/email/verify": { scope: "self" },
+  // v0.18.61 §83: the trip's rider, or an admin with finance.read and the trip's zone; cash-only → typed 400.
+  "GET /payments/:paymentId": { scope: "payment", admin: "finance.read", cashOnly: true },
   "POST /calls/:callId/signal": { scope: "call" },
   "POST /calls/:callId/answer": { scope: "call" },
   "POST /calls/:callId/end": { scope: "call", last: true },

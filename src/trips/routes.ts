@@ -14,7 +14,7 @@ import { tripProjection } from "./projection.js";
 import { answerRouteChange, quoteRouteChange, requestRouteChange } from "./routeChange.js";
 import { tripPath } from "./path.js";
 import { EstimateRouter, type Router } from "../maps/routing.js";
-import { listMessages, sendMessage } from "./messages.js";
+import { assertAdminTripScope, listMessages, sendMessage } from "./messages.js";
 import { callTripPeer } from "./call.js";
 import { disabledTelephony, type TelephonyProvider } from "../telephony/provider.js";
 import { eventEnvelope } from "../realtime/events.js";
@@ -251,8 +251,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     throw badRequest("Only cash is available for now.", "payment_method_not_available");
   });
   // Openapi lists card methods, payment intents and wallet top-up; the test week takes cash only, so these answer the
-  // same typed 400 as POST /payment-methods instead of a plain 404 (audit B9). No money is moved. GET /payments/{paymentId}
-  // is left out: the contract gives it to rider AND admin, so it needs an owner decision and a T11 matrix row first.
+  // same typed 400 as POST /payment-methods instead of a plain 404 (audit B9). No money is moved.
   const cashOnly = async (request: FastifyRequest): Promise<never> => {
     await authenticate(request, guard, ["rider"]);
     throw badRequest("Only cash is available for now.", "payment_method_not_available");
@@ -261,6 +260,22 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   app.post(`${API_PREFIX}/payments`, cashOnly);
   app.post(`${API_PREFIX}/payments/:paymentId/confirm`, cashOnly);
   app.post(`${API_PREFIX}/wallet/topup`, cashOnly);
+  // v0.18.61 §83 (contract.json#paymentRead): GET /payments/{paymentId} for the rider and the admin. A trip's one
+  // payment is pay_<tripId> (as GET /admin/payments). A rider sees only his own (anyone else's → 404 not_found); an
+  // admin needs finance.read and the trip's zone (the §77 helper). Those checks come first; while cash-only no
+  // payment intent exists, so it then answers the typed 400 of the card routes.
+  app.get(`${API_PREFIX}/payments/:paymentId`, async (request) => {
+    const who = await authenticate(request, guard, ["rider", "admin"]);
+    const { paymentId } = parseBody(z.object({ paymentId: z.string().min(1).max(200) }), request.params);
+    // An admin without finance.read is refused before any lookup, so the answer never tells which payments exist.
+    if (who.actor === "admin" && !(who.perms ?? []).includes("finance.read")) throw new ApiError("forbidden", "You do not have permission to do that.", { reason: "missing_permission" });
+    const tripId = paymentId.startsWith("pay_") ? paymentId.slice(4) : null;
+    const trip = tripId ? await deps.db.selectFrom("trips").select(["trip_id", "rider_id", "zone_id"]).where("trip_id", "=", tripId).executeTakeFirst() : undefined;
+    const mine = trip !== undefined && (who.actor === "admin" || trip.rider_id === who.subjectId);
+    if (!mine) throw new ApiError("not_found", "No such payment.", { reason: "not_found" });
+    assertAdminTripScope(chatWho(who), trip, "finance.read");
+    throw badRequest("Only cash is available for now.", "payment_method_not_available");
+  });
   app.post(`${API_PREFIX}/payment-methods/default`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
     const body = parseBody(DefaultMethodBody, request.body);

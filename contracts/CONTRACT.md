@@ -1,4 +1,6 @@
-# Movera shared contract v0.18.60
+# Movera shared contract v0.18.61
+
+v0.18.61 (owner 2026-11-11 "Finance permission", Rule 0; X-Api-Version stays `0.5`; no migration): **`GET /payments/{paymentId}` (rider + admin): an admin needs `finance.read` (as `GET /admin/payments` / `GET /admin/payouts`) + the payment's trip zone**, else `403 forbidden` `missing_permission` / `zone_out_of_scope`; a rider sees only their own payment; **while Movera is cash-only the route answers `400 invalid_request`, reason `payment_method_not_available`**, like `POST /payment-methods`, until card payments exist (`contract.json#paymentRead`). See §83.
 
 v0.18.60 (docs fix, Rules `plan/REMINDERS.md` row 14b; X-Api-Version stays `0.5`; example only; the masking rule, the wire and the apps do not change; no migration): **the §76 masked-phone example now follows its own rule** — `+46701234512` has 9 digits after `+46`, the last 2 stay, so 7 are hidden: `+46•••••••12` (the old example showed only 5 dots) in §76 and `contract.json#adminMasking.shapes.phone`.
 
@@ -1372,3 +1374,12 @@ Owner 2026-11-10 "Use phone language" (Rule 0). Changes v0.18.2 `auth.firstLangu
 - Before sign-in: a language saved on the phone (globe button) wins; else the phone language if it is sv, fr or en; else en. The start country no longer picks the language (`auth.firstLanguage.countryDefault` stays in contract.json, unused, Rule 21).
 - After sign-in: the account language (`profile.language`) replaces the phone choice only when the person picked one. The server stores `null` for a new account and leaves `language` out of the profile until it is set, so no default `sv` is forced.
 - **Order (Rule 0)**: contract → server (no change: new riders and drivers get language null) → admin (no change) → driver app and rider app (first-language logic).
+
+## 83. Payment read: rider's own, admin with finance.read (v0.18.61)
+
+Owner 2026-11-11 "Finance permission" (Rule 0). X-Api-Version stays `0.5`; no migration. contract.json#paymentRead.
+
+- **Rider**: `GET /payments/{paymentId}` answers only the rider's own payment (another one → 404 `not_found`).
+- **Admin**: needs `finance.read` (`x-permission`; the same id as `GET /admin/payments`, `GET /admin/payouts`, `GET /admin/refunds/payouts`) and the payment's trip zone in the admin's zones (`"*"` = all); otherwise `403 forbidden`, reason `missing_permission` or `zone_out_of_scope` (as §77).
+- **Cash only**: no payment intent exists yet, so until card payments exist the route answers `400 invalid_request`, reason `payment_method_not_available` (texts `finish.paymentMethods.texts`), like `POST /payment-methods`; the permission and zone checks come first.
+- **Order (Rule 0)**: contract → server (checks + typed 400) → admin (no change; reads `/admin/payments`) → driver app (no change) → rider app (no change; shows `texts[reason]`).
