@@ -698,3 +698,14 @@ describe("E4 (audit S03 B2): an older batch that replaces nothing tells nobody",
     expect(trace.length).toBe(1);
   });
 });
+
+describe("E13 (audit S02 A2): a straight-line estimate is never kept as the trip's road route", () => {
+  it("the ride-check scan with an estimating router (prepareLegs → preparedRouter) leaves planned_route empty", async () => {
+    const trip = await accepted();
+    await onBoard(trip);
+    await moveTo({ lat: 59.326, lng: 18.068 }, 20);
+    await worker.runDue();
+    const row = await database.db.selectFrom("trips").select("planned_route").where("trip_id", "=", trip.tripId).executeTakeFirstOrThrow();
+    expect(row.planned_route).toBeNull();
+  });
+});
