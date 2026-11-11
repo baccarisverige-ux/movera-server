@@ -5,7 +5,7 @@ import type { DriversTable, DriverLocationsTable, VehiclesTable, DriverCancelsTa
 import type { FleetsTable, FleetJoinAttemptsTable, FleetInvitationsTable } from "./fleets.js";
 import type { DocumentUploadAttemptsTable, DocumentsTable, DocumentFilesTable, DocumentRenewalsTable, LegalTextsTable, LegalAcceptancesTable, DocumentNoticesTable, SignUpRemindersTable, TermsAcceptancesTable } from "./documents.js";
 import type { TelemetryTable, ErrorGroupsTable, ErrorGroupDevicesTable } from "./telemetry.js";
-import type { TripsTable, TripEventsTable, TripCallsTable, CompletePreviewsTable, TripLocationsTable, TripGapRoadsTable, TripMessagesTable, RatingsTable, RideChecksTable, RouteQuotesTable, AdminTripNotesTable, BlockedPairsTable, TripStreamPresenceTable } from "./trips.js";
+import type { TripsTable, TripEventsTable, TripCallsTable, CompletePreviewsTable, TripLocationsTable, TripGapRoadsTable, TripMessagesTable, TripMessageTranslationsTable, RatingsTable, RideChecksTable, RouteQuotesTable, AdminTripNotesTable, BlockedPairsTable, TripStreamPresenceTable } from "./trips.js";
 import type { IdempotencyKeysTable, TimersTable, TestPhonesTable, SignInWaitlistTable, SignInWaitlistAsksTable, OtpSessionsTable, EmailChangesTable, AccountChangeStartsTable, OutboundNoticesTable, AuthSessionsTable, RefreshTokensTable, PushDevicesTable, NotificationsTable, SmsOutboxTable, AuthProviderLinksTable, AuthLinkTokensTable } from "./auth.js";
 import type { AdminsTable, AdminSetupLinksTable, AdminSignInFailuresTable, ConfigDraftsTable, ConfigLiveTable, ConfigHistoryTable, ApprovalsTable, AdminAuditTable, AdminLiveEventsTable, AdminLivePrunedTable, KpiDaysTable, ContentItemsTable } from "./admin.js";
 import type { ZonesTable, SurgeSamplesTable, QuotesTable, SurgeSchedulesTable, SmartSurgeStateTable, CategoriesTable } from "./pricing.js";
@@ -23,6 +23,7 @@ export interface Database {
   trips: TripsTable;
   trip_events: TripEventsTable;
   trip_messages: TripMessagesTable;
+  trip_message_translations: TripMessageTranslationsTable;
   trip_calls: TripCallsTable;
   trip_stream_presence: TripStreamPresenceTable;
   idempotency_keys: IdempotencyKeysTable;

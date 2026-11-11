@@ -203,6 +203,9 @@ describe("v0.18.56 §78 automatic messages", () => {
 describe("v0.18.56 §78 translate", () => {
   it("G8 503 coming_soon until a provider is set; another target 400; translation off 403; unknown message 404", async () => {
     const { tripId } = await accepted();
+    // v0.18.64 §85: a message already in the reader's language answers its own text (auto_translate.test.ts T4), so
+    // the driver writes in English here and the Swedish rider asks for a real translation.
+    await database.db.updateTable("drivers").set({ language: "en" }).where("driver_id", "=", drivers.A.id).execute();
     const msg = (await send(tripId, drivers.A.headers, "Hej")).json();
     const tr = (body: Record<string, unknown>) => call(app, "POST", `/trips/${tripId}/messages/translate`, rider, body);
     // The rider has no language; the zone is Swedish → sv.

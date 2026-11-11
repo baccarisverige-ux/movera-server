@@ -36,7 +36,7 @@ export async function chatRoutes(app: FastifyInstance, deps: ChatDeps): Promise<
 
   app.post(`${API_PREFIX}/trips/:tripId/messages/translate`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);
-    return translateMessage(deps.db, deps.translator, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, tripParam(request), request.body);
+    return translateMessage(deps.db, deps.translator, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, tripParam(request), request.body, now());
   });
 
   app.get(`${API_PREFIX}/admin/chats`, async (request) => {

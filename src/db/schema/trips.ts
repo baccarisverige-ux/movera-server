@@ -204,6 +204,16 @@ export interface TripMessagesTable {
   quick_reply_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** v0.18.56 §78: arrived | on_my_way for the automatic messages (one of each per trip). */
   auto: ColumnType<"arrived" | "on_my_way" | null, "arrived" | "on_my_way" | null | undefined, "arrived" | "on_my_way" | null>;
+  /** v0.18.64 §85 (migration 0097): Message.lang, the language the text was written in (sv | fr | en). */
+  lang: ColumnType<"sv" | "fr" | "en" | null, "sv" | "fr" | "en" | null | undefined, "sv" | "fr" | "en" | null>;
+}
+
+/** v0.18.64 §85 (chat.autoTranslate.cache, migration 0097): one kept translation per message and target language. */
+export interface TripMessageTranslationsTable {
+  message_id: string;
+  lang: "sv" | "fr" | "en";
+  text: string;
+  created_at: Timestamp;
 }
 
 /** v0.18.56 §78 (inAppCalls.push, migration 0090): the trip streams open right now on any server copy. */
