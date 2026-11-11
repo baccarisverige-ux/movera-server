@@ -17,6 +17,7 @@ import { listMessages } from "../../src/trips/messages.js";
 import { driverEarnings } from "../../src/trips/ride/earnings.js";
 import { driverPayouts, listPayouts } from "../../src/admin/payouts.js";
 import { listTrips } from "../../src/admin/lists.js";
+import { countDay } from "../../src/admin/kpis.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { ROUND, WITHDRAW } from "../../src/dispatch/runtime/shared.js";
 import { TRIP_ETA } from "../../src/trips/etaNow.js";
@@ -314,6 +315,31 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   // ---- admin ----
   it("fixed (0093 trips_created): admin trip list with no filter reads one page on an index (admin/lists.ts)", async () => {
     await noProblems(() => listTrips(traced, SUPER, { limit: 50 }, now), (s) => s.includes('from "trips"'));
+  });
+  it("S05 A5 fixed (0095 trips_zone_ended/_created): nightly KPI day count reads one zone-day of trips on an index, new riders without a walk of every trip (admin/kpis.ts)", async () => {
+    // 176 days back: the riders' first trips (each rider's oldest) fall on these days, so new riders are counted.
+    const day = new Date(now.getTime() - 176 * 86_400_000).toISOString().slice(0, 10);
+    const zone = { zone_id: "Z002", time_zone: "Europe/Stockholm", currency: "SEK" };
+    let figures: Awaited<ReturnType<typeof countDay>> | undefined;
+    const { problems } = await check(async () => (figures = await countDay(traced, zone, day)), (s) => s.includes("FROM trips"));
+    // The work grows with the zone-day (~560 trips here: a few blocks per trip for the first-trip probe), never with the
+    // table: no Seq Scan of a big table, no mass of filtered rows, and at most 15 blocks per trip of the day.
+    expect(problems.filter((p) => !/^\d+ shared buffers/.test(p)), problems.join("\n")).toEqual([]);
+    const c = await database.pool.connect();
+    try {
+      const bounds = await c.query<{ n: string; old: string }>(
+        `WITH b AS (SELECT ($1::date::timestamp AT TIME ZONE $2) AS lo, (($1::date + 1)::timestamp AT TIME ZONE $2) AS hi)
+         SELECT (SELECT count(*) FROM trips, b WHERE zone_id = $3 AND created_at >= lo AND created_at < hi) AS n,
+                (SELECT count(*) FROM (SELECT DISTINCT ON (rider_id) rider_id, zone_id, created_at FROM trips ORDER BY rider_id, created_at, trip_id) f, b
+                  WHERE zone_id = $3 AND created_at >= lo AND created_at < hi) AS old`, [day, zone.time_zone, zone.zone_id]);
+      const { n, old } = bounds.rows[0]!;
+      // Same answer as the old DISTINCT ON over every trip.
+      expect(figures!.newRiders).toBe(Number(old));
+      expect(figures!.newRiders).toBeGreaterThan(0);
+      for (const p of problems) expect(Number(/^(\d+) shared buffers/.exec(p)![1]), p).toBeLessThanOrEqual(15 * Number(n) + MAX_BUFFERS);
+    } finally {
+      c.release();
+    }
   });
   it("B1.19 fixed: Dispatch page driver facts reads missed-in-a-row and driving time in one query each (dispatch/driverFacts.ts)", async () => {
     const { count } = await check(() => zoneDriverFacts(traced, "Z002", now));
