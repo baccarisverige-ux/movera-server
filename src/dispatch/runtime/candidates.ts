@@ -157,6 +157,8 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     .where("drivers.online_status", "in", statuses)
     // v0.18.37 §61: from his "Go offline" tap on a trip, no new offers (the on-trip Exclusives included).
     .where("drivers.offline_after_trip", "=", false)
+    // v0.18.65 §86 (owner phone test 2026-11-11): he stopped next trips on the trip sheet's radar.
+    .where(sql<boolean>`NOT (drivers.online_status = 'on_trip' AND drivers.next_trips_off)`)
     .where(inZones)
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
     .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000));
@@ -298,15 +300,15 @@ export async function lockAndRecheck(trx: Trx, driverIds: string[], onTrip: Set<
   const ids = [...new Set(driverIds)].sort();
   const gone = new Set<string>();
   if (ids.length === 0) return gone;
-  let rows: Array<{ driver_id: string; online_status: string; account_status: string; offline_after_trip: boolean }>;
+  let rows: Array<{ driver_id: string; online_status: string; account_status: string; offline_after_trip: boolean; next_trips_off: boolean }>;
   try {
-    rows = await trx.selectFrom("drivers").select(["driver_id", "online_status", "account_status", "offline_after_trip"]).where("driver_id", "in", ids).orderBy("driver_id").forUpdate().noWait().execute();
+    rows = await trx.selectFrom("drivers").select(["driver_id", "online_status", "account_status", "offline_after_trip", "next_trips_off"]).where("driver_id", "in", ids).orderBy("driver_id").forUpdate().noWait().execute();
   } catch (error) {
     if ((error as { code?: string }).code === "55P03") throw new TimerBusy("a chosen driver is busy");
     throw error;
   }
   // v0.18.33 (owner Q7): a booked-next driver (onTrip) may be on a trip; he still must not hold an open Exclusive.
-  for (const r of rows) if ((r.online_status !== "online" && !(onTrip.has(r.driver_id) && r.online_status === "on_trip")) || r.account_status !== "active" || r.offline_after_trip) gone.add(r.driver_id);
+  for (const r of rows) if ((r.online_status !== "online" && !(onTrip.has(r.driver_id) && r.online_status === "on_trip")) || r.account_status !== "active" || r.offline_after_trip || (r.online_status === "on_trip" && r.next_trips_off)) gone.add(r.driver_id);
   for (const id of ids) if (!rows.some((r) => r.driver_id === id)) gone.add(id);
   const open = await trx.selectFrom("offers").select("driver_id").where("driver_id", "in", ids).where("status", "=", "open").where("kind", "in", ["exclusive", "assigned"]).execute();
   for (const o of open) gone.add(o.driver_id);

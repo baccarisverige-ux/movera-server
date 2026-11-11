@@ -48,6 +48,8 @@ export interface DriversTable {
   /** v0.18.37 §61 (migration 0084): he tapped Go offline during a trip; offline when his last trip ends. */
   offline_after_trip: Generated<boolean>;
   offline_after_trip_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** v0.18.65 §86 (migration 0098): next-trip offers stopped for his current trip (trip sheet radar). */
+  next_trips_off: Generated<boolean>;
 }
 
 export type OfflineReason = "no_position" | "missed_offers" | "vehicle_blocked" | "fleet_removed" | "account_status" | "admin" | "documents_expired" | "after_trip";
