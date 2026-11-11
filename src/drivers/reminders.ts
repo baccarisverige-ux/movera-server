@@ -2,7 +2,7 @@ import type { Executor } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { notify } from "../notifications/service.js";
 import { ONBOARDING } from "./onboardingRules.js";
-import { PHOTO_TYPES, daysLeft, onboardingSettings, requiredOf, typeInfo, type OnboardingSettings } from "./onboardingSettings.js";
+import { PHOTO_TYPES, daysLeft, largestWarnDays, onboardingSettings, publishedOnboarding, requiredOf, settingsFrom, typeInfo, type OnboardingSettings } from "./onboardingSettings.js";
 import { expiredBlockers, isTestDriver, pickableCars, vehicleDocumentBlockers } from "./readiness.js";
 import { markSetOffline } from "./offlineReason.js";
 import { scheduleTimer } from "../jobs/timers.js";
@@ -161,19 +161,28 @@ const EXPIRY_TEXT: Record<"document_expiring" | "document_expired", Record<"sv" 
  * reached when several are reached at once) and the expired notice, each once per document and expiry date.
  */
 export async function sweepDocumentExpiry(ex: Executor, now: Date): Promise<void> {
-  const due = await ex.selectFrom("documents").select(["document_id", "driver_id", "owner_kind", "owner_id", "type", "status", "expires_at"]).where("status", "=", "approved").where("expires_at", "is not", null).execute();
+  // S05 A4: only documents a warning (or the expiry) can reach now, and the lookups each in one query, not ~4 per document.
+  const published = await publishedOnboarding(ex);
+  const horizon = new Date(now.getTime() + largestWarnDays(published.values()) * 86_400_000);
+  const due = await ex.selectFrom("documents").select(["document_id", "driver_id", "owner_kind", "owner_id", "type", "status", "expires_at"]).where("status", "=", "approved").where("expires_at", "is not", null).where("expires_at", "<=", horizon).execute();
+  const driverIds = [...new Set(due.map((d) => d.driver_id))];
+  const carIds = [...new Set(due.filter((d) => d.owner_kind === "vehicle").map((d) => d.owner_id))];
+  const drivers = new Map(driverIds.length ? (await ex.selectFrom("drivers").select(["driver_id", "country", "language"]).where("driver_id", "in", driverIds).execute()).map((d) => [d.driver_id, d]) : []);
+  const cars = new Map(carIds.length ? (await ex.selectFrom("vehicles").select(["vehicle_id", "fleet_id"]).where("vehicle_id", "in", carIds).execute()).map((c) => [c.vehicle_id, c]) : []);
+  const fleetIds = [...new Set([...cars.values()].flatMap((c) => (c.fleet_id ? [c.fleet_id] : [])))];
+  const fleets = new Map(fleetIds.length ? (await ex.selectFrom("fleets").select(["fleet_id", "country"]).where("fleet_id", "in", fleetIds).execute()).map((f) => [f.fleet_id, f.country]) : []);
   for (const doc of due) {
     const expiresAt = doc.expires_at!;
-    const driver = await ex.selectFrom("drivers").select(["driver_id", "country", "language"]).where("driver_id", "=", doc.driver_id).executeTakeFirst();
+    const driver = drivers.get(doc.driver_id);
     if (driver === undefined) continue;
     let country = driver.country;
     let vehicleId: string | undefined;
     if (doc.owner_kind === "vehicle") {
       vehicleId = doc.owner_id;
-      const car = await ex.selectFrom("vehicles").select(["fleet_id"]).where("vehicle_id", "=", doc.owner_id).executeTakeFirst();
-      if (car?.fleet_id) country = (await ex.selectFrom("fleets").select("country").where("fleet_id", "=", car.fleet_id).executeTakeFirst())?.country ?? country;
+      const car = cars.get(doc.owner_id);
+      if (car?.fleet_id) country = fleets.get(car.fleet_id) ?? country;
     }
-    const settings = await onboardingSettings(ex, country);
+    const settings = settingsFrom(country, country ? published.get(country) : undefined);
     const left = daysLeft(expiresAt, now);
     const scope = doc.owner_kind === "vehicle" ? "vehicle" : settings.documents.fleet.includes(doc.type) && !settings.documents.driver.includes(doc.type) ? "fleet" : "driver";
     let kind: "document_expiring" | "document_expired";
