@@ -69,12 +69,14 @@ export function limitStatements(pool: pg.Pool, ms: number): void {
 
 /**
  * Job 1 (fix plan R22): errors that mean "the database is overloaded right now", not a bug: no free pooled connection in
- * time (pg-pool), a statement stopped by statement_timeout (57014), a lock wait stopped by lock_timeout (55P03).
+ * time (pg-pool), a statement stopped by statement_timeout (57014), a lock wait stopped by lock_timeout (55P03), and (E5) a transaction Postgres rolled back as a deadlock
+ * victim (40P01) or for a serialization failure (40001): trying again in a moment succeeds.
  * The API answers them 503 unavailable, reason server_busy, retryable, with Retry-After.
  */
+const BUSY_CODES = new Set(["57014", "55P03", "40P01", "40001"]);
 export function isDatabaseBusy(error: unknown): boolean {
   const e = error as { code?: string; message?: string } | undefined;
   if (e === undefined || e === null) return false;
-  if (e.code === "57014" || e.code === "55P03") return true;
+  if (e.code !== undefined && BUSY_CODES.has(e.code)) return true;
   return typeof e.message === "string" && /timeout exceeded when trying to connect/i.test(e.message);
 }

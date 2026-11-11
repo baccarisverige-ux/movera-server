@@ -62,14 +62,21 @@ export const TIMER_LOCK_TIMEOUT_MS = 2000;
  */
 const isLockTimeout = (error: unknown) => ["55P03", "40P01"].includes((error as { code?: string } | undefined)?.code ?? "");
 
-/** At most one pending timer per (kind, refId): scheduling again moves it. */
-export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }): Promise<void> {
+/**
+ * At most one pending timer per (kind, refId): scheduling again moves it (and starts its attempts again).
+ * E6 (audit S02 A1/A4): `keepDue` is for a timer asked again and again (the ride-check scan, once per GPS batch): a
+ * pending one keeps its due time (never moved later; nor earlier, which would skip a failing one's back-off or wake a
+ * parked one at 'infinity'), its attempts and its last error; only its payload is refreshed.
+ */
+export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }, options: { keepDue?: boolean } = {}): Promise<void> {
   const payload = JSON.stringify(timer.payload ?? {});
   await ex
     .insertInto("timers")
     .values({ kind: timer.kind, ref_id: timer.refId, due_at: timer.dueAt, payload })
     .onConflict((conflict) =>
-      conflict.columns(["kind", "ref_id"]).doUpdateSet({ due_at: timer.dueAt, payload, attempts: 0, last_error: null }),
+      conflict
+        .columns(["kind", "ref_id"])
+        .doUpdateSet(options.keepDue ? { payload } : { due_at: timer.dueAt, payload, attempts: 0, last_error: null }),
     )
     .execute();
 }

@@ -410,6 +410,9 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
       .values(fresh.map(({ fix, at }) => ({ trip_id: active.trip_id, driver_id: driverId, measured_at: at, lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy, heading: fix.heading ?? null, speed_mps: fix.speedMps ?? null, moving: fix.moving ?? false })))
       .onConflict((c) => c.columns(["trip_id", "measured_at", "driver_id"]).doNothing())
       .execute();
+    // E4 (audit S03 B2): a batch older than the stored fix (out of order on a bad connection) only fills the trace above;
+    // no location event, NOTIFY, near-drop-off, ride-check scan or silence check runs on a position that is not current.
+    if (!replaced) return { accepted: fresh.length };
     // One location event per batch, with the newest fix; it never changes the projection version (§4).
     await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
     await maybeNearDropoff(trx, active, latest.fix, now);

@@ -44,7 +44,8 @@ export function openServerCheck(trip: Pick<TripRow, "ride_check">, now: Date): S
 /** Called for each position batch of a driver on a trip: the check runs in a job right after (never inside the request). */
 export async function scheduleRideCheckScan(trx: Trx, trip: Pick<TripRow, "trip_id" | "status">, now: Date): Promise<void> {
   if (!ONBOARD.has(trip.status)) return;
-  await scheduleTimer(trx, { kind: RIDE_CHECK_SCAN, refId: trip.trip_id, dueAt: now });
+  // E6: a pending scan keeps its due time and attempts (a GPS backlog cannot push it back or un-park a failing one).
+  await scheduleTimer(trx, { kind: RIDE_CHECK_SCAN, refId: trip.trip_id, dueAt: now }, { keepDue: true });
 }
 
 /** Distance (km) from a point to a line through the points (flat earth around the point: fine for a few km). */
@@ -95,7 +96,9 @@ async function routeOf(trx: Trx, trip: TripRow, router: Router | undefined): Pro
   if (router) {
     try {
       const leg = await router.route(points);
-      if (leg.points && leg.points.length >= 2) {
+      // E13 (audit S02 A2): only a real road route (OSRM) is kept; the estimate's points are the straight lines below,
+      // and keeping them would stop the trip from ever getting its road route once OSRM answers.
+      if (leg.source === "osrm" && leg.points && leg.points.length >= 2) {
         const shape = leg.points.map(pointOf);
         await trx.updateTable("trips").set({ planned_route: JSON.stringify(shape) }).where("trip_id", "=", trip.trip_id).execute();
         return shape;

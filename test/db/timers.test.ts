@@ -286,3 +286,26 @@ describe("S05 A1: parked recurring timers at start", () => {
     expect(logs.filter((entry) => entry.level === "warn" && entry.message.includes("re-armed"))).toHaveLength(1);
   });
 });
+
+describe("E6 (audit S02 A1/A4): the ride-check scan is not re-stamped by every GPS batch", () => {
+  it("a pending scan keeps its due time, attempts and last error; only the payload is refreshed; other timers still move", async () => {
+    const { scheduleRideCheckScan, RIDE_CHECK_SCAN } = await import("../../src/safety/rideCheckServer.js");
+    const trip = { trip_id: "trp_e6", status: "in_trip" };
+    await scheduleRideCheckScan(database.db as never, trip, at(0));
+    await database.db.updateTable("timers").set({ attempts: 3, last_error: "boom" }).where("kind", "=", RIDE_CHECK_SCAN).execute();
+    await scheduleRideCheckScan(database.db as never, trip, at(5));
+    const [row] = await database.db.selectFrom("timers").selectAll().where("kind", "=", RIDE_CHECK_SCAN).execute();
+    expect([row!.due_at.toISOString(), row!.attempts, row!.last_error]).toEqual([at(0).toISOString(), 3, "boom"]);
+    // keepDue never moves a pending timer (not later, and not earlier: that would skip a back-off or wake a parked one).
+    await scheduleTimer(database.db, { kind: "k", refId: "r", dueAt: at(60), payload: { n: 1 } }, { keepDue: true });
+    await scheduleTimer(database.db, { kind: "k", refId: "r", dueAt: at(30), payload: { n: 2 } }, { keepDue: true });
+    await scheduleTimer(database.db, { kind: "k", refId: "r", dueAt: at(90), payload: { n: 3 } }, { keepDue: true });
+    const [k] = await database.db.selectFrom("timers").selectAll().where("kind", "=", "k").execute();
+    expect([k!.due_at.toISOString(), k!.payload]).toEqual([at(60).toISOString(), { n: 3 }]);
+    // Default: scheduling again still moves the timer and resets its attempts (reservations rely on it).
+    await database.db.updateTable("timers").set({ attempts: 2 }).where("kind", "=", "k").execute();
+    await scheduleTimer(database.db, { kind: "k", refId: "r", dueAt: at(120) });
+    const [moved] = await database.db.selectFrom("timers").selectAll().where("kind", "=", "k").execute();
+    expect([moved!.due_at.toISOString(), moved!.attempts]).toEqual([at(120).toISOString(), 0]);
+  });
+});

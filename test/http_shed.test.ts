@@ -31,4 +31,10 @@ describe("load shedding", () => {
     expect(isDatabaseBusy(Object.assign(new Error("lock timeout"), { code: "55P03" }))).toBe(true);
     expect(isDatabaseBusy(new Error("syntax error"))).toBe(false);
   });
+
+  it("E5: a deadlock (40P01) or serialization failure (40001) is busy (503 server_busy), a unique violation is not", () => {
+    expect(isDatabaseBusy(Object.assign(new Error("deadlock detected"), { code: "40P01" }))).toBe(true);
+    expect(isDatabaseBusy(Object.assign(new Error("could not serialize access"), { code: "40001" }))).toBe(true);
+    expect(isDatabaseBusy(Object.assign(new Error("duplicate key"), { code: "23505" }))).toBe(false);
+  });
 });
