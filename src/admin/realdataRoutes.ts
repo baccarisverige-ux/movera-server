@@ -10,6 +10,7 @@ import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
+import { SettledCursor } from "../realtime/settled.js";
 import { DISPATCH_EVENTS_CHANNEL, dispatchEventOf, dispatchEventsAfter, mayHearDispatch } from "../dispatch/feed.js";
 import { adminDeskCommand, adminReply, adminTicket, adminTickets, openTicket, ownTicket, ownTickets, writeOwnTicket, giveFeedback, type DeskCommand } from "../support/tickets.js";
 import { reviewDone, reviewQueue, reviewRulesOf, saveReviewRules } from "./reviewRules.js";
@@ -405,7 +406,8 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     }
     if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available; poll the dispatch feed instead.", { reason: "realtime_unavailable", retryAfterSeconds: 10 });
     const stream = openEventStream(request, reply);
-    let last = after;
+    // S04 A1: a settled cursor, so an event committed after a higher one is still sent (once).
+    const cursor = new SettledCursor(after, "dispatch_events_sequence_seq");
     let running = false;
     let again = false;
     const pump = async () => {
@@ -417,14 +419,13 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
       try {
         do {
           again = false;
-          const rows = await dispatchEventsAfter(deps.db, last, 200, query.zoneId);
+          const { rows, full } = await cursor.next(deps.db, 200, (from, limit) => dispatchEventsAfter(deps.db, from, limit, query.zoneId));
           const serverTime = now();
           for (const row of rows) {
             if (stream.closed()) return;
             if (mayHearDispatch(who, row)) stream.send(Number(row.sequence), await dispatchEventOf(deps.db, row, serverTime));
-            last = Number(row.sequence);
           }
-          if (rows.length === 200) again = true;
+          if (full) again = true;
         } while (again && !stream.closed());
       } catch (error) {
         request.log.warn({ err: error }, "dispatch stream read failed");
