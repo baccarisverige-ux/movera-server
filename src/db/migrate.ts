@@ -20,6 +20,16 @@ const LOCK_KEY = 73_310_001;
 export const LOCK_RETRY_MS = 200;
 export const NO_TRANSACTION_MARKER = "-- movera: no-transaction";
 
+/**
+ * B1.4 follow-up (owner W1 Q68, 2026-11-11: the database time limit "never on database changes"). The app pool has
+ * DATABASE_STATEMENT_TIMEOUT_MS on every connection, and the server migrates at start on that pool. The migration
+ * connection therefore turns the statement limit off (an index build or VALIDATE may take long) and sets lock_timeout
+ * instead: a migration that waits for a busy table fails after this long (the next start tries again) rather than
+ * queueing every app query behind its lock wait. 0 = no lock limit. Env: DATABASE_MIGRATION_LOCK_TIMEOUT_MS.
+ */
+export const MIGRATION_LOCK_TIMEOUT_MS = 5000;
+export type MigrateOptions = { lockTimeoutMs?: number };
+
 function wantsNoTransaction(sql: string): boolean {
   const eol = sql.indexOf("\n");
   return (eol === -1 ? sql : sql.slice(0, eol)).trimEnd() === NO_TRANSACTION_MARKER;
@@ -55,10 +65,14 @@ async function runWithoutTransaction(client: pg.PoolClient, name: string, sql: s
  * with NO_TRANSACTION_MARKER), under an advisory lock so two instances starting together never race. A migration that was applied and later edited stops the
  * server: migrations are append-only; change the schema with a new file.
  */
-export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR): Promise<string[]> {
+export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR, options: MigrateOptions = {}): Promise<string[]> {
+  const lockTimeoutMs = Math.max(0, Math.round(options.lockTimeoutMs ?? MIGRATION_LOCK_TIMEOUT_MS));
   const client = await pool.connect();
   const applied: string[] = [];
   try {
+    // B1.4: session settings of this connection only; it is closed (never handed back to the app pool) at the end.
+    await client.query("SET statement_timeout = 0");
+    await client.query(`SET lock_timeout = ${lockTimeoutMs}`);
     // Stress T-A follow-up (0091, the first no-transaction file): a server WAITING in pg_advisory_lock is a running
     // statement, and CREATE INDEX CONCURRENTLY of the server holding the lock waits for every running statement to
     // end, so two servers starting together deadlocked. Ask with pg_try_advisory_lock and sleep between tries instead.
@@ -99,6 +113,7 @@ export async function migrate(pool: pg.Pool, dir: string = MIGRATIONS_DIR): Prom
     return applied;
   } finally {
     await client.query("SELECT pg_advisory_unlock($1)", [LOCK_KEY]).catch(() => undefined);
-    client.release();
+    // B1.4: close the connection so its migration settings (no statement limit) never serve an app query.
+    client.release(true);
   }
 }
