@@ -681,3 +681,20 @@ describe("migration 0043: the old defaults move to the owner's (2 km, 0 free sto
     expect(doc("FR-PC").rideCheck.offRouteKm).toBe(5);
   });
 });
+
+describe("E4 (audit S03 B2): an older batch that replaces nothing tells nobody", () => {
+  it("no location event, no ride-check scan when the stored fix is newer; the older fixes still go into the trace", async () => {
+    const trip = await accepted();
+    await onBoard(trip);
+    await moveTo({ lat: 59.326, lng: 18.068 }, 20);
+    await worker.runDue();
+    const events = () => database.db.selectFrom("trip_events").select("sequence").where("trip_id", "=", trip.tripId).where("kind", "=", "location").execute();
+    const before = (await events()).length;
+    const older = { fixes: [{ lat: 59.33, lng: 18.06, accuracy: 5, measuredAt: new Date(clock.now.getTime() - 10_000).toISOString() }] };
+    expect((await call(app, "POST", "/driver/location", driverA.headers, older)).statusCode).toBe(200);
+    expect((await events()).length).toBe(before);
+    expect(await database.db.selectFrom("timers").select("kind").where("kind", "=", RIDE_CHECK_SCAN).where("ref_id", "=", trip.tripId).execute()).toEqual([]);
+    const trace = await database.db.selectFrom("trip_locations").select("lat").where("trip_id", "=", trip.tripId).where("measured_at", "=", new Date(older.fixes[0]!.measuredAt)).execute();
+    expect(trace.length).toBe(1);
+  });
+});
