@@ -56,15 +56,20 @@ function invalidIndexHint(names: string[]): string {
  */
 const WAITS_WITHOUT_LIMIT = /\bCONCURRENTLY\b|\bVALIDATE\s+CONSTRAINT\b/i;
 
-/** The statement without string literals and comments, so a header or a string naming these words never matches (supervisor #189 F1b). */
-function sqlCodeOnly(statement: string): string {
-  return statement.replace(/'(?:[^']|'')*'/g, "''").replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+/**
+ * True when the statement itself (not a comment, string literal, quoted identifier or dollar-quoted body) is a
+ * CONCURRENTLY / VALIDATE CONSTRAINT statement. One left-to-right pass, so whichever starts first wins — an apostrophe in
+ * a comment ("driver's") never opens a string that swallows the code (supervisor #189 F1b, F1c; same rule as splitSql).
+ */
+export function waitsWithoutLimit(statement: string): boolean {
+  const code = statement.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|\/\*[\s\S]*?\*\/|--[^\n]*|\$([A-Za-z_][A-Za-z0-9_]*)?\$[\s\S]*?\$\1\$/g, " ");
+  return WAITS_WITHOUT_LIMIT.test(code);
 }
 
 async function runWithoutTransaction(client: pg.PoolClient, name: string, sql: string, lockTimeoutMs: number): Promise<void> {
   try {
     for (const statement of splitSql(sql)) {
-      if (!WAITS_WITHOUT_LIMIT.test(sqlCodeOnly(statement))) {
+      if (!waitsWithoutLimit(statement)) {
         await client.query(statement);
         continue;
       }

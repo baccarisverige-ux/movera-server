@@ -149,6 +149,37 @@ describe("B1.4: migrations run without the app statement limit, with a lock limi
     await holder.query("ROLLBACK");
   }, 20_000);
 
+  it("an apostrophe in a comment never hides a real CONCURRENTLY (like 0091: \"driver's\" + IN ('…')) (supervisor #189 F1c)", async () => {
+    const database = await migratedDb();
+    const pool = appPool(database);
+    const holder = new pg.Client({ connectionString: database.url });
+    await holder.connect();
+    cleanups.push(() => holder.end());
+    await holder.query("BEGIN");
+    await holder.query("LOCK TABLE riders IN ROW EXCLUSIVE MODE");
+    const release = setTimeout(() => void holder.query("COMMIT"), 1500);
+    cleanups.push(() => clearTimeout(release));
+    const sql = `${NO_TRANSACTION_MARKER}\n-- the rider's open rows only\n` +
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS b14_f1c_idx ON riders (created_at) WHERE language IN ('sv', 'fr');\n`;
+    expect(await migrate(pool, migrationsWith({ "9999_b14_f1c.sql": sql }), { lockTimeoutMs: 500 })).toEqual(["9999_b14_f1c.sql"]);
+  }, 20_000);
+
+  it("every CONCURRENTLY statement in the real no-transaction migrations is seen as one (0091, 0093, 0094, 0095)", async () => {
+    const { readFileSync, readdirSync } = await import("node:fs");
+    const { splitSql } = await import("../../src/db/splitSql.js");
+    const { waitsWithoutLimit } = await import("../../src/db/migrate.js");
+    for (const name of readdirSync(MIGRATIONS_DIR).filter((n) => n.endsWith(".sql"))) {
+      const sql = readFileSync(join(MIGRATIONS_DIR, name), "utf8");
+      if (!sql.startsWith(NO_TRANSACTION_MARKER)) continue;
+      for (const statement of splitSql(sql)) {
+        if (/^\s*(--[^\n]*\n\s*)*CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY/i.test(statement)) expect(waitsWithoutLimit(statement), `${name}: ${statement.slice(0, 80)}`).toBe(true);
+      }
+    }
+    expect(waitsWithoutLimit("-- it's fine\nCREATE INDEX CONCURRENTLY x ON t (a) WHERE b = 'a--b'")).toBe(true);
+    expect(waitsWithoutLimit("DO $$ BEGIN PERFORM 'CONCURRENTLY'; END $$")).toBe(false);
+    expect(waitsWithoutLimit("-- VALIDATE CONSTRAINT later\nALTER TABLE t ADD CONSTRAINT c CHECK (true) NOT VALID")).toBe(false);
+  });
+
   it("a transactional file after a no-transaction file gets the lock limit back (supervisor #189 F2)", async () => {
     const database = await migratedDb();
     const check = (want: string) =>
