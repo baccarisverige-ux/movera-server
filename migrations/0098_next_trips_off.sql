@@ -2,3 +2,5 @@
 -- the trip sheet's radar for his current trip (rule 33: the state lives here, not in a server copy's memory).
 -- Cleared when each trip of his ends (releaseDriver).
 ALTER TABLE drivers ADD COLUMN IF NOT EXISTS next_trips_off boolean NOT NULL DEFAULT false;
+-- undo:
+-- ALTER TABLE drivers DROP COLUMN IF EXISTS next_trips_off;
