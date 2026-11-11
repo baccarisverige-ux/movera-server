@@ -18,12 +18,13 @@ import { tripProjection } from "../projection.js";
 
 export async function releaseDriver(trx: Trx, driverId: string | null, now: Date): Promise<void> {
   if (driverId === null) return;
-  // v0.18.65 §86: the trip sheet's "stop next trips" belongs to the trip that just ended; the next one starts with it on.
-  await clearNextTripsOff(trx, driverId, now);
   // v0.18.33 (owner answer 2026-11-05): he still drives a current trip (a queued or held one just ended): he stays on it.
   const still = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId)
     .where("status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).where(NOT_HELD).executeTakeFirst();
+  // v0.18.65 §86 (owner "Yes, prove + fix" 2026-11-11): the trip sheet's "stop next trips" belongs to the trip he drives;
+  // a queued or held next trip that ends keeps it. Only when that trip ends is it cleared: the next one starts with it on.
   if (still) return;
+  await clearNextTripsOff(trx, driverId, now);
   // A live trip he took as an Exclusive while on that trip starts now: it is his current trip, the ETA starts ticking.
   // Rule 33: in this same transaction, with the queued row locked (FOR UPDATE), so two server copies never start it twice.
   const queued = await trx.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("status", "=", "accepted").where("next_after_trip_id", "is not", null).orderBy("accepted_at").forUpdate().executeTakeFirst();

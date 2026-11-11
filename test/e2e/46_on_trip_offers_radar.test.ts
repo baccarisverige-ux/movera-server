@@ -133,6 +133,49 @@ describe("offers while on a trip (owner phone test 2026-11-11)", () => {
     expect(await profile(a)).toMatchObject({ onlineStatus: "online", nextTripsOff: false });
   });
 
+  it("radar off, then his queued next trip is cancelled by its rider: the switch stays off until his last trip ends (fail-before: cleared while trip A ran, offers came again)", async () => {
+    // Owner "Yes, prove + fix" 2026-11-11 (Rules decisions/session-2026-11-06.md): the switch belongs to the trip he is
+    // driving; a queued next trip that ends (here cancelled by its rider) does not end that trip.
+    const live = await liveTrip("in_trip");
+    await a.moveTo(NEAR_DROP);
+    const queuedRider = await sim.rider(2);
+    const queued = await queuedRider.book();
+    await sim.tick();
+    const offer = await a.offerFor(queued.tripId);
+    expect(offer?.["kind"], "control: the on-trip Exclusive comes").toBe("exclusive");
+    expect((await a.accept(offer!)).status).toBe(200);
+    expect(await sim.db.selectFrom("trips").select(["status", "next_after_trip_id"]).where("trip_id", "=", queued.tripId).executeTakeFirstOrThrow()).toEqual({ status: "accepted", next_after_trip_id: live.tripId });
+
+    expect((await nextTrips(a, false)).body).toMatchObject({ onlineStatus: "on_trip", nextTripsOff: true });
+    const cancelled = await queuedRider.command(queued.tripId, "cancel", { reasonCode: "plans_changed" });
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    expect(cancelled.body["status"]).toBe("cancelled_by_rider");
+    // Trip A still runs: the radar on his trip sheet is still off, and so is the server's switch.
+    expect(await profile(a), "the switch stays off while trip A runs").toMatchObject({ onlineStatus: "on_trip", activeTripId: live.tripId, nextTripsOff: true });
+    const other = await (await sim.rider(0)).book();
+    for (let i = 0; i < 3; i++) await jump(20);
+    expect(await kindsTo(a.id, other.tripId), "no offer to him while next trips are off").toEqual([]);
+
+    // His last trip ends: the switch goes back on.
+    await complete(live.tripId);
+    expect(await profile(a)).toMatchObject({ onlineStatus: "online", nextTripsOff: false });
+  });
+
+  it("an accept in the race window (switch off, withdraw job not run yet) is refused 409 next_trips_off", async () => {
+    await liveTrip("in_trip");
+    await a.moveTo(NEAR_DROP);
+    const ride = await (await sim.rider(2)).book();
+    await sim.tick();
+    const open = await a.offerFor(ride.tripId);
+    expect(open?.["kind"]).toBe("exclusive");
+    // The switch as the route leaves it, before the withdraw_driver_offers job closes his open offer.
+    await sim.db.updateTable("drivers").set({ next_trips_off: true }).where("driver_id", "=", a.id).execute();
+    expect((await sim.db.selectFrom("offers").select("status").where("offer_id", "=", open!["offerId"] as string).executeTakeFirstOrThrow()).status).toBe("open");
+    const late = await a.accept(open!);
+    expect([late.status, late.body["reason"]]).toEqual([409, "next_trips_off"]);
+    expect((await sim.db.selectFrom("trips").select("driver_id").where("trip_id", "=", ride.tripId).executeTakeFirstOrThrow()).driver_id).toBeNull();
+  });
+
   it("off a trip the switch changes nothing (the Home radar is the online switch)", async () => {
     const before = await profile(a);
     const res = await nextTrips(a, false);
