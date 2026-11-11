@@ -12,6 +12,7 @@ import { driversWithCurrentTrip } from "../../src/reservations/service.js";
 import { nearbyVehicles } from "../../src/riders/nearby.js";
 import { maybePushArriving } from "../../src/notifications/tripPush.js";
 import { listNotifications } from "../../src/notifications/service.js";
+import { purgeOfferPushes } from "../../src/dispatch/offerPush.js";
 import { listMessages } from "../../src/trips/messages.js";
 import { driverEarnings } from "../../src/trips/ride/earnings.js";
 import { driverPayouts, listPayouts } from "../../src/admin/payouts.js";
@@ -296,6 +297,9 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   });
   it("B3.8 fixed (0091 notifications_trip): \"almost there\" sent-check reads notifications by trip on an index (notifications/tripPush.ts)", async () => {
     await noProblems(() => inTrx((trx) => maybePushArriving(trx, { ...liveTrip, status: "driver_to_pickup" }, 30, now)), (s) => s.includes('from "notifications"'));
+  });
+  it("S05 A10 fixed (0094 notifications_offer_push_purge): hourly offer-push purge reads only old offer-push rows on an index (dispatch/offerPush.ts)", async () => {
+    await noProblems(() => inTrx((trx) => purgeOfferPushes(trx, now)), (s) => s.includes('from "notifications"'));
   });
   it("rider's notification list (notifications/service.ts:111-118)", async () => {
     await noProblems(() => listNotifications(traced, { audience: "rider", subjectId: "r5" }, { limit: 20 }), (s) => s.includes('from "notifications"'));
