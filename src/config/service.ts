@@ -564,11 +564,25 @@ export async function liveDocument<T = Record<string, unknown>>(ex: Executor, do
   const now = Date.now();
   const hit = liveCache.entries.get(key);
   if (hit !== undefined && hit.until > now) return hit.value as LiveDocument<T> | null;
+  // S04 A3: callers that miss while a read of the same (doc, zone) runs share it (one DB read, not one per stream).
+  const running = liveCache.inFlight.get(key);
+  if (running !== undefined) return running as Promise<LiveDocument<T> | null>;
   const generation = liveCache.generation;
-  const value = await readLiveDocument<T>(ex, doc, zoneId);
-  // A publish that happened while this read ran must not be hidden by the older value it read.
-  if (generation === liveCache.generation) liveCache.entries.set(key, { value, until: now + liveCache.ttlMs });
-  return value;
+  const read = readLiveDocument<T>(ex, doc, zoneId).then(
+    (value) => {
+      // A publish that happened while this read ran must not be hidden by the older value it read.
+      if (generation === liveCache.generation) liveCache.entries.set(key, { value, until: now + liveCache.ttlMs });
+      return value;
+    },
+  );
+  liveCache.inFlight.set(key, read);
+  // Cleared on settle either way; an error is never cached (the next caller reads again). A publish drops the map
+  // (forgetLiveDocuments), so a read started before it is not shared after it; only its own entry is removed here.
+  const clear = (): void => {
+    if (liveCache.inFlight.get(key) === read) liveCache.inFlight.delete(key);
+  };
+  read.then(clear, clear);
+  return read;
 }
 
 /**
@@ -577,7 +591,7 @@ export async function liveDocument<T = Record<string, unknown>>(ex: Executor, do
  * entry lives at most `ttlMs` and EVERY config_published notification (any instance, any document) empties the cache,
  * as does any publish made by this instance (at once, before its commit and again on the notification after it).
  */
-const liveCache = { ttlMs: 0, generation: 0, entries: new Map<string, { value: unknown; until: number }>() };
+const liveCache = { ttlMs: 0, generation: 0, entries: new Map<string, { value: unknown; until: number }>(), inFlight: new Map<string, Promise<unknown>>() };
 
 export function cacheLiveDocuments(ttlMs: number): void {
   liveCache.ttlMs = Math.max(0, ttlMs);
@@ -587,6 +601,7 @@ export function cacheLiveDocuments(ttlMs: number): void {
 export function forgetLiveDocuments(): void {
   liveCache.generation += 1;
   liveCache.entries.clear();
+  liveCache.inFlight.clear();
 }
 
 async function readLiveDocument<T>(ex: Executor, doc: ConfigDoc, zoneId: string): Promise<LiveDocument<T> | null> {

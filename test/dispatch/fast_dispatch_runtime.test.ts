@@ -138,6 +138,36 @@ describe("fast dispatch — Job 1", () => {
     }
   });
 
+  it("S04 A3: 100 callers missing at once share one in-flight read; it is cleared on settle and an error is not kept", async () => {
+    let reads = 0;
+    let fail = false;
+    const counted = database.db.withPlugin({
+      transformQuery: (args) => {
+        reads += 1;
+        if (fail) throw new Error("db down");
+        return args.node;
+      },
+      transformResult: async (args) => args.result,
+    });
+    cacheLiveDocuments(60_000);
+    try {
+      const all = await Promise.all(Array.from({ length: 100 }, () => liveDocument(counted, "dispatch", "Z001")));
+      expect(reads).toBe(1);
+      expect(new Set(all.map((d) => d?.version)).size).toBe(1);
+      forgetLiveDocuments();
+      reads = 0;
+      fail = true;
+      const failed = await Promise.allSettled(Array.from({ length: 10 }, () => liveDocument(counted, "dispatch", "Z001")));
+      expect(failed.every((r) => r.status === "rejected")).toBe(true);
+      expect(reads).toBe(1);
+      fail = false;
+      expect((await liveDocument(counted, "dispatch", "Z001"))?.version).toBe(all[0]?.version); // read again, not the error
+      expect(reads).toBe(2);
+    } finally {
+      cacheLiveDocuments(0);
+    }
+  });
+
   it("M4: the admin map can ask only for the drivers inside its visible box (map-only answer)", async () => {
     admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
     const box = `minLat=${SPOTS.A.lat - 0.001}&minLng=${SPOTS.A.lng - 0.001}&maxLat=${SPOTS.A.lat + 0.001}&maxLng=${SPOTS.A.lng + 0.001}`;
