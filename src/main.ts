@@ -1,4 +1,4 @@
-import { buildWorkerConfig } from "./jobs/workerConfig.js";
+import { buildWorkerConfig, RESTART_ONCE_KINDS } from "./jobs/workerConfig.js";
 import { cacheGeometry, forgetGeometry } from "./config/geometryCache.js";
 import type pg from "pg";
 import { registerLoadShedding } from "./http/shed.js";
@@ -11,7 +11,7 @@ import { readEnv, startupWarnings } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers } from "./jobs/maintenance.js";
 import { NO_FIX_OFFLINE } from "./drivers/presence.js";
-import { TimerWorker, rearmParkedRecurringTimers } from "./jobs/timers.js";
+import { TimerWorker, rearmParkedRecurringTimers, restartParkedOnce } from "./jobs/timers.js";
 import { ALERT_SWEEP, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
@@ -70,6 +70,8 @@ warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 if (db !== undefined) {
   // S05 A1: a recurring job parked after repeated failures runs again at every start (one warning each).
   await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, SMART_SURGE_CHECK, ALERT_SWEEP], app.log);
+  // B1.6b (owner W1 Q70): a trip or safety timer parked before restart-once existed runs once more (once in all).
+  await restartParkedOnce(db, RESTART_ONCE_KINDS, app.log);
   await ensureMaintenanceTimers(db);
   await ensurePricingTimers(db);
   // v0.18.23 (contract.json#alertDesk.serverDetection): the server finds the admin alerts every 30 s.
@@ -80,8 +82,8 @@ if (db !== undefined) {
   // Owner (v0.18.19 leaveOnTime): booked rides start from the same live road-route ETA as normal rides.
   setLeaveRouter((app as unknown as { router: Router }).router);
   // Job 1 / stress H1: handlers and lanes (dispatch lane, trip GPS lane, general lanes) in jobs/workerConfig.ts.
-  const { handlers, lanes } = buildWorkerConfig((app as unknown as { router: Router }).router, { timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES });
-  worker = new TimerWorker(db, { handlers, logger: app.log, pollMs: 200, lanes });
+  const { handlers, lanes, parked } = buildWorkerConfig((app as unknown as { router: Router }).router, { timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES });
+  worker = new TimerWorker(db, { ...parked, handlers, logger: app.log, pollMs: 200, lanes });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
   if (push.sender !== undefined) {
