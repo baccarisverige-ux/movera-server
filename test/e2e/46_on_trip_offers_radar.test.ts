@@ -161,6 +161,21 @@ describe("offers while on a trip (owner phone test 2026-11-11)", () => {
     expect(await profile(a)).toMatchObject({ onlineStatus: "online", nextTripsOff: false });
   });
 
+  it("G1 guard: radar off, then trip A completes: his queued next trip starts with next trips on again", async () => {
+    // Coordinator G1 (2026-11-11): the switch belongs to the trip he drives; the queued trip that starts is a new one.
+    // A guard test: it passes on main eebb7b8 (releaseDriver clears it before starting the queued trip).
+    const live = await liveTrip("in_trip");
+    await a.moveTo(NEAR_DROP);
+    const queued = await (await sim.rider(2)).book();
+    await sim.tick();
+    const offer = await a.offerFor(queued.tripId);
+    expect(offer?.["kind"], "control: the on-trip Exclusive comes").toBe("exclusive");
+    expect((await a.accept(offer!)).status).toBe(200);
+    expect((await nextTrips(a, false)).body).toMatchObject({ onlineStatus: "on_trip", nextTripsOff: true });
+    await complete(live.tripId);
+    expect(await profile(a)).toMatchObject({ onlineStatus: "on_trip", activeTripId: queued.tripId, nextTripsOff: false });
+  });
+
   it("an accept in the race window (switch off, withdraw job not run yet) is refused 409 next_trips_off", async () => {
     await liveTrip("in_trip");
     await a.moveTo(NEAR_DROP);

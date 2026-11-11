@@ -234,7 +234,10 @@ export async function setErrorStatus(trx: Trx, who: Principal, errorId: string, 
   return view(await groups(trx).where("g.error_id", "=", errorId).executeTakeFirstOrThrow());
 }
 
-/** contract §11: error groups not seen for keepDays go with their reports. */
-export async function purgeOldErrorGroups(ex: Executor, before: Date): Promise<void> {
-  await ex.deleteFrom("error_groups").where("last_seen", "<", before).execute();
+/** contract §11: error groups not seen for keepDays go with their reports. S4 0.14b: at most `limit` groups per call. */
+export async function purgeOldErrorGroups(ex: Executor, before: Date, limit?: number): Promise<number> {
+  let query = ex.deleteFrom("error_groups").where("last_seen", "<", before);
+  if (limit !== undefined) query = query.where("error_id", "in", ex.selectFrom("error_groups").select("error_id").where("last_seen", "<", before).limit(limit));
+  const result = await query.executeTakeFirst();
+  return Number(result.numDeletedRows);
 }

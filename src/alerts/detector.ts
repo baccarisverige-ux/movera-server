@@ -469,7 +469,19 @@ export async function sweepAlerts(trx: Trx, now: Date, scope: "all" | "system" =
   // (supervisor B1.6b F2): if a sweep runs now, it skips — that sweep, or the next one, sees the parked row.
   if (scope === "system") {
     const got = await sql<{ ok: boolean }>`SELECT pg_try_advisory_xact_lock(hashtext('movera_alert_sweep')) AS ok`.execute(trx);
-    if (!got.rows[0]?.ok) return { opened: 0, solved: 0, reopened: 0 };
+    if (!got.rows[0]?.ok) {
+      // G10 (2026-11-11): the running sweep may have read the timers before this parking; a one-off sweep right after
+      // it ends sees the parked row. A poke row being run right now (deleted, not yet committed) would make this insert
+      // wait for that sweep: never more than 200 ms (then the periodic sweep, every 30 s, sees it).
+      await sql`SAVEPOINT alert_poke`.execute(trx);
+      try {
+        await sql`SET LOCAL lock_timeout = '200ms'`.execute(trx);
+        await pokeAlerts(trx, now);
+      } catch {
+        await sql`ROLLBACK TO SAVEPOINT alert_poke`.execute(trx);
+      }
+      return { opened: 0, solved: 0, reopened: 0 };
+    }
   } else {
     await sql`SELECT pg_advisory_xact_lock(hashtext('movera_alert_sweep'))`.execute(trx);
   }

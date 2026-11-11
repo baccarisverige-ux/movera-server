@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { sql } from "kysely";
-import type { Db, Trx } from "../db/db.js";
+import type { Db, Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "./errors.js";
 
 /**
@@ -106,9 +106,18 @@ export async function runIdempotent<T>(
   });
 }
 
-/** Keys are kept for a day (long enough for any app retry), then swept by a timer. */
-export async function sweepIdempotencyKeys(db: Db, olderThan: Date): Promise<number> {
-  const result = await db.deleteFrom("idempotency_keys").where("created_at", "<", olderThan).executeTakeFirst();
+/**
+ * Keys are kept for a day (long enough for any app retry), then swept by a timer. S4 0.14b: `limit` = at most that many
+ * keys in one statement (the housekeeping timer comes back soon while more are left).
+ */
+export async function sweepIdempotencyKeys(ex: Executor, olderThan: Date, limit?: number): Promise<number> {
+  let query = ex.deleteFrom("idempotency_keys").where("created_at", "<", olderThan);
+  if (limit !== undefined) {
+    query = query.where((eb) =>
+      eb(eb.refTuple("actor", "subject_id", "key"), "in", eb.selectFrom("idempotency_keys").select(["actor", "subject_id", "key"]).where("created_at", "<", olderThan).limit(limit).$asTuple("actor", "subject_id", "key")),
+    );
+  }
+  const result = await query.executeTakeFirst();
   return Number(result.numDeletedRows);
 }
 

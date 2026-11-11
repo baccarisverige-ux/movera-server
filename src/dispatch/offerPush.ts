@@ -63,13 +63,21 @@ export async function queueOfferPush(trx: Trx, driverId: string, offer: Record<s
 /** Checker LOW 10: new-offer push rows are useless once their offer ran out; they go a day after push_until. */
 export const OFFER_PUSH_KEEP_MS = 24 * 60 * 60 * 1000;
 
-export async function purgeOfferPushes(ex: Executor, now: Date): Promise<number> {
+/** S4 0.14b: `limit` = at most that many rows in one statement (the housekeeping timer comes back soon while more are left). */
+export async function purgeOfferPushes(ex: Executor, now: Date, limit?: number): Promise<number> {
   const cutoff = new Date(now.getTime() - OFFER_PUSH_KEEP_MS);
-  const gone = await ex
+  const stale = ex
+    .selectFrom("notifications")
+    .select("notification_id")
+    .where("bell", "=", false)
+    .where("kind", "=", OFFER_PUSH.kind)
+    .where((eb) => eb.or([eb("push_until", "<", cutoff), eb.and([eb("push_until", "is", null), eb("created_at", "<", cutoff)])]));
+  let query = ex
     .deleteFrom("notifications")
     .where("bell", "=", false)
     .where("kind", "=", OFFER_PUSH.kind)
-    .where((eb) => eb.or([eb("push_until", "<", cutoff), eb.and([eb("push_until", "is", null), eb("created_at", "<", cutoff)])]))
-    .executeTakeFirst();
+    .where((eb) => eb.or([eb("push_until", "<", cutoff), eb.and([eb("push_until", "is", null), eb("created_at", "<", cutoff)])]));
+  if (limit !== undefined) query = query.where("notification_id", "in", stale.limit(limit));
+  const gone = await query.executeTakeFirst();
   return Number(gone.numDeletedRows);
 }
