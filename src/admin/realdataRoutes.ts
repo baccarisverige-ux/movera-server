@@ -1,3 +1,4 @@
+import { readRetry } from "../realtime/retry.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { sql } from "kysely";
 import { z } from "zod";
@@ -410,6 +411,8 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const cursor = new SettledCursor(after, "dispatch_events_sequence_seq");
     let running = false;
     let again = false;
+    const retry = readRetry(() => void pump(), () => stream.closed());
+    stream.onClose(retry.stop);
     const pump = async () => {
       if (running) {
         again = true;
@@ -427,8 +430,10 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
           }
           if (full) again = true;
         } while (again && !stream.closed());
+        retry.ok();
       } catch (error) {
         request.log.warn({ err: error }, "dispatch stream read failed");
+        retry.failed();
       } finally {
         running = false;
       }

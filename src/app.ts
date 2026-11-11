@@ -212,6 +212,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     env: env.MOVERA_ENV,
     ...(db !== undefined ? { dbPool: poolStats() } : {}),
     database: db === undefined ? "not_configured" : (await databaseAnswers(db, HEALTH_DB_TIMEOUT_MS)) ? "ok" : "unavailable",
+    // S04 A4: the LISTEN connection every stream depends on (not in the contract: /healthz is an ops endpoint).
+    ...(hub !== undefined ? { realtime: hub.healthSnapshot() } : {}),
   }));
   // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
   app.get("/readyz", async () => {

@@ -36,7 +36,7 @@ let hub: NotificationHub;
 let base: string;
 
 /** Faults and counters on the app's database handle (the stream reads; transactions use their own handle). */
-const faults = { tripEventsReads: 0 };
+const faults = { tripEventsReads: 0, configLiveReads: 0 };
 const counts = { configLive: 0 };
 let faulty: Db;
 
@@ -51,6 +51,10 @@ beforeAll(async () => {
         return (table: string) => {
           if (table === "trip_events" && faults.tripEventsReads > 0) {
             faults.tripEventsReads -= 1;
+            throw new Error("simulated pool timeout");
+          }
+          if (table === "config_live" && faults.configLiveReads > 0) {
+            faults.configLiveReads -= 1;
             throw new Error("simulated pool timeout");
           }
           if (table === "config_live") counts.configLive += 1;
@@ -122,7 +126,7 @@ async function killListen(h: NotificationHub): Promise<void> {
 
 describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
   // A2 / P11: the pump catches, logs and stops; nothing reads again until an unrelated NOTIFY.
-  it.fails("A2/P11: a failed trip stream read is retried, so the cancel arrives without a later NOTIFY (src/realtime/streams.ts:69-70)", async () => {
+  it("A2/P11: a failed trip stream read is retried, so the cancel arrives without a later NOTIFY (src/realtime/streams.ts:69-70)", async () => {
     const rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
     const trip = await bookTrip(rider);
     const sse = await listen(base, `/trips/${trip.tripId}/events?after=2`, rider);
@@ -135,13 +139,28 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
     expect(got).toBe(true);
   });
 
-  it.fails("A2: a failed FIRST replay is retried, so a stream opened while the DB is busy still gets the missed events (src/realtime/streams.ts:80)", async () => {
+  it("A2: a failed FIRST replay is retried, so a stream opened while the DB is busy still gets the missed events (src/realtime/streams.ts:80)", async () => {
     const rider = (await signIn(app, TEST_PHONES[1]!, "rider")).headers;
     const trip = await bookTrip(rider);
     faults.tripEventsReads = 1;
     const sse = await listen(base, `/trips/${trip.tripId}/events?after=0`, rider);
     const got = await until(() => sse.events.length >= 2, 6000);
     faults.tripEventsReads = 0;
+    sse.close();
+    expect(got).toBe(true);
+  });
+
+  it("A2: a failed settings-stream config read is retried, so the new version arrives without a later NOTIFY (src/realtime/streams.ts:139)", async () => {
+    const rider = (await signIn(app, TEST_PHONES[2]!, "rider")).headers;
+    const sse = await listen(base, "/rider/config/stream?zoneId=Z001", rider);
+    await sleep(200);
+    const top = Number((await database.pool.query("SELECT max(version) AS v FROM config_live WHERE doc = 'rider_app_config' AND zone_id = 'Z001'")).rows[0]?.v ?? 0);
+    const before = kinds(sse, "config_published").length;
+    faults.configLiveReads = 1;
+    await database.pool.query("INSERT INTO config_live (doc, zone_id, version, document, published_at, published_by) VALUES ('rider_app_config', 'Z001', $1, '{}', now(), NULL)", [top + 1]);
+    await database.pool.query("SELECT pg_notify($1, $2)", [CONFIG_CHANNEL, JSON.stringify({ doc: "rider_app_config", zoneId: "Z001", version: top + 1 })]);
+    const got = await until(() => kinds(sse, "config_published").length > before, 6000);
+    faults.configLiveReads = 0;
     sse.close();
     expect(got).toBe(true);
   });
@@ -161,21 +180,32 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
   });
 
   // A5 / P5: the hint listeners return on the null catch-up signal after a LISTEN reconnect.
-  it.fails("A5/P5: a rider_trip_changed hint made during a LISTEN reconnect gap still reaches the rider (src/realtime/streams.ts:130)", async () => {
+  it("A5/P5: after a LISTEN reconnect the rider's settings stream closes, so the app reconnects and re-reads the trip it may have missed (src/realtime/streams.ts:155)", async () => {
     const rider = (await signIn(app, TEST_PHONES[3]!, "rider")).headers;
     const trip = await bookTrip(rider);
     const sse = await listen(base, "/rider/config/stream?zoneId=Z001", rider);
     await sleep(300);
-    const before = kinds(sse, "rider_trip_changed").length;
     await killListen(hub);
     await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
-    const got = await until(() => kinds(sse, "rider_trip_changed").length > before, 5000);
+    const ended = await until(() => sse.ended, 5000);
     sse.close();
-    expect(got).toBe(true);
+    expect(ended).toBe(true);
+  });
+
+  it("A5: after a LISTEN reconnect the driver's settings stream closes (driver_reservations_changed hint may be lost) (src/realtime/streams.ts:164)", async () => {
+    await seedTestPhones(database.db, ["+46701740621"]);
+    const driver = (await signIn(app, "+46701740621", "driver")).headers;
+    const sse = await listen(base, "/driver/config/stream?zoneId=Z001", driver);
+    expect(sse.status).toBe(200);
+    await sleep(300);
+    await killListen(hub);
+    const ended = await until(() => sse.ended, 5000);
+    sse.close();
+    expect(ended).toBe(true);
   });
 
   // Rule 33 variant of A5: two copies, only copy A's LISTEN drops; copy B delivers, copy A loses the hint silently.
-  it.fails("A5 + Rule 33: with 2 copies, the copy whose LISTEN dropped still gives its rider the hint (src/realtime/streams.ts:130, src/realtime/hub.ts:59)", async () => {
+  it("A5 + Rule 33: with 2 copies, the copy whose LISTEN dropped closes its rider stream (the app reconnects); the other keeps delivering (src/realtime/streams.ts:130, src/realtime/hub.ts:59)", async () => {
     const hub2 = new NotificationHub(database.url, CHANNELS);
     await hub2.start();
     const app2 = await buildApp({ env: ENV(), logger: false, db: database.db, router: fixedRouter, hub: hub2 });
@@ -190,10 +220,12 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
       await killListen(hub);
       await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
       expect(await until(() => kinds(onB, "rider_trip_changed").length === 1)).toBe(true);
-      const gotA = await until(() => kinds(onA, "rider_trip_changed").length === 1, 4000);
+      const endedA = await until(() => onA.ended, 4000);
+      const endedB = onB.ended;
       onA.close();
       onB.close();
-      expect(gotA).toBe(true);
+      expect(endedA).toBe(true);
+      expect(endedB).toBe(false);
     } finally {
       await app2.close();
       await hub2.stop();
@@ -291,14 +323,33 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
   });
 
   // A4: no keepAlive on the LISTEN client, no ping, and /healthz says nothing about realtime.
-  it.fails("A4: the LISTEN client uses TCP keepAlive (src/realtime/hub.ts:31)", () => {
+  it("A4: the LISTEN client uses TCP keepAlive (src/realtime/hub.ts:31)", () => {
     const client = (hub as unknown as { client: { connection: { _keepAlive?: boolean } } }).client;
     expect(client.connection._keepAlive).toBe(true);
   });
 
-  it.fails("A4/E2: /healthz reports realtime (LISTEN up/down, open streams) (src/app.ts:193-199)", async () => {
+  it("A4/E2: /healthz reports realtime (LISTEN up/down, open streams) (src/app.ts:193-199)", async () => {
     const res = await fetch(`http://127.0.0.1:${(app.server.address() as AddressInfo).port}/healthz`);
-    expect(await res.json()).toHaveProperty("realtime");
+    const body = (await res.json()) as { realtime: Record<string, unknown> };
+    expect(body.realtime).toMatchObject({ status: "ok", reconnects: expect.any(Number), subscribers: expect.any(Number) });
+  });
+
+  it("A4: a LISTEN health check that hangs reconnects and tells every stream to catch up", async () => {
+    const h = new NotificationHub(database.url, CHANNELS, undefined, { everyMs: 100, timeoutMs: 50 });
+    await h.start();
+    try {
+      let catchUps = 0;
+      h.subscribe(TRIP_EVENTS_CHANNEL, (payload) => void (payload === null && (catchUps += 1)));
+      // The socket "died without a close": queries never answer.
+      const client = (h as unknown as { client: pg.Client }).client;
+      client.query = (() => new Promise(() => undefined)) as unknown as pg.Client["query"];
+      expect(await until(() => catchUps >= 1, 4000)).toBe(true);
+      expect(h.healthSnapshot()).toMatchObject({ status: "ok", reconnects: 1 });
+      expect((h as unknown as { client: pg.Client }).client).not.toBe(client);
+    } finally {
+      await h.stop();
+    }
+    expect(h.healthSnapshot().status).toBe("down");
   });
 
   // Not a problem today (passes): every NOTIFY payload is a small doorbell, far under PostgreSQL's 8000-byte limit.
