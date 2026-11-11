@@ -86,6 +86,16 @@ describe("sign-in code: 6 digits, per-number daily lock, per-address limit as ad
     const sup = await adminSession(app, database.db, "super", { now: clock.now });
     const unlock = await app.inject({ method: "POST", url: "/api/v1/admin/auth/sign-in-locks/unlock", headers: { ...sup.headers, "content-type": "application/json" }, payload: { phone } });
     expect(unlock.statusCode, unlock.body).toBe(200);
+    // v0.18.62 §84: 200 { phone, lifted } (the number as sent, unmasked); settings.edit or 403 missing_permission; 400 invalid_phone / invalid_body.
+    expect(unlock.json()).toEqual({ phone, lifted: expect.any(Number) });
+    expect(unlock.json().lifted).toBeGreaterThan(0);
+    const viewer = await adminSession(app, database.db, "viewer", { now: clock.now });
+    const denied = await app.inject({ method: "POST", url: "/api/v1/admin/auth/sign-in-locks/unlock", headers: { ...viewer.headers, "content-type": "application/json" }, payload: { phone } });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({ code: "forbidden", reason: "missing_permission" });
+    const unlockAs = (payload: unknown) => app.inject({ method: "POST", url: "/api/v1/admin/auth/sign-in-locks/unlock", headers: { ...sup.headers, "content-type": "application/json" }, payload: payload as object });
+    expect((await unlockAs({ phone: "0701234567" })).json()).toMatchObject({ code: "invalid_request", reason: "invalid_phone" });
+    expect((await unlockAs({})).json()).toMatchObject({ code: "invalid_request", reason: "invalid_body" });
     advance(60);
     expect((await post("/auth/otp/request", { phone, app: "rider" })).statusCode).toBe(200);
   });

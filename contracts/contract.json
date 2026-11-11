@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.61",
+  "version": "0.18.62",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -8898,5 +8898,12 @@
     "admin": "An ADMIN caller needs finance.read (x-permission; the same id as GET /admin/payments, GET /admin/payouts and GET /admin/refunds/payouts) and the payment's trip zone in the admin's zones (\"*\" = all; a Super admin passes); otherwise 403 forbidden, reason missing_permission or zone_out_of_scope.",
     "cashOnly": "Movera is cash-only now (finish.paymentMethods.served): no payment intent exists, so until card payments exist the route answers 400 invalid_request, reason payment_method_not_available, like POST /payment-methods (texts: finish.paymentMethods.texts.payment_method_not_available). The permission and zone checks come first.",
     "apps": "Rule 0 order: contract -> server (finance.read + zone check for admins, own payment for riders, the typed 400 while cash-only) -> admin (no change: reads /admin/payments) -> driver app (no change) -> rider app (no change: shows texts[reason])."
+  },
+  "signInUnlock": {
+    "note": "v0.18.62 §84 (docs fix, no behaviour change): POST /admin/auth/sign-in-locks/unlock { phone } documented as the server answers.",
+    "permission": "An admin caller needs settings.edit (x-permission); otherwise 403 forbidden, reason missing_permission.",
+    "answer": "200 { phone, lifted }: phone = the number sent (E.164, not masked); lifted = integer >= 0, how many of the number's wrong-code sessions of the last 24 h were unlocked (0 when nothing was locked; still 200). Audited auth.sign_in_unlock { lifted } with the number's last 4 digits hidden.",
+    "errors": "400 invalid_request reason invalid_body when phone is missing or not a string; 400 invalid_request reason invalid_phone when phone is not international form (^\\+[1-9][0-9]{6,14}$); 401 unauthenticated; 403 forbidden missing_permission. The server never answers 404 here.",
+    "apps": "Rule 0 order: contract -> server (no change) -> admin (reads { phone, lifted }; Unlock shown only with settings.edit) -> driver app (no change) -> rider app (no change)."
   }
 }
