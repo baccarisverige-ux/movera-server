@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import type { TripRow } from "../../src/db/tripLog.js";
-import { creditWallet, getWallet } from "../../src/riders/wallet.js";
+import { creditWallet, getWallet, moveWallet } from "../../src/riders/wallet.js";
 import { spendWallet, walletCovers } from "../../src/trips/ride/money.js";
 import { adminRiderView, riderWallets } from "../../src/admin/lists.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -77,5 +77,51 @@ describe("wallet per currency", () => {
     await database.db.updateTable("riders").set({ wallet_minor: 777 }).where("rider_id", "=", riderId).execute();
     await credit(100, "EUR");
     expect((await database.db.selectFrom("riders").select("wallet_minor").where("rider_id", "=", riderId).executeTakeFirstOrThrow()).wallet_minor).toBe("777");
+  });
+});
+
+describe("S07 M12 / E16: a spend never takes the balance below 0", () => {
+  const bal = async () => (await database.db.selectFrom("rider_wallets").select("balance_minor").where("rider_id", "=", riderId).where("currency", "=", "SEK").executeTakeFirst())?.balance_minor;
+  const move = (d: number) => database.db.transaction().execute((trx) => moveWallet(trx, riderId, "SEK", d, clock.now));
+
+  it("a credit creates the balance, a second credit adds to it", async () => {
+    await move(500);
+    await move(250);
+    expect(await bal()).toBe("750");
+  });
+
+  it("a spend takes from the balance, down to exactly 0", async () => {
+    await move(500);
+    await move(-200);
+    expect(await bal()).toBe("300");
+    await move(-300);
+    expect(await bal()).toBe("0");
+  });
+
+  it("a spend above the balance (or with no balance) is refused and writes nothing", async () => {
+    await expect(move(-100)).rejects.toThrow(/wallet spend refused/);
+    expect(await bal()).toBeUndefined();
+    await move(100);
+    await expect(move(-101)).rejects.toThrow(/wallet spend refused/);
+    expect(await bal()).toBe("100");
+  });
+
+  it("spendWallet still takes only what the wallet holds (it clamps under the row lock, never refused)", async () => {
+    await credit(300, "SEK");
+    const applied = await database.db.transaction().execute((trx) => spendWallet(trx, trip("SEK", 1000), 1000, clock.now));
+    expect(applied).toBe(300);
+    expect(await bal()).toBe("0");
+  });
+
+  it("concurrent spends: one wins, the other is refused, never negative", async () => {
+    await move(100);
+    const results = await Promise.allSettled([move(-80), move(-80)]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await bal()).toBe("20");
+  });
+
+  it("the database refuses a negative balance (CHECK rider_wallets_balance_nonneg)", async () => {
+    await move(10);
+    await expect(database.db.updateTable("rider_wallets").set({ balance_minor: "-1" }).where("rider_id", "=", riderId).execute()).rejects.toThrow(/rider_wallets_balance_nonneg/);
   });
 });

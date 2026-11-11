@@ -26,8 +26,24 @@ export async function walletBalance(ex: Executor, riderId: string, currency: str
   return row ? Number(row.balance_minor) : 0;
 }
 
-/** Adds (or, negative, takes) money in one currency's balance. */
+/**
+ * Adds (or, negative, takes) money in one currency's balance. A credit is an upsert; a spend (S07 M12 / E16) is an
+ * UPDATE guarded by balance + delta >= 0, so the proposed row never holds a negative amount (rider_wallets CHECK,
+ * migration 0096). Callers already take at most the locked balance (spendWallet), so the guard never refuses a real
+ * spend; if it ever does, nothing is written and the transaction fails.
+ */
 export async function moveWallet(trx: Trx, riderId: string, currency: string, deltaMinor: number, now: Date) {
+  if (deltaMinor < 0) {
+    const res = await trx
+      .updateTable("rider_wallets")
+      .set({ balance_minor: sql`balance_minor + ${deltaMinor}`, updated_at: now })
+      .where("rider_id", "=", riderId)
+      .where("currency", "=", currency)
+      .where(sql<boolean>`balance_minor + ${deltaMinor} >= 0`)
+      .executeTakeFirst();
+    if (Number(res.numUpdatedRows) !== 1) throw new Error(`wallet spend refused: ${riderId} ${currency} ${deltaMinor} is more than the balance`);
+    return;
+  }
   await trx
     .insertInto("rider_wallets")
     .values({ rider_id: riderId, currency, balance_minor: deltaMinor, updated_at: now })
