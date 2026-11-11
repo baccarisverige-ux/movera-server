@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
+import { maskPhone } from "../../src/admin/masking.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, signIn, testWorld } from "../support/world.js";
@@ -162,6 +163,12 @@ describe("a number without an account", () => {
     expect((await me(newcomer)).pendingFleetInvitations).toBe(1);
     const detail = (await call(app, "GET", `/admin/fleets/${fleetId}`, admin.headers)).json();
     expect(detail.invitations).toEqual([expect.objectContaining({ invitationId, driverName: "Nils Ny", phone: TEST_PHONES[3] })]);
+    // §76 (REMINDERS 14a): an admin without drivers.viewSensitive sees the invited number masked.
+    const viewer = await adminSession(app, database.db, "viewer", { now: clock.now });
+    const masked = (await call(app, "GET", `/admin/fleets/${fleetId}`, viewer.headers)).json();
+    const invited = TEST_PHONES[3]!;
+    expect(masked.invitations).toEqual([expect.objectContaining({ invitationId, phone: maskPhone(invited), sensitiveMasked: true })]);
+    expect(JSON.stringify(masked)).not.toContain(invited);
     const accepted = await call(app, "POST", `/admin/fleets/${fleetId}/invitations/${invitationId}/accept`, admin.headers);
     expect(accepted.json()).toMatchObject({ status: "accepted" });
     expect(await me(newcomer)).toMatchObject({ fleet: { fleetId, role: "member" } });
