@@ -198,4 +198,15 @@ describe("phone and e-mail change by code (owner 2026-11-02, checker round)", ()
     expect(ok.json()).toEqual({ email: "new@example.se" });
     expect(await database.db.selectFrom("outbound_notices").select(["channel", "to_address"]).where("kind", "=", "email_changed").execute()).toEqual([{ channel: "email", to_address: "old@example.se" }]);
   });
+
+  it("v0.18.66 §87 noticeLanguage: a Tunisian driver with no language gets the 'e-mail changed' bell notice in French (supervisor #188)", async () => {
+    const me = await signed(TEST_PHONES[1]!, "driver");
+    await database.db.updateTable("drivers").set({ language: null, country: "TN" }).where("phone", "=", TEST_PHONES[1]!).execute();
+    const { challengeId } = (await change(me.accessToken, "email/change", { email: "tn@example.tn" })).json();
+    const { createHash } = await import("node:crypto");
+    await database.db.updateTable("email_changes").set({ code_sha256: createHash("sha256").update(`${challengeId}:4242`).digest("hex") }).where("challenge_id", "=", challengeId).execute();
+    expect((await change(me.accessToken, "email/verify", { challengeId, code: "4242" })).statusCode).toBe(200);
+    const bell = await database.db.selectFrom("notifications").select("title").where("kind", "=", "email_changed").orderBy("created_at", "desc").executeTakeFirstOrThrow();
+    expect(bell.title).toBe("Votre adresse e-mail a été modifiée");
+  });
 });
