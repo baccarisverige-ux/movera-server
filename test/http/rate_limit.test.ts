@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { signAccessToken } from "../../src/auth/jwt.js";
 import { readEnv, writeLimitsFrom } from "../../src/env.js";
-import { limitOf } from "../../src/http/rateLimit.js";
+import { limitOf, shareOf } from "../../src/http/rateLimit.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /** B11 (contract.json#rateLimit): a general write limit per signed-in user, else per address. */
@@ -56,10 +56,18 @@ describe("general write limit", () => {
     await app.close();
   });
 
+  it("WEB_COPIES=2: each copy allows half the budget, so 2 copies together allow the budget once (load test part 6)", async () => {
+    const { app } = await appWith({ RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE: "4", WEB_COPIES: "2" });
+    for (let i = 0; i < 2; i++) expect((await post(app, { "x-forwarded-for": "203.0.113.7" })).statusCode).not.toBe(429);
+    expect((await post(app, { "x-forwarded-for": "203.0.113.7" })).statusCode).toBe(429);
+    await app.close();
+    expect([shareOf(120, 1), shareOf(120, 2), shareOf(5, 2), shareOf(1, 4), shareOf(0, 2)]).toEqual([120, 60, 3, 1, 0]);
+  });
+
   it("defaults: safe in production, higher on staging, 0 turns a limit off; env is fallback and floor", () => {
-    expect(writeLimitsFrom(readEnv({ MOVERA_ENV: "development" }))).toEqual({ user: { fallback: 1200, floor: 1200, off: false }, address: { fallback: 600, floor: 600, off: false } });
+    expect(writeLimitsFrom(readEnv({ MOVERA_ENV: "development" }))).toEqual({ user: { fallback: 1200, floor: 1200, off: false }, address: { fallback: 600, floor: 600, off: false }, copies: 1 });
     const prod = readEnv({ MOVERA_ENV: "production", DATABASE_URL: "postgres://u:p@h/db", JWT_SECRET: SECRET, DOCUMENT_FILES_KEY: "k".repeat(44) });
-    expect(writeLimitsFrom(prod)).toEqual({ user: { fallback: 120, floor: 0, off: false }, address: { fallback: 60, floor: 0, off: false } });
+    expect(writeLimitsFrom(prod)).toEqual({ user: { fallback: 120, floor: 0, off: false }, address: { fallback: 60, floor: 0, off: false }, copies: 1 });
     expect(writeLimitsFrom(readEnv({ MOVERA_ENV: "development", RATE_LIMIT_WRITES_PER_USER_PER_MINUTE: "0" })).user.off).toBe(true);
     const prodEnv = writeLimitsFrom(prod).user;
     expect(limitOf(prodEnv, undefined)).toBe(120);

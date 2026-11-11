@@ -12,13 +12,18 @@ import { API_PREFIX } from "./prefix.js";
  * (token `sub`), so many accounts behind one address (the 500+500 load test, a mobile operator's NAT) never share a
  * budget; a caller without a valid token is keyed by its address (Render proxy: TRUST_PROXY_HOPS). Over the budget:
  * 429 rate_limited, reason too_many_requests, Retry-After = seconds until the window ends. The OTP limits in
- * auth/service.ts stay as they are; this one sits in front of them. In memory per instance (one web instance).
+ * auth/service.ts stay as they are; this one sits in front of them. In memory per copy: with WEB_COPIES > 1 each copy allows its share of the budget (shareOf).
  *
  * Owner 2026-11-04 "Yes, admin setting": the budgets are CountryRules.limits.writesPerUserPerMinute /
  * writesPerAddressPerMinute of each country's standard. They are read in the background at most once a minute
  * (CountryWriteLimits), never per request; env is the fallback and the floor (env.ts writeLimitsFrom).
  */
-export type WriteLimitSettings = { user: WriteLimitEnv; address: WriteLimitEnv; windowMs?: number };
+export type WriteLimitSettings = { user: WriteLimitEnv; address: WriteLimitEnv; windowMs?: number; copies?: number };
+
+/** One copy's share of a budget when `copies` web copies each count in their own memory (never under 1). */
+export function shareOf(limit: number, copies: number | undefined): number {
+  return limit <= 0 || !copies || copies <= 1 ? limit : Math.max(1, Math.ceil(limit / copies));
+}
 
 const WRITES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const SWEEP_EVERY = 1000;
@@ -148,7 +153,7 @@ export function registerWriteLimit(
     const { key, zone, signedIn } = keyOf(request, deps.jwtSecret, now);
     const country = admin?.countryOfZone(signedIn ? zone : deps.defaultZoneId) ?? null;
     const set = admin?.get(country, now.getTime()) ?? null;
-    const limit = signedIn ? limitOf(settings.user, set?.user) : limitOf(settings.address, set?.address);
+    const limit = shareOf(signedIn ? limitOf(settings.user, set?.user) : limitOf(settings.address, set?.address), settings.copies);
     if (limit <= 0) return;
     const wait = limiter.take(key, limit, now.getTime());
     if (wait > 0) {
