@@ -44,7 +44,8 @@ export function openServerCheck(trip: Pick<TripRow, "ride_check">, now: Date): S
 /** Called for each position batch of a driver on a trip: the check runs in a job right after (never inside the request). */
 export async function scheduleRideCheckScan(trx: Trx, trip: Pick<TripRow, "trip_id" | "status">, now: Date): Promise<void> {
   if (!ONBOARD.has(trip.status)) return;
-  await scheduleTimer(trx, { kind: RIDE_CHECK_SCAN, refId: trip.trip_id, dueAt: now });
+  // E6: a pending scan keeps its due time and attempts (a GPS backlog cannot push it back or un-park a failing one).
+  await scheduleTimer(trx, { kind: RIDE_CHECK_SCAN, refId: trip.trip_id, dueAt: now }, { keepDue: true });
 }
 
 /** Distance (km) from a point to a line through the points (flat earth around the point: fine for a few km). */
