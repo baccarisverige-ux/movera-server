@@ -186,6 +186,31 @@ describe("rider account", () => {
     }
   });
 
+  it("v0.18.61 §83: GET /payments/{paymentId} — own rider / finance.read admin in zone get the cash-only 400, others refused", async () => {
+    const trip = (await book(await economyQuote())).json();
+    const path = `/payments/pay_${trip.tripId}`;
+    const own = await call(app, "GET", path, rider);
+    expect(own.statusCode).toBe(400);
+    expect(own.json()).toMatchObject({ code: "invalid_request", reason: "payment_method_not_available" });
+    const notMine = await call(app, "GET", path, other);
+    expect(notMine.statusCode).toBe(404);
+    expect(notMine.json()).toMatchObject({ code: "not_found" });
+    expect((await call(app, "GET", "/payments/pay_nope", rider)).statusCode).toBe(404);
+    const driver = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+    expect((await call(app, "GET", path, driver)).statusCode).toBe(403);
+    expect((await call(app, "GET", path, {})).statusCode).toBe(401);
+    const finance = await adminSession(app, database.db, "finance", { now: clock.now });
+    expect((await call(app, "GET", path, finance.headers)).json()).toMatchObject({ code: "invalid_request", reason: "payment_method_not_available" });
+    const dispatcher = await adminSession(app, database.db, "dispatcher", { now: clock.now });
+    const noPerm = await call(app, "GET", path, dispatcher.headers);
+    expect(noPerm.statusCode).toBe(403);
+    expect(noPerm.json()).toMatchObject({ code: "forbidden", reason: "missing_permission" });
+    const elsewhere = await adminSession(app, database.db, "finance", { zoneIds: ["Z002"], now: clock.now });
+    const outOfZone = await call(app, "GET", path, elsewhere.headers);
+    expect(outOfZone.statusCode).toBe(403);
+    expect(outOfZone.json()).toMatchObject({ code: "forbidden", reason: "zone_out_of_scope" });
+  });
+
   it("an unpaid fee shows on the profile and rides along on the next price", async () => {
     const riderId = (await call(app, "GET", "/rider/profile", other)).json().riderId;
     // v0.18.7 (Q3): the debt is the owed fee rows themselves (per currency), not a number on the rider.

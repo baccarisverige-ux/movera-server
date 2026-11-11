@@ -45,6 +45,7 @@ beforeAll(async () => {
     ticketId: (ticket.body["ticketId"] as string | undefined) ?? newId("tkt"),
     callId: (call.body["callId"] as string | undefined) ?? newId("cll"),
     notificationId: newId("ntf"),
+    paymentId: `pay_${tripId}`,
   });
   callers.push(
     { name: "no token", actor: "none" },
@@ -71,12 +72,14 @@ export function expected(route: string, op: Op, row: Row, caller: Caller): Expec
   }
   if (row.scope === "self") return "ok";
   if (row.scope === "notification") return "denied";
-  // A rider's ticket is only that rider's.
-  if (row.scope === "ticket") return caller.owner && caller.actor === "rider" ? "ok" : "denied";
+  // A rider's ticket (and payment) is only that rider's.
+  if (row.scope === "ticket" || row.scope === "payment") return caller.owner && caller.actor === "rider" ? "ok" : "denied";
   return caller.owner ? "ok" : "denied";
 }
 
-function matches(want: Expect, status: number, method: string): boolean {
+function matches(want: Expect, status: number, method: string, body: unknown, row: Row): boolean {
+  // v0.18.61 §83: a cash-only route answers a caller who passed authorization with the typed 400.
+  if (want === "ok" && row.cashOnly) return status === 400 && (body as { reason?: string } | null)?.reason === "payment_method_not_available";
   if (want === "401") return status === 401;
   if (want === "403") return status === 403;
   if (want === "denied") return status === 403 || status === 404;
@@ -92,11 +95,12 @@ const bodyOf = (route: string, caller: Caller): Json | undefined => (caller.owne
 
 async function cell(route: string, caller: Caller): Promise<{ key: string; ok: boolean; detail: string }> {
   const op = ops.get(route)!;
-  const want = expected(route, op, SHARED_ROWS[route]!, caller);
+  const row = SHARED_ROWS[route]!;
+  const want = expected(route, op, row, caller);
   const [method, path] = route.split(" ") as [string, string];
   const res = await sim.request(method, fill(path), caller.token, bodyOf(route, caller));
   const key = `${route} × ${caller.name}`;
-  return { key, ok: matches(want, res.status, method), detail: `${key}: want ${want}, got ${res.status} ${JSON.stringify(res.body).slice(0, 160)}` };
+  return { key, ok: matches(want, res.status, method, res.body, row), detail: `${key}: want ${want}, got ${res.status} ${JSON.stringify(res.body).slice(0, 160)}` };
 }
 
 describe("T11: authorization matrix of the shared routes", () => {
