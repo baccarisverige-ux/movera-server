@@ -9,6 +9,7 @@ import { eventEnvelope } from "./events.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "./hub.js";
 import { openEventStream } from "./sse.js";
+import { readRetry } from "./retry.js";
 
 /**
  * Live streams (contract §4). Each stream subscribes before it replays, then reads everything after the last
@@ -41,6 +42,8 @@ export async function streamTrip(
   let last = after;
   let running = false;
   let again = false;
+  const retry = readRetry(() => void pump(), () => stream.closed());
+  stream.onClose(retry.stop);
 
   const pump = async () => {
     if (running) {
@@ -66,8 +69,10 @@ export async function streamTrip(
         }
         if (rows.length === 200) again = true;
       } while (again && !stream.closed());
+      retry.ok();
     } catch (error) {
       request.log.warn({ err: error, tripId }, "trip stream read failed");
+      retry.failed();
     } finally {
       running = false;
     }
@@ -135,8 +140,15 @@ export async function streamConfig(
       serverTime: now.toISOString(),
     });
   };
+  const retry = readRetry(() => void safeCheck(), () => stream.closed());
+  stream.onClose(retry.stop);
+  const safeCheck = () =>
+    check().then(retry.ok, (error: unknown) => {
+      request.log.warn({ err: error }, "config stream read failed");
+      retry.failed();
+    });
   const unsubscribe = deps.hub.subscribe(CONFIG_CHANNEL, (payload) => {
-    if (payload === null || (payload["doc"] === doc && payload["zoneId"] === zoneId)) void check().catch((error) => request.log.warn({ err: error }, "config stream read failed"));
+    if (payload === null || (payload["doc"] === doc && payload["zoneId"] === zoneId)) void safeCheck();
     // v0.10.0 content of this zone and v0.11.0 zones (any zone: the apps keep every open zone) ride along on the
     // app document's stream. Their id is the app document version already sent, so Last-Event-ID stays that.
     // v0.18.6 (G4-F6, contract.json#dispatchTools.events): the events of the driver's country ride along on the driver stream.
@@ -170,5 +182,5 @@ export async function streamConfig(
     }));
   }
   // A reconnect with Last-Event-ID older than the live version gets the newest at once.
-  await check();
+  await safeCheck();
 }

@@ -36,7 +36,7 @@ let hub: NotificationHub;
 let base: string;
 
 /** Faults and counters on the app's database handle (the stream reads; transactions use their own handle). */
-const faults = { tripEventsReads: 0 };
+const faults = { tripEventsReads: 0, configLiveReads: 0 };
 const counts = { configLive: 0 };
 let faulty: Db;
 
@@ -51,6 +51,10 @@ beforeAll(async () => {
         return (table: string) => {
           if (table === "trip_events" && faults.tripEventsReads > 0) {
             faults.tripEventsReads -= 1;
+            throw new Error("simulated pool timeout");
+          }
+          if (table === "config_live" && faults.configLiveReads > 0) {
+            faults.configLiveReads -= 1;
             throw new Error("simulated pool timeout");
           }
           if (table === "config_live") counts.configLive += 1;
@@ -122,7 +126,7 @@ async function killListen(h: NotificationHub): Promise<void> {
 
 describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
   // A2 / P11: the pump catches, logs and stops; nothing reads again until an unrelated NOTIFY.
-  it.fails("A2/P11: a failed trip stream read is retried, so the cancel arrives without a later NOTIFY (src/realtime/streams.ts:69-70)", async () => {
+  it("A2/P11: a failed trip stream read is retried, so the cancel arrives without a later NOTIFY (src/realtime/streams.ts:69-70)", async () => {
     const rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
     const trip = await bookTrip(rider);
     const sse = await listen(base, `/trips/${trip.tripId}/events?after=2`, rider);
@@ -135,13 +139,28 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
     expect(got).toBe(true);
   });
 
-  it.fails("A2: a failed FIRST replay is retried, so a stream opened while the DB is busy still gets the missed events (src/realtime/streams.ts:80)", async () => {
+  it("A2: a failed FIRST replay is retried, so a stream opened while the DB is busy still gets the missed events (src/realtime/streams.ts:80)", async () => {
     const rider = (await signIn(app, TEST_PHONES[1]!, "rider")).headers;
     const trip = await bookTrip(rider);
     faults.tripEventsReads = 1;
     const sse = await listen(base, `/trips/${trip.tripId}/events?after=0`, rider);
     const got = await until(() => sse.events.length >= 2, 6000);
     faults.tripEventsReads = 0;
+    sse.close();
+    expect(got).toBe(true);
+  });
+
+  it("A2: a failed settings-stream config read is retried, so the new version arrives without a later NOTIFY (src/realtime/streams.ts:139)", async () => {
+    const rider = (await signIn(app, TEST_PHONES[2]!, "rider")).headers;
+    const sse = await listen(base, "/rider/config/stream?zoneId=Z001", rider);
+    await sleep(200);
+    const top = Number((await database.pool.query("SELECT max(version) AS v FROM config_live WHERE doc = 'rider_app_config' AND zone_id = 'Z001'")).rows[0]?.v ?? 0);
+    const before = kinds(sse, "config_published").length;
+    faults.configLiveReads = 1;
+    await database.pool.query("INSERT INTO config_live (doc, zone_id, version, document, published_at, published_by) VALUES ('rider_app_config', 'Z001', $1, '{}', now(), NULL)", [top + 1]);
+    await database.pool.query("SELECT pg_notify($1, $2)", [CONFIG_CHANNEL, JSON.stringify({ doc: "rider_app_config", zoneId: "Z001", version: top + 1 })]);
+    const got = await until(() => kinds(sse, "config_published").length > before, 6000);
+    faults.configLiveReads = 0;
     sse.close();
     expect(got).toBe(true);
   });

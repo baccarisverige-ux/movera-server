@@ -1,3 +1,4 @@
+import { readRetry } from "./retry.js";
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import { z } from "zod";
@@ -97,6 +98,8 @@ export class AdminLiveFeed {
   private unsubscribe: (() => void) | undefined;
   /** How many shared reads ran (tests: one per change, whatever the number of streams). */
   reads = 0;
+  /** S04 A2: a failed shared read is tried again (backoff) while any stream is open. */
+  private readonly retry = readRetry(() => void this.pump(), () => this.subs.size === 0);
 
   constructor(
     private readonly db: Executor,
@@ -186,14 +189,17 @@ export class AdminLiveFeed {
         }
         if (full) this.again = true;
       } while (this.again && this.subs.size);
+      this.retry.ok();
     } catch (error) {
       this.log.warn({ err: error }, "admin events read failed");
+      this.retry.failed();
     } finally {
       this.running = false;
     }
   }
 
   private stop(): void {
+    this.retry.stop();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     // Re-read the start on the next join (events may be written while nobody listens).

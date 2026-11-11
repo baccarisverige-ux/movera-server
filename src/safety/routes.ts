@@ -1,3 +1,4 @@
+import { readRetry } from "../realtime/retry.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -106,6 +107,8 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
     let last = after;
     let running = false;
     let again = false;
+    const retry = readRetry(() => void pump(), () => stream.closed());
+    stream.onClose(retry.stop);
     const pump = async () => {
       if (running) {
         again = true;
@@ -124,8 +127,10 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
           }
           if (rows.length === 200) again = true;
         } while (again && !stream.closed());
+        retry.ok();
       } catch (error) {
         request.log.warn({ err: error }, "incident stream read failed");
+        retry.failed();
       } finally {
         running = false;
       }
