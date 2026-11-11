@@ -126,14 +126,25 @@ export const documentSummary = (row: DocumentRow) => ({
 
 /** DocumentSummary[] of one owner (a driver or a car), oldest first. */
 export async function documentSummaries(ex: Executor, ownerKind: "driver" | "vehicle", ownerId: string) {
-  const rows = await ex.selectFrom("documents").selectAll().where("owner_kind", "=", ownerKind).where("owner_id", "=", ownerId).orderBy("created_at").execute();
+  return (await documentSummariesOf(ex, ownerKind, [ownerId])).get(ownerId) ?? [];
+}
+
+/** S06 F9: documentSummaries of many owners in two queries (the documents, then their waiting renewals). */
+export async function documentSummariesOf(ex: Executor, ownerKind: "driver" | "vehicle", ownerIds: string[]) {
+  const out = new Map<string, Array<ReturnType<typeof documentSummary> | { documentId: string; type: string; status: string; expiresAt?: string; renewalOf: string }>>();
+  if (ownerIds.length === 0) return out;
+  const rows = await ex.selectFrom("documents").selectAll().where("owner_kind", "=", ownerKind).where("owner_id", "in", ownerIds).orderBy("created_at").orderBy("document_id").execute();
   const renewals = await renewalsOf(ex, rows.map((r) => r.document_id));
   // v0.18.5 (G2-D1): a waiting renewal is listed right after the document it renews.
-  return rows.flatMap((r) => {
+  for (const r of rows) {
     const renewal = renewals.get(r.document_id);
     const own = documentSummary(r as DocumentRow);
-    return renewal ? [own, { documentId: renewal.renewal_id, type: r.type, status: renewal.status, ...(renewal.expires_at ? { expiresAt: renewal.expires_at.toISOString() } : {}), renewalOf: r.document_id }] : [own];
-  });
+    const list = out.get(r.owner_id) ?? [];
+    list.push(own);
+    if (renewal) list.push({ documentId: renewal.renewal_id, type: r.type, status: renewal.status, ...(renewal.expires_at ? { expiresAt: renewal.expires_at.toISOString() } : {}), renewalOf: r.document_id });
+    out.set(r.owner_id, list);
+  }
+  return out;
 }
 
 /** The terms, accepted on onboarding: a document of kind acceptance, approved at once. */

@@ -246,12 +246,17 @@ export async function signUpView(ex: Executor, d: { driver_id: string; account_s
   const created = d.created_at ?? (await ex.selectFrom("drivers").select("created_at").where("driver_id", "=", d.driver_id).executeTakeFirstOrThrow()).created_at;
   const settings = await onboardingSettings(ex, d.country);
   const sent = await ex.selectFrom("sign_up_reminders").select("sent_at").where("driver_id", "=", d.driver_id).orderBy("sent_at", "desc").execute();
+  return signUpOf(created, settings, sent.map((r) => r.sent_at), now);
+}
+
+/** S06 F9: signUpView from facts already read (`sent` newest first). */
+export function signUpOf(created: Date, settings: OnboardingSettings, sent: Date[], now: Date) {
   return {
     signUp: {
       since: created.toISOString(),
       stuck: now.getTime() - created.getTime() >= settings.signUpReminders.stuckAfterDays * 86_400_000,
       remindersSent: sent.length,
-      ...(sent[0] ? { lastReminderAt: sent[0].sent_at.toISOString() } : {}),
+      ...(sent[0] ? { lastReminderAt: sent[0].toISOString() } : {}),
     },
   };
 }

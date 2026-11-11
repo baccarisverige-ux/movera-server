@@ -60,6 +60,17 @@ export async function onboardingSettings(ex: Executor, country: string | null | 
   return row === undefined ? defaultSettings(country) : (row.document as OnboardingSettings);
 }
 
+/** S06 F9: onboardingSettings of many countries in one query, keyed by country ("" for none). */
+export async function onboardingSettingsOf(ex: Executor, countries: Array<string | null | undefined>): Promise<Map<string, OnboardingSettings>> {
+  const wanted = [...new Set(countries.map((c) => c ?? ""))];
+  const named = wanted.filter((c) => c !== "");
+  const rows = named.length ? await ex.selectFrom("config_live").select(["zone_id", "document"]).where("doc", "=", "onboarding").where("zone_id", "in", named.map((c) => `standard-${c}`)).execute() : [];
+  const live = new Map(rows.map((r) => [r.zone_id, r.document as OnboardingSettings]));
+  const out = new Map<string, OnboardingSettings>();
+  for (const c of wanted) out.set(c, c === "" ? { ...defaultSettings("--"), documents: { ...EMPTY }, expiringTypes: [] } : live.get(`standard-${c}`) ?? defaultSettings(c));
+  return out;
+}
+
 /** The required documents of a scope; a car also needs the four photos while photosNeeded is on (item 11). */
 export function requiredOf(settings: OnboardingSettings, scope: DocumentScope): string[] {
   const list = settings.documents[scope] ?? [];
