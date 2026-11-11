@@ -240,12 +240,18 @@ async function load(trx: Trx, invitationId: string): Promise<InvitationRow> {
   return row as unknown as InvitationRow;
 }
 
-async function mustBePending(trx: Trx, row: InvitationRow, now: Date): Promise<void> {
+type Project = (row: InvitationRow) => Promise<ReturnType<typeof invitationView>>;
+
+/** The 409 projection is the view the caller would get on success: driver, owner, or (masked per §76) admin. */
+const as = (trx: Trx, viewer: "driver" | "owner", now: Date): Project => (r) => viewOf(trx, r, viewer, now);
+const asAdmin = (trx: Trx, who: Admin, now: Date): Project => async (r) => maskInvitationView(await viewOf(trx, r, "admin", now), who);
+
+async function mustBePending(trx: Trx, row: InvitationRow, now: Date, project: Project): Promise<void> {
   if (row.status === "pending" && row.expires_at.getTime() <= now.getTime()) {
     await trx.updateTable("fleet_invitations").set({ status: "expired", decided_at: row.expires_at, decided_by: "system", version: row.version + 1, updated_at: now }).where("invitation_id", "=", row.invitation_id).execute();
-    throw new ApiError("invalid_transition", "This invitation has expired.", { reason: "invitation_expired", projection: await viewOf(trx, await load(trx, row.invitation_id), "admin", now) });
+    throw new ApiError("invalid_transition", "This invitation has expired.", { reason: "invitation_expired", projection: await project(await load(trx, row.invitation_id)) });
   }
-  if (row.status !== "pending") throw new ApiError("invalid_transition", `This invitation is already ${row.status}.`, { reason: "invitation_closed", projection: await viewOf(trx, row, "admin", now) });
+  if (row.status !== "pending") throw new ApiError("invalid_transition", `This invitation is already ${row.status}.`, { reason: "invitation_closed", projection: await project(row) });
 }
 
 async function decide(trx: Trx, row: InvitationRow, status: "accepted" | "declined" | "cancelled", by: string, now: Date): Promise<void> {
@@ -285,7 +291,7 @@ async function receiver(trx: Trx, row: InvitationRow, actorId: string, now: Date
 
 export async function acceptInvitation(trx: Trx, deps: InviteDeps, actorId: string, invitationId: string, now: Date) {
   const row = await load(trx, invitationId);
-  await mustBePending(trx, row, now);
+  await mustBePending(trx, row, now, as(trx, row.direction === "owner_invite" ? "driver" : "owner", now));
   const { driver, fleet } = await receiver(trx, row, actorId, now);
   await link(trx, deps, row, driver, fleet, actorId, now);
   return viewOf(trx, await load(trx, invitationId), row.direction === "owner_invite" ? "driver" : "owner", now);
@@ -293,7 +299,7 @@ export async function acceptInvitation(trx: Trx, deps: InviteDeps, actorId: stri
 
 export async function declineInvitation(trx: Trx, _deps: InviteDeps, actorId: string, invitationId: string, now: Date) {
   const row = await load(trx, invitationId);
-  await mustBePending(trx, row, now);
+  await mustBePending(trx, row, now, as(trx, row.direction === "owner_invite" ? "driver" : "owner", now));
   const { driver, fleet } = await receiver(trx, row, actorId, now);
   await decide(trx, row, "declined", actorId, now);
   if (row.direction === "driver_request") {
@@ -309,7 +315,7 @@ export async function declineInvitation(trx: Trx, _deps: InviteDeps, actorId: st
 /** Only the side that created it: the driver his request, the owner his invite. */
 export async function cancelInvitation(trx: Trx, _deps: InviteDeps, actorId: string, invitationId: string, now: Date) {
   const row = await load(trx, invitationId);
-  await mustBePending(trx, row, now);
+  await mustBePending(trx, row, now, as(trx, row.direction === "driver_request" ? "driver" : "owner", now));
   const fleet = await loadFleet(trx, row.fleet_id);
   const creator = row.direction === "driver_request" ? row.driver_id : fleet.owner_driver_id;
   if (creator !== actorId) throw new ApiError("forbidden", "Only the side that sent it can cancel it.", { reason: "not_sender" });
@@ -333,7 +339,7 @@ export async function adminDecideInvitation(trx: Trx, deps: InviteDeps, who: Adm
   coversFleet(who, fleet);
   const row = await load(trx, invitationId);
   if (row.fleet_id !== fleetId) throw notFound("No such invitation in this fleet.", "invitation_not_found");
-  await mustBePending(trx, row, now);
+  await mustBePending(trx, row, now, asAdmin(trx, who, now));
   if (action === "accept") {
     if (row.driver_id === null) throw new ApiError("invalid_transition", "That number has no account yet.", { reason: "driver_not_signed_up" });
     await link(trx, deps, row, await loadDriver(trx, row.driver_id, true), fleet, who.subjectId, now);
