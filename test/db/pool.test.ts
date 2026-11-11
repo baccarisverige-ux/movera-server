@@ -29,3 +29,16 @@ describe("database pool settings", () => {
     expect(res.body).not.toContain("secret");
   });
 });
+
+describe("S05 D1: statement_timeout on every connection", () => {
+  it("the very first connection of the pool already has the timeout", async () => {
+    const url = process.env.TEST_DATABASE_URL ?? "postgres://movera:movera@127.0.0.1:5432/movera";
+    const pool = createPool(url, { max: 2, statementTimeoutMs: 4321 });
+    try {
+      const first = await pool.query<{ statement_timeout: string }>("SHOW statement_timeout");
+      expect(first.rows[0]!.statement_timeout).toBe("4321ms");
+    } finally {
+      await pool.end();
+    }
+  });
+});
