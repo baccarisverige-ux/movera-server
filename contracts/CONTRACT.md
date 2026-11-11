@@ -1,4 +1,6 @@
-# Movera shared contract v0.18.61
+# Movera shared contract v0.18.62
+
+v0.18.62 (docs fix, no behaviour change; X-Api-Version stays `0.5`; no migration): **`POST /admin/auth/sign-in-locks/unlock` `{ phone }` documented as the server answers**: needs `settings.edit` (`x-permission`; else `403 forbidden` `missing_permission`); answers **`200 { phone, lifted }`** (the number sent, not masked; `lifted` = how many wrong-code sessions of the last 24 h were unlocked, `0` is still 200), not "No content"; `400 invalid_request` reason `invalid_body` (phone missing/not a string) or `invalid_phone` (not international form); never 404 (`contract.json#signInUnlock`). See §84.
 
 v0.18.61 (owner 2026-11-11 "Finance permission", Rule 0; X-Api-Version stays `0.5`; no migration): **`GET /payments/{paymentId}` (rider + admin): an admin needs `finance.read` (as `GET /admin/payments` / `GET /admin/payouts`) + the payment's trip zone**, else `403 forbidden` `missing_permission` / `zone_out_of_scope`; a rider sees only their own payment; **while Movera is cash-only the route answers `400 invalid_request`, reason `payment_method_not_available`**, like `POST /payment-methods`, until card payments exist (`contract.json#paymentRead`). See §83.
 
@@ -1383,3 +1385,12 @@ Owner 2026-11-11 "Finance permission" (Rule 0). X-Api-Version stays `0.5`; no mi
 - **Admin**: needs `finance.read` (`x-permission`; the same id as `GET /admin/payments`, `GET /admin/payouts`, `GET /admin/refunds/payouts`) and the payment's trip zone in the admin's zones (`"*"` = all); otherwise `403 forbidden`, reason `missing_permission` or `zone_out_of_scope` (as §77).
 - **Cash only**: no payment intent exists yet, so until card payments exist the route answers `400 invalid_request`, reason `payment_method_not_available` (texts `finish.paymentMethods.texts`), like `POST /payment-methods`; the permission and zone checks come first.
 - **Order (Rule 0)**: contract → server (checks + typed 400) → admin (no change; reads `/admin/payments`) → driver app (no change) → rider app (no change; shows `texts[reason]`).
+
+## 84. Lift a sign-in lock: permission and answer (v0.18.62)
+
+Docs fix: the contract now says what the server already does (no behaviour change). X-Api-Version stays `0.5`; no migration. contract.json#signInUnlock.
+
+- **Permission**: `POST /admin/auth/sign-in-locks/unlock` needs `settings.edit` (`x-permission`); otherwise `403 forbidden`, reason `missing_permission`.
+- **Answer**: `200 { phone, lifted }` (`SignInUnlockResult`): `phone` is the number sent (E.164, not masked); `lifted` (integer ≥ 0) is how many of the number's wrong-code sessions of the last 24 h were unlocked; `0` (nothing was locked) is still 200. Audited `auth.sign_in_unlock { lifted }`, last 4 digits hidden.
+- **Errors**: `400 invalid_request` reason `invalid_body` (phone missing or not a string) or `invalid_phone` (not `^\+[1-9][0-9]{6,14}$`); `401`; `403 missing_permission`. Never 404.
+- **Order (Rule 0)**: contract → server (no change) → admin (reads `{ phone, lifted }`; Unlock only with `settings.edit`) → driver app (no change) → rider app (no change).

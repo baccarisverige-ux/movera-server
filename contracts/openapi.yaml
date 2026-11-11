@@ -1,11 +1,11 @@
-# Movera API v0.18.61 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.62 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.61
+  version: 0.18.62
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.61 in this folder; this file must agree with them.
+    v0.18.62 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.61
+  version: 0.18.62
   source: contract.json
 paths:
   /auth/otp/request:
@@ -15053,7 +15053,12 @@ paths:
         wrong codes in 24 h from one address for one number, that address gets 429 rate_limited reason otp_locked_today for
         that number (Retry-After = until the oldest leaves the 24 h window), on request and verify; an admin can lift it (POST
         /admin/auth/sign-in-locks/unlock { phone }). Codes per number per hour and per address per hour are admin settings
-        (countryLimits).'
+        (countryLimits). v0.18.62 §84: An admin caller needs settings.edit (x-permission); otherwise 403 forbidden, reason
+        missing_permission. 200 { phone, lifted }: phone = the number sent (E.164, not masked); lifted = integer >= 0, how
+        many of the number''s wrong-code sessions of the last 24 h were unlocked (0 when nothing was locked; still 200). Audited
+        auth.sign_in_unlock { lifted } with the number''s last 4 digits hidden. 400 invalid_request reason invalid_body when
+        phone is missing or not a string; 400 invalid_request reason invalid_phone when phone is not international form (^\+[1-9][0-9]{6,14}$);
+        401 unauthenticated; 403 forbidden missing_permission. The server never answers 404 here.'
       tags:
       - Admin · Auth
       x-actor:
@@ -15069,24 +15074,27 @@ paths:
               $ref: '#/components/schemas/SignInUnlock'
       responses:
         '200':
-          description: No content
+          description: 'The lock is lifted: { phone, lifted }.'
           headers:
             X-Request-Id:
               description: Echo of the request id (server-generated if absent).
               schema:
                 type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignInUnlockResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+      x-permission: settings.edit
   /account/phone/change:
     post:
       operationId: startPhoneChange
@@ -34762,3 +34770,18 @@ components:
               type: string
               minLength: 1
               maxLength: 40
+    SignInUnlockResult:
+      type: object
+      additionalProperties: false
+      required:
+      - phone
+      - lifted
+      description: '200 { phone, lifted }: phone = the number sent (E.164, not masked); lifted = integer >= 0, how many of
+        the number''s wrong-code sessions of the last 24 h were unlocked (0 when nothing was locked; still 200). Audited auth.sign_in_unlock
+        { lifted } with the number''s last 4 digits hidden.'
+      properties:
+        phone:
+          $ref: '#/components/schemas/PhoneE164'
+        lifted:
+          type: integer
+          minimum: 0
