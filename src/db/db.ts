@@ -13,14 +13,23 @@ export type Executor = Db | Trx;
  * An idle connection that the database drops (restart, failover) is reported, not fatal: the pool opens a new
  * one on the next query, and /readyz shows whether the database is reachable.
  */
-export type PoolOptions = { max?: number; idleMs?: number; connectTimeoutMs?: number };
+export type PoolOptions = { max?: number; idleMs?: number; connectTimeoutMs?: number; statementTimeoutMs?: number };
 
 let current: pg.Pool | undefined;
 let currentMax = 0;
 
 export function createPool(url: string, options: number | PoolOptions = {}, onIdleError: (error: Error) => void = () => undefined): pg.Pool {
-  const { max = 10, idleMs = 30_000, connectTimeoutMs = 0 } = typeof options === "number" ? { max: options } : options;
-  const pool = new pg.Pool({ connectionString: url, max, idleTimeoutMillis: idleMs, connectionTimeoutMillis: connectTimeoutMs, application_name: "movera-server" });
+  const { max = 10, idleMs = 30_000, connectTimeoutMs = 0, statementTimeoutMs = 0 } = typeof options === "number" ? { max: options } : options;
+  // S05 D1: statement_timeout is a connection setting of the pool itself, so EVERY connection has it from its first
+  // statement (also the one waitForDatabase/migrate open before anything else); 0 = no limit.
+  const pool = new pg.Pool({
+    connectionString: url,
+    max,
+    idleTimeoutMillis: idleMs,
+    connectionTimeoutMillis: connectTimeoutMs,
+    application_name: "movera-server",
+    ...(statementTimeoutMs > 0 ? { statement_timeout: Math.round(statementTimeoutMs) } : {}),
+  });
   pool.on("error", onIdleError);
   current = pool;
   currentMax = max;
@@ -48,6 +57,8 @@ export function createDb(pool: pg.Pool): Db {
 /**
  * Job 1 (fix plan R22, audits/stress-test-2026-11-04.md H3): every connection the pool opens from now on stops a single
  * statement after `ms` (0: no limit), so one slow query can never hold a connection for ever under a spike.
+ * S05 D1: the server now passes `statementTimeoutMs` to createPool instead (this hook missed connections opened
+ * before it was added); kept for callers that build a pool themselves.
  */
 export function limitStatements(pool: pg.Pool, ms: number): void {
   if (ms <= 0) return;

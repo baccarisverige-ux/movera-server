@@ -1,5 +1,6 @@
+import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { MAX_ATTEMPTS, TimerWorker, timerLanes, backoffMs, cancelTimer, scheduleTimer, type TimerHandler } from "../../src/jobs/timers.js";
+import { MAX_ATTEMPTS, TimerWorker, rearmParkedRecurringTimers, timerLanes, backoffMs, cancelTimer, scheduleTimer, type TimerHandler } from "../../src/jobs/timers.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 let database: TestDatabase;
@@ -262,5 +263,26 @@ describe("timers — Job 1 (fast dispatch)", () => {
     await w.runOne();
     expect(calls).toBe(2);
     expect(await pending()).toEqual([]);
+  });
+});
+
+describe("S05 A1: parked recurring timers at start", () => {
+  it("re-arms a parked recurring timer (due now, attempts 0, one warning) and leaves parked one-off timers alone", async () => {
+    await database.db
+      .insertInto("timers")
+      .values([
+        { kind: "nightly_summary", ref_id: "all", due_at: sql<Date>`'infinity'::timestamptz`, attempts: MAX_ATTEMPTS, last_error: "boom" },
+        { kind: "offer_expiry", ref_id: "ofr_1", due_at: sql<Date>`'infinity'::timestamptz`, attempts: MAX_ATTEMPTS, last_error: "boom" },
+      ])
+      .execute();
+    logs.length = 0;
+    const count = await rearmParkedRecurringTimers(database.db, ["nightly_summary", "sweep_idempotency_keys"], logger, T0);
+    expect(count).toBe(1);
+    const rows = await pending();
+    const nightly = rows.find((row) => row.kind === "nightly_summary")!;
+    expect(nightly.due_at.getTime()).toBe(T0.getTime());
+    expect(nightly.attempts).toBe(0);
+    expect(Number(rows.find((row) => row.kind === "offer_expiry")!.due_at)).toBe(Infinity);
+    expect(logs.filter((entry) => entry.level === "warn" && entry.message.includes("re-armed"))).toHaveLength(1);
   });
 });

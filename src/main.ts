@@ -3,15 +3,16 @@ import { cacheGeometry, forgetGeometry } from "./config/geometryCache.js";
 import type pg from "pg";
 import { registerLoadShedding } from "./http/shed.js";
 import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "./safety/rideCheckServer.js";
-import { ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
+import { SMART_SURGE_CHECK, ensurePricingTimers, pricingHandlers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
-import { createDb, createPool, limitStatements, poolOptionsFrom, type Db } from "./db/db.js";
+import { createDb, createPool, poolOptionsFrom, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { guardProcess, waitForDatabase } from "./db/ready.js";
 import { readEnv, startupWarnings } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
-import { ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
-import { TimerWorker } from "./jobs/timers.js";
+import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers, maintenanceHandlers } from "./jobs/maintenance.js";
+import { NO_FIX_OFFLINE } from "./drivers/presence.js";
+import { TimerWorker, rearmParkedRecurringTimers } from "./jobs/timers.js";
 import { ALERT_SWEEP, alertSweepHandler, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
@@ -46,11 +47,10 @@ let pusher: PushDispatcher | undefined;
 let warn = (error: Error) => console.warn("database connection dropped:", error.message);
 
 if (env.DATABASE_URL !== undefined) {
-  pool = createPool(env.DATABASE_URL, poolOptionsFrom(env), (error) => warn(error));
+  pool = createPool(env.DATABASE_URL, { ...poolOptionsFrom(env), statementTimeoutMs: env.DATABASE_STATEMENT_TIMEOUT_MS }, (error) => warn(error));
   // Rule 28 (Render 2026-11-05: 57P03 while the database restarted): wait up to ~2 min for it, then migrate.
   await waitForDatabase(pool, { log: (data, message) => console.warn(message, JSON.stringify(data)) });
   if (env.MIGRATE_ON_START) await migrate(pool);
-  limitStatements(pool, env.DATABASE_STATEMENT_TIMEOUT_MS);
   db = createDb(pool);
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();
@@ -73,6 +73,8 @@ for (const message of startupWarnings(env)) app.log.warn(message);
 warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 
 if (db !== undefined) {
+  // S05 A1: a recurring job parked after repeated failures runs again at every start (one warning each).
+  await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, SMART_SURGE_CHECK, ALERT_SWEEP], app.log);
   await ensureMaintenanceTimers(db);
   await ensurePricingTimers(db);
   // v0.18.23 (contract.json#alertDesk.serverDetection): the server finds the admin alerts every 30 s.
