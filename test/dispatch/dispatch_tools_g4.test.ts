@@ -277,7 +277,8 @@ describe("Offline reason (owner 'Send the real reason')", () => {
     await call(app, "POST", `/offers/${offer!.offerId}/decline`, drivers.A.headers, { expectedVersion: offer!.version });
     expect(await profile("A")).toMatchObject({ onlineStatus: "offline", offlineReason: "missed_offers", offlineAt: clock.now.toISOString() });
     const notice = await lastNotice(drivers.A.id);
-    expect(notice).toMatchObject({ body: "You missed or declined 1 offers in a row", data: { reason: "missed_offers", count: 1 } });
+    // v0.18.66 §87 (contract.json#noticeLanguage): a Swedish driver with no language set reads his country's language (was English).
+    expect(notice).toMatchObject({ body: "Du missade eller nekade 1 erbjudanden i rad", data: { reason: "missed_offers", count: 1 } });
     await database.db.updateTable("config_live").set({ document: JSON.stringify(sample("driver_app_config")) }).where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
     await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", tripId).execute();
     const v = (await profile("A")).version;

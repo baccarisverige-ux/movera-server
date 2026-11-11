@@ -25,6 +25,7 @@ import { adminUnlockPin } from "../trips/pin.js";
 import { registerApprovalHandler, runOrRequest, type PendingApproval } from "./approvals.js";
 import { resumTripDay } from "./kpis.js";
 import { reassignHeldBooked } from "../reservations/service.js";
+import { noticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * The admin's trip tools (contract §3, §3.1; owner decisions 30–34): cancel, reassign, direct assign, radar
@@ -514,8 +515,8 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
 
 const REFUND_TEXT = { sv: { title: "Återbetalning", body: "Du får tillbaka {amount} för din resa." }, fr: { title: "Remboursement", body: "Vous êtes remboursé de {amount} pour votre course." }, en: { title: "Refund", body: "You get {amount} back for your trip." } } as const;
 async function noticeRefund(trx: Trx, trip: TripRow, amount: Money, now: Date) {
-  const rider = await trx.selectFrom("riders").select("language").where("rider_id", "=", trip.rider_id).executeTakeFirst();
-  const lang = rider?.language === "sv" || rider?.language === "fr" ? rider.language : "en";
+  // v0.18.66 §87: the one notice-language rule (his language, else the trip country's, TN fr, else en).
+  const lang = await noticeLanguage(trx, { actor: "rider", id: trip.rider_id }, trip.zone_id);
   const text = toMajorString(amount as WireMoney).replace(".", ",") + (amount.currency === "SEK" ? " kr" : amount.currency === "EUR" ? " €" : ` ${amount.currency}`);
   await notify(trx, { audience: "rider", subjectId: trip.rider_id, kind: "refund", title: REFUND_TEXT[lang].title, body: REFUND_TEXT[lang].body.replace("{amount}", text), deepLink: `movera://trips/${trip.trip_id}/receipt`, tripId: trip.trip_id, data: { tripId: trip.trip_id, amount } }, now);
 }

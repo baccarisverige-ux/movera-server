@@ -1,6 +1,7 @@
 import { liveDocument } from "../config/service.js";
 import { contract } from "../contract/contract.js";
 import type { Executor } from "../db/db.js";
+import { noticeLanguage, pickNoticeLanguage, zoneCountry } from "../notifications/noticeLanguage.js";
 
 /**
  * v0.18.56 §78 (G9 part 2, owner rule 16; contract.json#chat.settings): CountryRules.chat of the trip's zone (its own
@@ -111,20 +112,11 @@ export function chatOptions(settings: ChatSettings, side: "rider" | "driver") {
   };
 }
 
-const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
-
-/** A person's app language (Rider.language / Driver.language), else the zone country's language, else en. */
+/**
+ * A person's app language (Rider.language / Driver.language), else the zone country's language, else en.
+ * v0.18.66 §87: the one rule of src/notifications/noticeLanguage.ts (TN fr too); no list of its own.
+ */
 export async function languageOf(ex: Executor, who: { actor: "rider" | "driver"; subjectId: string | null }, zoneId: string | null): Promise<Lang> {
-  if (who.subjectId !== null) {
-    const row = who.actor === "rider"
-      ? await ex.selectFrom("riders").select("language").where("rider_id", "=", who.subjectId).executeTakeFirst()
-      : await ex.selectFrom("drivers").select("language").where("driver_id", "=", who.subjectId).executeTakeFirst();
-    if (isLang(row?.language)) return row.language;
-  }
-  if (zoneId !== null) {
-    const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", zoneId).executeTakeFirst();
-    const lang = zone ? COUNTRY_LANGUAGE[zone.country] : undefined;
-    if (lang) return lang;
-  }
-  return "en";
+  if (who.subjectId === null) return pickNoticeLanguage(null, await zoneCountry(ex, zoneId));
+  return noticeLanguage(ex, { actor: who.actor, id: who.subjectId }, zoneId);
 }

@@ -245,4 +245,50 @@ describe("in-app calls (v0.18.38 §62)", () => {
     const bodies = JSON.stringify([started, answered, ended, await eventsOf(tripId, rider), await eventsOf(tripId, driver.headers), (await call(app, "GET", `/admin/trips/${tripId}/calls`, admin.headers)).json()]);
     for (const phone of [TEST_PHONES[0]!, TEST_PHONES[1]!]) expect(bodies).not.toContain(phone.slice(3));
   });
+
+  // v0.18.66 §87 (contract.json#callConnect.connectTimeout, owner 2026-11-11: an admin setting, Rule 16). Fail-before: no field.
+  it("C9 connectTimeoutSeconds (default 25) rides on TripCall, call_ringing, the answer, the end and the admin log; the zone's country rules set it", async () => {
+    const { tripId } = await accepted();
+    const started = await startCall(tripId, rider);
+    expect(started.json()).toMatchObject({ ringSeconds: 30, maxCallMin: 15, connectTimeoutSeconds: 25 });
+    expect(schemaProblem("TripCall", started.json())).toBeNull();
+    const answered = await call(app, "POST", `/calls/${started.json().callId}/answer`, driver.headers, {});
+    expect(answered.json()).toMatchObject({ state: "answered", connectTimeoutSeconds: 25 });
+    expect(schemaProblem("CallView", answered.json())).toBeNull();
+    const ended = await call(app, "POST", `/calls/${started.json().callId}/end`, rider, { reason: "failed" });
+    expect(ended.json()).toMatchObject({ state: "ended", endedReason: "failed", connectTimeoutSeconds: 25 });
+    const calls = (await eventsOf(tripId, driver.headers)).filter((e) => String(e.kind).startsWith("call_") && e.kind !== "call_signal");
+    expect(calls.map((e) => [e.kind, (e.call as { connectTimeoutSeconds?: number }).connectTimeoutSeconds])).toEqual([["call_ringing", 25], ["call_answered", 25], ["call_ended", 25]]);
+    for (const e of calls) expect(schemaProblem("RealtimeEvent", e)).toBeNull();
+    const admin = await adminSession(app, database.db, "support", { now: clock.now });
+    expect((await call(app, "GET", `/admin/trips/${tripId}/calls`, admin.headers)).json().items[0]).toMatchObject({ connectTimeoutSeconds: 25 });
+
+    await fresh();
+    await setCalls({ connectTimeoutSeconds: 40 });
+    const own = await accepted();
+    const second = await startCall(own.tripId, driver.headers);
+    expect(second.json()).toMatchObject({ connectTimeoutSeconds: 40 });
+    await advance(31);
+    const missed = (await eventsOf(own.tripId, rider)).find((e) => e.kind === "call_missed");
+    expect(missed!.call).toMatchObject({ state: "missed", connectTimeoutSeconds: 40 });
+
+    // A stored value outside 10–60 reads as the default.
+    await fresh();
+    await setCalls({ connectTimeoutSeconds: 5 });
+    const bad = await accepted();
+    expect((await startCall(bad.tripId, rider)).json()).toMatchObject({ connectTimeoutSeconds: 25 });
+  });
+
+  it("C10 Admin › Tips & limits › Calls: connectTimeoutSeconds outside 10–60 → 400 invalid_document; inside → saved (fail-before: 5 and 61 were saved)", async () => {
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const r = sample("rider_app_config"), d = sample("driver_app_config");
+    const rules = (connectTimeoutSeconds: number) => ({ version: 1, publishedAt: clock.now.toISOString(), country: "SE", currency: "SEK", tips: r.tips ?? [], raiseSteps: r.raiseSteps ?? [], driverBonus: d.driverBonus ?? {}, calls: { on: true, ringSeconds: 30, maxCallMin: 15, connectTimeoutSeconds } });
+    for (const bad of [5, 9, 61]) {
+      const res = await call(app, "PUT", "/admin/config/country_rules", admin.headers, { expectedVersion: 1, zoneId: "Z001", document: rules(bad) });
+      expect([res.statusCode, res.json().reason], String(bad)).toEqual([400, "invalid_document"]);
+    }
+    const ok = await call(app, "PUT", "/admin/config/country_rules", admin.headers, { expectedVersion: 1, zoneId: "Z001", document: rules(40) });
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(ok.json().document.calls.connectTimeoutSeconds).toBe(40);
+  });
 });

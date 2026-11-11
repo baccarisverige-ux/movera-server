@@ -3,6 +3,7 @@ import type { Db, Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { notify } from "../notifications/service.js";
+import { noticeLanguage } from "../notifications/noticeLanguage.js";
 import { OTP, PHONE, requestOtp, type AuthDeps, type ClientInfo } from "./service.js";
 
 /**
@@ -130,6 +131,9 @@ async function afterChange(trx: Trx, who: Who, what: "phone" | "email", old: str
   const row = await trx.selectFrom(table(who.actor) as "drivers").select("language").where(idCol(who.actor) as "driver_id", "=", who.subjectId).executeTakeFirst();
   const l = row?.language === "sv" || row?.language === "fr" ? row.language : "en";
   if (old) await trx.insertInto("outbound_notices").values({ channel: what === "phone" ? "sms" : "email", to_address: old, kind: `${what}_changed`, language: l, status: "pending_provider", created_at: now }).execute();
-  await notify(trx, { audience: who.actor, subjectId: who.subjectId, kind: `${what}_changed`, title: TEXT[what][l], body: TEXT.body[l], data: { texts: { title: TEXT[what], body: TEXT.body } } }, now);
+  // v0.18.66 §87: the bell + push follow the one notice-language rule (own → country → en); the SMS / e-mail to the OLD
+  // address keeps its own language rule above (supervisor answer 13, owner to review).
+  const n = await noticeLanguage(trx, { actor: who.actor, id: who.subjectId, language: row?.language ?? null });
+  await notify(trx, { audience: who.actor, subjectId: who.subjectId, kind: `${what}_changed`, title: TEXT[what][n], body: TEXT.body[n], data: { texts: { title: TEXT[what], body: TEXT.body } } }, now);
   await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "account_changed" }).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("session_id", "!=", who.sessionId).where("revoked_at", "is", null).execute();
 }

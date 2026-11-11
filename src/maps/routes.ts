@@ -8,13 +8,13 @@ import { API_PREFIX } from "../http/prefix.js";
 import { PlacesUnavailable, type Places } from "./places.js";
 import type { LatLng, Router } from "./routing.js";
 import { zoneAt } from "../config/zoneLookup.js";
+import { countryLanguage } from "../notifications/noticeLanguage.js";
 
 /** contract §10: /locations/autocomplete, /geocode, /reverse-geocode, /routes, /routes/driving/{coordinates}. Read-only: no Idempotency-Key. */
 
 export type MapsDeps = { db: Db; jwtSecret: string; places: Places; router: Router; osrmUrl?: string; clock?: () => Date };
 
 const LANGUAGES = ["sv", "en", "fr"];
-const COUNTRY_LANGUAGE: Record<string, string> = { SE: "sv", FR: "fr", TN: "fr" };
 const NAV_PER_MINUTE = 30;
 
 function check(schema: string, body: unknown): void {
@@ -51,7 +51,8 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
     if (bias) {
       const zone = await zoneAt(deps.db, bias);
       const row = zone ? await deps.db.selectFrom("zones").select("country").where("zone_id", "=", zone.zoneId).executeTakeFirst() : undefined;
-      const lang = row ? COUNTRY_LANGUAGE[row.country] : undefined;
+      // v0.18.66 §87: the countries' languages come from one place (configDefaults.countries; SE sv, FR fr, TN fr).
+      const lang = row ? countryLanguage(row.country) : undefined;
       if (lang) return lang;
     }
     return language(request, actor, subjectId);

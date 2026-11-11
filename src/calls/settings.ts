@@ -7,7 +7,7 @@ import type { Executor } from "../db/db.js";
  * v0.18.38 §62 (contract.json#inAppCalls.settings): CountryRules.calls of the trip's zone (its own country_rules, else
  * its country's Standard), else the defaults. A missing value, or one outside its range, reads as the default.
  */
-export type CallSettings = { on: boolean; mode: "in_app" | "phone"; callWindowAfterTripMin: number; ringSeconds: number; maxCallMin: number; adminCallRoles: string[]; phoneProvider: string };
+export type CallSettings = { on: boolean; mode: "in_app" | "phone"; callWindowAfterTripMin: number; ringSeconds: number; maxCallMin: number; connectTimeoutSeconds: number; adminCallRoles: string[]; phoneProvider: string };
 type Range = [number, number];
 const C = contract as unknown as { configDefaults: { calls: CallSettings }; inAppCalls: { settings: { ranges: Record<string, Range> } } };
 export const CALL_DEFAULTS: CallSettings = C.configDefaults.calls;
@@ -27,6 +27,8 @@ export function callSettingsOf(rules: unknown): CallSettings {
     callWindowAfterTripMin: int(raw["callWindowAfterTripMin"], "callWindowAfterTripMin", d.callWindowAfterTripMin),
     ringSeconds: int(raw["ringSeconds"], "ringSeconds", d.ringSeconds),
     maxCallMin: int(raw["maxCallMin"], "maxCallMin", d.maxCallMin),
+    // v0.18.66 §87 (contract.json#callConnect.connectTimeout): 10–60 s, default 25; the apps get it with each call.
+    connectTimeoutSeconds: int(raw["connectTimeoutSeconds"], "connectTimeoutSeconds", d.connectTimeoutSeconds),
     adminCallRoles: Array.isArray(raw["adminCallRoles"]) ? raw["adminCallRoles"].filter((r): r is string => typeof r === "string") : d.adminCallRoles,
     phoneProvider: typeof raw["phoneProvider"] === "string" ? raw["phoneProvider"] : d.phoneProvider,
   };

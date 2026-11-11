@@ -17,6 +17,7 @@ import { inPolygon, polygonProblem, type Polygon } from "../zones/geometry.js";
 import { dispatchKm } from "./engine.js";
 import { lockTripNow, sendAdminOffers } from "./runtime.js";
 import { RADAR_ZONE_REPEAT, sendView, type SendRow } from "./radarSends.js";
+import { countryLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Contract v0.18.6 §32 (owner decisions G4-F1..F6 of 2026-10-31, contract.json#dispatchTools): the admin's Dispatch
@@ -30,7 +31,6 @@ export const GROUP_MAX_DRIVERS = TOOLS.groups.maxDrivers;
 export const SEND_MAX = TOOLS.groups.sendMax;
 
 type Lang = "sv" | "fr" | "en";
-const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr" };
 
 /* ---------------------------------------------------------------- scope, names, versions */
 
@@ -496,7 +496,8 @@ export async function driverEvents(ex: Executor, driverId: string, now: Date) {
   if (country === null && driver?.zone_ids[0]) country = (await ex.selectFrom("zones").select("country").where("zone_id", "=", driver.zone_ids[0]).executeTakeFirst())?.country ?? null;
   if (country === null) return { items: [], at: now.toISOString() };
   const own = driver?.language === "sv" || driver?.language === "fr" || driver?.language === "en" ? (driver.language as Lang) : null;
-  const order: Lang[] = [...new Set([own, "en", COUNTRY_LANGUAGE[country]].filter((l): l is Lang => l !== null && l !== undefined))];
+  // v0.18.66 §87: the country's language from the one place (configDefaults.countries; TN fr too).
+  const order: Lang[] = [...new Set([own, "en", countryLanguage(country)].filter((l): l is Lang => l !== null && l !== undefined))];
   const rows = (await ex
     .selectFrom("area_events")
     .selectAll()

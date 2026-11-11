@@ -20,6 +20,7 @@ import { contract } from "../../contract/contract.js";
 import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet } from "./money.js";
 import { newPin } from "./steps.js";
 import { creditTrip, earlyEndPrice, type FrozenMoney } from "./finish.js";
+import { noticeLanguage, tripZoneId } from "../../notifications/noticeLanguage.js";
 
 /* ---------------------------------------------------------------- no-show */
 
@@ -302,7 +303,7 @@ export async function takeBackLateBooked(trx: Trx, trip: TripRow, now: Date, dri
 /** Owner Q3 (2026-11-05, contract.json#afterTestRules.onTripOffers.queuedCancelNotice): bell + push to the driver. */
 const QUEUED_CANCEL = (contract as unknown as { afterTestRules: { onTripOffers: { queuedCancelNotice: { kind: string; title: Record<string, string>; body: Record<string, string> } } } }).afterTestRules.onTripOffers.queuedCancelNotice;
 async function noticeQueuedCancelled(ex: Executor, driverId: string, tripId: string, now: Date): Promise<void> {
-  const driver = await ex.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
-  const lang = driver?.language && driver.language in QUEUED_CANCEL.title ? driver.language : "en";
+  // v0.18.66 §87: the one notice-language rule (his language, else the trip country's, TN fr, else en).
+  const lang = await noticeLanguage(ex, { actor: "driver", id: driverId }, await tripZoneId(ex, tripId));
   await notify(ex, { audience: "driver", subjectId: driverId, kind: QUEUED_CANCEL.kind, title: QUEUED_CANCEL.title[lang]!, body: QUEUED_CANCEL.body[lang]!, tripId, data: { tripId } }, now);
 }

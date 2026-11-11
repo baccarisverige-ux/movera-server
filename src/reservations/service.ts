@@ -35,14 +35,13 @@ type Lang = "sv" | "fr" | "en";
 type Texts = Record<Lang, string>;
 type PushKind = "reservation_new" | "reservation_popup" | "reservation_reminder" | "reservation_go_online" | "reservation_lost" | "reservation_changed" | "reservation_driver_found" | "reservation_no_driver" | "reservation_change_ask" | "reservation_unassigned" | "reservation_not_started" | "reservation_assigned" | "reservation_offered" | "reservation_leave_now" | "reservation_late_risk" | "reservation_taken_back" | "reservation_no_driver_found";
 const BL = (contract as unknown as { bookLater: { push: { texts: Record<PushKind, { title: Texts; body: Texts }> } } }).bookLater;
-const COUNTRY_LANGUAGE: Record<string, Lang> = { SE: "sv", FR: "fr", TN: "fr" };
-const isLang = (value: unknown): value is Lang => value === "sv" || value === "fr" || value === "en";
 const SCHEDULED_REASONS = (contract as unknown as { cancelReasons: Record<string, string[]> }).cancelReasons["scheduled"]!;
 /** Statuses with no driver yet: the no-driver alert counts these. */
 const NO_DRIVER = new Set(["requested", "searching", "offered"]);
 const ASSIGNED = ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"] as const;
 
 import { TIMER, RESERVATION_TIMER_KINDS } from "./timerKinds.js";
+import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 export { TIMER, RESERVATION_TIMER_KINDS };
 
 /** What the trip keeps (trips.reservation). */
@@ -179,7 +178,8 @@ async function push(ex: Executor, trip: TripRow, to: { audience: "rider" | "driv
     ? await ex.selectFrom("riders").select("language").where("rider_id", "=", to.id).executeTakeFirst()
     : await ex.selectFrom("drivers").select("language").where("driver_id", "=", to.id).executeTakeFirst();
   if (!person) return;
-  const lang: Lang = isLang(person.language) ? person.language : COUNTRY_LANGUAGE[facts.country] ?? "en";
+  // v0.18.66 §87: the one notice-language rule (the person's language, else the trip country's, TN fr, else en).
+  const lang: Lang = pickNoticeLanguage(person.language, facts.country);
   const fill = (text: string) => Object.entries({ time: trip.scheduled_at ? clock(trip.scheduled_at, facts.timeZone) : "", ...extra }).reduce((t, [k, v]) => t.replaceAll(`{${k}}`, v), text).replace(/ · $/, "");
   const text = BL.push.texts[kind];
   await notify(ex, {

@@ -5,6 +5,7 @@ import type { TripRow } from "../db/tripLog.js";
 import { DISPATCH } from "../dispatch/engine.js";
 import { haversineKm } from "../maps/routing.js";
 import { notify } from "../notifications/service.js";
+import { noticeLanguage, tripZoneId } from "../notifications/noticeLanguage.js";
 
 /**
  * v0.18.13 (owner G5-8, decisions/driver-g5.md item 8 + notes; contract.json#pickupWaiting.headingCheck): the smart
@@ -142,21 +143,20 @@ export async function headingTick(
   return false;
 }
 
-async function driverLang(ex: Executor, driverId: string, texts: Record<string, string>): Promise<string> {
-  const driver = await ex.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
-  return driver?.language && driver.language in texts ? driver.language : "en";
+/** v0.18.66 §87: the one notice-language rule (his language, else the trip country's, TN fr, else en). */
+async function driverLang(ex: Executor, driverId: string, tripId: string): Promise<string> {
+  return noticeLanguage(ex, { actor: "driver", id: driverId }, await tripZoneId(ex, tripId));
 }
 
 /** v0.18.35 (owner Q-A, job 4 Q4): "You are not driving towards the rider" (bell + push, his language, else English). */
 export async function noticeNotHeading(ex: Executor, driverId: string, tripId: string, now: Date): Promise<void> {
   const n = SPEC.notHeadingNotice;
-  const lang = await driverLang(ex, driverId, n.title);
+  const lang = await driverLang(ex, driverId, tripId);
   await notify(ex, { audience: "driver", subjectId: driverId, kind: n.kind, title: n.title[lang]!, body: n.body[lang]!, deepLink: n.deepLink.replace("{tripId}", tripId), tripId, data: { tripId, reason: "not_heading_to_rider" } }, now);
 }
 
 /** The driver's notice when the trip is taken back (bell + push, his language, else English). */
 export async function noticeTakenBack(ex: Executor, driverId: string, tripId: string, now: Date): Promise<void> {
-  const driver = await ex.selectFrom("drivers").select("language").where("driver_id", "=", driverId).executeTakeFirst();
-  const lang = driver?.language && driver.language in SPEC.driverNotice.title ? driver.language : "en";
+  const lang = await driverLang(ex, driverId, tripId);
   await notify(ex, { audience: "driver", subjectId: driverId, kind: SPEC.driverNotice.kind, title: SPEC.driverNotice.title[lang]!, body: SPEC.driverNotice.body[lang]!, deepLink: SPEC.driverNotice.deepLink, tripId, data: { tripId, reason: NOT_HEADING_REASON } }, now);
 }

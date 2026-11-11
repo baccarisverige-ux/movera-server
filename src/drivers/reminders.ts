@@ -6,6 +6,7 @@ import { PHOTO_TYPES, daysLeft, largestWarnDays, onboardingSettings, publishedOn
 import { expiredBlockers, isTestDriver, pickableCars, vehicleDocumentBlockers } from "./readiness.js";
 import { markSetOffline } from "./offlineReason.js";
 import { scheduleTimer } from "../jobs/timers.js";
+import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Contract v0.18.0 §27 (owner decisions of 2026-10-29, driver group 2, items 1, 2, 3, 8, 9 and the note check):
@@ -141,7 +142,8 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date)
 
 /* ---------------------------------------------------------------- the hourly sweep */
 
-const lang = (language: string | null | undefined) => (language === "sv" || language === "fr" ? language : "en");
+/** v0.18.66 §87: the one notice-language rule (his language, else his country's, TN fr, else en). */
+const lang = (language: string | null | undefined, country: string | null | undefined) => pickNoticeLanguage(language, country);
 
 const EXPIRY_TEXT: Record<"document_expiring" | "document_expired", Record<"sv" | "fr" | "en", (name: string, days: number) => { title: string; body: string }>> = {
   document_expiring: {
@@ -205,7 +207,7 @@ export async function sweepDocumentExpiry(ex: Executor, now: Date): Promise<void
       const larger = warnDaysFor(settings, doc.owner_kind).filter((d) => d > warnDay);
       for (const d of larger) await ex.insertInto("document_notices").values({ document_id: doc.document_id, expires_at: expiresAt, warn_day: d, sent_at: now }).onConflict((c) => c.doNothing()).execute();
     }
-    const language = lang(driver.language);
+    const language = lang(driver.language, driver.country);
     const name = typeInfo(settings, doc.type)?.name[language] ?? doc.type;
     const text = EXPIRY_TEXT[kind][language](name, left);
     await notify(ex, {
@@ -244,7 +246,7 @@ export async function sweepSignUpReminders(ex: Executor, now: Date): Promise<voi
     if (now.getTime() - from.getTime() < settings.signUpReminders.everyDays * 86_400_000) continue;
     if (!(await waitsOnItself(ex, d, settings))) continue;
     await ex.insertInto("sign_up_reminders").values({ driver_id: d.driver_id, sent_at: now }).execute();
-    const language = lang(d.language);
+    const language = lang(d.language, d.country);
     await notify(ex, { audience: "driver", subjectId: d.driver_id, kind: SIGN_UP.kind, title: SIGN_UP.text.title[language]!, body: SIGN_UP.text.body[language]!, deepLink: "movera-driver://home" }, now);
   }
 }

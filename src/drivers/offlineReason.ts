@@ -2,6 +2,7 @@ import { contract } from "../contract/contract.js";
 import type { Executor } from "../db/db.js";
 import type { OfflineReason } from "../db/schema.js";
 import { notify } from "../notifications/service.js";
+import { noticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Contract v0.18.6 §32 (owner 2026-10-31 "Send the real reason", contract.json#driverHome.setOffline.offlineReason):
@@ -14,14 +15,14 @@ type Lang = "sv" | "fr" | "en";
 type SetOffline = { noticeKind: string; deepLink: string; text: { title: Record<Lang, string>; body: Record<Lang, string> }; reasons: Record<string, Record<Lang, string>> };
 const SET_OFFLINE = (contract as unknown as { driverHome: { setOffline: SetOffline } }).driverHome.setOffline;
 
-const lang = (language: string | null | undefined): Lang => (language === "sv" || language === "fr" ? language : "en");
 const fill = (text: string, values: Record<string, string | number>) => text.replace(/\{(\w+)\}/g, (all, key: string) => (values[key] === undefined ? all : String(values[key])));
 
 export async function markSetOffline(ex: Executor, driverId: string, reason: OfflineReason, extra: { note?: string | null; minutes?: number; count?: number }, now: Date): Promise<void> {
   const note = reason === "vehicle_blocked" && extra.note ? extra.note : null;
   const row = await ex.updateTable("drivers").set({ offline_reason: reason, offline_note: note, offline_at: now }).where("driver_id", "=", driverId).returning("language").executeTakeFirst();
   if (row === undefined) return;
-  const language = lang(row.language);
+  // v0.18.66 §87: the one notice-language rule (his language, else his zone's country, TN fr, else en).
+  const language: Lang = await noticeLanguage(ex, { actor: "driver", id: driverId, language: row.language });
   const values = { ...(extra.minutes !== undefined ? { minutes: extra.minutes } : {}), ...(extra.count !== undefined ? { count: extra.count } : {}) };
   // no_position keeps its G3 body "Tap to go online again"; every other reason says why.
   const body = reason === "no_position" ? SET_OFFLINE.text.body[language] : fill(SET_OFFLINE.reasons[reason]![language], values);

@@ -10,6 +10,7 @@ import { loadFleet, ownedFleet, coversFleet, type Admin, type FleetRow } from ".
 import { ONBOARDING, normalizeFleetCode, sameEmail, sameName } from "./onboardingRules.js";
 import { driverView, loadDriver, type DriverRow } from "./service.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
+import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Joining a fleet is a two-sided invitation (contract v0.5.3 §14, contract.json#driverOnboarding.fleetInvitations;
@@ -43,9 +44,8 @@ const PHONE = /^\+[1-9][0-9]{6,14}$/;
 
 /* ---------------------------------------------------------------- words */
 
-const LANG_OF_COUNTRY: Record<string, string> = { SE: "sv", FR: "fr", TN: "fr" };
-const language = (row: { language: string | null; country: string | null } | undefined, fallback?: string) =>
-  row?.language ?? (row?.country ? LANG_OF_COUNTRY[row.country] : undefined) ?? fallback ?? "en";
+// v0.18.66 §87: the one notice-language rule (his language, else his country's, TN fr, else en).
+const language = (row: { language: string | null; country: string | null } | undefined): string => pickNoticeLanguage(row?.language, row?.country);
 
 const TEXT: Record<string, Record<string, (a: string, b?: string) => string>> = {
   invited_title: { sv: () => "Inbjudan till åkeri", fr: () => "Invitation d’une flotte", en: () => "Fleet invitation" },
@@ -214,7 +214,7 @@ export async function inviteByPhone(trx: Trx, deps: InviteDeps, ownerId: string,
     await notify(trx, { audience: "driver", subjectId: driver.driver_id, kind: KIND, title: words("invited_title", lang, ""), body: words("invited_body", lang, fleet.name), deepLink: "movera-driver://fleet/invitations", data: { invitationId: created.invitation_id, direction: "owner_invite" } }, now);
     await sendSms(trx, deps.sms, { phone: body.phone, text: fill(INVITATIONS.smsText[lang] ?? INVITATIONS.smsText.en!, { fleet: fleet.name }), kind: KIND }, now);
   } else {
-    const lang = LANG_OF_COUNTRY[fleet.country] ?? "en";
+    const lang = pickNoticeLanguage(null, fleet.country);
     const text = fill(INVITATIONS.smsText[lang] ?? INVITATIONS.smsText.en!, { fleet: fleet.name }) + (deps.appLink ? ` ${deps.appLink}` : "");
     await sendSms(trx, deps.sms, { phone: body.phone, text, kind: KIND }, now);
   }
@@ -227,7 +227,7 @@ export async function attachInvitesToNewDriver(trx: Trx, driverId: string, phone
   for (const row of rows) {
     await trx.updateTable("fleet_invitations").set({ driver_id: driverId, updated_at: now }).where("invitation_id", "=", row.invitation_id).execute();
     const fleet = await trx.selectFrom("fleets").select(["name", "country"]).where("fleet_id", "=", row.fleet_id).executeTakeFirstOrThrow();
-    const lang = LANG_OF_COUNTRY[fleet.country] ?? "en";
+    const lang = pickNoticeLanguage(null, fleet.country);
     await notify(trx, { audience: "driver", subjectId: driverId, kind: KIND, title: words("invited_title", lang, ""), body: words("invited_body", lang, fleet.name), deepLink: "movera-driver://fleet/invitations", data: { invitationId: row.invitation_id, direction: "owner_invite" } }, now);
   }
 }
