@@ -66,12 +66,12 @@ Settings come from the environment (`src/env.ts`):
 | `SEED_TEST_ON_START` | `true`: at start, make the test accounts once and publish sample settings where a zone has none (a host without a shell; not in production) | `false` |
 | `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_NAME` | At start, make this Super admin and write its password link to the log while it has no password (not in production) | none |
 | `ADMIN_TEST_EMAIL`, `ADMIN_TEST_NAME`, `ADMIN_TEST_PASSWORD_RESET` | A second Super admin for automated checks, made at start the same way: kept if it exists, password link in the log while it has no password, any new reset text gives one new link (not in production) | none |
-| `MOVERA_EXTRA_TEST_PHONES` | Big test: more test numbers than the six built in, comma list of numbers and ranges (`+46701740611-+46701740660,+33639980001`), both ends included, at most 1000; seeded at start for both apps with the fixed code (not in production) | none |
+| `MOVERA_EXTRA_TEST_PHONES` | Big test: more test numbers than the six built in, comma list of numbers and ranges (`+467XXXXXXXX-+467YYYYYYYY,+336XXXXXXXX`), both ends included, at most 1000; seeded at start for both apps with the fixed code (not in production) | none |
 | `RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE`, `RATE_LIMIT_WRITES_PER_USER_PER_MINUTE` | Write-request limits per signed-in user and per address, per minute (`src/env.ts`; `0` = off) | `120` / `60` in production, `1200` / `600` elsewhere |
 | `WEB_COPIES` | How many web copies run behind the load balancer. Each copy counts writes in its own memory, so each allows 1/`WEB_COPIES` of the write budget (load test part 6) | `1` |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 
-Tests use `TEST_DATABASE_URL` (default `postgres://movera:movera@127.0.0.1:5432/movera`, the compose database).
+Tests use `TEST_DATABASE_URL` (default `postgres://USER:PASSWORD@127.0.0.1:5432/DBNAME`, the compose database).
 The run builds a template database with every migration, and each test file gets its own copy.
 
 ## The contract
@@ -130,7 +130,7 @@ Update the contract copy with `tools/sync_contract.sh v0.18.58` (the tag, never 
 - `npm run admin -- create --email <e-mail> --name "<name>" --role super` creates an admin and prints a one-time
   link (72 h) to choose the password; `npm run admin -- link --email <e-mail>` makes a new one. In the container:
   `node dist/admin/cli.js …`.
-- `npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123
+- `npm run admin -- driver --phone +467XXXXXXXX --name Sara --make Volvo --model V60 --color Black --plate ABC123
   --categories economy` creates an approved test driver with an approved car, in every open zone.
 - `npm run admin -- seed-test` (staging and development only) makes the test week's ready accounts on the test
   numbers: three activated drivers in the approved fleet "Movera Test AB" (code `MV-TESTA`), each with an approved
