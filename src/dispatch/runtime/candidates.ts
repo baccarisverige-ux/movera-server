@@ -144,7 +144,8 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
   // Deep fix 2026-11-02 (perf): only the drivers of this trip's zone (and its neighbours) are read.
   const zones = [trip.zone_id, ...neighbourZones];
   const inZones = sql<boolean>`drivers.zone_ids && ${sql.val(zones)}::text[]`;
-  let query = trx
+  const onTrip = onTripOpen(trip, doc, now);
+  const read = (statuses: Array<"online" | "on_trip">) => trx
     .selectFrom("drivers")
     .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
     .leftJoin("vehicles", "vehicles.vehicle_id", "drivers.vehicle_id")
@@ -153,19 +154,37 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     // Next trips (an offer to a driver who still has a rider) are a later round (owner decision 10): only free
     // (online) drivers get live offers. v0.18.33 (owner Q7): a booked ride within bookedNext.withinMin also reads the
     // drivers on a trip (Exclusive only; checked below with onTripReach).
-    .where("drivers.online_status", "in", onTripOpen(trip, doc, now) ? ["online", "on_trip"] : ["online"])
+    .where("drivers.online_status", "in", statuses)
     // v0.18.37 §61: from his "Go offline" tap on a trip, no new offers (the on-trip Exclusives included).
     .where("drivers.offline_after_trip", "=", false)
     .where(inZones)
     .where("driver_locations.received_at", ">", new Date(now.getTime() - STALE_AFTER_SECONDS * 1000))
     .where("driver_locations.measured_at", ">", new Date(now.getTime() - DISPATCH_FIX_MAX_AGE_SECONDS * 1000));
-  if (options.reachKm !== undefined && Number.isFinite(options.reachKm) && !onTripOpen(trip, doc, now)) {
-    // dispatchKm = straight line × roadFactor (≥ 1), so a box of reachKm straight-line km holds every driver in reach.
+  let rows: Awaited<ReturnType<ReturnType<typeof read>["execute"]>>;
+  if (options.reachKm !== undefined && Number.isFinite(options.reachKm)) {
+    // dispatchKm = straight line × roadFactor (≥ 1), so a box of reachKm straight-line km holds every point in reach.
     const dLat = options.reachKm / 111.32;
     const dLng = dLat / Math.max(0.01, Math.cos((pickup.lat * Math.PI) / 180));
-    query = query.where("driver_locations.lat", ">=", pickup.lat - dLat).where("driver_locations.lat", "<=", pickup.lat + dLat).where("driver_locations.lng", ">=", pickup.lng - dLng).where("driver_locations.lng", "<=", pickup.lng + dLng);
+    const box = { latMin: pickup.lat - dLat, latMax: pickup.lat + dLat, lngMin: pickup.lng - dLng, lngMax: pickup.lng + dLng };
+    // S01 A1: two reads, so a live ride no longer reads every driver of the zone. Free drivers: km is from their
+    // position, so they are boxed on it (the drivers_online partial index serves this read).
+    const free = await read(["online"])
+      .where("driver_locations.lat", ">=", box.latMin).where("driver_locations.lat", "<=", box.latMax)
+      .where("driver_locations.lng", ">=", box.lngMin).where("driver_locations.lng", "<=", box.lngMax)
+      .execute();
+    // Drivers on a trip: km is from the drop-off of their one current trip (onTripReach), so they are boxed on that
+    // drop-off — the same trips onTripReach reads. A driver with no such trip in the box is never kept there anyway
+    // (no trip, two trips, or a drop-off out of reach).
+    const busy = onTrip
+      ? await read(["on_trip"]).where(({ exists, selectFrom }) => exists(selectFrom("trips").select("trips.trip_id")
+        .whereRef("trips.driver_id", "=", "drivers.driver_id").where("trips.trip_id", "!=", trip.trip_id)
+        .where("trips.status", "in", ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "in_trip", "approaching_dropoff"]).where(NOT_HELD)
+        .where(sql<boolean>`(trips.dropoff->>'lat')::float8 between ${box.latMin} and ${box.latMax} and (trips.dropoff->>'lng')::float8 between ${box.lngMin} and ${box.lngMax}`))).execute()
+      : [];
+    rows = [...free, ...busy];
+  } else {
+    rows = await read(onTrip ? ["online", "on_trip"] : ["online"]).execute();
   }
-  const rows = await query.execute();
   const pool: Pool = { candidates: [], meta: new Map(), bookedNext: new Set() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
   const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
