@@ -8,7 +8,7 @@ import { DRIVER_ASSIGNED, TERMINAL, type TripStatus } from "../rules/transitions
 import { lockOwnTrip, readOwnTrip } from "./commands.js";
 import { tripProjection } from "./projection.js";
 import type { Selectable } from "kysely";
-import { chatSettingsFor, languageOf, ON_MY_WAY_TEXT, type ChatSettings } from "../chat/settings.js";
+import { chatSettingsFor, languageOf, ON_MY_WAY_TEXT, type ChatSettings, type Lang } from "../chat/settings.js";
 
 /**
  * The trip chat (contract Message, GET and POST /trips/{tripId}/messages): the rider and the driver of a trip
@@ -24,7 +24,8 @@ import { chatSettingsFor, languageOf, ON_MY_WAY_TEXT, type ChatSettings } from "
  */
 
 export type MessageWho = { actor: "rider" | "driver" | "admin"; subjectId: string; zones?: readonly string[]; perms?: readonly string[] };
-export type Message = { messageId: string; tripId: string; from: "rider" | "driver" | "support"; text: string; at: string; quickReplyId?: string; auto?: "arrived" | "on_my_way" };
+/** v0.18.64 §85: lang = the language the text was written in (chat.autoTranslate.sourceLanguage); none for support. */
+export type Message = { messageId: string; tripId: string; from: "rider" | "driver" | "support"; text: string; at: string; quickReplyId?: string; auto?: "arrived" | "on_my_way"; lang?: Lang };
 
 type MessageRow = Selectable<TripMessagesTable>;
 
@@ -38,6 +39,7 @@ const messageView = (row: MessageRow): Message => ({
   messageId: row.message_id, tripId: row.trip_id, from: row.sender, text: row.text, at: row.created_at.toISOString(),
   ...(row.quick_reply_id ? { quickReplyId: row.quick_reply_id } : {}),
   ...(row.auto ? { auto: row.auto } : {}),
+  ...(row.lang ? { lang: row.lang } : {}),
 });
 
 /** Open while a driver is on the trip, closed at drop-off (contract.json#chat.window). Support may still write after it. */
@@ -83,17 +85,23 @@ export async function sendMessage(trx: Trx, who: MessageWho, tripId: string, bod
   }
   const settings = await chatSettingsFor(trx, trip.zone_id);
   let text = typed;
+  // v0.18.64 §85 (chat.autoTranslate.sourceLanguage): a chip is written in the reader's language (exact); typed text
+  // carries the sender's app language (a hint); support's messages carry none.
+  let lang: Lang | undefined;
   if (quickReplyId !== undefined) {
     const chip = who.actor === "admin" ? undefined : settings.quickReplies[who.actor].find((q) => q.id === quickReplyId);
     if (chip === undefined) throw badRequest("Unknown quick reply.", "unknown_quick_reply");
     const reader = who.actor === "rider" ? { actor: "driver" as const, subjectId: trip.driver_id } : { actor: "rider" as const, subjectId: trip.rider_id };
-    text = chip.text[await languageOf(trx, reader, trip.zone_id)];
+    lang = await languageOf(trx, reader, trip.zone_id);
+    text = chip.text[lang];
   } else if (text.length > settings.maxLength) {
     throw badRequest(`The message is longer than ${settings.maxLength} characters.`, "message_too_long");
+  } else if (who.actor !== "admin") {
+    lang = await languageOf(trx, { actor: who.actor, subjectId: who.subjectId }, trip.zone_id);
   }
   if (who.actor !== "admin") await assertNotSpam(trx, tripId, who.subjectId, settings, now);
   const from = who.actor === "admin" ? "support" : who.actor;
-  return writeMessage(trx, trip, { from, senderId: who.subjectId, text, ...(quickReplyId !== undefined ? { quickReplyId } : {}) }, now);
+  return writeMessage(trx, trip, { from, senderId: who.subjectId, text, ...(quickReplyId !== undefined ? { quickReplyId } : {}), ...(lang ? { lang } : {}) }, now);
 }
 
 async function assertNotSpam(trx: Trx, tripId: string, senderId: string, settings: ChatSettings, now: Date): Promise<void> {
@@ -107,17 +115,18 @@ async function assertNotSpam(trx: Trx, tripId: string, senderId: string, setting
 }
 
 /** Stores one message and sends it as a `message` trip event. The caller holds the trip lock. */
-async function writeMessage(trx: Trx, trip: TripRow, m: { from: Message["from"]; senderId: string; text: string; quickReplyId?: string; auto?: "arrived" | "on_my_way" }, now: Date): Promise<Message> {
+async function writeMessage(trx: Trx, trip: TripRow, m: { from: Message["from"]; senderId: string; text: string; quickReplyId?: string; auto?: "arrived" | "on_my_way"; lang?: Lang }, now: Date): Promise<Message> {
   const message: Message = {
     messageId: newId("msg", now.getTime()), tripId: trip.trip_id, from: m.from, text: m.text, at: now.toISOString(),
     ...(m.quickReplyId ? { quickReplyId: m.quickReplyId } : {}),
     ...(m.auto ? { auto: m.auto } : {}),
+    ...(m.lang ? { lang: m.lang } : {}),
   };
   // The event's sequence is the chat's order; it is taken under the trip lock held above.
   const { sequence } = await appendTripEvent(trx, { tripId: trip.trip_id, kind: "message", version: trip.version, occurredAt: now, message });
   await trx.insertInto("trip_messages").values({
     message_id: message.messageId, trip_id: trip.trip_id, sequence, sender: m.from, sender_id: m.senderId, text: m.text, created_at: now,
-    quick_reply_id: m.quickReplyId ?? null, auto: m.auto ?? null,
+    quick_reply_id: m.quickReplyId ?? null, auto: m.auto ?? null, lang: m.lang ?? null,
   }).execute();
   // v0.18.5 (G9, owner "Never store messages between rider or driver in driver app or rider app"): no stored notice;
   // the other side hears of it through the trip stream's message event only (contract.json#chat.appStorage).
@@ -138,10 +147,10 @@ export async function writeAutoMessage(trx: Trx, trip: TripRow, auto: "arrived" 
     const settings = await chatSettingsFor(trx, trip.zone_id);
     if (!settings.autoArrived.on) return null;
     const lang = await languageOf(trx, { actor: "rider", subjectId: trip.rider_id }, trip.zone_id);
-    return writeMessage(trx, trip, { from: "driver", senderId: trip.driver_id, text: settings.autoArrived.text[lang], auto }, now);
+    return writeMessage(trx, trip, { from: "driver", senderId: trip.driver_id, text: settings.autoArrived.text[lang], auto, lang }, now);
   }
   const lang = await languageOf(trx, { actor: "driver", subjectId: trip.driver_id }, trip.zone_id);
-  return writeMessage(trx, trip, { from: "rider", senderId: trip.rider_id, text: ON_MY_WAY_TEXT[lang], auto }, now);
+  return writeMessage(trx, trip, { from: "rider", senderId: trip.rider_id, text: ON_MY_WAY_TEXT[lang], auto, lang }, now);
 }
 
 /** The message of a trip (for translate), or 404 message_not_found. */
@@ -183,6 +192,9 @@ export async function purgeOldMessages(trx: Trx, now: Date): Promise<number> {
     const before = new Date(now.getTime() - (await chatSettingsFor(trx, zoneId)).keepDays * day);
     const ofZone = trx.selectFrom("trips").select("trip_id").where((eb) => (zoneId === null ? eb("zone_id", "is", null) : eb("zone_id", "=", zoneId)));
     const safetyTrips = trx.selectFrom("incidents").select("trip_id").where("trip_id", "is not", null);
+    // v0.18.64 §85: the kept translations go with their message (no foreign key, migration 0097).
+    const going = trx.selectFrom("trip_messages").select("message_id").where("created_at", "<", before).where("trip_id", "in", ofZone as never).where("trip_id", "not in", safetyTrips as never);
+    await trx.deleteFrom("trip_message_translations").where("message_id", "in", going as never).execute();
     const gone = await trx.deleteFrom("trip_messages").where("created_at", "<", before).where("trip_id", "in", ofZone as never).where("trip_id", "not in", safetyTrips as never).executeTakeFirst();
     // The event stays (its sequence is the stream's order); only the text goes.
     await trx.updateTable("trip_events").set({ message: null }).where("kind", "=", "message").where("message", "is not", null).where("occurred_at", "<", before).where("trip_id", "in", ofZone as never).where("trip_id", "not in", safetyTrips as never).execute();

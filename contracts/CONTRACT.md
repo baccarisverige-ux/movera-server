@@ -1,4 +1,8 @@
-# Movera shared contract v0.18.62
+# Movera shared contract v0.18.64
+
+v0.18.64 (owner 2026-11-11 "the language must arrive with the receiver language and the translate when click on it must open original language", Rule 0; X-Api-Version stays `0.5`; additive; server migration 0097): **ride chat messages arrive already translated into the reader's app language**; "See original" under the message shows the text as written, a second tap shows the translation again; own messages show as written. New `CountryRules.chat.autoTranslate` (default on, Admin › Chat "Translate messages automatically"), `ChatOptions.autoTranslate`, `Message.lang` (source language), `TranslateMessageRequest.auto` (403 `auto_translate_off` when the switch is off); the server answers the text as written when `Message.lang` = `to` and keeps each translation once per message and language (cache, deleted with the message). Failure → the original, no notice. See §85.
+
+v0.18.63 (docs only, Rule 0 sync with server PR #179 and rider PR #590; X-Api-Version stays `0.5`; no wire change; no migration): **the server closes `GET /rider/config/stream` and `GET /driver/config/stream` when it cannot guarantee delivery** (its LISTEN connection reconnects); `rider_trip_changed` / `driver_reservations_changed` hints are not replayed, so on every stream reconnect (not the first connect) the rider app reads `GET /rider/trips/active` and its Upcoming list again, and the driver app re-reads its reservations (§53, §68).
 
 v0.18.62 (docs fix, no behaviour change; X-Api-Version stays `0.5`; no migration): **`POST /admin/auth/sign-in-locks/unlock` `{ phone }` documented as the server answers**: needs `settings.edit` (`x-permission`; else `403 forbidden` `missing_permission`); answers **`200 { phone, lifted }`** (the number sent, not masked; `lifted` = how many wrong-code sessions of the last 24 h were unlocked, `0` is still 200), not "No content"; `400 invalid_request` reason `invalid_body` (phone missing/not a string) or `invalid_phone` (not international form); never 404 (`contract.json#signInUnlock`). See §84.
 
@@ -1098,7 +1102,7 @@ Owner: fix-plan Q5 2026-11-04; job-2 Q1 "Live ride + banner", Q2 (driver change)
 - **Both active**: the live trip stays on screen; banner "Your booked driver is on the way" while `GET /rider/trips?kind=scheduled&status=driver_to_pickup&status=arrived` lists one.
 - **Driver change**: before he started driving, the rider sees nothing; after, the normal "Searching for a new driver", then the new driver heading to the pickup.
 - **Late but kept**: no message to the rider.
-- **Trip made elsewhere (P21)**: `rider_trip_changed { tripId }` on `GET /rider/config/stream` for every event of the rider's trips; the Home also polls `GET /rider/trips/active` every 8 s while it shows no trip.
+- **Trip made elsewhere (P21)**: `rider_trip_changed { tripId }` on `GET /rider/config/stream` for every event of the rider's trips; the Home also polls `GET /rider/trips/active` every 8 s while it shows no trip. The server closes the stream when it cannot guarantee delivery (its LISTEN connection reconnects); hints are not replayed, so on every stream reconnect (not the first connect) the rider app reads `GET /rider/trips/active` and its Upcoming list again (as `driverReservationsLive.app`).
 - **Leave-now popup**: push `reservation_leave_now` has `data.riderFirstName`; title "Time to drive to pickup · {name}"; Start opens the normal trip screen.
 - **Rules**: the rider app reads `booking.freeChangeBeforeMin` and `cancelFees.reservation` from `/rider/config`; `GET /rider/scheduled-rides/rules` is not used.
 - **409**: `version_mismatch` carries `projection`; reschedule, cancel and raise-price retry once with its version.
@@ -1208,7 +1212,7 @@ Proven cause (rule 36, rider-app main 10f17471, server main 129d148): (1) the ri
 
 ## 68. Driver booked rides live — driver_reservations_changed (v0.18.45)
 
-- **`GET /driver/config/stream`** also carries **`driver_reservations_changed`** `{ eventId, kind, tripId, occurredAt, serverTime }`. Its SSE `id:` stays the config version already sent (as `rider_trip_changed`).
+- **`GET /driver/config/stream`** also carries **`driver_reservations_changed`** `{ eventId, kind, tripId, occurredAt, serverTime }`. Its SSE `id:` stays the config version already sent (as `rider_trip_changed`). The server closes the stream when it cannot guarantee delivery (LISTEN reconnect); hints are not replayed, the app re-reads on reconnect.
 - **Hint only**: no reservation data; the app re-reads `GET /driver/reservations?scope=open` and `?scope=accepted`, which alone decides what the driver sees.
 - **When**: a trip with `scheduledAt` in the stream's zone changes (created, accepted, released, cancelled, rescheduled, started), or the trip names this driver. A now-ride sends nothing. Only after commit; a rolled-back change sends nothing.
 - **App**: re-read at sign-in, on every reconnect and on the event; debounce bursts (≤ 1 re-read per 2 s); demo rides cleared at sign-in.
@@ -1394,3 +1398,17 @@ Docs fix: the contract now says what the server already does (no behaviour chang
 - **Answer**: `200 { phone, lifted }` (`SignInUnlockResult`): `phone` is the number sent (E.164, not masked); `lifted` (integer ≥ 0) is how many of the number's wrong-code sessions of the last 24 h were unlocked; `0` (nothing was locked) is still 200. Audited `auth.sign_in_unlock { lifted }`, last 4 digits hidden.
 - **Errors**: `400 invalid_request` reason `invalid_body` (phone missing or not a string) or `invalid_phone` (not `^\+[1-9][0-9]{6,14}$`); `401`; `403 missing_permission`. Never 404.
 - **Order (Rule 0)**: contract → server (no change) → admin (reads `{ phone, lifted }`; Unlock only with `settings.edit`) → driver app (no change) → rider app (no change).
+
+## 85. Chat messages arrive translated (v0.18.64)
+
+Owner 2026-11-11: "the language must arrive with the receiver language and the translate when click on it must open original language" (Rule 0: contract, server, admin incl. setting, driver app, rider app). X-Api-Version stays `0.5`; additive; older apps keep the tap-to-translate link of §78. contract.json#chat.autoTranslate.
+
+- **Rule**: in the ride chat each message from the other side (or support) shows already translated into the reader's own app language (sv / fr / en). Under it **"See original"** shows the text as written; tapping the link again ("Translate to <language>") shows the translation again, with no new request. The reader's own messages show as written.
+- **Setting**: `CountryRules.chat.autoTranslate` (default `true`), Admin › Pricing › Tips & limits › Chat › "Translate messages automatically", published with `country_rules`. `false`: messages show as written and the reader taps "Translate to <language>" (§78). `translation false` still hides both. `ChatOptions.autoTranslate` carries it to the apps (absent from an older server: off).
+- **When the app asks**: once per message from the other side, as it arrives (stream or history), when `translation` and `autoTranslate` are on and `Message.lang` is not the reader's language; not before `ChatOptions` is read.
+- **`Message.lang`** (optional): the language of the text — exact for quick-reply chips and automatic messages (the reader's language), the sender's app language for typed text (a hint only), absent for support and older messages.
+- **Request**: `POST /trips/{tripId}/messages/translate { messageId, to, auto: true }`; with `autoTranslate false` an `auto` request is `403 forbidden`, reason `auto_translate_off`. When `Message.lang` = `to` the answer is the text as written (no provider call, also with no provider).
+- **Cache (server)**: one translation per message and target language, kept with the message (table `trip_message_translations`, migration 0097, deleted with the message after `keepDays`); later requests (other device, reopen, retry, another server copy) answer the kept text. The apps still keep nothing after the trip.
+- **Failure**: 503 `coming_soon` (no provider yet), 403 `translation_off` / `auto_translate_off`, 429, network error or empty text → the original shows with "Translate to <language>", no notice, no retry loop; after `coming_soon` / `translation_off` / `auto_translate_off` the app stops asking by itself for that trip. A tap still asks and shows the §78 notice.
+- **Trip sheet card**: shows the same text as the chat; the driver's read aloud reads the translation if it arrives within 3 s, else the original.
+- **Order (Rule 0)**: contract → server (Message.lang, `auto`, same-language answer, cache, migration 0097, setting with default) → admin (Chat settings switch, texts sv / fr / en) → driver and rider apps (translated by default, See original toggle, quiet fallback). The admin's trip chat view shows messages as written (no change).

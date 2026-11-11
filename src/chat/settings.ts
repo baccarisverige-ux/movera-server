@@ -19,6 +19,8 @@ export type ChatSettings = {
   sheetAutoOpen: "new_message" | "off";
   readAloudDefault: boolean;
   translation: boolean;
+  /** v0.18.64 §85 (chat.autoTranslate): messages arrive translated into the reader's language. Default true. */
+  autoTranslate: boolean;
   quickRepliesOn: boolean;
   quickReplies: { driver: QuickReply[]; rider: QuickReply[] };
   autoArrived: { on: boolean; text: Texts };
@@ -82,6 +84,7 @@ export function chatSettingsOf(rules: unknown): ChatSettings {
     sheetAutoOpen: raw["sheetAutoOpen"] === "new_message" || raw["sheetAutoOpen"] === "off" ? raw["sheetAutoOpen"] : d.sheetAutoOpen,
     readAloudDefault: bool(raw["readAloudDefault"], d.readAloudDefault),
     translation: bool(raw["translation"], d.translation),
+    autoTranslate: bool(raw["autoTranslate"], d.autoTranslate),
     quickRepliesOn: bool(raw["quickRepliesOn"], d.quickRepliesOn),
     quickReplies: { driver: replies(qr["driver"], d.quickReplies.driver), rider: replies(qr["rider"], d.quickReplies.rider) },
     autoArrived: { on: bool(aa["on"], d.autoArrived.on), text: texts(aa["text"], 200) ?? d.autoArrived.text },
@@ -103,6 +106,7 @@ export function chatOptions(settings: ChatSettings, side: "rider" | "driver") {
     sheetAutoOpen: settings.sheetAutoOpen,
     readAloudDefault: settings.readAloudDefault,
     translation: settings.translation,
+    autoTranslate: settings.autoTranslate,
     headerLine: CHAT_HEADER_LINE,
   };
 }

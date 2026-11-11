@@ -2,6 +2,7 @@ import { TEST_CODE } from "../../src/auth/service.js";
 import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
+import type { Translator } from "../../src/chat/translate.js";
 import { seedTestPhones } from "../../src/auth/testPhones.js";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import type { Db } from "../../src/db/db.js";
@@ -14,11 +15,11 @@ export const SODERMALM = { address: "Medborgarplatsen", lat: 59.3143, lng: 18.07
 
 export const fixedRouter: Router = { route: async (_points: LatLng[]) => ({ distanceMeters: 8000, durationSeconds: 1080, source: "osrm" }) };
 
-export async function testWorld(db: Db, url: string, clock: { now: Date }) {
+export async function testWorld(db: Db, url: string, clock: { now: Date }, extra: { translator?: Translator } = {}) {
   await seedTestPhones(db);
   const pricing = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/pricing_document.json`, "utf8"));
   await db.insertInto("config_live").values({ doc: "pricing", zone_id: "Z001", version: 1, document: JSON.stringify(pricing), published_at: clock.now, published_by: null }).execute();
-  const app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: url, JWT_SECRET: "world-test-secret".padEnd(48, "w") }), logger: false, db, clock: () => clock.now, router: fixedRouter });
+  const app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: url, JWT_SECRET: "world-test-secret".padEnd(48, "w") }), logger: false, db, clock: () => clock.now, router: fixedRouter, ...extra });
   return app;
 }
 
