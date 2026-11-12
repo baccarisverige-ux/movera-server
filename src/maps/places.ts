@@ -131,7 +131,8 @@ export class GooglePlaces implements Places {
     if (data["status"] === "ZERO_RESULTS") return null;
     if (data["status"] !== "OK") throw new PlacesUnavailable(`Geocoding status ${String(data["status"])}`);
     // One warning line per skipped wrong result, so a new kind of bad Google answer shows in the logs (no coordinates).
-    return pickReverseAddress((data["results"] ?? []) as ReverseResult[], { lat: input.lat, lng: input.lng }, (skipped) =>
+    // B1.27: and no address either (it is a place near a pickup); the types, towns and distance say what was wrong.
+    return pickReverseAddress((data["results"] ?? []) as ReverseResult[], { lat: input.lat, lng: input.lng }, ({ address: _address, ...skipped }) =>
       console.warn(JSON.stringify({ msg: "reverse_geocode_skipped", ...skipped })),
     );
   }

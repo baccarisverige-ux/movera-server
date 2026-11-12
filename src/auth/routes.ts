@@ -98,7 +98,8 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
   app.post(`${API_PREFIX}/account/email/change`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);
     const body = parseBody(z.object({ email: z.string().max(200) }), request.body);
-    return startEmailChange(deps.db, who as never, body.email, deps.clock?.() ?? new Date(), deps.testSignInEnabled ? (code) => request.log.info({ code }, "e-mail change code (no e-mail provider yet)") : undefined);
+    // B1.27: the code reaches the log only on a developer's laptop, never on staging or production (no e-mail provider yet).
+    return startEmailChange(deps.db, who as never, body.email, deps.clock?.() ?? new Date(), deps.logCodes === true ? (code) => request.log.info({ code }, "e-mail change code (developer laptop only)") : undefined);
   });
   app.post(`${API_PREFIX}/account/email/verify`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);

@@ -90,6 +90,8 @@ export type AuthDeps = {
   fastTestSignIn?: boolean;
   /** Apple / Google token verifiers, one per provider with client ids set. */
   providers?: Partial<Record<Provider, ProviderVerifier>> | undefined;
+  /** B1.27 (owner, Sitting W1): the e-mail change code is written to the log only on a developer's laptop (MOVERA_ENV development). */
+  logCodes?: boolean;
   clock?: () => Date;
 };
 

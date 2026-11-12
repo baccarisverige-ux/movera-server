@@ -1,5 +1,6 @@
 import type { Executor } from "../db/db.js";
 import { newId } from "../ids.js";
+import { scrubText } from "../telemetry/scrub.js";
 
 /**
  * Text messages the server sends (fleet invitations; later the sign-in code for real numbers). Every message is
@@ -32,7 +33,7 @@ export async function sendSms(ex: Executor, deps: SmsDeps, message: SmsMessage, 
     return { smsId, status: "sent" };
   } catch (error) {
     await ex.insertInto("sms_outbox").values({ sms_id: smsId, phone: message.phone, text: message.text, kind: message.kind, status: "failed", provider: deps.provider.name, error: String(error).slice(0, 500), created_at: now }).execute();
-    deps.warn?.({ smsId, err: String(error) }, "SMS failed");
+    deps.warn?.({ smsId, err: scrubText(String(error)) }, "SMS failed");
     return { smsId, status: "failed" };
   }
 }
