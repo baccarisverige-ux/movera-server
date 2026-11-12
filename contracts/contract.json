@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.68",
+  "version": "0.18.69",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -1554,7 +1554,8 @@
     "maxBodyBytes": 16384,
     "keepDays": 30,
     "privacy": "clients scrub e-mails, phone numbers and coordinates; the server scrubs again before storing",
-    "limits": "rate limited per address and device: 429 rate_limited; a body over maxBodyBytes is 400 invalid_request (reason payload_too_large)",
+    "perAddressPerMinute": 120,
+    "limits": "B1.22: its own budget, outside the general write limit (rateLimit): perAddressPerMinute per client address (default 120; server env TELEMETRY_PER_ADDRESS_PER_MINUTE), fixed 60 s window in each server copy's memory, each copy allowing 1/WEB_COPIES of it; over it 429 rate_limited, reason telemetry_too_many, Retry-After. A token sent with telemetry does not use the user's write budget. A body over maxBodyBytes is 400 invalid_request (reason payload_too_large); one over 4 × maxBodyBytes is refused before it is read: 400 invalid_request (reason body_too_large).",
     "crashReport": {
       "note": "v0.16.0 (owner 2026-10-29, \"Want section on dispatch to show all crash droids and bugs detected from server\"): POST /telemetry/crashes takes optional app, platform, appVersion, build, screen, kind and occurredAt next to error, stack and extra (additive; an older app sends none). The server scrubs again, groups each report and keeps the reports keepDays days.",
       "apps": [
@@ -7941,6 +7942,8 @@
     "version": "0.18.24",
     "note": "BASE job B11 (architecture audit 2026-11-03 item 9): one general write limit on top of the existing sign-in limits (auth.limits, countryLimits, waitlist, admin sign-in), which stay as they are.",
     "applies": "every POST, PUT, PATCH and DELETE under /api/v1; reads (GET, HEAD) and CORS preflights (OPTIONS) are never counted",
+    "safetyWrites": "B1.22 (owner W1 Q82, 2026-11-11): with a valid access token these are never counted or refused by this limit: POST /rider/trips/{tripId}/sos, /driver/trips/{tripId}/sos, /rider/trips/{tripId}/ride-check, /driver/trips/{tripId}/ride-check, /trips/{tripId}/cancel, /rides/{rideId}/cancel, /admin/trips/{tripId}/cancel. Matched on the route, not the raw path. Without a valid token they count against the address like any other write. Their own checks still apply: one open SOS incident per trip, trip state, Idempotency-Key, and at most RIDE_CHECK_APP_MAX_PER_TRIP (server setting, default 30) app-started ride checks per trip and side — over it no new check is created and the answer is the newest app check's receipt (200), while 'need_help' still raises the case and answers to an existing check are never capped. Every other write, including /trips/{tripId}/cancel-reason, still counts.",
+    "ownBudget": "POST /telemetry/logs, /telemetry/analytics, /telemetry/crashes are never counted here; they have their own budget (contract.json#telemetry.limits).",
     "key": "a valid access token: its actor and user (sub), so many accounts behind one address never share a budget; no or an invalid token: the client address (the address the trusted proxy saw, TRUST_PROXY_HOPS)",
     "window": "fixed 60 s window per key, in the server's memory",
     "signInOutsideProduction": "Owner 2026-11-04: on staging only, a test number (auth.testSignIn, no real SMS) has no resend wait (otp.retryAfterSeconds; the challenge says retryAfterSeconds 0) and no hourly per-number or per-address code limit, under a cap of 30 codes per number per minute (429 otp_too_many); production keeps every OTP limit and has no test numbers. staging and development: POST /auth/otp/request and /auth/otp/verify are not counted per address (load test); the OTP limits still apply. Production counts them.",

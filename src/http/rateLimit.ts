@@ -12,7 +12,8 @@ import { API_PREFIX } from "./prefix.js";
  * (token `sub`), so many accounts behind one address (the 500+500 load test, a mobile operator's NAT) never share a
  * budget; a caller without a valid token is keyed by its address (Render proxy: TRUST_PROXY_HOPS). Over the budget:
  * 429 rate_limited, reason too_many_requests, Retry-After = seconds until the window ends. The OTP limits in
- * auth/service.ts stay as they are; this one sits in front of them. In memory per copy: with WEB_COPIES > 1 each copy allows its share of the budget (shareOf).
+ * auth/service.ts stay as they are; this one sits in front of them. B1.22: signed-in safety writes (SAFETY_WRITE_ROUTES)
+ * and telemetry (OWN_BUDGET_ROUTES) are not counted here. In memory per copy: with WEB_COPIES > 1 each copy allows its share of the budget (shareOf).
  *
  * Owner 2026-11-04 "Yes, admin setting": the budgets are CountryRules.limits.writesPerUserPerMinute /
  * writesPerAddressPerMinute of each country's standard. They are read in the background at most once a minute
@@ -30,6 +31,26 @@ const SWEEP_EVERY = 1000;
 export const LIMITS_REFRESH_MS = 60_000;
 /** Sign-in calls left out of the write limit outside production (registerWriteLimit exemptPaths). */
 export const SIGN_IN_PATHS: readonly string[] = [`${API_PREFIX}/auth/otp/request`, `${API_PREFIX}/auth/otp/verify`];
+
+/**
+ * B1.22 (owner W1 Q82, 2026-11-11): safety writes are never refused, nor counted, by this limit when the caller has a
+ * valid token: SOS and ride-check answers (rider and driver), and trip cancels (rider, its /rides alias, driver, admin).
+ * Without a valid token they count against the address like any other write. Matched on the route pattern.
+ */
+export const SAFETY_WRITE_ROUTES: ReadonlySet<string> = new Set(
+  [
+    "/rider/trips/:tripId/sos",
+    "/driver/trips/:tripId/sos",
+    "/rider/trips/:tripId/ride-check",
+    "/driver/trips/:tripId/ride-check",
+    "/trips/:tripId/cancel",
+    "/rides/:rideId/cancel",
+    "/admin/trips/:tripId/cancel",
+  ].map((route) => `POST ${API_PREFIX}${route}`),
+);
+
+/** B1.22: the apps' telemetry lines have their own budget per address (telemetry/routes.ts), never this one. */
+export const OWN_BUDGET_ROUTES: ReadonlySet<string> = new Set(["logs", "analytics", "crashes"].map((kind) => `POST ${API_PREFIX}/telemetry/${kind}`));
 
 export class WriteLimiter {
   private readonly windows = new Map<string, { start: number; count: number }>();
@@ -149,8 +170,11 @@ export function registerWriteLimit(
     // Staging / development: sign-in (OTP request + verify) is not counted per address, so the 500+500 load test can
     // sign 1000 accounts in from a few machines. Its own OTP limits (per phone, per address, countryLimits) still apply.
     if (deps.exemptPaths?.includes(request.url.split("?")[0]!)) return;
+    const route = `${request.method} ${request.routeOptions.url ?? ""}`;
+    if (OWN_BUDGET_ROUTES.has(route)) return;
     const now = deps.clock?.() ?? new Date();
     const { key, zone, signedIn } = keyOf(request, deps.jwtSecret, now);
+    if (signedIn && SAFETY_WRITE_ROUTES.has(route)) return;
     const country = admin?.countryOfZone(signedIn ? zone : deps.defaultZoneId) ?? null;
     const set = admin?.get(country, now.getTime()) ?? null;
     const limit = shareOf(signedIn ? limitOf(settings.user, set?.user) : limitOf(settings.address, set?.address), settings.copies);

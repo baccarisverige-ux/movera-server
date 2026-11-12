@@ -68,6 +68,8 @@ Settings come from the environment (`src/env.ts`):
 | `ADMIN_TEST_EMAIL`, `ADMIN_TEST_NAME`, `ADMIN_TEST_PASSWORD_RESET` | A second Super admin for automated checks, made at start the same way: kept if it exists, password link in the log while it has no password, any new reset text gives one new link (not in production) | none |
 | `MOVERA_EXTRA_TEST_PHONES` | Big test: more test numbers than the six built in, comma list of numbers and ranges (`+467XXXXXXXX-+467YYYYYYYY,+336XXXXXXXX`), both ends included, at most 1000; seeded at start for both apps with the fixed code (not in production) | none |
 | `RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE`, `RATE_LIMIT_WRITES_PER_USER_PER_MINUTE` | Write-request limits per signed-in user and per address, per minute (`src/env.ts`; `0` = off) | `120` / `60` in production, `1200` / `600` elsewhere |
+| `TELEMETRY_PER_ADDRESS_PER_MINUTE` | The apps' telemetry lines (`POST /telemetry/logs`, `/analytics`, `/crashes`) per address per minute: their own budget, outside the write limit, shared by `WEB_COPIES` (`src/env.ts`, 1–100000) | `120` |
+| `RIDE_CHECK_APP_MAX_PER_TRIP` | The app's own ride checks (new checkIds) per trip and side; over it no new check or no-answer timer is made and the newest one answers. Answers, "I need help" and the server's checks are never capped (`src/env.ts`, 1–500) | `30` |
 | `WEB_COPIES` | How many web copies run behind the load balancer. Each copy counts writes in its own memory, so each allows 1/`WEB_COPIES` of the write budget (load test part 6) | `1` |
 | `LOG_LEVEL` | `info`, `debug`, … | `info` |
 

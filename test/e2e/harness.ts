@@ -51,7 +51,8 @@ export type Res = { status: number; body: Json; headers: Headers };
 export const BOOTSTRAP_EMAIL = "owner@movera.test";
 
 /** poolMax: the server gets its own pool of this size (the test's own reads keep the default pool). */
-export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date; poolMax?: number };
+/** env: extra server environment (e.g. a production-size write limit, B1.22). */
+export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date; poolMax?: number; env?: Record<string, string> };
 
 let keyCounter = 0;
 export const newKey = (prefix = "e2e") => `${prefix}-key-${String(++keyCounter).padStart(12, "0")}-${process.pid}`;
@@ -95,6 +96,7 @@ export class Sim {
       ADMIN_BOOTSTRAP_EMAIL: BOOTSTRAP_EMAIL,
       ADMIN_PANEL_URL: "https://admin.example.test/live/",
       ...(options.osrmUrl ? { OSRM_URL: options.osrmUrl } : {}),
+      ...options.env,
     });
     sim.env = env;
     await prepareTestWeek(db, env, { info: (data, message) => sim.startLog.push({ data, message }) }, { now: sim.clock.now });

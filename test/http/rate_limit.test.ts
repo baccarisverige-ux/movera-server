@@ -125,3 +125,32 @@ describe("general write limit: admin setting per country (owner 2026-11-04)", ()
     await app.close();
   });
 });
+
+describe("B1.22: telemetry has its own budget (TELEMETRY_PER_ADDRESS_PER_MINUTE)", () => {
+  let database: TestDatabase;
+  beforeAll(async () => {
+    database = await freshDatabase();
+  });
+  afterAll(async () => {
+    await database.drop();
+  });
+
+  const lines = async (extra: Record<string, string>, n: number) => {
+    const env = readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: SECRET, TRUST_PROXY_HOPS: "1", ...extra });
+    const app = await buildApp({ env, logger: false, db: database.db, clock: () => at });
+    const codes: number[] = [];
+    for (let i = 0; i < n; i++) codes.push((await app.inject({ method: "POST", url: "/api/v1/telemetry/logs", headers: { "x-forwarded-for": "203.0.113.90", "content-type": "application/json" }, payload: { level: "error", event: `line ${i}` } })).statusCode);
+    await app.close();
+    return codes;
+  };
+
+  it("is not the write budget, defaults to 120, is a setting and is shared by the web copies", async () => {
+    // A write budget of 2 per address does not touch telemetry; the telemetry budget answers its own 429.
+    const own = await lines({ RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE: "2", TELEMETRY_PER_ADDRESS_PER_MINUTE: "5" }, 6);
+    expect(own).toEqual([202, 202, 202, 202, 202, 429]);
+    expect((await lines({ TELEMETRY_PER_ADDRESS_PER_MINUTE: "6", WEB_COPIES: "2" }, 4)).at(-1)).toBe(429);
+    const unset = await lines({}, 121);
+    expect(unset.filter((code) => code === 202)).toHaveLength(120);
+    expect(unset.at(-1)).toBe(429);
+  });
+});

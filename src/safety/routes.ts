@@ -16,7 +16,7 @@ import { reportRideCheck } from "./rideCheck.js";
 
 /** contract v0.7.0 §15: rider and driver SOS, admin incidents and the incident feed. */
 
-export type SafetyDeps = { db: Db; jwtSecret: string; hub?: NotificationHub; clock?: () => Date };
+export type SafetyDeps = { db: Db; jwtSecret: string; rideCheckAppMaxPerTrip: number; hub?: NotificationHub; clock?: () => Date };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Position = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracyM: z.number().min(0).optional(), at: z.string().datetime() });
@@ -77,7 +77,7 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
       const who = await authenticate(request, guard, [actor]);
       const tripId = tripParam(request);
       const body = parseBody(RideCheckBody, request.body);
-      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await reportRideCheck(trx, { actor, subjectId: who.subjectId }, tripId, clean(body), now()) }));
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await reportRideCheck(trx, { actor, subjectId: who.subjectId }, tripId, clean(body), now(), deps.rideCheckAppMaxPerTrip) }));
       return result.body;
     });
   }

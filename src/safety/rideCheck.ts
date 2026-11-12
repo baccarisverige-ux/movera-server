@@ -92,16 +92,38 @@ async function raiseHelp(trx: Trx, trip: TripRow, check: CheckRow, position: Pos
   return open.incident_id;
 }
 
-export async function reportRideCheck(trx: Trx, who: { actor: Side; subjectId: string }, tripId: string, body: RideCheckBody, now: Date) {
+/**
+ * B1.22 supervisor N1: the endpoint is outside the write limit, so the app's own checks (origin app; the server's scan
+ * checks never count) are capped per trip and side. The trip row is locked, so the count cannot race. Returns the
+ * newest app check once the trip and side hold `max` of them, else null.
+ */
+async function appCapReached(trx: Trx, tripId: string, side: Side, max: number): Promise<CheckRow | null> {
+  const own = trx.selectFrom("ride_checks").where("trip_id", "=", tripId).where("side", "=", side).where("origin", "=", "app");
+  const held = await trx.selectFrom(own.select("check_id").limit(max).as("held")).select(sql<string>`count(*)`.as("n")).executeTakeFirstOrThrow();
+  if (Number(held.n) < max) return null;
+  return own.selectAll().orderBy("created_at", "desc").orderBy("check_id", "desc").limit(1).executeTakeFirstOrThrow();
+}
+
+export async function reportRideCheck(trx: Trx, who: { actor: Side; subjectId: string }, tripId: string, body: RideCheckBody, now: Date, appMaxPerTrip: number) {
   const trip = await lockTrip(trx, tripId);
   const own = who.actor === "rider" ? trip.rider_id === who.subjectId : trip.driver_id === who.subjectId;
   if (!own) throw notFound("No such trip.", "trip_not_found");
   if (!mayReport(trip, who.actor, now, body.checkId)) {
     throw new ApiError("invalid_transition", "Ride check works only during the trip.", { reason: "trip_not_live", projection: tripProjection(trip, who.actor) });
   }
-  let check = await trx.selectFrom("ride_checks").selectAll().where("trip_id", "=", tripId).where("side", "=", who.actor).where("check_id", "=", body.checkId).executeTakeFirst();
   const position = body.position;
+  let check = await trx.selectFrom("ride_checks").selectAll().where("trip_id", "=", tripId).where("side", "=", who.actor).where("check_id", "=", body.checkId).executeTakeFirst();
   if (!check) {
+    const newest = serverCheckOf(trip, body.checkId) ? null : await appCapReached(trx, tripId, who.actor, appMaxPerTrip);
+    if (newest && body.answer !== "need_help") {
+      // Over the cap: no new row, no no-answer timer; the newest app check answers (200, the receipt the apps read).
+      return receiptOf(newest, now);
+    }
+    if (newest) {
+      // I need help is never dropped: the trip's ride_check case opens or rings, without a new row.
+      const asked: CheckRow = { trip_id: tripId, side: who.actor, check_id: body.checkId, trigger: body.trigger, subject_id: who.subjectId, origin: "app", shown_at: null, answer: "need_help", answered_at: now, no_answer_at: null, position: position ? JSON.stringify(position) : null, incident_id: null, created_at: now };
+      return receiptOf({ ...asked, incident_id: await raiseHelp(trx, trip, asked, position, now) }, now);
+    }
     check = await trx
       .insertInto("ride_checks")
       .values({
