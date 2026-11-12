@@ -1,4 +1,6 @@
-# Movera shared contract v0.18.69
+# Movera shared contract v0.18.70
+
+v0.18.70 (server S4 B1.23, owner Q83; X-Api-Version stays `0.5`; additive; no new setting; no app change; no migration): **§88 no mass offline after an outage** — when every server copy or the database was down (the no-position job ran more than 60 s late and no fix was stored meanwhile), every driver's no-position minutes count from no earlier than its end (the job's first run after it or the first fix stored after it, whichever is earlier); a network cut in front of a running server is not covered; the booked-ride offline check waits the same grace — see `contract.json#driverHome.setOffline.outageGrace`.
 
 v0.18.69 (wording only, server B1.22, owner W1 Q82; X-Api-Version stays `0.5`; additive; no API shape change; no migration): **§47 safety writes are never refused by the write limit** — with a valid access token, SOS, ride-check reports and trip cancels (rider, driver, `/rides` alias, admin) are not counted; their own checks still apply, and the apps' own ride checks are capped by `RIDE_CHECK_APP_MAX_PER_TRIP` (default 30) per trip and side — see `contract.json#rateLimit.safetyWrites`. **§11 telemetry has its own budget** (`telemetry.perAddressPerMinute`, default 120, `429 rate_limited` reason `telemetry_too_many`), outside the write limit — see `contract.json#telemetry.limits`, `rateLimit.ownBudget`.
 
@@ -1446,3 +1448,22 @@ Owner answers of 2026-11-11 (evening), quoted as decisions. Full rules: `contrac
 - **Admin trip chat (owner: "Original + translation")**: `GET /trips/{tripId}/messages` answered to an admin carries `Message.translations [MessageTranslation { to, text }]`, the translations the server already keeps (§85 cache), oldest first, `[]` when none. Read-only: no provider call, no translate button for the admin; rider and driver answers never carry it. Admin › Trip details › Chat shows the text as written, then each translation under it in smaller grey text, "Translation (EN)" (sv "Översättning (EN)", fr "Traduction (EN)"). Replaces "the admin's trip chat view shows messages as written" of §85.
 - **App version line (owner: show version + build in both apps)**: Account, bottom line "Version 1.0.0 (583)": app only, **no contract change needed** (Rule 43(1)).
 - **Order (Rule 0)**: contract → server (`connectTimeoutSeconds` setting with default and range, copied into `TripCall` / `CallView`; notice language with TN fr; `Message.translations` on admin reads) → admin (Calls field; trip chat original + translation) → driver and rider apps (timeout from the call, speaker default, failure hint, version line).
+
+## 88. No mass offline after an outage (v0.18.70, S4 B1.23, owner Q83)
+
+- When every server copy or the database was down (the no-position job ran more than 60 s late and no driver's fix was
+  stored meanwhile), the no-position minutes of every driver start again from the end of the outage (`heardAgainAt`,
+  never moved back): the job's first run after it, or the first fix stored after it if a phone reaches a server copy
+  first, whichever is earlier (while the job is overdue every stored fix checks this; a copy skips the check for 10 s
+  only after it found the job on time). The decision is a short run; the pass that sets silent drivers offline is a
+  separate run right after it. Nobody is set offline at the restart; a driver who still sends nothing goes
+  `noFixMinutes` (zone, default 5) later.
+- A booked ride whose "still offline after the go-online time" check fell in the outage is not released at the restart;
+  the check runs again `noFixMinutes` (the driver's zone; default 5, also when the rule is off there) after the restart,
+  never later than the ride's search start (`dispatchAt`); still offline then, he loses it.
+- A slow server that still stores fixes is no outage. A network cut in front of a running server is not covered: drivers
+  silent for `noFixMinutes` go offline as before. A parked job row gives no signal.
+- Several server copies: the moment is kept in the database (the job's one shared timer row), so every copy agrees; one
+  copy restarting while the others run is not an outage. Value: `contract.json#driverHome.setOffline.outageGrace`.
+- Apps: no change. Admin: no change (same audit line `driver.auto_offline`, reason `no_position`). Driver app: no change
+  (the server-sent reason and text are the same).

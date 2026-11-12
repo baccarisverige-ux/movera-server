@@ -1,11 +1,11 @@
-# Movera API v0.18.69 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.70 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.69
+  version: 0.18.70
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.69 in this folder; this file must agree with them.
+    v0.18.70 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.69
+  version: 0.18.70
   source: contract.json
 paths:
   /auth/otp/request:
@@ -24622,7 +24622,9 @@ components:
                     of kind noticeKind in the driver''s language opens deepLink, and the admin audit gets a line action auditAction
                     (target driver, detail { reason: no_position, lastFixAt|null, minutes }). Driver app (decision 3): an
                     app restarted while the driver was online sets him offline (POST /driver/availability offline) and shows
-                    the same text.'
+                    the same text. v0.18.70 (B1.23): the minutes are counted from no earlier than the end of an outage of
+                    every server copy or the database: the job''s first run after it or the first fix stored after it, whichever
+                    is earlier (outageGrace).'
                 hiddenComesBackMin:
                   type: number
                   minimum: 0

@@ -32,9 +32,16 @@ let database: TestDatabase;
 let app: FastifyInstance;
 let worker: TimerWorker;
 const clock = { now: new Date("2026-11-02T08:00:00Z") };
+/**
+ * Time passes with the server up: the worker runs in steps of at most 10 s, as a real server's does every second.
+ * S4 B1.23: one long jump with no job run is an outage (the no-position job gives everyone noFixMinutes after it).
+ */
 const advance = async (seconds: number) => {
-  clock.now = new Date(clock.now.getTime() + seconds * 1000);
-  await worker.runDue();
+  const end = clock.now.getTime() + seconds * 1000;
+  while (clock.now.getTime() < end) {
+    clock.now = new Date(Math.min(end, clock.now.getTime() + 10_000));
+    await worker.runDue();
+  }
 };
 const sample = (name: string) => JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/${name}.json`, "utf8"));
 
