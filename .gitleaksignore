@@ -1,0 +1,7 @@
+# 2026-11-12: a FAKE Resend test key (not a real secret) in test/email/resend.test.ts:25 in three
+# old commits of the G30 work; the file now uses an obviously fake value (PR #208). Only these exact
+# commit fingerprints are ignored, so the scheduled full-history scan goes green and any new finding
+# (any other commit, file, line or rule) still fails the scan.
+fd05a4b1293adc7ca81a05f7474c91a4402753eb:test/email/resend.test.ts:generic-api-key:25
+e19665145a328914b610127018cd37b19bc702dd:test/email/resend.test.ts:generic-api-key:25
+580871c067683210994e0bb73d5d44a654690416:test/email/resend.test.ts:generic-api-key:25
