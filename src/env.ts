@@ -169,6 +169,13 @@ const schema = z.object({
    * safe side by side (each locks its own trip row; chosen drivers are locked NOWAIT and checked again).
    */
   DISPATCH_LANES: z.coerce.number().int().min(1).max(16).default(1),
+  /**
+   * B1.7 (owner W1 Q71): loops per instance that run ONLY housekeeping (the clean-ups, the hourly sweep, the nightly run;
+   * jobs/workerConfig.ts HOUSEKEEPING_LANE_KINDS), on top of TIMER_LANES and DISPATCH_LANES. Housekeeping never runs on the
+   * general lanes, so SOS escalation and booked rides never wait behind a long clean-up (stress T-A part 4: a 74 s sweep).
+   * Default 1: one more pooled connection at most per instance, the same housekeeping work as before (it is not urgent).
+   */
+  HOUSEKEEPING_LANES: z.coerce.number().int().min(1).max(16).default(1),
   /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */

@@ -19,6 +19,8 @@ import { driverPayouts, listPayouts } from "../../src/admin/payouts.js";
 import { listTrips } from "../../src/admin/lists.js";
 import { countDay } from "../../src/admin/kpis.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
+import { buildWorkerConfig } from "../../src/jobs/workerConfig.js";
+import { EstimateRouter } from "../../src/maps/routing.js";
 import { ROUND, WITHDRAW } from "../../src/dispatch/runtime/shared.js";
 import { TRIP_ETA } from "../../src/trips/etaNow.js";
 import { RIDE_CHECK_SCAN } from "../../src/safety/rideCheckServer.js";
@@ -283,6 +285,14 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   it("B1.13 fixed (0091 timers_due_general): general lane (all kinds but the trip lane's) skips the trip-lane backlog (jobs/timers.ts)", async () => {
     const worker = new TimerWorker(traced, { handlers: { [ROUND]: async () => undefined }, logger: { warn: () => undefined, error: () => undefined } });
     await noProblems(() => worker.runOne({ exclude: [TRIP_ETA, RIDE_CHECK_SCAN, "near_dropoff"] }), (s) => s.includes('from "timers"') && s.includes("skip locked"));
+  });
+  it("B1.7: the real general lane (trip and housekeeping kinds excluded) and the housekeeping lane skip the trip-lane backlog (jobs/workerConfig.ts)", async () => {
+    const { lanes } = buildWorkerConfig(new EstimateRouter(), { timerLanes: 4, dispatchLanes: 1 });
+    const general = lanes.find((lane) => lane.exclude !== undefined)!;
+    const housekeeping = lanes.find((lane) => lane.name === "housekeeping")!;
+    const worker = new TimerWorker(traced, { handlers: { [ROUND]: async () => undefined }, logger: { warn: () => undefined, error: () => undefined } });
+    await noProblems(() => worker.runOne(general), (s) => s.includes('from "timers"') && s.includes("skip locked"));
+    await noProblems(() => worker.runOne(housekeeping), (s) => s.includes('from "timers"') && s.includes("skip locked"));
   });
   it("trip lane takes the oldest due timer (jobs/timers.ts:141-147)", async () => {
     const worker = new TimerWorker(traced, { handlers: { [TRIP_ETA]: async () => undefined }, logger: { warn: () => undefined, error: () => undefined } });

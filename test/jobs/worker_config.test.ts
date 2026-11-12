@@ -1,7 +1,12 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildWorkerConfig, TRIP_LANE_KINDS } from "../../src/jobs/workerConfig.js";
+import { buildWorkerConfig, HOUSEKEEPING_LANE_KINDS, TRIP_LANE_KINDS } from "../../src/jobs/workerConfig.js";
+import type { TimerLane } from "../../src/jobs/timers.js";
+import { HOUSEKEEPING_KINDS } from "../../src/jobs/housekeeping.js";
+import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "../../src/jobs/maintenance.js";
+import { ALERT_SWEEP } from "../../src/alerts/detector.js";
+import { INCIDENT_ESCALATE } from "../../src/safety/incidents.js";
 import { EstimateRouter } from "../../src/maps/routing.js";
 import { TIMER } from "../../src/reservations/timerKinds.js";
 import { TRIP_ETA } from "../../src/trips/eta.js";
@@ -57,5 +62,33 @@ describe("buildWorkerConfig", () => {
 
   it("uses the real-router trip_eta handler, with its prepare", () => {
     expect(handlers[TRIP_ETA]?.prepare).toBeTypeOf("function");
+  });
+
+  // B1.7 (owner W1 Q71): housekeeping on its own lane; SOS escalation and the alert sweep on lanes it never uses.
+  const takes = (lane: TimerLane, kind: string) => (lane.kinds !== undefined ? lane.kinds.includes(kind) : !(lane.exclude ?? []).includes(kind));
+  it("B1.7: housekeeping (12 jobs, hourly sweep, nightly run) runs only on the housekeeping lane", () => {
+    expect(HOUSEKEEPING_KINDS).toHaveLength(12);
+    expect([...HOUSEKEEPING_LANE_KINDS].sort()).toEqual([...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY].sort());
+    const housekeeping = lanes.filter((lane) => lane.name === "housekeeping");
+    expect(housekeeping).toHaveLength(1);
+    for (const kind of HOUSEKEEPING_LANE_KINDS) {
+      expect(handlers[kind]).toBeTypeOf("function");
+      expect(lanes.filter((lane) => takes(lane, kind))).toEqual(housekeeping);
+    }
+  });
+  it("B1.7: incident_escalate, alert_sweep and every booked-ride timer run on a lane that never takes housekeeping", () => {
+    for (const kind of [INCIDENT_ESCALATE, ALERT_SWEEP, ...Object.values(TIMER)]) {
+      const own = lanes.filter((lane) => takes(lane, kind));
+      expect(own.length).toBeGreaterThanOrEqual(1);
+      for (const lane of own) expect(HOUSEKEEPING_LANE_KINDS.filter((hk) => takes(lane, hk))).toEqual([]);
+    }
+  });
+  it("B1.7: every kind with a handler is taken by some lane; HOUSEKEEPING_LANES sets the housekeeping lane count", () => {
+    for (const kind of Object.keys(handlers)) expect(lanes.some((lane) => takes(lane, kind))).toBe(true);
+    const wide = buildWorkerConfig(new EstimateRouter(), { timerLanes: 4, dispatchLanes: 1, housekeepingLanes: 3 }).lanes;
+    expect(wide.filter((lane) => lane.name === "housekeeping")).toHaveLength(3);
+    // Today's other lanes are unchanged: 1 dispatch + 1 trip + 2 general.
+    expect(lanes).toHaveLength(5);
+    expect(lanes.filter((lane) => lane.exclude !== undefined)).toHaveLength(2);
   });
 });
