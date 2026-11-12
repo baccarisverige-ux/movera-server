@@ -250,7 +250,7 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
     const who = { actor: "admin", subjectId: "adm_t5", sessionId: "ses_t5", zones: ["*"], perms } as Principal;
     const feed = new AdminLiveFeed(database.db, hub, { warn: () => undefined });
     const sent: number[] = [];
-    const sub = { who, last: 0, catchingUp: true, send: (row: { sequence: string }) => sent.push(Number(row.sequence)), cursor: () => undefined };
+    const sub = { who, last: 0, catchingUp: true, send: (row: { sequence: string }) => sent.push(Number(row.sequence)), cursor: () => undefined, close: () => undefined };
     const top = await database.pool.query<{ top: string | null }>("SELECT max(sequence) AS top FROM admin_live_events");
     sub.last = Number(top.rows[0]!.top ?? 0);
     const leave = await feed.join(sub);

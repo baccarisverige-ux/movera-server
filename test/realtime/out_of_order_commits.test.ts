@@ -38,7 +38,7 @@ describe("S04 A1: events committed out of order", () => {
     const hub = { subscribe: (_c: string, fn: () => void) => (listeners.push(fn), () => undefined) } as unknown as NotificationHub;
     const feed = new AdminLiveFeed(database.db, hub, { warn: () => undefined });
     const sent: number[] = [];
-    await feed.join({ who: owner, last: 0, catchingUp: true, send: (row) => sent.push(Number(row.sequence)), cursor: () => undefined });
+    await feed.join({ who: owner, last: 0, catchingUp: true, send: (row) => sent.push(Number(row.sequence)), cursor: () => undefined, close: () => undefined });
     expect(ADMIN_EVENTS_CHANNEL).toBeTruthy();
     const notify = async () => {
       const before = feed.reads;

@@ -9,7 +9,7 @@ import { eventEnvelope } from "./events.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "./hub.js";
 import { openEventStream } from "./sse.js";
-import { readRetry } from "./retry.js";
+import { giveUpStream, readRetry } from "./retry.js";
 
 /**
  * Live streams (contract §4). Each stream subscribes before it replays, then reads everything after the last
@@ -42,7 +42,7 @@ export async function streamTrip(
   let last = after;
   let running = false;
   let again = false;
-  const retry = readRetry(() => void pump(), () => stream.closed());
+  const retry = readRetry(() => void pump(), () => stream.closed(), () => giveUpStream(stream));
   stream.onClose(retry.stop);
 
   const pump = async () => {
@@ -140,7 +140,7 @@ export async function streamConfig(
       serverTime: now.toISOString(),
     });
   };
-  const retry = readRetry(() => void safeCheck(), () => stream.closed());
+  const retry = readRetry(() => void safeCheck(), () => stream.closed(), () => giveUpStream(stream));
   stream.onClose(retry.stop);
   const safeCheck = () =>
     check().then(retry.ok, (error: unknown) => {

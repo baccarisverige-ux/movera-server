@@ -1,4 +1,4 @@
-import { readRetry } from "./retry.js";
+import { giveUpStream, readRetry, spreadClose } from "./retry.js";
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
 import { z } from "zod";
@@ -84,7 +84,7 @@ export async function pruneAdminLiveEvents(ex: Executor, now: Date, batch: numbe
   return dropped;
 }
 
-type Subscriber = { who: Principal; last: number; own?: SettledCursor; catchingUp: boolean; send: (row: AdminLiveRow) => void; cursor: (sequence: number) => void };
+type Subscriber = { who: Principal; last: number; own?: SettledCursor; catchingUp: boolean; send: (row: AdminLiveRow) => void; cursor: (sequence: number) => void; close: () => void; closing?: true };
 const LIVE_SEQUENCE = "admin_live_events_sequence_seq";
 
 /**
@@ -103,8 +103,11 @@ export class AdminLiveFeed {
   private unsubscribe: (() => void) | undefined;
   /** How many shared reads ran (tests: one per change, whatever the number of streams). */
   reads = 0;
-  /** S04 A2: a failed shared read is tried again (backoff) while any stream is open. */
-  private readonly retry = readRetry(() => void this.pump(), () => this.subs.size === 0);
+  /**
+   * S04 A2: a failed shared read is tried again (backoff) while any stream is open. B1.9: after the last retry every
+   * stream of this copy is closed, each after its own random delay (spreadClose), and the panel reconnects with its cursor.
+   */
+  private readonly retry = readRetry(() => void this.pump(), () => this.subs.size === 0, () => this.giveUp(), { spread: false });
 
   constructor(
     private readonly db: Executor,
@@ -203,6 +206,14 @@ export class AdminLiveFeed {
     }
   }
 
+  private giveUp(): void {
+    for (const sub of this.subs) {
+      if (sub.closing) continue;
+      sub.closing = true;
+      spreadClose(sub.close, () => !this.subs.has(sub));
+    }
+  }
+
   private stop(): void {
     this.retry.stop();
     this.unsubscribe?.();
@@ -269,6 +280,7 @@ export async function adminEventRoutes(app: FastifyInstance, deps: GuardDeps & {
       catchingUp: true,
       send: (row) => void stream.send(Number(row.sequence), liveEventOf(row, now())),
       cursor: (sequence) => stream.cursor(sequence),
+      close: () => giveUpStream(stream),
     });
     if (stream.closed()) leave();
     else stream.onClose(leave);

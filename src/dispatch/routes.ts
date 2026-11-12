@@ -1,4 +1,4 @@
-import { readRetry } from "../realtime/retry.js";
+import { giveUpStream, readRetry } from "../realtime/retry.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { adminCoversZone, authenticate, authenticateAdmin } from "../auth/guard.js";
@@ -110,7 +110,7 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     let last = head ?? after;
     let running = false;
     let again = false;
-    const retry = readRetry(() => void pump(), () => stream.closed());
+    const retry = readRetry(() => void pump(), () => stream.closed(), () => giveUpStream(stream));
     stream.onClose(retry.stop);
     const pump = async () => {
       if (running) return void (again = true);

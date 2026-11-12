@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parseExtraTestPhones } from "./auth/testPhones.js";
 import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./maps/osrmSettings.js";
+import { READ_RETRY_DEFAULTS } from "./realtime/retry.js";
 
 /**
  * Server settings, read from the environment once at start. Anything missing or malformed stops the server
@@ -180,6 +181,14 @@ const schema = z.object({
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
   SHED_LOOP_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1000),
+  /**
+   * B1.9 (owner W1 Q73, 2026-11-11): a failed stream read (trip, offer, settings, admin live, dispatch, incident
+   * streams) is retried this many times (1, 2, 4 s …); the next failure closes the stream so the app reconnects and
+   * re-reads (0: close at the first failure). Infra knobs, env like SHED_*.
+   */
+  STREAM_READ_RETRIES: z.coerce.number().int().min(0).max(10).default(READ_RETRY_DEFAULTS.maxRetries),
+  /** B1.9: a stream that gave up closes after a random 0 – this many ms, so one DB blip does not reconnect every app at once (0: at once). */
+  STREAM_CLOSE_SPREAD_MS: z.coerce.number().int().min(0).max(300_000).default(READ_RETRY_DEFAULTS.closeSpreadMs),
   /** Job 1 (fix plan R22): a single SQL statement of a request is stopped after this many ms (0: no limit). */
   DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).max(600_000).default(30_000),
   /**
