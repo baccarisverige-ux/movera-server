@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.72",
+  "version": "0.18.73",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -3944,7 +3944,8 @@
       "v0.18.9: a server ride check and its answers (TripProjection.rideCheck) go out as trip_projection events WITHOUT a version change, like the waiting alerts; a route change request and its answer (TripProjection.routeChange) are trip_projection events with version + 1. No new event kinds.",
       "v0.18.38 §62: call_ringing, call_answered, call_signal, call_ended and call_missed carry no projection and no version change; they pass the gate also after a terminal status (the call window runs callWindowAfterTripMin after drop-off)."
     ],
-    "streamClose": "v0.18.68 (server B1.9, owner W1 Q73): the server may close any stream (trip events, offer feed, settings, admin live events, admin dispatch, incidents) after its reads fail STREAM_READ_RETRIES (default 3) times in a row (retries after 1, 2, 4 s), each close after a random 0–STREAM_CLOSE_SPREAD_MS (default 30 s) delay and held while the server's database pool is busy; before closing it sends the SSE comment ': stream read failed; reconnect to catch up'. The app reconnects with its cursor (Last-Event-ID / after) and backoff; the settings streams re-read as on every reconnect (v0.18.63). Apps should reset their reconnect backoff only after real data arrives or the stream stayed up ≥ 30 s."
+    "streamClose": "v0.18.68 (server B1.9, owner W1 Q73): the server may close any stream (trip events, offer feed, settings, admin live events, admin dispatch, incidents) after its reads fail STREAM_READ_RETRIES (default 3) times in a row (retries after 1, 2, 4 s), each close after a random 0–STREAM_CLOSE_SPREAD_MS (default 30 s) delay and held while the server's database pool is busy; before closing it sends the SSE comment ': stream read failed; reconnect to catch up'. The app reconnects with its cursor (Last-Event-ID / after) and backoff; the settings streams re-read as on every reconnect (v0.18.63). Apps should reset their reconnect backoff only after real data arrives or the stream stayed up ≥ 30 s.",
+    "sessionEnd": "v0.18.73 (server B1.15, owner W1 Q76): every open stream (trip events, offer feed, rider/driver settings, admin live events, admin dispatch, incidents) ends within 60 s after its session ends: sign-out, a sign-in on another phone, an account change, any revoke of the session row, the session's own expiry; for admins also a role change or deactivation. Each server copy re-checks the sessions of all its open streams every STREAM_SESSION_CHECK_MS (default 30 s, at most 60 s) with one batched read by primary key (one more per 500 sessions; none while no stream is open), so a sign-out on one copy closes the stream held by another. Before closing it sends the SSE comment ': session ended; sign in again'. Only the session row counts: a token refresh or an access token's own 15-minute end never closes a stream; a preview token (no session row) closes its stream at the token's own end. A failed check closes nothing (the next interval tries again). The app needs nothing new: its reconnect gets 401 with reason session_ended or signed_in_elsewhere and follows auth.signedOut (renew once, never retried in a loop); comment lines are ignored by the parsers. No new event kind."
   },
   "fastDispatch": {
     "note": "v0.18.27 (fix plan Job 1 'Fast dispatch', Rules plan/FIX-PLAN-ORDER-2026-11-04b.md ledger L1, L9, L10, L17, L29, L30, L31, R26; stress test 2026-11-04 H1-H3, M1, M4, M5, L1, L2). Server behaviour; apps: no change needed (they already retry 503 and read the newest offer).",
@@ -4617,7 +4618,7 @@
         },
         "system_health": {
           "level": "important",
-          "rule": "Server background jobs that failed and were parked (timers at the attempt limit): one alert per parked job kind, its detail naming the kind and its first refs. Critical for trip and safety kinds (incident_escalate, ride_check_scan, ride_check_no_answer, near_dropoff, waiting_paid, waiting_no_show, driver_silence, search_step, search_end, withdraw_driver_offers, dispatch_round), otherwise critical from 10. Raised by the server when the job is parked, even if the alert sweep itself is parked. A parked trip or safety job whose handler re-checks the trip (all listed kinds except ride_check_no_answer, withdraw_driver_offers and dispatch_round) runs once more 60 s after it is parked, and a job parked before a deploy once at start — once in all (server B1.6b)."
+          "rule": "Server background jobs that failed and were parked (timers at the attempt limit): one alert per parked job kind, its detail naming the kind and its first refs. Critical for trip and safety kinds (incident_escalate, ride_check_scan, ride_check_no_answer, near_dropoff, waiting_paid, waiting_no_show, driver_silence, search_step, search_end, withdraw_driver_offers, dispatch_round), otherwise critical from 10. Raised by the server when the job is parked, even if the alert sweep itself is parked. A parked trip or safety job whose handler re-checks the trip (all listed kinds except ride_check_no_answer and withdraw_driver_offers) runs once more 60 s after it is parked, and a job parked before a deploy once at start — once in all (server B1.6b; dispatch_round since 0.18.73, server B1.14, owner W1 Q75: a stopped dispatch round restarts once after 1 min; its handler locks the trip and does nothing unless the trip is still searching or offered with a search, and an offer already out only makes it wait). Failing again parks it for good (no loop) and its alert stays open; a job that works on its restart is gone and its alert turns solved at the next sweep. ride_check_no_answer and withdraw_driver_offers are never restarted (their handlers do not re-check the trip or the driver; a planned admin Retry job, B1.6c, not built yet)."
         },
         "rule": {
           "rule": "Owner A3: every custom rule (PUT /admin/alerts/rules: { id, name, on, metric free_drivers | riders_waiting | longest_wait | failed_payments | open_sos | open_tickets, op above | below, value, forMin, zoneId | all, level }) is checked by the server on each sweep, per zone; it alerts once the condition held forMin minutes. Solved when it no longer holds."
@@ -8915,6 +8916,46 @@
         "fr": "Numéros d’urgence",
         "en": "Emergency numbers"
       }
+    }
+  },
+  "riderBack": {
+    "note": "v0.18.73 (G26-back, owner decision 2026-11-12 'Nothing / collapse', Rule 0; X-Api-Version stays 0.5; no API shape change; no server change; no setting): on the rider's 'driver is coming' screen before pickup, the phone's back (Android back button or gesture) never opens the cancel flow and never leaves the screen. The trip sheet has three stops (low, resting, full): back lowers a sheet raised above its resting stop to that stop; at the resting or the low stop it does nothing. Cancelling is only the close (X) button, then the cancel sheet with its fee note and reasons (unchanged). Rider app wip/g25 f513af55 (waiting_for_driver.dart).",
+    "beforePickup": {
+      "statuses": [
+        "accepted",
+        "driver_to_pickup",
+        "arrived"
+      ],
+      "back": "lower_sheet_or_nothing",
+      "opensCancel": false,
+      "leavesScreen": false,
+      "cancelEntry": "close_button"
+    },
+    "onBoard": {
+      "statuses": [
+        "rider_onboard",
+        "in_trip",
+        "approaching_dropoff"
+      ],
+      "back": "open_trip_details"
+    },
+    "rideCheckOpen": {
+      "back": "nothing",
+      "note": "RC5: an open Ride check card has to be answered first."
+    },
+    "cancelInFlight": {
+      "leavesScreen": false,
+      "note": "while a cancel request is out back never leaves the screen (rider-29); before pickup it still only lowers a raised sheet."
+    },
+    "searching": {
+      "back": "open_cancel_sheet",
+      "note": "Unchanged: the 'Looking for a driver' screen (requested / searching / offered) still opens the cancel sheet on back; no driver accepted, so that cancel is always free."
+    },
+    "apps": {
+      "rider": "this rule",
+      "driver": "no change (back on its trip screen already does nothing)",
+      "admin": "no change, no setting",
+      "server": "no change"
     }
   },
   "driverConfigZone": {

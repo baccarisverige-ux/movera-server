@@ -28,7 +28,7 @@ import { CONTRACTS_DIR } from "../../src/contract/contract.js";
  */
 
 const CHANNELS = [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, ADMIN_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL];
-const ENV = () => readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: "stream-test-secret".padEnd(48, "s") });
+const ENV = () => readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: "stream-test-secret".padEnd(48, "s"), STREAM_SESSION_CHECK_MS: "300" });
 
 let database: TestDatabase;
 let app: FastifyInstance;
@@ -292,8 +292,11 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
       const onB = await listen(base2, "/rider/config/stream?zoneId=Z001", rider);
       await sleep(300);
       await killListen(hub);
-      await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
-      expect(await until(() => kinds(onB, "rider_trip_changed").length === 1)).toBe(true);
+      // Copy B may still get hints from the booking's own earlier changes, so wait for a NEW one after the cancel.
+      const hintsBefore = kinds(onB, "rider_trip_changed").length;
+      const cancelled = await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
+      expect(cancelled.statusCode).toBe(200);
+      expect(await until(() => kinds(onB, "rider_trip_changed").length > hintsBefore)).toBe(true);
       const endedA = await until(() => onA.ended, 4000);
       const endedB = onB.ended;
       onA.close();
@@ -306,8 +309,9 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
     }
   });
 
-  // C / P7: streams are never tied to the session; sign-out does not end them.
-  it.fails("P7: a rider's open settings stream ends after POST /auth/sign-out (src/realtime/sse.ts:28-73 has no session check; src/realtime/streams.ts:244-310)", async () => {
+  // C / P7: fixed by B1.15 (src/realtime/sessionWatch.ts): each copy re-checks its streams' session rows every
+  // STREAM_SESSION_CHECK_MS (300 ms here, default 30 s), so sign-out ends the stream.
+  it("P7: a rider's open settings stream ends after POST /auth/sign-out (src/realtime/sessionWatch.ts)", async () => {
     const rider = (await signIn(app, TEST_PHONES[5]!, "rider")).headers;
     const sse = await listen(base, "/rider/config/stream?zoneId=Z001", rider);
     expect(sse.status).toBe(200);
