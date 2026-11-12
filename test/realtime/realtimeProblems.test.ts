@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { TEST_PHONES, seedTestPhones } from "../../src/auth/testPhones.js";
 import type { Principal } from "../../src/auth/guard.js";
-import { CONFIG_CHANNEL, cacheLiveDocumentsOn } from "../../src/config/service.js";
+import { CONFIG_CHANNEL, cacheLiveDocumentsOn, liveDocument } from "../../src/config/service.js";
 import { TRIP_EVENTS_CHANNEL, tripNotice } from "../../src/db/tripLog.js";
 import type { Db } from "../../src/db/db.js";
 import { readEnv } from "../../src/env.js";
@@ -210,6 +210,46 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
       const published = kinds(s, "config_published");
       expect(published).toHaveLength(1);
       expect(published[0]).toMatchObject({ id: String(next), data: { doc: "rider_app_config", zoneId, version: next } });
+    }
+  });
+
+  // Rule 33 / supervisor finding 7: a publish made by ANOTHER server copy reaches this copy only as a NOTIFY; nothing
+  // here clears the cache first. Only the forget listener (subscribed before every stream, cacheLiveDocumentsOn in
+  // main.ts) empties it, so the streams miss together and share one read instead of serving the old cached version.
+  it("A3/P3 (B1.8) + Rule 33: a publish by another copy (config_live write + NOTIFY, no local cache clear) makes ONE read for 50 streams; each gets the new version once", async () => {
+    const zoneId = "Z004";
+    const doc = "rider_app_config";
+    const sample = { ...JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/rider_app_config.json`, "utf8")), zoneId, version: 1, publishedAt: new Date().toISOString() };
+    await database.pool.query("INSERT INTO config_live (doc, zone_id, version, document, published_at, published_by) VALUES ($1, $2, 1, $3, now(), NULL)", [doc, zoneId, JSON.stringify(sample)]);
+    const rider = (await signIn(app, TEST_PHONES[2]!, "rider")).headers;
+    const streams = await Promise.all(Array.from({ length: 50 }, () => listen(base, `/rider/config/stream?zoneId=${zoneId}`, rider)));
+    expect(streams.every((s) => s.status === 200)).toBe(true);
+    await sleep(300);
+    // The stream opens read (and cached) version 1; the cache holds it when the other copy publishes.
+    expect((await liveDocument(faulty, doc, zoneId))?.version).toBe(1);
+    counts.configLive = 0;
+    // What publishDraft does on the other copy: the row and the NOTIFY in one transaction (delivered at commit).
+    const other = await database.pool.connect();
+    const publishedAt = new Date().toISOString();
+    try {
+      await other.query("BEGIN");
+      await other.query("UPDATE config_live SET version = 2, document = $3, published_at = now() WHERE doc = $1 AND zone_id = $2", [doc, zoneId, JSON.stringify({ ...sample, version: 2, publishedAt })]);
+      await other.query("SELECT pg_notify($1, $2)", [CONFIG_CHANNEL, JSON.stringify({ doc, zoneId, version: 2, publishedAt })]);
+      await other.query("COMMIT");
+    } finally {
+      other.release();
+    }
+    const gotAll = await until(() => streams.every((s) => kinds(s, "config_published").length >= 1), 3000);
+    await sleep(300);
+    const reads = counts.configLive;
+    for (const s of streams) s.close();
+    console.log(`A3/P3 other-copy proof (B1.8): 50 settings streams, 1 other-copy publish -> ${reads} config_live read(s)`);
+    expect(gotAll).toBe(true);
+    expect(reads).toBe(1);
+    for (const s of streams) {
+      const published = kinds(s, "config_published");
+      expect(published).toHaveLength(1);
+      expect(published[0]).toMatchObject({ id: "2", data: { doc, zoneId, version: 2, publishedAt } });
     }
   });
 
