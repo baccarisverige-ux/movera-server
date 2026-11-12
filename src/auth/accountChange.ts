@@ -29,7 +29,8 @@ import { OTP, PHONE, requestOtp, type AuthDeps, type ClientInfo } from "./servic
  *   start counts toward the 3 per hour (a refused or failed send is 'pending_provider' and is not counted).
  * - owner answer F3: besides, at most EMAIL_TRIES_PER_HOUR (10) starts per hour, counting every start.
  * G30 fix round (supervisor F2, F4): the silent answer stores a never-sent challenge and takes as long as the last real
- * send, so neither a wrong-code answer nor the answer time tells that another account has the address.
+ * send, so neither a wrong-code answer nor the answer time tells that another account has the address. F5: parallel starts
+ * of one account queue on a per-account lock while counted and stored, and a running send holds its accepted place.
  */
 
 type Who = { actor: "rider" | "driver"; subjectId: string; sessionId: string };
@@ -50,16 +51,19 @@ async function recentSignIn(ex: Executor, who: Who, now: Date): Promise<void> {
 }
 /**
  * The e-mail start limits per account and hour, both 429 change_too_many. acceptedPerHour: starts whose code e-mail the
- * service accepted (rows in account_change_starts). allTriesPerHour (supervisor G30 F3, owner 2026-11-12: "at most 10
- * per hour, counting every start"; contract line follows as v0.18.77): every start, sent, refused / failed send or the
- * silent answer (each stores an email_changes row); null = no such cap.
+ * service accepted (rows in account_change_starts) plus starts whose send is still running (email_changes.delivery
+ * 'sending', a reserved place). allTriesPerHour (supervisor G30 F3, owner 2026-11-12: "at most 10 per hour, counting every
+ * start"; contract v0.18.77 emailVerified.delivery): every start, sent, refused / failed send or the silent answer (each
+ * stores an email_changes row); null = no such cap. For e-mail both are counted under the per-account start lock
+ * (startEmailChange, supervisor G30 F5), so parallel starts cannot pass them.
  */
 export const EMAIL_TRIES_PER_HOUR = 10;
 export const EMAIL_LIMITS: { acceptedPerHour: number; allTriesPerHour: number | null } = { acceptedPerHour: STARTS_PER_HOUR, allTriesPerHour: EMAIL_TRIES_PER_HOUR };
 const tooMany = () => new ApiError("rate_limited", "Too many changes. Try again later.", { reason: "change_too_many", retryAfterSeconds: 3600 });
 async function startsLeft(ex: Executor, who: Who, kind: "phone" | "email", now: Date): Promise<void> {
   const starts = await ex.selectFrom("account_change_starts").select((eb) => eb.fn.countAll<string>().as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("kind", "=", kind).where("at", ">", hourAgo(now)).executeTakeFirstOrThrow();
-  if (Number(starts.n) >= (kind === "email" ? EMAIL_LIMITS.acceptedPerHour : STARTS_PER_HOUR)) throw tooMany();
+  const sending = kind === "email" ? await ex.selectFrom("email_changes").select((eb) => eb.fn.countAll<string>().as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("delivery", "=", "sending").where("created_at", ">", hourAgo(now)).executeTakeFirstOrThrow() : { n: "0" };
+  if (Number(starts.n) + Number(sending.n) >= (kind === "email" ? EMAIL_LIMITS.acceptedPerHour : STARTS_PER_HOUR)) throw tooMany();
   const cap = kind === "email" ? EMAIL_LIMITS.allTriesPerHour : null;
   if (cap === null) return;
   const tries = await ex.selectFrom("email_changes").select((eb) => eb.fn.countAll<string>().as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("created_at", ">", hourAgo(now)).executeTakeFirstOrThrow();
@@ -138,7 +142,6 @@ export async function startEmailChange(db: Db, who: Who, email: string, now: Dat
   // emailVerified.verifyCurrent: checking the address the account already has changes nothing, so no 10-minute rule.
   const own = account?.email != null && account.email.trim().toLowerCase() === value;
   if (!own) await recentSignIn(db, who, now);
-  await startsLeft(db, who, "email", now);
   const challengeId = newId("emc", now.getTime());
   const expiresAt = new Date(now.getTime() + OTP.expiresSeconds * 1000);
   const answer = (delivery: "sent" | "pending_provider") => ({ challengeId, expiresAt: expiresAt.toISOString(), delivery });
@@ -147,31 +150,48 @@ export async function startEmailChange(db: Db, who: Who, email: string, now: Dat
   // invalid_otp_code either way, and it closes the open challenge like a real start. Its right code is never known; even
   // then the verify refuses the taken address (invalid_email_challenge).
   const code = String(randomInt(0, 10 ** OTP.codeLength)).padStart(OTP.codeLength, "0");
-  // Wrong tries of the last hour carry over to the new challenge (a restart never resets them).
-  const earlier = await db.selectFrom("email_changes").select((eb) => eb.fn.coalesce(eb.fn.max("attempts"), eb.val(0)).as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("created_at", ">", hourAgo(now)).executeTakeFirstOrThrow();
-  await db.updateTable("email_changes").set({ expires_at: now }).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("expires_at", ">", now).execute();
-  await db.insertInto("email_changes").values({ challenge_id: challengeId, actor: who.actor, subject_id: who.subjectId, email: value, code_sha256: sha(`${challengeId}:${code}`), attempts: Number(earlier.n), expires_at: expiresAt, created_at: now }).execute();
+  // Supervisor G30 F5: the count, closing the open challenge and the new row are one transaction under a per-account lock,
+  // so parallel starts queue here and the 10 tries per hour are strict (Rule 33: also across server copies). The new row
+  // is 'sending': it holds one of the 3 accepted places until the send ends, so parallel starts cannot pass the 3 either.
+  // The lock ends with this transaction, before any e-mail is sent.
+  await db.transaction().execute(async (trx) => {
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${`email_start:${who.actor}:${who.subjectId}`}))`.execute(trx);
+    await startsLeft(trx, who, "email", now);
+    // Wrong tries of the last hour carry over to the new challenge (a restart never resets them).
+    const earlier = await trx.selectFrom("email_changes").select((eb) => eb.fn.coalesce(eb.fn.max("attempts"), eb.val(0)).as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("created_at", ">", hourAgo(now)).executeTakeFirstOrThrow();
+    await trx.updateTable("email_changes").set({ expires_at: now }).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("expires_at", ">", now).execute();
+    await trx.insertInto("email_changes").values({ challenge_id: challengeId, actor: who.actor, subject_id: who.subjectId, email: value, code_sha256: sha(`${challengeId}:${code}`), attempts: Number(earlier.n), expires_at: expiresAt, created_at: now, delivery: "sending" }).execute();
+  });
   let delivery: "sent" | "pending_provider" = "pending_provider";
-  if (taken) {
-    // The same answer as a real start (no e-mail): nobody learns that another account has this address.
-    if (options.sender !== undefined) {
-      const last = lastSend.get(options.sender);
-      await new Promise((resolve) => setTimeout(resolve, Math.min(SILENT_WAIT_MAX_MS, last?.ms ?? SILENT_WAIT_DEFAULT_MS)));
-      if (last?.accepted === true) delivery = "sent";
+  try {
+    if (taken) {
+      // The same answer as a real start (no e-mail): nobody learns that another account has this address.
+      if (options.sender !== undefined) {
+        const last = lastSend.get(options.sender);
+        await new Promise((resolve) => setTimeout(resolve, Math.min(SILENT_WAIT_MAX_MS, last?.ms ?? SILENT_WAIT_DEFAULT_MS)));
+        if (last?.accepted === true) delivery = "sent";
+      }
+    } else {
+      options.log?.(code);
+      if (options.sender !== undefined) {
+        const lang = await noticeLanguage(db, { actor: who.actor, id: who.subjectId, language: account?.language ?? null });
+        const started = performance.now();
+        // A sender that throws counts as a failed send (never a server error, never 'sent').
+        const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, Math.ceil(OTP.expiresSeconds / 60)) }).catch(() => ({ accepted: false }));
+        lastSend.set(options.sender, { accepted: outcome.accepted, ms: performance.now() - started });
+        if (outcome.accepted) delivery = "sent";
+      }
     }
-  } else {
-    options.log?.(code);
-    if (options.sender !== undefined) {
-      const lang = await noticeLanguage(db, { actor: who.actor, id: who.subjectId, language: account?.language ?? null });
-      const started = performance.now();
-      // A sender that throws counts as a failed send (never a server error, never 'sent').
-      const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, Math.ceil(OTP.expiresSeconds / 60)) }).catch(() => ({ accepted: false }));
-      lastSend.set(options.sender, { accepted: outcome.accepted, ms: performance.now() - started });
-      if (outcome.accepted) delivery = "sent";
-    }
+  } finally {
+    // Supervisor round 3 (R2-3): only a start whose e-mail the service accepted counts toward the 3 per hour; a refused or
+    // failed send gives its reserved place back (the row still counts toward the 10). One transaction: the place is never
+    // counted twice nor dropped between the two writes.
+    const final = delivery;
+    await db.transaction().execute(async (trx) => {
+      await trx.updateTable("email_changes").set({ delivery: final }).where("challenge_id", "=", challengeId).execute();
+      if (final === "sent") await recordStart(trx, who, "email", now);
+    });
   }
-  // Supervisor round 3 (R2-3): only a start whose e-mail the service accepted counts toward the 3 per hour.
-  if (delivery === "sent") await recordStart(db, who, "email", now);
   return answer(delivery);
 }
 

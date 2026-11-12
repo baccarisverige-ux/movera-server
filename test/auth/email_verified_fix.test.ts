@@ -13,7 +13,7 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
  * G30 fix round (supervisor NO-GO on a16f4af, audits/impact/server-g30.md "Supervisor check"): the silent answer to an
  * address VERIFIED on another account of the same app must not be told apart from a real start, neither by its time (F2)
  * nor by what a wrong code answers (F4); at most 10 starts per hour count every try (F3, owner answer
- * 2026-11-12, contract line follows as v0.18.77); the Apple / Google path takes the same per-address lock as the code verify (nit c).
+ * 2026-11-12, contract v0.18.77), also for parallel starts (F5); the Apple / Google path takes the same per-address lock as the code verify (nit c).
  */
 
 let database: TestDatabase;
@@ -161,6 +161,33 @@ describe("G30 fix round: the silent answer looks like a real start", () => {
     again = await signIn(mine);
     for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: "own@example.se" }, again)).statusCode).toBe(200);
     expect((await post("/account/email/change", { email: "own@example.se" }, again)).json()).toMatchObject({ reason: "change_too_many" });
+  }, 30_000);
+
+  it("F5: 25 parallel starts from one account keep both limits (at most 10 tries, at most 3 accepted, the rest 429)", async () => {
+    const burst = async (accept: boolean) => {
+      service.accept = accept;
+      outbox.length = 0;
+      const me = await signIn(freshPhone());
+      const res = await Promise.all(Array.from({ length: 25 }, (_, i) => post("/account/email/change", { email: `p${i}@example.se` }, me)));
+      const ok = res.filter((r) => r.statusCode === 200);
+      for (const r of res.filter((x) => x.statusCode !== 200)) {
+        expect(r.statusCode).toBe(429);
+        expect(r.json()).toMatchObject({ reason: "change_too_many" });
+      }
+      return { ok: ok.length, sent: ok.filter((r) => r.json().delivery === "sent").length, calls: outbox.length };
+    };
+    // An accepting e-mail service: at most 3 code e-mails go out, however many starts arrive at once.
+    const accepted = await burst(true);
+    expect(accepted.ok).toBeGreaterThanOrEqual(1);
+    expect(accepted.ok).toBeLessThanOrEqual(10);
+    expect(accepted.sent).toBeLessThanOrEqual(3);
+    expect(accepted.calls).toBeLessThanOrEqual(3);
+    // A refusing one: at most 10 tries (and at most 10 calls to the service), none counted as sent.
+    const refused = await burst(false);
+    expect(refused.ok).toBeGreaterThanOrEqual(1);
+    expect(refused.ok).toBeLessThanOrEqual(10);
+    expect(refused.sent).toBe(0);
+    expect(refused.calls).toBeLessThanOrEqual(10);
   }, 30_000);
 
   it("nit c: the Apple / Google path waits for the same per-address lock as the code verify", async () => {

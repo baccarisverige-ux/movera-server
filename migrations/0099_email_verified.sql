@@ -7,6 +7,9 @@ ALTER TABLE drivers ADD COLUMN IF NOT EXISTS email_verified_at timestamptz;
 ALTER TABLE drivers ADD COLUMN IF NOT EXISTS first_activated_at timestamptz;
 -- emailVerified.writePaths.provider (owner Q4): Apple / Google said it checked the e-mail (constant default: no rewrite).
 ALTER TABLE auth_link_tokens ADD COLUMN IF NOT EXISTS email_verified boolean NOT NULL DEFAULT false;
+-- Supervisor G30 F5: what became of an e-mail change start's code e-mail ('sending' holds one of the 3 accepted places
+-- per hour while the send runs; then 'sent' or 'pending_provider'). Nullable, no default: no rewrite; older rows stay null.
+ALTER TABLE email_changes ADD COLUMN IF NOT EXISTS delivery text;
 
 -- The backfill of these columns runs in 0100 (no-transaction): here, inside this file's transaction, it would keep the
 -- ADD COLUMNs' ACCESS EXCLUSIVE lock on riders and drivers for its whole run and every read would queue behind it
@@ -17,3 +20,4 @@ ALTER TABLE auth_link_tokens ADD COLUMN IF NOT EXISTS email_verified boolean NOT
 -- ALTER TABLE drivers DROP COLUMN IF EXISTS email_verified_at;
 -- ALTER TABLE drivers DROP COLUMN IF EXISTS first_activated_at;
 -- ALTER TABLE auth_link_tokens DROP COLUMN IF EXISTS email_verified;
+-- ALTER TABLE email_changes DROP COLUMN IF EXISTS delivery;

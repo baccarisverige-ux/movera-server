@@ -77,6 +77,8 @@ export interface EmailChangesTable {
   attempts: number;
   expires_at: Timestamp;
   created_at: Timestamp;
+  /** G30 F5: 'sending' while the code e-mail is on its way (holds one of the 3 accepted places), then 'sent' or 'pending_provider'; null on rows from before. */
+  delivery: ColumnType<"sending" | "sent" | "pending_provider" | null, "sending" | "sent" | "pending_provider" | null | undefined, "sending" | "sent" | "pending_provider" | null>;
 }
 
 /** Checker round: account change starts (rate limit) and notices waiting for an SMS / e-mail provider. */
