@@ -88,6 +88,29 @@ export async function heardAgainAt(ex: Executor, now: Date): Promise<Date | null
   return nextHeardAgain(ex, now, due, heardAgainOf(row.payload));
 }
 
+/** Per server copy: when this copy last checked a stored fix against the outage signal (empty at start). */
+let lastFixCheckAt: number | null = null;
+const FIX_CHECK_EVERY_MS = 10_000;
+
+/**
+ * Called before a fix is stored (POST /driver/location, going online with a location). The first fix stored after an
+ * outage also marks it: when the no-position row is more than lateSeconds overdue and no fix was stored since its due
+ * time, heardAgainAt = now (only later, never back), so the worker's first run after the outage still sees it even if
+ * phones reach a copy before the worker runs. One statement, at most once per 10 s per copy; the time is set only after
+ * a check that succeeded (a check that fails while the database is down never hides the first one after it).
+ */
+export async function noteFixAfterOutage(trx: Trx, now: Date): Promise<void> {
+  const t = now.getTime();
+  if (lastFixCheckAt !== null && t - lastFixCheckAt >= 0 && t - lastFixCheckAt < FIX_CHECK_EVERY_MS) return;
+  const late = new Date(t - OUTAGE.lateSeconds * 1000);
+  await sql`
+    UPDATE timers SET payload = jsonb_set(coalesce(payload, '{}'::jsonb), '{heardAgainAt}', to_jsonb(${now.toISOString()}::text))
+     WHERE kind = ${NO_FIX_OFFLINE} AND ref_id = 'all' AND due_at < ${late} AND due_at > '-infinity'::timestamptz
+       AND NOT EXISTS (SELECT 1 FROM driver_locations WHERE received_at >= timers.due_at)
+       AND (payload->>'heardAgainAt' IS NULL OR (payload->>'heardAgainAt')::timestamptz < ${now})`.execute(trx);
+  lastFixCheckAt = t;
+}
+
 /** The grace after an outage for this driver: noFixMinutes of the zone the no-position rule uses (his latest fix's zone, else his first home zone, else `fallbackZone`), the contract default when the rule is off there. */
 export async function outageGraceMinutes(ex: Executor, driverId: string, fallbackZone: string | null): Promise<number> {
   const d = await ex.selectFrom("drivers").leftJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id").select(["drivers.zone_ids", "driver_locations.zone_id as fixZone"]).where("drivers.driver_id", "=", driverId).executeTakeFirst();

@@ -1,4 +1,5 @@
 import { sql } from "kysely";
+import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { heardAgainAt } from "../../src/drivers/presence.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "../../src/jobs/maintenance.js";
@@ -215,4 +216,62 @@ describe("B1.23: no mass offline after an outage", () => {
     expect((await holder(heldByB))["driver_id"]).toBeNull();
     expect(sim.timerErrors).toEqual([]);
   }, 180_000);
+
+  /* Supervisor NO-GO #3 on 2f7324b: a fix stored before the worker's first run after an outage. */
+
+  /** Down `seconds`; on return A's fix is stored `fixFirstMs` before the worker's first no-position run. */
+  async function outageThenFix(seconds: number, fixFirstMs: number) {
+    sim.clock.now = new Date(sim.clock.now.getTime() + seconds * 1000);
+    await ensureMaintenanceTimers(sim.db, sim.clock.now);
+    sim.clock.now = new Date(sim.clock.now.getTime() + fixFirstMs);
+    await a.heartbeat();
+    sim.clock.now = new Date(sim.clock.now.getTime() + 1000);
+    await sim.tick();
+  }
+  const heardAgainStored = async () => ((await sim.db.selectFrom("timers").select("payload").where("kind", "=", "no_fix_offline").executeTakeFirstOrThrow()).payload as { heardAgainAt?: string }).heardAgainAt;
+
+  it("R1: a 6-minute outage; A's phone posts a fix 2 s before the worker's first no-position run: still nobody set offline", async () => {
+    await sim.advance(60);
+    await outageThenFix(6 * 60, 2000);
+    expect(await statuses()).toEqual(["online", "online", "online"]);
+  }, 120_000);
+
+  it("R2: the same order with booked driver B offline whose check fell in the outage: the ride is not released at the restart", async () => {
+    const heldByB = await bookAndHold(b, 70);
+    await tapOffline(b);
+    const check = await offlineCheckAt(heldByB);
+    await sim.advance((check.getTime() - 5 * 60_000 - sim.clock.now.getTime()) / 1000);
+    await outageThenFix(6 * 60, 2000);
+    expect(await holder(heldByB)).toMatchObject({ status: "accepted", driver_id: b.id });
+    expect([await status(a), await status(c)]).toEqual(["online", "online"]);
+  }, 120_000);
+
+  it("throttle: a fix sent just before an outage does not hide the first fix after it (the outage is marked by that fix)", async () => {
+    await sim.advance(60);
+    await a.heartbeat();
+    sim.clock.now = new Date(sim.clock.now.getTime() + 100_000);
+    const back = sim.clock.now.toISOString();
+    await a.heartbeat();
+    expect(await heardAgainStored()).toBe(back);
+  }, 120_000);
+
+  it("throttle: two fixes inside 10 s run the outage check once (one statement on the timers row per copy per 10 s)", async () => {
+    await sim.advance(60);
+    sim.clock.now = new Date(sim.clock.now.getTime() + 11_000);
+    const original = pg.Client.prototype.query;
+    const texts: string[] = [];
+    pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]) {
+      const first = args[0];
+      texts.push(typeof first === "string" ? first : String((first as { text?: string })?.text ?? ""));
+      return (original as (...x: unknown[]) => unknown).apply(this, args);
+    } as typeof original;
+    try {
+      await a.heartbeat();
+      sim.clock.now = new Date(sim.clock.now.getTime() + 5000);
+      await b.heartbeat();
+    } finally {
+      pg.Client.prototype.query = original;
+    }
+    expect(texts.filter((t) => t.includes("no_fix_offline") || /update "?timers"?/i.test(t)).length).toBe(1);
+  }, 120_000);
 });

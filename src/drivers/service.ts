@@ -13,7 +13,7 @@ import { zoneAt } from "../config/zoneLookup.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { CLEAR_OFFLINE_REASON } from "./offlineReason.js";
-import { availabilityOnTrip, offlineAfterTripView } from "./presence.js";
+import { availabilityOnTrip, noteFixAfterOutage, offlineAfterTripView } from "./presence.js";
 import { documentSummaries, documentSummariesOf } from "../documents/service.js";
 import { EXTRA_CATEGORIES, carRuleProblems, categoryProblem, liveRequiredDocuments, onboardingSettings, onboardingSettingsOf, requiredOf, type Fuel, type OnboardingSettings } from "./onboardingSettings.js";
 import { expiredBlockers, pickableCars, vehicleCountry, vehicleDocumentBlockers } from "./readiness.js";
@@ -429,6 +429,8 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     .filter(({ at }) => !Number.isNaN(at.getTime()) && now.getTime() - at.getTime() <= MAX_FIX_AGE_MS && at.getTime() - now.getTime() <= MAX_FIX_AHEAD_MS)
     .sort((a, b) => a.at.getTime() - b.at.getTime());
   if (fresh.length === 0) return { accepted: 0 };
+  // S4 B1.23: the first fix stored after an outage marks it (before it is written).
+  await noteFixAfterOutage(trx, now);
   const latest = fresh[fresh.length - 1]!;
   const zone = await zoneAt(trx, latest.fix);
   const values = {
