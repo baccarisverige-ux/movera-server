@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { TEST_PHONES, seedTestPhones } from "../../src/auth/testPhones.js";
 import type { Principal } from "../../src/auth/guard.js";
-import { CONFIG_CHANNEL } from "../../src/config/service.js";
+import { CONFIG_CHANNEL, cacheLiveDocumentsOn } from "../../src/config/service.js";
 import { TRIP_EVENTS_CHANNEL, tripNotice } from "../../src/db/tripLog.js";
 import type { Db } from "../../src/db/db.js";
 import { readEnv } from "../../src/env.js";
@@ -34,6 +34,7 @@ let database: TestDatabase;
 let app: FastifyInstance;
 let hub: NotificationHub;
 let base: string;
+let uncache: () => void = () => undefined;
 
 /** Faults and counters on the app's database handle (the stream reads; transactions use their own handle). */
 const faults = { tripEventsReads: 0, configLiveReads: 0 };
@@ -67,11 +68,14 @@ beforeAll(async () => {
   }) as Db;
   hub = new NotificationHub(database.url, CHANNELS);
   await hub.start();
+  // B1.8: the live-document cache on, wired exactly as src/main.ts does it (before buildApp, on the same hub).
+  uncache = cacheLiveDocumentsOn(hub);
   app = await buildApp({ env: ENV(), logger: false, db: faulty, router: fixedRouter, hub });
   await app.listen({ host: "127.0.0.1", port: 0 });
   base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}/api/v1`;
 });
 afterAll(async () => {
+  uncache();
   await app.close();
   await hub.stop();
   await database.drop();
@@ -165,18 +169,48 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
     expect(got).toBe(true);
   });
 
-  // A3 / P3: every settings stream reads config_live itself on one NOTIFY (no single-flight).
-  it.fails("A3/P3: one config_published NOTIFY makes one shared read, not one per open settings stream (src/realtime/streams.ts:95-98,113-114)", async () => {
+  // A3 / P3, fixed by B1.8 (#174, src/config/service.ts liveDocument in-flight map) with the cache on as in production.
+  it("A3/P3 (B1.8): 100 settings streams and one real publish make ONE config_live read per (doc, zone); every stream gets the new version once (src/config/service.ts liveDocument, src/realtime/streams.ts sent)", async () => {
+    const zoneId = "Z003";
+    const owner = await adminSession(app, database.db, "super");
+    const sample = { ...JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/rider_app_config.json`, "utf8")), zoneId };
+    // A draft is saved first; the counter is reset right before the publish itself (the admin draft read uses config_live too).
+    const draftUp = async () => {
+      const got = await call(app, "GET", `/admin/config/rider_app_config?zoneId=${zoneId}`, owner.headers);
+      // No document yet (404 config_not_found): the first draft is saved at version 1.
+      const at = got.statusCode === 404 ? 1 : (got.json().version as number);
+      const put = await call(app, "PUT", "/admin/config/rider_app_config", owner.headers, { expectedVersion: at, zoneId, document: sample });
+      expect(put.statusCode, put.body).toBe(200);
+      return put.json().version as number;
+    };
+    const publish = async (expectedVersion: number) => {
+      const done = await call(app, "POST", "/admin/config/rider_app_config/publish", owner.headers, { expectedVersion, zoneId });
+      expect(done.statusCode, done.body).toBe(200);
+      return done.json().version as number;
+    };
+    const first = await publish(await draftUp());
     const rider = (await signIn(app, TEST_PHONES[2]!, "rider")).headers;
-    const streams = await Promise.all(Array.from({ length: 20 }, () => listen(base, "/rider/config/stream?zoneId=Z001", rider)));
+    const streams = await Promise.all(Array.from({ length: 100 }, () => listen(base, `/rider/config/stream?zoneId=${zoneId}`, rider)));
+    expect(streams.every((s) => s.status === 200)).toBe(true);
     await sleep(300);
+    const draft = await draftUp();
     counts.configLive = 0;
-    await database.pool.query("SELECT pg_notify($1, $2)", [CONFIG_CHANNEL, JSON.stringify({ doc: "rider_app_config", zoneId: "Z001", version: 99, publishedAt: new Date().toISOString() })]);
-    await sleep(1000);
+    const next = await publish(draft);
+    expect(next).toBe(first + 1);
+    const gotAll = await until(() => streams.every((s) => kinds(s, "config_published").length >= 1), 6000);
+    await sleep(300);
     const reads = counts.configLive;
     for (const s of streams) s.close();
-    console.log(`A3/P3 proof: 20 settings streams, 1 NOTIFY -> ${reads} config_live reads`);
-    expect(reads).toBeLessThanOrEqual(2);
+    console.log(`A3/P3 proof (B1.8): 100 settings streams, 1 publish -> ${reads} config_live read(s)`);
+    expect(gotAll).toBe(true);
+    // One shared read for (rider_app_config, Z003): the zone has its own document, so a read is one config_live select.
+    expect(reads).toBe(1);
+    // Each stream sends the new version exactly once, with that version as the event id ("last version sent").
+    for (const s of streams) {
+      const published = kinds(s, "config_published");
+      expect(published).toHaveLength(1);
+      expect(published[0]).toMatchObject({ id: String(next), data: { doc: "rider_app_config", zoneId, version: next } });
+    }
   });
 
   // A5 / P5: the hint listeners return on the null catch-up signal after a LISTEN reconnect.

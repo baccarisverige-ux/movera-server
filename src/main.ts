@@ -19,7 +19,7 @@ import { NotificationHub } from "./realtime/hub.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
-import { CONFIG_CHANNEL, cacheLiveDocuments, forgetLiveDocuments } from "./config/service.js";
+import { CONFIG_CHANNEL, cacheLiveDocumentsOn } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
 import { ADMIN_EVENTS_CHANNEL } from "./realtime/adminEvents.js";
 import { DISPATCH_EVENTS_CHANNEL } from "./dispatch/feed.js";
@@ -52,8 +52,8 @@ if (env.DATABASE_URL !== undefined) {
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();
   // Job 1 (fix plan R23): settings are kept in memory; any config_published (from any instance) empties the cache.
-  hub.subscribe(CONFIG_CHANNEL, () => forgetLiveDocuments());
-  cacheLiveDocuments(15_000);
+  // B1.8: subscribed before any stream, so one config_published makes one shared read per (doc, zone).
+  cacheLiveDocumentsOn(hub);
   // Stress T-A part 3 (RESULT-3.md): zone and airport-area geometry in memory, dropped on every config_published
   // (zone saves send doc "zones") and after 60 s at most (an airport area save on another copy sends no notification).
   hub.subscribe(CONFIG_CHANNEL, () => forgetGeometry());
