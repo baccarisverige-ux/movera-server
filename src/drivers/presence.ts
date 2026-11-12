@@ -19,7 +19,7 @@ import { inPolygon, type Polygon } from "../zones/geometry.js";
 
 type Texts = Record<string, Record<string, string>>;
 type Home = {
-  setOffline: { jobEverySeconds: number; noticeKind: string; deepLink: string; auditAction: string; text: Texts };
+  setOffline: { jobEverySeconds: number; noticeKind: string; deepLink: string; auditAction: string; text: Texts; outageGrace: { lateSeconds: number; fixCheckEverySeconds: number } };
   locationRequired: { reason: string; freshSeconds: number };
 };
 export const DRIVER_HOME = (contract as unknown as { driverHome: Home }).driverHome;
@@ -58,7 +58,8 @@ export async function ensureNoFixTimer(ex: Executor, now: Date): Promise<void> {
  * before). The booked-ride offline check waits for the same grace (heardAgainAt below), never past the ride's dispatchAt. The
  * decision is its own short run (no_fix_offline); the loop over the drivers is the no_fix_sweep run it books.
  */
-export const OUTAGE = { lateSeconds: 60 } as const;
+/** contract.json#driverHome.setOffline.outageGrace (v0.18.70): lateSeconds 60, fixCheckEverySeconds 10. */
+export const OUTAGE = DRIVER_HOME.setOffline.outageGrace;
 
 const heardAgainOf = (payload: unknown): Date | null => {
   const at = (payload as { heardAgainAt?: unknown } | null)?.heardAgainAt;
@@ -93,7 +94,7 @@ export async function heardAgainAt(ex: Executor, now: Date): Promise<Date | null
 
 /** Per server copy: when this copy last found the no-position row missing or not overdue (empty at start). */
 let lastFixCheckAt: number | null = null;
-const FIX_CHECK_EVERY_MS = 10_000;
+const FIX_CHECK_EVERY_MS = OUTAGE.fixCheckEverySeconds * 1000;
 
 /**
  * Called before a fix is stored (POST /driver/location, going online with a location). The first fix stored after an
