@@ -152,6 +152,30 @@ describe("B1.6b gate: every restart-once handler re-checks the trip or case befo
     expect(await snapshot(id)).toEqual(before);
   });
 
+  it("dispatch_round (B1.14): a second run sends no second offer while one is open; a trip that moved on is left alone", async () => {
+    const driverId = await insertDriver(db());
+    const search = (id: string) => db().insertInto("searches").values({ trip_id: id, started_at: at(-120), start_mode: null, busy: 0, document: JSON.stringify({}), doc_version: 1, state: null, end_at: at(600), steps: JSON.stringify([]), fired: JSON.stringify([]), answered: JSON.stringify([]), updated_at: at(-120) } as never).execute();
+    const offers = (id: string) => db().selectFrom("offers").select(["offer_id", "status", "version"]).where("trip_id", "=", id).orderBy("offer_id").execute();
+    // An offer is out (the round that sent it committed): the restart only waits for it, it sends nothing new.
+    const offered = await insertTrip(db(), await insertRider(db()), { status: "offered" });
+    await search(offered);
+    await db().insertInto("offers").values({ offer_id: newId("ofr", NOW.getTime()), trip_id: offered, driver_id: driverId, kind: "exclusive", status: "open", round: 1, currency: "SEK", fare_minor: 25000, driver_earnings_minor: 20000, pickup_meters: 900, pickup_eta_seconds: 120, sent_at: at(-5), expires_at: at(120), answered_at: null, group_id: null, reason_code: null, decline_reason: null } as never).execute();
+    const before = { trip: await snapshot(offered), offers: await offers(offered) };
+    await run(dispatchHandlers[kind(ROUND)]!, timer(ROUND, offered, NOW));
+    await run(dispatchHandlers[ROUND]!, timer(ROUND, offered, at(60)));
+    expect({ trip: await snapshot(offered), offers: await offers(offered) }).toEqual(before);
+    // The trip was accepted or cancelled meanwhile: nothing changes, and no new round is booked.
+    for (const status of ["accepted", "cancelled_by_rider"]) {
+      const moved = await insertTrip(db(), await insertRider(db()), { status, driverId: status === "accepted" ? driverId : null });
+      await search(moved);
+      const was = await snapshot(moved);
+      await run(dispatchHandlers[ROUND]!, timer(ROUND, moved, at(60)));
+      expect(await snapshot(moved)).toEqual(was);
+      expect(await offers(moved)).toEqual([]);
+      expect(await db().selectFrom("timers").select("kind").where("ref_id", "=", moved).execute()).toEqual([]);
+    }
+  });
+
   it("ride_check_no_answer is NOT restarted (its handler does not look at the trip state: an ended trip would get a new safety case) but stays loud (supervisor B1.6b F1)", () => {
     expect(RESTART_ONCE_KINDS).not.toContain(RIDE_CHECK_NO_ANSWER);
     expect(LOUD_PARKED_KINDS).toContain(RIDE_CHECK_NO_ANSWER);
@@ -159,7 +183,7 @@ describe("B1.6b gate: every restart-once handler re-checks the trip or case befo
 
   it("every restart-once kind has its test above (add the test first, then the kind)", () => {
     expect([...RESTART_ONCE_KINDS].sort()).toEqual([...tested].sort());
-    // Loud (critical) when parked: every restart-once kind, and the trip kinds not restarted: no-answer checks, withdrawals, rounds.
-    expect([...LOUD_PARKED_KINDS].sort()).toEqual([...tested, RIDE_CHECK_NO_ANSWER, WITHDRAW, ROUND].sort());
+    // Loud (critical) when parked: every restart-once kind, and the trip kinds not restarted: no-answer checks, withdrawals.
+    expect([...LOUD_PARKED_KINDS].sort()).toEqual([...tested, RIDE_CHECK_NO_ANSWER, WITHDRAW].sort());
   });
 });
