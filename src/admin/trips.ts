@@ -4,7 +4,7 @@ import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
 import { commissionOf } from "../rules/commission.js";
 import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
-import { boxAround, driversById, freshPositions } from "../dispatch/nearArea.js";
+import { boxAround, driversNear } from "../dispatch/nearArea.js";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { contract } from "../contract/contract.js";
 import { liveDocument } from "../config/service.js";
@@ -558,11 +558,10 @@ export async function tripOffers(ex: Executor, trip: TripRow, input: { cursor?: 
 export async function nearbyDrivers(ex: Executor, trip: TripRow, input: { scope: "radius" | "zone" | "zone_and_neighbours"; radiusKm?: number }, now: Date) {
   const radiusKm = input.scope === "radius" ? input.radiusKm ?? 5 : input.scope === "zone_and_neighbours" ? 25 : Infinity;
   // S4 B1.20 (owner yes, W1 Q81b): not every online driver of every country, only the drivers whose fresh position is
-  // in the trip's zone or within the radius, each by key. The filter below stays and decides, so the lists are the same.
-  const near = (await freshPositions(ex, input.scope === "zone" ? { zoneId: trip.zone_id } : { box: boxAround(trip.pickup as Place, radiusKm) }, now)).map((p) => p.driver_id);
-  if (near.length === 0) return { items: [], scope: input.scope, ...(input.scope === "radius" ? { radiusKm } : {}) };
-  const rows = await driversById(ex, near)
-    .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
+  // in the trip's zone or within the radius (nearArea.ts). The filter below stays and decides, so the lists are the same.
+  const near = await driversNear(ex, input.scope === "zone" ? { zoneId: trip.zone_id } : { box: boxAround(trip.pickup as Place, radiusKm) }, now);
+  if (near === null) return { items: [], scope: input.scope, ...(input.scope === "radius" ? { radiusKm } : {}) };
+  const rows = await near
     .select(["drivers.driver_id", "drivers.first_name", "drivers.online_status", "drivers.category_ids", "driver_locations.lat", "driver_locations.lng", "driver_locations.accuracy", "driver_locations.heading", "driver_locations.speed_mps", "driver_locations.moving", "driver_locations.measured_at", "driver_locations.zone_id"])
     .where("drivers.account_status", "=", "active")
     .where("drivers.online_status", "in", ["online", "on_trip"])

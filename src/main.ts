@@ -1,5 +1,5 @@
 import { buildWorkerConfig, RESTART_ONCE_KINDS } from "./jobs/workerConfig.js";
-import { cacheGeometry, forgetGeometry } from "./config/geometryCache.js";
+import { cacheGeometry, forgetGeometry, GEOMETRY_TTL_MS } from "./config/geometryCache.js";
 import type pg from "pg";
 import { registerLoadShedding } from "./http/shed.js";
 import { configureReadRetry } from "./realtime/retry.js";
@@ -57,7 +57,7 @@ if (env.DATABASE_URL !== undefined) {
   // Stress T-A part 3 (RESULT-3.md): zone and airport-area geometry in memory, dropped on every config_published
   // (zone saves send doc "zones") and after 60 s at most (an airport area save on another copy sends no notification).
   hub.subscribe(CONFIG_CHANNEL, () => forgetGeometry());
-  cacheGeometry(60_000);
+  cacheGeometry(GEOMETRY_TTL_MS);
 }
 
 let log: (message: string) => void = (message) => console.warn(message);

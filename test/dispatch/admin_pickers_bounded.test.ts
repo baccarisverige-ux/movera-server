@@ -32,6 +32,8 @@ const CITIES = [
 // A small area in central Tunis.
 const AREA: Polygon = [[36.79, 10.15], [36.82, 10.15], [36.82, 10.19], [36.79, 10.19]];
 const PICKUP = { lat: 36.8, lng: 10.17 };
+// A dense area: the whole Tunis grid (3,000 online drivers inside).
+const CITY: Polygon = [[36.7, 10.05], [36.9, 10.05], [36.9, 10.3], [36.7, 10.3]];
 const ADMIN: Principal = { actor: "admin", subjectId: "adm_b120", sessionId: "s_b120", zones: ["*"] };
 
 let database: TestDatabase;
@@ -60,13 +62,22 @@ beforeAll(async () => {
       SELECT 'drv_tn_old_' || g, '+80' || lpad(g::text, 9, '0'), 'active', 'offline', '{economy}', '{TN-TC}' FROM generate_series(0, ${OFFLINE - 1}) g`);
     await client.query(`INSERT INTO driver_locations (driver_id, lat, lng, accuracy, measured_at, received_at, zone_id)
       SELECT 'drv_tn_old_' || g, 36.8, 10.17, 5, $1, $1, 'TN-TC' FROM generate_series(0, ${OFFLINE - 1}) g`, [new Date(NOW.getTime() - 7 * 86_400_000)]);
+    // F1 (supervisor 2026-11-12): an admin just moved zone B120-MOVED's outline (PUT /admin/zones/{id}, 30 s ago) far
+    // away; this driver's fresh fix still carries that zone until his next one. The pickers listed him before B1.20.
+    await client.query(`INSERT INTO zones (zone_id, name, country, currency, time_zone, center_lat, center_lng, created_at, updated_at, south, west, north, east, names, polygon)
+      VALUES ('B120-MOVED', 'Moved', 'TN', 'TND', 'Africa/Tunis', 30.5, 5.5, $1, $2, 30, 5, 31, 6, '{}', '[[30,5],[31,5],[31,6],[30,6]]')`, [new Date(NOW.getTime() - 86_400_000), new Date(NOW.getTime() - 30_000)]);
+    await client.query(`INSERT INTO drivers (driver_id, phone, account_status, online_status, category_ids) VALUES ('drv_tn_movedzone', '+90000000002', 'active', 'online', '{economy}')`);
+    await client.query(`INSERT INTO driver_locations (driver_id, lat, lng, accuracy, measured_at, received_at, zone_id) VALUES ('drv_tn_movedzone', 36.806, 10.168, 5, $1, $1, 'B120-MOVED')`, [NOW]);
     await client.query("SET session_replication_role = origin");
   } finally {
     client.release();
   }
   const online = await database.db.selectFrom("driver_locations").innerJoin("drivers", "drivers.driver_id", "driver_locations.driver_id").select(["drivers.driver_id as id", "lat", "lng", "zone_id as zone"]).where("online_status", "=", "online").execute();
   positions.push(...online);
-  await database.db.insertInto("radar_zones").values({ radar_zone_id: "rzn_b120", country: "TN", zone_id: "TN-TC", name: "Tunis centre", polygon: JSON.stringify(AREA), version: 1, created_at: NOW, updated_at: NOW } as never).execute();
+  await database.db.insertInto("radar_zones").values([
+    { radar_zone_id: "rzn_b120", country: "TN", zone_id: "TN-TC", name: "Tunis centre", polygon: JSON.stringify(AREA), version: 1, created_at: NOW, updated_at: NOW },
+    { radar_zone_id: "rzn_b120_city", country: "TN", zone_id: "TN-TC", name: "All Tunis", polygon: JSON.stringify(CITY), version: 1, created_at: NOW, updated_at: NOW },
+  ] as never).execute();
   await database.pool.query("ANALYZE drivers; ANALYZE driver_locations");
 });
 afterAll(async () => {
@@ -100,10 +111,41 @@ async function pickerRowsRead(): Promise<number> {
 }
 
 /**
- * The most a bounded picker may read: the fresh positions of the zones around the box (Tunis only here: 3,001 index
- * entries and 3,001 rows) and then, for each driver in the box, his driver row and his position by key.
+ * What the pickers read before B1.20 (origin/main 814fe8e): every active online (or on-trip) driver with a fresh
+ * position, joined in full; the area or radius came after, in Node.
  */
-const bound = (box: Bounds) => 2 * (PER_COUNTRY + 1) + 2 * positions.filter((p) => p.lat >= box.south && p.lat <= box.north && p.lng >= box.west && p.lng <= box.east).length;
+async function beforeRowsRead(): Promise<number> {
+  return rowsRead({
+    sql: `SELECT d.driver_id, d.first_name, d.online_status, d.category_ids, l.lat, l.lng, l.accuracy, l.heading, l.speed_mps, l.moving, l.measured_at, l.zone_id
+      FROM drivers d INNER JOIN driver_locations l ON l.driver_id = d.driver_id
+      WHERE d.account_status = 'active' AND d.online_status IN ('online', 'on_trip') AND l.received_at > $1 AND l.measured_at > $2`,
+    parameters: [new Date(NOW.getTime() - 120_000), new Date(NOW.getTime() - 300_000)],
+  } as unknown as CompiledQuery);
+}
+
+/** True when a statement reads the drivers one by one by key (the fenced per-id LATERAL of nearArea.driversById). */
+const byKey = (q: CompiledQuery) => q.sql.includes("unnest(");
+
+/**
+ * The most a bounded picker may read: the fresh positions of the zones searched (Tunis, the zone just moved and no zone
+ * here: index entries and rows) and then, for each driver in the box, his driver row and his position by key.
+ */
+const SEARCHED = new Set(["TN-TC", "B120-MOVED", null]);
+const bound = (box: Bounds) => 2 * positions.filter((p) => SEARCHED.has(p.zone)).length + 2 * positions.filter((p) => p.lat >= box.south && p.lat <= box.north && p.lng >= box.west && p.lng <= box.east).length;
+
+/**
+ * A dense area (more than BY_KEY_MAX drivers inside, nearArea.ts) is one plain join: its positions read stays bounded as
+ * above, and the join never reads more rows than the whole join before B1.20 (F2: not slower than main).
+ */
+async function expectDenseWithinBefore(): Promise<void> {
+  expect(captured.some(byKey)).toBe(false);
+  const positionsRead = captured.filter((c) => /^select "driver_locations"."driver_id", "driver_locations"."lat", "driver_locations"."lng" from "driver_locations"/.test(c.sql));
+  const joins = captured.filter((c) => /from "drivers"/.test(c.sql));
+  expect(positionsRead.length).toBe(1);
+  expect(joins.length).toBe(1);
+  expect(await rowsRead(positionsRead[0]!)).toBeLessThanOrEqual(2 * positions.filter((p) => SEARCHED.has(p.zone)).length);
+  expect(await rowsRead(joins[0]!)).toBeLessThanOrEqual(await beforeRowsRead());
+}
 
 describe("B1.20: the admin's radar-zone pickers read only the drivers around the area", () => {
   it("send to a radar zone (and its repeat): only the Tunis drivers inside, nearest first; the database reads the area's drivers, not 9,000", async () => {
@@ -144,13 +186,44 @@ describe("B1.20: the admin's radar-zone pickers read only the drivers around the
       const near = await nearbyDrivers(traced, trip, { scope: "radius", radiusKm }, NOW);
       expect(near.items.map((d) => d.driverId)).toEqual(byKm((_, km) => km <= radiusKm));
       expect(near.items.every((d) => d.driverId.startsWith("drv_tn_"))).toBe(true);
-      expect(await pickerRowsRead()).toBeLessThanOrEqual(bound(boxAround(PICKUP, radiusKm)));
+      // 5 km: 622 drivers, each by key; 10 km: 2,476, a dense list (one plain join).
+      if (radiusKm === 5) expect(await pickerRowsRead()).toBeLessThanOrEqual(bound(boxAround(PICKUP, radiusKm)));
+      else await expectDenseWithinBefore();
     }
     captured = [];
     const zone = await nearbyDrivers(traced, trip, { scope: "zone" }, NOW);
     expect(zone.items.map((d) => d.driverId)).toEqual(byKm((p) => p.zone === "TN-TC"));
-    // The zone's fresh positions (3,000 index entries and rows), then each of those drivers and his position by key.
-    expect(await pickerRowsRead()).toBeLessThanOrEqual(4 * PER_COUNTRY);
+    // A whole zone of 3,000 is a dense list: one plain join (F2), never more than before.
+    expect(captured.some(byKey)).toBe(false);
+    expect(await rowsRead(captured.find((c) => /from "drivers"/.test(c.sql))!)).toBeLessThanOrEqual(await beforeRowsRead());
+  });
+
+  it("F1: a driver whose fresh fix still carries a zone an admin just moved away is still found by every picker", async () => {
+    const trip = { trip_id: "trp_b120", pickup: PICKUP, category_id: "economy" };
+    expect(await freeDriversFor(traced, trip, { polygon: AREA, limit: 1000, now: NOW })).toContain("drv_tn_movedzone");
+    const near = await nearbyDrivers(traced, { ...trip, zone_id: "TN-TC" } as never, { scope: "radius", radiusKm: 5 }, NOW);
+    expect(near.items.map((d) => d.driverId)).toContain("drv_tn_movedzone");
+    const counted = await radarZoneFree(traced, ADMIN, "rzn_b120", "economy", NOW);
+    expect(counted.free).toBe(positions.filter((p) => inPolygon(p.lat, p.lng, AREA)).length);
+    expect(positions.some((p) => p.id === "drv_tn_movedzone" && inPolygon(p.lat, p.lng, AREA))).toBe(true);
+  });
+
+  it("F2: a dense area (all of Tunis, 3,000 inside) is one plain join reading no more than before; a small one goes by key", async () => {
+    const trip = { trip_id: "trp_b120", pickup: PICKUP, category_id: "economy" };
+    captured = [];
+    const ids = await freeDriversFor(traced, trip, { polygon: CITY, limit: 10, now: NOW });
+    expect(ids).toEqual(positions.filter((p) => inPolygon(p.lat, p.lng, CITY)).map((p) => ({ id: p.id, km: dispatchKm(p, PICKUP) })).sort((a, b) => a.km - b.km || (a.id < b.id ? -1 : 1)).slice(0, 10).map((p) => p.id));
+    await expectDenseWithinBefore();
+    captured = [];
+    expect((await radarZoneFree(traced, ADMIN, "rzn_b120_city", "economy", NOW)).free).toBe(positions.filter((p) => inPolygon(p.lat, p.lng, CITY)).length);
+    await expectDenseWithinBefore();
+    captured = [];
+    await nearbyDrivers(traced, { ...trip, zone_id: "TN-TC" } as never, { scope: "zone_and_neighbours" }, NOW);
+    await expectDenseWithinBefore();
+    // The small area of the first test stays by key.
+    captured = [];
+    await freeDriversFor(traced, trip, { polygon: AREA, limit: 10, now: NOW });
+    expect(captured.some(byKey)).toBe(true);
   });
 
   it("a zone-scoped admin of another country still cannot count a Tunis radar zone", async () => {
