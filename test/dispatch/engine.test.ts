@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { contractJson } from "../../src/contract/contract.js";
-import { busyOf, newSearch, planRound, rank, searchEndSec, startMode, waitingSteps, type Candidate, type Control, type DispatchDoc } from "../../src/dispatch/engine.js";
+import { busyOf, certainWait, newSearch, planRound, rank, searchEndSec, startMode, waitingSteps, type Candidate, type Control, type DispatchDoc, type Mode, type Ranked, type SearchState, type Then } from "../../src/dispatch/engine.js";
 
 type Case = {
   id: string;
@@ -106,5 +106,78 @@ describe("automatic dispatch (contract fixtures/dispatch.json)", () => {
   });
   it.each(fixture.cases.map((c) => [c.id, c] as const))("%s", (_id, c) => {
     expect(simulate(c)).toEqual(c.expect);
+  });
+});
+
+/**
+ * B1.29 (S4-W1 Q89, owner "A) Yes": no behaviour change): the round facts (open offers, papers, driving limit, score,
+ * blocks, category off) can only REMOVE drivers. certainWait plans on a superset of the real pool; when it answers
+ * "wait", every subset (whatever the facts remove, in any order) must give exactly the same wait and state.
+ */
+describe("B1.29 certainWait", () => {
+  it("B1.29: certainWait on a superset equals planRound on any subset", () => {
+    let seed = 1291;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)]!;
+    const thens: Then[] = ["widen", "exclusive", "widen_then_exclusive", "radar", "widen_then_radar"];
+    let certain = 0;
+    let checked = 0;
+    for (let n = 0; n < 4000; n++) {
+      const radarOn = rnd() < 0.6;
+      const exclusiveOn = !radarOn || rnd() < 0.7;
+      const d: DispatchDoc = {
+        ...doc,
+        radar: { ...doc.radar, on: radarOn, drivers: 1 + Math.floor(rnd() * 4), then: pick(thens) },
+        exclusive: { ...doc.exclusive, on: exclusiveOn, drivers: 1 + Math.floor(rnd() * 3), then: pick(thens), ...(rnd() < 0.3 ? { reaskAfterSeconds: 20 } : {}) },
+        radius: { ...doc.radius, steps: rnd() < 0.5 ? [3, 5, 8] : [2, 4] },
+        ...(rnd() < 0.3 ? { neighbours: { on: true, zoneIds: ["Z002"], afterStep: 1 + Math.floor(rnd() * 3) } } : {}),
+      };
+      const modes: Mode[] = [...(radarOn ? (["radar"] as const) : []), ...(exclusiveOn ? (["exclusive"] as const) : [])];
+      const ids = Array.from({ length: Math.floor(rnd() * 6) }, (_, i) => `drv_${i}`);
+      const superset: Ranked[] = ids.map((id) => ({
+        id,
+        km: Math.round(rnd() * 120) / 10,
+        score: Math.floor(rnd() * 100),
+        fav: false,
+        near: rnd() < 0.1,
+        riding: rnd() < 0.15,
+        out: rnd() < 0.25,
+        ...(rnd() < 0.2 ? { neighbour: true } : {}),
+        ...(rnd() < 0.1 ? { bookedNext: true } : {}),
+      }));
+      const state: SearchState = {
+        cur: pick(modes),
+        step: Math.floor(rnd() * 4),
+        tried: Math.floor(rnd() * 4),
+        asked: ids.filter(() => rnd() < 0.5),
+        switched: modes.filter(() => rnd() < 0.3),
+        repeat: rnd() < 0.6,
+        ...(rnd() < 0.3 ? { again: true } : {}),
+        ...(rnd() < 0.3 ? { far: true } : {}),
+      };
+      const sure = certainWait(d, state, superset);
+      if (sure === null) continue;
+      certain++;
+      expect(sure.round.type).toBe("wait");
+      for (let k = 0; k < 6; k++) {
+        const subset = superset.filter(() => rnd() < 0.5).sort(() => rnd() - 0.5);
+        expect(planRound(d, state, subset)).toEqual(sure);
+        checked++;
+      }
+    }
+    // The property is only worth something if many states were really sure waits.
+    expect(certain).toBeGreaterThan(200);
+    expect(checked).toBe(certain * 6);
+  });
+
+  it("B1.29: a pending start, or Radar off with someone in the Exclusive ring, is never a sure wait", () => {
+    const one: Ranked = { id: "drv_1", km: 1, score: 50, fav: false, near: false, riding: false, out: false };
+    const offRadar: DispatchDoc = { ...doc, radar: { ...doc.radar, on: false }, exclusive: { ...doc.exclusive, on: true } };
+    // Asked already, Radar off: today a wait that sets `again` — a subset without him waits WITHOUT `again`.
+    expect(certainWait(offRadar, { ...newSearch("exclusive"), repeat: true, asked: ["drv_1"] }, [one])).toBeNull();
+    expect(certainWait(doc, newSearch("exclusive", "byDistance"), [])).toBeNull();
+    expect(certainWait(doc, newSearch("exclusive", "both"), [])).toBeNull();
+    // Nobody in reach at all: the wait is sure.
+    expect(certainWait(doc, { ...newSearch("radar"), repeat: true }, [])).toEqual(planRound(doc, { ...newSearch("radar"), repeat: true }, []));
   });
 });

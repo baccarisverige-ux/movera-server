@@ -136,6 +136,14 @@ async function sameCountryZones(trx: Trx, zoneId: string, zoneIds: string[]): Pr
  * `reachKm` (rounds only): drivers farther than the widest search step are not read at all (a box around the pickup).
  */
 export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | null, now: Date, options: { reachKm?: number } = {}): Promise<Pool> {
+  return candidatesFrom(trx, trip, now, await poolRows(trx, trip, doc, now, options));
+}
+
+/**
+ * B1.29: the first part of candidatesFor — the box read of the drivers (and their zones) plus the checks that need no
+ * other query. candidatesFrom does the rest (blocks, category off, on-trip reach, the round facts).
+ */
+export async function poolRows(trx: Trx, trip: TripRow, doc: DispatchDoc | null, now: Date, options: { reachKm?: number } = {}) {
   const pickup = trip.pickup as Place;
   // v0.18.11: with neighbours on, drivers of the listed zones are candidates too (the engine asks them from afterStep).
   // Only zones of the same country and currency as the trip zone may lend drivers (a SE zone never borrows FR).
@@ -187,9 +195,52 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
   } else {
     rows = await read(onTrip ? ["online", "on_trip"] : ["online"]).execute();
   }
-  const pool: Pool = { candidates: [], meta: new Map(), bookedNext: new Set() };
   // v0.18.4 (G3-R2): only a driver whose latest position is inside one of his own zones gets offers.
   const insideOwn = await zoneChecker(trx, [...new Set(rows.flatMap((r) => r.zone_ids))]);
+  /** The checks of a box row that need no query; `next` = his on-trip reach (on_trip rows). Null = not a candidate. */
+  const place = (d: (typeof rows)[number], next: { dropKm: number } | undefined): { km: number; neighbour: boolean } | null => {
+    const own = d.zone_ids.includes(trip.zone_id);
+    const neighbour = !own && d.zone_ids.some((z) => neighbourZones.includes(z));
+    if (!own && !neighbour) return null;
+    if (!next && !insideOwn({ lat: d.lat, lng: d.lng }, d.zone_ids)) return null;
+    // A driver who cancelled this trip is not offered it again.
+    if (trip.cancelled_driver_ids.includes(d.driver_id)) return null;
+    if (!d.category_ids.includes(trip.category_id)) return null;
+    // Deep fix 2026-11-02 (live sweep H-2, g1-g3 M5): the car he drives must be approved for the trip's category too
+    // (a Komfort trip needs a Komfort car; a car re-approved without Premium no longer gets Premium trips).
+    // Checker MED 9: an approved car with no categories stored (older rows) does not narrow his own chosen types.
+    const carTypes = d.vehicle_category_ids ?? [];
+    if (d.vehicle_status !== null && (d.vehicle_status !== "approved" || (carTypes.length > 0 && !carTypes.includes(trip.category_id)))) return null;
+    const km = next ? next.dropKm : dispatchKm({ lat: d.lat, lng: d.lng }, pickup);
+    if (options.reachKm !== undefined && km > options.reachKm) return null;
+    return { km, neighbour };
+  };
+  return { rows, place };
+}
+
+export type PoolRows = Awaited<ReturnType<typeof poolRows>>;
+
+/**
+ * B1.29: the FREE drivers of the box as candidates before any fact is read (km, categories, neighbour, idle; no score
+ * numbers), less `skip`. The real pool is a subset of these with the same km, categories and neighbour flag. Null when
+ * a driver on a trip is in the box: his km needs onTripReach (a query), so the round reads everything as before.
+ */
+export function freeRowsAsCandidates(base: PoolRows, now: Date, skip: Set<string>): Candidate[] | null {
+  if (base.rows.some((d) => d.online_status !== "online")) return null;
+  const out: Candidate[] = [];
+  for (const d of base.rows) {
+    if (skip.has(d.driver_id)) continue;
+    const at = base.place(d, undefined);
+    if (at === null) continue;
+    out.push({ driverId: d.driver_id, km: at.km, categoryIds: d.category_ids, ...(at.neighbour ? { neighbour: true } : {}), idleMin: d.last_free_at ? (now.getTime() - d.last_free_at.getTime()) / 60_000 : 0 });
+  }
+  return out;
+}
+
+/** B1.29: the second part of candidatesFor — the checks of the box rows that read the database, then the round facts. */
+export async function candidatesFrom(trx: Trx, trip: TripRow, now: Date, base: PoolRows): Promise<Pool> {
+  const { rows, place } = base;
+  const pool: Pool = { candidates: [], meta: new Map(), bookedNext: new Set() };
   // v0.18.26 (contract.json#phoneDataToServer.driverPreferences.dispatch): a category the driver switched off in Ride
   // preferences is not sent to him (one query for the whole round).
   const switchedOff = await driversWithCategoryOff(trx, rows.map((r) => r.driver_id), trip.category_id);
@@ -203,22 +254,10 @@ export async function candidatesFor(trx: Trx, trip: TripRow, doc: DispatchDoc | 
     if (blocked.has(d.driver_id)) continue;
     const next = d.online_status === "on_trip" ? reach.get(d.driver_id) : undefined;
     if (d.online_status === "on_trip" && next === undefined) continue;
-    const own = d.zone_ids.includes(trip.zone_id);
-    const neighbour = !own && d.zone_ids.some((z) => neighbourZones.includes(z));
-    if (!own && !neighbour) continue;
-    if (!next && !insideOwn({ lat: d.lat, lng: d.lng }, d.zone_ids)) continue;
-    // A driver who cancelled this trip is not offered it again.
-    if (trip.cancelled_driver_ids.includes(d.driver_id)) continue;
-    if (!d.category_ids.includes(trip.category_id)) continue;
     if (switchedOff.has(d.driver_id)) continue;
-    // Deep fix 2026-11-02 (live sweep H-2, g1-g3 M5): the car he drives must be approved for the trip's category too
-    // (a Komfort trip needs a Komfort car; a car re-approved without Premium no longer gets Premium trips).
-    // Checker MED 9: an approved car with no categories stored (older rows) does not narrow his own chosen types.
-    const carTypes = d.vehicle_category_ids ?? [];
-    if (d.vehicle_status !== null && (d.vehicle_status !== "approved" || (carTypes.length > 0 && !carTypes.includes(trip.category_id)))) continue;
-    const km = next ? next.dropKm : dispatchKm({ lat: d.lat, lng: d.lng }, pickup);
-    if (options.reachKm !== undefined && km > options.reachKm) continue;
-    kept.push({ ...d, km, neighbour });
+    const at = place(d, next);
+    if (at === null) continue;
+    kept.push({ ...d, km: at.km, neighbour: at.neighbour });
   }
   const facts = await roundFacts(trx, trip, kept, now, new Set(reach.keys()));
   for (const d of kept) {
