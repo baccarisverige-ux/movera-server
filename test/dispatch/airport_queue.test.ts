@@ -4,9 +4,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { cacheLiveDocuments } from "../../src/config/service.js";
-import { dispatchHandlers } from "../../src/dispatch/runtime.js";
+import { dispatchHandlers, ROUND } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
-import { TimerWorker } from "../../src/jobs/timers.js";
+import { scheduleTimer, TimerWorker } from "../../src/jobs/timers.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
@@ -208,5 +208,31 @@ describe("airport queue — fix job 9 (v0.18.36 §60)", () => {
     await Promise.all([at("A", SPOTS.A), at("A", { lat: SPOTS.A.lat + 0.0001, lng: SPOTS.A.lng })]);
     const rows = await database.db.selectFrom("airport_queue_entries").select("entry_id").where("driver_id", "=", drivers.A.id).where("left_at", "is", null).execute();
     expect(rows).toHaveLength(1);
+  });
+  it("B1.29: a round that is a sure wait on the search ring still sends the airport-queue offer", async () => {
+    // A and B let reaskLimit (2) offers of this trip pass; C (1.3 km) is in the pool but out of every ring by
+    // limits.maxPickupEtaMin 1 (his pickup estimate is 3 min): the ring plans a wait, the queue still picks C.
+    await queueUp(["C", "B", "A"]);
+    const tripId = await book();
+    await database.db.deleteFrom("timers").execute();
+    const search = await database.db.selectFrom("searches").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    const trip = await database.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    for (let i = 1; i <= 4; i++) {
+      const t = new Date(search.started_at.getTime() + i * 1000);
+      await database.db.insertInto("offers").values({
+        offer_id: `ofr_b129_${tripId}_${i}`, trip_id: tripId, driver_id: i <= 2 ? drivers.A.id : drivers.B.id, kind: "exclusive", status: "expired", round: i, group_id: null, reason_code: null,
+        currency: trip.currency, fare_minor: Number(trip.fare_minor), driver_earnings_minor: 0, pickup_pay_minor: 0, pickup_meters: 500, pickup_eta_seconds: 60,
+        sent_at: t, expires_at: new Date(t.getTime() + 15_000), answered_at: new Date(t.getTime() + 15_000), decline_reason: null, rider_rating: null, driver_on_trip: false,
+      }).execute();
+    }
+    const d = sample("dispatch_document");
+    const doc = { ...d, limits: { ...(d.limits ?? {}), maxPickupEtaMin: 1 } };
+    const state = { cur: "exclusive", step: 2, tried: 0, asked: [drivers.A.id, drivers.B.id], switched: ["radar", "exclusive"], repeat: true, far: true };
+    await database.db.updateTable("searches").set({ document: JSON.stringify(doc), state: JSON.stringify(state) }).where("trip_id", "=", tripId).execute();
+    await database.db.updateTable("trips").set({ status: "searching" }).where("trip_id", "=", tripId).execute();
+    await database.db.transaction().execute((trx) => scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: clock.now, payload: {} }));
+    await worker.runDue();
+    const open = await openOffers(tripId);
+    expect(open.map((o) => [keyOf(o.driver_id), o.reason_code])).toEqual([["C", "airport-queue"]]);
   });
 });

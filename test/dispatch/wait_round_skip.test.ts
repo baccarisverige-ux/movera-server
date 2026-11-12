@@ -71,13 +71,13 @@ async function book(): Promise<string> {
 }
 
 /** A live ride whose search took its far step and repeats, with A, B and C each past reaskLimit (2) for it. */
-async function spentSearch(): Promise<string> {
+async function spentSearch(keys: Array<"A" | "B" | "C"> = ["A", "B", "C"]): Promise<string> {
   const tripId = await book();
   await database.db.deleteFrom("timers").execute();
   const search = await database.db.selectFrom("searches").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   const trip = await database.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   let n = 0;
-  for (const key of ["A", "B", "C"] as const) for (let i = 0; i < 2; i++) {
+  for (const key of keys) for (let i = 0; i < 2; i++) {
     n++;
     const at = new Date(search.started_at.getTime() + n * 1000);
     await database.db.insertInto("offers").values({
@@ -86,7 +86,7 @@ async function spentSearch(): Promise<string> {
       sent_at: at, expires_at: new Date(at.getTime() + 15_000), answered_at: new Date(at.getTime() + 15_000), decline_reason: null, rider_rating: null, driver_on_trip: false,
     }).execute();
   }
-  const state = { cur: "exclusive", step: 2, tried: 0, asked: [drivers.A.id, drivers.B.id, drivers.C.id], switched: ["radar", "exclusive"], repeat: true, far: true };
+  const state = { cur: "exclusive", step: 2, tried: 0, asked: keys.map((k) => drivers[k].id), switched: ["radar", "exclusive"], repeat: true, far: true };
   await database.db.updateTable("searches").set({ state: JSON.stringify(state), rounds: 6 }).where("trip_id", "=", tripId).execute();
   await database.db.updateTable("trips").set({ status: "searching" }).where("trip_id", "=", tripId).execute();
   return tripId;
@@ -117,7 +117,7 @@ describe("B1.29 wait round skips the driver facts", () => {
     const outcome = async (full: boolean) => {
       let got: unknown;
       await database.db.transaction().execute(async (trx) => {
-        await runRound(trx, tripId, clock.now, new FeedQueue(), { readFactsAlways: full } as never);
+        await runRound(trx, tripId, clock.now, new FeedQueue(), { readFactsAlways: full });
         const search = await trx.selectFrom("searches").select(["state", "rounds", "document"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
         const timers = await trx.selectFrom("timers").select(["kind", "due_at", "payload"]).where("ref_id", "=", tripId).orderBy("kind").execute();
         const offers = await trx.selectFrom("offers").select(["driver_id", "status"]).where("trip_id", "=", tripId).orderBy("offer_id").execute();
@@ -141,6 +141,24 @@ describe("B1.29 wait round skips the driver facts", () => {
     await worker.runDue();
     const open = await database.db.selectFrom("offers").select(["driver_id", "status"]).where("trip_id", "=", tripId).where("status", "=", "open").execute();
     expect(open.map((o) => o.driver_id)).toContain(drivers.C.id);
+  });
+
+  it("B1.29: a driver on a trip in the box makes the round read everything (his booked-next Exclusive still goes out)", async () => {
+    // C is on a trip 15 km north of the pickup (out of every ring from where he is), 76 % of it driven, its drop-off
+    // 1 km from the pickup: for a booked ride within bookedNext.withinMin he reaches it from that drop-off in time.
+    const other = (await signIn(app, TEST_PHONES[4]!, "rider")).headers;
+    const quote = (await call(app, "POST", "/quotes", other, { pickup: SODERMALM, dropoff: NORRMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+    const current = (await call(app, "POST", "/trips", other, { quoteId: quote.quoteId, categoryId: "economy", pickup: SODERMALM, dropoff: NORRMALM, stops: [], kind: "live", paymentMethod: "cash" })).json().tripId as string;
+    const drop = { address: "Near the pickup", lat: NORRMALM.lat + 0.009, lng: NORRMALM.lng };
+    await database.db.updateTable("trips").set({ status: "in_trip", driver_id: drivers.C.id, dropoff: JSON.stringify(drop), distance_meters: 60_000 }).where("trip_id", "=", current).execute();
+    await database.db.updateTable("drivers").set({ online_status: "on_trip" }).where("driver_id", "=", drivers.C.id).execute();
+    await database.db.updateTable("driver_locations").set({ lat: NORRMALM.lat + 0.11, lng: NORRMALM.lng, received_at: clock.now, measured_at: clock.now }).where("driver_id", "=", drivers.C.id).execute();
+    const tripId = await spentSearch(["A", "B"]);
+    await database.db.updateTable("trips").set({ kind: "scheduled", scheduled_at: new Date(clock.now.getTime() + 55 * 60_000) }).where("trip_id", "=", tripId).execute();
+    await roundDue(tripId);
+    await worker.runDue();
+    const open = await database.db.selectFrom("offers").select(["driver_id", "kind", "driver_on_trip"]).where("trip_id", "=", tripId).where("status", "=", "open").execute();
+    expect(open).toEqual([{ driver_id: drivers.C.id, kind: "exclusive", driver_on_trip: true }]);
   });
 });
 

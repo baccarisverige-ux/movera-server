@@ -326,11 +326,11 @@ export function planRound(doc: DispatchDoc, input: SearchState, ranked: Ranked[]
  * Emptiness on a superset means emptiness on every subset. Excluded: a pending start ("byDistance" picks the nearest,
  * "both" the best) and Radar off with someone in the Exclusive ring (the ask-again wait sets `again` only then).
  */
-export function certainWait(doc: DispatchDoc, state: SearchState, ranked: Ranked[]): { state: SearchState; round: Round } | null {
+export function certainWait(doc: DispatchDoc, state: SearchState, ranked: Ranked[]): { state: SearchState; round: Extract<Round, { type: "wait" }> } | null {
   if (state.pending !== undefined) return null;
   if (doc.exclusive.on && !doc.radar.on && inRange(doc, ranked, "exclusive", kmAt(doc, "exclusive", stepCount(doc) - 1)).length > 0) return null;
   const planned = planRound(doc, state, ranked);
-  return planned.round.type === "wait" ? planned : null;
+  return planned.round.type === "wait" ? { state: planned.state, round: planned.round } : null;
 }
 
 /** The rider-waiting steps that count (on, not skipped in the test week), by time from search start. */

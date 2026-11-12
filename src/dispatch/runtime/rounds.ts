@@ -106,7 +106,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   const sure = boxFree === null ? null : certainWait(rules, state, rank(rules, boxFree, trip.category_id));
   if (sure !== null && !(await queueMayPick(trx, trip))) {
     await trx.updateTable("searches").set({ state: JSON.stringify(sure.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
-    if (sure.round.type === "wait") await waitRound(sure.round.seconds);
+    await waitRound(sure.round.seconds);
     return;
   }
   let pool = await poolFor(rules, box);
