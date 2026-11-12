@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { isDatabaseBusy } from "../src/db/db.js";
-import { registerLoadShedding } from "../src/http/shed.js";
+import { registerLoadShedding, sheddable } from "../src/http/shed.js";
 
 /** Job 1 (stress H3, fix plan R22): back-pressure instead of an endless queue. */
 describe("load shedding", () => {
@@ -21,6 +21,35 @@ describe("load shedding", () => {
     }
     waiting = 0;
     expect((await app.inject({ method: "GET", url: "/api/v1/admin/trips" })).statusCode).toBe(200);
+    stop();
+    await app.close();
+  });
+
+  it("B1.24 (owner W1 Q84): the admin safety reads are never shed; every other admin read still is", async () => {
+    const waiting = 500;
+    const app = Fastify();
+    const safety = [
+      "/api/v1/admin/incidents",
+      "/api/v1/admin/incidents/:incidentId",
+      "/api/v1/admin/incidents/:incidentId/emergency-contacts",
+      "/api/v1/admin/ride-checks",
+      "/api/v1/admin/alerts/book",
+      "/api/v1/admin/trips/:tripId",
+    ];
+    for (const url of [...safety, "/api/v1/admin/trips", "/api/v1/admin/trips/:tripId/receipt", "/api/v1/admin/incidents/settings", "/api/v1/admin/drivers/:driverId"]) app.get(url, async () => ({ ok: true }));
+    const stop = registerLoadShedding(app, { maxPoolWaiting: 200, maxLoopDelayMs: 0, poolWaiting: () => waiting });
+    // Matched on the route pattern: real ids and a query string still count as the safety read.
+    for (const url of ["/api/v1/admin/incidents?status=open", "/api/v1/admin/incidents/inc_1", "/api/v1/admin/incidents/inc_1/emergency-contacts", "/api/v1/admin/ride-checks?limit=50", "/api/v1/admin/alerts/book", "/api/v1/admin/trips/trp_1"]) {
+      expect((await app.inject({ method: "GET", url })).statusCode, url).toBe(200);
+    }
+    for (const url of ["/api/v1/admin/trips", "/api/v1/admin/trips/trp_1/receipt", "/api/v1/admin/incidents/settings", "/api/v1/admin/drivers/drv_1"]) {
+      expect((await app.inject({ method: "GET", url })).statusCode, url).toBe(503);
+    }
+    // An unknown admin path (no route) is still shed, so it cannot pass as a safety read.
+    expect((await app.inject({ method: "GET", url: "/api/v1/admin/incidents/inc_1/x" })).statusCode).toBe(503);
+    expect(sheddable("GET", "/api/v1/admin/incidents")).toBe(false);
+    expect(sheddable("GET", "/api/v1/admin/incidents/inc_1", "/api/v1/admin/incidents/:incidentId")).toBe(false);
+    expect(sheddable("GET", "/api/v1/admin/trips")).toBe(true);
     stop();
     await app.close();
   });
