@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.74",
+  "version": "0.18.75",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -1555,7 +1555,9 @@
     "keepDays": 30,
     "privacy": "clients scrub e-mails, phone numbers and coordinates; the server scrubs again before storing",
     "perAddressPerMinute": 120,
-    "limits": "B1.22: its own budget, outside the general write limit (rateLimit): perAddressPerMinute per client address (default 120; server env TELEMETRY_PER_ADDRESS_PER_MINUTE), fixed 60 s window in each server copy's memory, each copy allowing 1/WEB_COPIES of it; over it 429 rate_limited, reason telemetry_too_many, Retry-After. A token sent with telemetry does not use the user's write budget. A body over maxBodyBytes is 400 invalid_request (reason payload_too_large); one over 4 × maxBodyBytes is refused before it is read: 400 invalid_request (reason body_too_large).",
+    "anonRowsPerMinute": 600,
+    "anonBytesPerMinute": 2097152,
+    "limits": "B1.22: its own budget, outside the general write limit (rateLimit): perAddressPerMinute per client address (default 120; server env TELEMETRY_PER_ADDRESS_PER_MINUTE), fixed 60 s window in each server copy's memory, each copy allowing 1/WEB_COPIES of it; over it 429 rate_limited, reason telemetry_too_many, Retry-After. A token sent with telemetry does not use the user's write budget. A body over maxBodyBytes is 400 invalid_request (reason payload_too_large); one over 4 × maxBodyBytes is refused before it is read: 400 invalid_request (reason body_too_large). v0.18.75 (server B1.25, owner W1 Q85): calls without a valid token (none sent, or stale/bad) also share a total per server copy: anonRowsPerMinute lines and anonBytesPerMinute body bytes per fixed 60 s window, all addresses together (server env TELEMETRY_ANON_ROWS_PER_MINUTE / TELEMETRY_ANON_BYTES_PER_MINUTE; per copy, NOT divided by WEB_COPIES, so the fleet total is copies × cap). Over it the call still answers 202 with an empty body but is not stored (the server counts the drop); the apps treat it as delivered and do not retry. A signed-in caller is never counted here (only its per-address budget applies).",
     "crashReport": {
       "note": "v0.16.0 (owner 2026-10-29, \"Want section on dispatch to show all crash droids and bugs detected from server\"): POST /telemetry/crashes takes optional app, platform, appVersion, build, screen, kind and occurredAt next to error, stack and extra (additive; an older app sends none). The server scrubs again, groups each report and keeps the reports keepDays days.",
       "apps": [

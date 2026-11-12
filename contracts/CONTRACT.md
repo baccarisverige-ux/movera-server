@@ -1,4 +1,6 @@
-# Movera shared contract v0.18.74
+# Movera shared contract v0.18.75
+
+v0.18.75 (server B1.25, owner W1 Q85; X-Api-Version stays `0.5`; additive; no API shape change; no migration; no admin setting): **no-token telemetry has a total per server copy** — on top of B1.22's per-address budget, calls without a valid token share `telemetry.anonRowsPerMinute` (600) lines and `telemetry.anonBytesPerMinute` (2 MiB) per minute per copy (env `TELEMETRY_ANON_ROWS_PER_MINUTE` / `TELEMETRY_ANON_BYTES_PER_MINUTE`, not divided by `WEB_COPIES`); over it: `202`, not stored, counted; signed-in callers are not counted — `contract.json#telemetry.limits`.
 
 v0.18.74 (wording only, server B1.24, owner W1 Q84 + 2026-11-12 "None of these"; X-Api-Version stays `0.5`; additive; no API shape change; no migration; no new setting): **admin safety reads are never shed** — exactly six, matched on the route: `GET /admin/incidents`, `GET /admin/incidents/{incidentId}`, `GET /admin/incidents/{incidentId}/emergency-contacts`, `GET /admin/ride-checks`, `GET /admin/alerts/book`, `GET /admin/trips/{tripId}`; every other admin read is still shed; a query of theirs past the statement or lock timeout can still answer `server_busy` — `contract.json#fastDispatch.shedOnly`.
 
