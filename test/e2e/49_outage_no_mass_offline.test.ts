@@ -292,36 +292,74 @@ describe("B1.23: no mass offline after an outage", () => {
     expect(await heardAgainStored()).toBeDefined();
   }, 60_000);
 
-  it("lock wait: a location POST during the worker's first run after an outage (2000 online drivers) waits only for the short decision, not the sweep; the sweep still sets the silent ones offline after the grace", async () => {
+  const onEnd: Array<() => Promise<unknown>> = [];
+  afterEach(async () => {
+    for (const end of onEnd.splice(0)) await end();
+  });
+  /** Settles to "marker" if `promise` has not settled within `ms` (only the order is asserted, never a time; Rule 47). */
+  const first = <T,>(promise: Promise<T>, ms = 10_000) =>
+    Promise.race([promise.then(() => "settled" as const), new Promise<"marker">((resolve) => setTimeout(() => resolve("marker"), ms))]);
+  const rowsOf = (kind: string) => sim.db.selectFrom("timers").select(["due_at", "payload"]).where("kind", "=", kind).execute();
+
+  it("lock wait: the decision run only books the sweep and lets go of the shared row; a POST while a sweep runs never waits for it; the sweep sets 2000 silent drivers offline after the grace", async () => {
     // 2000 more online drivers, copies of C with an old fix (their silence is as old as the outage).
     await sql`INSERT INTO drivers SELECT (jsonb_populate_record(NULL::drivers, to_jsonb(d) || jsonb_build_object('driver_id', 'drv_bulk_' || g, 'phone', '+4679' || lpad(g::text, 7, '0'), 'vehicle_id', NULL))).* FROM drivers d, generate_series(1, 2000) g WHERE d.driver_id = ${c.id}`.execute(sim.db);
     await sql`INSERT INTO driver_locations SELECT (jsonb_populate_record(NULL::driver_locations, to_jsonb(l) || jsonb_build_object('driver_id', 'drv_bulk_' || g))).* FROM driver_locations l, generate_series(1, 2000) g WHERE l.driver_id = ${c.id}`.execute(sim.db);
+    const online = async () => (await sql<{ n: number }>`SELECT count(*)::int AS n FROM drivers WHERE driver_id LIKE 'drv_bulk_%' AND online_status = 'online'`.execute(sim.db)).rows[0]!.n;
     sim.clock.now = new Date(sim.clock.now.getTime() + 6 * 60_000);
     await ensureMaintenanceTimers(sim.db, sim.clock.now);
-    const run = sim.tick();
-    // Wait until the worker holds the shared no-position row (its first run after the outage has begun).
-    const probe = new pg.Client({ connectionString: sim.database.url });
-    await probe.connect();
-    for (let i = 0; i < 300; i += 1) {
-      const held = await probe.query("BEGIN").then(() => probe.query("SELECT 1 FROM timers WHERE kind = 'no_fix_offline' FOR UPDATE NOWAIT")).then(() => false, () => true);
-      await probe.query("ROLLBACK");
-      if (held) break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    await probe.end();
-    const t0 = Date.now();
-    const posted = await a.post("/driver/location", { fixes: [a.fix(PLACES.nearSergels)] });
-    const ms = Date.now() - t0;
-    await run;
-    expect(posted.status).toBe(200);
-    expect(ms).toBeLessThan(400);
-    for (let i = 0; i < 20; i += 1) await sim.tick();
-    const online = async () => (await sql<{ n: number }>`SELECT count(*)::int AS n FROM drivers WHERE driver_id LIKE 'drv_bulk_%' AND online_status = 'online'`.execute(sim.db)).rows[0]!.n;
+    // (a) The decision alone: a sweep is booked and the shared row is free again (nobody set offline in it).
+    await sim.worker.runDue(1, { kinds: ["no_fix_offline"] });
+    expect(await rowsOf("no_fix_sweep")).toHaveLength(1);
     expect(await online()).toBe(2000);
-    c.position = null;
-    b.position = null;
-    a.position = null;
+    const probe = new pg.Client({ connectionString: sim.database.url });
+    probe.on("error", () => undefined);
+    await probe.connect();
+    onEnd.push(() => probe.end().catch(() => undefined));
+    await probe.query("BEGIN");
+    await probe.query("SELECT 1 FROM timers WHERE kind = 'no_fix_offline' FOR UPDATE NOWAIT");
+    await probe.query("ROLLBACK");
+    // (b) A sweep is running (its row deleted, not committed): a location POST settles before that sweep ends.
+    await probe.query("BEGIN");
+    await probe.query("DELETE FROM timers WHERE kind = 'no_fix_sweep'");
+    const post = a.post("/driver/location", { fixes: [a.fix(PLACES.nearSergels)] });
+    expect(await first(post)).toBe("settled");
+    expect((await post).status).toBe(200);
+    await probe.query("COMMIT");
+    await probe.end();
+    // (c) The sweep still sets every silent driver offline noFixMinutes after the outage.
+    for (const d of [a, b, c]) d.position = null;
     await sim.advance(5 * 60 + 40);
     expect(await online()).toBe(0);
   }, 300_000);
+
+  it("S1: a sweep is running when the outage-ending decision runs: the decision does not wait for it (it commits heardAgainAt and books itself), and a POST does not wait either", async () => {
+    // A sweep row is pending from a decision before the outage.
+    await sim.worker.runDue(1000, { kinds: ["no_fix_offline"] });
+    sim.clock.now = new Date(sim.clock.now.getTime() + 31_000);
+    await sim.worker.runDue(1, { kinds: ["no_fix_offline"] });
+    expect(await rowsOf("no_fix_sweep")).toHaveLength(1);
+    sim.clock.now = new Date(sim.clock.now.getTime() + 6 * 60_000);
+    const outside = new pg.Client({ connectionString: sim.database.url });
+    outside.on("error", () => undefined);
+    await outside.connect();
+    onEnd.push(() => outside.end().catch(() => undefined));
+    await outside.query("BEGIN");
+    await outside.query("DELETE FROM timers WHERE kind = 'no_fix_sweep'");
+    const decision = sim.worker.runDue(1, { kinds: ["no_fix_offline"] });
+    expect(await first(decision)).toBe("settled");
+    const post = a.post("/driver/location", { fixes: [a.fix(PLACES.nearSergels)] });
+    expect(await first(post)).toBe("settled");
+    // Before that sweep ends: the decision has committed (the row is booked again, ahead, with heardAgainAt).
+    const [row] = await rowsOf("no_fix_offline");
+    expect(row!.due_at.getTime()).toBeGreaterThan(sim.clock.now.getTime());
+    expect(row!.payload).toMatchObject({ heardAgainAt: expect.any(String) });
+    expect(sim.timerErrors).toEqual([]);
+    await outside.query("COMMIT");
+    await outside.end();
+    expect((await post).status).toBe(200);
+    // The next decision books the sweep again; it runs and sets nobody offline (grace).
+    await sim.advance(60);
+    expect(await statuses()).toEqual(["online", "online", "online"]);
+  }, 120_000);
 });

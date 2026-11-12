@@ -138,12 +138,21 @@ export const noFixOfflineHandler: TimerHandler = async (trx, timer) => {
   const heardAgain = await nextHeardAgain(trx, now, timer.dueAt, heardAgainOf(timer.payload));
   await trx
     .insertInto("timers")
-    .values([
-      { kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000), payload: JSON.stringify(heardAgain ? { heardAgainAt: heardAgain.toISOString() } : {}) },
-      { kind: NO_FIX_SWEEP, ref_id: "all", due_at: now },
-    ])
+    .values({ kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000), payload: JSON.stringify(heardAgain ? { heardAgainAt: heardAgain.toISOString() } : {}) })
     .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
     .execute();
+  // A sweep being run right now (its row deleted, not committed) would make this insert wait for that whole sweep while
+  // this run holds the shared row: never more than 50 ms (supervisor #5 3a, as pokeAlerts). On a lock timeout nothing
+  // is booked: the running sweep, or the one the next decision books 30 s later, covers it.
+  await sql`SAVEPOINT no_fix_sweep`.execute(trx);
+  try {
+    await sql`SET LOCAL lock_timeout = '50ms'`.execute(trx);
+    await trx.insertInto("timers").values({ kind: NO_FIX_SWEEP, ref_id: "all", due_at: now }).onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing()).execute();
+    await sql`RELEASE SAVEPOINT no_fix_sweep`.execute(trx);
+  } catch (error) {
+    if (!["55P03", "40P01"].includes((error as { code?: string } | undefined)?.code ?? "")) throw error;
+    await sql`ROLLBACK TO SAVEPOINT no_fix_sweep`.execute(trx);
+  }
 };
 
 /** The sweep: set offline each online driver whose latest position is too old; heardAgainAt read without a lock. */
