@@ -2,6 +2,7 @@ import { z } from "zod";
 import { parseExtraTestPhones } from "./auth/testPhones.js";
 import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./maps/osrmSettings.js";
 import { READ_RETRY_DEFAULTS } from "./realtime/retry.js";
+import { SESSION_CHECK_DEFAULT_MS, SESSION_CHECK_MAX_MS } from "./realtime/sessionWatch.js";
 
 /**
  * Server settings, read from the environment once at start. Anything missing or malformed stops the server
@@ -197,6 +198,11 @@ const schema = z.object({
   STREAM_READ_RETRIES: z.coerce.number().int().min(0).max(10).default(READ_RETRY_DEFAULTS.maxRetries),
   /** B1.9: a stream that gave up closes after a random 0 – this many ms, so one DB blip does not reconnect every app at once (0: at once). */
   STREAM_CLOSE_SPREAD_MS: z.coerce.number().int().min(0).max(300_000).default(READ_RETRY_DEFAULTS.closeSpreadMs),
+  /**
+   * B1.15 (owner W1 Q76): each server copy re-checks the session rows of all its open streams this often (one batched
+   * query), so a stream of a signed-out / revoked session ends within this time; at most 60 s (the contract's promise).
+   */
+  STREAM_SESSION_CHECK_MS: z.coerce.number().int().min(100).max(SESSION_CHECK_MAX_MS).default(SESSION_CHECK_DEFAULT_MS),
   /** Job 1 (fix plan R22): a single SQL statement of a request is stopped after this many ms (0: no limit). */
   DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).max(600_000).default(30_000),
   /**

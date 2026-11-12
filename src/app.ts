@@ -47,6 +47,7 @@ import { dispatchToolRoutes } from "./dispatch/toolRoutes.js";
 import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
+import { watchStreamSessions } from "./realtime/sessionWatch.js";
 import { pushServicesFrom, type PushServices } from "./push/config.js";
 import { pushRoutes } from "./push/routes.js";
 import { configureReadRetry } from "./realtime/retry.js";
@@ -254,6 +255,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
 
   if (db !== undefined) {
     const jwtSecret = env.JWT_SECRET ?? DEV_JWT_SECRET;
+    // B1.15 (Q76): every open stream of this copy is re-checked against its session row, one batched query per interval.
+    watchStreamSessions(app, db, { everyMs: env.STREAM_SESSION_CHECK_MS, warn: (data, message) => app.log.warn(data, message), ...(clock ? { clock } : {}) });
     const signInProviders = providers ?? providersFrom(env);
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });

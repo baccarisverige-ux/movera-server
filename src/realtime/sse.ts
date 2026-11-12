@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { streamClosed, streamOpened } from "../telemetry/load.js";
+import { SESSION_ENDED_COMMENT, streamOwnerOf, watchOf } from "./sessionWatch.js";
 
 /** Server-sent events (contract §4): `id:` is the sequence, `data:` one JSON event, a comment every 15 s. */
 
@@ -60,6 +61,17 @@ export function openEventStream(request: FastifyRequest, reply: FastifyReply, he
   }, heartbeatMs);
   request.raw.on("close", finish);
   open.add(finish);
+  // B1.15 (Q76): the stream ends within STREAM_SESSION_CHECK_MS when its session ends (sessionWatch.ts).
+  const owner = streamOwnerOf(request);
+  const watch = watchOf(request.server);
+  if (owner !== undefined && watch !== undefined) {
+    closers.push(
+      watch.add(owner, () => {
+        if (!done) raw.write(`: ${SESSION_ENDED_COMMENT}\n\n`);
+        finish();
+      }),
+    );
+  }
   return {
     send: (id, data) => {
       if (done) return false;

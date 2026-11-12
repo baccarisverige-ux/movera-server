@@ -3,6 +3,7 @@ import type { Executor } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
 import { verifyAccessToken, type Actor } from "./jwt.js";
 import { endAdminSessions, REFRESH_TTL_MS, sessionIsActive } from "./service.js";
+import { noteStreamOwner } from "../realtime/sessionWatch.js";
 
 /** Who is calling, from the access token (contract: actor and ids come from the token, never from the body). */
 export type Principal = { actor: Actor; subjectId: string; sessionId: string; zones: string[]; role?: string; perms?: string[]; preview?: true };
@@ -43,6 +44,8 @@ export async function authenticate(
     // the token lives 15 minutes and cannot be refreshed. Only rider / driver tokens can be previews.
     if (claims.actor === "admin") throw new ApiError("unauthenticated", "Please sign in again.", { reason: "token_invalid" });
     if (!PREVIEW_METHODS.has(request.method.toUpperCase())) throw new ApiError("forbidden", "Preview – not sent.", { reason: "preview_blocked" });
+    // B1.15: a preview's stream ends at the token's own end (no session row to re-check).
+    noteStreamOwner(request, { sessionId: claims.sid, actor: claims.actor, previewEndsAt: claims.exp * 1000 });
     return { actor: claims.actor, subjectId: claims.sub, sessionId: claims.sid, zones: claims.zones, preview: true };
   }
   if (options.allowEndedSession !== true && !(await sessionIsActive(deps.db, claims.sid, now))) {
@@ -53,6 +56,8 @@ export async function authenticate(
   // Step 38 (owner Q42): an admin's rights live in the token, so a role change or a deactivation ends every session
   // of that admin at once, however the row was changed (route, CLI or hand); one select by primary key.
   if (claims.actor === "admin" && options.allowEndedSession !== true) await assertAdminUnchanged(deps.db, claims.sub, claims.role, now);
+  // B1.15 (Q76): a stream opened by this request is re-checked against this session row (and admin role) while open.
+  noteStreamOwner(request, { sessionId: claims.sid, actor: claims.actor, ...(claims.role !== undefined ? { role: claims.role } : {}) });
   return {
     actor: claims.actor,
     subjectId: claims.sub,
