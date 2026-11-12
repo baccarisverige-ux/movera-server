@@ -1,11 +1,11 @@
-# Movera API v0.18.76 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.77 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.76
+  version: 0.18.77
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.76 in this folder; this file must agree with them.
+    v0.18.77 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.76
+  version: 0.18.77
   source: contract.json
 paths:
   /auth/otp/request:
@@ -15200,14 +15200,16 @@ paths:
         ''sent'' only when the sending service accepted the e-mail, else ''pending_provider'', also on a refused or failed
         send, which does not count toward the 3 starts per hour; contract.json#emailVerified.delivery); POST /account/email/verify
         { challengeId, code } → { email, emailVerifiedAt } (v0.18.76). Only within 10 minutes of signing in on this phone
-        (403 reauth_required: sign in again first); at most 3 starts per hour per account and kind (429 change_too_many).
-        A number that already has any account (rider or driver), or (v0.18.76) an address VERIFIED on another account of the
-        same app (contract.json#emailVerified.unique), gets the same answer and no code, and the verify fails like a wrong
-        session (invalid_otp_session / invalid_email_challenge) — the answer never tells. Wrong tries carry over a restart
-        (5 per hour, auth.otp). After the change: a notice to the OLD number / OLD address (sent by SMS / e-mail once a provider
-        is connected; recorded as pending until then), an in-app notice (phone_changed / email_changed), and every other session
-        of the account ends. v0.18.76: the account''s own current e-mail may be verified the same way (contract.json#emailVerified.verifyCurrent:
-        no 10-minute rule, no change notice, no session ends).'
+        (403 reauth_required: sign in again first); at most 3 starts per hour per account and kind (429 change_too_many);
+        v0.18.77: for e-mail also at most 10 starts per hour per account, counting every start, sent or pending_provider (429
+        change_too_many; contract.json#emailVerified.delivery). A number that already has any account (rider or driver), or
+        (v0.18.76) an address VERIFIED on another account of the same app (contract.json#emailVerified.unique), gets the same
+        answer and no code, and the verify fails like a wrong session (invalid_otp_session / invalid_email_challenge) — the
+        answer never tells. Wrong tries carry over a restart (5 per hour, auth.otp). After the change: a notice to the OLD
+        number / OLD address (sent by SMS / e-mail once a provider is connected; recorded as pending until then), an in-app
+        notice (phone_changed / email_changed), and every other session of the account ends. v0.18.76: the account''s own
+        current e-mail may be verified the same way (contract.json#emailVerified.verifyCurrent: no 10-minute rule, no change
+        notice, no session ends).'
       tags:
       - Account
       x-actor:
@@ -15255,14 +15257,16 @@ paths:
         ''sent'' only when the sending service accepted the e-mail, else ''pending_provider'', also on a refused or failed
         send, which does not count toward the 3 starts per hour; contract.json#emailVerified.delivery); POST /account/email/verify
         { challengeId, code } → { email, emailVerifiedAt } (v0.18.76). Only within 10 minutes of signing in on this phone
-        (403 reauth_required: sign in again first); at most 3 starts per hour per account and kind (429 change_too_many).
-        A number that already has any account (rider or driver), or (v0.18.76) an address VERIFIED on another account of the
-        same app (contract.json#emailVerified.unique), gets the same answer and no code, and the verify fails like a wrong
-        session (invalid_otp_session / invalid_email_challenge) — the answer never tells. Wrong tries carry over a restart
-        (5 per hour, auth.otp). After the change: a notice to the OLD number / OLD address (sent by SMS / e-mail once a provider
-        is connected; recorded as pending until then), an in-app notice (phone_changed / email_changed), and every other session
-        of the account ends. v0.18.76: the account''s own current e-mail may be verified the same way (contract.json#emailVerified.verifyCurrent:
-        no 10-minute rule, no change notice, no session ends).'
+        (403 reauth_required: sign in again first); at most 3 starts per hour per account and kind (429 change_too_many);
+        v0.18.77: for e-mail also at most 10 starts per hour per account, counting every start, sent or pending_provider (429
+        change_too_many; contract.json#emailVerified.delivery). A number that already has any account (rider or driver), or
+        (v0.18.76) an address VERIFIED on another account of the same app (contract.json#emailVerified.unique), gets the same
+        answer and no code, and the verify fails like a wrong session (invalid_otp_session / invalid_email_challenge) — the
+        answer never tells. Wrong tries carry over a restart (5 per hour, auth.otp). After the change: a notice to the OLD
+        number / OLD address (sent by SMS / e-mail once a provider is connected; recorded as pending until then), an in-app
+        notice (phone_changed / email_changed), and every other session of the account ends. v0.18.76: the account''s own
+        current e-mail may be verified the same way (contract.json#emailVerified.verifyCurrent: no 10-minute rule, no change
+        notice, no session ends).'
       tags:
       - Account
       x-actor:
@@ -15306,20 +15310,22 @@ paths:
         ''sent'' only when the sending service accepted the e-mail, else ''pending_provider'', also on a refused or failed
         send, which does not count toward the 3 starts per hour; contract.json#emailVerified.delivery); POST /account/email/verify
         { challengeId, code } → { email, emailVerifiedAt } (v0.18.76). Only within 10 minutes of signing in on this phone
-        (403 reauth_required: sign in again first); at most 3 starts per hour per account and kind (429 change_too_many).
-        A number that already has any account (rider or driver), or (v0.18.76) an address VERIFIED on another account of the
-        same app (contract.json#emailVerified.unique), gets the same answer and no code, and the verify fails like a wrong
-        session (invalid_otp_session / invalid_email_challenge) — the answer never tells. Wrong tries carry over a restart
-        (5 per hour, auth.otp). After the change: a notice to the OLD number / OLD address (sent by SMS / e-mail once a provider
-        is connected; recorded as pending until then), an in-app notice (phone_changed / email_changed), and every other session
-        of the account ends. v0.18.76: the account''s own current e-mail may be verified the same way (contract.json#emailVerified.verifyCurrent:
-        no 10-minute rule, no change notice, no session ends). v0.18.76 (G30): POST /account/email/change with the account''s
-        own current address (case ignored) starts a check of it: no 10-minute sign-in rule (403 reauth_required is not used),
-        still at most 3 starts per hour. Its verify sets emailVerifiedAt only: no change notice to the old address, no email_changed
-        notice, no other session ends. Addresses are compared lower-cased. Only an address VERIFIED on another account of
-        the SAME app blocks (rider ↔ rider, driver ↔ driver: the same answer, no code, the verify fails like a wrong challenge);
-        a Not verified copy elsewhere never blocks. The same person may use the same address on his own rider and driver accounts
-        (owner Q5). Two accounts verifying the same address at once: the first verify wins, the other fails like a wrong challenge.
+        (403 reauth_required: sign in again first); at most 3 starts per hour per account and kind (429 change_too_many);
+        v0.18.77: for e-mail also at most 10 starts per hour per account, counting every start, sent or pending_provider (429
+        change_too_many; contract.json#emailVerified.delivery). A number that already has any account (rider or driver), or
+        (v0.18.76) an address VERIFIED on another account of the same app (contract.json#emailVerified.unique), gets the same
+        answer and no code, and the verify fails like a wrong session (invalid_otp_session / invalid_email_challenge) — the
+        answer never tells. Wrong tries carry over a restart (5 per hour, auth.otp). After the change: a notice to the OLD
+        number / OLD address (sent by SMS / e-mail once a provider is connected; recorded as pending until then), an in-app
+        notice (phone_changed / email_changed), and every other session of the account ends. v0.18.76: the account''s own
+        current e-mail may be verified the same way (contract.json#emailVerified.verifyCurrent: no 10-minute rule, no change
+        notice, no session ends). v0.18.76 (G30): POST /account/email/change with the account''s own current address (case
+        ignored) starts a check of it: no 10-minute sign-in rule (403 reauth_required is not used), still at most 3 starts
+        per hour. Its verify sets emailVerifiedAt only: no change notice to the old address, no email_changed notice, no other
+        session ends. Addresses are compared lower-cased. Only an address VERIFIED on another account of the SAME app blocks
+        (rider ↔ rider, driver ↔ driver: the same answer, no code, the verify fails like a wrong challenge); a Not verified
+        copy elsewhere never blocks. The same person may use the same address on his own rider and driver accounts (owner
+        Q5). Two accounts verifying the same address at once: the first verify wins, the other fails like a wrong challenge.
         The server sends the code by e-mail through its sending service (owner Q1: Resend; job G30b; the key lives only in
         the server''s environment, never in the contract or the apps). AccountEmailChallenge.delivery is ''sent'' only when
         the sending service accepted the e-mail. It is ''pending_provider'' while no service is connected AND (owner 2026-11-12
@@ -15328,7 +15334,13 @@ paths:
         ''pending_provider'' the apps say texts.codeNotSentYet ("Codes can''t be sent yet") and never that a code was sent;
         the provider''s error is never shown to the user. A start counts toward the at most 3 starts per hour (429 change_too_many)
         only when its answer is delivery ''sent'' (the provider accepted the e-mail); a ''pending_provider'' start (no service,
-        or a refused or failed send) does not count, since the person never got a code.'
+        or a refused or failed send) does not count, since the person never got a code. v0.18.77 (owner 2026-11-12 ~15:02
+        "Max 10 tries/hour"): besides those 3 accepted sends, at most 10 e-mail code starts per hour per account, counting
+        EVERY start, sent or pending_provider (also the start of a check of the account''s own current address, and the start
+        for an address VERIFIED on another account, which gets the same answer and no code, so the answer never tells). The
+        11th start within the hour → 429 change_too_many (Retry-After), before any e-mail is sent and before anything is saved;
+        whichever limit is reached first refuses. A start refused before it begins (400, 403 reauth_required, or a 429 itself)
+        does not count. Same rolling hour as the 3 accepted sends; phone starts are unchanged.'
       tags:
       - Account
       x-actor:
@@ -15364,7 +15376,22 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '429':
-          $ref: '#/components/responses/RateLimited'
+          description: 'rate_limited, reason change_too_many; obey Retry-After. v0.18.77 (G30): at most 3 accepted code sends
+            (delivery ''sent'') AND at most 10 code starts (every start, sent or pending_provider) per hour per account; whichever
+            is reached first refuses, before any e-mail is sent (contract.json#emailVerified.delivery).'
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 0
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '503':
           $ref: '#/components/responses/Unavailable'
   /account/email/verify:
@@ -15376,20 +15403,22 @@ paths:
         ''sent'' only when the sending service accepted the e-mail, else ''pending_provider'', also on a refused or failed
         send, which does not count toward the 3 starts per hour; contract.json#emailVerified.delivery); POST /account/email/verify
         { challengeId, code } → { email, emailVerifiedAt } (v0.18.76). Only within 10 minutes of signing in on this phone
-        (403 reauth_required: sign in again first); at most 3 starts per hour per account and kind (429 change_too_many).
-        A number that already has any account (rider or driver), or (v0.18.76) an address VERIFIED on another account of the
-        same app (contract.json#emailVerified.unique), gets the same answer and no code, and the verify fails like a wrong
-        session (invalid_otp_session / invalid_email_challenge) — the answer never tells. Wrong tries carry over a restart
-        (5 per hour, auth.otp). After the change: a notice to the OLD number / OLD address (sent by SMS / e-mail once a provider
-        is connected; recorded as pending until then), an in-app notice (phone_changed / email_changed), and every other session
-        of the account ends. v0.18.76: the account''s own current e-mail may be verified the same way (contract.json#emailVerified.verifyCurrent:
-        no 10-minute rule, no change notice, no session ends). v0.18.76 (G30): POST /account/email/change with the account''s
-        own current address (case ignored) starts a check of it: no 10-minute sign-in rule (403 reauth_required is not used),
-        still at most 3 starts per hour. Its verify sets emailVerifiedAt only: no change notice to the old address, no email_changed
-        notice, no other session ends. Addresses are compared lower-cased. Only an address VERIFIED on another account of
-        the SAME app blocks (rider ↔ rider, driver ↔ driver: the same answer, no code, the verify fails like a wrong challenge);
-        a Not verified copy elsewhere never blocks. The same person may use the same address on his own rider and driver accounts
-        (owner Q5). Two accounts verifying the same address at once: the first verify wins, the other fails like a wrong challenge.'
+        (403 reauth_required: sign in again first); at most 3 starts per hour per account and kind (429 change_too_many);
+        v0.18.77: for e-mail also at most 10 starts per hour per account, counting every start, sent or pending_provider (429
+        change_too_many; contract.json#emailVerified.delivery). A number that already has any account (rider or driver), or
+        (v0.18.76) an address VERIFIED on another account of the same app (contract.json#emailVerified.unique), gets the same
+        answer and no code, and the verify fails like a wrong session (invalid_otp_session / invalid_email_challenge) — the
+        answer never tells. Wrong tries carry over a restart (5 per hour, auth.otp). After the change: a notice to the OLD
+        number / OLD address (sent by SMS / e-mail once a provider is connected; recorded as pending until then), an in-app
+        notice (phone_changed / email_changed), and every other session of the account ends. v0.18.76: the account''s own
+        current e-mail may be verified the same way (contract.json#emailVerified.verifyCurrent: no 10-minute rule, no change
+        notice, no session ends). v0.18.76 (G30): POST /account/email/change with the account''s own current address (case
+        ignored) starts a check of it: no 10-minute sign-in rule (403 reauth_required is not used), still at most 3 starts
+        per hour. Its verify sets emailVerifiedAt only: no change notice to the old address, no email_changed notice, no other
+        session ends. Addresses are compared lower-cased. Only an address VERIFIED on another account of the SAME app blocks
+        (rider ↔ rider, driver ↔ driver: the same answer, no code, the verify fails like a wrong challenge); a Not verified
+        copy elsewhere never blocks. The same person may use the same address on his own rider and driver accounts (owner
+        Q5). Two accounts verifying the same address at once: the first verify wins, the other fails like a wrong challenge.'
       tags:
       - Account
       x-actor:
@@ -33467,7 +33496,13 @@ components:
             yet") and never that a code was sent; the provider''s error is never shown to the user. A start counts toward
             the at most 3 starts per hour (429 change_too_many) only when its answer is delivery ''sent'' (the provider accepted
             the e-mail); a ''pending_provider'' start (no service, or a refused or failed send) does not count, since the
-            person never got a code.'
+            person never got a code. v0.18.77 (owner 2026-11-12 ~15:02 "Max 10 tries/hour"): besides those 3 accepted sends,
+            at most 10 e-mail code starts per hour per account, counting EVERY start, sent or pending_provider (also the start
+            of a check of the account''s own current address, and the start for an address VERIFIED on another account, which
+            gets the same answer and no code, so the answer never tells). The 11th start within the hour → 429 change_too_many
+            (Retry-After), before any e-mail is sent and before anything is saved; whichever limit is reached first refuses.
+            A start refused before it begins (400, 403 reauth_required, or a 429 itself) does not count. Same rolling hour
+            as the 3 accepted sends; phone starts are unchanged.'
     AccountEmailVerify:
       type: object
       required:
