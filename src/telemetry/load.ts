@@ -25,6 +25,8 @@ const lanes = new Map<string, Lag>();
 let parkedByThisCopy = 0;
 const parkedKinds = new Map<string, number>();
 let notifyTotal = 0;
+/** B1.25: no-token telemetry lines this copy answered 202 but did not store (over its per-minute total). */
+const telemetryDropped = { rows: 0, bytes: 0, byKind: new Map<string, number>() };
 let openStreams = 0;
 let streamsOpened = 0;
 /** NOTIFY messages received in each of the last 60 one-second buckets (per-second rate without a timer). */
@@ -55,6 +57,13 @@ export function recordTimerLag(lane: string, lagMs: number): void {
 export function recordTimerParked(kind: string): void {
   parkedByThisCopy += 1;
   parkedKinds.set(kind, (parkedKinds.get(kind) ?? 0) + 1);
+}
+
+/** B1.25: a no-token telemetry line over this copy's total was not stored. `kind` is a code name (log/analytics/crash). */
+export function recordTelemetryNotStored(kind: string, bytes: number): void {
+  telemetryDropped.rows += 1;
+  telemetryDropped.bytes += bytes;
+  telemetryDropped.byKind.set(kind, (telemetryDropped.byKind.get(kind) ?? 0) + 1);
 }
 
 function rollNotify(nowSecond: number): void {
@@ -94,6 +103,7 @@ export function loadSnapshot(now = Date.now()): Record<string, unknown> {
     timersParkedByThisCopy: { total: parkedByThisCopy, byKind: Object.fromEntries(parkedKinds) },
     notify: { total: notifyTotal, perSecondLast10s: last10 / 10 },
     streams: { open: openStreams, openedTotal: streamsOpened },
+    telemetryNotStored: { rows: telemetryDropped.rows, bytes: telemetryDropped.bytes, byKind: Object.fromEntries(telemetryDropped.byKind) },
     eventLoop: { p99Ms: round(loopDelay.percentile(99) / 1e6), maxMs: round(loopDelay.max / 1e6) },
     memoryMb: { rss: Math.round(memory.rss / 1048576), heapUsed: Math.round(memory.heapUsed / 1048576) },
   };

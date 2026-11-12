@@ -260,7 +260,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const signInProviders = providers ?? providersFrom(env);
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await telemetryRoutes(app, { db, jwtSecret, perAddressPerMinute: shareOf(env.TELEMETRY_PER_ADDRESS_PER_MINUTE ?? TELEMETRY.perAddressPerMinute, env.WEB_COPIES), ...(clock ? { clock } : {}) });
+    await telemetryRoutes(app, { db, jwtSecret, perAddressPerMinute: shareOf(env.TELEMETRY_PER_ADDRESS_PER_MINUTE ?? TELEMETRY.perAddressPerMinute, env.WEB_COPIES), anonRowsPerMinute: env.TELEMETRY_ANON_ROWS_PER_MINUTE ?? TELEMETRY.anonRowsPerMinute, anonBytesPerMinute: env.TELEMETRY_ANON_BYTES_PER_MINUTE ?? TELEMETRY.anonBytesPerMinute, ...(clock ? { clock } : {}) });
     // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.
     const invites = { sms: { provider: sms, warn: (data: Record<string, unknown>, message: string) => app.log.warn(data, message) }, appLink: env.DRIVER_APP_LINK };
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });

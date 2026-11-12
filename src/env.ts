@@ -55,6 +55,12 @@ const schema = z.object({
   /** B1.22 (owner W1 Q82): the apps' telemetry lines (POST /telemetry/logs|analytics|crashes) per address per minute,
    * their own budget outside the write limit above. Unset: 120 (the budget they always had). Shared by WEB_COPIES. */
   TELEMETRY_PER_ADDRESS_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).optional(),
+  /** B1.25 (owner W1 Q85): the TOTAL telemetry lines and body bytes one server copy stores per minute for callers without
+   * a valid token (all addresses together); over it the call answers 202 and is not stored (counted in GET /internal/load).
+   * Per server copy, NOT divided by WEB_COPIES: each copy guards its own share of the database disk (fleet total = copies
+   * x cap). Signed-in callers are never counted. Unset: 600 lines and 2 MiB (2097152). */
+  TELEMETRY_ANON_ROWS_PER_MINUTE: z.coerce.number().int().min(1).max(1_000_000).optional(),
+  TELEMETRY_ANON_BYTES_PER_MINUTE: z.coerce.number().int().min(1024).max(1_073_741_824).optional(),
   /** B1.22 supervisor N1: the app's own ride checks (new checkIds, safety/rideCheck.ts) per trip and side. The endpoint
    * is outside the write limit, so over this many no new check and no no-answer timer is made (the newest app check
    * answers); answers, I need help and the server's own checks are never capped. 30 is far above the apps' cadence
