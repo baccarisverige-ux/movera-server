@@ -1,4 +1,7 @@
+import { sql } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { heardAgainAt } from "../../src/drivers/presence.js";
+import { seedDriver } from "../../src/drivers/service.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "../../src/jobs/maintenance.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
@@ -139,4 +142,61 @@ describe("B1.23: no mass offline after an outage", () => {
     await sim.advance(90);
     expect(await statuses()).toEqual(["online", "online", "offline"]);
   });
+
+  /* Supervisor NO-GO on d95724d (F1–F4): the grace must always end. */
+
+  it("F1: a quiet night, all 3 phones die while the server runs: offline within deafSince + 10 min cap + noFixMinutes, not never", async () => {
+    for (const d of [a, b, c]) d.position = null;
+    await sim.advance(6 * 60);
+    // A sudden stop of every phone counts as the server not hearing: no one set offline at the usual 5 min.
+    expect(await statuses()).toEqual(["online", "online", "online"]);
+    // The last fix came at the start; the silence is seen at about 1.5 min; cap 10 min; then 5 min: all gone by 17 min.
+    await sim.advance(11 * 60);
+    expect(await statuses()).toEqual(["offline", "offline", "offline"]);
+    const row = await sim.db.selectFrom("timers").select("payload").where("kind", "=", "no_fix_offline").executeTakeFirstOrThrow();
+    expect(row.payload).toMatchObject({ deafSince: expect.any(String) });
+    // A fix again (a driver goes online with a position): the deafness is over.
+    await a.goOnline(PLACES.nearSergels);
+    await sim.advance(30);
+    expect((await sim.db.selectFrom("timers").select("payload").where("kind", "=", "no_fix_offline").executeTakeFirstOrThrow()).payload).not.toHaveProperty("deafSince");
+  }, 120_000);
+
+  it("F2: a booked driver offline while every online phone is silent loses the ride by its search start (dispatchAt) at the latest", async () => {
+    const heldByB = await bookAndHold(b, 70);
+    await tapOffline(b);
+    // A third online driver with a dead phone, so the silence counts (3 online).
+    const extra = await sim.db.transaction().execute((trx) =>
+      seedDriver(trx, { phone: "+46700009123", firstName: "Extra", make: "Volvo", model: "V60", year: 2021, color: "Black", plate: "OUT123", categoryIds: ["economy"], zoneIds: ["Z001"] }, sim.clock.now));
+    await sim.db.updateTable("drivers").set({ online_status: "online", online_since: sim.clock.now }).where("driver_id", "=", extra.driverId).execute();
+    const state = (await sim.db.selectFrom("trips").select("reservation").where("trip_id", "=", heldByB).executeTakeFirstOrThrow()).reservation as { dispatchAt: string };
+    for (const d of [a, c]) d.position = null;
+    await sim.advance((Date.parse(state.dispatchAt) - sim.clock.now.getTime()) / 1000 + 60);
+    expect((await holder(heldByB))["driver_id"]).toBeNull();
+    expect(await reasons(b)).toContain("reservation_lost");
+  }, 180_000);
+
+  it("F4: a lagging worker (each run 61+ s late) while fixes ARE stored is no outage: a silent driver among senders goes offline", async () => {
+    c.position = null;
+    for (let i = 0; i < 8; i += 1) {
+      for (let s = 0; s < 3; s += 1) {
+        sim.clock.now = new Date(sim.clock.now.getTime() + 30_500);
+        await a.heartbeat();
+        await b.heartbeat();
+      }
+      await sim.tick();
+    }
+    // 12 minutes on: C has sent nothing for far more than 5 minutes.
+    expect(await statuses()).toEqual(["online", "online", "offline"]);
+  }, 120_000);
+
+  it("F3: a parked no-position timer (due 'infinity') is no outage signal and never breaks the booked offline check", async () => {
+    const heldByB = await bookAndHold(b, 70);
+    await tapOffline(b);
+    await sim.db.updateTable("timers").set({ due_at: sql`'infinity'::timestamptz`, attempts: 8 }).where("kind", "=", "no_fix_offline").execute();
+    expect(await heardAgainAt(sim.db, sim.clock.now)).toBeNull();
+    const check = await offlineCheckAt(heldByB);
+    await sim.advance((check.getTime() - sim.clock.now.getTime()) / 1000 + 10);
+    expect((await holder(heldByB))["driver_id"]).toBeNull();
+    expect(sim.timerErrors).toEqual([]);
+  }, 180_000);
 });

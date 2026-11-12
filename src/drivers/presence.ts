@@ -47,46 +47,83 @@ export async function ensureNoFixTimer(ex: Executor, now: Date): Promise<void> {
 }
 
 /**
- * S4 B1.23 (contract v0.18.70, owner Q83 "no mass offline after an outage"): a driver is never blamed for minutes the
- * server could not hear him. The no-position job keeps, in its own shared timer row (one row for every server copy),
- * the moment the server could hear the drivers again (`heardAgainAt`); every driver then gets noFixMinutes from that
- * moment. The server could not hear when either:
- * - the job itself ran more than lateSeconds after its due time: no server copy ran jobs (all copies down, or the
- *   database down), so no fix could be stored either; or
- * - at least silentMinOnline drivers are online or on a trip and not one fix from ANY driver reached the server in the
- *   last silentSeconds (the apps send one every few seconds): the network in front of the server is cut.
- * The booked-ride offline check waits for the same grace (heardAgainAt below).
+ * S4 B1.23 (contract v0.18.70, owner Q83 "no mass offline after an outage"): a driver is not blamed for minutes the
+ * server could not hear him, within a bound. The no-position job keeps its state in its one shared timer row (the same
+ * row for every server copy): `heardAgainAt` (each driver's silence counts from no earlier than this), `deafSince`
+ * (while the server cannot hear) and `hearing` (the last run saw a fix from some driver in the last silentSeconds).
+ * A run counts as "the server cannot hear" when:
+ * - it ran more than lateSeconds after its due time AND no fix from any driver was stored since that due time (no
+ *   copy ran jobs and none stored fixes: all copies or the database down; a worker that is only slow while fixes are
+ *   stored is no outage); or
+ * - a sudden stop: the previous run was hearing, now no fix from ANY driver reached the server in silentSeconds, and at
+ *   least silentMinOnline drivers are online or on a trip (the network in front of the server is cut); or
+ * - it already could not hear (deafSince set) and still no fix came in silentSeconds.
+ * deafSince is the first such run and clears only when a fix arrives again. While it lasts, heardAgainAt = that run's
+ * time but never later than deafSince + capMinutes; after the cap the normal rule applies even if still deaf. So every
+ * silent driver is offline by deafSince + capMinutes + noFixMinutes at the latest.
+ * The booked-ride offline check waits for the same grace (heardAgainAt below), never past the ride's dispatchAt.
  */
-export const OUTAGE = { lateSeconds: 60, silentSeconds: 60, silentMinOnline: 3 } as const;
+export const OUTAGE = { lateSeconds: 60, silentSeconds: 60, silentMinOnline: 3, capMinutes: 2 * DEFAULT_NO_FIX_MINUTES } as const;
 
-const heardAgainOf = (payload: unknown): Date | null => {
-  const at = (payload as { heardAgainAt?: unknown } | null)?.heardAgainAt;
-  return typeof at === "string" && Number.isFinite(Date.parse(at)) ? new Date(at) : null;
+type OutageState = { heardAgainAt: Date | null; deafSince: Date | null; hearing: boolean };
+const dateOf = (value: unknown): Date | null => (typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value) : null);
+const stateOf = (payload: unknown): OutageState => {
+  const p = (payload ?? {}) as { heardAgainAt?: unknown; deafSince?: unknown; hearing?: unknown };
+  return { heardAgainAt: dateOf(p.heardAgainAt), deafSince: dateOf(p.deafSince), hearing: p.hearing === true };
 };
+const payloadOf = (s: OutageState) => ({
+  ...(s.heardAgainAt ? { heardAgainAt: s.heardAgainAt.toISOString() } : {}),
+  ...(s.deafSince ? { deafSince: s.deafSince.toISOString() } : {}),
+  hearing: s.hearing,
+});
 
-/** No fix from any driver in the last silentSeconds while enough drivers are online: the server is deaf. */
-async function nobodyHeard(ex: Executor, now: Date): Promise<boolean> {
+/** One run's outage decision (pure; the facts come from the database). */
+export function nextOutageState(prev: OutageState, facts: { now: Date; dueAt: Date; online: number; heardInWindow: boolean; storedSinceDue: boolean }): OutageState {
+  const { now } = facts;
+  const lateDeaf = now.getTime() - facts.dueAt.getTime() > OUTAGE.lateSeconds * 1000 && !facts.storedSinceDue;
+  const suddenStop = prev.hearing && !facts.heardInWindow && facts.online >= OUTAGE.silentMinOnline;
+  const stillDeaf = prev.deafSince !== null && !facts.heardInWindow;
+  if (!(lateDeaf || suddenStop || stillDeaf)) return { heardAgainAt: prev.heardAgainAt, deafSince: null, hearing: facts.heardInWindow };
+  const deafSince = prev.deafSince ?? now;
+  const cap = deafSince.getTime() + OUTAGE.capMinutes * 60_000;
+  const heardAgainAt = new Date(Math.min(now.getTime(), cap));
+  // Never move it back (a cap reached keeps the latest grace given).
+  const kept = prev.heardAgainAt !== null && prev.heardAgainAt > heardAgainAt ? prev.heardAgainAt : heardAgainAt;
+  return { heardAgainAt: kept, deafSince, hearing: false };
+}
+
+async function outageFacts(ex: Executor, now: Date, dueAt: Date) {
   const since = new Date(now.getTime() - OUTAGE.silentSeconds * 1000);
-  const row = await sql<{ online: number; heard: boolean }>`
+  const row = await sql<{ online: number; heard: boolean; stored: boolean }>`
     SELECT (SELECT count(*)::int FROM drivers WHERE online_status IN ('online', 'on_trip')) AS online,
-           EXISTS (SELECT 1 FROM driver_locations WHERE received_at >= ${since}) AS heard`.execute(ex);
+           EXISTS (SELECT 1 FROM driver_locations WHERE received_at >= ${since}) AS heard,
+           EXISTS (SELECT 1 FROM driver_locations WHERE received_at >= ${dueAt}) AS stored`.execute(ex);
   const r = row.rows[0]!;
-  return r.online >= OUTAGE.silentMinOnline && !r.heard;
+  return { now, dueAt, online: r.online, heardInWindow: r.heard, storedSinceDue: r.stored };
 }
 
 /**
  * When the server could hear the drivers again after its last outage (null: none known). Read from the job's shared
- * row: a row overdue by more than lateSeconds means an outage is ending right now (the job has not caught up yet).
+ * row: a row overdue by more than lateSeconds with no fix stored since its due time means an outage is ending right
+ * now (the job has not caught up yet). A parked row (due 'infinity') gives no signal.
  */
 export async function heardAgainAt(ex: Executor, now: Date): Promise<Date | null> {
   const row = await ex.selectFrom("timers").select(["due_at", "payload"]).where("kind", "=", NO_FIX_OFFLINE).where("ref_id", "=", "all").executeTakeFirst();
   if (row === undefined) return null;
-  if (now.getTime() - row.due_at.getTime() > OUTAGE.lateSeconds * 1000) return now;
-  return heardAgainOf(row.payload);
+  const due = row.due_at as unknown;
+  if (!(due instanceof Date) || !Number.isFinite(due.getTime())) return null;
+  const state = stateOf(row.payload);
+  if (now.getTime() - due.getTime() > OUTAGE.lateSeconds * 1000) {
+    const facts = await outageFacts(ex, now, due);
+    return nextOutageState(state, facts).heardAgainAt;
+  }
+  return state.heardAgainAt;
 }
 
-/** The grace after an outage in this zone: its noFixMinutes (the contract default when the rule is off there). */
-export async function outageGraceMinutes(ex: Executor, zoneId: string | null): Promise<number> {
+/** The grace after an outage for this driver: noFixMinutes of the zone the no-position rule uses (his latest fix's zone, else his first home zone, else `fallbackZone`), the contract default when the rule is off there. */
+export async function outageGraceMinutes(ex: Executor, driverId: string, fallbackZone: string | null): Promise<number> {
+  const d = await ex.selectFrom("drivers").leftJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id").select(["drivers.zone_ids", "driver_locations.zone_id as fixZone"]).where("drivers.driver_id", "=", driverId).executeTakeFirst();
+  const zoneId = d?.fixZone ?? d?.zone_ids[0] ?? fallbackZone;
   const minutes = zoneId ? await noFixMinutes(ex, zoneId) : DEFAULT_NO_FIX_MINUTES;
   return minutes > 0 ? minutes : DEFAULT_NO_FIX_MINUTES;
 }
@@ -94,12 +131,11 @@ export async function outageGraceMinutes(ex: Executor, zoneId: string | null): P
 /** Every jobEverySeconds: set offline each online driver whose latest position is too old, then book the next run. */
 export const noFixOfflineHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
-  const deaf = now.getTime() - timer.dueAt.getTime() > OUTAGE.lateSeconds * 1000 || (await nobodyHeard(trx, now));
-  const heardAgain = deaf ? now : heardAgainOf(timer.payload);
-  await setOfflineWithoutPosition(trx, now, heardAgain);
+  const state = nextOutageState(stateOf(timer.payload), await outageFacts(trx, now, timer.dueAt));
+  await setOfflineWithoutPosition(trx, now, state.heardAgainAt);
   await trx
     .insertInto("timers")
-    .values({ kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000), payload: JSON.stringify(heardAgain ? { heardAgainAt: heardAgain.toISOString() } : {}) })
+    .values({ kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000), payload: JSON.stringify(payloadOf(state)) })
     .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
     .execute();
 };

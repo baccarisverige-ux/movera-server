@@ -723,13 +723,15 @@ export async function reservationTimer(trx: Trx, timer: Timer): Promise<void> {
       if (trip.driver_id !== payload.driverId || trip.status !== "accepted") return;
       const driver = await trx.selectFrom("drivers").select("online_status").where("driver_id", "=", trip.driver_id!).executeTakeFirst();
       if (driver && driver.online_status !== "offline" && driver.online_status !== "suspended") return;
-      // S4 B1.23: after an outage the driver could not go online; he gets the zone's noFixMinutes from the moment the
-      // server could hear again, then the check runs once more.
+      // S4 B1.23: after an outage the driver could not go online; he gets noFixMinutes from the moment the server could
+      // hear again, then the check runs once more; never past the ride's search start (dispatchAt), so another driver
+      // can still be found.
       const heardAgain = await heardAgainAt(trx, now);
       if (heardAgain !== null) {
-        const until = new Date(heardAgain.getTime() + (await outageGraceMinutes(trx, trip.zone_id)) * 60_000);
-        if (until > now) {
-          await scheduleTimer(trx, { kind: TIMER.offlineCheck, refId: tripId, dueAt: until, payload: { driverId: payload.driverId } });
+        const grace = heardAgain.getTime() + (await outageGraceMinutes(trx, trip.driver_id!, trip.zone_id)) * 60_000;
+        const until = Math.min(grace, Date.parse(state.dispatchAt));
+        if (until > now.getTime()) {
+          await scheduleTimer(trx, { kind: TIMER.offlineCheck, refId: tripId, dueAt: new Date(until), payload: { driverId: payload.driverId } });
           return;
         }
       }
