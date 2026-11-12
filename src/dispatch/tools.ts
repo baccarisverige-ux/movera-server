@@ -13,10 +13,11 @@ import { newId } from "../ids.js";
 import { cancelTimer, scheduleTimer, type TimerHandler } from "../jobs/timers.js";
 import { applyCommand } from "../trips/commands.js";
 import { DRIVER_ASSIGNED, TERMINAL } from "../rules/transitions.js";
-import { inPolygon, polygonProblem, type Polygon } from "../zones/geometry.js";
+import { boundsOf, inPolygon, polygonProblem, type Polygon } from "../zones/geometry.js";
 import { dispatchKm } from "./engine.js";
 import { lockTripNow, sendAdminOffers } from "./runtime.js";
 import { RADAR_ZONE_REPEAT, sendView, type SendRow } from "./radarSends.js";
+import { driversNear } from "./nearArea.js";
 import { countryLanguage } from "../notifications/noticeLanguage.js";
 
 /**
@@ -183,14 +184,16 @@ type Place = { lat: number; lng: number };
 
 /**
  * The drivers who could take the trip now: account active, online (not on a trip), a position newer than 120 s, the
- * trip's category, no open offer of this trip; optionally only some ids and / or only inside a polygon. Nearest to the
- * pickup first, at most `limit`.
+ * trip's category, no open offer of this trip; optionally only some ids and / or only inside a polygon (S4 B1.20: then
+ * only the drivers whose position is around it are read). Nearest to the pickup first, at most `limit`.
  */
 export async function freeDriversFor(ex: Executor, trip: Pick<TripRow, "trip_id" | "pickup" | "category_id">, opts: { only?: string[]; polygon?: Polygon; limit: number; now: Date }): Promise<string[]> {
   if (opts.only !== undefined && opts.only.length === 0) return [];
-  let q = ex
-    .selectFrom("drivers")
-    .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
+  // S4 B1.20: inside an area only the drivers whose position is around it are read (nearArea.ts).
+  const polygon = opts.polygon;
+  const near = polygon !== undefined ? await driversNear(ex, { box: boundsOf(polygon) }, opts.now, (p) => inPolygon(p.lat, p.lng, polygon)) : undefined;
+  if (near === null) return [];
+  let q = (near ?? ex.selectFrom("drivers").innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id"))
     .select(["drivers.driver_id", "driver_locations.lat", "driver_locations.lng"])
     .where("drivers.account_status", "=", "active")
     .where("drivers.online_status", "=", "online")
@@ -322,9 +325,11 @@ export async function radarZoneFree(ex: Executor, who: Principal, radarZoneId: s
   const zone = await ex.selectFrom("radar_zones").selectAll().where("radar_zone_id", "=", radarZoneId).executeTakeFirst();
   if (zone === undefined) throw notFound("No such radar zone.", "radar_zone_not_found");
   await checkCountry(ex, who, zone.country);
-  let q = ex
-    .selectFrom("drivers")
-    .innerJoin("driver_locations", "driver_locations.driver_id", "drivers.driver_id")
+  // S4 B1.20: only the drivers whose position is around the area are read (nearArea.ts).
+  const polygon = zone.polygon as Polygon;
+  const near = await driversNear(ex, { box: boundsOf(polygon) }, now, (p) => inPolygon(p.lat, p.lng, polygon));
+  if (near === null) return { radarZoneId, free: 0, at: now.toISOString() };
+  let q = near
     .select(["driver_locations.lat", "driver_locations.lng"])
     .where("drivers.account_status", "=", "active")
     .where("drivers.online_status", "=", "online")

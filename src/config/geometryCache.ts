@@ -14,6 +14,9 @@ export type ZoneGeometry = { zone_id: string; open: boolean; kind: string; south
 export type AreaGeometry = Record<string, unknown> & { area_id: string; is_on: boolean; south: number; west: number; north: number; east: number; polygon: unknown };
 export type Geometry = { zones: ZoneGeometry[]; byId: Map<string, ZoneGeometry>; areas: AreaGeometry[] };
 
+/** The copy's longest life in the server (main.ts); S4 B1.20 also uses it to know how long a stored fix zone can lag. */
+export const GEOMETRY_TTL_MS = 60_000;
+
 const cache = { ttlMs: 0, generation: 0, value: null as Geometry | null, until: 0, loading: null as Promise<Geometry> | null };
 
 export function cacheGeometry(ttlMs: number): void {
