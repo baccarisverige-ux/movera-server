@@ -83,14 +83,23 @@ async function timed<T>(run: () => Promise<T>): Promise<[T, number]> {
 describe("G30 fix round: the silent answer looks like a real start", () => {
   it("F2: a start for a taken address takes about as long as a real send", async () => {
     await holdAddress("victim@example.se");
-    const attacker = await signIn(freshPhone());
-    const [free, freeMs] = await timed(() => post("/account/email/change", { email: "free@example.se" }, attacker));
-    const [taken, takenMs] = await timed(() => post("/account/email/change", { email: "victim@example.se" }, attacker));
-    expect(free.json().delivery).toBe("sent");
-    expect(taken.json().delivery).toBe("sent");
-    expect(outbox).toEqual(["victim@example.se", "free@example.se"]);
-    expect(takenMs).toBeGreaterThanOrEqual(SEND_MS - 20);
-    expect(Math.abs(takenMs - freeMs)).toBeLessThan(100);
+    // Three pairs, each from a new account (the hourly limits stay out of it); the fastest of each kind is
+    // compared, because a busy machine only ever adds delay (one sample flaked at 199 ms under load).
+    const freeTimes: number[] = [];
+    const takenTimes: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const attacker = await signIn(freshPhone());
+      const [free, freeMs] = await timed(() => post("/account/email/change", { email: `free${i}@example.se` }, attacker));
+      const [taken, takenMs] = await timed(() => post("/account/email/change", { email: "victim@example.se" }, attacker));
+      expect(free.json().delivery).toBe("sent");
+      expect(taken.json().delivery).toBe("sent");
+      expect(takenMs).toBeGreaterThanOrEqual(SEND_MS - 20);
+      freeTimes.push(freeMs);
+      takenTimes.push(takenMs);
+    }
+    // The held address never gets a mail; only the free ones do.
+    expect(outbox).toEqual(["victim@example.se", "free0@example.se", "free1@example.se", "free2@example.se"]);
+    expect(Math.abs(Math.min(...takenTimes) - Math.min(...freeTimes))).toBeLessThan(100);
   });
 
   it("F4: a wrong code answers invalid_otp_code for a taken address too; the silent start is a stored challenge that closes the older one", async () => {
