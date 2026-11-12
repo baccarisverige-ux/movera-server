@@ -13,6 +13,7 @@ import { appendTripEvent } from "../../db/tripLog.js";
 import { scheduleTimer } from "../../jobs/timers.js";
 import { NOT_HELD } from "../../reservations/view.js";
 import { tripProjection } from "../projection.js";
+import { scrubText } from "../../telemetry/scrub.js";
 
 /* ---------------------------------------------------------------- money records */
 
@@ -93,7 +94,7 @@ async function startDueBooked(trx: Trx, driverId: string, now: Date): Promise<vo
     await trx.updateTable("trips")
       .set({ reservation: sql`coalesce(reservation, '{}'::jsonb) || jsonb_build_object('notStarted', true, 'startFailedAt', ${now.toISOString()}::text)` })
       .where("trip_id", "=", held.trip_id).execute();
-    console.warn(JSON.stringify({ msg: "booked ride not started after the driver's trip", tripId: held.trip_id, error: (error as { code?: string }).code ?? String((error as Error)?.message ?? error) }));
+    console.warn(JSON.stringify({ msg: "booked ride not started after the driver's trip", tripId: held.trip_id, error: (error as { code?: string }).code ?? scrubText(String((error as Error)?.message ?? error)) }));
   }
 }
 

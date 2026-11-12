@@ -27,11 +27,12 @@ import { prepareTestWeek } from "./testWeek.js";
 import { pushServicesFrom } from "./push/config.js";
 import { PushDispatcher } from "./push/dispatcher.js";
 import { onNotify } from "./notifications/service.js";
+import { scrubText } from "./telemetry/scrub.js";
 
 const env = readEnv();
 
 // Rule 28: a database error escaping a background promise is logged, never fatal; the logger is the app's once it exists.
-let fatalLog: { error: (data: object, message: string) => void } = { error: (data, message) => console.error(message, (data as { err?: Error }).err?.message ?? "") };
+let fatalLog: { error: (data: object, message: string) => void } = { error: (data, message) => console.error(message, scrubText((data as { err?: Error }).err?.message ?? "")) };
 guardProcess({ error: (data, message) => fatalLog.error(data, message) });
 
 let db: Db | undefined;
@@ -40,7 +41,7 @@ let hub: NotificationHub | undefined;
 let worker: TimerWorker | undefined;
 let pusher: PushDispatcher | undefined;
 // Until the server's logger exists, a dropped connection is reported on stderr.
-let warn = (error: Error) => console.warn("database connection dropped:", error.message);
+let warn = (error: Error) => console.warn("database connection dropped:", scrubText(error.message));
 
 if (env.DATABASE_URL !== undefined) {
   pool = createPool(env.DATABASE_URL, { ...poolOptionsFrom(env), statementTimeoutMs: env.DATABASE_STATEMENT_TIMEOUT_MS }, (error) => warn(error));

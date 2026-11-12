@@ -36,6 +36,7 @@ import { revealRoutes } from "./admin/revealRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
 import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
 import { recordServerError } from "./telemetry/errors.js";
+import { scrubLogError } from "./telemetry/scrub.js";
 import { loadSnapshot, registerServerTiming } from "./telemetry/load.js";
 import { TELEMETRY, telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
@@ -56,6 +57,8 @@ import { CachedPlaces, GooglePlaces, NoPlaces, type Places } from "./maps/places
 export { API_PREFIX };
 
 const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
+/** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
+const NO_ROUTE = "(no route)";
 
 export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator };
 
@@ -97,9 +100,13 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
           level: env.LOG_LEVEL,
           ...(typeof logger === "object" ? { stream: logger.stream } : {}),
           // Audit Phase 4 (P4-7): the request line is logged without its query string, which can hold a phone
-          // number or an e-mail (admin searches `?q=`) or a place; the path alone is enough to trace a request.
+          // number or an e-mail (admin searches `?q=`) or a place.
+          // B1.27 (owner, Sitting W1): and without the path values either: the route pattern only
+          // (`/routes/driving/:coordinates`, `/trips/:tripId`); a path that matches no route is never written.
+          // Every `{ err }` keeps only its type, scrubbed message and stack, and code (scrubLogError).
           serializers: {
-            req: (request: { method: string; url: string; id: string }) => ({ method: request.method, url: request.url.split("?")[0], reqId: request.id }),
+            req: (request: { method: string; id: string; routeOptions?: { url?: string } }) => ({ method: request.method, url: request.routeOptions?.url ?? NO_ROUTE, reqId: request.id }),
+            err: scrubLogError,
           },
         }
       : false,
@@ -199,7 +206,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // contract v0.16.0: the server's own unhandled 5xx errors show in the admin's Crashes & errors (app server, scrubbed).
     if (db !== undefined) {
       const at = clock?.() ?? new Date();
-      const route = request.routeOptions.url ?? request.url.split("?")[0] ?? "";
+      const route = request.routeOptions.url ?? NO_ROUTE;
       await recordServerError(db, error, { method: request.method, route, ip: request.ip, at }).catch((failure: unknown) => request.log.warn({ err: failure }, "server error not recorded"));
     }
     return reply.status(500).send(new ApiError("internal", "Something went wrong on the server.").body(request.id));
@@ -258,7 +265,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // B1.15 (Q76): every open stream of this copy is re-checked against its session row, one batched query per interval.
     watchStreamSessions(app, db, { everyMs: env.STREAM_SESSION_CHECK_MS, warn: (data, message) => app.log.warn(data, message), ...(clock ? { clock } : {}) });
     const signInProviders = providers ?? providersFrom(env);
-    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(clock ? { clock } : {}) });
+    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, logCodes: env.MOVERA_ENV === "development", ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await telemetryRoutes(app, { db, jwtSecret, perAddressPerMinute: shareOf(env.TELEMETRY_PER_ADDRESS_PER_MINUTE ?? TELEMETRY.perAddressPerMinute, env.WEB_COPIES), anonRowsPerMinute: env.TELEMETRY_ANON_ROWS_PER_MINUTE ?? TELEMETRY.anonRowsPerMinute, anonBytesPerMinute: env.TELEMETRY_ANON_BYTES_PER_MINUTE ?? TELEMETRY.anonBytesPerMinute, ...(clock ? { clock } : {}) });
     // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.
