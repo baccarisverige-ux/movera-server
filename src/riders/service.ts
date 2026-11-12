@@ -10,6 +10,7 @@ type RiderRow = {
   phone: string;
   first_name: string;
   email: string | null;
+  email_verified_at?: Date | null;
   status: "active" | "suspended";
   language: string | null;
   rating_sum: number;
@@ -42,6 +43,8 @@ export function riderView(row: RiderRow, currency: string, byCurrency?: Array<{ 
     firstName: row.first_name,
     phone: row.phone,
     ...(row.email ? { email: row.email } : {}),
+    // G30 v0.18.76 (contract.json#emailVerified.field): when the current e-mail was proven; never masked.
+    ...(row.email && row.email_verified_at ? { emailVerifiedAt: row.email_verified_at.toISOString() } : {}),
     ...(row.rating_count > 0 ? { rating: Math.round((row.rating_sum / row.rating_count) * 100) / 100 } : {}),
     status: row.status,
     version: row.version,
@@ -68,9 +71,14 @@ export async function getRiderProfile(ex: Executor, riderId: string, currency: s
 }
 
 export async function updateRiderProfile(trx: Trx, riderId: string, body: unknown, currency: string, now: Date) {
+  // G30 v0.18.76 (contract.json#emailVerified.writePaths.riderPatch): the e-mail changes only by code; refused before
+  // the schema and version checks, nothing saved.
+  if (typeof body === "object" && body !== null && "email" in body) {
+    throw badRequest("Change the e-mail with a code: POST /account/email/change.", "email_needs_code");
+  }
   const problem = schemaProblem("RiderProfileUpdate", body);
   if (problem !== null) throw badRequest(`The profile change is not valid: ${problem}.`, "invalid_body");
-  const update = body as { expectedVersion: number; firstName?: string; email?: string; language?: string; consents?: Record<string, boolean> };
+  const update = body as { expectedVersion: number; firstName?: string; language?: string; consents?: Record<string, boolean> };
   const row = await loadRider(trx, riderId, true);
   if (row.version !== update.expectedVersion) {
     throw new ApiError("version_mismatch", "Your profile changed since you last saw it.", { projection: riderView(row, currency) });
@@ -80,7 +88,6 @@ export async function updateRiderProfile(trx: Trx, riderId: string, body: unknow
     .updateTable("riders")
     .set({
       ...(update.firstName !== undefined ? { first_name: update.firstName.trim() } : {}),
-      ...(update.email !== undefined ? { email: update.email } : {}),
       ...(update.language !== undefined ? { language: update.language } : {}),
       ...(update.consents !== undefined ? { consents: JSON.stringify({ ...((row.consents as object) ?? {}), ...update.consents }) } : {}),
       version: row.version + 1,

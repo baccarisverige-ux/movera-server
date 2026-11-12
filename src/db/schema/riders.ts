@@ -7,6 +7,8 @@ export interface RidersTable {
   phone: string;
   first_name: Generated<string>;
   email: string | null;
+  /** G30 v0.18.76 (migration 0099): when the current e-mail was proven (code or Apple / Google); null = Not verified. */
+  email_verified_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   status: Generated<"active" | "suspended">;
   language: string | null;
   outstanding_minor: ColumnType<string, number | string | undefined, number | string>;

@@ -22,7 +22,9 @@ const advance = (seconds: number) => (clock.now = new Date(clock.now.getTime() +
 beforeAll(async () => {
   database = await freshDatabase();
   await seedTestPhones(database.db);
-  app = await buildApp({ env: readEnv({ MOVERA_ENV: "development" /* OTP limits on test numbers; staging skips them */, DATABASE_URL: database.url, JWT_SECRET: "deep-fix-1".padEnd(48, "d") }), logger: false, db: database.db, clock: () => clock.now });
+  // G30b (v0.18.76): a fake e-mail service that accepts every code e-mail (only accepted starts count toward 3 per hour).
+  const email = { name: "fake", send: async () => ({ accepted: true, status: 200 }) };
+  app = await buildApp({ env: readEnv({ MOVERA_ENV: "development" /* OTP limits on test numbers; staging skips them */, DATABASE_URL: database.url, JWT_SECRET: "deep-fix-1".padEnd(48, "d") }), logger: false, db: database.db, clock: () => clock.now, email });
 });
 afterAll(async () => {
   await app.close();
@@ -195,7 +197,8 @@ describe("phone and e-mail change by code (owner 2026-11-02, checker round)", ()
     const { createHash } = await import("node:crypto");
     await database.db.updateTable("email_changes").set({ code_sha256: createHash("sha256").update(`${challengeId}:4242`).digest("hex") }).where("challenge_id", "=", challengeId).execute();
     const ok = await change(me.accessToken, "email/verify", { challengeId, code: "4242" });
-    expect(ok.json()).toEqual({ email: "new@example.se" });
+    // v0.18.76 (G30): the verify answers the saved address with emailVerifiedAt.
+    expect(ok.json()).toEqual({ email: "new@example.se", emailVerifiedAt: clock.now.toISOString() });
     expect(await database.db.selectFrom("outbound_notices").select(["channel", "to_address"]).where("kind", "=", "email_changed").execute()).toEqual([{ channel: "email", to_address: "old@example.se" }]);
   });
 

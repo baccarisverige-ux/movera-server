@@ -77,6 +77,8 @@ export interface EmailChangesTable {
   attempts: number;
   expires_at: Timestamp;
   created_at: Timestamp;
+  /** G30 F5: 'sending' while the code e-mail is on its way (holds one of the 3 accepted places), then 'sent' or 'pending_provider'; null on rows from before. */
+  delivery: ColumnType<"sending" | "sent" | "pending_provider" | null, "sending" | "sent" | "pending_provider" | null | undefined, "sending" | "sent" | "pending_provider" | null>;
 }
 
 /** Checker round: account change starts (rate limit) and notices waiting for an SMS / e-mail provider. */
@@ -172,6 +174,8 @@ export interface AuthLinkTokensTable {
   first_name: ColumnType<string | null, string | null | undefined, string | null>;
   last_name: ColumnType<string | null, string | null | undefined, string | null>;
   email: ColumnType<string | null, string | null | undefined, string | null>;
+  /** G30 v0.18.76 (migration 0099, owner Q4): the provider said it checked the e-mail. */
+  email_verified: Generated<boolean>;
   expires_at: Timestamp;
   used_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   created_at: Timestamp;

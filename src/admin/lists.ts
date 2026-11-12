@@ -4,6 +4,7 @@ import { adminCoversZone, type Principal } from "../auth/guard.js";
 import type { Executor, Trx } from "../db/db.js";
 import { driverView, driverViews, fixView, loadDriver } from "../drivers/service.js";
 import { activationBlockers } from "../drivers/readiness.js";
+import { onboardingSettings } from "../drivers/onboardingSettings.js";
 
 export { activationBlockers };
 import { ApiError, badRequest } from "../http/errors.js";
@@ -243,11 +244,18 @@ export async function setDriverStatus(trx: Trx, who: Principal, driverId: string
     }
     const missing = await activationBlockers(trx, row, now);
     if (missing.length > 0) throw new ApiError("documents_not_approved", "The driver's required documents are not all approved.", { details: missing });
+    // G30 v0.18.76 (contract.json#emailVerified.approvalSetting, owner Q6 + S3): with the country's setting on, a driver
+    // who was never active needs a verified e-mail; re-activating a once-active driver is not checked.
+    if (row.first_activated_at == null && row.email_verified_at == null && (await onboardingSettings(trx, row.country)).emailVerifiedForApproval === true) {
+      throw new ApiError("invalid_transition", "The driver's e-mail is not verified yet.", { reason: "email_not_verified", projection: maskDriverView(await driverView(trx, row, "admin", now), who) });
+    }
   }
   const blocked = body.accountStatus !== "active";
   // A blocked driver goes offline (one on a trip keeps it to the end) and loses their open offers.
   const online = blocked && ["online", "going_online"].includes(row.online_status) ? { online_status: "offline" as const, online_since: null } : {};
-  await trx.updateTable("drivers").set({ account_status: body.accountStatus, ...online, version: row.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
+  // G30 (emailVerified.neverActive): the first time he becomes active is recorded once, never cleared.
+  const firstActive = body.accountStatus === "active" && row.first_activated_at == null ? { first_activated_at: now } : {};
+  await trx.updateTable("drivers").set({ account_status: body.accountStatus, ...online, ...firstActive, version: row.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
   if (blocked) await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: driverId, dueAt: now, payload: {} });
   // v0.18.6 (owner "Send the real reason"): account_status.
   if ("online_status" in online) await markSetOffline(trx, driverId, "account_status", {}, now);

@@ -1,4 +1,8 @@
-# Movera shared contract v0.18.75
+# Movera shared contract v0.18.77
+
+v0.18.77 (G30, owner 2026-11-12 ~15:02 “Max 10 tries/hour”; X-Api-Version stays `0.5`; no API shape change; no migration; no admin setting): **at most 10 e-mail code starts per hour** — besides the 3 accepted sends per hour (only delivery `sent` counts, v0.18.76), `POST /account/email/change` allows at most 10 starts per hour per account, counting every start (`sent` or `pending_provider`); the 11th → `429 rate_limited` reason `change_too_many`, before any e-mail is sent; phone starts unchanged — `contract.json#emailVerified.delivery`.
+
+v0.18.76 (G30, owner 2026-11-12 Q1–Q6; X-Api-Version stays `0.5`; server migration; admin setting): **an e-mail is saved only after a code check** — `Rider.emailVerifiedAt` / `Driver.emailVerifiedAt` (absent = Not verified; own + admin views, never masked); `PATCH /rider/profile` with `email` → 400 `email_needs_code`; `POST /account/email/verify` → `{ email, emailVerifiedAt }`; own current address may be verified (no 10-min rule, no notice, no session ends); only a VERIFIED address on another account of the same app blocks; sign-up and Apple/Google rules; old e-mails kept; `delivery` is `sent` only when the provider accepted the e-mail, else `pending_provider` (also a refused or failed send); driver Home reminder `email_not_verified` (fix `verify_email`, apps ≥ 0.18.76 only; red “needed for approval” when the setting is on and the driver was never active, else orange); per-country `OnboardingSettings.emailVerifiedForApproval` (off; on → 409 `invalid_transition` `email_not_verified` for a driver never active before, not for re-activating one) — `contract.json#emailVerified`.
 
 v0.18.75 (server B1.25, owner W1 Q85; X-Api-Version stays `0.5`; additive; no API shape change; no migration; no admin setting): **no-token telemetry has a total per server copy** — on top of B1.22's per-address budget, calls without a valid token share `telemetry.anonRowsPerMinute` (600) lines and `telemetry.anonBytesPerMinute` (2 MiB) per minute per copy (env `TELEMETRY_ANON_ROWS_PER_MINUTE` / `TELEMETRY_ANON_BYTES_PER_MINUTE`, not divided by `WEB_COPIES`); over it: `202`, not stored, counted; signed-in callers are not counted — `contract.json#telemetry.limits`.
 
@@ -108,11 +112,11 @@ Offer { offerId, tripId, kind: OfferKind, status: OfferStatus, version, expiresA
         // driverBonus is already included in fare and driverEarnings as the driver sees them; priority → "Priority" badge
 Quote { quoteId, categoryId, total: Money, fareLines, expiresAt, pickup, dropoff, stops, surgeMultiplier?, surge?: { multiplier, until?, scheduleId? } }
        // surgeMultiplier stays with the quote whatever the schedule does next (§3.4); pickup_fee is in fareLines when the category has a rider pickup fee (§3.2)
-Rider { riderId, firstName, phone?, email?, rating?, status: active | suspended, version,
+Rider { riderId, firstName, phone?, email?, emailVerifiedAt? (v0.18.76), rating?, status: active | suspended, version,
         outstanding?: Money | null, language?, consents?: { rideUpdates, emailUpdates, promotions } }   // v0.5.1: unpaid cash fees (§3.7), profile language and consents
        // v0.18.7 (§33): outstanding = the owed fees in the oldest owed currency; outstandingByCurrency?: Money[] = every currency with a debt
 Driver { driverId, accountStatus: DriverAccountStatus, onlineStatus: DriverOnlineStatus, moving?: bool, firstName, rating?, zoneIds, categoryIds, vehicleId?, documents: DocumentSummary[], version }
-       // v0.5.3 (§14): accountType?: driver | fleet, lastName?, dateOfBirth?, email?, country?, cityId?, language?, termsAcceptedAt?, fleet?: FleetLink, payoutTo?: self | fleet,
+       // v0.5.3 (§14): accountType?: driver | fleet, lastName?, dateOfBirth?, email?, emailVerifiedAt? (v0.18.76), country?, cityId?, language?, termsAcceptedAt?, fleet?: FleetLink, payoutTo?: self | fleet,
        //               requiredDocuments: DocumentType[], requiredFleetDocuments?: DocumentType[]
        // moving mirrors the latest GeoFix.moving the driver app sent (§3.3)
        // v0.5.1, admin view only: location?: GeoFix, lastFixAt? (§12)

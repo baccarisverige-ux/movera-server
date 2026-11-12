@@ -13,6 +13,10 @@ week change the plans to `starter` (server) and `basic-256mb` (database). The lo
 3. It asks for two values:
    - `ADMIN_BOOTSTRAP_EMAIL`: your e-mail; you become the Super admin.
    - `GOOGLE_MAPS_API_KEY`: the Maps key (address search answers 503 without it; everything else works).
+   - `RESEND_API_KEY` (G30b): the Resend key for the e-mail change codes. Without it no code e-mail is sent (the apps
+     say "codes cannot be sent yet"). Optional `EMAIL_FROM` (default `Movera <onboarding@resend.dev>`, which reaches
+     only the Resend account owner's own address until an own domain is added in Resend) and `EMAIL_SEND_TIMEOUT_MS`
+     (default 5000).
 4. Wait until `movera-server` says **Live**. Its address is on the service page, e.g.
    `https://movera-server-xxxx.onrender.com`. Check `…/healthz` shows `"env":"staging"`.
 

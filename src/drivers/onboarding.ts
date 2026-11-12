@@ -127,13 +127,18 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
     throw badRequest("The account type cannot change; ask support.", "account_type_locked");
   }
 
+  // G30 v0.18.76 (contract.json#emailVerified.writePaths.driverSignUp, owner Q3): never blocked; saved trimmed and
+  // lower-cased, Not verified unless it is the address he already verified.
+  const email = d.email.trim().toLowerCase();
+  const keepsVerified = row.email_verified_at != null && (row.email ?? "").trim().toLowerCase() === email;
   await trx
     .updateTable("drivers")
     .set({
       first_name: d.firstName.trim(),
       last_name: d.lastName.trim(),
       date_of_birth: d.dateOfBirth,
-      email: d.email.trim(),
+      email,
+      email_verified_at: keepsVerified ? row.email_verified_at! : null,
       country: d.country,
       city_id: d.cityId,
       language: d.language,

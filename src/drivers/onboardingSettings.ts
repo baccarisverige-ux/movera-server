@@ -30,6 +30,8 @@ export type OnboardingSettings = {
   guides?: Record<string, DocumentGuide>;
   /** v0.18.3 (R9): months a type is valid from its issue date. */
   validMonths?: Record<string, number>;
+  /** G30 v0.18.76 (owner Q6, contract.json#emailVerified.approvalSetting): a never-active driver needs a verified e-mail before approval; missing = false. */
+  emailVerifiedForApproval?: boolean;
 };
 export type DocumentGuide = { checklist?: LocalText[]; tips?: LocalText[] };
 

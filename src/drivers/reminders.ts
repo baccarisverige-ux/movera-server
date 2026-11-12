@@ -34,7 +34,19 @@ export type Reminder = {
   actions?: Array<{ target: string; invitationId?: string }>;
 };
 
-type DriverLike = { driver_id: string; country: string | null; account_type: string | null; account_status: string; fleet_id: string | null; vehicle_id: string | null; language?: string | null; created_at?: Date };
+type DriverLike = { driver_id: string; country: string | null; account_type: string | null; account_status: string; fleet_id: string | null; vehicle_id: string | null; language?: string | null; created_at?: Date; email?: string | null; email_verified_at?: Date | null; first_activated_at?: Date | null };
+/** G30: the first contract the driver app knows the line email_not_verified in (older apps never get it). */
+export const EMAIL_LINE_SINCE = "0.18.76";
+
+/** True when an X-Contract-Version header is at least `min` (missing or malformed: false = an older app). */
+export function contractAtLeast(header: unknown, min: string): boolean {
+  const value = Array.isArray(header) ? header[0] : header;
+  if (typeof value !== "string" || !/^\d+\.\d+\.\d+$/.test(value.trim())) return false;
+  const a = value.trim().split(".").map(Number);
+  const b = min.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (a[i]! !== b[i]!) return a[i]! > b[i]!;
+  return true;
+}
 type DocRow = { document_id: string; type: string; status: string; expires_at: Date | null; review_note: string | null; owner_id: string; renewal_status?: "in_review" | "rejected" | null; renewal_note?: string | null };
 
 const INFO = (contract as unknown as { driverOnboarding: { infoSession: { type: string; status: string; contentSlot: string } } }).driverOnboarding.infoSession;
@@ -93,10 +105,12 @@ async function docsOf(ex: Executor, ownerKind: "driver" | "vehicle", ownerIds: s
 }
 
 /** GET /driver/reminders (contract.json#driverOnboarding.reminders). */
-export async function listReminders(ex: Executor, driver: DriverLike, now: Date): Promise<{ items: Reminder[]; blocksOnline: number }> {
+export async function listReminders(ex: Executor, driver: DriverLike, now: Date, options: { contractVersion?: unknown } = {}): Promise<{ items: Reminder[]; blocksOnline: number }> {
   const items: Reminder[] = [];
+  // Read once per call: the documents and the e-mail line below share it (supervisor G30 nit a).
+  let countrySettings: OnboardingSettings | undefined;
   if (driver.country) {
-    const settings = await onboardingSettings(ex, driver.country);
+    const settings = (countrySettings = await onboardingSettings(ex, driver.country));
     const own = await docsOf(ex, "driver", [driver.driver_id]);
     items.push(...documentLines(requiredOf(settings, "driver"), own, "driver", settings, now));
     if (driver.account_type === "fleet") items.push(...documentLines(requiredOf(settings, "fleet"), own, "fleet", settings, now));
@@ -134,8 +148,17 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date)
       else items.push({ kind: "no_vehicle", level: "blocks_online", fix: { target: "pick_vehicle" } });
     }
   }
-  // v0.18.3 (R10): "not active yet" only once every document is done (none needed, rejected, expired, in review or waiting).
-  if (driver.account_status !== "active" && !items.some((i) => DOCUMENT_TODO.includes(i.kind))) items.push({ kind: "account_not_active", level: "blocks_online" });
+  // G30 v0.18.76 (reminders.kinds.email_not_verified, owner Q3 + S2): an e-mail without emailVerifiedAt, for apps that
+  // know the line. Red (blocks_online) when his country's emailVerifiedForApproval is on and he was never active (Movera
+  // cannot approve him before the check), else orange (due_soon). The line itself never blocks an active driver.
+  if (driver.email && !driver.email_verified_at && contractAtLeast(options.contractVersion, EMAIL_LINE_SINCE)) {
+    const red = driver.account_status !== "active" && driver.first_activated_at == null && (countrySettings ?? (await onboardingSettings(ex, driver.country))).emailVerifiedForApproval === true;
+    items.push({ kind: "email_not_verified", level: red ? "blocks_online" : "due_soon", fix: { target: "verify_email" } });
+  }
+  // v0.18.3 (R10): "not active yet" only once every document is done (none needed, rejected, expired, in review or waiting);
+  // v0.18.76 (supervisor round 3): nor when a red email_not_verified line was actually sent.
+  const waitsOnDriver = items.some((i) => DOCUMENT_TODO.includes(i.kind) || (i.kind === "email_not_verified" && i.level === "blocks_online"));
+  if (driver.account_status !== "active" && !waitsOnDriver) items.push({ kind: "account_not_active", level: "blocks_online" });
   items.sort((a, b) => RANK[a.level] - RANK[b.level] || (a.expiresAt ?? "~").localeCompare(b.expiresAt ?? "~") || (a.documentType ?? "").localeCompare(b.documentType ?? ""));
   return { items, blocksOnline: items.filter((i) => i.level === "blocks_online").length };
 }

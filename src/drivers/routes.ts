@@ -67,7 +67,8 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   // v0.18.0 (§27): the Home sheet's important reminders, the country's onboarding settings, Start my own company.
   app.get(`${API_PREFIX}/driver/reminders`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    return listReminders(deps.db, await loadDriver(deps.db, who.subjectId), now());
+    // G30: the line email_not_verified only for driver apps on contract 0.18.76 or later (X-Contract-Version).
+    return listReminders(deps.db, await loadDriver(deps.db, who.subjectId), now(), { contractVersion: request.headers["x-contract-version"] });
   });
   app.get(`${API_PREFIX}/driver/onboarding/settings`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);

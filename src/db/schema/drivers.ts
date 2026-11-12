@@ -33,6 +33,10 @@ export interface DriversTable {
   last_name: Generated<string>;
   date_of_birth: ColumnType<Date | null, string | null | undefined, string | null>;
   email: ColumnType<string | null, string | null | undefined, string | null>;
+  /** G30 v0.18.76 (migration 0099): when the current e-mail was proven (code or Apple / Google); null = Not verified. */
+  email_verified_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** G30 v0.18.76 (migration 0099, contract.json#emailVerified.neverActive): first time account_status became active; never cleared, never sent. */
+  first_activated_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   country: ColumnType<string | null, string | null | undefined, string | null>;
   city_id: ColumnType<string | null, string | null | undefined, string | null>;
   language: ColumnType<string | null, string | null | undefined, string | null>;
