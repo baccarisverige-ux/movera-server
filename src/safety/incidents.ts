@@ -63,6 +63,15 @@ async function latestFix(ex: Executor, driverId: string | null) {
   return row ? geoFix(row) : undefined;
 }
 
+/** B1.26: the live positions of a page's drivers in one read (driver_locations is keyed by driver_id); none → no statement. */
+async function latestFixes(ex: Executor, driverIds: (string | null)[]) {
+  const ids = [...new Set(driverIds.filter((id): id is string => id !== null))];
+  const fixes = new Map<string, ReturnType<typeof geoFix>>();
+  if (!ids.length) return fixes;
+  for (const row of await ex.selectFrom("driver_locations").selectAll().where("driver_id", "in", ids).execute()) fixes.set(row.driver_id, geoFix(row));
+  return fixes;
+}
+
 /** contract Incident. `driverPosition` is the car's live position when given, else the one kept at opening. */
 export function incidentView(row: IncidentRow, driverPosition?: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {
@@ -276,8 +285,8 @@ export async function listIncidents(ex: Executor, who: Principal, input: Inciden
   }
   const rows = await q.orderBy("opened_at", "desc").orderBy("incident_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
-  const items = [];
-  for (const r of page) items.push(incidentView(r, await latestFix(ex, r.driver_id)));
+  const fixes = await latestFixes(ex, page.map((r) => r.driver_id));
+  const items = page.map((r) => incidentView(r, r.driver_id ? fixes.get(r.driver_id) : undefined));
   const last = page[page.length - 1];
   return { items, nextCursor: rows.length > input.limit && last ? cursorOf(last.opened_at, last.incident_id) : null };
 }
