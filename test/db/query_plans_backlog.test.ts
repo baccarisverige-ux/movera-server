@@ -327,12 +327,17 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
     await noProblems(() => listTrips(traced, SUPER, { limit: 50 }, now), (s) => s.includes('from "trips"'));
   });
   it("S05 A5 fixed (0095 trips_zone_ended/_created): nightly KPI day count reads one zone-day of trips on an index, new riders without a walk of every trip (admin/kpis.ts)", async () => {
-    // 176 days back: the riders' first trips (each rider's oldest) fall on these days, so new riders are counted.
-    const day = new Date(now.getTime() - 176 * 86_400_000).toISOString().slice(0, 10);
+    // The day is taken from the data, never from the clock. Trips are in Z002 only in runs of 1,000 (g % 3000 >= 2000,
+    // ~14.2 h), then ~28.3 h of Z001, so "176 days back" by the clock held no Z002 trip at all on runs between 06:29 and
+    // 10:50 UTC (07:29-11:50 when that day is in Stockholm winter time; fail 2026-11-12 07:13 UTC). t299500 is mid-run (g 299000-299999, riders r19000-r19999, each rider's oldest
+    // trip: g > 280000): its Stockholm day holds ~500+ Z002 trips that are all first trips, whatever the time of the run.
     const zone = { zone_id: "Z002", time_zone: "Europe/Stockholm", currency: "SEK" };
+    const pick = await database.pool.query<{ day: string }>(
+      `SELECT to_char(created_at AT TIME ZONE $1, 'YYYY-MM-DD') AS day FROM trips WHERE trip_id = 't299500'`, [zone.time_zone]);
+    const day = pick.rows[0]!.day;
     let figures: Awaited<ReturnType<typeof countDay>> | undefined;
     const { problems } = await check(async () => (figures = await countDay(traced, zone, day)), (s) => s.includes("FROM trips"));
-    // The work grows with the zone-day (~560 trips here: a few blocks per trip for the first-trip probe), never with the
+    // The work grows with the zone-day (500-1,000 trips here: a few blocks per trip for the first-trip probe), never with the
     // table: no Seq Scan of a big table, no mass of filtered rows, and at most 15 blocks per trip of the day.
     expect(problems.filter((p) => !/^\d+ shared buffers/.test(p)), problems.join("\n")).toEqual([]);
     const c = await database.pool.connect();
@@ -345,7 +350,8 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
       const { n, old } = bounds.rows[0]!;
       // Same answer as the old DISTINCT ON over every trip.
       expect(figures!.newRiders).toBe(Number(old));
-      expect(figures!.newRiders).toBeGreaterThan(0);
+      expect(Number(n), "Z002 trips in the picked day").toBeGreaterThanOrEqual(500);
+      expect(figures!.newRiders).toBeGreaterThanOrEqual(500);
       for (const p of problems) expect(Number(/^(\d+) shared buffers/.exec(p)![1]), p).toBeLessThanOrEqual(15 * Number(n) + MAX_BUFFERS);
     } finally {
       c.release();

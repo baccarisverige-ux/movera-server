@@ -176,6 +176,20 @@ describe("config stream", () => {
     expect(sse.events[1]!.data).toMatchObject({ kind: "config_published", doc: "content", zoneId: "Z001", version: 1 });
     sse.close();
   });
+  it("G17: a driver stream opened without zoneId follows the zone of his latest fix, not his account zone", async () => {
+    const driver = (await signIn(app, TEST_PHONES[5]!, "driver")).headers;
+    const driverId = JSON.parse(Buffer.from(driver["authorization"]!.split(" ")[1]!.split(".")[1]!, "base64url").toString("utf8")).sub as string;
+    await database.db.updateTable("drivers").set({ zone_ids: ["Z001"] }).where("driver_id", "=", driverId).execute();
+    const at = new Date();
+    await database.db.insertInto("driver_locations").values({ driver_id: driverId, lat: 36.8, lng: 10.18, accuracy: 10, measured_at: at, received_at: at, zone_id: "TN-TC" }).execute();
+    const doc = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/driver_app_config.json`, "utf8"));
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "TN-TC", version: 3, document: JSON.stringify({ ...doc, zoneId: "TN-TC", currency: "TND" }), published_at: at, published_by: null }).execute();
+    const sse = await listen("/driver/config/stream", { ...driver, "last-event-id": "0" });
+    expect(sse.status).toBe(200);
+    expect(await until(() => sse.events.length === 1)).toBe(true);
+    expect(sse.events[0]!.data).toMatchObject({ kind: "config_published", doc: "driver_app_config", zoneId: "TN-TC", version: 3 });
+    sse.close();
+  });
 });
 
 describe("listen connection", () => {
@@ -207,7 +221,7 @@ describe("driver offer feed", () => {
 
   it("03c: a feed opened without a cursor starts at the newest event (an id: with no data), so an app that just started gets no old history (no old driverOffline)", async () => {
     const driver = (await signIn(app, TEST_PHONES[4]!, "driver")).headers;
-    const driverId = (await call(app, "GET", "/driver/profile", driver)).json().driverId as string;
+    const driverId = JSON.parse(Buffer.from(driver["authorization"]!.split(" ")[1]!.split(".")[1]!, "base64url").toString("utf8")).sub as string;
     const old = new Date(Date.now() - 3 * 3600_000);
     for (const [sequence, offer] of [
       [1, { offerId: "o1", status: "expired" }],

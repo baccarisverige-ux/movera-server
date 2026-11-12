@@ -5,6 +5,7 @@ import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { emergencyNumbersOf } from "../../src/config/emergencyNumbers.js";
 import { adminSession } from "../support/admin.js";
+import { insertRider, insertTrip } from "../support/seed.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
@@ -65,6 +66,48 @@ describe("emergency numbers (§79)", () => {
     expect((await call(app, "GET", "/rider/config?zoneId=Z001", rider)).json().emergencyNumbers).toEqual(list);
     const driver = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
     const got = await call(app, "GET", "/driver/config?zoneId=Z001", driver);
-    if (got.statusCode === 200) expect(got.json().emergencyNumbers).toEqual(list);
+    expect(got.statusCode).toBe(200);
+    expect(got.json().emergencyNumbers).toEqual(list);
+  });
+
+  // G17 (live 2026-11-12): a driver whose account zone is Z001 (SE) but who works in Tunis got 112 and "kr".
+  describe("GET /driver/config without zoneId follows the zone he works in", () => {
+    const tnNumbers = ["197", "190"];
+    const numbers = (res: { json(): { emergencyNumbers: Array<{ number: string }> } }) => res.json().emergencyNumbers.map((r) => r.number);
+    const driverIn = async (phone: string) => {
+      const session = await signIn(app, phone, "driver");
+      const driverId = JSON.parse(Buffer.from(session.token.split(".")[1]!, "base64url").toString("utf8")).sub as string;
+      await database.db.updateTable("drivers").set({ zone_ids: ["Z001"] }).where("driver_id", "=", driverId).execute();
+      return { headers: session.headers, driverId };
+    };
+    beforeAll(async () => {
+      await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "TN-TC", version: 1, document: JSON.stringify({ ...sample("driver_app_config"), zoneId: "TN-TC", currency: "TND" }), published_at: clock.now, published_by: null }).execute();
+    });
+
+    it("an active trip in a TN zone → TN numbers (the account zone is SE)", async () => {
+      const { headers, driverId } = await driverIn(TEST_PHONES[2]!);
+      const riderId = await insertRider(database.db);
+      const tripId = await insertTrip(database.db, riderId, { status: "accepted", driverId });
+      await database.db.updateTable("trips").set({ zone_id: "TN-TC", currency: "TND" }).where("trip_id", "=", tripId).execute();
+      const got = await call(app, "GET", "/driver/config", headers);
+      expect(got.statusCode).toBe(200);
+      expect(numbers(got)).toEqual(tnNumbers);
+      expect(got.json()).toMatchObject({ zoneId: "TN-TC", currency: "TND" });
+      // ?zoneId= still wins.
+      const asked = await call(app, "GET", "/driver/config?zoneId=Z001", headers);
+      expect(asked.statusCode).toBe(200);
+      expect(numbers(asked)).not.toEqual(tnNumbers);
+    });
+
+    it("no trip, latest fix in a TN zone → TN numbers; no fix → the account zone", async () => {
+      const { headers, driverId } = await driverIn(TEST_PHONES[3]!);
+      const before = await call(app, "GET", "/driver/config", headers);
+      expect(before.statusCode).toBe(200);
+      expect(numbers(before)).not.toEqual(tnNumbers);
+      await database.db.insertInto("driver_locations").values({ driver_id: driverId, lat: 36.8, lng: 10.18, accuracy: 10, measured_at: clock.now, received_at: clock.now, zone_id: "TN-TC" }).execute();
+      const got = await call(app, "GET", "/driver/config", headers);
+      expect(got.statusCode).toBe(200);
+      expect(numbers(got)).toEqual(tnNumbers);
+    });
   });
 });

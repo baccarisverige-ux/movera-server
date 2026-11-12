@@ -1,4 +1,6 @@
-# Movera shared contract v0.18.71
+# Movera shared contract v0.18.72
+
+v0.18.72 (G17, live bug 2026-11-12, owner Rule 0; X-Api-Version stays `0.5`; no API shape change; no migration): **§89 the driver's config follows the zone he works in** — the driver app sends `?zoneId=` (its active trip's zone, else the zone of its current position) on `GET /driver/config` and `GET /driver/config/stream` and fetches again when that zone changes; without `zoneId` the server uses the active trip's zone, else the latest fix's zone, else the account zone, else the default. So `emergencyNumbers` (ride check, SOS) and the money formatting of a driver working in Tunis are Tunisian (197 / 190, DT), not Swedish (112, kr) — see `contract.json#driverConfigZone`, `#emergencyNumbers.apps`.
 
 v0.18.71 (wording fix, live bug 2026-11-12; X-Api-Version stays `0.5`; no API shape change; no migration; no app change): **§85 same-language shortcut** — the text-as-written answer when `Message.lang` = `to` applies only to quick-reply chips and automatic messages (`quickReplyId` or `auto` set); typed text goes to the kept translation or the provider like any other (its `lang` is the sender's app language, a hint only; no provider: 503 `coming_soon`) — see `contract.json#chat.autoTranslate.sameLanguage`.
 
@@ -1469,3 +1471,20 @@ Owner answers of 2026-11-11 (evening), quoted as decisions. Full rules: `contrac
   copy restarting while the others run is not an outage. Value: `contract.json#driverHome.setOffline.outageGrace`.
 - Apps: no change. Admin: no change (same audit line `driver.auto_offline`, reason `no_position`). Driver app: no change
   (the server-sent reason and text are the same).
+
+## 89. The driver's config follows the zone he works in (v0.18.72, G17)
+
+- `GET /driver/config` and `GET /driver/config/stream` serve the zone the driver is **working** in, not his account zone
+  (`Driver.zoneIds[0]`). Everything zone-bound follows it: `zoneId`, `country`, `currency` and `timeZone` (money
+  formatting, §81), `emergencyNumbers` (§79: ride check, SOS, emergency contacts), waiting terms, pickup pay, `dontMatchAgain`.
+- **Driver app**: sends `?zoneId=` = the zone of its active trip (`TripProjection.zoneId`, `tripStatus.driverAssigned`;
+  not a held booked ride, not a queued next trip), else the open zone of `GET /driver/zones` that holds its position;
+  with neither it sends none. When that zone changes it fetches `GET /driver/config?zoneId=<new>` again and reopens the
+  stream with the new `zoneId`. Versions are compared per zone: on a zone change the app compares against, and sends as
+  `Last-Event-ID`, the last version it holds for THAT zone (none if none). Offline it keeps the last document.
+- **Server, no `zoneId`**: the active trip's zone (at most one: `trips_one_active_per_driver`), else the latest fix's zone
+  (`driver_locations.zone_id`; none when the fix lies in no zone), else `Driver.zoneIds[0]`, else the default zone; one
+  read. A preview token keeps its own zone. A stream keeps the zone it opened with; the server does not move an open stream.
+- `?zoneId=` always wins; unknown zone 404 `zone_not_found`; nothing published (own or country standard) 404
+  `config_not_published`. No limit on which zone a driver may read (unchanged). Value: `contract.json#driverConfigZone`.
+- Rider app: unchanged (it already sends `?zoneId=`). Admin: nothing to change (no setting; the numbers stay per country, §79).

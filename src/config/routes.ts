@@ -3,7 +3,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { tipAmountsFor, tipRulesOf, withPaymentOptions } from "../trips/finish.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { streamConfig } from "../realtime/streams.js";
+import { sql } from "kysely";
 import { z } from "zod";
+import { DRIVER_ASSIGNED } from "../rules/transitions.js";
+import { NOT_HELD } from "../reservations/view.js";
 import { withCatalog } from "../pricing/routes.js";
 import { raiseMaxFactor, withRaiseLimit } from "./raiseLimit.js";
 import { adminCoversZone, authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
@@ -62,6 +65,31 @@ async function scopeKey(db: Db, who: Principal, scope: { zoneId?: string | undef
   return standardKey(scope.country!);
 }
 
+/**
+ * G17 (live 2026-11-12): the zone a driver works in, for his config when the app names none: his active trip's zone,
+ * else the zone of his latest position fix. One read: two indexed lookups (trips_one_active_per_driver, driver_locations primary key).
+ */
+async function driverWorkZone(db: Db, driverId: string): Promise<string | undefined> {
+  const trip = db
+    .selectFrom("trips")
+    .select("trips.zone_id")
+    .where("trips.driver_id", "=", driverId)
+    .where("trips.status", "in", [...DRIVER_ASSIGNED])
+    .where(NOT_HELD)
+    .orderBy("trips.updated_at", "desc")
+    .limit(1);
+  const fix = db.selectFrom("driver_locations").select("driver_locations.zone_id").where("driver_locations.driver_id", "=", driverId);
+  const row = await db.selectNoFrom(sql<string | null>`coalesce((${trip}), (${fix}))`.as("zone_id")).executeTakeFirst();
+  return row?.zone_id ?? undefined;
+}
+
+/** The zone of an app's config read or stream: the asked one; a driver's work zone, else his first zone; else the default. */
+async function appZone(db: Db, who: Principal, actor: "rider" | "driver", asked: string | undefined, defaultZoneId: string, previewZone: boolean): Promise<string> {
+  if (asked !== undefined) return asked;
+  if (actor === "driver" && who.preview !== true) return (await driverWorkZone(db, who.subjectId)) ?? who.zones[0] ?? defaultZoneId;
+  return (actor === "driver" || (previewZone && who.preview === true) ? who.zones[0] : undefined) ?? defaultZoneId;
+}
+
 const keyOf = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
 
 export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Promise<void> {
@@ -74,7 +102,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
   const serveAppDoc = (doc: ConfigDoc, actor: "rider" | "driver") => async (request: FastifyRequest) => {
     const who = await authenticate(request, guard, [actor]);
     const { zoneId: asked, draft } = parseBody(AppDocQuery, request.query);
-    const zoneId = asked ?? (actor === "driver" || who.preview === true ? who.zones[0] : undefined) ?? deps.defaultZoneId;
+    const zoneId = await appZone(deps.db, who, actor, asked, deps.defaultZoneId, true);
     const zone = await getZone(deps.db, zoneId);
     const live = who.preview === true && draft === "1" ? ((await draftForPreview(deps.db, doc, zoneId)) ?? (await liveDocument(deps.db, doc, zoneId))) : await liveDocument(deps.db, doc, zoneId);
     if (live === null) throw new ApiError("not_found", "No settings are published for this zone yet.", { reason: "config_not_published" });
@@ -106,7 +134,8 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
   const streamAppDoc = (doc: ConfigDoc, actor: "rider" | "driver") => async (request: FastifyRequest, reply: FastifyReply) => {
     const who = await authenticate(request, guard, [actor]);
     const { zoneId: asked } = parseBody(OptionalZoneQuery, request.query);
-    const zoneId = asked ?? (actor === "driver" ? who.zones[0] : undefined) ?? deps.defaultZoneId;
+    // G17: the stream follows the zone it opened with; the app opens it again when its work zone changes.
+    const zoneId = await appZone(deps.db, who, actor, asked, deps.defaultZoneId, false);
     await getZone(deps.db, zoneId);
     if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available.", { reason: "realtime_unavailable", retryAfterSeconds: 5 });
     const lastEventId = request.headers["last-event-id"];

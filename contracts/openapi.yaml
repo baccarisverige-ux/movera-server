@@ -1,11 +1,11 @@
-# Movera API v0.18.71 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.72 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.71
+  version: 0.18.72
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.71 in this folder; this file must agree with them.
+    v0.18.72 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.71
+  version: 0.18.72
   source: contract.json
 paths:
   /auth/otp/request:
@@ -1410,7 +1410,8 @@ paths:
         pricing document (configDocs.mustMatch applied when serving, like the raise limit), whatever the published app document
         says. So a driver or rider in a French zone gets the French zone''s terms in euro, a Swedish one the Swedish terms
         in kronor. The apps read freeWaitMin, perMin, noShowAfterMin and noShowFee from there (and from TripProjection.terms
-        once a trip exists) and never from their own constants.'
+        once a trip exists) and never from their own constants. v0.18.72: "a driver in Paris" means the zone he works in (driverConfigZone),
+        not his account zone.'
   /rider/config/stream:
     get:
       operationId: streamRiderConfig
@@ -3250,7 +3251,14 @@ paths:
           - '1'
         description: 'v0.18.25: ''1'' with a preview token (contract.json#previewSession) returns the zone''s saved draft;
           ignored for every other token.'
-      - $ref: '#/components/parameters/ZoneIdQuery'
+      - name: zoneId
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/Id'
+        description: 'v0.18.72 §89: the zone the driver works in (his active trip''s zone, else the zone of his position).
+          Without it: the active trip''s zone, else the latest fix''s zone, else Driver.zoneIds[0], else the server default
+          zone.'
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
       responses:
@@ -3277,13 +3285,34 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
-      description: ' v0.18.7 (contract.json#pickupWaiting.servedConfig): HIGH fix (apps showed 5 kr/min and 50 kr while the
+      description: 'v0.18.7 (contract.json#pickupWaiting.servedConfig): HIGH fix (apps showed 5 kr/min and 50 kr while the
         server charged 12.26 kr/min and 65 kr; a driver in Paris saw Swedish terms): GET /driver/config and GET /rider/config
         are always served with waiting (top-level terms and byCategory) and the rider pickup fees taken from the zone''s LIVE
         pricing document (configDocs.mustMatch applied when serving, like the raise limit), whatever the published app document
         says. So a driver or rider in a French zone gets the French zone''s terms in euro, a Swedish one the Swedish terms
         in kronor. The apps read freeWaitMin, perMin, noShowAfterMin and noShowFee from there (and from TripProjection.terms
-        once a trip exists) and never from their own constants.'
+        once a trip exists) and never from their own constants. v0.18.72: "a driver in Paris" means the zone he works in (driverConfigZone),
+        not his account zone. v0.18.72 §89 (G17): v0.18.72 (G17, live bug 2026-11-12, owner Rule 0; X-Api-Version stays 0.5;
+        no API shape change; no migration): the driver''s DriverAppConfig (GET /driver/config) and its stream (GET /driver/config/stream)
+        follow the zone he is WORKING in, not his account zone (Driver.zoneIds[0]). Everything zone-bound in it follows: zoneId,
+        country, currency and timeZone (money formatting, moneyDisplay), emergencyNumbers (ride check, SOS, emergency contacts),
+        waiting terms, pickup pay, dontMatchAgain. The driver app sends ?zoneId= on GET /driver/config and GET /driver/config/stream:
+        the zone of its active trip (TripProjection.zoneId of the trip in tripStatus.driverAssigned: accepted, driver_to_pickup,
+        arrived, rider_onboard, in_trip, approaching_dropoff; not a held booked ride, not a queued next trip), else the zone
+        of its current position (the open zone of GET /driver/zones whose outline holds it). When that zone changes (a trip
+        in another zone is accepted, the driver drives into another zone) it fetches GET /driver/config?zoneId=<new> again
+        and reopens the stream with the new zoneId. Versions are compared per zone: on a zone change the app compares against,
+        and sends as Last-Event-ID, the last version it holds for THAT zone (none if none). With neither (no active trip,
+        its position in no open zone) it sends no zoneId and the server picks (serverDefault). Offline it keeps the last document
+        it got. Without zoneId the server picks, in this order: the zone of the driver''s active trip (tripStatus.driverAssigned,
+        not a held booked ride, not a queued next trip (at most one: trips_one_active_per_driver)), else the zone of his latest
+        position fix (driver_locations.zone_id: the zone the server found for the fix it stored from POST /driver/location;
+        none when that fix lies in no zone), else his first account zone (Driver.zoneIds[0]), else the server default zone.
+        One read per request (two indexed lookups). A preview token keeps its own zone (unchanged). A stream keeps the zone
+        picked when it opened; the server does not move an open stream to another zone, so the app reopens it (app rule above).
+        ?zoneId= always wins (unchanged). A zone that does not exist is 404 zone_not_found (config and stream); on GET /driver/config
+        a zone with nothing published (own or country standard) is 404 config_not_published and the app keeps its document.
+        There is no rule limiting which zone a driver may read (unchanged).'
   /driver/config/stream:
     get:
       operationId: streamDriverConfig
@@ -3293,7 +3322,14 @@ paths:
       x-actor:
       - driver
       parameters:
-      - $ref: '#/components/parameters/ZoneIdQuery'
+      - name: zoneId
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/Id'
+        description: 'v0.18.72 §89: the zone the driver works in (his active trip''s zone, else the zone of his position).
+          Without it: the active trip''s zone, else the latest fix''s zone, else Driver.zoneIds[0], else the server default
+          zone.'
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
       responses:
@@ -3332,7 +3368,28 @@ paths:
         the change commits; a rolled-back change sends nothing. The driver app re-reads at sign-in, on every stream reconnect
         and on this event, and debounces bursts (at most 1 re-read per 2 s). Demo rides are cleared at sign-in. v0.18.63:
         the server closes the stream when it cannot guarantee delivery (its LISTEN connection reconnects); hints are not replayed,
-        so the re-read on reconnect is what catches up.'
+        so the re-read on reconnect is what catches up. v0.18.72 §89 (G17): v0.18.72 (G17, live bug 2026-11-12, owner Rule
+        0; X-Api-Version stays 0.5; no API shape change; no migration): the driver''s DriverAppConfig (GET /driver/config)
+        and its stream (GET /driver/config/stream) follow the zone he is WORKING in, not his account zone (Driver.zoneIds[0]).
+        Everything zone-bound in it follows: zoneId, country, currency and timeZone (money formatting, moneyDisplay), emergencyNumbers
+        (ride check, SOS, emergency contacts), waiting terms, pickup pay, dontMatchAgain. The driver app sends ?zoneId= on
+        GET /driver/config and GET /driver/config/stream: the zone of its active trip (TripProjection.zoneId of the trip in
+        tripStatus.driverAssigned: accepted, driver_to_pickup, arrived, rider_onboard, in_trip, approaching_dropoff; not a
+        held booked ride, not a queued next trip), else the zone of its current position (the open zone of GET /driver/zones
+        whose outline holds it). When that zone changes (a trip in another zone is accepted, the driver drives into another
+        zone) it fetches GET /driver/config?zoneId=<new> again and reopens the stream with the new zoneId. Versions are compared
+        per zone: on a zone change the app compares against, and sends as Last-Event-ID, the last version it holds for THAT
+        zone (none if none). With neither (no active trip, its position in no open zone) it sends no zoneId and the server
+        picks (serverDefault). Offline it keeps the last document it got. Without zoneId the server picks, in this order:
+        the zone of the driver''s active trip (tripStatus.driverAssigned, not a held booked ride, not a queued next trip (at
+        most one: trips_one_active_per_driver)), else the zone of his latest position fix (driver_locations.zone_id: the zone
+        the server found for the fix it stored from POST /driver/location; none when that fix lies in no zone), else his first
+        account zone (Driver.zoneIds[0]), else the server default zone. One read per request (two indexed lookups). A preview
+        token keeps its own zone (unchanged). A stream keeps the zone picked when it opened; the server does not move an open
+        stream to another zone, so the app reopens it (app rule above). ?zoneId= always wins (unchanged). A zone that does
+        not exist is 404 zone_not_found (config and stream); on GET /driver/config a zone with nothing published (own or country
+        standard) is 404 config_not_published and the app keeps its document. There is no rule limiting which zone a driver
+        may read (unchanged).'
   /driver/earnings:
     get:
       operationId: getDriverEarnings
@@ -24446,12 +24503,15 @@ components:
           maxItems: 6
           description: 'v0.18.57 §79: Written by the server from the zone''s country into RiderAppConfig.emergencyNumbers
             and DriverAppConfig.emergencyNumbers (GET /rider/config, GET /driver/config, config_published) when the country
-            standard is published, like dontMatchAgain. The apps keep the last list they got (offline) and fall back to [112
-            general] only if they never got one. Rider and driver apps: (1) the safety shield with no trip — one "Call <label>
-            <number>" button per row (opens the phone dialer, nothing sent to Movera) instead of "Call 112"; (2) SOS during
-            a trip — the SOS dials the FIRST number and alerts Movera; the other rows show as extra call buttons on the "SOS
-            sent" screen; (3) ride check "Need help" — the same call buttons; (4) the driver''s emergency contacts screen
-            — the built-in number shown is the country list, not 112. Labels in the app language (sv / fr / en).'
+            standard is published, like dontMatchAgain. v0.18.72 (G17, live 2026-11-12: a driver working in Tunis got 112):
+            the driver''s list is the one of the zone he works in (driverConfigZone), not of his account zone, so the ride
+            check and SOS of a driver working in Tunis show police 197 / ambulance 190. The apps keep the last list they got
+            (offline) and fall back to [112 general] only if they never got one. Rider and driver apps: (1) the safety shield
+            with no trip — one "Call <label> <number>" button per row (opens the phone dialer, nothing sent to Movera) instead
+            of "Call 112"; (2) SOS during a trip — the SOS dials the FIRST number and alerts Movera; the other rows show as
+            extra call buttons on the "SOS sent" screen; (3) ride check "Need help" — the same call buttons; (4) the driver''s
+            emergency contacts screen — the built-in number shown is the country list, not 112. Labels in the app language
+            (sv / fr / en).'
     DriverAppConfig:
       type: object
       description: Per-zone driver document built by Admin exporters. Unknown keys are ignored; missing keys fall back to
@@ -24765,12 +24825,15 @@ components:
           maxItems: 6
           description: 'v0.18.57 §79: Written by the server from the zone''s country into RiderAppConfig.emergencyNumbers
             and DriverAppConfig.emergencyNumbers (GET /rider/config, GET /driver/config, config_published) when the country
-            standard is published, like dontMatchAgain. The apps keep the last list they got (offline) and fall back to [112
-            general] only if they never got one. Rider and driver apps: (1) the safety shield with no trip — one "Call <label>
-            <number>" button per row (opens the phone dialer, nothing sent to Movera) instead of "Call 112"; (2) SOS during
-            a trip — the SOS dials the FIRST number and alerts Movera; the other rows show as extra call buttons on the "SOS
-            sent" screen; (3) ride check "Need help" — the same call buttons; (4) the driver''s emergency contacts screen
-            — the built-in number shown is the country list, not 112. Labels in the app language (sv / fr / en).'
+            standard is published, like dontMatchAgain. v0.18.72 (G17, live 2026-11-12: a driver working in Tunis got 112):
+            the driver''s list is the one of the zone he works in (driverConfigZone), not of his account zone, so the ride
+            check and SOS of a driver working in Tunis show police 197 / ambulance 190. The apps keep the last list they got
+            (offline) and fall back to [112 general] only if they never got one. Rider and driver apps: (1) the safety shield
+            with no trip — one "Call <label> <number>" button per row (opens the phone dialer, nothing sent to Movera) instead
+            of "Call 112"; (2) SOS during a trip — the SOS dials the FIRST number and alerts Movera; the other rows show as
+            extra call buttons on the "SOS sent" screen; (3) ride check "Need help" — the same call buttons; (4) the driver''s
+            emergency contacts screen — the built-in number shown is the country list, not 112. Labels in the app language
+            (sv / fr / en).'
     CategoryPricingWaiting:
       type: object
       description: Waiting at pickup for one category; RiderAppConfig / DriverAppConfig waiting.byCategory carry the same
