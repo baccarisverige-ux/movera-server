@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { READ_RETRY_DEFAULTS, configureReadRetry, readRetry, readRetrySettings } from "../../src/realtime/retry.js";
+import { READ_RETRY_DEFAULTS, configureReadRetry, readRetry, readRetrySettings, spreadClose } from "../../src/realtime/retry.js";
 import { readEnv } from "../../src/env.js";
 import { buildApp } from "../../src/app.js";
 
@@ -111,5 +111,19 @@ describe("readRetry", () => {
     const c = readRetry(() => undefined, () => false, () => (closes += 1), { spread: false });
     c.failed();
     expect(closes).toBe(2);
+  });
+
+  it("with spread 0 and the pool busy, a held close re-checks at most about once a second (supervisor B1.9 L1)", () => {
+    vi.useFakeTimers();
+    try {
+      let checks = 0;
+      configureReadRetry({ closeSpreadMs: 0, holdClose: () => (checks++, true) });
+      const cancel = spreadClose(() => undefined, () => false);
+      vi.advanceTimersByTime(10_000);
+      cancel();
+      expect(checks).toBeLessThanOrEqual(12);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

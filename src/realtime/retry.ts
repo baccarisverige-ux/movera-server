@@ -32,16 +32,17 @@ export function readRetrySettings(): Readonly<ReadRetrySettings> {
  */
 export function spreadClose(close: () => void, isClosed: () => boolean): () => void {
   let timer: NodeJS.Timeout | undefined;
-  const arm = () => {
+  // A re-check while the pool is busy waits at least 1 s, so a spread of 0 cannot spin (supervisor B1.9 L1).
+  const arm = (minMs: number) => {
     timer = setTimeout(() => {
       timer = undefined;
       if (isClosed()) return;
-      if (settings.holdClose()) return arm();
+      if (settings.holdClose()) return arm(1000);
       close();
-    }, Math.floor(Math.random() * settings.closeSpreadMs));
+    }, Math.max(minMs, Math.floor(Math.random() * settings.closeSpreadMs)));
     timer.unref();
   };
-  arm();
+  arm(0);
   return () => {
     clearTimeout(timer);
     timer = undefined;
