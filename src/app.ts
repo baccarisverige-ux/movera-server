@@ -1,4 +1,5 @@
 import { pricingRoutes } from "./pricing/routes.js";
+import { jobsHeartbeat } from "./jobs/heartbeat.js";
 import { contentRoutes } from "./content/routes.js";
 import { legalRoutes } from "./legal/routes.js";
 import { zoneRoutes } from "./zones/routes.js";
@@ -243,6 +244,16 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
     }
     return { status: "ready", database: "ok" };
+  });
+  // S4 B1.28 (owner W1 Q88): 503 when a recurring server job is parked, missing or more than 3× its period late
+  // (jobs/heartbeat.ts). No token, kind + state only. For the outside monitor (U9); never the hosting health check.
+  app.get("/healthz/jobs", async (_request, reply) => {
+    if (db === undefined) return { status: "not_configured" };
+    if (!(await databaseAnswers(db, READY_TIMEOUT_MS))) {
+      throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
+    }
+    const heartbeat = await jobsHeartbeat(db, clock?.() ?? new Date());
+    return reply.code(heartbeat.status === "ok" ? 200 : 503).send(heartbeat);
   });
 
   // Step 63 (T6b): this copy's load numbers for the stress test; only with LOAD_COUNTERS (never in production).

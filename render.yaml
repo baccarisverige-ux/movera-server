@@ -10,6 +10,7 @@ services:
     dockerfilePath: ./Dockerfile
     region: frankfurt
     plan: standard
+    # S4 B1.28: never /healthz/jobs here (a parked background job must not make the host restart copies; the outside monitor watches it).
     healthCheckPath: /readyz
     envVars:
       - key: MOVERA_ENV
