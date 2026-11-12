@@ -49,6 +49,7 @@ import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
 import { pushServicesFrom, type PushServices } from "./push/config.js";
 import { pushRoutes } from "./push/routes.js";
+import { configureReadRetry } from "./realtime/retry.js";
 import { CachedPlaces, GooglePlaces, NoPlaces, type Places } from "./maps/places.js";
 
 export { API_PREFIX };
@@ -114,6 +115,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
 
   // Step 63 (T6): Server-Timing on every answer; first, so `total` covers every other hook.
   registerServerTiming(app);
+  // B1.9 (Q73): stream reads give up after STREAM_READ_RETRIES retries; closes spread over STREAM_CLOSE_SPREAD_MS.
+  configureReadRetry({ maxRetries: env.STREAM_READ_RETRIES, closeSpreadMs: env.STREAM_CLOSE_SPREAD_MS });
 
   // An empty body with Content-Type: application/json (the apps' sign-out) is "no body", not bad JSON.
   const json = app.getDefaultJsonParser("error", "error");

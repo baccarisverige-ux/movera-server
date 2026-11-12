@@ -2,6 +2,7 @@ import { buildWorkerConfig, RESTART_ONCE_KINDS } from "./jobs/workerConfig.js";
 import { cacheGeometry, forgetGeometry } from "./config/geometryCache.js";
 import type pg from "pg";
 import { registerLoadShedding } from "./http/shed.js";
+import { configureReadRetry } from "./realtime/retry.js";
 import { SMART_SURGE_CHECK, ensurePricingTimers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
 import { createDb, createPool, poolOptionsFrom, type Db } from "./db/db.js";
@@ -114,4 +115,7 @@ process.once("SIGTERM", () => void close("SIGTERM"));
 
 // Job 1 (stress H3): load shedding while the pool queue or the event loop is over its limit (SHED_* settings).
 if (pool !== undefined) registerLoadShedding(app, { maxPoolWaiting: env.SHED_POOL_WAITING, maxLoopDelayMs: env.SHED_LOOP_DELAY_MS, poolWaiting: () => pool!.waitingCount });
+// B1.9 (Q73): a stream that gave up on its reads is not closed while the pool queue is over SHED_POOL_WAITING (its app would
+// reconnect into the busy pool); it draws a new random delay instead.
+if (pool !== undefined && env.SHED_POOL_WAITING > 0) configureReadRetry({ holdClose: () => pool!.waitingCount > env.SHED_POOL_WAITING });
 await app.listen({ host: env.HOST, port: env.PORT });
