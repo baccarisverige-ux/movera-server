@@ -27,6 +27,9 @@ import { OTP, PHONE, requestOtp, type AuthDeps, type ClientInfo } from "./servic
  *   the same person may use it on his rider and his driver account); the first of two verifies wins;
  * - the code goes out through the e-mail service; delivery is 'sent' only when it accepted the e-mail, and only such a
  *   start counts toward the 3 per hour (a refused or failed send is 'pending_provider' and is not counted).
+ * - owner answer F3: besides, at most EMAIL_TRIES_PER_HOUR (10) starts per hour, counting every start.
+ * G30 fix round (supervisor F2, F4): the silent answer stores a never-sent challenge and takes as long as the last real
+ * send, so neither a wrong-code answer nor the answer time tells that another account has the address.
  */
 
 type Who = { actor: "rider" | "driver"; subjectId: string; sessionId: string };
@@ -45,9 +48,22 @@ async function recentSignIn(ex: Executor, who: Who, now: Date): Promise<void> {
     throw new ApiError("forbidden", "Sign in again on this phone, then change it within 10 minutes.", { reason: "reauth_required" });
   }
 }
+/**
+ * The e-mail start limits per account and hour, both 429 change_too_many. acceptedPerHour: starts whose code e-mail the
+ * service accepted (rows in account_change_starts). allTriesPerHour (supervisor G30 F3, owner 2026-11-12: "at most 10
+ * per hour, counting every start"; contract line follows as v0.18.77): every start, sent, refused / failed send or the
+ * silent answer (each stores an email_changes row); null = no such cap.
+ */
+export const EMAIL_TRIES_PER_HOUR = 10;
+export const EMAIL_LIMITS: { acceptedPerHour: number; allTriesPerHour: number | null } = { acceptedPerHour: STARTS_PER_HOUR, allTriesPerHour: EMAIL_TRIES_PER_HOUR };
+const tooMany = () => new ApiError("rate_limited", "Too many changes. Try again later.", { reason: "change_too_many", retryAfterSeconds: 3600 });
 async function startsLeft(ex: Executor, who: Who, kind: "phone" | "email", now: Date): Promise<void> {
   const starts = await ex.selectFrom("account_change_starts").select((eb) => eb.fn.countAll<string>().as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("kind", "=", kind).where("at", ">", hourAgo(now)).executeTakeFirstOrThrow();
-  if (Number(starts.n) >= STARTS_PER_HOUR) throw new ApiError("rate_limited", "Too many changes. Try again later.", { reason: "change_too_many", retryAfterSeconds: 3600 });
+  if (Number(starts.n) >= (kind === "email" ? EMAIL_LIMITS.acceptedPerHour : STARTS_PER_HOUR)) throw tooMany();
+  const cap = kind === "email" ? EMAIL_LIMITS.allTriesPerHour : null;
+  if (cap === null) return;
+  const tries = await ex.selectFrom("email_changes").select((eb) => eb.fn.countAll<string>().as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("created_at", ">", hourAgo(now)).executeTakeFirstOrThrow();
+  if (Number(tries.n) >= cap) throw tooMany();
 }
 async function recordStart(ex: Executor, who: Who, kind: "phone" | "email", now: Date): Promise<void> {
   await ex.insertInto("account_change_starts").values({ actor: who.actor, subject_id: who.subjectId, kind, at: now }).execute();
@@ -97,11 +113,15 @@ export async function verifyPhoneChange(deps: AuthDeps, who: Who, input: { phone
 
 type EmailStartOptions = { sender?: EmailSender | undefined; log?: ((code: string) => void) | undefined };
 /**
- * G30b: whether the e-mail service took the last real code e-mail. The silent answer (an address verified on another
- * account) copies it, so 'sent' vs 'pending_provider' never tells whether someone else uses the address — also while the
- * service refuses every address but the Resend owner's (no own domain yet).
+ * G30b: whether the e-mail service took the last real code e-mail, and how long that send took. The silent answer (an
+ * address verified on another account) copies the first, so 'sent' vs 'pending_provider' never tells whether someone else
+ * uses the address — also while the service refuses every address but the Resend owner's (no own domain yet) — and waits
+ * the second (supervisor G30 F2), so the answer time does not tell it either. Before any real send: SILENT_WAIT_DEFAULT_MS;
+ * never longer than SILENT_WAIT_MAX_MS (the sender's own time-out default).
  */
-const lastAccepted = new WeakMap<EmailSender, boolean>();
+const lastSend = new WeakMap<EmailSender, { accepted: boolean; ms: number }>();
+export const SILENT_WAIT_DEFAULT_MS = 400;
+export const SILENT_WAIT_MAX_MS = 5000;
 const CODE_TEXT = {
   subject: { sv: "Din Movera-kod", fr: "Votre code Movera", en: "Your Movera code" },
   text: {
@@ -122,25 +142,33 @@ export async function startEmailChange(db: Db, who: Who, email: string, now: Dat
   const challengeId = newId("emc", now.getTime());
   const expiresAt = new Date(now.getTime() + OTP.expiresSeconds * 1000);
   const answer = (delivery: "sent" | "pending_provider") => ({ challengeId, expiresAt: expiresAt.toISOString(), delivery });
-  if (await emailTakenByOther(db, who.actor, who.subjectId, value)) {
-    // The same answer as a real start (no code, no e-mail): nobody learns that another account has this address.
-    const delivery = options.sender !== undefined && lastAccepted.get(options.sender) === true ? "sent" : "pending_provider";
-    if (delivery === "sent") await recordStart(db, who, "email", now);
-    return answer(delivery);
-  }
+  const taken = await emailTakenByOther(db, who.actor, who.subjectId, value);
+  // Supervisor G30 F4: the silent answer stores a challenge too (a random code that is never sent), so a wrong code answers
+  // invalid_otp_code either way, and it closes the open challenge like a real start. Its right code is never known; even
+  // then the verify refuses the taken address (invalid_email_challenge).
   const code = String(randomInt(0, 10 ** OTP.codeLength)).padStart(OTP.codeLength, "0");
   // Wrong tries of the last hour carry over to the new challenge (a restart never resets them).
   const earlier = await db.selectFrom("email_changes").select((eb) => eb.fn.coalesce(eb.fn.max("attempts"), eb.val(0)).as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("created_at", ">", hourAgo(now)).executeTakeFirstOrThrow();
   await db.updateTable("email_changes").set({ expires_at: now }).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("expires_at", ">", now).execute();
   await db.insertInto("email_changes").values({ challenge_id: challengeId, actor: who.actor, subject_id: who.subjectId, email: value, code_sha256: sha(`${challengeId}:${code}`), attempts: Number(earlier.n), expires_at: expiresAt, created_at: now }).execute();
-  options.log?.(code);
   let delivery: "sent" | "pending_provider" = "pending_provider";
-  if (options.sender !== undefined) {
-    const lang = await noticeLanguage(db, { actor: who.actor, id: who.subjectId, language: account?.language ?? null });
-    // A sender that throws counts as a failed send (never a server error, never 'sent').
-    const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, Math.ceil(OTP.expiresSeconds / 60)) }).catch(() => ({ accepted: false }));
-    lastAccepted.set(options.sender, outcome.accepted);
-    if (outcome.accepted) delivery = "sent";
+  if (taken) {
+    // The same answer as a real start (no e-mail): nobody learns that another account has this address.
+    if (options.sender !== undefined) {
+      const last = lastSend.get(options.sender);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(SILENT_WAIT_MAX_MS, last?.ms ?? SILENT_WAIT_DEFAULT_MS)));
+      if (last?.accepted === true) delivery = "sent";
+    }
+  } else {
+    options.log?.(code);
+    if (options.sender !== undefined) {
+      const lang = await noticeLanguage(db, { actor: who.actor, id: who.subjectId, language: account?.language ?? null });
+      const started = performance.now();
+      // A sender that throws counts as a failed send (never a server error, never 'sent').
+      const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, Math.ceil(OTP.expiresSeconds / 60)) }).catch(() => ({ accepted: false }));
+      lastSend.set(options.sender, { accepted: outcome.accepted, ms: performance.now() - started });
+      if (outcome.accepted) delivery = "sent";
+    }
   }
   // Supervisor round 3 (R2-3): only a start whose e-mail the service accepted counts toward the 3 per hour.
   if (delivery === "sent") await recordStart(db, who, "email", now);

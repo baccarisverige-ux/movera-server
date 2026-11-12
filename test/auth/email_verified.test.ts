@@ -173,9 +173,10 @@ describe("G30: e-mail saved only after a code check", () => {
     const start = await post("/account/email/change", { email: "Taken@Example.se" }, other.accessToken);
     expect(start.statusCode).toBe(200);
     expect(Object.keys(start.json()).sort()).toEqual(["challengeId", "delivery", "expiresAt"]);
-    expect(await challengesOf("rider", other.id)).toEqual([]);
+    // Fix round F4: a stored challenge whose random code is never sent (a wrong code answers like a real one).
+    expect(await challengesOf("rider", other.id)).toEqual([{ email: "taken@example.se" }]);
     expect(outbox).toEqual([]);
-    expect((await post("/account/email/verify", { challengeId: start.json().challengeId, code: "4242" }, other.accessToken)).json()).toMatchObject({ reason: "invalid_email_challenge" });
+    expect((await post("/account/email/verify", { challengeId: start.json().challengeId, code: "4242" }, other.accessToken)).json()).toMatchObject({ reason: "invalid_otp_code" });
 
     // Q5: the same address verified on a DRIVER account does not block a rider account.
     const phone = freshPhone();

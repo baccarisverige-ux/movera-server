@@ -1,6 +1,9 @@
 import type { FastifyInstance } from "fastify";
+import { Kysely, PostgresDialect } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { seedTestPhones } from "../../src/auth/testPhones.js";
+import type { Database } from "../../src/db/schema/database.js";
+import { listReminders } from "../../src/drivers/reminders.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { approveDriverDocuments } from "../support/seed.js";
@@ -128,5 +131,15 @@ describe("G30: Home reminder email_not_verified", () => {
     const off = (await reminders(d.headers, "0.18.76")).json().items as Array<{ kind: string; level: string }>;
     expect(off.find((i) => i.kind === "email_not_verified")?.level).toBe("due_soon");
     expect(off.some((i) => i.kind === "account_not_active")).toBe(true);
+  });
+
+  it("G30 fix nit a: the e-mail line reuses the country settings already read (one onboarding read)", async () => {
+    const d = await driver();
+    let reads = 0;
+    const counting = new Kysely<Database>({ dialect: new PostgresDialect({ pool: database.pool }), log: (e) => { if (e.level === "query" && e.query.sql.includes("config_live")) reads++; } });
+    const row = await database.db.selectFrom("drivers").selectAll().where("driver_id", "=", d.id).executeTakeFirstOrThrow();
+    const out = await listReminders(counting, row as never, clock.now, { contractVersion: "0.18.76" });
+    expect(out.items.some((i) => i.kind === "email_not_verified")).toBe(true);
+    expect(reads).toBe(1);
   });
 });

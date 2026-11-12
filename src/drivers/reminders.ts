@@ -107,8 +107,10 @@ async function docsOf(ex: Executor, ownerKind: "driver" | "vehicle", ownerIds: s
 /** GET /driver/reminders (contract.json#driverOnboarding.reminders). */
 export async function listReminders(ex: Executor, driver: DriverLike, now: Date, options: { contractVersion?: unknown } = {}): Promise<{ items: Reminder[]; blocksOnline: number }> {
   const items: Reminder[] = [];
+  // Read once per call: the documents and the e-mail line below share it (supervisor G30 nit a).
+  let countrySettings: OnboardingSettings | undefined;
   if (driver.country) {
-    const settings = await onboardingSettings(ex, driver.country);
+    const settings = (countrySettings = await onboardingSettings(ex, driver.country));
     const own = await docsOf(ex, "driver", [driver.driver_id]);
     items.push(...documentLines(requiredOf(settings, "driver"), own, "driver", settings, now));
     if (driver.account_type === "fleet") items.push(...documentLines(requiredOf(settings, "fleet"), own, "fleet", settings, now));
@@ -150,7 +152,7 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date,
   // know the line. Red (blocks_online) when his country's emailVerifiedForApproval is on and he was never active (Movera
   // cannot approve him before the check), else orange (due_soon). The line itself never blocks an active driver.
   if (driver.email && !driver.email_verified_at && contractAtLeast(options.contractVersion, EMAIL_LINE_SINCE)) {
-    const red = driver.account_status !== "active" && driver.first_activated_at == null && (await onboardingSettings(ex, driver.country)).emailVerifiedForApproval === true;
+    const red = driver.account_status !== "active" && driver.first_activated_at == null && (countrySettings ?? (await onboardingSettings(ex, driver.country))).emailVerifiedForApproval === true;
     items.push({ kind: "email_not_verified", level: red ? "blocks_online" : "due_soon", fix: { target: "verify_email" } });
   }
   // v0.18.3 (R10): "not active yet" only once every document is done (none needed, rejected, expired, in review or waiting);

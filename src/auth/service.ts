@@ -419,6 +419,9 @@ async function linkProvider(trx: Trx, link: LinkTokenRow, app: App, account: { i
   // Verified (at account creation) when the provider's token said email_verified true — unless that address is
   // already verified on another account of the same app (emailVerified.unique); else Not verified.
   const email = link.email ? link.email.trim().toLowerCase() : null;
+  // The same per-address lock as the code verify (accountChange.ts verifyEmailChange): a provider sign-up and a code
+  // verify of one address queue, so two accounts of one app never both end up Verified (supervisor G30 nit c).
+  if (email !== null && link.email_verified) await sql`SELECT pg_advisory_xact_lock(hashtext(${`email_verified:${app}:${email}`}))`.execute(trx);
   const verified = email !== null && link.email_verified && !(await emailTakenByOther(trx, app, account.id, email));
   const mail = email !== null ? { email, email_verified_at: verified ? now : null } : {};
   if (app === "driver") {

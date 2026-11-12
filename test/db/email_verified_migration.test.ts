@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MIGRATIONS_DIR, migrate } from "../../src/db/migrate.js";
+import { splitSql } from "../../src/db/splitSql.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
 
@@ -108,4 +109,62 @@ describe("G30 migrations 0099 + 0100", () => {
     expect(indexes.rows).toEqual([{ name: "drivers_email_lower", valid: true }, { name: "riders_email_lower", valid: true }]);
     expect(await migrate(database.pool, dir)).toEqual([]);
   });
+  it("G30 fix F1 (Rule 46): 0099 is ALTERs only; the backfill runs in no-transaction 0100, so readers never wait behind it; re-runnable", async () => {
+    // 0099: no UPDATE (its ADD COLUMNs hold ACCESS EXCLUSIVE until the file's transaction ends).
+    const f99 = readFileSync(join(MIGRATIONS_DIR, FILES[0]!), "utf8");
+    const f100 = readFileSync(join(MIGRATIONS_DIR, FILES[1]!), "utf8");
+    const code = (sql: string) => splitSql(sql).map((st) => st.replace(/--[^\n]*/g, "").trim()).filter(Boolean);
+    expect(code(f99).every((st) => /^ALTER TABLE\b/i.test(st))).toBe(true);
+    expect(f100.startsWith("-- movera: no-transaction\n")).toBe(true);
+    const kinds = code(f100).map((st) => (/^UPDATE\b/i.test(st) ? "update" : /^CREATE INDEX CONCURRENTLY\b/i.test(st) ? "index" : "other"));
+    expect(kinds).toEqual(["update", "update", "update", "update", "index", "index"]);
+
+    // Measured: a backfill made slow (a 1.5 s trigger on the drivers it touches) never blocks a plain read of drivers.
+    const slow = await freshDatabase({ migrated: false });
+    const slowDir = mkdtempSync(join(tmpdir(), "movera-g30-f1-"));
+    let running: Promise<string[]> | undefined;
+    try {
+      cpSync(MIGRATIONS_DIR, slowDir, { recursive: true });
+      for (const f of FILES) rmSync(join(slowDir, f));
+      await migrate(slow.pool, slowDir);
+      const active = await insertDriver(slow.db);
+      await slow.pool.query("UPDATE drivers SET account_status = 'active' WHERE driver_id = $1", [active]);
+      await slow.pool.query("CREATE FUNCTION g30_slow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.5); RETURN NEW; END $$");
+      await slow.pool.query("CREATE TRIGGER g30_slow BEFORE UPDATE ON drivers FOR EACH ROW EXECUTE FUNCTION g30_slow()");
+      for (const f of FILES) cpSync(join(MIGRATIONS_DIR, f), join(slowDir, f));
+      running = migrate(slow.pool, slowDir);
+      let sleeping = false;
+      for (let i = 0; i < 200 && !sleeping; i++) {
+        sleeping = (await slow.pool.query("SELECT 1 FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND datname = current_database()")).rowCount! > 0;
+        if (!sleeping) await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(sleeping).toBe(true);
+      const reader = await slow.pool.connect();
+      let readMs = Number.NaN;
+      let readError: unknown = null;
+      try {
+        await reader.query("SET lock_timeout = '300ms'");
+        const t = Date.now();
+        await reader.query("SELECT count(*) FROM drivers").catch((e: unknown) => (readError = e));
+        readMs = Date.now() - t;
+      } finally {
+        reader.release();
+      }
+      expect(readError).toBeNull();
+      expect(readMs).toBeLessThan(300);
+      expect(await running).toEqual(FILES);
+      await slow.pool.query("DROP TRIGGER g30_slow ON drivers");
+      const row = (await slow.pool.query("SELECT first_activated_at, created_at FROM drivers WHERE driver_id = $1", [active])).rows[0];
+      expect(row.first_activated_at).toEqual(row.created_at);
+
+      // Re-runnable (a no-transaction file runs again whole after a failure): every statement again, nothing changes.
+      await slow.pool.query("UPDATE drivers SET email = 'again@x.se' WHERE driver_id = $1", [active]);
+      for (const st of splitSql(f100)) await slow.pool.query(st);
+      expect((await slow.pool.query("SELECT first_activated_at FROM drivers WHERE driver_id = $1", [active])).rows[0].first_activated_at).toEqual(row.first_activated_at);
+    } finally {
+      await running?.catch(() => undefined);
+      rmSync(slowDir, { recursive: true, force: true });
+      await slow.drop();
+    }
+  }, 20_000);
 });
