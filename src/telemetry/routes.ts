@@ -8,6 +8,7 @@ import { runIdempotent } from "../http/idempotency.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { parseBody } from "../http/validate.js";
 import { listErrorGroups, recordError, setErrorStatus, type ErrorApp, type ErrorKind, type ErrorPlatform } from "./errors.js";
+import { recordTelemetryNotStored } from "./load.js";
 import { scrub } from "./scrub.js";
 
 /**
@@ -16,10 +17,14 @@ import { scrub } from "./scrub.js";
  * scrub e-mails, phone numbers and coordinates; the server scrubs again before storing and keeps entries 30 days.
  */
 
-/** perAddressPerMinute: this copy's telemetry budget per address (B1.22: its own, outside the write limit); default TELEMETRY's. */
-export type TelemetryDeps = { db: Db; jwtSecret: string; clock?: () => Date; perAddressPerMinute?: number };
+/**
+ * perAddressPerMinute: this copy's telemetry budget per address (B1.22: its own, outside the write limit); default TELEMETRY's.
+ * anonRowsPerMinute / anonBytesPerMinute (B1.25, owner W1 Q85): the TOTAL lines and body bytes this copy stores per
+ * minute for callers without a valid token, all addresses together; over it 202 and nothing stored. Default TELEMETRY's.
+ */
+export type TelemetryDeps = { db: Db; jwtSecret: string; clock?: () => Date; perAddressPerMinute?: number; anonRowsPerMinute?: number; anonBytesPerMinute?: number };
 
-export const TELEMETRY = { maxBodyBytes: 16 * 1024, perAddressPerMinute: 120, keepDays: 30 } as const;
+export const TELEMETRY = { maxBodyBytes: 16 * 1024, perAddressPerMinute: 120, anonRowsPerMinute: 600, anonBytesPerMinute: 2 * 1024 * 1024, keepDays: 30 } as const;
 
 const KINDS = [
   ["logs", "log", "TelemetryLog"],
@@ -53,6 +58,10 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
   // Per address, a fixed one-minute window, in memory per copy (app.ts gives each copy its share of the budget).
   const budget = deps.perAddressPerMinute ?? TELEMETRY.perAddressPerMinute;
   const windows = new Map<string, { start: number; n: number }>();
+  // B1.25: one fixed one-minute window for all no-token callers of this copy (per buildApp, like `windows`).
+  const anonRows = deps.anonRowsPerMinute ?? TELEMETRY.anonRowsPerMinute;
+  const anonBytes = deps.anonBytesPerMinute ?? TELEMETRY.anonBytesPerMinute;
+  const anon = { start: 0, rows: 0, bytes: 0, dropped: 0 };
 
   const caller = async (request: FastifyRequest): Promise<Principal | null> => {
     if (request.headers.authorization === undefined) return null;
@@ -75,10 +84,22 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
         throw new ApiError("rate_limited", "Too many telemetry calls.", { reason: "telemetry_too_many", retryAfterSeconds: Math.max(1, Math.ceil((window.start + minute - at.getTime()) / 1000)) });
       }
       const body = request.body ?? {};
-      if (Buffer.byteLength(JSON.stringify(body)) > TELEMETRY.maxBodyBytes) throw badRequest("The body is larger than 16 KB.", "payload_too_large");
+      const size = Buffer.byteLength(JSON.stringify(body));
+      if (size > TELEMETRY.maxBodyBytes) throw badRequest("The body is larger than 16 KB.", "payload_too_large");
       const problem = schemaProblem(schema, body);
       if (problem !== null) throw badRequest(`The ${kind} is not valid: ${problem}.`, "invalid_body");
       const who = await caller(request);
+      if (who === null) {
+        // B1.25: the no-token total of this copy. Over it: 202 as always, no database work, the drop is counted.
+        if (at.getTime() - anon.start >= minute) Object.assign(anon, { start: at.getTime(), rows: 0, bytes: 0, dropped: 0 });
+        if (anon.rows + 1 > anonRows || anon.bytes + size > anonBytes) {
+          recordTelemetryNotStored(kind, size);
+          if (++anon.dropped === 1) request.log.warn({ kind, rowsPerMinute: anonRows, bytesPerMinute: anonBytes }, "telemetry cap reached; lines not stored");
+          return reply.status(202).send();
+        }
+        anon.rows += 1;
+        anon.bytes += size;
+      }
       const clean = scrub(body) as Record<string, unknown>;
       // v0.16.0: a crash report that names its app (or comes with a rider/driver token) and platform is grouped
       // for the admin's Crashes & errors. One without (an older app) is kept as before, ungrouped.
