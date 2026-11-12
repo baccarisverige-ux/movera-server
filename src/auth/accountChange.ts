@@ -1,5 +1,8 @@
 import { createHash, randomInt, timingSafeEqual } from "node:crypto";
+import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
+import type { EmailSender } from "../email/resend.js";
+import { emailTakenByOther } from "./emailTaken.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { notify } from "../notifications/service.js";
@@ -17,6 +20,13 @@ import { OTP, PHONE, requestOtp, type AuthDeps, type ClientInfo } from "./servic
  * - wrong-code attempts count over the hour, a restart never resets them;
  * - after the change: a notice to the OLD number / OLD address (recorded as pending until an SMS / e-mail provider is
  *   connected), an in-app notice, and every other session of the account ends.
+ * G30 + G30b (contract v0.18.76, contract.json#emailVerified; owner 2026-11-12 Q1–Q6, S1; supervisor round 3):
+ * - the verify saves the address lower-cased with email_verified_at = now and answers { email, emailVerifiedAt };
+ * - the account's own current address may be verified: no 10-minute rule, no change notice, no session ends;
+ * - only an address VERIFIED on another account of the SAME app gets the silent answer (an unchecked copy never blocks;
+ *   the same person may use it on his rider and his driver account); the first of two verifies wins;
+ * - the code goes out through the e-mail service; delivery is 'sent' only when it accepted the e-mail, and only such a
+ *   start counts toward the 3 per hour (a refused or failed send is 'pending_provider' and is not counted).
  */
 
 type Who = { actor: "rider" | "driver"; subjectId: string; sessionId: string };
@@ -29,14 +39,23 @@ const table = (actor: Who["actor"]) => (actor === "rider" ? "riders" : "drivers"
 const idCol = (actor: Who["actor"]) => (actor === "rider" ? "rider_id" : "driver_id");
 const hourAgo = (now: Date) => new Date(now.getTime() - 3_600_000);
 
-async function checkStart(ex: Executor, who: Who, kind: "phone" | "email", now: Date): Promise<void> {
+async function recentSignIn(ex: Executor, who: Who, now: Date): Promise<void> {
   const session = await ex.selectFrom("auth_sessions").select("created_at").where("session_id", "=", who.sessionId).executeTakeFirst();
   if (!session || now.getTime() - session.created_at.getTime() > RECENT_SIGN_IN_MS) {
     throw new ApiError("forbidden", "Sign in again on this phone, then change it within 10 minutes.", { reason: "reauth_required" });
   }
+}
+async function startsLeft(ex: Executor, who: Who, kind: "phone" | "email", now: Date): Promise<void> {
   const starts = await ex.selectFrom("account_change_starts").select((eb) => eb.fn.countAll<string>().as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("kind", "=", kind).where("at", ">", hourAgo(now)).executeTakeFirstOrThrow();
   if (Number(starts.n) >= STARTS_PER_HOUR) throw new ApiError("rate_limited", "Too many changes. Try again later.", { reason: "change_too_many", retryAfterSeconds: 3600 });
+}
+async function recordStart(ex: Executor, who: Who, kind: "phone" | "email", now: Date): Promise<void> {
   await ex.insertInto("account_change_starts").values({ actor: who.actor, subject_id: who.subjectId, kind, at: now }).execute();
+}
+async function checkStart(ex: Executor, who: Who, kind: "phone" | "email", now: Date): Promise<void> {
+  await recentSignIn(ex, who, now);
+  await startsLeft(ex, who, kind, now);
+  await recordStart(ex, who, kind, now);
 }
 
 async function phoneHasAccount(ex: Executor, phone: string): Promise<boolean> {
@@ -44,12 +63,6 @@ async function phoneHasAccount(ex: Executor, phone: string): Promise<boolean> {
   const d = await ex.selectFrom("drivers").select("driver_id").where("phone", "=", phone).executeTakeFirst();
   return r !== undefined || d !== undefined;
 }
-async function emailHasAccount(ex: Executor, email: string): Promise<boolean> {
-  const r = await ex.selectFrom("riders").select("rider_id").where("email", "=", email).executeTakeFirst();
-  const d = await ex.selectFrom("drivers").select("driver_id").where("email", "=", email).executeTakeFirst();
-  return r !== undefined || d !== undefined;
-}
-
 export async function startPhoneChange(deps: AuthDeps, who: Who, phone: string, client: ClientInfo, now: Date) {
   if (!PHONE.test(phone)) throw badRequest("Send the phone number in international form, e.g. +46701234567.", "invalid_phone");
   await checkStart(deps.db, who, "phone", now);
@@ -82,21 +95,56 @@ export async function verifyPhoneChange(deps: AuthDeps, who: Who, input: { phone
   return { phone: input.phone };
 }
 
-export async function startEmailChange(db: Db, who: Who, email: string, now: Date, log?: (code: string) => void) {
+type EmailStartOptions = { sender?: EmailSender | undefined; log?: ((code: string) => void) | undefined };
+/**
+ * G30b: whether the e-mail service took the last real code e-mail. The silent answer (an address verified on another
+ * account) copies it, so 'sent' vs 'pending_provider' never tells whether someone else uses the address — also while the
+ * service refuses every address but the Resend owner's (no own domain yet).
+ */
+const lastAccepted = new WeakMap<EmailSender, boolean>();
+const CODE_TEXT = {
+  subject: { sv: "Din Movera-kod", fr: "Votre code Movera", en: "Your Movera code" },
+  text: {
+    sv: (code: string, minutes: number) => `Din Movera-kod är ${code}. Den gäller i ${minutes} minuter.\n\nBad du inte om den? Då kan du strunta i det här mejlet.`,
+    fr: (code: string, minutes: number) => `Votre code Movera est ${code}. Il est valable ${minutes} minutes.\n\nVous ne l’avez pas demandé ? Ignorez cet e-mail.`,
+    en: (code: string, minutes: number) => `Your Movera code is ${code}. It is valid for ${minutes} minutes.\n\nDid not ask for it? Ignore this e-mail.`,
+  },
+} as const;
+
+export async function startEmailChange(db: Db, who: Who, email: string, now: Date, options: EmailStartOptions = {}) {
   const value = email.trim().toLowerCase();
   if (!EMAIL.test(value) || value.length > 200) throw badRequest("The e-mail is not valid.", "invalid_email");
-  await checkStart(db, who, "email", now);
+  const account = await db.selectFrom(table(who.actor) as "drivers").select(["email", "language"]).where(idCol(who.actor) as "driver_id", "=", who.subjectId).executeTakeFirst();
+  // emailVerified.verifyCurrent: checking the address the account already has changes nothing, so no 10-minute rule.
+  const own = account?.email != null && account.email.trim().toLowerCase() === value;
+  if (!own) await recentSignIn(db, who, now);
+  await startsLeft(db, who, "email", now);
   const challengeId = newId("emc", now.getTime());
   const expiresAt = new Date(now.getTime() + OTP.expiresSeconds * 1000);
-  const answer = { challengeId, expiresAt: expiresAt.toISOString(), delivery: "pending_provider" as const };
-  if (await emailHasAccount(db, value)) return answer;
+  const answer = (delivery: "sent" | "pending_provider") => ({ challengeId, expiresAt: expiresAt.toISOString(), delivery });
+  if (await emailTakenByOther(db, who.actor, who.subjectId, value)) {
+    // The same answer as a real start (no code, no e-mail): nobody learns that another account has this address.
+    const delivery = options.sender !== undefined && lastAccepted.get(options.sender) === true ? "sent" : "pending_provider";
+    if (delivery === "sent") await recordStart(db, who, "email", now);
+    return answer(delivery);
+  }
   const code = String(randomInt(0, 10 ** OTP.codeLength)).padStart(OTP.codeLength, "0");
   // Wrong tries of the last hour carry over to the new challenge (a restart never resets them).
   const earlier = await db.selectFrom("email_changes").select((eb) => eb.fn.coalesce(eb.fn.max("attempts"), eb.val(0)).as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("created_at", ">", hourAgo(now)).executeTakeFirstOrThrow();
   await db.updateTable("email_changes").set({ expires_at: now }).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("expires_at", ">", now).execute();
   await db.insertInto("email_changes").values({ challenge_id: challengeId, actor: who.actor, subject_id: who.subjectId, email: value, code_sha256: sha(`${challengeId}:${code}`), attempts: Number(earlier.n), expires_at: expiresAt, created_at: now }).execute();
-  log?.(code);
-  return answer;
+  options.log?.(code);
+  let delivery: "sent" | "pending_provider" = "pending_provider";
+  if (options.sender !== undefined) {
+    const lang = await noticeLanguage(db, { actor: who.actor, id: who.subjectId, language: account?.language ?? null });
+    // A sender that throws counts as a failed send (never a server error, never 'sent').
+    const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, Math.ceil(OTP.expiresSeconds / 60)) }).catch(() => ({ accepted: false }));
+    lastAccepted.set(options.sender, outcome.accepted);
+    if (outcome.accepted) delivery = "sent";
+  }
+  // Supervisor round 3 (R2-3): only a start whose e-mail the service accepted counts toward the 3 per hour.
+  if (delivery === "sent") await recordStart(db, who, "email", now);
+  return answer(delivery);
 }
 
 export async function verifyEmailChange(db: Db, who: Who, input: { challengeId: string; code: string }, now: Date) {
@@ -110,11 +158,14 @@ export async function verifyEmailChange(db: Db, who: Who, input: { challengeId: 
       return badRequest("That code is not right.", "invalid_otp_code");
     }
     await trx.updateTable("email_changes").set({ expires_at: now }).where("challenge_id", "=", c.challenge_id).execute();
-    if (await emailHasAccount(trx, c.email)) return badRequest("This code is not active. Ask for a new one.", "invalid_email_challenge");
-    const before = await trx.selectFrom(table(who.actor) as "drivers").select("email").where(idCol(who.actor) as "driver_id", "=", who.subjectId).executeTakeFirstOrThrow();
-    await trx.updateTable(table(who.actor) as "drivers").set({ email: c.email }).where(idCol(who.actor) as "driver_id", "=", who.subjectId).execute();
-    await afterChange(trx, who, "email", before.email, now);
-    return { email: c.email };
+    // emailVerified.unique: two accounts of one app verifying the same address queue here; the first wins.
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${`email_verified:${who.actor}:${c.email}`}))`.execute(trx);
+    if (await emailTakenByOther(trx, who.actor, who.subjectId, c.email)) return badRequest("This code is not active. Ask for a new one.", "invalid_email_challenge");
+    const before = await trx.selectFrom(table(who.actor) as "drivers").select("email").where(idCol(who.actor) as "driver_id", "=", who.subjectId).forUpdate().executeTakeFirstOrThrow();
+    await trx.updateTable(table(who.actor) as "drivers").set({ email: c.email, email_verified_at: now }).where(idCol(who.actor) as "driver_id", "=", who.subjectId).execute();
+    // emailVerified.verifyCurrent: the address did not change → no notice to it, no email_changed, no session ends.
+    if ((before.email ?? "").trim().toLowerCase() !== c.email) await afterChange(trx, who, "email", before.email, now);
+    return { email: c.email, emailVerifiedAt: now.toISOString() };
   });
   if (outcome instanceof ApiError) throw outcome;
   return outcome;

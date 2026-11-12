@@ -58,6 +58,8 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
         first_name: d.firstName,
         last_name: d.lastName,
         email: d.email,
+        // G30: the fake @movera.test addresses stay Not verified (contract.json#emailVerified.writePaths.seed).
+        email_verified_at: null,
         date_of_birth: "1990-01-01",
         country: accounts.fleet.country,
         city_id: accounts.fleet.cityId,
@@ -65,6 +67,8 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
         account_type: d.owner ? "fleet" : "driver",
         terms_accepted_at: now,
         account_status: "active",
+        // G30 (emailVerified.neverActive): every path to active records the first time.
+        first_activated_at: sql`coalesce(first_activated_at, ${now})`,
         zone_ids: zoneIds,
         category_ids: d.car.categoryIds,
         version: (existing?.version ?? 1) + 1,
@@ -117,7 +121,7 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
     const existing = await trx.selectFrom("riders").select("rider_id").where("phone", "=", r.phone).executeTakeFirst();
     const riderId = existing?.rider_id ?? newId("rdr", now.getTime());
     if (!existing) await trx.insertInto("riders").values({ rider_id: riderId, phone: r.phone, email: r.email, language: "sv" }).execute();
-    await trx.updateTable("riders").set({ first_name: r.firstName, email: r.email, status: "active", updated_at: now }).where("rider_id", "=", riderId).execute();
+    await trx.updateTable("riders").set({ first_name: r.firstName, email: r.email, email_verified_at: null, status: "active", updated_at: now }).where("rider_id", "=", riderId).execute();
     riderIds.set(r.phone, riderId);
   }
   return { fleetId, code: accounts.fleet.code, drivers: [...driverIds.entries()].map(([phone, driverId]) => ({ phone, driverId, vehicleId: vehicleIds.get(phone)! })), riders: [...riderIds.entries()].map(([phone, riderId]) => ({ phone, riderId })) };

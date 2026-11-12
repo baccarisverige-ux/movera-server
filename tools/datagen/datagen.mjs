@@ -204,14 +204,14 @@ for (let i = 0; i < PLAN.drivers; i++) {
   driverStatus.push(status);
   const created = new Date(START.getTime() - Math.floor(DR() * 365 * 86_400_000));
   const cats = DR() < 0.3 ? "{economy,comfort}" : DR() < 0.1 ? "{economy,comfort,premium,xl}" : "{economy}";
-  driverRows.push([`drv_dg_${pad(i)}`, phoneFor(z, 50_000_000 + i).slice(0, z.phone.length + z.phoneDigits), FIRST[z.country][(i * 7) % 10], LAST[z.country][i % 4], status, `{${z.zoneId}}`, cats, z.country, LANG[z.country], "driver", created, created]);
+  driverRows.push([`drv_dg_${pad(i)}`, phoneFor(z, 50_000_000 + i).slice(0, z.phone.length + z.phoneDigits), FIRST[z.country][(i * 7) % 10], LAST[z.country][i % 4], status, `{${z.zoneId}}`, cats, z.country, LANG[z.country], "driver", created, created, status === "active" ? created : null]);
 }
 // Driver phones must not collide with riders: drivers use the top half of the number range.
 for (let i = 0; i < driverRows.length; i++) {
   const z = driverZone[i];
   driverRows[i][1] = `${z.phone}${String(10 ** z.phoneDigits - 1 - i).padStart(z.phoneDigits, "0")}`;
 }
-await insertBatched("drivers", { driver_id: "text", phone: "text", first_name: "text", last_name: "text", account_status: "text", zone_ids: "text[]", category_ids: "text[]", country: "bpchar", language: "text", account_type: "text", created_at: "timestamptz", updated_at: "timestamptz" }, driverRows);
+await insertBatched("drivers", { driver_id: "text", phone: "text", first_name: "text", last_name: "text", account_status: "text", zone_ids: "text[]", category_ids: "text[]", country: "bpchar", language: "text", account_type: "text", created_at: "timestamptz", updated_at: "timestamptz", first_activated_at: "timestamptz" }, driverRows);
 
 // Fleets: owners are drivers (account_type fleet); about 30 % of the other drivers of the same zone drive for a fleet.
 const F = prng(streamSeed(SEED, "fleets"));

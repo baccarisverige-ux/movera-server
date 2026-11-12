@@ -70,6 +70,8 @@ export type DriverRow = {
   last_name: string;
   date_of_birth: Date | null;
   email: string | null;
+  email_verified_at?: Date | null;
+  first_activated_at?: Date | null;
   country: string | null;
   city_id: string | null;
   language: string | null;
@@ -208,6 +210,8 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     ...(row.last_name ? { lastName: row.last_name } : {}),
     ...(dob ? { dateOfBirth: dob instanceof Date ? dob.toISOString().slice(0, 10) : String(dob) } : {}),
     ...(row.email ? { email: row.email } : {}),
+    // G30 v0.18.76 (contract.json#emailVerified.field): when the current e-mail was proven; never masked.
+    ...(row.email && row.email_verified_at ? { emailVerifiedAt: row.email_verified_at.toISOString() } : {}),
     ...(row.country ? { country: row.country } : {}),
     ...(row.city_id ? { cityId: row.city_id } : {}),
     ...(row.language ? { language: row.language } : {}),
@@ -734,7 +738,8 @@ export async function seedDriver(
   else await trx.insertInto("vehicles").values({ vehicle_id: vehicleId, driver_id: driverId, created_at: now, ...vehicle }).execute();
   await trx
     .updateTable("drivers")
-    .set({ first_name: input.firstName, account_status: "active", vehicle_id: vehicleId, category_ids: input.categoryIds, zone_ids: input.zoneIds, version: (existing?.version ?? 1) + 1, updated_at: now })
+    // G30 (contract.json#emailVerified.neverActive): every path to active records the first time.
+    .set({ first_name: input.firstName, account_status: "active", first_activated_at: sql`coalesce(first_activated_at, ${now})`, vehicle_id: vehicleId, category_ids: input.categoryIds, zone_ids: input.zoneIds, version: (existing?.version ?? 1) + 1, updated_at: now })
     .where("driver_id", "=", driverId)
     .execute();
   return { driverId, vehicleId };

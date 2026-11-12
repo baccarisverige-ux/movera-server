@@ -1,3 +1,5 @@
+import type { EmailSender } from "../email/resend.js";
+import { emailTakenByOther } from "./emailTaken.js";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
@@ -90,7 +92,9 @@ export type AuthDeps = {
   fastTestSignIn?: boolean;
   /** Apple / Google token verifiers, one per provider with client ids set. */
   providers?: Partial<Record<Provider, ProviderVerifier>> | undefined;
-  /** B1.27 (owner, Sitting W1): the e-mail change code is written to the log only on a developer's laptop (MOVERA_ENV development). */
+  /** G30b (owner Q1): the e-mail service for the e-mail change codes (Resend); none = delivery pending_provider. */
+  email?: EmailSender | undefined;
+  /** B1.27 rule: the e-mail change code is written to the log only on a developer's laptop (MOVERA_ENV development). */
   logCodes?: boolean;
   clock?: () => Date;
 };
@@ -322,7 +326,7 @@ async function findOrCreateAccount(trx: Trx, app: App, phone: string, now: Date)
 
 /* ---------------------------------------------------------------- Apple / Google */
 
-type LinkTokenRow = { token_sha256: string; provider: Provider; provider_subject: string; app: App; first_name: string | null; last_name: string | null; email: string | null; expires_at: Date; used_at: Date | null };
+type LinkTokenRow = { token_sha256: string; provider: Provider; provider_subject: string; app: App; first_name: string | null; last_name: string | null; email: string | null; email_verified: boolean; expires_at: Date; used_at: Date | null };
 
 export type PhoneRequired = { code: "PHONE_REQUIRED"; linkToken: string; name?: string; firstName?: string; lastName?: string; email?: string };
 
@@ -365,6 +369,8 @@ export async function signInWithProvider(
         first_name: firstName ?? null,
         last_name: lastName ?? null,
         email: identity.email ?? null,
+        // G30 (owner Q4): Apple / Google said it checked this e-mail.
+        email_verified: identity.email !== undefined && identity.emailVerified === true,
         expires_at: new Date(now.getTime() + LINK_TOKEN_TTL_MS),
         created_at: now,
       })
@@ -409,16 +415,22 @@ async function linkProvider(trx: Trx, link: LinkTokenRow, app: App, account: { i
     .execute();
   await trx.updateTable("auth_link_tokens").set({ used_at: now }).where("token_sha256", "=", link.token_sha256).execute();
   if (!account.created) return;
+  // G30 v0.18.76 (contract.json#emailVerified.writePaths.provider, owner Q4): the provider e-mail, lower-cased, is
+  // Verified (at account creation) when the provider's token said email_verified true — unless that address is
+  // already verified on another account of the same app (emailVerified.unique); else Not verified.
+  const email = link.email ? link.email.trim().toLowerCase() : null;
+  const verified = email !== null && link.email_verified && !(await emailTakenByOther(trx, app, account.id, email));
+  const mail = email !== null ? { email, email_verified_at: verified ? now : null } : {};
   if (app === "driver") {
     await trx
       .updateTable("drivers")
-      .set({ ...(link.first_name ? { first_name: link.first_name } : {}), ...(link.last_name ? { last_name: link.last_name } : {}), ...(link.email ? { email: link.email } : {}), updated_at: now })
+      .set({ ...(link.first_name ? { first_name: link.first_name } : {}), ...(link.last_name ? { last_name: link.last_name } : {}), ...mail, updated_at: now })
       .where("driver_id", "=", account.id)
       .execute();
   } else {
     await trx
       .updateTable("riders")
-      .set({ ...(link.first_name ? { first_name: [link.first_name, link.last_name].filter(Boolean).join(" ") } : {}), ...(link.email ? { email: link.email } : {}), updated_at: now })
+      .set({ ...(link.first_name ? { first_name: [link.first_name, link.last_name].filter(Boolean).join(" ") } : {}), ...mail, updated_at: now })
       .where("rider_id", "=", account.id)
       .execute();
   }

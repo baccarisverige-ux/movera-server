@@ -172,6 +172,8 @@ export interface AuthLinkTokensTable {
   first_name: ColumnType<string | null, string | null | undefined, string | null>;
   last_name: ColumnType<string | null, string | null | undefined, string | null>;
   email: ColumnType<string | null, string | null | undefined, string | null>;
+  /** G30 v0.18.76 (migration 0099, owner Q4): the provider said it checked the e-mail. */
+  email_verified: Generated<boolean>;
   expires_at: Timestamp;
   used_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   created_at: Timestamp;

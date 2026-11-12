@@ -41,6 +41,7 @@ import { loadSnapshot, registerServerTiming } from "./telemetry/load.js";
 import { TELEMETRY, telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
+import { emailSenderFrom, type EmailSender } from "./email/resend.js";
 import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
 import { reservationRoutes } from "./reservations/routes.js";
@@ -60,7 +61,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 /** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
 const NO_ROUTE = "(no route)";
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
@@ -93,7 +94,7 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
 }
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email }: BuildOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger
       ? {
@@ -265,7 +266,9 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // B1.15 (Q76): every open stream of this copy is re-checked against its session row, one batched query per interval.
     watchStreamSessions(app, db, { everyMs: env.STREAM_SESSION_CHECK_MS, warn: (data, message) => app.log.warn(data, message), ...(clock ? { clock } : {}) });
     const signInProviders = providers ?? providersFrom(env);
-    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, logCodes: env.MOVERA_ENV === "development", ...(clock ? { clock } : {}) });
+    // G30b (owner Q1): e-mail change codes go out through Resend when RESEND_API_KEY is set (tests inject a fake).
+    const emailSender = email ?? emailSenderFrom(env);
+    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(emailSender ? { email: emailSender } : {}), logCodes: env.MOVERA_ENV === "development", ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await telemetryRoutes(app, { db, jwtSecret, perAddressPerMinute: shareOf(env.TELEMETRY_PER_ADDRESS_PER_MINUTE ?? TELEMETRY.perAddressPerMinute, env.WEB_COPIES), anonRowsPerMinute: env.TELEMETRY_ANON_ROWS_PER_MINUTE ?? TELEMETRY.anonRowsPerMinute, anonBytesPerMinute: env.TELEMETRY_ANON_BYTES_PER_MINUTE ?? TELEMETRY.anonBytesPerMinute, ...(clock ? { clock } : {}) });
     // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.

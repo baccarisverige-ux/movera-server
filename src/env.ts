@@ -85,6 +85,15 @@ const schema = z.object({
   /** Google Places / Geocoding key for address search (owner decision 4). Unset: address search answers 503. */
   GOOGLE_MAPS_API_KEY: z.string().min(10).optional(),
   /**
+   * G30b (owner 2026-11-12 Q1, contract.json#emailVerified.delivery): Resend's API key for the e-mail change codes,
+   * filled in Render's dashboard (never committed, never logged). Unset: no e-mail is sent, delivery pending_provider.
+   */
+  RESEND_API_KEY: z.string().min(8).optional(),
+  /** The sender of those e-mails. Unset: Resend's own test sender "Movera <onboarding@resend.dev>" (no own domain yet). */
+  EMAIL_FROM: z.string().min(3).max(200).optional(),
+  /** One send waits at most this long for Resend, then counts as not sent (pending_provider). */
+  EMAIL_SEND_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(5000),
+  /**
    * Seals uploaded driver documents at rest (AES-256-GCM): 32 random bytes, base64 (`openssl rand -base64 32`).
    * Required in production; elsewhere a key derived from JWT_SECRET stands in (contract v0.5.3 §14).
    */
