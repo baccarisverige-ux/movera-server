@@ -3,7 +3,7 @@ import { sql } from "kysely";
 import type { Db } from "../db/db.js";
 
 /**
- * B1.15 (owner W1 Q76, S04 C1 / P7; contract.json#realtime.sessionEnd, drafted for contract 0.18.73): an open stream ends within 60 s when its
+ * B1.15 (owner W1 Q76, S04 C1 / P7; contract.json#realtime.sessionEnd, contract 0.18.73): an open stream ends within 60 s when its
  * SESSION ends — sign-out, a sign-in on a new phone, an account change, an admin's role change or deactivation, any
  * revoke however the row was changed. Only the session row is re-checked, never the access token's 15 minutes, so a
  * stream stays open across refreshes. Rule 33 cost: each server copy runs ONE batched query for all its open streams
