@@ -51,6 +51,9 @@ const schema = z.object({
    */
   RATE_LIMIT_WRITES_PER_USER_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).optional(),
   RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).optional(),
+  /** B1.22 (owner W1 Q82): the apps' telemetry lines (POST /telemetry/logs|analytics|crashes) per address per minute,
+   * their own budget outside the write limit above. Unset: 120 (the budget they always had). Shared by WEB_COPIES. */
+  TELEMETRY_PER_ADDRESS_PER_MINUTE: z.coerce.number().int().min(1).max(100_000).optional(),
   /** How many web copies of the server run behind the load balancer (load test part 6). Each copy keeps its own write
    * counts in memory, so each one allows 1/WEB_COPIES of the budget. Default 1 = today. */
   WEB_COPIES: z.coerce.number().int().min(1).max(16).optional(),

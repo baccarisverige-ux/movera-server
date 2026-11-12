@@ -10,7 +10,7 @@ import { sql } from "kysely";
 import { isDatabaseBusy, type Db } from "./db/db.js";
 import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
 import { writeLimitsFrom, type Env } from "./env.js";
-import { registerWriteLimit, SIGN_IN_PATHS } from "./http/rateLimit.js";
+import { registerWriteLimit, shareOf, SIGN_IN_PATHS } from "./http/rateLimit.js";
 import { poolStats } from "./db/db.js";
 import { ApiError, badRequest, notFound } from "./http/errors.js";
 
@@ -37,7 +37,7 @@ import { documentKeyFrom } from "./documents/files.js";
 import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
 import { recordServerError } from "./telemetry/errors.js";
 import { loadSnapshot, registerServerTiming } from "./telemetry/load.js";
-import { telemetryRoutes } from "./telemetry/routes.js";
+import { TELEMETRY, telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
 import multipart from "@fastify/multipart";
@@ -257,7 +257,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const signInProviders = providers ?? providersFrom(env);
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await telemetryRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    await telemetryRoutes(app, { db, jwtSecret, perAddressPerMinute: shareOf(env.TELEMETRY_PER_ADDRESS_PER_MINUTE ?? TELEMETRY.perAddressPerMinute, env.WEB_COPIES), ...(clock ? { clock } : {}) });
     // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.
     const invites = { sms: { provider: sms, warn: (data: Record<string, unknown>, message: string) => app.log.warn(data, message) }, appLink: env.DRIVER_APP_LINK };
     await adminAuthRoutes(app, { db, jwtSecret, panelUrl: env.ADMIN_PANEL_URL, ...(clock ? { clock } : {}) });

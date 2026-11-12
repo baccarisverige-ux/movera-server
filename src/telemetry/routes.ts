@@ -16,7 +16,8 @@ import { scrub } from "./scrub.js";
  * scrub e-mails, phone numbers and coordinates; the server scrubs again before storing and keeps entries 30 days.
  */
 
-export type TelemetryDeps = { db: Db; jwtSecret: string; clock?: () => Date };
+/** perAddressPerMinute: this copy's telemetry budget per address (B1.22: its own, outside the write limit); default TELEMETRY's. */
+export type TelemetryDeps = { db: Db; jwtSecret: string; clock?: () => Date; perAddressPerMinute?: number };
 
 export const TELEMETRY = { maxBodyBytes: 16 * 1024, perAddressPerMinute: 120, keepDays: 30 } as const;
 
@@ -49,7 +50,8 @@ function appOf(body: Record<string, unknown>, who: Principal | null): ErrorApp |
 export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps): Promise<void> {
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
   const now = () => deps.clock?.() ?? new Date();
-  // Per address, a fixed one-minute window (one server in the test week; several instances would each count).
+  // Per address, a fixed one-minute window, in memory per copy (app.ts gives each copy its share of the budget).
+  const budget = deps.perAddressPerMinute ?? TELEMETRY.perAddressPerMinute;
   const windows = new Map<string, { start: number; n: number }>();
 
   const caller = async (request: FastifyRequest): Promise<Principal | null> => {
@@ -69,7 +71,7 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
       if (window === undefined || at.getTime() - window.start >= minute) {
         if (windows.size > 10_000) windows.clear();
         windows.set(request.ip, { start: at.getTime(), n: 1 });
-      } else if (++window.n > TELEMETRY.perAddressPerMinute) {
+      } else if (++window.n > budget) {
         throw new ApiError("rate_limited", "Too many telemetry calls.", { reason: "telemetry_too_many", retryAfterSeconds: Math.max(1, Math.ceil((window.start + minute - at.getTime()) / 1000)) });
       }
       const body = request.body ?? {};
