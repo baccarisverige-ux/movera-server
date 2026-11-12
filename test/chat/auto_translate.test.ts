@@ -131,15 +131,38 @@ describe("v0.18.64 §85 translate", () => {
     expect(row).toEqual([expect.objectContaining({ lang: "fr", text: "[fr] Jag står vid porten" })]);
   });
 
-  it("T4 a message already in the reader's language answers its own text with no provider call", async () => {
+  it("T4 a chip (lang exact) in the reader's language answers its own text with no provider call; typed text (lang a hint) is read by the provider", async () => {
     const { tripId } = await accepted();
     await setLanguage("driver", "sv");
-    const msg = (await send(tripId, rider, { text: "Hej" })).json();
-    expect(msg.lang).toBe("sv");
-    const same = await translate(tripId, driver.headers, { messageId: msg.messageId, to: "sv", auto: true });
+    await setLanguage("rider", "sv");
+    const chip = (await send(tripId, rider, { text: "x", quickReplyId: "thanks" })).json();
+    expect(chip.lang).toBe("sv");
+    const same = await translate(tripId, driver.headers, { messageId: chip.messageId, to: "sv", auto: true });
     expect(same.statusCode).toBe(200);
-    expect(same.json()).toMatchObject({ text: "Hej", to: "sv" });
+    expect(same.json()).toMatchObject({ text: chip.text, to: "sv" });
     expect(asked).toEqual([]);
+    const typed = (await send(tripId, rider, { text: "Hej" })).json();
+    expect(typed.lang).toBe("sv");
+    expect((await translate(tripId, driver.headers, { messageId: typed.messageId, to: "sv", auto: true })).json()).toMatchObject({ text: "[sv] Hej" });
+    expect(asked).toEqual([{ text: "Hej", to: "sv" }]);
+  });
+
+  // Live bug 2026-11-12 (BrowserStack, driver-19): a rider whose app is fr typed English; the fr driver tapped
+  // "Traduire en français" and got the English original back. Typed text's lang is only the sender's app language (a
+  // hint, chat.autoTranslate.sourceLanguage): the provider reads the text and translates from what it reads.
+  it("T9 typed text in another language than the sender's app language is still translated into the reader's (fail-before: original returned)", async () => {
+    const { tripId } = await accepted();
+    await setLanguage("rider", "fr");
+    await setLanguage("driver", "fr");
+    const msg = (await send(tripId, rider, { text: "Hello, I am wearing a red jacket and I have one small bag." })).json();
+    expect(msg.lang).toBe("fr");
+    for (const auto of [true, false]) {
+      const res = await translate(tripId, driver.headers, { messageId: msg.messageId, to: "fr", auto });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ messageId: msg.messageId, to: "fr", text: "[fr] Hello, I am wearing a red jacket and I have one small bag." });
+    }
+    // Asked once; the second request reads the kept text.
+    expect(asked).toEqual([{ text: "Hello, I am wearing a red jacket and I have one small bag.", to: "fr" }]);
   });
 
   it("T5 autoTranslate off: an auto request is 403 auto_translate_off; a tap still translates; translation off stops both", async () => {
