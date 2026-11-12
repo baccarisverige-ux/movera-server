@@ -292,8 +292,11 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
       const onB = await listen(base2, "/rider/config/stream?zoneId=Z001", rider);
       await sleep(300);
       await killListen(hub);
-      await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
-      expect(await until(() => kinds(onB, "rider_trip_changed").length === 1)).toBe(true);
+      // Copy B may still get hints from the booking's own earlier changes, so wait for a NEW one after the cancel.
+      const hintsBefore = kinds(onB, "rider_trip_changed").length;
+      const cancelled = await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
+      expect(cancelled.statusCode).toBe(200);
+      expect(await until(() => kinds(onB, "rider_trip_changed").length > hintsBefore)).toBe(true);
       const endedA = await until(() => onA.ended, 4000);
       const endedB = onB.ended;
       onA.close();

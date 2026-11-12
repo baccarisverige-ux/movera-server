@@ -80,7 +80,9 @@ export class SessionWatch {
     if (this.running || this.streams.size === 0) return;
     this.running = true;
     try {
-      const ids = [...new Set([...this.streams].map((w) => w.owner.sessionId))];
+      // Only the streams open when the check starts are judged: one opened while the query runs was not asked about.
+      const judged = [...this.streams];
+      const ids = [...new Set(judged.map((w) => w.owner.sessionId))];
       const now = this.now();
       const alive = new Map<string, { role: string | null; active: boolean | null }>();
       for (let at = 0; at < ids.length; at += SESSION_CHECK_BATCH) {
@@ -91,7 +93,8 @@ export class SessionWatch {
            WHERE s.session_id = ANY(${ids.slice(at, at + SESSION_CHECK_BATCH)}::text[]) AND s.revoked_at IS NULL AND s.expires_at > ${now}`.execute(this.db);
         for (const row of rows) alive.set(row.session_id, row);
       }
-      for (const watched of [...this.streams]) {
+      for (const watched of judged) {
+        if (!this.streams.has(watched)) continue;
         const row = alive.get(watched.owner.sessionId);
         // Step 38 (Q42): an admin's rights live in his token, so a role change or a deactivation ends his streams too.
         const ok = row !== undefined && (watched.owner.actor !== "admin" || (row.active === true && row.role === watched.owner.role));
