@@ -315,6 +315,24 @@ export function planRound(doc: DispatchDoc, input: SearchState, ranked: Ranked[]
   throw new Error("dispatch plan did not settle");
 }
 
+/**
+ * B1.29 (S4-W1 recheck Q89, owner "no behaviour change"): the round's wait when it is the same for EVERY subset of
+ * `ranked`, else null. The runtime ranks the drivers in the box before it reads their facts (open offers, papers,
+ * driving limit, blocks, ...): those can only remove drivers, so when this says "wait" the real pool waits exactly
+ * so (same seconds, same state) and the facts need not be read.
+ *
+ * Why it holds: planRound reads `ranked` only through inRange (a filter on each driver alone), and outside the cases
+ * below only asks whether a ring / the not-yet-asked part of it is EMPTY; every step move depends on the state alone.
+ * Emptiness on a superset means emptiness on every subset. Excluded: a pending start ("byDistance" picks the nearest,
+ * "both" the best) and Radar off with someone in the Exclusive ring (the ask-again wait sets `again` only then).
+ */
+export function certainWait(doc: DispatchDoc, state: SearchState, ranked: Ranked[]): { state: SearchState; round: Extract<Round, { type: "wait" }> } | null {
+  if (state.pending !== undefined) return null;
+  if (doc.exclusive.on && !doc.radar.on && inRange(doc, ranked, "exclusive", kmAt(doc, "exclusive", stepCount(doc) - 1)).length > 0) return null;
+  const planned = planRound(doc, state, ranked);
+  return planned.round.type === "wait" ? { state: planned.state, round: planned.round } : null;
+}
+
 /** The rider-waiting steps that count (on, not skipped in the test week), by time from search start. */
 export function waitingSteps(doc: DispatchDoc) {
   return doc.waiting

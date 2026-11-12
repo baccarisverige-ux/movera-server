@@ -163,6 +163,18 @@ export async function queueStatus(ex: Executor, driverId: string, now: Date) {
 }
 
 /**
+ * B1.29: may queuePick give this trip to a queued driver at all (its pickup is in an airport zone whose area is on)?
+ * Read only. A round that skips the driver facts on a sure wait does so only when this is false, so queuePick (which
+ * also re-orders and prunes the line) runs exactly when it ran before.
+ */
+export async function queueMayPick(ex: Executor, trip: Pick<TripRow, "pickup">): Promise<boolean> {
+  const airport = await zoneAt(ex, trip.pickup as { lat: number; lng: number }, { kind: "airport" });
+  if (!airport) return false;
+  const area = await ex.selectFrom("airport_queue_areas").select("area_id").where("airport_zone_id", "=", airport.zoneId).where("is_on", "=", true).executeTakeFirst();
+  return area !== undefined;
+}
+
+/**
  * Dispatch (contract airportQueue.dispatch): for a trip picked up inside an airport zone whose area is on, the first
  * driver in line who is in this round's pool (the normal filter) and was not asked for this trip yet, while fewer than
  * maxQueueOffers queue offers went out. Runs in the round's transaction (trip row locked); the round then locks the

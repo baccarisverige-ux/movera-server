@@ -6,13 +6,13 @@ import { liveDocument } from "../../config/service.js";
 import { pickupPayMinor, type PickupPayRate } from "../../rules/pickupPay.js";
 import { applyCommand } from "../../trips/commands.js";
 import { sql } from "kysely";
-import { farDoc, farReachKm, maxPickupKm, newSearch, nobodyNew, planRound, rank, reaskLimitOf, startOf, type DispatchDoc, type SearchState } from "../engine.js";
+import { certainWait, farDoc, farReachKm, maxPickupKm, newSearch, nobodyNew, planRound, rank, reaskLimitOf, startOf, type DispatchDoc, type SearchState } from "../engine.js";
 import { ROUND, OPEN_STATUSES, lockTripNow, localTime, controlOf } from "./shared.js";
-import { candidatesFor, lockAndRecheck } from "./candidates.js";
+import { candidatesFrom, freeRowsAsCandidates, lockAndRecheck, poolRows, type PoolRows } from "./candidates.js";
 import { exclusiveOnlyDoc } from "./start.js";
 import { loadOffer, offerView, riderRatingForOffer, FeedQueue } from "./offers.js";
 import { positiveSeconds } from "./adminOffers.js";
-import { QUEUE_REASON, queuePick } from "../../airportQueue/service.js";
+import { QUEUE_REASON, queueMayPick, queuePick } from "../../airportQueue/service.js";
 
 /* ---------------------------------------------------------------- rounds */
 
@@ -28,7 +28,8 @@ export const roundHandler: TimerHandler = async (trx, timer) => {
   await queue.flush(trx, now);
 };
 
-export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQueue): Promise<void> {
+/** `readFactsAlways` (tests only): never take the B1.29 sure-wait path, to compare it with the full read. */
+export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQueue, options: { readFactsAlways?: boolean } = {}): Promise<void> {
   const locked = await lockTripNow(trx, tripId);
   if (!locked) return;
   let trip = locked;
@@ -85,14 +86,30 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
   const passed = new Set(passedRows.map((r) => r.driver_id));
   const spent = new Set(passedRows.filter((r) => Number(r.n) >= reaskLimitOf(doc)).map((r) => r.driver_id));
   const far = farReachKm(doc);
+  // A wait is radar.seconds (exclusive.seconds with Radar off), contract.json ranges radar.seconds 5–120: 0 s is not a
+  // contract value and would spin the round timer, so the same guard applies (checker M2, 2026-11-01).
+  const waitRound = (seconds: number) => scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(Math.min(now.getTime() + positiveSeconds(seconds, 15) * 1000, search.end_at.getTime())), payload: {} });
   // Job 1 (fix plan R1 d): drivers beyond the widest step are never read (they are out of range for every round).
   // v0.18.39 §63: once the search took its far step (state.far), the widest step is limits.farReachKm.
-  const poolFor = async (rules: DispatchDoc) => {
-    const p = await candidatesFor(trx, trip, rules, now, { reachKm: maxPickupKm(rules) });
+  const poolFor = async (rules: DispatchDoc, read?: PoolRows) => {
+    const p = await candidatesFrom(trx, trip, now, read ?? (await poolRows(trx, trip, rules, now, { reachKm: maxPickupKm(rules) })));
     return { ...p, candidates: p.candidates.filter((c) => !spent.has(c.driverId)) };
   };
   let rules = state.far && far !== null ? farDoc(doc, far) : doc;
-  let pool = await poolFor(rules);
+  const box = await poolRows(trx, trip, rules, now, { reachKm: maxPickupKm(rules) });
+  // B1.29 (S4-W1 recheck Q89, owner "no behaviour change"; AUDIT-S01 A5): the per-driver facts (open offers, papers,
+  // driving limit, score counts, blocks, category off) can only REMOVE drivers. When the round planned on every free
+  // driver of the box (less the spent ones) is a sure wait (certainWait), the real pool waits exactly the same, so it is
+  // written and scheduled as below without reading them. Not taken when the far step may still come (it re-plans), a
+  // driver on a trip is in the box (his km needs onTripReach), or the pickup is in an on airport queue area (queuePick).
+  const boxFree = options.readFactsAlways || (!state.far && far !== null) ? null : freeRowsAsCandidates(box, now, spent);
+  const sure = boxFree === null ? null : certainWait(rules, state, rank(rules, boxFree, trip.category_id));
+  if (sure !== null && !(await queueMayPick(trx, trip))) {
+    await trx.updateTable("searches").set({ state: JSON.stringify(sure.state), rounds: search.rounds + 1, updated_at: now }).where("trip_id", "=", tripId).execute();
+    await waitRound(sure.round.seconds);
+    return;
+  }
+  let pool = await poolFor(rules, box);
   // Owner smart assign (v0.18.19): a booked ride asks first the drivers who can arrive early.
   // v0.18.36 §60 (fix job 9, contract.json#airportQueue.dispatch): an airport pickup goes first, as an Exclusive, to the
   // first driver in the airport queue (DB order) who passed this round's filter; the round then locks and re-checks him.
@@ -128,9 +145,7 @@ export async function runRound(trx: Trx, tripId: string, now: Date, queue: FeedQ
     }
   }
   if (round.type === "wait") {
-    // A wait is radar.seconds (exclusive.seconds with Radar off), contract.json ranges radar.seconds 5–120: 0 s is not a
-    // contract value and would spin the round timer, so the same guard applies (checker M2, 2026-11-01).
-    await scheduleTimer(trx, { kind: ROUND, refId: tripId, dueAt: new Date(Math.min(now.getTime() + positiveSeconds(round.seconds, 15) * 1000, search.end_at.getTime())), payload: {} });
+    await waitRound(round.seconds);
     return;
   }
   const expiryOf = (kind: "radar" | "exclusive") => new Date(Math.min(now.getTime() + positiveSeconds(doc[kind].seconds, 15) * 1000, search.end_at.getTime()));
