@@ -22,7 +22,8 @@ function fakeFetch(answer: (call: Call) => Promise<Response>) {
   }) as typeof fetch;
   return { calls, fetcher };
 }
-const KEY = "re_test_0123456789abcdef";
+// An obviously fake key (low entropy so the secret scan does not mistake it for a real one); the tests only need a non-empty string.
+const KEY = "re_test_not_a_real_key";
 const message = { to: "anna@example.se", subject: "Your Movera code", text: "Your Movera code is 1234." };
 
 describe("G30b: Resend sender", () => {

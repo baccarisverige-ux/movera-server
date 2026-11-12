@@ -70,7 +70,9 @@ jobs:
       && github.event.pull_request.draft != true
       && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 2026-11-12: the suite (2,000+ tests with coverage) takes ~18 min on a runner and the build
+    # follows; 20 min cut PR #208 off at 20:13 after every test passed. A ceiling, not a cost.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
