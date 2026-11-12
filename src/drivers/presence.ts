@@ -26,6 +26,8 @@ export const DRIVER_HOME = (contract as unknown as { driverHome: Home }).driverH
 const DEFAULT_NO_FIX_MINUTES = (contract as unknown as { configDefaults: { noFixMinutesBeforeOffline: number } }).configDefaults.noFixMinutesBeforeOffline;
 
 export const NO_FIX_OFFLINE = "no_fix_offline";
+/** S4 B1.23: the long no-position loop, booked by each no_fix_offline run, so the shared row's lock is short. */
+export const NO_FIX_SWEEP = "no_fix_sweep";
 const lang = (language: string | null | undefined) => (language === "sv" || language === "fr" ? language : "en");
 
 /** The zone's noFixMinutes (0 = never); the contract default when the document has none or a bad value. */
@@ -53,7 +55,8 @@ export async function ensureNoFixTimer(ex: Executor, now: Date): Promise<void> {
  * database were down). That run's time becomes `heardAgainAt`, kept in the job's one shared timer row (the same for every
  * server copy) and never moved back; each driver's silence counts from no earlier than it, so every silent driver is
  * offline by heardAgainAt + noFixMinutes (+ one run). A network cut with the server up is not covered (noFixMinutes as
- * before). The booked-ride offline check waits for the same grace (heardAgainAt below), never past the ride's dispatchAt.
+ * before). The booked-ride offline check waits for the same grace (heardAgainAt below), never past the ride's dispatchAt. The
+ * decision is its own short run (no_fix_offline); the loop over the drivers is the no_fix_sweep run it books.
  */
 export const OUTAGE = { lateSeconds: 60 } as const;
 
@@ -88,7 +91,7 @@ export async function heardAgainAt(ex: Executor, now: Date): Promise<Date | null
   return nextHeardAgain(ex, now, due, heardAgainOf(row.payload));
 }
 
-/** Per server copy: when this copy last checked a stored fix against the outage signal (empty at start). */
+/** Per server copy: when this copy last found the no-position row missing or not overdue (empty at start). */
 let lastFixCheckAt: number | null = null;
 const FIX_CHECK_EVERY_MS = 10_000;
 
@@ -96,19 +99,25 @@ const FIX_CHECK_EVERY_MS = 10_000;
  * Called before a fix is stored (POST /driver/location, going online with a location). The first fix stored after an
  * outage also marks it: when the no-position row is more than lateSeconds overdue and no fix was stored since its due
  * time, heardAgainAt = now (only later, never back), so the worker's first run after the outage still sees it even if
- * phones reach a copy before the worker runs. One statement, at most once per 10 s per copy; the time is set only after
- * a check that succeeded (a check that fails while the database is down never hides the first one after it).
+ * phones reach a copy before the worker runs. One statement, which also returns the row's due time. The check is
+ * skipped for 10 s per copy only after it found the row missing or not overdue; while the row is overdue every fix
+ * checks, so a transaction that rolls back (or a failed check) never hides the outage from the next fix.
  */
 export async function noteFixAfterOutage(trx: Trx, now: Date): Promise<void> {
   const t = now.getTime();
   if (lastFixCheckAt !== null && t - lastFixCheckAt >= 0 && t - lastFixCheckAt < FIX_CHECK_EVERY_MS) return;
   const late = new Date(t - OUTAGE.lateSeconds * 1000);
-  await sql`
-    UPDATE timers SET payload = jsonb_set(coalesce(payload, '{}'::jsonb), '{heardAgainAt}', to_jsonb(${now.toISOString()}::text))
-     WHERE kind = ${NO_FIX_OFFLINE} AND ref_id = 'all' AND due_at < ${late} AND due_at > '-infinity'::timestamptz
-       AND NOT EXISTS (SELECT 1 FROM driver_locations WHERE received_at >= timers.due_at)
-       AND (payload->>'heardAgainAt' IS NULL OR (payload->>'heardAgainAt')::timestamptz < ${now})`.execute(trx);
-  lastFixCheckAt = t;
+  const result = await sql<{ due_at: unknown }>`
+    WITH mark AS (
+      UPDATE timers SET payload = jsonb_set(coalesce(payload, '{}'::jsonb), '{heardAgainAt}', to_jsonb(${now.toISOString()}::text))
+       WHERE kind = ${NO_FIX_OFFLINE} AND ref_id = 'all' AND due_at < ${late} AND due_at > '-infinity'::timestamptz
+         AND NOT EXISTS (SELECT 1 FROM driver_locations WHERE received_at >= timers.due_at)
+         AND (payload->>'heardAgainAt' IS NULL OR (payload->>'heardAgainAt')::timestamptz < ${now})
+       RETURNING 1)
+    SELECT (SELECT due_at FROM timers WHERE kind = ${NO_FIX_OFFLINE} AND ref_id = 'all') AS due_at`.execute(trx);
+  const due = result.rows[0]?.due_at;
+  const overdue = due instanceof Date && due.getTime() < late.getTime();
+  if (!overdue) lastFixCheckAt = t;
 }
 
 /** The grace after an outage for this driver: noFixMinutes of the zone the no-position rule uses (his latest fix's zone, else his first home zone, else `fallbackZone`), the contract default when the rule is off there. */
@@ -119,16 +128,27 @@ export async function outageGraceMinutes(ex: Executor, driverId: string, fallbac
   return minutes > 0 ? minutes : DEFAULT_NO_FIX_MINUTES;
 }
 
-/** Every jobEverySeconds: set offline each online driver whose latest position is too old, then book the next run. */
+/**
+ * Every jobEverySeconds: decide whether this run ends an outage (heardAgainAt, in the row it books again) and book the
+ * sweep due now. Short on purpose (B1.23, supervisor F1): a location request that marks an outage waits on this row only
+ * for this decision, never for the sweep over every online driver.
+ */
 export const noFixOfflineHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
   const heardAgain = await nextHeardAgain(trx, now, timer.dueAt, heardAgainOf(timer.payload));
-  await setOfflineWithoutPosition(trx, now, heardAgain);
   await trx
     .insertInto("timers")
-    .values({ kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000), payload: JSON.stringify(heardAgain ? { heardAgainAt: heardAgain.toISOString() } : {}) })
+    .values([
+      { kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000), payload: JSON.stringify(heardAgain ? { heardAgainAt: heardAgain.toISOString() } : {}) },
+      { kind: NO_FIX_SWEEP, ref_id: "all", due_at: now },
+    ])
     .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
     .execute();
+};
+
+/** The sweep: set offline each online driver whose latest position is too old; heardAgainAt read without a lock. */
+export const noFixSweepHandler: TimerHandler = async (trx, timer) => {
+  await setOfflineWithoutPosition(trx, timer.firedAt, await heardAgainAt(trx, timer.firedAt));
 };
 
 /** `heardAgain` (B1.23): the silence of each driver counts from no earlier than this moment. */

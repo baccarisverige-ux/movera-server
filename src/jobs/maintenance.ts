@@ -2,7 +2,7 @@ import type { Executor } from "../db/db.js";
 import { closePeriodsBatch, PAYOUT_BATCH_DRIVERS } from "../admin/payouts.js";
 import { summarize } from "../admin/kpis.js";
 import { purgeOldMessages } from "../trips/messages.js";
-import { NO_FIX_OFFLINE, ensureNoFixTimer, noFixOfflineHandler } from "../drivers/presence.js";
+import { NO_FIX_OFFLINE, NO_FIX_SWEEP, ensureNoFixTimer, noFixOfflineHandler, noFixSweepHandler } from "../drivers/presence.js";
 import type { TimerHandler } from "./timers.js";
 import { ensureHousekeepingTimers, housekeepingHandlers } from "./housekeeping.js";
 
@@ -88,5 +88,6 @@ export const maintenanceHandlers: Record<string, TimerHandler> = {
   [SWEEP_IDEMPOTENCY_KEYS]: sweepIdempotencyKeysHandler,
   [NIGHTLY]: nightlyHandler,
   [NO_FIX_OFFLINE]: noFixOfflineHandler,
+  [NO_FIX_SWEEP]: noFixSweepHandler,
   ...housekeepingHandlers,
 };

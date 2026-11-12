@@ -1,7 +1,7 @@
 import { sql } from "kysely";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { heardAgainAt } from "../../src/drivers/presence.js";
+import { heardAgainAt, noteFixAfterOutage } from "../../src/drivers/presence.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "../../src/jobs/maintenance.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { dispatchHandlers } from "../../src/dispatch/runtime.js";
@@ -274,4 +274,54 @@ describe("B1.23: no mass offline after an outage", () => {
     }
     expect(texts.filter((t) => t.includes("no_fix_offline") || /update "?timers"?/i.test(t)).length).toBe(1);
   }, 120_000);
+
+  /* Supervisor NO-GO #4 on 990d085: no lock wait behind the long sweep; the throttle is never set before a commit. */
+
+  it("T1: the first check after an outage runs in a location transaction that rolls back; B's fix 3 s later still marks the outage", async () => {
+    sim.clock.now = new Date(sim.clock.now.getTime() + 6 * 60_000);
+    await ensureMaintenanceTimers(sim.db, sim.clock.now);
+    await sim.db.transaction().execute(async (trx) => {
+      await noteFixAfterOutage(trx, sim.clock.now);
+      throw new Error("connection dropped");
+    }).catch(() => undefined);
+    sim.clock.now = new Date(sim.clock.now.getTime() + 3000);
+    await b.heartbeat();
+    sim.clock.now = new Date(sim.clock.now.getTime() + 1000);
+    await sim.tick();
+    expect(await statuses()).toEqual(["online", "online", "online"]);
+    expect(await heardAgainStored()).toBeDefined();
+  }, 60_000);
+
+  it("lock wait: a location POST during the worker's first run after an outage (2000 online drivers) waits only for the short decision, not the sweep; the sweep still sets the silent ones offline after the grace", async () => {
+    // 2000 more online drivers, copies of C with an old fix (their silence is as old as the outage).
+    await sql`INSERT INTO drivers SELECT (jsonb_populate_record(NULL::drivers, to_jsonb(d) || jsonb_build_object('driver_id', 'drv_bulk_' || g, 'phone', '+4679' || lpad(g::text, 7, '0'), 'vehicle_id', NULL))).* FROM drivers d, generate_series(1, 2000) g WHERE d.driver_id = ${c.id}`.execute(sim.db);
+    await sql`INSERT INTO driver_locations SELECT (jsonb_populate_record(NULL::driver_locations, to_jsonb(l) || jsonb_build_object('driver_id', 'drv_bulk_' || g))).* FROM driver_locations l, generate_series(1, 2000) g WHERE l.driver_id = ${c.id}`.execute(sim.db);
+    sim.clock.now = new Date(sim.clock.now.getTime() + 6 * 60_000);
+    await ensureMaintenanceTimers(sim.db, sim.clock.now);
+    const run = sim.tick();
+    // Wait until the worker holds the shared no-position row (its first run after the outage has begun).
+    const probe = new pg.Client({ connectionString: sim.database.url });
+    await probe.connect();
+    for (let i = 0; i < 300; i += 1) {
+      const held = await probe.query("BEGIN").then(() => probe.query("SELECT 1 FROM timers WHERE kind = 'no_fix_offline' FOR UPDATE NOWAIT")).then(() => false, () => true);
+      await probe.query("ROLLBACK");
+      if (held) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await probe.end();
+    const t0 = Date.now();
+    const posted = await a.post("/driver/location", { fixes: [a.fix(PLACES.nearSergels)] });
+    const ms = Date.now() - t0;
+    await run;
+    expect(posted.status).toBe(200);
+    expect(ms).toBeLessThan(400);
+    for (let i = 0; i < 20; i += 1) await sim.tick();
+    const online = async () => (await sql<{ n: number }>`SELECT count(*)::int AS n FROM drivers WHERE driver_id LIKE 'drv_bulk_%' AND online_status = 'online'`.execute(sim.db)).rows[0]!.n;
+    expect(await online()).toBe(2000);
+    c.position = null;
+    b.position = null;
+    a.position = null;
+    await sim.advance(5 * 60 + 40);
+    expect(await online()).toBe(0);
+  }, 300_000);
 });

@@ -12,7 +12,7 @@ import { readEnv, startupWarnings } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers } from "./jobs/maintenance.js";
 import { HOUSEKEEPING_KINDS } from "./jobs/housekeeping.js";
-import { NO_FIX_OFFLINE } from "./drivers/presence.js";
+import { NO_FIX_OFFLINE, NO_FIX_SWEEP } from "./drivers/presence.js";
 import { TimerWorker, rearmParkedRecurringTimers, restartParkedOnce } from "./jobs/timers.js";
 import { ALERT_SWEEP, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
@@ -72,7 +72,7 @@ warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 if (db !== undefined) {
   // S05 A1: a recurring job parked after repeated failures runs again at every start (one warning each).
   // S4 0.14b: every housekeeping job (one timer per clean-up) too.
-  await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS], app.log);
+  await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS], app.log);
   // B1.6b (owner W1 Q70): a trip or safety timer parked before restart-once existed runs once more (once in all).
   await restartParkedOnce(db, RESTART_ONCE_KINDS, app.log);
   await ensureMaintenanceTimers(db);
