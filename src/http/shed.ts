@@ -1,6 +1,7 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { FastifyInstance } from "fastify";
 import { ApiError } from "./errors.js";
+import { API_PREFIX } from "./prefix.js";
 
 /**
  * Job 1 (stress test H3: spikes of 700+ req/s queued 14 000 requests on the pool, 100 % timeouts, 2.2 GB memory and
@@ -12,15 +13,35 @@ import { ApiError } from "./errors.js";
 export type ShedOptions = { maxPoolWaiting: number; maxLoopDelayMs: number; poolWaiting: () => number };
 
 /**
+ * B1.24 (owner W1 Q84, 2026-11-11): the admin's safety screens are read even when the server is busy, never answered
+ * 503 server_busy: the incidents list, an incident, its emergency contacts, the ride checks, the alert book and a trip's
+ * detail. Matched on the route pattern (like B1.22's SAFETY_WRITE_ROUTES), never on the raw path. Every other admin
+ * read is still shed under load.
+ */
+export const SAFETY_READ_ROUTES: ReadonlySet<string> = new Set(
+  [
+    "/admin/incidents",
+    "/admin/incidents/:incidentId",
+    "/admin/incidents/:incidentId/emergency-contacts",
+    "/admin/ride-checks",
+    "/admin/alerts/book",
+    "/admin/trips/:tripId",
+  ].map((route) => `GET ${API_PREFIX}${route}`),
+);
+
+/**
  * Supervisor P4: ONLY new, low-priority work is ever shed — a price quote, the rider's map of cars, address search and
  * the admin panel's lists. Everything else (SOS / safety, offer accept / decline, trip state changes, payment and cash,
- * trip GPS, every event stream and its resume, sign-in, health checks) is never refused here.
+ * trip GPS, every event stream and its resume, sign-in, health checks) is never refused here. B1.24: nor are the admin
+ * safety reads (SAFETY_READ_ROUTES). `routePattern` is the matched route (request.routeOptions.url); without one the
+ * raw path is compared, so only the routes without an id match then.
  */
-export function sheddable(method: string, url: string): boolean {
+export function sheddable(method: string, url: string, routePattern?: string): boolean {
   const path = url.split("?")[0] ?? "";
   const route = path.replace(/^\/api\/v1/, "");
   if (method === "POST" && (route === "/quotes" || route.startsWith("/locations/"))) return true;
   if (method !== "GET") return false;
+  if (SAFETY_READ_ROUTES.has(`${method} ${routePattern ?? path}`)) return false;
   if (route.endsWith("/stream") || route.endsWith("/events")) return false;
   if (route === "/rider/nearby-vehicles" || route.startsWith("/places/")) return true;
   return route.startsWith("/admin/");
@@ -45,7 +66,7 @@ export function registerLoadShedding(app: FastifyInstance, options: ShedOptions)
       reply.hijack();
       return;
     }
-    if (!sheddable(request.method, request.url)) return;
+    if (!sheddable(request.method, request.url, request.routeOptions.url)) return;
     const pool = options.maxPoolWaiting > 0 && options.poolWaiting() > options.maxPoolWaiting;
     const late = options.maxLoopDelayMs > 0 && lateMs > options.maxLoopDelayMs;
     if (pool || late) {

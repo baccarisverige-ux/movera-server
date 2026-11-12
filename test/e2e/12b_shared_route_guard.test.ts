@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { SAFETY_READ_ROUTES } from "../../src/http/shed.js";
 import { Sim } from "./harness.js";
 import { contractOps, serverRoutes } from "./routeMatrix.js";
 import { missingRows, SHARED_ROWS, sharedServedRoutes } from "./sharedRouteRows.js";
@@ -23,6 +24,13 @@ describe("T11 guard: every shared route has a matrix row", () => {
     const shared = sharedServedRoutes(served, contractOps());
     expect(shared.length).toBeGreaterThan(30);
     expect(missingRows(shared, SHARED_ROWS, served)).toEqual({ withoutRow: [], staleRows: [] });
+  });
+
+  it("B1.24: every admin safety read that is never shed is a route the server serves (no stale pattern)", () => {
+    const served = new Set(serverRoutes(sim));
+    const stale = [...SAFETY_READ_ROUTES].map((r) => r.replace(" /api/v1", " ")).filter((r) => !served.has(r));
+    expect(SAFETY_READ_ROUTES.size).toBe(6);
+    expect(stale).toEqual([]);
   });
 
   it("proof: a new shared route without a row is caught", () => {
