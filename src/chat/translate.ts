@@ -14,7 +14,7 @@ import { chatSettingsFor, isLang, languageOf, type Lang } from "./settings.js";
  * v0.18.64 §85 (chat.autoTranslate; owner 2026-11-11 "the language must arrive with the receiver language"): the apps
  * ask by themselves as a message arrives (`auto: true`, 403 auto_translate_off when the admin turned that off); a chip or
  * an automatic message already in the target language answers its own text with no provider call (typed text: lang is a
- * hint, the provider reads it, 2026-11-12); a translation is made once per
+ * hint, the provider reads it, v0.18.71); a translation is made once per
  * message and language and kept (trip_message_translations, migration 0097), so another device, a reopen, a retry or
  * another server copy reads the kept text (Rule 33: the cache is in the database, never in one copy's memory).
  */
@@ -41,7 +41,7 @@ export async function translateMessage(ex: Executor, translator: Translator | un
   if (b.to !== own) throw badRequest("Messages are translated to your own app language only.", "translate_target_not_allowed");
   const message = await messageOfTrip(ex, tripId, b.messageId);
   const answer = (text: string): TranslatedMessage => ({ messageId: message.messageId, to: own, text });
-  // chat.autoTranslate.sameLanguage: already in the reader's language. Only a chip or an automatic message is known to
+  // chat.autoTranslate.sameLanguage (v0.18.71): already in the reader's language. Only a chip or an automatic message is known to
   // be (its lang is exact); typed text's lang is the sender's app language, a hint only (sourceLanguage): a person may
   // type in another language, so the provider reads the text (live bug 2026-11-12: English from a fr app stayed English).
   if (message.lang === own && (message.quickReplyId !== undefined || message.auto !== undefined)) return answer(message.text);
