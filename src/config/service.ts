@@ -598,6 +598,24 @@ export function cacheLiveDocuments(ttlMs: number): void {
   forgetLiveDocuments();
 }
 
+/** How long a live document stays in memory at most (main.ts). */
+export const LIVE_DOCUMENTS_TTL_MS = 15_000;
+
+/**
+ * B1.8: the production wiring of the live-document cache, used by main.ts and by the tests that must run as
+ * production does. The forget listener is subscribed FIRST (before any stream subscribes on the hub, whose listeners
+ * run in subscription order), so on a config_published every open settings stream misses together and shares ONE
+ * read per (doc, zone) through the in-flight map of liveDocument. Returns the undo (tests).
+ */
+export function cacheLiveDocumentsOn(hub: { subscribe(channel: string, listener: (payload: Record<string, unknown> | null) => void): () => void }, ttlMs = LIVE_DOCUMENTS_TTL_MS): () => void {
+  const unsubscribe = hub.subscribe(CONFIG_CHANNEL, () => forgetLiveDocuments());
+  cacheLiveDocuments(ttlMs);
+  return () => {
+    unsubscribe();
+    cacheLiveDocuments(0);
+  };
+}
+
 export function forgetLiveDocuments(): void {
   liveCache.generation += 1;
   liveCache.entries.clear();
