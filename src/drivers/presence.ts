@@ -46,18 +46,66 @@ export async function ensureNoFixTimer(ex: Executor, now: Date): Promise<void> {
     .execute();
 }
 
+/**
+ * S4 B1.23 (contract v0.18.70, owner Q83 "no mass offline after an outage"): a driver is never blamed for minutes the
+ * server could not hear him. The no-position job keeps, in its own shared timer row (one row for every server copy),
+ * the moment the server could hear the drivers again (`heardAgainAt`); every driver then gets noFixMinutes from that
+ * moment. The server could not hear when either:
+ * - the job itself ran more than lateSeconds after its due time: no server copy ran jobs (all copies down, or the
+ *   database down), so no fix could be stored either; or
+ * - at least silentMinOnline drivers are online or on a trip and not one fix from ANY driver reached the server in the
+ *   last silentSeconds (the apps send one every few seconds): the network in front of the server is cut.
+ * The booked-ride offline check waits for the same grace (heardAgainAt below).
+ */
+export const OUTAGE = { lateSeconds: 60, silentSeconds: 60, silentMinOnline: 3 } as const;
+
+const heardAgainOf = (payload: unknown): Date | null => {
+  const at = (payload as { heardAgainAt?: unknown } | null)?.heardAgainAt;
+  return typeof at === "string" && Number.isFinite(Date.parse(at)) ? new Date(at) : null;
+};
+
+/** No fix from any driver in the last silentSeconds while enough drivers are online: the server is deaf. */
+async function nobodyHeard(ex: Executor, now: Date): Promise<boolean> {
+  const since = new Date(now.getTime() - OUTAGE.silentSeconds * 1000);
+  const row = await sql<{ online: number; heard: boolean }>`
+    SELECT (SELECT count(*)::int FROM drivers WHERE online_status IN ('online', 'on_trip')) AS online,
+           EXISTS (SELECT 1 FROM driver_locations WHERE received_at >= ${since}) AS heard`.execute(ex);
+  const r = row.rows[0]!;
+  return r.online >= OUTAGE.silentMinOnline && !r.heard;
+}
+
+/**
+ * When the server could hear the drivers again after its last outage (null: none known). Read from the job's shared
+ * row: a row overdue by more than lateSeconds means an outage is ending right now (the job has not caught up yet).
+ */
+export async function heardAgainAt(ex: Executor, now: Date): Promise<Date | null> {
+  const row = await ex.selectFrom("timers").select(["due_at", "payload"]).where("kind", "=", NO_FIX_OFFLINE).where("ref_id", "=", "all").executeTakeFirst();
+  if (row === undefined) return null;
+  if (now.getTime() - row.due_at.getTime() > OUTAGE.lateSeconds * 1000) return now;
+  return heardAgainOf(row.payload);
+}
+
+/** The grace after an outage in this zone: its noFixMinutes (the contract default when the rule is off there). */
+export async function outageGraceMinutes(ex: Executor, zoneId: string | null): Promise<number> {
+  const minutes = zoneId ? await noFixMinutes(ex, zoneId) : DEFAULT_NO_FIX_MINUTES;
+  return minutes > 0 ? minutes : DEFAULT_NO_FIX_MINUTES;
+}
+
 /** Every jobEverySeconds: set offline each online driver whose latest position is too old, then book the next run. */
 export const noFixOfflineHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
-  await setOfflineWithoutPosition(trx, now);
+  const deaf = now.getTime() - timer.dueAt.getTime() > OUTAGE.lateSeconds * 1000 || (await nobodyHeard(trx, now));
+  const heardAgain = deaf ? now : heardAgainOf(timer.payload);
+  await setOfflineWithoutPosition(trx, now, heardAgain);
   await trx
     .insertInto("timers")
-    .values({ kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000) })
+    .values({ kind: NO_FIX_OFFLINE, ref_id: "all", due_at: new Date(now.getTime() + DRIVER_HOME.setOffline.jobEverySeconds * 1000), payload: JSON.stringify(heardAgain ? { heardAgainAt: heardAgain.toISOString() } : {}) })
     .onConflict((conflict) => conflict.columns(["kind", "ref_id"]).doNothing())
     .execute();
 };
 
-export async function setOfflineWithoutPosition(trx: Trx, now: Date): Promise<string[]> {
+/** `heardAgain` (B1.23): the silence of each driver counts from no earlier than this moment. */
+export async function setOfflineWithoutPosition(trx: Trx, now: Date, heardAgain: Date | null = null): Promise<string[]> {
   // The shortest window any zone could have is the cheapest prefilter: nobody fresher than 1 minute is looked at.
   const rows = await trx
     .selectFrom("drivers")
@@ -73,7 +121,8 @@ export async function setOfflineWithoutPosition(trx: Trx, now: Date): Promise<st
     const zoneId = r.fixZone ?? r.zone_ids[0] ?? null;
     const minutes = zoneId ? await noFixMinutes(trx, zoneId) : DEFAULT_NO_FIX_MINUTES;
     if (minutes === 0) continue;
-    const last = r.received_at ?? r.online_since;
+    const own = r.received_at ?? r.online_since;
+    const last = heardAgain !== null && (own === null || own < heardAgain) ? heardAgain : own;
     if (last !== null && now.getTime() - last.getTime() < minutes * 60_000) continue;
     // Lock the driver; one busy with a command is looked at again on the next run.
     const locked = await trx.selectFrom("drivers").select(["online_status", "version"]).where("driver_id", "=", r.driver_id).forUpdate().skipLocked().executeTakeFirst();
