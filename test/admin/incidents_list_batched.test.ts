@@ -63,14 +63,16 @@ describe("admin incident list (B1.26)", () => {
     expect(small.result.items).toHaveLength(5);
     expect(large.result.items).toHaveLength(50);
     expect(large.queries).toBe(small.queries);
-    // The page, then the positions of the page's drivers.
-    expect(large.queries).toBe(2);
+    // The page, then the positions of the page's drivers; L78-S: + the first page's total (begin, SET LOCAL
+    // statement_timeout, count, commit), the same for any page size.
+    expect(large.queries).toBe(6);
   });
 
   it("B1.26: a page with no driver reads no positions", async () => {
     const { result, queries: n } = await counted(() => listIncidents(traced as never, SUPER, { limit: 1, kind: "no_such_kind" }));
     expect(result.items).toEqual([]);
-    expect(n).toBe(1);
+    // The page and its total (4 statements, L78-S); no position read.
+    expect(n).toBe(5);
   });
 
   it("B1.26: every item is exactly what the single read gives", async () => {

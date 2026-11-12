@@ -20,6 +20,8 @@ import { noticeVehicleReview } from "../drivers/reviewNotices.js";
 import { sendFile } from "../drivers/routes.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { audit } from "./audit.js";
+import { cursorOf, readCursor } from "./lists.js";
+import { countTotal, withTotal } from "./listTotal.js";
 import { maskDriverView } from "./masking.js";
 import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminUpdateVehicle } from "./vehicleActions.js";
 
@@ -155,34 +157,40 @@ async function zoneOfVehicle(ex: Executor, v: VehicleRow): Promise<string | null
   return null;
 }
 
+/**
+ * L78-S (contract v0.18.78, adminListFilters.total): the same rule as zoneOfVehicle, in SQL, so the zone scope and
+ * zoneId are part of the page's and the count's WHERE (the page was filtered in code after a limit*3+1 read-ahead,
+ * which lost "Load more" when the admin's cars were sparse and made an exact count impossible).
+ */
+const CAR_ZONE = sql<string | null>`(CASE WHEN vehicles.fleet_id IS NOT NULL THEN car_fleet.zone_id ELSE car_owner.zone_ids[1] END)`;
+
 async function listVehicles(ex: Executor, who: Principal, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; driverId?: string | undefined; fleetId?: string | undefined; zoneId?: string | undefined; q?: string | undefined }) {
-  let q = ex.selectFrom("vehicles").selectAll();
-  if (input.status?.length) q = q.where("status", "in", input.status as never);
-  if (input.driverId) q = q.where("driver_id", "=", input.driverId);
-  if (input.fleetId) q = q.where("fleet_id", "=", input.fleetId);
+  let q = ex
+    .selectFrom("vehicles")
+    .leftJoin("fleets as car_fleet", "car_fleet.fleet_id", "vehicles.fleet_id")
+    .leftJoin("drivers as car_owner", "car_owner.driver_id", "vehicles.driver_id")
+    .selectAll("vehicles");
+  // A car with no zone (no fleet, no owner) is seen only by an all-zones admin, as before.
+  if (!who.zones.includes("*")) q = q.where(sql<boolean>`${CAR_ZONE} = ANY(${sql.val(who.zones.length ? who.zones : ["-"])}::text[])`);
+  if (input.zoneId) q = q.where(sql<boolean>`${CAR_ZONE} = ${input.zoneId}`);
+  if (input.status?.length) q = q.where("vehicles.status", "in", input.status as never);
+  if (input.driverId) q = q.where("vehicles.driver_id", "=", input.driverId);
+  if (input.fleetId) q = q.where("vehicles.fleet_id", "=", input.fleetId);
   if (input.q) {
     const text = `%${input.q.trim().replace(/[%_\\]/g, "").toUpperCase()}%`;
-    q = q.where((eb) => eb.or([eb("plate", "like", text), eb("make", "ilike", text), eb("model", "ilike", text), eb("vehicle_id", "=", input.q!.trim())]));
+    q = q.where((eb) => eb.or([eb("vehicles.plate", "like", text), eb("vehicles.make", "ilike", text), eb("vehicles.model", "ilike", text), eb("vehicles.vehicle_id", "=", input.q!.trim())]));
   }
+  const counting = input.cursor ? undefined : countTotal(ex, q);
   if (input.cursor) {
-    const [at, id] = Buffer.from(input.cursor, "base64url").toString("utf8").split("|");
-    q = q.where(sql<boolean>`(created_at, vehicle_id) < (${new Date(at!)}, ${id!})`);
+    const c = readCursor(input.cursor);
+    q = q.where(sql<boolean>`(vehicles.created_at, vehicles.vehicle_id) < (${c.at}, ${c.id})`);
   }
-  const rows = await q.orderBy("created_at", "desc").orderBy("vehicle_id", "desc").limit(input.limit * 3 + 1).execute();
-  // Zone scope is per car (its fleet's or owner's zone), so it is filtered after the read.
+  const rows = await q.orderBy("vehicles.created_at", "desc").orderBy("vehicles.vehicle_id", "desc").limit(input.limit + 1).execute();
+  const page = rows.slice(0, input.limit);
   const items = [];
-  let lastKept: { created_at: Date; vehicle_id: string } | undefined;
-  let seen = 0;
-  for (const r of rows) {
-    const zone = await zoneOfVehicle(ex, r as unknown as VehicleRow);
-    const covered = who.zones.includes("*") || (zone !== null && who.zones.includes(zone));
-    if (!covered || (input.zoneId && zone !== input.zoneId)) continue;
-    seen += 1;
-    if (seen > input.limit) break;
-    items.push(await vehicleFullView(ex, r as unknown as VehicleRow));
-    lastKept = r;
-  }
-  return { items, nextCursor: seen > input.limit && lastKept ? Buffer.from(`${lastKept.created_at.toISOString()}|${lastKept.vehicle_id}`).toString("base64url") : null };
+  for (const r of page) items.push(await vehicleFullView(ex, r as unknown as VehicleRow));
+  const last = page[page.length - 1];
+  return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.vehicle_id) : null }, await counting);
 }
 
 /** POST /admin/vehicles/{id}/review: a car that is no longer approved takes its driver offline (not on a trip). */

@@ -4,6 +4,7 @@ import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import type { IncidentsTable } from "../db/schema.js";
 import { audit } from "../admin/audit.js";
+import { countTotal, withTotal } from "../admin/listTotal.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
@@ -267,7 +268,7 @@ function readCursor(cursor: string): { at: Date; id: string } {
   return { at: new Date(at), id };
 }
 
-export type IncidentQuery = { cursor?: string; limit: number; status?: string[]; severity?: string; kind?: string; tripId?: string; zoneId?: string; from?: string; to?: string };
+export type IncidentQuery = { cursor?: string; limit: number; status?: string[]; severity?: string; kind?: string; tripId?: string; driverId?: string; riderId?: string; zoneId?: string; from?: string; to?: string };
 
 export async function listIncidents(ex: Executor, who: Principal, input: IncidentQuery) {
   let q = ex.selectFrom("incidents").selectAll();
@@ -276,9 +277,15 @@ export async function listIncidents(ex: Executor, who: Principal, input: Inciden
   if (input.severity) q = q.where("severity", "=", input.severity as never);
   if (input.kind) q = q.where("kind", "=", input.kind);
   if (input.tripId) q = q.where("trip_id", "=", input.tripId);
+  // L78-S (v0.18.78 adminListFilters.incidentsByPerson): one driver's / rider's cases (both: AND), inside the zones above;
+  // an id with no case is an empty page. Indexed by migration 0105 (driver_id / rider_id, opened_at, incident_id).
+  if (input.driverId) q = q.where("driver_id", "=", input.driverId);
+  if (input.riderId) q = q.where("rider_id", "=", input.riderId);
   if (input.zoneId) q = q.where("zone_id", "=", input.zoneId);
   if (input.from) q = q.where("opened_at", ">=", new Date(input.from));
   if (input.to) q = q.where("opened_at", "<", new Date(input.to));
+  // L78-S (v0.18.78 adminListFilters.total).
+  const counting = input.cursor ? undefined : countTotal(ex, q);
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(opened_at, incident_id) < (${c.at}, ${c.id})`);
@@ -288,7 +295,7 @@ export async function listIncidents(ex: Executor, who: Principal, input: Inciden
   const fixes = await latestFixes(ex, page.map((r) => r.driver_id));
   const items = page.map((r) => incidentView(r, r.driver_id ? fixes.get(r.driver_id) : undefined));
   const last = page[page.length - 1];
-  return { items, nextCursor: rows.length > input.limit && last ? cursorOf(last.opened_at, last.incident_id) : null };
+  return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.opened_at, last.incident_id) : null }, await counting);
 }
 
 /* ---------------------------------------------------------------- the feed */

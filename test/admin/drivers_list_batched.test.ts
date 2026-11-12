@@ -100,8 +100,9 @@ describe("admin drivers list (S06 F9)", () => {
     const large = await counted(() => listDrivers(traced as never, SUPER, { limit: 24 }));
     expect(small.result.items).toHaveLength(4);
     expect(large.result.items).toHaveLength(24);
-    // The page, then locations, active trips, fleets, documents, renewals, two invitation counts, settings, reminders.
+    // The page, then locations, active trips, fleets, documents, renewals, two invitation counts, settings, reminders;
+    // L78-S: + the first page's total (begin, SET LOCAL statement_timeout, count, commit), the same for any page size.
     expect(large.queries).toBe(small.queries);
-    expect(large.queries).toBe(10);
+    expect(large.queries).toBe(14);
   });
 });

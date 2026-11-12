@@ -6,6 +6,7 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "../admin/audit.js";
 import { cursorOf, readCursor } from "../admin/lists.js";
+import { countTotal, withTotal } from "../admin/listTotal.js";
 import { permissionsOf, isAdminRole } from "../admin/permissions.js";
 import * as desk from "./desk.js";
 import { pokeAlerts } from "../alerts/detector.js";
@@ -214,6 +215,8 @@ export async function adminTickets(ex: Executor, who: Principal, input: { cursor
     const like = `%${input.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
     q = q.where((eb) => eb.or([eb("subject", "ilike", like), eb("ticket_id", "=", input.q!), eb("trip_id", "=", input.q!)]));
   }
+  // L78-S (v0.18.78 adminListFilters.total).
+  const counting = input.cursor ? undefined : countTotal(ex, q);
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(updated_at, ticket_id) < (${c.at}, ${c.id})`);
@@ -222,7 +225,7 @@ export async function adminTickets(ex: Executor, who: Principal, input: { cursor
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   const extras = await desk.deskExtras(ex, page as TicketRow[], now);
-  return { items: page.map((r) => ticketView(r as TicketRow, undefined, { extra: extras.get(r.ticket_id) })), nextCursor: rows.length > input.limit && last ? cursorOf(last.updated_at, last.ticket_id) : null };
+  return withTotal({ items: page.map((r) => ticketView(r as TicketRow, undefined, { extra: extras.get(r.ticket_id) })), nextCursor: rows.length > input.limit && last ? cursorOf(last.updated_at, last.ticket_id) : null }, await counting);
 }
 
 async function ticketForAdmin(ex: Executor, who: Principal, ticketId: string, lock = false): Promise<TicketRow> {
