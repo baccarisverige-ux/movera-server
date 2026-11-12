@@ -24,6 +24,7 @@ import { EstimateRouter } from "../../src/maps/routing.js";
 import { ROUND, WITHDRAW } from "../../src/dispatch/runtime/shared.js";
 import { TRIP_ETA } from "../../src/trips/etaNow.js";
 import { RIDE_CHECK_SCAN } from "../../src/safety/rideCheckServer.js";
+import { listIncidents } from "../../src/safety/incidents.js";
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import { createPool } from "../../src/db/db.js";
@@ -42,11 +43,11 @@ import { TEMPLATE_DB, adminUrl, urlFor } from "../support/globalSetup.js";
  *
  * Data (generated here, fixed shape, no randomness): 3,000 drivers (2,000 in Z001), 20,000 riders, 300,000 finished
  * trips over 180 days + 200 live trips, 600,000 trip events, 300,000 offers, 400,000 notifications, 300,000 earnings
- * rows, 30,000 payouts, 150,000 chat messages, 20,000 overdue trip-lane timers. Foreign keys and triggers are skipped
+ * rows, 30,000 payouts, 150,000 chat messages, 20,000 overdue trip-lane timers, 100,000 closed incidents over 180 days + 40 open ones (B1.26). Foreign keys and triggers are skipped
  * while loading (session_replication_role = replica), then every table is ANALYZEd.
  */
 
-const BIG = new Set(["trips", "trip_events", "offers", "notifications", "timers", "earnings_entries", "payouts", "trip_messages", "driver_cancels"]);
+const BIG = new Set(["trips", "trip_events", "offers", "notifications", "timers", "earnings_entries", "payouts", "trip_messages", "driver_cancels", "incidents"]);
 const MAX_REMOVED = 5_000;
 // The passing statements touch at most ~300 blocks on this data (deterministic); a walk of a whole index or heap is thousands.
 const MAX_BUFFERS = 1_000;
@@ -228,6 +229,17 @@ beforeAll(async () => {
       SELECT 'm' || g, 't' || (g / 3 + 1), g % 3 + 1, 'rider', 'r1', 'Hi', ${at} - g * interval '1 minute' FROM generate_series(0, 149999) g`);
     await c.query(`INSERT INTO trip_messages (message_id, trip_id, sequence, sender, sender_id, text, created_at)
       SELECT 'ml' || g, 'tl0', g, 'rider', 'r0', 'Hi', ${at} - interval '15 minutes' + g * interval '1 second' FROM generate_series(1, 30) g`);
+    // B1.26: a big closed SOS history (100,000 resolved / dismissed over 180 days, half in Z001) and 40 open cases in Z001
+    // (drivers d0-d39), one every 4 days back to 156 days (cases left open), so "open cases, newest first" cannot hide
+    // behind the newest rows.
+    await c.query(`INSERT INTO incidents (incident_id, trip_id, kind, severity, status, raised_by, zone_id, driver_id, opened_at, updated_at, resolved_at)
+      SELECT 'ic' || g, 't' || (g + 1), 'sos', 'high', CASE WHEN g % 2 = 0 THEN 'resolved' ELSE 'dismissed' END, 'rider', CASE WHEN g % 2 = 0 THEN 'Z001' ELSE 'Z002' END,
+             'd' || (g % 3000), ${at} - interval '1 hour' - g * interval '155 seconds', ${at} - interval '1 hour' - g * interval '155 seconds', ${at} - interval '1 hour' - g * interval '155 seconds'
+        FROM generate_series(0, 99999) g`);
+    await c.query(`INSERT INTO incidents (incident_id, trip_id, kind, severity, status, raised_by, zone_id, driver_id, opened_at, updated_at)
+      SELECT 'io' || g, 'tl' || g, 'sos', 'critical', CASE WHEN g % 4 = 1 THEN 'investigating' ELSE 'open' END, 'rider', 'Z001', 'd' || g,
+             ${at} - interval '10 minutes' - g * interval '4 days', ${at} - interval '10 minutes'
+        FROM generate_series(0, 39) g`);
     // A trip-lane backlog: 20,000 overdue ETA timers, and 20 dispatch rounds due behind them.
     await c.query(`INSERT INTO timers (kind, ref_id, due_at) SELECT '${TRIP_ETA}', 'tl' || g, ${at} - interval '10 minutes' + g * interval '10 ms' FROM generate_series(0, 19999) g`);
     await c.query(`INSERT INTO timers (kind, ref_id, due_at) SELECT '${ROUND}', 'ts' || g, ${at} - interval '1 second' FROM generate_series(0, 19) g`);
@@ -363,6 +375,22 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
   });
   it("B1.11 fixed (0091): driver facts' batched driving-time reads only trips in the window (dispatch/driverFacts.ts → drivers/drivingTime.ts)", async () => {
     await noProblems(() => zoneDriverFacts(traced, "Z002", now), (s) => s.includes("legs AS ("));
+  });
+  // No new index: the open-case read already runs on incidents_one_open_per_trip (0021, partial on open | investigating;
+  // it holds every open case, also those without a trip) and sorts only the open cases; the history (no status) pages on
+  // incidents_newest. What was slow is the N+1: one driver_locations read per row (a page of 51 = 52 statements).
+  it("B1.26: admin SOS list of open cases and of all cases, newest first, one batched position read per page (safety/incidents.ts)", async () => {
+    const ZONE: Principal = { ...SUPER, zones: ["Z001"] };
+    let items = 0;
+    const { count, problems } = await check(async () => {
+      items = (await listIncidents(traced, SUPER, { limit: 51, status: ["open", "investigating"] })).items.length;
+      await listIncidents(traced, ZONE, { limit: 51, status: ["open", "investigating"] });
+      await listIncidents(traced, ZONE, { limit: 51 });
+    });
+    expect(items).toBe(40);
+    expect(problems, problems.join("\n")).toEqual([]);
+    // Three calls, each: the page, then the positions of its drivers in one read.
+    expect(count).toBe(6);
   });
   it("admin payout list (admin/payouts.ts:272-284)", async () => {
     await noProblems(() => listPayouts(traced, SUPER, { limit: 50 }));
