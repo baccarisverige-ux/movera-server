@@ -136,6 +136,33 @@ describe("G30 fix round: the silent answer looks like a real start", () => {
     expect((await post("/account/email/change", { email: "later@example.se" }, await signIn(mine))).statusCode).toBe(200);
   }, 30_000);
 
+  it("v0.18.77: the own-address start counts; a start refused before it begins (400, 403 reauth_required, 429) does not", async () => {
+    service.accept = false;
+    const mine = freshPhone();
+    const me = await signIn(mine);
+    await database.db.updateTable("riders").set({ email: "Own@Example.se" }).where("phone", "=", mine).execute();
+    // Refused before they begin: never counted.
+    for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: "not-an-e-mail" }, me)).json()).toMatchObject({ reason: "invalid_email" });
+    advance(11 * 60);
+    for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: `n${i}@example.se` }, me)).json()).toMatchObject({ reason: "reauth_required" });
+    // Checking his own current address needs no recent sign-in, but each start counts: 5 now + 5 half an hour later.
+    for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: "own@example.se" }, me)).statusCode).toBe(200);
+    advance(30 * 60);
+    let again = await signIn(mine); // the access token outlives neither half hour; signing in again changes no count
+    for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: "own@example.se" }, again)).statusCode).toBe(200);
+    for (let i = 0; i < 3; i++) {
+      const over = await post("/account/email/change", { email: "own@example.se" }, again);
+      expect(over.statusCode).toBe(429);
+      expect(over.headers["retry-after"]).toBe("3600");
+      expect(over.json()).toMatchObject({ reason: "change_too_many" });
+    }
+    // The first 5 leave the rolling hour; the three 429s did not count, so exactly 5 more are allowed.
+    advance(31 * 60);
+    again = await signIn(mine);
+    for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: "own@example.se" }, again)).statusCode).toBe(200);
+    expect((await post("/account/email/change", { email: "own@example.se" }, again)).json()).toMatchObject({ reason: "change_too_many" });
+  }, 30_000);
+
   it("nit c: the Apple / Google path waits for the same per-address lock as the code verify", async () => {
     const phone = freshPhone();
     const first = (await post("/auth/provider", { provider: "google", idToken: `ok:g-${phone}:Lock@Gmail.com`, app: "rider" })).json();
