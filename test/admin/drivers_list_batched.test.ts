@@ -1,5 +1,6 @@
 import { Kysely, PostgresDialect } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { LIST_COUNT } from "../../src/admin/listTotal.js";
 import type { Database } from "../../src/db/schema.js";
 import type { Principal } from "../../src/auth/guard.js";
 import { listDrivers } from "../../src/admin/lists.js";
@@ -57,7 +58,11 @@ async function seedDriver(i: number) {
   }
 }
 
+// L78-S: these cases count the statements a list sends, the first page's total included; wait for the count so it is
+// always there (the production wait of 25 ms is tested in test/admin/list_total.test.ts).
+const WAIT_BEFORE = LIST_COUNT.waitAfterPageMs;
 beforeAll(async () => {
+  LIST_COUNT.waitAfterPageMs = 5000;
   database = await freshDatabase();
   traced = new Kysely<Database>({
     dialect: new PostgresDialect({ pool: database.pool }),
@@ -69,6 +74,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  LIST_COUNT.waitAfterPageMs = WAIT_BEFORE;
   await database.drop();
 });
 
@@ -101,8 +107,8 @@ describe("admin drivers list (S06 F9)", () => {
     expect(small.result.items).toHaveLength(4);
     expect(large.result.items).toHaveLength(24);
     // The page, then locations, active trips, fleets, documents, renewals, two invitation counts, settings, reminders;
-    // L78-S: + the first page's total (begin, SET LOCAL statement_timeout, count, commit), the same for any page size.
+    // L78-S: + the first page's total (begin, SET LOCAL statement_timeout and max_parallel_workers_per_gather, count, commit), the same for any page size.
     expect(large.queries).toBe(small.queries);
-    expect(large.queries).toBe(14);
+    expect(large.queries).toBe(15);
   });
 });

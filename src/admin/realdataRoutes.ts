@@ -20,7 +20,7 @@ import { alertBook, alertCommand, alertHistory, saveDoc, setMute, setQuiet, type
 import { adminGetSettings, adminPutSettings, SUPPORT_COUNTRIES, topicsFor } from "../support/desk.js";
 import { kpis } from "./kpis.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
-import { countTotal, withTotal } from "./listTotal.js";
+import { countTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { approvePayoutRun, createPayout, driverPayouts, holdDriverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
 import { driverView, loadDriver } from "../drivers/service.js";
 import { listRatings, moderateRating } from "./ratings.js";
@@ -113,12 +113,15 @@ export async function listRefunds(ex: Executor, who: Principal, input: { cursor?
   if (input.from) q = q.where("refunds.created_at", ">=", new Date(input.from));
   if (input.to) q = q.where("refunds.created_at", "<", new Date(input.to));
   // L78-S (v0.18.78 adminListFilters.total).
-  const counting = input.cursor ? undefined : countTotal(ex, q);
+  const filtered = q;
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(refunds.created_at, refunds.refund_id) < (${c.at}, ${c.id})`);
   }
-  const rows = await q.orderBy("refunds.created_at", "desc").orderBy("refunds.refund_id", "desc").limit(input.limit + 1).execute();
+  const reading = q.orderBy("refunds.created_at", "desc").orderBy("refunds.refund_id", "desc").limit(input.limit + 1).execute();
+  // The page asked first; the count follows it (L78-S, listTotal.ts).
+  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   return withTotal({
@@ -133,7 +136,7 @@ export async function listRefunds(ex: Executor, who: Principal, input: { cursor?
       createdAt: r.created_at.toISOString(),
     })),
     nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.refund_id) : null,
-  }, await counting);
+  }, await totalAfterPage(counting));
 }
 
 export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): Promise<void> {

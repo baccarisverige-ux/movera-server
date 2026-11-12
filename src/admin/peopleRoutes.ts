@@ -21,7 +21,7 @@ import { sendFile } from "../drivers/routes.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { audit } from "./audit.js";
 import { cursorOf, readCursor } from "./lists.js";
-import { countTotal, withTotal } from "./listTotal.js";
+import { countTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { maskDriverView } from "./masking.js";
 import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminUpdateVehicle } from "./vehicleActions.js";
 
@@ -180,17 +180,20 @@ async function listVehicles(ex: Executor, who: Principal, input: { cursor?: stri
     const text = `%${input.q.trim().replace(/[%_\\]/g, "").toUpperCase()}%`;
     q = q.where((eb) => eb.or([eb("vehicles.plate", "like", text), eb("vehicles.make", "ilike", text), eb("vehicles.model", "ilike", text), eb("vehicles.vehicle_id", "=", input.q!.trim())]));
   }
-  const counting = input.cursor ? undefined : countTotal(ex, q);
+  const filtered = q;
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(vehicles.created_at, vehicles.vehicle_id) < (${c.at}, ${c.id})`);
   }
-  const rows = await q.orderBy("vehicles.created_at", "desc").orderBy("vehicles.vehicle_id", "desc").limit(input.limit + 1).execute();
+  const reading = q.orderBy("vehicles.created_at", "desc").orderBy("vehicles.vehicle_id", "desc").limit(input.limit + 1).execute();
+  // The page asked first; the count follows it (L78-S, listTotal.ts).
+  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const rows = await reading;
   const page = rows.slice(0, input.limit);
   const items = [];
   for (const r of page) items.push(await vehicleFullView(ex, r as unknown as VehicleRow));
   const last = page[page.length - 1];
-  return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.vehicle_id) : null }, await counting);
+  return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.vehicle_id) : null }, await totalAfterPage(counting));
 }
 
 /** POST /admin/vehicles/{id}/review: a car that is no longer approved takes its driver offline (not on a trip). */

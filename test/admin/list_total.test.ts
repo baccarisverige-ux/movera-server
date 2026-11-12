@@ -1,11 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import { Kysely, PostgresDialect } from "kysely";
 import type pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import type { Database } from "../../src/db/schema.js";
 import { readEnv } from "../../src/env.js";
-import { LIST_COUNT } from "../../src/admin/listTotal.js";
+import { countTotal, LIST_COUNT, totalAfterPage } from "../../src/admin/listTotal.js";
+import type { Principal } from "../../src/auth/guard.js";
+import { poolStats } from "../../src/db/db.js";
+import { listIncidents } from "../../src/safety/incidents.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
 import { adminSession } from "../support/admin.js";
@@ -21,6 +24,9 @@ import { fixedRouter, testWorld } from "../support/world.js";
 
 let database: TestDatabase;
 let app: FastifyInstance;
+/** Production budgets, and the longer wait the exactness cases use (they test the number, not the time). */
+const DEFAULT_COUNT = { ...LIST_COUNT };
+const TEST_COUNT = { ...LIST_COUNT, waitAfterPageMs: 5000 };
 let slowApp: FastifyInstance;
 let slowDb: Kysely<Database>;
 const clock = { now: new Date("2026-11-12T10:00:00Z") };
@@ -88,6 +94,7 @@ function slowCounts(pool: pg.Pool): Kysely<Database> {
 }
 
 beforeAll(async () => {
+  Object.assign(LIST_COUNT, TEST_COUNT);
   database = await freshDatabase();
   const db = database.db;
   app = await testWorld(db, database.url, clock);
@@ -159,6 +166,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  Object.assign(LIST_COUNT, DEFAULT_COUNT);
   await slowApp?.close();
   await app?.close();
   await slowDb?.destroy();
@@ -207,30 +215,129 @@ describe("L78-S: total on the first page of the 10 admin lists", () => {
     expect(res.json()).toEqual({ items: [], nextCursor: null, total: 0 });
   });
 
-  it.each(LISTS)("%s: a count that runs past its time budget leaves total out; the page is still served", async (path, key) => {
+});
+
+describe("L78-S: the count never fails or slows the list (Rule 33, supervisor F1/F2)", () => {
+  // The production budgets here (the cases above wait longer for the count: they test exactness, not timing).
+  beforeEach(() => Object.assign(LIST_COUNT, DEFAULT_COUNT));
+  afterEach(() => Object.assign(LIST_COUNT, TEST_COUNT));
+
+  /** The fastest of three runs, in ms. */
+  async function bestOf3(run: () => Promise<unknown>): Promise<number> {
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const started = performance.now();
+      await run();
+      best = Math.min(best, performance.now() - started);
+    }
+    return best;
+  }
+
+  it.each(LISTS)("%s: a count past its budget leaves total out; the first page takes its page time + at most ~150 ms", async (path, key) => {
     const fast = await get(`${path}?limit=2`, superAdmin);
-    const started = Date.now();
-    const slow = await get(`${path}?limit=2`, superAdmin, slowApp);
-    const took = Date.now() - started;
+    // The page alone: the same request with no wait for the count.
+    LIST_COUNT.waitAfterPageMs = 0;
+    const pageOnly = await bestOf3(() => get(`${path}?limit=2`, superAdmin));
+    Object.assign(LIST_COUNT, DEFAULT_COUNT);
+    let slow = await get(`${path}?limit=2`, superAdmin, slowApp);
+    const slowTook = await bestOf3(async () => (slow = await get(`${path}?limit=2`, superAdmin, slowApp)));
     expect(slow.statusCode, slow.body).toBe(200);
     expect(slow.json()).not.toHaveProperty("total");
     expect(slow.json().items.map((row: Record<string, string>) => row[key])).toEqual(fast.json().items.map((row: Record<string, string>) => row[key]));
     expect(slow.json().nextCursor).toBe(fast.json().nextCursor);
-    // The 3 s count was cut off at the budget (~300 ms), it did not hold the page.
-    expect(took).toBeLessThan(2000);
+    // The 3 s count is waited for at most waitAfterPageMs (25 ms) once the page is built.
+    expect(slowTook - pageOnly, `${path}: page ${pageOnly.toFixed(1)} ms, with the slow count ${slowTook.toFixed(1)} ms`).toBeLessThan(150);
   });
 
-  it("control: the slowed count is a real, valid count; with a budget above 3 s it is sent", async () => {
-    const before = LIST_COUNT.timeoutMs;
+  it("a fast count still gives total with the production budgets", async () => {
+    await get("/admin/incidents?limit=2", superAdmin);
+    const totals: Array<number | undefined> = [];
+    // Three tries, so one slow tick of a loaded CI runner does not fail the case; on a quiet machine every try has it.
+    for (let i = 0; i < 3; i++) totals.push((await get("/admin/incidents?limit=2", superAdmin)).json().total);
+    expect(totals).toContain(7);
+  });
+
+  it("control: the slowed count is a real, valid count; with budgets above 3 s it is sent", async () => {
     LIST_COUNT.timeoutMs = 6000;
+    LIST_COUNT.waitAfterPageMs = 6000;
+    const started = Date.now();
+    const slow = await get("/admin/incidents?limit=2", superAdmin, slowApp);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2900);
+    expect(slow.json().total).toBe(7);
+  });
+
+  /** A Kysely on the test pool that records the statements it sends. */
+  function traced(): { db: Kysely<Database>; sent: string[] } {
+    const sent: string[] = [];
+    const db = new Kysely<Database>({ dialect: new PostgresDialect({ pool: database.pool }), log: (event) => {
+      sent.push(event.query.sql);
+    } });
+    return { db, sent };
+  }
+  const SUPER: Principal = { actor: "admin", subjectId: "adm_l78", sessionId: "s_l78", zones: ["*"], role: "super", perms: ["incidents.read"] };
+  const counts = (sent: string[]) => sent.filter((text) => text.includes('count(*) as "total"'));
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("with requests waiting on the pool, the page has no total, is otherwise unchanged and opens no extra connection", async () => {
+    LIST_COUNT.waitAfterPageMs = 5000; // absent total then means "skipped", never "late"
+    const expected = await listIncidents(database.db, SUPER, { limit: 2 });
+    expect(expected.total).toBe(7);
+    const { db, sent } = traced();
+    const max = database.pool.options.max!;
+    expect(poolStats()).toMatchObject({ max });
+    // Every connection busy: the page's own request waits (waiting = 1) when the count looks at the pool.
+    const held = await Promise.all(Array.from({ length: max }, () => database.pool.connect()));
     try {
-      const started = Date.now();
-      const slow = await get("/admin/incidents?limit=2", superAdmin, slowApp);
-      expect(Date.now() - started).toBeGreaterThanOrEqual(2900);
-      expect(slow.json().total).toBe(7);
+      const listing = listIncidents(db as never, SUPER, { limit: 2 });
+      await tick();
+      await tick();
+      expect(poolStats()!.waiting).toBeGreaterThan(0);
+      held.pop()!.release();
+      const page = await listing;
+      expect(page).not.toHaveProperty("total");
+      expect(page).toEqual({ items: expected.items, nextCursor: expected.nextCursor });
+      expect(counts(sent)).toEqual([]);
+      expect(database.pool.totalCount).toBeLessThanOrEqual(max);
     } finally {
-      LIST_COUNT.timeoutMs = before;
+      for (const client of held) client.release();
     }
+  });
+
+  it("with no idle connection and none left to open, the count is skipped (no extra connection)", async () => {
+    LIST_COUNT.waitAfterPageMs = 5000;
+    const { db, sent } = traced();
+    const max = database.pool.options.max!;
+    // max - 1 held: the page takes the last one, nothing is waiting, but nothing is free either.
+    const held = await Promise.all(Array.from({ length: max - 1 }, () => database.pool.connect()));
+    try {
+      const page = await listIncidents(db as never, SUPER, { limit: 2 });
+      expect(page).not.toHaveProperty("total");
+      expect(page.items).toHaveLength(2);
+      expect(counts(sent)).toEqual([]);
+      expect(database.pool.totalCount).toBe(max);
+    } finally {
+      for (const client of held) client.release();
+    }
+    // Pool free again: the same call counts.
+    const { db: again, sent: sentAgain } = traced();
+    expect((await listIncidents(again as never, SUPER, { limit: 2 })).total).toBe(7);
+    expect(counts(sentAgain)).toHaveLength(1);
+  });
+
+  it("a count abandoned while waiting for its connection runs no statement on it", async () => {
+    // A pool that hands out connections 100 ms late: the page answer (wait 0) comes before the count has one.
+    const sent: string[] = [];
+    const late = { connect: async () => (await new Promise((resolve) => setTimeout(resolve, 100)), database.pool.connect()), end: async () => undefined };
+    const db = new Kysely<Database>({ dialect: new PostgresDialect({ pool: late as never }), log: (event) => {
+      sent.push(event.query.sql);
+    } });
+    LIST_COUNT.waitAfterPageMs = 0;
+    const pending = countTotal(db, db.selectFrom("incidents").selectAll())!;
+    expect(await totalAfterPage(pending)).toBeUndefined();
+    // The count got its connection after the answer and gave it back unused.
+    expect(await pending.result).toBeUndefined();
+    expect(sent).toEqual([]);
+    expect(database.pool.waitingCount).toBe(0);
   });
 });
 

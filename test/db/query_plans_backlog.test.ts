@@ -165,7 +165,11 @@ class Rollback extends Error {}
 
 const SUPER: Principal = { actor: "admin", subjectId: "adm_qp", sessionId: "s_qp", zones: ["*"], role: "super", perms: ["support.reply"] };
 
+// L78-S: these cases count the statements a list sends, the first page's total included; wait for the count so it is
+// always there (the production wait of 25 ms is tested in test/admin/list_total.test.ts).
+const WAIT_BEFORE = LIST_COUNT.waitAfterPageMs;
 beforeAll(async () => {
+  LIST_COUNT.waitAfterPageMs = 5000;
   const name = `movera_qp_${randomBytes(6).toString("hex")}`;
   await adminQuery(`CREATE DATABASE ${name} TEMPLATE ${TEMPLATE_DB}`);
   database = { name, pool: createPool(urlFor(name), 10) };
@@ -259,6 +263,7 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
+  LIST_COUNT.waitAfterPageMs = WAIT_BEFORE;
   await traced?.destroy().catch(() => undefined);
   if (database === undefined) return;
   if (!database.pool.ended) await database.pool.end();
@@ -394,8 +399,8 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
     expect(items).toBe(40);
     expect(problems, problems.join("\n")).toEqual([]);
     // Three calls, each: the page, then the positions of its drivers in one read; L78-S: + each first page's total
-    // (begin, SET LOCAL statement_timeout, count, commit; checked by its own case below).
-    expect(count).toBe(3 * 2 + 3 * 4);
+    // (begin, two SET LOCAL, count, commit; checked by its own case below).
+    expect(count).toBe(3 * 2 + 3 * 5);
   });
   it("admin payout list (admin/payouts.ts:272-284)", async () => {
     await noProblems(() => listPayouts(traced, SUPER, { limit: 50 }), notTotal);

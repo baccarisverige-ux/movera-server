@@ -16,7 +16,7 @@ import "../riders/walletSchema.js";
 import { withEta } from "../trips/eta.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { audit } from "./audit.js";
-import { countTotal, withTotal } from "./listTotal.js";
+import { countTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { maskDriverView, maskRiderView } from "./masking.js";
 
 /** Admin lists (contract §7: cursor pages, newest first) and account status changes. */
@@ -53,12 +53,15 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery, 
     q = q.where((eb) => eb.or([eb("trip_id", "=", text), eb("rider_id", "in", eb.selectFrom("riders").select("rider_id").where("phone", "like", `%${text.replace(/[%_\\]/g, "")}%`))]));
   }
   // L78-S (v0.18.78 adminListFilters.total): the first page counts the same query, next to the page read.
-  const counting = input.cursor ? undefined : countTotal(ex, q);
+  const filtered = q;
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(created_at, trip_id) < (${c.at}, ${c.id})`);
   }
-  const rows = await q.orderBy("created_at", "desc").orderBy("trip_id", "desc").limit(input.limit + 1).execute();
+  const reading = q.orderBy("created_at", "desc").orderBy("trip_id", "desc").limit(input.limit + 1).execute();
+  // The page asked first; the count follows it (L78-S, listTotal.ts).
+  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   // v0.18.7 (contract.json#pickupWaiting.adminLiveRow): a row of a trip going on with a driver carries his position and
@@ -71,7 +74,7 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery, 
     const projection = withEta(r, fix, now, "admin");
     return fix ? { ...projection, driverLocation: fixView(fix) } : projection;
   });
-  return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.trip_id) : null }, await counting);
+  return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.trip_id) : null }, await totalAfterPage(counting));
 }
 
 /** Riders have no zone: a zone-limited admin sees only riders with a trip in their zones (P4-6). */
@@ -88,12 +91,15 @@ export async function listRiders(ex: Executor, who: Principal, input: { cursor?:
     const text = `%${input.q.trim().replace(/[%_\\]/g, "")}%`;
     q = q.where((eb) => eb.or([eb("phone", "like", text), eb("first_name", "ilike", text), eb("rider_id", "=", input.q!.trim())]));
   }
-  const counting = input.cursor ? undefined : countTotal(ex, q);
+  const filtered = q;
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(created_at, rider_id) < (${c.at}, ${c.id})`);
   }
-  const rows = await q.orderBy("created_at", "desc").orderBy("rider_id", "desc").limit(input.limit + 1).execute();
+  const reading = q.orderBy("created_at", "desc").orderBy("rider_id", "desc").limit(input.limit + 1).execute();
+  // The page asked first; the count follows it (L78-S, listTotal.ts).
+  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   // v0.18.7 (Q3): what each rider owes per currency, oldest debt first (contract.json#pickupWaiting.debtByCurrency).
@@ -107,7 +113,7 @@ export async function listRiders(ex: Executor, who: Principal, input: { cursor?:
     byRider.set(fee.rider_id, list);
   }
   const wallets = await riderWallets(ex, page.map((r) => r.rider_id));
-  return withTotal({ items: page.map((r) => adminRiderView(r, currency, byRider.get(r.rider_id) ?? [], wallets.get(r.rider_id), who)), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.rider_id) : null }, await counting);
+  return withTotal({ items: page.map((r) => adminRiderView(r, currency, byRider.get(r.rider_id) ?? [], wallets.get(r.rider_id), who)), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.rider_id) : null }, await totalAfterPage(counting));
 }
 
 type RiderWallets = { balances: Array<{ amountMinor: number; currency: string }>; zoneCurrency: string | null };
@@ -147,17 +153,20 @@ export async function listDrivers(ex: Executor, who: Principal, input: { cursor?
     const text = `%${input.q.trim().replace(/[%_\\]/g, "")}%`;
     q = q.where((eb) => eb.or([eb("phone", "like", text), eb("first_name", "ilike", text), eb("driver_id", "=", input.q!.trim())]));
   }
-  const counting = input.cursor ? undefined : countTotal(ex, q);
+  const filtered = q;
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(created_at, driver_id) < (${c.at}, ${c.id})`);
   }
-  const rows = await q.orderBy("created_at", "desc").orderBy("driver_id", "desc").limit(input.limit + 1).execute();
+  const reading = q.orderBy("created_at", "desc").orderBy("driver_id", "desc").limit(input.limit + 1).execute();
+  // The page asked first; the count follows it (L78-S, listTotal.ts).
+  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   const items = [];
   for (const view of await driverViews(ex, page as never, "admin")) items.push(maskDriverView(view, who));
-  return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.driver_id) : null }, await counting);
+  return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.driver_id) : null }, await totalAfterPage(counting));
 }
 
 /** Payments in the cash week: one per paid trip (PaymentIntent, purpose trip). */
@@ -172,12 +181,15 @@ export async function listPayments(ex: Executor, who: Principal, input: { cursor
   if (input.zoneId) q = q.where("zone_id", "=", input.zoneId);
   if (input.from) q = q.where("updated_at", ">=", new Date(input.from));
   if (input.to) q = q.where("updated_at", "<", new Date(input.to));
-  const counting = input.cursor ? undefined : countTotal(ex, q);
+  const filtered = q;
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(created_at, trip_id) < (${c.at}, ${c.id})`);
   }
-  const rows = await q.orderBy("created_at", "desc").orderBy("trip_id", "desc").limit(input.limit + 1).execute();
+  const reading = q.orderBy("created_at", "desc").orderBy("trip_id", "desc").limit(input.limit + 1).execute();
+  // The page asked first; the count follows it (L78-S, listTotal.ts).
+  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   return withTotal({
@@ -194,7 +206,7 @@ export async function listPayments(ex: Executor, who: Principal, input: { cursor
       walletApplied: { amountMinor: Number(t.wallet_applied_minor ?? 0), currency: t.currency },
     })),
     nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.trip_id) : null,
-  }, await counting);
+  }, await totalAfterPage(counting));
 }
 
 export async function listAudit(ex: Executor, who: Principal, input: { cursor?: string; limit: number; actorId?: string; targetType?: string; targetId?: string; action?: string; from?: string; to?: string }) {

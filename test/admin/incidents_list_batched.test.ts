@@ -1,5 +1,6 @@
 import { Kysely, PostgresDialect } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { LIST_COUNT } from "../../src/admin/listTotal.js";
 import type { Database } from "../../src/db/schema.js";
 import type { Principal } from "../../src/auth/guard.js";
 // The ride module first: safety/incidents.ts and safety/rideCheck.ts import each other through trips/ride.ts.
@@ -19,7 +20,11 @@ let database: TestDatabase;
 let traced: Kysely<Database>;
 let queries = 0;
 
+// L78-S: these cases count the statements a list sends, the first page's total included; wait for the count so it is
+// always there (the production wait of 25 ms is tested in test/admin/list_total.test.ts).
+const WAIT_BEFORE = LIST_COUNT.waitAfterPageMs;
 beforeAll(async () => {
+  LIST_COUNT.waitAfterPageMs = 5000;
   database = await freshDatabase();
   traced = new Kysely<Database>({
     dialect: new PostgresDialect({ pool: database.pool }),
@@ -47,6 +52,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  LIST_COUNT.waitAfterPageMs = WAIT_BEFORE;
   await database.drop();
 });
 
@@ -63,16 +69,16 @@ describe("admin incident list (B1.26)", () => {
     expect(small.result.items).toHaveLength(5);
     expect(large.result.items).toHaveLength(50);
     expect(large.queries).toBe(small.queries);
-    // The page, then the positions of the page's drivers; L78-S: + the first page's total (begin, SET LOCAL
-    // statement_timeout, count, commit), the same for any page size.
-    expect(large.queries).toBe(6);
+    // The page, then the positions of the page's drivers; L78-S: + the first page's total (begin, two SET LOCAL,
+    // count, commit), the same for any page size.
+    expect(large.queries).toBe(7);
   });
 
   it("B1.26: a page with no driver reads no positions", async () => {
     const { result, queries: n } = await counted(() => listIncidents(traced as never, SUPER, { limit: 1, kind: "no_such_kind" }));
     expect(result.items).toEqual([]);
-    // The page and its total (4 statements, L78-S); no position read.
-    expect(n).toBe(5);
+    // The page and its total (5 statements, L78-S); no position read.
+    expect(n).toBe(6);
   });
 
   it("B1.26: every item is exactly what the single read gives", async () => {
