@@ -29,7 +29,7 @@ export function readCursor(cursor: string): { at: Date; id: string } {
 }
 export const zonesOf = (who: Principal) => (who.zones.includes("*") ? null : who.zones);
 
-export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string; flagged?: boolean; total?: boolean };
+export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string; flagged?: boolean; total?: boolean; scheduledBefore?: string };
 
 export async function listTrips(ex: Executor, who: Principal, input: TripQuery, now: Date = new Date()) {
   let q = ex.selectFrom("trips").selectAll();
@@ -47,6 +47,13 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery, 
   if (input.flagged === false) q = q.where(sql<boolean>`(admin_flag->>'flagged')::boolean IS NOT TRUE`);
   if (input.from) q = q.where("created_at", ">=", new Date(input.from));
   if (input.to) q = q.where("created_at", "<", new Date(input.to));
+  // G34 A2 (contract v0.18.83 adminListFilters.scheduledBefore; owner 2026-11-13 12:24 UTC "Exact contract filter"): a
+  // live trip always passes; a booked ride only when its scheduledAt is at or before the value. It only narrows, for the
+  // page and the count alike, so the Dashboard's waiting read never reads booked rides that are not due.
+  if (input.scheduledBefore) {
+    const before = new Date(input.scheduledBefore);
+    q = q.where((eb) => eb.or([eb("kind", "<>", "scheduled"), eb("scheduled_at", "<=", before)]));
+  }
   if (input.q) {
     // A trip id, or the rider's phone number.
     const text = input.q.trim();
