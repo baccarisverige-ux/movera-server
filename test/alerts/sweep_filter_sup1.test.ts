@@ -24,4 +24,10 @@ describe("alert sweep SQL filters", () => {
     // The contract defaults (no settings document) still count, so "off" in every saved country is not "off" for a country with none.
     expect(docHorizonDays(ctxOf({ SE: off, FR: off, TN: off }))).toBe(31);
   });
+  it("supervisor: a negative limit reads from the currency with the most decimals; a limit bigint cannot read never stops the sweep", () => {
+    // TN -365 (the admin panel's lowest limit): a -100 DT payout (-100,000 minor) reaches it, so the floor is -365,000, not -36,500.
+    expect(payoutFloorMinor(ctxOf({ TN: { kinds: { payout_big: { limits: { info: -365 } } } } }))).toBe(-365_000);
+    // A raw API value: -1e17 x 1,000 is below bigint; read every row (as main did) instead of a SQL error.
+    expect(payoutFloorMinor(ctxOf({ SE: { kinds: { payout_big: { limits: { info: -1e17 } } } } }))).toBe(-(2n ** 63n));
+  });
 });

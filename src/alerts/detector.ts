@@ -212,11 +212,14 @@ export function docHorizonDays(ctx: Ctx): number | null {
   const days = allSettings(ctx).map((s) => s.kind("doc_expiring")).filter((k) => k.on).flatMap((k) => [k.limits.info, k.limits.important, k.limits.critical]).filter((v): v is number => typeof v === "number");
   return days.length === 0 ? null : Math.min(400, Math.max(...days) + 1);
 }
-/** The smallest payout_big limit of any country with the kind on, in the smallest minor unit of any currency: a lower bound. */
-export function payoutFloorMinor(ctx: Ctx): number | null {
+/** The smallest payout_big limit of any country with the kind on, as the lowest minor amount over every currency (right for negative limits too): a lower bound. */
+export function payoutFloorMinor(ctx: Ctx): number | bigint | null {
   const limits = allSettings(ctx).map((s) => s.kind("payout_big")).filter((k) => k.on).flatMap((k) => [k.limits.info, k.limits.important, k.limits.critical]).filter((v): v is number => typeof v === "number");
-  const factor = 10 ** Math.min(...CURRENCY_CODES.map((c) => exponentOf(c)));
-  return limits.length === 0 ? null : Math.floor(Math.min(...limits) * factor);
+  if (limits.length === 0) return null;
+  // The lowest bound over every currency: for a negative limit the currency with the MOST decimals reads lowest.
+  const floor = Math.min(...CURRENCY_CODES.map((c) => Math.floor(Math.min(...limits) * 10 ** exponentOf(c))));
+  // The settings document is free JSON: a limit Postgres bigint cannot read (e.g. -1e17) would stop the whole sweep.
+  return floor < Number.MIN_SAFE_INTEGER ? -(2n ** 63n) : floor;
 }
 
 async function driverCauses(ctx: Ctx): Promise<Cause[]> {
