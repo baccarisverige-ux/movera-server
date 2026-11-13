@@ -6,6 +6,7 @@ import { DRIVER_HOME, NO_FIX_OFFLINE } from "../drivers/presence.js";
 import { SMART_SURGE_CHECK } from "../pricing/surge.js";
 import { HOUSEKEEPING_KINDS } from "./housekeeping.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "./maintenance.js";
+import { PAYOUT_CLOSE } from "./payouts.js";
 
 /**
  * S4 B1.28 (owner W1 Q88 "An outside check that wakes you when background jobs stop? — A) Yes"): the recurring server
@@ -14,7 +15,8 @@ import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "./maintenance.js";
  * LATE_FACTOR × its period past its due time. Watched by the outside monitor (U9), never by the hosting health check
  * (render.yaml keeps /readyz: a parked job must not make the host restart copies).
  * no_fix_sweep is booked per no_fix_offline run and deleted when done (not recurring); alert_sweep 'poke' rows are
- * one-off. Neither is checked.
+ * one-off; payout_driver (S4 0.14a) is one row per driver (ref_id = driver id), booked by payout_close. None is checked
+ * here (a parked payout_driver step raises the system_health alert naming the driver).
  */
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -25,8 +27,10 @@ export const RECURRING_JOBS: ReadonlyArray<{ kind: string; everyMs: number }> = 
   // contract.json#driverHome.setOffline.jobEverySeconds (30 s).
   { kind: NO_FIX_OFFLINE, everyMs: DRIVER_HOME.setOffline.jobEverySeconds * 1000 },
   { kind: SMART_SURGE_CHECK, everyMs: 60_000 },
-  // The hourly payout sweep (5 s between batches while a backlog is paid).
+  // The hourly sweep (S4 0.14a: it only books itself again; kept so the rollback of 0.14a finds its row).
   { kind: SWEEP_IDEMPOTENCY_KEYS, everyMs: HOUR_MS },
+  // S4 0.14a: the one payout job, hourly (5 s between batches while a backlog is listed).
+  { kind: PAYOUT_CLOSE, everyMs: HOUR_MS },
   // Every housekeeping job is hourly (5 s while a backlog is left).
   ...HOUSEKEEPING_KINDS.map((kind) => ({ kind, everyMs: HOUR_MS })),
   // Daily at 01:00 UTC: late after 3 days (3 × its period, like every job).

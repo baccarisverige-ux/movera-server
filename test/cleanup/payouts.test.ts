@@ -1,8 +1,10 @@
+import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { approvePayoutRun, closePeriods, closePeriodsBatch, driverPayouts, holdDriverPayouts, markPayoutPaid, payoutScheduleOf, periodOf } from "../../src/admin/payouts.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver } from "../support/seed.js";
 import { PAYOUT_BATCH_GAP_MS, SWEEP_IDEMPOTENCY_KEYS, sweepIdempotencyKeysHandler } from "../../src/jobs/maintenance.js";
+import { PAYOUT_CLOSE, PAYOUT_DRIVER, payoutCloseHandler, payoutDriverHandler } from "../../src/jobs/payouts.js";
 
 /**
  * Live clean-up 1 (contract v0.18.13, contract.json#payouts.schedule / payouts.currency; owner G10-2, audit M1/M2):
@@ -176,8 +178,8 @@ describe("stress T-A follow-up: a payout backlog is paid in batches, never in on
     for (const id of ids) expect((await payoutsOf(id)).length).toBe(1);
   });
 
-  it("the hourly sweep books its next run soon with a cursor while a backlog is left, and in an hour when done", async () => {
-    await database.db.deleteFrom("timers").where("kind", "=", SWEEP_IDEMPOTENCY_KEYS).execute();
+  it("the payout timer books one step per due driver, comes back soon with a cursor while a backlog is left, and in an hour when done (S4 0.14a)", async () => {
+    await database.db.deleteFrom("timers").where("kind", "in", [PAYOUT_CLOSE, PAYOUT_DRIVER, SWEEP_IDEMPOTENCY_KEYS]).execute();
     await database.db.updateTable("drivers").set({ payout_hold_at: new Date() }).execute(); // only this test's drivers
     const ids: string[] = [];
     for (let i = 0; i < 201; i++) ids.push(await driverIn(["Z001"], "SE"));
@@ -185,19 +187,60 @@ describe("stress T-A follow-up: a payout backlog is paid in batches, never in on
     const firedAt = new Date("2026-11-02T08:00:00Z");
     const fire = (payload: unknown) =>
       database.db.transaction().execute(async (trx) => {
-        await trx.deleteFrom("timers").where("kind", "=", SWEEP_IDEMPOTENCY_KEYS).execute();
-        await sweepIdempotencyKeysHandler(trx, { timerId: "t", kind: SWEEP_IDEMPOTENCY_KEYS, refId: "all", dueAt: firedAt, payload, attempts: 0, firedAt });
-        return trx.selectFrom("timers").select(["due_at", "payload"]).where("kind", "=", SWEEP_IDEMPOTENCY_KEYS).executeTakeFirstOrThrow();
+        await trx.deleteFrom("timers").where("kind", "=", PAYOUT_CLOSE).execute();
+        await payoutCloseHandler(trx, { timerId: "t", kind: PAYOUT_CLOSE, refId: "all", dueAt: firedAt, payload, attempts: 0, firedAt });
+        return trx.selectFrom("timers").select(["due_at", "payload"]).where("kind", "=", PAYOUT_CLOSE).executeTakeFirstOrThrow();
       });
+    const steps = () => database.db.selectFrom("timers").select("ref_id").where("kind", "=", PAYOUT_DRIVER).execute();
+    const runSteps = async () => {
+      for (const step of await steps()) {
+        await database.db.transaction().execute(async (trx) => {
+          await trx.deleteFrom("timers").where("kind", "=", PAYOUT_DRIVER).where("ref_id", "=", step.ref_id).execute();
+          await payoutDriverHandler(trx, { timerId: "t", kind: PAYOUT_DRIVER, refId: step.ref_id, dueAt: firedAt, payload: {}, attempts: 0, firedAt });
+        });
+      }
+    };
+    const count = async () => Number((await database.db.selectFrom("payouts").select((eb) => eb.fn.countAll<string>().as("n")).executeTakeFirstOrThrow()).n);
     const next = await fire({});
     expect(next.due_at.getTime()).toBe(firedAt.getTime() + PAYOUT_BATCH_GAP_MS);
-    expect(typeof (next.payload as { payoutAfter?: unknown }).payoutAfter).toBe("string");
-    const paidFirst = await database.db.selectFrom("payouts").select((eb) => eb.fn.countAll<string>().as("n")).executeTakeFirstOrThrow();
-    expect(Number(paidFirst.n)).toBe(200);
+    expect(typeof (next.payload as { after?: unknown }).after).toBe("string");
+    expect((await steps()).length).toBe(200);
+    expect(await count()).toBe(0);
+    await runSteps();
+    expect(await count()).toBe(200);
     const done = await fire(next.payload);
     expect(done.due_at.getTime()).toBe(firedAt.getTime() + 60 * 60 * 1000);
     expect(done.payload).toEqual({});
-    const paid = await database.db.selectFrom("payouts").select((eb) => eb.fn.countAll<string>().as("n")).executeTakeFirstOrThrow();
-    expect(Number(paid.n)).toBe(201);
+    await runSteps();
+    expect(await count()).toBe(201);
+    // A sweep row booked by the older release (payload.payoutAfter) only cleans and comes back in an hour.
+    await database.db.transaction().execute((trx) => sweepIdempotencyKeysHandler(trx, { timerId: "t", kind: SWEEP_IDEMPOTENCY_KEYS, refId: "all", dueAt: firedAt, payload: { payoutAfter: ids[0] }, attempts: 0, firedAt }));
+    const sweep = await database.db.selectFrom("timers").select(["due_at", "payload"]).where("kind", "=", SWEEP_IDEMPOTENCY_KEYS).executeTakeFirstOrThrow();
+    expect([sweep.due_at.getTime(), sweep.payload]).toEqual([firedAt.getTime() + 60 * 60 * 1000, {}]);
+  });
+
+  it("a driver whose period check throws (a broken time zone) still gets his own step; the others are booked (S4 0.14a)", async () => {
+    await database.db.deleteFrom("timers").where("kind", "in", [PAYOUT_CLOSE, PAYOUT_DRIVER]).execute();
+    await database.db.updateTable("drivers").set({ payout_hold_at: new Date() }).execute();
+    const good = await driverIn(["Z001"], "SE");
+    const broken = await driverIn([], "FR");
+    const notYet = await driverIn(["FR-PC"], "FR");
+    await entry(good, "2026-10-27T10:00:00Z", "SEK", 500);
+    await entry(broken, "2026-10-27T10:00:00Z", "EUR", 500);
+    await entry(notYet, "2026-11-02T10:00:00Z", "EUR", 500);
+    const firedAt = new Date("2026-11-02T08:00:00Z");
+    // His first zone has a time zone Postgres does not know: only his period check fails.
+    await sql`INSERT INTO zones SELECT (jsonb_populate_record(NULL::zones, to_jsonb(z) || '{"zone_id": "BROKEN-TZ", "time_zone": "Mars/Olympus"}'::jsonb)).* FROM zones z WHERE zone_id = 'FR-PC'`.execute(database.db);
+    await database.db.updateTable("drivers").set({ zone_ids: ["BROKEN-TZ"] }).where("driver_id", "=", broken).execute();
+    try {
+      await database.db.transaction().execute((trx) => payoutCloseHandler(trx, { timerId: "t", kind: PAYOUT_CLOSE, refId: "all", dueAt: firedAt, payload: {}, attempts: 0, firedAt }));
+      const booked = (await database.db.selectFrom("timers").select("ref_id").where("kind", "=", PAYOUT_DRIVER).execute()).map((t) => t.ref_id).sort();
+      expect(booked).toEqual([good, broken].sort());
+      // His own step fails (and is retried, logged and alerted by the worker); it never pays anyone else's.
+      await expect(database.db.transaction().execute((trx) => payoutDriverHandler(trx, { timerId: "t", kind: PAYOUT_DRIVER, refId: broken, dueAt: firedAt, payload: {}, attempts: 0, firedAt }))).rejects.toThrow(/time zone/);
+    } finally {
+      await database.db.updateTable("drivers").set({ zone_ids: [] }).where("driver_id", "=", broken).execute();
+      await database.db.deleteFrom("zones").where("zone_id", "=", "BROKEN-TZ").execute();
+    }
   });
 });

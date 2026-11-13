@@ -2,6 +2,7 @@ import { timerLanes, type TimerHandler, type TimerLane, type TimerWorkerOptions 
 import { RESTART_ONCE_KINDS } from "./parkedKinds.js";
 import { maintenanceHandlers, NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "./maintenance.js";
 import { HOUSEKEEPING_KINDS } from "./housekeeping.js";
+import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "./payouts.js";
 import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "../safety/rideCheckServer.js";
 import { pricingHandlers } from "../pricing/surge.js";
 import { ALERT_SWEEP, alertSweepHandler, raiseParkedAlert } from "../alerts/detector.js";
@@ -20,10 +21,11 @@ export const TRIP_LANE_KINDS: readonly string[] = [TRIP_ETA, RIDE_CHECK_SCAN, NE
 /**
  * B1.7 (stage S4 wave B1; owner W1 Q71 "Cleaning on its own lane, after a test proves it delays SOS escalation?" = "Yes,
  * after the proof", 2026-11-11; proof: test/jobs/housekeeping_lane.test.ts). Every clean-up and bookkeeping run: the 12
- * housekeeping jobs (0.14b), the hourly sweep (payout pass) and the nightly run. They run only on the housekeeping lane;
- * every other kind (incident_escalate, alert_sweep, booked rides, calls, …) never waits behind them.
+ * housekeeping jobs (0.14b), the hourly sweep and the nightly run, and (S4 0.14a) the payout timer and each driver's
+ * payout step. They run only on the housekeeping lane; every other kind (incident_escalate, alert_sweep, booked rides,
+ * calls, …) never waits behind them.
  */
-export const HOUSEKEEPING_LANE_KINDS: readonly string[] = [...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY];
+export const HOUSEKEEPING_LANE_KINDS: readonly string[] = [...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER];
 
 /**
  * The timer worker's handlers and lanes (S08 A1/A2, moved out of main.ts with no behaviour change).

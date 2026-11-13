@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { payoutLines } from "../../src/admin/payouts.js";
 import { nightlyHandler, NIGHTLY, nextNightly } from "../../src/jobs/maintenance.js";
+import { PAYOUT_CLOSE, PAYOUT_DRIVER, payoutHandlers } from "../../src/jobs/payouts.js";
+import { TimerWorker } from "../../src/jobs/timers.js";
 import { summarize } from "../../src/admin/kpis.js";
 import { bookAndAccept, drive, fakeOsrm, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
@@ -220,12 +222,19 @@ describe("the dispatch feed as server-sent events", () => {
   });
 });
 
-describe("the nightly job (last: it moves the clock a week on)", () => {
-  it("the nightly job pays each ended week once (v0.18.13 default: Monday 08:00 to Monday 08:00 in the zone's time) and is safe to run again", async () => {
+describe("the nightly and payout jobs (last: it moves the clock a week on)", () => {
+  it("the payout job pays each ended week once (v0.18.13 default: Monday 08:00 to Monday 08:00 in the zone's time) and is safe to run again", async () => {
     const second = await completedTrip();
     // A week later (the tokens have run out by then, so the check reads the database).
     sim.clock.now = new Date("2026-11-03T02:00:00Z");
-    const run = () => sim.database.db.transaction().execute((trx) => nightlyHandler(trx, { timerId: "t", kind: NIGHTLY, refId: "all", dueAt: sim.clock.now, firedAt: sim.clock.now, attempts: 0 } as never));
+    // S4 0.14a (owner W1 Q69): the nightly run no longer pays; the one payout job is the hourly payout timer.
+    await sim.database.db.transaction().execute((trx) => nightlyHandler(trx, { timerId: "t", kind: NIGHTLY, refId: "all", dueAt: sim.clock.now, firedAt: sim.clock.now, attempts: 0 } as never));
+    expect(await sim.database.db.selectFrom("payouts").select("payout_id").where("driver_id", "=", driver.id).where("source", "=", "weekly").execute()).toEqual([]);
+    const worker = new TimerWorker(sim.database.db, { handlers: payoutHandlers, logger: { warn: () => undefined, error: (d, m) => console.error(m, d) }, clock: () => sim.clock.now });
+    const run = async () => {
+      await sim.database.db.insertInto("timers").values({ kind: PAYOUT_CLOSE, ref_id: "all", due_at: sim.clock.now }).onConflict((c) => c.columns(["kind", "ref_id"]).doUpdateSet({ due_at: sim.clock.now })).execute();
+      await worker.runDue(100, { kinds: [PAYOUT_CLOSE, PAYOUT_DRIVER] });
+    };
     await run();
     await run();
     const weekly = await sim.database.db.selectFrom("payouts").selectAll().where("driver_id", "=", driver.id).where("source", "=", "weekly").execute();

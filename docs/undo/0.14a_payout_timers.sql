@@ -1,0 +1,11 @@
+-- S4 0.14a rollback (GLOBAL-SAFE-PLAN 0.14 "new timer rows removed by a tested forward undo step in the same PR").
+-- Proven by test/jobs/payout_once.test.ts ("the forward undo: ..."), which runs THIS file.
+--
+-- Order (Rule 21: nothing paid is ever deleted or changed; payouts and earnings entries stay as they are):
+--   1. Deploy the release before 0.14a (code revert). Its hourly sweep (sweep_idempotency_keys, row kept by 0.14a) and
+--      its nightly run pay again, from the same unpaid entries; payouts_weekly_once keeps one weekly payout per
+--      driver, period and currency, so nothing paid by 0.14a is paid twice.
+--   2. Run this file once (any time after step 1; safe to run again). The older release has no handler for these two
+--      kinds: left in place they would fail, park and raise the system alert.
+-- A wrong payout written by a release is fixed by a correction entry with an audit row, never by this file.
+DELETE FROM timers WHERE kind IN ('payout_close', 'payout_driver');
