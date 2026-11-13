@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.78",
+  "version": "0.18.79",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -4401,7 +4401,7 @@
     "adminCommands": {
       "claim": "POST /admin/tickets/{ticketId}/claim {} -> SupportTicket: assignedTo = the caller. Owner 2026-11-02 'Never': a claim never runs out by itself; it stays until the ticket is solved or handed over (assign). Another admin's claim -> 409 conflict, reason ticket_claimed, except for a Super admin, who takes it over (owner 2026-11-03, audited ticket.takeover); a solved or closed ticket -> 409 invalid_transition, reason ticket_not_open. Audited ticket.claim.",
       "leave": "POST /admin/tickets/{ticketId}/leave {} -> SupportTicket: owner 2026-11-02 'Leave ticket': the admin who works on the ticket gives it back; assignedTo is cleared and the ticket waits in the queue for any admin. Only that admin (else 409 conflict, reason ticket_not_yours). No automatic timeout. Audited ticket.leave.",
-      "assign": "POST /admin/tickets/{ticketId}/assign { adminId | null, reason } -> SupportTicket: hands the ticket to an active admin who has support.reply and covers the ticket's zone (else 400 invalid_request, reason assignee_not_allowed); null = nobody. Audited ticket.assign.",
+      "assign": "POST /admin/tickets/{ticketId}/assign { adminId | null, reason } -> SupportTicket: hands the ticket to an active admin who has support.reply and covers the ticket (its zone; a ticket without a zone: a zone in the ticket's country, or all zones — the countryTeam rule) (else 400 invalid_request, reason assignee_not_allowed); null = nobody. Audited ticket.assign.",
       "topic": "POST /admin/tickets/{ticketId}/topic { category } -> SupportTicket (any contract topic; the ticket's time limits follow it). Audited ticket.topic.",
       "waiting": "POST /admin/tickets/{ticketId}/waiting { waiting } -> SupportTicket: true = pending (waiting for the person), false = open. Closed or solved -> 409 invalid_transition, reason ticket_not_open. Audited ticket.waiting.",
       "solve": "POST /admin/tickets/{ticketId}/solve { note? } -> SupportTicket: status resolved, solvedBy / solvedAt; the note is private (never sent to the app). Closed -> 409 ticket_closed. Audited ticket.solve.",
@@ -4465,14 +4465,14 @@
       },
       "limits": "firstReplyMin 1-10080; solveHours 1-720; every contract topic once; at least one topic on.",
       "replies": "Owner 2026-11-02 'Yes': ready replies the admin manages per language (sv, fr, en): replies [{ id, lang, title, text }] in SupportSettings (at most 100; title 1-80, text 1-2000 chars; id unique). Agents pick one in Admin › Support, change it and send it as an ordinary answer. Never saved = no ready replies.",
-      "autoSort": "Owner 2026-11-02 'Yes, by topic': each topic may name the admin who gets its new tickets: topics[].assignTo (an admin id; absent = nobody; saving needs an active admin with support.reply and a zone in that country, else 400 assignee_not_allowed). When a rider or driver opens a ticket on that topic, the server sets assignedTo to that admin if he is active, has support.reply and covers the ticket's zone (else nobody). A team (several admins) is not in this version.",
+      "autoSort": "Owner 2026-11-02 'Yes, by topic': each topic may name the admin who gets its new tickets: topics[].assignTo (an admin id; absent = nobody; saving needs an active admin with support.reply and a zone in that country, else 400 assignee_not_allowed). When a rider or driver opens a ticket on that topic, the server sets assignedTo to that admin if he is active, has support.reply and covers the ticket (its zone; a ticket without a zone: a zone in the ticket's country, or all zones — the countryTeam rule) (else nobody). A team (several admins) is not in this version.",
       "revision": "Checker LOW (as alert and incident settings): SupportSettings.rev (1 never saved); PUT needs expectedRev = the rev read; a stale one -> 409 version_mismatch; a save makes rev + 1.",
       "agents": "Checker LOW: GET /admin/support/settings also lists agents [{ adminId, name }]: the active admins with support.reply and a zone in that country (or all zones) — the only ones a topic's assignTo may name (read only)."
     },
     "caseIncidentKind": "support_case",
     "next": "Rider and driver apps: reply box on the ticket, '<first name> · Movera Support', topics from GET /support/topics.",
     "claimedOnly": "Owner 2026-11-02 'Never' + 'Leave ticket', 2026-11-03: on a claimed ticket only the claiming admin acts (reply, assign, topic, waiting, solve, reopen, case); others get 409 conflict, reason ticket_not_yours. He gives it back with leave. A Super admin (role super) can take it over with claim (audited ticket.takeover with the previous admin); nobody else. Solving (solve, or an answer with status resolved) ends the claim (owner 'until solved or handed over'), so any support admin of the ticket's country can reopen it.",
-    "countryTeam": "Owner 2026-11-03: a ticket without zone belongs to its country (the person's phone prefix: +46 SE, +33 FR, +216 TN, else the driver's country); the support admins with a zone in that country see and answer it (list and one ticket), Super admins too. Before: Super admins only (contract v0.13.0 §22)."
+    "countryTeam": "Owner 2026-11-03: a ticket without zone belongs to its country (the person's phone prefix: +46 SE, +33 FR, +216 TN, else the driver's country); the support admins with a zone in that country see and answer it (list and one ticket), get it assigned (assign) and auto-sorted to them (settings.autoSort), Super admins too (v0.18.79, owner Q93 'A) Yes'). Before: Super admins only (contract v0.13.0 §22)."
   },
   "alertDesk": {
     "note": "v0.18.15 (build-all A1, owner 2026-11-02 Q5 'Alerts = FULL FLOW': take — the others see who has it, pass on, snooze, mute types, quiet hours, done). The admin panel finds the alerts from the live data (its alert engine, admin settings + rules); the SERVER keeps who works on each alert, the history, the mutes, every admin's quiet hours and the shared alert settings and rules, so every admin sees the same state on live.",

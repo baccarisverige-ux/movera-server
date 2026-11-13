@@ -30,7 +30,7 @@ describe("health", () => {
   it("answers outside /api/v1 with the contract version", async () => {
     const res = await app.inject({ method: "GET", url: "/healthz" });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ status: "ok", contract: "0.18.78", apiVersion: "0.5", env: "development", database: "not_configured" });
+    expect(res.json()).toEqual({ status: "ok", contract: "0.18.79", apiVersion: "0.5", env: "development", database: "not_configured" });
     expect((await app.inject({ method: "GET", url: "/readyz" })).statusCode).toBe(200);
   });
 });
