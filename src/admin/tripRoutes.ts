@@ -185,7 +185,7 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   // The trip's zone is checked before the body (another zone's admin gets 403, never a body error).
   tool("driver-pay", "finance.edit", z.unknown(), 200, async (trx, who, id, raw) => {
     await adminTrip(trx, who, id);
-    const body = parseBody(z.object({ change: Money, reason: z.string().trim().min(1).max(1000) }), raw);
+    const body = parseBody(z.object({ expectedVersion: z.number().int().min(1), change: Money, reason: z.string().trim().min(1).max(1000) }), raw);
     return tripProjection(await adminDriverPay(trx, who, id, body, now()), "admin");
   });
   app.get(`${API_PREFIX}/admin/trips/:tripId/notes`, async (request) => {

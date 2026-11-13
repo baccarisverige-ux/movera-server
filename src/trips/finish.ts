@@ -9,7 +9,7 @@ import { audit } from "../admin/audit.js";
 import { notify } from "../notifications/service.js";
 import { debtOf } from "../rules/commission.js";
 import { localAmount, majorText, type CurrencyCode } from "../rules/money.js";
-import { lockOwnTrip, readOwnTrip, touchTrip } from "./commands.js";
+import { expectVersion, lockOwnTrip, readOwnTrip, touchTrip } from "./commands.js";
 import { driverTotalOf, endInfoOf, tripProjection } from "./projection.js";
 import { credit } from "./ride.js";
 import { noticeLanguage } from "../notifications/noticeLanguage.js";
@@ -277,12 +277,15 @@ export async function payChangeMaxOf(ex: Executor, zoneId: string, currency: str
 }
 
 /**
- * POST /admin/trips/{tripId}/driver-pay { change, reason } (contract.json#finish.driverMoney.payChange): an earnings
+ * POST /admin/trips/{tripId}/driver-pay { expectedVersion, change, reason } (contract.json#finish.driverMoney.payChange): an earnings
  * adjustment on an ended trip, paid with the next payout; the driver's total never below 0; audited; a bell to the driver.
  */
-export async function adminDriverPay(trx: Trx, who: Principal, tripId: string, body: { change: Money; reason: string }, now: Date): Promise<TripRow> {
+export async function adminDriverPay(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; change: Money; reason: string }, now: Date): Promise<TripRow> {
   const trip = await lockTrip(trx, tripId);
   if (!adminCoversZone(who, trip.zone_id)) throw new ApiError("forbidden", "This trip is outside your zones.", { reason: "zone_out_of_scope" });
+  // v0.18.82 S5 J4 (moneyBase.versionGuard, owner 106): on the locked trip; a pay change raises the trip version, so a
+  // second click with the same version gets 409 with the fresh admin TripProjection and no second adjustment.
+  expectVersion(trip, body.expectedVersion, "admin");
   if (trip.driver_id === null) throw new ApiError("invalid_transition", "This trip has no driver.", { reason: "driver_pay_no_driver", projection: tripProjection(trip, "admin") });
   if (trip.ended_at === null) throw new ApiError("invalid_transition", "Change the pay after the trip ended.", { reason: "driver_pay_not_ended", projection: tripProjection(trip, "admin") });
   if (body.change.currency !== trip.currency) throw badRequest(`The pay is in ${trip.currency}.`, "currency_mismatch");
