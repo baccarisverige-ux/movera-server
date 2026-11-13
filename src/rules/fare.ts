@@ -76,6 +76,17 @@ export class FareError extends Error {
 
 export const SEAT_CATEGORY = "child_seat";
 
+/**
+ * v0.18.85 (contract.json#waitingPriceShown; owner 2026-11-02 "Show price incl. fee", Rules decisions/driver-g6.md:96):
+ * the price of one waiting minute as the rider pays it. Waiting and stop waiting are extras and the app fee is added on
+ * top (§3.5 steps 4-5), so a minute costs perMin × (1 + appFeePct / 100), half-up to a whole minor unit (§3.5 step 7's
+ * line rounding). The apps show this number; the charge is unchanged.
+ */
+export function perMinWithAppFee(perMin: MoneyJson, appFeePct: number): MoneyJson {
+  const shown = Frac.of(perMin.amountMinor).mul(Frac.ONE.add(Frac.dec(appFeePct).div(Frac.of(100)))).halfUp();
+  return { amountMinor: Number(shown), currency: perMin.currency };
+}
+
 export function priceFare(doc: PricingDocument, input: FareInput): Fare {
   const cat = doc.categories[input.categoryId];
   if (cat === undefined) throw new FareError(`No price for category ${input.categoryId} in zone ${doc.zoneId}`);

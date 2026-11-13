@@ -219,6 +219,13 @@ describe("prices from the server: served config and TripProjection.terms (contra
     const riderCfg = (await call(app, "GET", "/rider/config?zoneId=Z001", rider)).json();
     expect(riderCfg.waiting).toMatchObject({ perMin: { amountMinor: 1226, currency: "SEK" }, noShowFee: { amountMinor: 6500, currency: "SEK" }, cancelAfterArrivedIsNoShow: true });
     expect(riderCfg.booking.maxPickupMoveMeters).toBe(200);
+    // v0.18.85 A1 (driver-g6.md:96 "Show price incl. fee"): the rider is served the price per minute with the 10 % app fee
+    // (12,26 kr -> 13,49 kr, premium 16,90 kr + 12 % -> 18,93 kr); the driver document gets no such field.
+    expect(riderCfg.waiting.perMinShown).toEqual({ amountMinor: 1349, currency: "SEK" });
+    expect(riderCfg.waiting.byCategory.economy.perMinShown).toEqual({ amountMinor: 1349, currency: "SEK" });
+    expect(riderCfg.waiting.byCategory.premium.perMinShown).toEqual({ amountMinor: 1893, currency: "SEK" });
+    expect(driverCfg.waiting.perMinShown).toBeUndefined();
+    expect(driverCfg.waiting.byCategory.economy.perMinShown).toBeUndefined();
   });
 
   it("the rider config copies the zone's cancel-after-arrival switch from the driver document", async () => {
@@ -254,6 +261,9 @@ describe("prices from the server: served config and TripProjection.terms (contra
       stopFreeWaitMin: 0,
       // v0.18.9 (G7, additive): the price per minute at a middle stop.
       stopWaitPerMin: { amountMinor: 500, currency: "SEK" },
+      // v0.18.85 A1 (driver-g6.md:96): the same prices with the 10 % app fee, as the rider pays them.
+      waitPerMinShown: { amountMinor: 1349, currency: "SEK" },
+      stopWaitPerMinShown: { amountMinor: 550, currency: "SEK" },
     };
     expect((await driverView(tripId)).terms).toEqual(terms);
     // Contract §2: the rider never sees the driver's shares.

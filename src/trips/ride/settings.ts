@@ -10,7 +10,7 @@ import { haversineKm } from "../../maps/routing.js";
 import { paidKm, PAID_KM_RULES } from "./paidKm.js";
 import { gapRoadsOf } from "./gapRoads.js";
 import { cancelFee, type FeeRule } from "../../rules/cancelFees.js";
-import { priceFare, type Fare, type FareLine, type PricingDocument } from "../../rules/fare.js";
+import { perMinWithAppFee, priceFare, type Fare, type FareLine, type PricingDocument } from "../../rules/fare.js";
 import { waitingExtrasOf, type WaitingExtras } from "../waitingRules.js";
 import { type Money, type Place, type Waiting, DEFAULT_NO_SHOW_SHARE, DEFAULT_MAX_PICKUP_MOVE_METERS, DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW, validPickupMoveMeters } from "./shared.js";
 import { zoneAt } from "../../config/zoneLookup.js";
@@ -71,6 +71,8 @@ export type BookingRules = {
   earlyEnd?: EarlyEndSettings;
   /** v0.18.33 (contract.json#afterTestRules.walletFirst): the wallet pays first on this trip (absent before v0.18.33 = true). */
   walletFirst?: boolean;
+  /** v0.18.85 (contract.json#waitingPriceShown): the category's app fee % at booking time, for the waiting prices shown (absent before v0.18.85). */
+  appFeePct?: number;
 };
 /** v0.18.33 (owner Q6): does the rider's wallet pay first on this trip? Trips booked before v0.18.33 keep the old rule (yes). */
 export const walletFirstOf = (trip: Pick<TripRow, "booking_rules">): boolean => (trip.booking_rules as BookingRules | null)?.walletFirst !== false;
@@ -156,6 +158,8 @@ export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string
     cancelDriverSharePct: sharePct(docs.driver?.cancelFees?.driverSharePct, DEFAULT_CANCEL_SHARE),
     waiting: priced?.categories[categoryId]?.waiting ?? null,
     ...(priced?.categories[categoryId]?.stopWaitPerMin ? { stopWaitPerMin: priced.categories[categoryId]!.stopWaitPerMin } : {}),
+    // v0.18.85 (contract.json#waitingPriceShown): the app fee the fare adds on the waiting, so the apps show what is paid.
+    ...(validFeePct(priced?.categories[categoryId]?.appFeePct) ? { appFeePct: priced!.categories[categoryId]!.appFeePct } : {}),
     noShowDriverSharePct: sharePct(docs.driver?.waiting?.driverSharePct, DEFAULT_NO_SHOW_SHARE),
     waitDriverSharePct: sharePct(docs.driver?.waiting?.driverShareWaitPct, 100),
     cancelAfterArrivedIsNoShow: cancelAfterArrivedOf(docs.driver),
@@ -164,6 +168,8 @@ export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string
     earlyEnd: earlyEndSettingsOf(docs.driver),
   };
 }
+
+const validFeePct = (pct: unknown): pct is number => typeof pct === "number" && Number.isFinite(pct) && pct >= 0 && pct <= 100;
 
 /** v0.18.8: the zone's waiting rules, stop free minutes and PIN switch of a driver document (none without a currency). */
 function waitingAndPinOf(driverDoc: AppDocs["driver"], currency: string | null): Pick<BookingRules, "waitingRules" | "stopFreeWaitMin" | "pin"> {
@@ -213,16 +219,21 @@ export function tripTerms(trip: Pick<TripRow, "booking_rules" | "currency"> & { 
   const w = arrived?.freeWaitMin !== undefined
     ? { freeWaitMin: arrived.freeWaitMin, perMin: arrived.perMin ?? kept.waiting.perMin, noShowAfterMin: arrived.noShowAfterMin ?? kept.waiting.noShowAfterMin, noShowFee: arrived.noShowFee ?? kept.waiting.noShowFee }
     : kept.waiting;
+  // v0.18.85 (contract.json#waitingPriceShown, owner 2026-11-02 driver-g6.md:96): the prices with the app fee, as the
+  // rider pays them; a trip booked before kept no app fee and gets none (never a guess).
+  const fee = validFeePct(kept.appFeePct) ? kept.appFeePct : null;
   return {
     currency: trip.currency,
     freeWaitMin: w.freeWaitMin,
     waitPerMin: w.perMin,
+    ...(fee !== null ? { waitPerMinShown: perMinWithAppFee(w.perMin, fee) } : {}),
     noShowAfterMin: w.noShowAfterMin,
     noShowFee: w.noShowFee,
     waitingRules: arrived?.rules ?? [],
     stopFreeWaitMin: kept.stopFreeWaitMin ?? 0,
     // v0.18.9 (contract.json#onTrip.stopWaiting): the price per minute at a middle stop, so both apps show it.
     ...(kept.stopWaitPerMin ? { stopWaitPerMin: kept.stopWaitPerMin } : {}),
+    ...(kept.stopWaitPerMin && fee !== null ? { stopWaitPerMinShown: perMinWithAppFee(kept.stopWaitPerMin, fee) } : {}),
     noShowDriverSharePct: kept.noShowDriverSharePct ?? DEFAULT_NO_SHOW_SHARE,
     cancelRule: kept.cancelRule ?? null,
     cancelDriverSharePct: kept.cancelDriverSharePct ?? DEFAULT_CANCEL_SHARE,
