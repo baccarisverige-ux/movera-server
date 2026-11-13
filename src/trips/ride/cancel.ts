@@ -207,6 +207,8 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
       set: { ...money, cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet },
     });
     await creditTrip(trx, ended, now);
+    // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
+    await credit(trx, { driverId, tripId: ended.trip_id, kind: "adjustment", currency: ended.currency, amount: Number(ended.driver_adjustments_minor ?? 0) }, now);
     await releaseDriver(trx, driverId, now);
     // v0.18.9 (contract.json#onTrip.rideCheck): ended on board far from the drop-off → "Is everything OK?" to both.
     await askUnexpectedEnd(trx, ended, now);
@@ -239,6 +241,8 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
       arrived_at: null,
       waiting: null,
       driver_summary: null,
+      // S5 J6: an admin's change to the old driver's pay is his; the next driver starts from his own pay.
+      driver_adjustments_minor: 0,
       // v0.18.7 (Q1, Q4): the next driver gets his own rider summary at accept; the ETA starts again with him.
       rider_summary: null,
       eta: null,

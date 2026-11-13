@@ -490,14 +490,16 @@ describe("items 6 + 7: the admin's trip tools", () => {
     expect(level.json()).toMatchObject({ severity: "medium", version: incident.version + 1 });
   });
 
-  it("existing admin trip commands still work for G7: adjust the price and the waiting, complete", async () => {
+  it("existing admin trip commands still work for G7: adjust the driver's pay (S5 J6: the rider's price stays), complete", async () => {
     const trip = await accepted();
     const v = await onBoard(trip);
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
-    const adjust = await call(app, "POST", `/admin/trips/${trip.tripId}/adjust`, admin.headers, { expectedVersion: v, fare: { amountMinor: 20000, currency: "SEK" }, reason: "Traffic" });
+    const before = await view(trip.tripId, rider);
+    const adjust = await call(app, "POST", `/admin/trips/${trip.tripId}/adjust`, admin.headers, { expectedVersion: v, driverPay: { amountMinor: 20000, currency: "SEK" }, reason: "Traffic" });
     expect(adjust.statusCode, adjust.body).toBe(200);
+    expect(adjust.json().driverTotal).toEqual({ amountMinor: 20000, currency: "SEK" });
     const after = await view(trip.tripId, rider);
-    expect(after.fare).toEqual({ amountMinor: 20000, currency: "SEK" });
+    expect(after.fare).toEqual(before.fare);
     const done = await call(app, "POST", `/admin/trips/${trip.tripId}/complete`, admin.headers, { expectedVersion: after.version, note: "Finished by support" });
     expect(done.statusCode, done.body).toBe(200);
     expect(done.json().status).toBe("completed");

@@ -45,6 +45,8 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
     set: { ...money, cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, ended, now);
+  // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
+  if (ended.driver_id) await credit(trx, { driverId: ended.driver_id, tripId: ended.trip_id, kind: "adjustment", currency: ended.currency, amount: Number(ended.driver_adjustments_minor ?? 0) }, now);
   await releaseDriver(trx, trip.driver_id, now);
   return ended;
 }
@@ -195,6 +197,8 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
     set: { ...money, ended_by_command: "complete", ended_at: now, payment_status: "captured", cash_collected_minor: cash, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, done, now);
+  // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
+  if (done.driver_id) await credit(trx, { driverId: done.driver_id, tripId: done.trip_id, kind: "adjustment", currency: done.currency, amount: Number(done.driver_adjustments_minor ?? 0) }, now);
   if (done.payment_method === "cash") await settleCarriedFees(trx, done, cash + wallet, now);
   await releaseDriver(trx, done.driver_id, now);
   // v0.18.9 (contract.json#onTrip.rideCheck): the driver ended the trip far from the drop-off → "Is everything OK?" to both.

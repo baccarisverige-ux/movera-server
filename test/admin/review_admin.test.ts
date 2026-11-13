@@ -244,7 +244,7 @@ describe("review: admin tools", () => {
     const [offer] = (await call(app, "GET", "/driver/offers", drivers.A.headers)).json().items;
     expect(offer.tripId).toBe(tripId);
     const trip = await adminView(tripId);
-    const adj = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: trip.version, fare: sek(10000), reason: "goodwill" });
+    const adj = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: trip.version, driverPay: sek(10000), reason: "goodwill" });
     expect(adj.json()).toMatchObject({ reason: "adjust_after_accept" });
     const ok = await call(app, "POST", `/offers/${offer.offerId}/accept`, drivers.A.headers, { expectedVersion: offer.version });
     expect(ok.json()).toMatchObject({ status: "accepted", fare: { amountMinor: 21700 }, driverEarnings: { amountMinor: 15760 }, commission: { amountMinor: 21700 - 15760 } });

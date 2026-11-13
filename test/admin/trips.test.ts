@@ -320,18 +320,17 @@ describe("admin trip commands", () => {
     }
   });
 
-  it("no-show by an admin can waive the fee; complete by an admin can set the fare", async () => {
+  it("no-show by an admin can waive the fee; complete by an admin can set the driver's pay (S5 J6: the rider's fare stays)", async () => {
     const first = await accepted();
     const ns = await adminPost(`/trips/${first.tripId}/no-show`, { expectedVersion: first.version, note: "Rider never came", waiveFee: true });
     expect(ns.json()).toMatchObject({ status: "no_show", cancellation: { actor: "admin", fee: null } });
     const second = await accepted();
     const { version: v } = await toBoard(second.tripId, second.version, 60);
     await step(second.tripId, "start", v);
-    const done = await adminPost(`/trips/${second.tripId}/complete`, { expectedVersion: v + 1, note: "Driver app froze", fare: { amountMinor: 20000, currency: "SEK" } });
-    expect(done.json()).toMatchObject({ status: "completed", fare: { amountMinor: 20000 }, paymentStatus: "captured" });
-    expect(done.json().fareLines).toEqual(expect.arrayContaining([{ code: "adjustment", amount: { amountMinor: -1700, currency: "SEK" } }]));
-    // The driver keeps their share of the fare: 157.60 × 200 / 217.
-    expect(done.json().driverEarnings.amountMinor).toBe(Math.round((15760 * 20000) / 21700));
+    const done = await adminPost(`/trips/${second.tripId}/complete`, { expectedVersion: v + 1, note: "Driver app froze", driverPay: { amountMinor: 12000, currency: "SEK" } });
+    // S5 J6 (owner Q-M7): the rider pays the booked 217 kr; the driver's pay is the 120 kr the admin typed.
+    expect(done.json()).toMatchObject({ status: "completed", fare: { amountMinor: 21700 }, paymentStatus: "captured", driverEarnings: { amountMinor: 15760 }, driverTotal: { amountMinor: 12000 }, driverAdjustments: { amountMinor: 12000 - 15760 } });
+    expect(done.json().fareLines.map((l: { code: string }) => l.code)).not.toContain("adjustment");
   });
 
   it("adjust: waiting on a running trip; a paid trip needs a refund; waiving an owed fee keeps the driver's share", async () => {
@@ -342,7 +341,7 @@ describe("admin trip commands", () => {
     expect(adj.json()).toMatchObject({ fare: { amountMinor: 24400 }, waiting: { chargedSeconds: 120 } });
     await step(tripId, "start", v + 1);
     const done = await step(tripId, "complete", v + 2);
-    expect((await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: done.json().version, fare: { amountMinor: 10000, currency: "SEK" }, reason: "x" })).json()).toMatchObject({ reason: "use_refund" });
+    expect((await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: done.json().version, driverPay: { amountMinor: 10000, currency: "SEK" }, reason: "x" })).json()).toMatchObject({ reason: "use_refund" });
 
     const ns = await accepted();
     await step(ns.tripId, "head-to-pickup", ns.version);
@@ -591,5 +590,139 @@ describe("account status", () => {
     r = (await adminPost(`/riders/${riderId}/moderation`, { expectedVersion: r.version, level: "none", reason: "Cleared after call" })).json();
     expect(r).toMatchObject({ status: "active", moderation: { level: "none" } });
     expect((await audits(riderId)).filter((a: string) => a === "rider.moderation")).toHaveLength(4);
+  });
+});
+
+/*
+ * v0.18.82 S5 J6 (contract.json#moneyBase.adminFare; owner Q-M7 2026-11-12 "If admin increase fare it's only for the
+ * driver side !! The rider pay same amount when booked"; Q-S5-8 2026-11-13 "Admin types driver pay", "No, without tip",
+ * "The change", "32 DT, keep change"): the admin types the driver's new pay; the rider's price never moves.
+ */
+describe("J6: the admin types the driver's pay (driverPay); the rider pays the booked price", () => {
+  beforeEach(clearFees);
+  const SEK = (amountMinor: number) => ({ amountMinor, currency: "SEK" });
+  /** The driver's pay without the tip, as the admin sees it. */
+  const payOf = (p: { driverTotal?: { amountMinor: number }; tip?: { amount?: { amountMinor: number } } }) => (p.driverTotal?.amountMinor ?? 0) - (p.tip?.amount?.amountMinor ?? 0);
+
+  it("adjust driverPay: only the driver's pay moves; the rider's fare, lines and receipt stay; the change is kept across a re-price and paid at the end", async () => {
+    const { tripId, version } = await accepted();
+    const { version: v } = await toBoard(tripId, version, 60);
+    const riderBefore = await riderView(tripId);
+    const adminBefore = await adminView(tripId);
+    const payBefore = payOf(adminBefore);
+    const res = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: v, driverPay: SEK(payBefore + 2000), reason: "Long detour for the driver" });
+    expect(res.statusCode, res.body).toBe(200);
+    // The rider sees nothing of it.
+    const riderAfter = await riderView(tripId);
+    expect(riderAfter.fare).toEqual(riderBefore.fare);
+    expect(riderAfter.fareLines).toEqual(riderBefore.fareLines);
+    expect(res.json().fare).toEqual(adminBefore.fare);
+    expect(res.json().commission).toEqual(adminBefore.commission);
+    // The driver's pay is what the admin typed; the change is its own line.
+    expect(payOf(res.json())).toBe(payBefore + 2000);
+    expect(res.json().driverAdjustments).toEqual(SEK(2000));
+    expect(res.json().driverEarnings).toEqual(adminBefore.driverEarnings);
+    // The driver sees it on his trip too.
+    const driverSide = (await call(app, "GET", `/trips/${tripId}`, drivers.A.headers)).json();
+    expect(driverSide.driverTotal).toEqual(SEK(payBefore + 2000));
+
+    // M8 "keep change": a later re-price (paid waiting) works the pay out again and adds the admin's change on top.
+    const repriced = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: res.json().version, waitingSeconds: 120, reason: "Rider was late" });
+    expect(repriced.statusCode, repriced.body).toBe(200);
+    expect(repriced.json().fare.amountMinor).toBeGreaterThan(riderBefore.fare.amountMinor);
+    expect(repriced.json().driverAdjustments).toEqual(SEK(2000));
+    const pickup = repriced.json().pickupPay?.amountMinor ?? 0;
+    const bonus = repriced.json().driverBonus?.amountMinor ?? 0;
+    expect(payOf(repriced.json())).toBe(repriced.json().driverEarnings.amountMinor + pickup + bonus + 2000);
+
+    await step(tripId, "start", repriced.json().version);
+    const done = await step(tripId, "complete", repriced.json().version + 1);
+    expect(done.statusCode, done.body).toBe(200);
+    // The rider pays the re-priced fare, never the admin's change.
+    expect(done.json().fare).toEqual(repriced.json().fare);
+    const receipt = (await call(app, "GET", `/trips/${tripId}/receipt`, rider)).json();
+    expect(receipt.total).toEqual(repriced.json().fare);
+    expect(JSON.stringify(receipt)).not.toContain("adjustment");
+    // Paid with the trip: one trip entry, one adjustment entry of the admin's change.
+    const paid = await entries(tripId);
+    expect(paid.filter((e) => e.kind === "trip")).toHaveLength(1);
+    expect(paid.filter((e) => e.kind === "adjustment").map((e) => e.amount_minor)).toEqual(["2000"]);
+    const ended = await adminView(tripId);
+    expect(ended.driverTotal).toEqual(SEK(repriced.json().driverEarnings.amountMinor + pickup + bonus + 2000));
+    expect(ended.moneySplit.riderPaid).toEqual(repriced.json().fare);
+  });
+
+  it("the change is limited by the zone's driverPayChangeMax and the pay never goes below 0; nothing is written", async () => {
+    const { tripId, version } = await accepted();
+    const { version: v } = await toBoard(tripId, version, 60);
+    const payBefore = payOf(await adminView(tripId));
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "Z001", version: 1, document: JSON.stringify({ driverPayChangeMax: SEK(5000) }), published_at: clock.now, published_by: null }).execute();
+    try {
+      const above = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: v, driverPay: SEK(payBefore + 5001), reason: "Too much" });
+      expect(above.statusCode, above.body).toBe(400);
+      expect(above.json()).toMatchObject({ code: "invalid_request", reason: "driver_pay_above_max" });
+      const down = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: v, driverPay: SEK(payBefore - 5001), reason: "Too much down" });
+      expect(down.json()).toMatchObject({ reason: "driver_pay_above_max" });
+      const atMax = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: v, driverPay: SEK(payBefore + 5000), reason: "At the limit" });
+      expect(atMax.statusCode, atMax.body).toBe(200);
+      const negative = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: atMax.json().version, driverPay: SEK(-1), reason: "Below zero" });
+      expect(negative.statusCode).toBe(400);
+      expect(negative.json()).toMatchObject({ reason: "driver_pay_below_zero" });
+      expect((await adminView(tripId)).version).toBe(atMax.json().version);
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").where("zone_id", "=", "Z001").execute();
+    }
+  });
+
+  it("the old fare (a rider price) is refused on adjust and complete: 400 fare_is_driver_pay, nothing written", async () => {
+    const { tripId, version } = await accepted();
+    const { version: v } = await toBoard(tripId, version, 60);
+    const before = await adminView(tripId);
+    const adjust = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: v, fare: SEK(20000), reason: "Traffic" });
+    expect(adjust.statusCode, adjust.body).toBe(400);
+    expect(adjust.json()).toMatchObject({ code: "invalid_request", reason: "fare_is_driver_pay" });
+    const complete = await adminPost(`/trips/${tripId}/complete`, { expectedVersion: v, note: "Driver app froze", fare: SEK(20000) });
+    expect(complete.statusCode, complete.body).toBe(400);
+    expect(complete.json()).toMatchObject({ code: "invalid_request", reason: "fare_is_driver_pay" });
+    const after = await adminView(tripId);
+    expect(after.version).toBe(before.version);
+    expect(after.fare).toEqual(before.fare);
+    expect(after.status).toBe("rider_onboard");
+  });
+
+  it("admin complete with driverPay: the rider pays the normal price; the change is from the pay the completion works out; a trip ends once (M14)", async () => {
+    const { tripId, version } = await accepted();
+    const { version: v } = await toBoard(tripId, version, 60);
+    await step(tripId, "start", v);
+    const fareBefore = (await riderView(tripId)).fare;
+    const done = await adminPost(`/trips/${tripId}/complete`, { expectedVersion: v + 1, note: "Driver app froze", driverPay: SEK(10000) });
+    expect(done.statusCode, done.body).toBe(200);
+    expect(done.json()).toMatchObject({ status: "completed", paymentStatus: "captured" });
+    expect(done.json().fare).toEqual(fareBefore);
+    expect(done.json().fareLines.map((l: { code: string }) => l.code)).not.toContain("adjustment");
+    expect(payOf(done.json())).toBe(10000);
+    const normal = 10000 - done.json().driverAdjustments.amountMinor;
+    const paid = await entries(tripId);
+    expect(paid.filter((e) => e.kind === "adjustment").map((e) => Number(e.amount_minor))).toEqual([10000 - normal]);
+    expect((await call(app, "GET", `/trips/${tripId}/receipt`, rider)).json().total).toEqual(fareBefore);
+    // M14: a second end is refused and credits nothing again.
+    const again = await adminPost(`/trips/${tripId}/complete`, { expectedVersion: done.json().version, note: "again", driverPay: SEK(12000) });
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toMatchObject({ code: "invalid_transition" });
+    expect(await entries(tripId)).toEqual(paid);
+  });
+
+  it("a reassigned trip does not carry the old driver's pay change to the next driver", async () => {
+    const { tripId, version } = await accepted();
+    await step(tripId, "head-to-pickup", version);
+    const v = version + 1;
+    const payBefore = payOf(await adminView(tripId));
+    const changed = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: v, driverPay: SEK(payBefore + 1500), reason: "Far pickup" });
+    expect(changed.statusCode, changed.body).toBe(200);
+    const back = await adminPost(`/trips/${tripId}/reassign`, { expectedVersion: changed.json().version, reasonCode: "admin_driver_request", note: "Driver stuck" });
+    expect(back.statusCode, back.body).toBe(200);
+    expect(back.json().driverAdjustments).toBeUndefined();
+    const row = await database.db.selectFrom("trips").select("driver_adjustments_minor").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(Number(row.driver_adjustments_minor)).toBe(0);
   });
 });
