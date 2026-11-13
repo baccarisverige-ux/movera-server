@@ -36,6 +36,31 @@ export function createPool(url: string, options: number | PoolOptions = {}, onId
   return pool;
 }
 
+/**
+ * G34 P2 (audits/load-g34/PROOF-2026-11-13.md): a tiny pool used ONLY by /readyz, /healthz and /healthz/jobs, so a
+ * health check never waits in the app pool's queue. With one shared pool, a copy whose 20 connections were all busy with
+ * app work answered /readyz 503 "database not reachable" after 2 s while Postgres was idle, and the host's health check
+ * (render.yaml healthCheckPath /readyz) would take a busy, working copy out of service. Two connections at most, kept
+ * open (no idle close, so a check does not pay a new connection), short connect and statement limits so a check that
+ * cannot reach the database fails in time. It does not replace `current`: /healthz keeps reporting the app pool.
+ */
+export const HEALTH_POOL_MAX = 2;
+export function createHealthPool(url: string, { connectTimeoutMs = 1500, statementTimeoutMs = 1500 }: { connectTimeoutMs?: number; statementTimeoutMs?: number } = {}): pg.Pool {
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: HEALTH_POOL_MAX,
+    idleTimeoutMillis: 0,
+    connectionTimeoutMillis: connectTimeoutMs,
+    application_name: "movera-health",
+    statement_timeout: Math.round(statementTimeoutMs),
+    // Never keeps the process alive on its own (the server's shutdown still ends it).
+    allowExitOnIdle: true,
+  });
+  // A dropped idle connection is replaced on the next check; the check itself then reports the database state.
+  pool.on("error", () => undefined);
+  return pool;
+}
+
 /** B12: the pool settings from the environment. */
 export function poolOptionsFrom(env: { DATABASE_POOL_MAX: number; DATABASE_POOL_IDLE_MS: number; DATABASE_POOL_CONNECT_TIMEOUT_MS: number }): PoolOptions {
   return { max: env.DATABASE_POOL_MAX, idleMs: env.DATABASE_POOL_IDLE_MS, connectTimeoutMs: env.DATABASE_POOL_CONNECT_TIMEOUT_MS };
