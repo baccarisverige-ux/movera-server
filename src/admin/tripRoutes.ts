@@ -11,6 +11,7 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
+import { TotalQuery } from "./listTotal.js";
 import { chooseRefundDestination, getWallet, payoutsToMake, riderRefunds, walletEntries } from "../riders/wallet.js";
 import { tripProjection } from "../trips/projection.js";
 import { withDriverPosition } from "../trips/service.js";
@@ -44,10 +45,10 @@ const BonusBody = z.object({ ...Version, amount: Money, priority: z.boolean().op
 const DriverStatusBody = z.object({ ...Version, accountStatus: z.enum(["pending", "active", "on_hold", "suspended"]), note: Note });
 const RiderStatusBody = z.object({ ...Version, status: z.enum(["active", "suspended"]), note: Note });
 
-const TripsQuery = { ...Page, ...When, flagged: z.enum(["true", "false"]).optional().transform((v) => (v === undefined ? undefined : v === "true")), status: many(z.string()), kind: z.enum(["live", "scheduled"]).optional(), categoryId: z.string().optional(), riderId: ID.optional(), driverId: ID.optional(), paymentStatus: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
-const RidersQuery = { ...Page, status: z.enum(["active", "suspended"]).optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
-const DriversQuery = { ...Page, accountStatus: many(z.string()), onlineStatus: many(z.string()), categoryId: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
-const PaymentsQuery = { ...Page, ...When, status: z.string().optional(), method: z.string().optional(), tripId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
+const TripsQuery = { ...Page, ...TotalQuery, ...When, flagged: z.enum(["true", "false"]).optional().transform((v) => (v === undefined ? undefined : v === "true")), status: many(z.string()), kind: z.enum(["live", "scheduled"]).optional(), categoryId: z.string().optional(), riderId: ID.optional(), driverId: ID.optional(), paymentStatus: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
+const RidersQuery = { ...Page, ...TotalQuery, status: z.enum(["active", "suspended"]).optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
+const DriversQuery = { ...Page, ...TotalQuery, accountStatus: many(z.string()), onlineStatus: many(z.string()), categoryId: z.string().optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
+const PaymentsQuery = { ...Page, ...TotalQuery, ...When, status: z.string().optional(), method: z.string().optional(), tripId: ID.optional(), riderId: ID.optional(), ...ZoneFilterQuery };
 const AuditQuery = z.object({ ...Page, ...When, actorId: z.string().optional(), targetType: z.string().optional(), targetId: z.string().optional(), action: z.string().optional(), result: z.string().optional() });
 const NearbyQuery = z.object({ scope: z.enum(["radius", "zone", "zone_and_neighbours"]).default("radius"), radiusKm: z.coerce.number().min(0.1).max(100).optional() });
 const OffersQuery = z.object(Page);

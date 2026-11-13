@@ -10,7 +10,7 @@ import { schemaProblem } from "../contract/schemas.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { recordAcceptance } from "../documents/service.js";
 import { audit } from "../admin/audit.js";
-import { countTotal, totalAfterPage, withTotal } from "../admin/listTotal.js";
+import { firstPageTotal, totalAfterPage, withTotal } from "../admin/listTotal.js";
 import { maskFleetView, maskInvitationView } from "../admin/masking.js";
 import { ONBOARDING, COUNTRY_CURRENCY, COUNTRY_TIME_ZONE, ageAt, cityOf, makeFleetCode, normalizeFleetCode } from "./onboardingRules.js";
 import { driverView, loadDriver, releaseCar, vehicleFullView, type DriverRow } from "./service.js";
@@ -409,7 +409,7 @@ export async function adminRemoveFleetDriver(trx: Trx, who: Admin, fleetId: stri
 }
 
 /** GET /admin/fleets (cursor page) within the admin's zones. */
-export async function listFleets(ex: Executor, who: Admin, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; country?: string | undefined; zoneId?: string | undefined; q?: string | undefined }) {
+export async function listFleets(ex: Executor, who: Admin, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; country?: string | undefined; zoneId?: string | undefined; q?: string | undefined; total?: boolean | undefined }) {
   let q = ex.selectFrom("fleets").selectAll();
   if (!who.zones.includes("*")) q = q.where("zone_id", "in", who.zones.length ? who.zones : ["-"]);
   if (input.status?.length) q = q.where("status", "in", input.status as never);
@@ -427,7 +427,7 @@ export async function listFleets(ex: Executor, who: Admin, input: { cursor?: str
   }
   const reading = q.orderBy("created_at", "desc").orderBy("fleet_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   // SUP3 P7: 3 batched reads for the page, not 3 per fleet one after the other.

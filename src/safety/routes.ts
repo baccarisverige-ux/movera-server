@@ -13,6 +13,7 @@ import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { listRideChecks } from "../admin/tripTools.js";
 import { adminIncident, adminIncidentCommand, adminIncidentLevel, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
 import { reportRideCheck } from "./rideCheck.js";
+import { TotalQuery } from "../admin/listTotal.js";
 
 /** contract v0.7.0 §15: rider and driver SOS, admin incidents and the incident feed. */
 
@@ -27,6 +28,7 @@ const CommandBody = z.object({ expectedVersion: z.number().int().min(1), note: z
 const many = <T extends z.ZodTypeAny>(item: T) => z.union([item, z.array(item)]).optional().transform((v) => (v === undefined ? undefined : Array.isArray(v) ? v : [v]));
 const Status = z.enum(["open", "investigating", "resolved", "dismissed"]);
 const ListQuery = {
+  ...TotalQuery,
   cursor: z.string().max(512).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   status: many(Status),

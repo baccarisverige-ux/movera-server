@@ -67,6 +67,29 @@ async function allPages(path: string, key: string, headers: Record<string, strin
   return { first: first.json() as { items: unknown[]; nextCursor: string | null; total?: number }, ids };
 }
 
+/** A database handle that counts the list-count statements it is asked to run (G34 P4-B). */
+function countingCounts(pool: pg.Pool, seen: { counts: number }): Kysely<Database> {
+  const wrapped = {
+    connect: async () => {
+      const client = await pool.connect();
+      return new Proxy(client, {
+        get(target, prop) {
+          if (prop === "query") {
+            return (text: unknown, params: unknown) => {
+              if (typeof text === "string" && text.includes('count(*) as "total"')) seen.counts += 1;
+              return target.query(text as never, params as never[]);
+            };
+          }
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+    end: async () => undefined,
+  };
+  return new Kysely<Database>({ dialect: new PostgresDialect({ pool: wrapped as never }) });
+}
+
 /**
  * A database handle whose list counts take 3 s (pg_sleep added to the count statement only): the server's own bounded
  * count must give up, leave total out, and still serve the page.
@@ -405,5 +428,46 @@ describe("L78-S: GET /admin/incidents?driverId=&riderId=", () => {
     const { first, ids } = await allPages(`/admin/incidents?driverId=${id.dA}`, "incidentId", superAdmin, 1);
     expect(first.total).toBe(4);
     expect(ids).toEqual(["inc_l78_1", "inc_l78_2", "inc_l78_5", "inc_l78_7"]);
+  });
+});
+
+describe("G34 P4-B (v0.18.83 adminListFilters.total.onlyWhenAsked, owner \"Yes\"): total=false never counts", () => {
+  const seen = { counts: 0 };
+  let spyApp: FastifyInstance;
+  let spyDb: Kysely<Database>;
+  beforeAll(async () => {
+    spyDb = countingCounts(database.pool, seen);
+    spyApp = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: "world-test-secret".padEnd(48, "w") }), logger: false, db: spyDb, clock: () => clock.now, router: fixedRouter });
+  });
+  afterAll(async () => {
+    await spyApp?.close();
+    await spyDb?.destroy();
+  });
+
+  it.each(LISTS)("%s: total=false runs no count and leaves total out; the rows and cursor are the same", async (path, key) => {
+    const counted = await get(`${path}?limit=2`, superAdmin, spyApp);
+    expect(counted.statusCode, counted.body).toBe(200);
+    expect(counted.json().total, path).toBeGreaterThan(0);
+    seen.counts = 0;
+    const plain = await get(`${path}?limit=2&total=false`, superAdmin, spyApp);
+    expect(plain.statusCode, plain.body).toBe(200);
+    expect(plain.json()).not.toHaveProperty("total");
+    expect(seen.counts, `${path}: count statements with total=false`).toBe(0);
+    expect(plain.json().items.map((row: Record<string, string>) => row[key])).toEqual(counted.json().items.map((row: Record<string, string>) => row[key]));
+    expect(plain.json().nextCursor).toBe(counted.json().nextCursor);
+  });
+
+  it.each(LISTS)("%s: total=true (and absent) still counts, as before", async (path) => {
+    seen.counts = 0;
+    const asked = await get(`${path}?limit=2&total=true`, superAdmin, spyApp);
+    expect(asked.statusCode, asked.body).toBe(200);
+    expect(asked.json().total, path).toBe((await get(`${path}?limit=2`, superAdmin, spyApp)).json().total);
+    expect(seen.counts).toBe(2);
+  });
+
+  it.each(LISTS)("%s: a malformed total is 400 invalid_request", async (path) => {
+    const bad = await get(`${path}?total=yes`, superAdmin);
+    expect(bad.statusCode, bad.body).toBe(400);
+    expect(bad.json()).toMatchObject({ code: "invalid_request" });
   });
 });

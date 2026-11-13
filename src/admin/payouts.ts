@@ -7,7 +7,7 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "./audit.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
-import { countTotal, totalAfterPage, withTotal } from "./listTotal.js";
+import { firstPageTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { standardKey } from "../config/service.js";
 
 /**
@@ -319,7 +319,7 @@ export const closeWeeks = closePeriods;
 
 const SELECT_PAYOUT = ["payouts.payout_id", "payouts.driver_id", "payouts.zone_id", "payouts.currency", "payouts.amount_minor", "payouts.lines", "payouts.trip_count", "payouts.source", "payouts.status", "payouts.period_start", "payouts.period_end", "payouts.note", "payouts.created_at", "payouts.paid_at", "payouts.paid_by", "drivers.first_name", "drivers.last_name"] as const;
 
-export async function listPayouts(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; driverId?: string; from?: string; to?: string }) {
+export async function listPayouts(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; driverId?: string; from?: string; to?: string; total?: boolean }) {
   let q = ex.selectFrom("payouts").innerJoin("drivers", "drivers.driver_id", "payouts.driver_id").select(SELECT_PAYOUT);
   const zones = zonesOf(who);
   if (zones) q = q.where("payouts.zone_id", "in", zones.length ? zones : ["-"]);
@@ -337,7 +337,7 @@ export async function listPayouts(ex: Executor, who: Principal, input: { cursor?
   }
   const reading = q.orderBy("payouts.created_at", "desc").orderBy("payouts.payout_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
