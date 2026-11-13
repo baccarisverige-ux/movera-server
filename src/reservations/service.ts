@@ -659,7 +659,8 @@ export async function adminDispatchNow(trx: Trx, who: { subjectId: string }, tri
 export async function reservationTimer(trx: Trx, timer: Timer): Promise<void> {
   const now = timer.firedAt;
   const tripId = timer.refId.split(":")[0]!;
-  const trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forUpdate().executeTakeFirst();
+  // S5: FOR NO KEY UPDATE, as lockTrip (db/tripLog.ts); a future trip DELETE must take FOR UPDATE itself.
+  const trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forNoKeyUpdate().executeTakeFirst();
   if (!trip || trip.kind !== "scheduled" || !trip.scheduled_at) return;
   const state = stateOf(trip);
   if (!state) return;

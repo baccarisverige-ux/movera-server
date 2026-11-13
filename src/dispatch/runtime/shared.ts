@@ -32,10 +32,13 @@ export const PICKUP_KMH = DISPATCH.score.pickupKmh;
 /** At most this many open Radar offers per driver (DriverAppConfig.offers.radarApp.full default, §3.3). */
 export const RADAR_LIST_MAX = 8;
 
-/** Timer handlers lock the trip without waiting: a command holding it may be waiting on this very timer. */
+/**
+ * Timer handlers lock the trip without waiting: a command holding it may be waiting on this very timer.
+ * S5: FOR NO KEY UPDATE, as lockTrip (db/tripLog.ts); a future trip DELETE must take FOR UPDATE itself.
+ */
 export async function lockTripNow(trx: Trx, tripId: string): Promise<TripRow | undefined> {
   try {
-    return await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forUpdate().noWait().executeTakeFirst();
+    return await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forNoKeyUpdate().noWait().executeTakeFirst();
   } catch (error) {
     if ((error as { code?: string }).code === "55P03") throw new TimerBusy(`trip ${tripId} is busy`);
     throw error;

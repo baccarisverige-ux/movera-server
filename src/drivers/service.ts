@@ -483,13 +483,18 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     // E4 (audit S03 B2): a batch older than the stored fix (out of order on a bad connection) only fills the trace above;
     // no location event, NOTIFY, near-drop-off, ride-check scan or silence check runs on a position that is not current.
     if (!replaced) return { accepted: fresh.length };
-    // One location event per batch, with the newest fix; it never changes the projection version (§4).
-    await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
     await maybeNearDropoff(trx, active, latest.fix, now);
     // v0.18.9 (contract.json#onTrip.rideCheck): the server's ride check looks at the new fixes in a job right after.
     await scheduleRideCheckScan(trx, active, now);
     // Car lost (contract v0.7.0 §15): the position is back, so the silence check runs now and takes the alarm down.
     if (active.driver_silent_alert) await scheduleTimer(trx, { kind: DRIVER_SILENCE, refId: active.trip_id, dueAt: now });
+    // S5 (sup1 P11, G34 proof 2026-11-13): the trip row is written LAST (timer rows first, as etaOnPosition already does),
+    // so the row lock that every trip command waits for is held for the fewest Node turns before the commit. No command
+    // that holds the trip lock writes the near-drop-off or ride-check-scan timer, and board books the silence timer only
+    // while driver_silent_alert is off (then this step skips it), so this order adds no lock cycle
+    // (test/e2e/50_gps_vs_trip_command.test.ts races GPS posts against Finish + Collect cash).
+    // One location event per batch, with the newest fix; it never changes the projection version (§4).
+    await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
   }
   // A row back = this batch's newest fix is now the stored position; none = an older fix, the stored one is read later.
   return { accepted: fresh.length, ...(replaced ? { position: { lat: latest.fix.lat, lng: latest.fix.lng } } : {}) };

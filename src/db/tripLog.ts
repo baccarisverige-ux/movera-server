@@ -22,7 +22,12 @@ export const TRIP_EVENTS_CHANNEL = "movera_trip_events";
 export const OFFER_EVENTS_CHANNEL = "movera_offer_events";
 
 export async function lockTrip(trx: Trx, tripId: string): Promise<TripRow> {
-  const row = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forUpdate().executeTakeFirst();
+  // S5 (sup1 P11): FOR NO KEY UPDATE. Against every other trip writer it is the same lock as FOR UPDATE (two commands, a
+  // timer's lockTripNow and any UPDATE of the row still wait for each other), but an insert of a child row that only
+  // takes KEY SHARE through its foreign key (the GPS trace in trip_locations) no longer waits for the whole command.
+  // test/db/tripLog.test.ts proves both. It is safe only because no code changes trip_id or deletes a trip row.
+  // RULE: any future DELETE of a trip row (or change of trip_id) must lock it FOR UPDATE itself, never through lockTrip.
+  const row = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).forNoKeyUpdate().executeTakeFirst();
   if (row === undefined) throw notFound("No such trip.", "trip_not_found");
   return row;
 }
