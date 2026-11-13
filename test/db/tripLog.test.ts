@@ -56,6 +56,59 @@ describe("lockTrip", () => {
     await Promise.all([first, second]);
     expect(order).toEqual(["first locked", "first done", "second locked"]);
   });
+
+  /**
+   * S5 (sup1 P11, GM safety review): a trip command holds the trip row while it works, but the GPS trace insert of that
+   * trip (POST /driver/location, drivers/service.ts storeFixes) only needs KEY SHARE on it through its foreign key. With
+   * FOR UPDATE it waited for the whole command (on main: lock_timeout after ~1 s here); with FOR NO KEY UPDATE it goes
+   * through at once, while any other write of the trip row still waits.
+   */
+  it("does not hold up the GPS trace insert of that trip; every other trip write still waits", async () => {
+    const tripId = await newTrip();
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    const command = database.db.transaction().execute(async (trx) => {
+      await lockTrip(trx, tripId);
+      locked();
+      await released;
+    });
+    await isLocked;
+    /** One statement in its own transaction, giving up after `timeoutMs` of waiting for a lock. */
+    const tryWrite = async (statement: string, params: unknown[], timeoutMs: number) => {
+      const client = await database.pool.connect();
+      const started = performance.now();
+      try {
+        await client.query("BEGIN");
+        await client.query(`SET LOCAL lock_timeout = ${timeoutMs}`);
+        await client.query(statement, params);
+        await client.query("COMMIT");
+        return { ms: Math.round(performance.now() - started), error: undefined as string | undefined };
+      } catch (error) {
+        await client.query("ROLLBACK");
+        return { ms: Math.round(performance.now() - started), error: (error as { code?: string }).code };
+      } finally {
+        client.release();
+      }
+    };
+    try {
+      const trace = await tryWrite(
+        "INSERT INTO trip_locations (trip_id, driver_id, measured_at, lat, lng, accuracy) VALUES ($1, 'drv_s5', now(), 59.33, 18.06, 5)",
+        [tripId],
+        1000,
+      );
+      const otherWriter = await tryWrite("UPDATE trips SET sequence = sequence + 1 WHERE trip_id = $1", [tripId], 200);
+      console.info(`[S5 lock] GPS trace insert under a trip command's lock: ${trace.error ?? "inserted"} after ${trace.ms} ms; trip row update: ${otherWriter.error ?? "updated"} after ${otherWriter.ms} ms`);
+      expect(trace, "the GPS trace insert must not wait for the trip command").toEqual({ ms: trace.ms, error: undefined });
+      expect(trace.ms).toBeLessThan(500);
+      // 55P03 lock_not_available: the trip row itself is still the command's alone.
+      expect(otherWriter.error).toBe("55P03");
+    } finally {
+      release();
+      await command;
+    }
+  });
 });
 
 describe("checkVersion", () => {
