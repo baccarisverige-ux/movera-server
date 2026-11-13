@@ -35,19 +35,25 @@ export type Figures = {
 
 type Zone = { zone_id: string; time_zone: string; currency: string };
 
+/** v0.18.82 S5 J5: a paid trip end (moneyBase.kpiMoney). */
+const PAID_END = sql`(status = 'completed' OR payment_status IN ('captured', 'partially_refunded', 'refunded'))`;
+/** The trip's outstanding_fee line (an older fee it carried, counted on its own day), 0 when none (rules/commission.ts debtOf). */
+const DEBT_LINE = sql`coalesce((SELECT sum((l->'amount'->>'amountMinor')::bigint) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(fare_lines) = 'array' THEN fare_lines ELSE '[]'::jsonb END) l WHERE l->>'code' = 'outstanding_fee'), 0)`;
+
 /** The figures of one zone for one zone-local day (YYYY-MM-DD), counted from the trips. */
 export async function countDay(ex: Executor, zone: Zone, day: string): Promise<Figures> {
   const bounds = sql`(${day}::date::timestamp AT TIME ZONE ${zone.time_zone})`;
   const next = sql`((${day}::date + 1)::timestamp AT TIME ZONE ${zone.time_zone})`;
+  // v0.18.82 S5 J5 (contract.json#moneyBase.kpiMoney, owner 107): money counts every PAID trip end — completed, ended
+  // early by the rider, ended by the driver with the rider on board (payment captured / partially_refunded / refunded;
+  // a completed trip is paid at completion, and older completed rows without a payment status stay counted as before).
+  // gross leaves the outstanding_fee line out: that old fee is counted once, on the day it was charged (rider_fees below).
   const trips = await sql<Record<string, string>>`
     SELECT count(*) FILTER (WHERE status = 'completed') AS completed,
            count(*) FILTER (WHERE status LIKE 'cancelled_by_%') AS cancelled,
            count(*) FILTER (WHERE status = 'no_show' AND NOT coalesce(cancellation ? 'reversal', false)) AS no_shows,
-           coalesce(sum(fare_minor) FILTER (WHERE status = 'completed'), 0) AS gross,
-           coalesce(sum(commission_minor) FILTER (WHERE status = 'completed'), 0) AS commission,
-           coalesce(sum(driver_earnings_minor) FILTER (WHERE status = 'completed'), 0) AS earnings,
-           coalesce(sum(pickup_pay_minor) FILTER (WHERE status = 'completed'), 0) AS pickup,
-           coalesce(sum(driver_bonus_minor) FILTER (WHERE status = 'completed'), 0) AS bonus,
+           coalesce(sum(fare_minor - ${DEBT_LINE}) FILTER (WHERE ${PAID_END}), 0) AS gross,
+           coalesce(sum(commission_minor) FILTER (WHERE ${PAID_END}), 0) AS commission,
            coalesce(sum(cash_collected_minor), 0) AS cash,
            coalesce(sum(wallet_applied_minor) FILTER (WHERE status = 'completed'), 0) AS wallet
       FROM trips
@@ -72,9 +78,18 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
        WHERE zone_id = ${zone.zone_id} AND coalesce(ended_at, updated_at) >= ${bounds} AND coalesce(ended_at, updated_at) < ${next}
          AND status IN ('completed', 'no_show', 'cancelled_by_rider', 'cancelled_by_driver', 'cancelled_by_admin', 'cancelled_by_system'))
     SELECT (SELECT coalesce(sum(amount_minor), 0) FROM rider_fees WHERE status NOT IN ('waived', 'refunded') AND trip_id IN (SELECT trip_id FROM day_trips)) AS fees,
-           (SELECT coalesce(sum(amount_minor), 0) FROM earnings_entries WHERE kind = 'fee_share' AND trip_id IN (SELECT trip_id FROM day_trips)) AS fee_share,
-           (SELECT coalesce(sum(amount_minor), 0) FROM earnings_entries WHERE kind = 'tip' AND trip_id IN (SELECT trip_id FROM day_trips)) AS tips,
-           (SELECT coalesce(sum(amount_minor), 0) FROM refunds WHERE status = 'done' AND trip_id IN (SELECT trip_id FROM day_trips)) AS refunds`.execute(ex);
+           -- One read of the day's earnings entries. v0.18.82 S5 J5 (moneyBase.kpiMoney): the driver's money of the day's trips
+           -- comes from them; adjustment = Movera's pay changes (driver-pay, an admin's pay delta; a refund taken from the
+           -- driver is negative).
+           e.fee_share, e.earnings, e.pickup, e.bonus, e.adjustments, e.tips,
+           (SELECT coalesce(sum(amount_minor), 0) FROM refunds WHERE status = 'done' AND trip_id IN (SELECT trip_id FROM day_trips)) AS refunds
+      FROM (SELECT coalesce(sum(amount_minor) FILTER (WHERE kind = 'fee_share'), 0) AS fee_share,
+                   coalesce(sum(amount_minor) FILTER (WHERE kind = 'trip'), 0) AS earnings,
+                   coalesce(sum(amount_minor) FILTER (WHERE kind = 'pickup_pay'), 0) AS pickup,
+                   coalesce(sum(amount_minor) FILTER (WHERE kind = 'bonus'), 0) AS bonus,
+                   coalesce(sum(amount_minor) FILTER (WHERE kind = 'adjustment'), 0) AS adjustments,
+                   coalesce(sum(amount_minor) FILTER (WHERE kind = 'tip'), 0) AS tips
+              FROM earnings_entries WHERE trip_id IN (SELECT trip_id FROM day_trips)) e`.execute(ex);
   const t = trips.rows[0]!;
   const m = money.rows[0]!;
   const fees = Number(m["fees"]);
@@ -84,9 +99,9 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     noShows: Number(t["no_shows"]),
     gross: Number(t["gross"]) + fees,
     commission: Number(t["commission"]),
-    driverEarnings: Number(t["earnings"]),
-    pickupPay: Number(t["pickup"]),
-    driverBonus: Number(t["bonus"]),
+    driverEarnings: Number(m["earnings"]),
+    pickupPay: Number(m["pickup"]),
+    driverBonus: Number(m["bonus"]),
     cashCollected: Number(t["cash"]),
     walletApplied: Number(t["wallet"]),
     newRiders: Number(riders.rows[0]!.n),
@@ -96,7 +111,8 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     fees,
     // v0.18.13 (audit 2026-11-02 H2): commission_minor already has pickup pay and the driver bonus taken off
     // (rules/commission.ts), so they are not taken off again; refunds Movera paid back are taken off.
-    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["refunds"]),
+    // v0.18.82 S5 J5 (contract.json#kpis.money.moveraEarnings, M3): Movera's pay changes are taken off too.
+    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["adjustments"]) - Number(m["refunds"]),
   };
 }
 

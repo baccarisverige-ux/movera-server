@@ -8,6 +8,7 @@ import { seedDriver } from "../drivers/service.js";
 import { seedTestAccounts } from "../drivers/seedTest.js";
 import { seedSampleConfig } from "../config/seedConfig.js";
 import { summarize } from "./kpis.js";
+import { resumStoredKpiDays, type ResumResult } from "./kpiResum.js";
 
 /**
  * npm run admin -- create --email you@example.com --name "Your Name" [--role super]
@@ -29,6 +30,7 @@ const { positionals, values } = parseArgs({
     categories: { type: "string", default: "economy" },
     zones: { type: "string" },
     from: { type: "string" },
+    "dry-run": { type: "boolean", default: false },
   },
 });
 const command = positionals[0];
@@ -40,6 +42,7 @@ const usage = [
   "npm run admin -- role --email <e-mail> --role <role>   (step 38: ends every open session of that admin at once; he signs in again)",
   'npm run admin -- driver --phone +46701740605 --name Sara --make Volvo --model V60 --color Black --plate ABC123 [--year 2020] [--categories economy,comfort] [--zones Z001,Z002]',
   "npm run admin -- kpi-backfill --from YYYY-MM-DD   (rewrites the nightly KPI summary from that day to yesterday; safe to run again)",
+  "npm run admin -- kpi-resum [--dry-run]   (S5 J5 one-off: re-sums every stored KPI day with the v0.18.82 money rule; prints before/after; --dry-run rolls back)",
   "npm run admin -- seed-test   (the test week's activated drivers, fleet and riders on the test numbers, and sample settings in open zones that have none; not for production)",
 ].join("\n  ");
 const pool = createPool(env.DATABASE_URL, 2);
@@ -53,6 +56,25 @@ if (command === "kpi-backfill") {
     await migrate(pool);
     const written = await db.transaction().execute((trx) => summarize(trx, new Date(), values.from));
     console.log(`kpi summary: ${written} zone-days written from ${values.from}`);
+  } finally {
+    await db.destroy();
+  }
+  process.exit(0);
+}
+if (command === "kpi-resum") {
+  // S5 J5 (owner 107): one-off; summary rows only, trips never change. R29: staging before/after with the owner's OK first.
+  const rollback = new Error("dry run");
+  let result: ResumResult | undefined;
+  try {
+    await migrate(pool);
+    await db.transaction().execute(async (trx) => {
+      result = await resumStoredKpiDays(trx, new Date());
+      if (values["dry-run"]) throw rollback;
+    }).catch((error: unknown) => { if (error !== rollback) throw error; });
+    const r = result!;
+    console.log(`kpi re-sum${values["dry-run"] ? " (dry run, rolled back)" : ""}: ${r.rows} stored zone-days read, ${r.changed} changed`);
+    for (const t of r.before) console.log(`before ${t.currency}: ${t.rows} rows, gross ${t.gross}, commission ${t.commission}, moveraEarnings ${t.moveraEarnings}`);
+    for (const t of r.after) console.log(`after  ${t.currency}: ${t.rows} rows, gross ${t.gross}, commission ${t.commission}, moveraEarnings ${t.moveraEarnings}`);
   } finally {
     await db.destroy();
   }

@@ -11,10 +11,11 @@ import { appendTripEvent, type TripRow } from "../../db/tripLog.js";
 import { ApiError, badRequest } from "../../http/errors.js";
 import { newId } from "../../ids.js";
 import type { FareLine } from "../../rules/fare.js";
+import { commissionOf, debtOf } from "../../rules/commission.js";
 import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "../commands.js";
 import { driverTotalOf, earningsLinesOf, tripProjection, type EndInfo } from "../projection.js";
 import { type Money, REASONS, ONBOARD } from "./shared.js";
-import { outstandingLine, drivenFare, driven, drivenColumns, earlyEndOf, endedBeforeDropoff, scaledFare, withStopWaiting } from "./settings.js";
+import { drivenFare, driven, drivenColumns, earlyEndOf, endedBeforeDropoff, scaledFare, withStopWaiting } from "./settings.js";
 import { releaseDriver, credit, settleCarriedFees, walletPart, spendWallet } from "./money.js";
 import { walletBalance } from "../../riders/wallet.js";
 
@@ -54,12 +55,16 @@ export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
   if (trip.driver_id === null) return;
   const fare = Number(trip.fare_minor);
   const earnings = Number(trip.driver_earnings_minor ?? 0);
-  const owed = outstandingLine(trip);
-  const owedMinor = trip.status === "completed" && owed ? owed.amount.amountMinor : 0;
-  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "trip", currency: trip.currency, amount: earnings, gross: fare - owedMinor, commission: fare - owedMinor - earnings, cash: Number(trip.cash_collected_minor ?? 0) }, now);
-  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "pickup_pay", currency: trip.currency, amount: Number(trip.pickup_pay_minor ?? 0) }, now);
+  const pickupPay = Number(trip.pickup_pay_minor ?? 0);
+  const bonus = Number(trip.driver_bonus_minor ?? 0);
+  // v0.18.82 S5 J5 (contract.json#moneyBase.commission, B2.4 / S07 M5): the entry holds the trip's ONE commission
+  // (fare − debtCollected − driverEarnings − pickupPay − driverBonus), the same number as trips.commission_minor, on every
+  // paid end (complete, the rider's early end, the driver's end on board). Entries written before keep their value.
+  const gross = fare - debtOf(trip.fare_lines);
+  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "trip", currency: trip.currency, amount: earnings, gross, commission: commissionOf(fare, trip.fare_lines, earnings, pickupPay, bonus), cash: Number(trip.cash_collected_minor ?? 0) }, now);
+  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "pickup_pay", currency: trip.currency, amount: pickupPay }, now);
   // A Movera bonus on the trip is paid when the trip ends with this driver.
-  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: Number(trip.driver_bonus_minor ?? 0) }, now);
+  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: bonus }, now);
 }
 
 /**

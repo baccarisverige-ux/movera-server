@@ -455,6 +455,17 @@ describe("Q3: one driver money number incl. pickup pay", () => {
     expect(done.driverTotal).toEqual(preview.driverTotal);
     expect(done.finish.driverTotal).toEqual(preview.driverTotal);
   });
+
+  it("S5 J5 (moneyBase.commission, run P6): with pickup pay, the trip's earnings entry holds the trip's commission", async () => {
+    const trip = await accepted();
+    await database.db.updateTable("trips").set({ pickup_pay_minor: 105 }).where("trip_id", "=", trip.tripId).execute();
+    const v = await onBoard(trip);
+    await moveTo(SODERMALM, 600);
+    const { done } = await complete(trip.tripId, v);
+    const entry = await database.db.selectFrom("earnings_entries").select("commission_minor").where("trip_id", "=", trip.tripId).where("kind", "=", "trip").executeTakeFirstOrThrow();
+    expect(done.commission.amountMinor).toBe(done.fare.amountMinor - done.driverEarnings.amountMinor - 105);
+    expect(Number(entry.commission_minor)).toBe(done.commission.amountMinor);
+  });
 });
 
 describe("the rider's old debt is not Movera's commission (live bug 2026-11-01)", () => {
