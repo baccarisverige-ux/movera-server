@@ -5,7 +5,7 @@ import { registerLoadShedding } from "./http/shed.js";
 import { configureReadRetry } from "./realtime/retry.js";
 import { SMART_SURGE_CHECK, ensurePricingTimers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
-import { createDb, createPool, poolOptionsFrom, type Db } from "./db/db.js";
+import { createDb, createHealthPool, createPool, poolOptionsFrom, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
 import { guardProcess, waitForDatabase } from "./db/ready.js";
 import { readEnv, startupWarnings } from "./env.js";
@@ -37,6 +37,8 @@ let fatalLog: { error: (data: object, message: string) => void } = { error: (dat
 guardProcess({ error: (data, message) => fatalLog.error(data, message) });
 
 let db: Db | undefined;
+// G34 P2: /readyz, /healthz and /healthz/jobs ask the database on their own 2-connection pool, never in the app pool's queue.
+let healthDb: Db | undefined;
 let pool: pg.Pool | undefined;
 let hub: NotificationHub | undefined;
 let worker: TimerWorker | undefined;
@@ -51,6 +53,7 @@ if (env.DATABASE_URL !== undefined) {
   // B1.4: the migration connection drops the statement limit and uses DATABASE_MIGRATION_LOCK_TIMEOUT_MS instead.
   if (env.MIGRATE_ON_START) await migrate(pool, undefined, { lockTimeoutMs: env.DATABASE_MIGRATION_LOCK_TIMEOUT_MS });
   db = createDb(pool);
+  healthDb = createDb(createHealthPool(env.DATABASE_URL));
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   await hub.start();
   // Job 1 (fix plan R23): settings are kept in memory; any config_published (from any instance) empties the cache.
@@ -64,11 +67,20 @@ if (env.DATABASE_URL !== undefined) {
 
 let log: (message: string) => void = (message) => console.warn(message);
 const push = pushServicesFrom(env, { warn: (message) => log(message) });
-const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}) });
+const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}), ...(healthDb ? { healthDb } : {}) });
 log = (message) => app.log.warn(message);
 fatalLog = app.log;
 // v0.18.56 §78 (G9-2.4): a missing TURN relay is visible in the start-up log.
 for (const message of startupWarnings(env)) app.log.warn(message);
+// G34 5k item 8: each online driver holds ~2 open streams, so the open-files cap limits drivers per copy. Node raises
+// its soft limit to the hard one at start; the hard one is the host's (Render documents none), so it is logged here.
+try {
+  const line = (await import("node:fs")).readFileSync("/proc/self/limits", "utf8").split("\n").find((l) => l.startsWith("Max open files"));
+  const [soft, hard] = (line?.match(/\d+|unlimited/g) ?? []).slice(0, 2);
+  if (soft !== undefined) app.log.info({ openFiles: { soft, hard } }, "open files limit");
+} catch {
+  // Not Linux: nothing to log.
+}
 warn = (error) => app.log.warn({ err: error }, "database connection dropped");
 
 if (db !== undefined) {
@@ -111,6 +123,7 @@ const close = async (signal: string) => {
   await pusher?.stop();
   await hub?.stop();
   await db?.destroy();
+  await healthDb?.destroy();
   process.exit(0);
 };
 process.once("SIGINT", () => void close("SIGINT"));

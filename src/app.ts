@@ -62,7 +62,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 /** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
 const NO_ROUTE = "(no route)";
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
@@ -95,7 +95,10 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
 }
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb }: BuildOptions): Promise<FastifyInstance> {
+  // G34 P2: the health checks ask the database on their own small pool (main.ts, db.ts createHealthPool) when given, so a
+  // full app pool is never reported as "database not reachable"; without one (tests, tools) they use the app's.
+  const probeDb = healthDb ?? db;
   const app = Fastify({
     logger: logger
       ? {
@@ -233,14 +236,14 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     apiVersion: API_VERSION,
     env: env.MOVERA_ENV,
     ...(db !== undefined ? { dbPool: poolStats() } : {}),
-    database: db === undefined ? "not_configured" : (await databaseAnswers(db, HEALTH_DB_TIMEOUT_MS)) ? "ok" : "unavailable",
+    database: probeDb === undefined ? "not_configured" : (await databaseAnswers(probeDb, HEALTH_DB_TIMEOUT_MS)) ? "ok" : "unavailable",
     // S04 A4: the LISTEN connection every stream depends on (not in the contract: /healthz is an ops endpoint).
     ...(hub !== undefined ? { realtime: hub.healthSnapshot() } : {}),
   }));
   // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
   app.get("/readyz", async () => {
-    if (db === undefined) return { status: "ready", database: "not_configured" };
-    if (!(await databaseAnswers(db, READY_TIMEOUT_MS))) {
+    if (probeDb === undefined) return { status: "ready", database: "not_configured" };
+    if (!(await databaseAnswers(probeDb, READY_TIMEOUT_MS))) {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
     }
     return { status: "ready", database: "ok" };
@@ -248,11 +251,11 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   // S4 B1.28 (owner W1 Q88): 503 when a recurring server job is parked, missing or more than 3× its period late
   // (jobs/heartbeat.ts). No token, kind + state only. For the outside monitor (U9); never the hosting health check.
   app.get("/healthz/jobs", async (_request, reply) => {
-    if (db === undefined) return { status: "not_configured" };
-    if (!(await databaseAnswers(db, READY_TIMEOUT_MS))) {
+    if (probeDb === undefined) return { status: "not_configured" };
+    if (!(await databaseAnswers(probeDb, READY_TIMEOUT_MS))) {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
     }
-    const heartbeat = await jobsHeartbeat(db, clock?.() ?? new Date());
+    const heartbeat = await jobsHeartbeat(probeDb, clock?.() ?? new Date());
     return reply.code(heartbeat.status === "ok" ? 200 : 503).send(heartbeat);
   });
 
