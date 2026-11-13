@@ -1,11 +1,11 @@
-# Movera API v0.18.78 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.79 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.78
+  version: 0.18.79
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.78 in this folder; this file must agree with them.
+    v0.18.79 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.78
+  version: 0.18.79
   source: contract.json
 paths:
   /auth/otp/request:
@@ -6305,8 +6305,10 @@ paths:
       operationId: adminTicketAssign
       summary: Assign a ticket
       description: 'v0.18.15. POST /admin/tickets/{ticketId}/assign { adminId | null, reason } -> SupportTicket: hands the
-        ticket to an active admin who has support.reply and covers the ticket''s zone (else 400 invalid_request, reason assignee_not_allowed);
-        null = nobody. Audited ticket.assign. The admin''s zones only (else 403 zone_out_of_scope).'
+        ticket to an active admin who has support.reply and covers the ticket (its zone; a ticket without a zone: a zone in
+        the ticket''s country, or all zones — the countryTeam rule) (else 400 invalid_request, reason assignee_not_allowed);
+        null = nobody. Audited ticket.assign. The admin''s zones only; a ticket without a zone: an admin with a zone in its
+        country, or all zones (contract.json#supportDesk.countryTeam); else 403 zone_out_of_scope.'
       tags:
       - Admin · Support
       x-actor:

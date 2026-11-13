@@ -1,5 +1,5 @@
 import { sql } from "kysely";
-import { adminCoversZone, type Principal } from "../auth/guard.js";
+import type { Principal } from "../auth/guard.js";
 import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
@@ -189,11 +189,9 @@ export async function giveFeedback(trx: Trx, who: Who, ticketId: string, text: s
 
 /** contract v0.13.0 §22: an admin sees tickets of their zones; a ticket without a zone only a Super admin ("*"). */
 /** Owner 2026-11-03: a ticket without zone belongs to its country's team (the country from the phone prefix). */
+/** S4 B1.33: the same helper decides assign and auto-sort (desk.coversTicket). */
 async function inScope(ex: Executor, who: Principal, zoneId: string | null, country: string | null): Promise<boolean> {
-  if (zoneId !== null) return adminCoversZone(who, zoneId);
-  if (who.zones.includes("*")) return true;
-  if (!country || who.zones.length === 0) return false;
-  return (await ex.selectFrom("zones").select("zone_id").where("country", "=", country).where("zone_id", "in", who.zones).executeTakeFirst()) !== undefined;
+  return desk.coversTicket(ex, who.zones, zoneId, country);
 }
 
 export async function adminTickets(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; priority?: string; tripId?: string; riderId?: string; driverId?: string; q?: string; assignedTo?: string }, now: Date = new Date()) {
@@ -265,7 +263,7 @@ function assertMine(who: Principal, row: TicketRow): void {
 export async function adminDeskCommand(trx: Trx, who: Principal, ticketId: string, command: DeskCommand, now: Date) {
   const row = await ticketForAdmin(trx, who, ticketId, true);
   if (command.verb !== "claim" && command.verb !== "leave") assertMine(who, row);
-  const r = { ...row, assigned_admin_id: row.assigned_admin_id ?? null, incident_id: row.incident_id ?? null };
+  const r = { ...row, country: row.country ?? null, assigned_admin_id: row.assigned_admin_id ?? null, incident_id: row.incident_id ?? null };
   switch (command.verb) {
     case "claim": await desk.claim(trx, who, r, now); break;
     case "leave": await desk.leave(trx, who, r, now); break;
