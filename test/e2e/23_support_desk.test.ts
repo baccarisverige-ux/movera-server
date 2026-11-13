@@ -328,6 +328,77 @@ describe("owner: a person without a country gets it from the phone prefix", () =
   });
 });
 
+/**
+ * S4 B1.33 (owner Q93 "A) Yes", contract v0.18.79 supportDesk.countryTeam): a ticket without a zone can also be handed
+ * to, and auto-sorted to, an admin of the ticket's country team (a zone in that country, or all zones) — the same rule
+ * as the list and one ticket. A ticket without a country stays with all-zones admins only. Fails before: assign
+ * answered 400 assignee_not_allowed and auto-sort left the ticket with nobody.
+ */
+describe("B1.33: a zone-less ticket can be assigned and auto-sorted to its country team", () => {
+  let person: Rider;
+  let originalPhone: string;
+  beforeAll(async () => {
+    person = await sim.rider(2);
+    originalPhone = (await sim.db.selectFrom("riders").select("phone").where("rider_id", "=", person.id).executeTakeFirstOrThrow()).phone as string;
+  });
+  afterAll(async () => {
+    await sim.db.updateTable("riders").set({ phone: originalPhone }).where("rider_id", "=", person.id).execute();
+  });
+  const zoneLess = async (phone: string, category = "help") => {
+    await sim.db.updateTable("riders").set({ phone }).where("rider_id", "=", person.id).execute();
+    const res = await person.post("/support/tickets", { category, subject: "Hej", text: "Hej" });
+    expect(res.status).toBe(201);
+    expect(res.body["zoneId"]).toBeUndefined();
+    return res.body["ticketId"] as string;
+  };
+
+  it("a zone-less SE ticket goes to an SE-zone support admin, not to an FR-only one; audited", async () => {
+    const id = await zoneLess("+46709990001");
+    expect((await sim.db.selectFrom("support_tickets").select("country").where("ticket_id", "=", id).executeTakeFirstOrThrow()).country).toBe("SE");
+    const seLead = await sim.admin("support", ["Z001"]);
+    const seAgent2 = await sim.admin("support", ["Z001"]);
+    const frOnly = await sim.admin("support", ["FR-PC"]);
+    const seViewer = await sim.admin("viewer", ["Z001"]);
+    // the list (set form of the same rule) agrees with assign
+    expect((await seLead.get("/admin/tickets")).body["items"].map((x: Json) => x["ticketId"])).toContain(id);
+    expect((await frOnly.get("/admin/tickets")).body["items"].map((x: Json) => x["ticketId"])).not.toContain(id);
+    expect((await seLead.post(`/admin/tickets/${id}/claim`, {})).status).toBe(200);
+    const handed = await seLead.post(`/admin/tickets/${id}/assign`, { adminId: seAgent2.id, reason: "Knows the case" });
+    expect(handed.status).toBe(200);
+    expect(handed.body["assignedTo"]["adminId"]).toBe(seAgent2.id);
+    const audit = await sim.db.selectFrom("admin_audit").select(["action", "detail"]).where("target_id", "=", id).where("action", "=", "ticket.assign").execute();
+    expect(audit).toHaveLength(1);
+    const toFrance = await seAgent2.post(`/admin/tickets/${id}/assign`, { adminId: frOnly.id, reason: "x" });
+    expect(toFrance.status).toBe(400);
+    expect(toFrance.body["reason"]).toBe("assignee_not_allowed");
+    expect((await seAgent2.post(`/admin/tickets/${id}/assign`, { adminId: seViewer.id, reason: "x" })).body["reason"]).toBe("assignee_not_allowed");
+    // an all-zones admin can still get it
+    expect((await seAgent2.post(`/admin/tickets/${id}/assign`, { adminId: agent.id, reason: "Super team" })).status).toBe(200);
+  });
+
+  it("auto-sort sends a zone-less ticket to the topic's chosen admin of that country", async () => {
+    const se = (await owner.get("/admin/support/settings?country=SE")).body;
+    const lostAgent = await sim.admin("support", ["Z001"]);
+    expect((await putSettings(owner, { ...se, topics: se["topics"].map((x: Json) => (x["code"] === "lost_item" ? { ...x, assignTo: lostAgent.id } : x)) })).status).toBe(200);
+    const id = await zoneLess("+46709990002", "lost_item");
+    expect((await owner.get(`/admin/tickets/${id}`)).body["assignedTo"]).toMatchObject({ adminId: lostAgent.id });
+    // a ticket without a country (unknown prefix) reads the SE defaults but is not sorted to an SE-zone admin
+    const noCountry = await zoneLess("+4930999001", "lost_item");
+    expect((await sim.db.selectFrom("support_tickets").select("country").where("ticket_id", "=", noCountry).executeTakeFirstOrThrow()).country).toBeNull();
+    expect((await owner.get(`/admin/tickets/${noCountry}`)).body["assignedTo"]).toBeUndefined();
+    await putSettings(owner, se);
+  });
+
+  it("a ticket without a country can be handed only to an all-zones admin", async () => {
+    const id = await zoneLess("+4930999002");
+    const seAgent = await sim.admin("support", ["Z001"]);
+    expect((await seAgent.get(`/admin/tickets/${id}`)).body["reason"]).toBe("zone_out_of_scope");
+    const refused = await owner.post(`/admin/tickets/${id}/assign`, { adminId: seAgent.id, reason: "x" });
+    expect(refused.body["reason"]).toBe("assignee_not_allowed");
+    expect((await owner.post(`/admin/tickets/${id}/assign`, { adminId: agent.id, reason: "All zones" })).body["assignedTo"]["adminId"]).toBe(agent.id);
+  });
+});
+
 describe("Incidents settings and report (contract.json#incidentDesk)", () => {
   it("settings: safety.edit saves one revision at a time; every admin reads the same; a report download is audited", async () => {
     const first = await owner.get("/admin/incidents/settings?country=SE");

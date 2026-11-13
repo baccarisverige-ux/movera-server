@@ -56,6 +56,19 @@ export async function countryOfZone(ex: Executor, zoneId: string | null): Promis
   return zone?.country ?? null;
 }
 
+/**
+ * contract.json#supportDesk.countryTeam (owner 2026-11-03, Q93 / v0.18.79): does an admin with these zones (null = all
+ * zones) cover a ticket? A zone ticket: all zones or that zone. A zone-less ticket: all zones, else a zone in the
+ * ticket's country; without a country only all zones. One rule for the list check, one ticket, assign and auto-sort.
+ */
+export async function coversTicket(ex: Executor, adminZones: readonly string[] | null, zoneId: string | null, country: string | null): Promise<boolean> {
+  const zones = adminZones ?? ["*"];
+  if (zones.includes("*")) return true;
+  if (zoneId !== null) return zones.includes(zoneId);
+  if (!country || zones.length === 0) return false;
+  return (await ex.selectFrom("zones").select("zone_id").where("country", "=", country).where("zone_id", "in", [...zones]).executeTakeFirst()) !== undefined;
+}
+
 /** Super admin, or an admin with at least one zone in that country. */
 async function coversCountry(ex: Executor, who: Principal, country: string): Promise<boolean> {
   if (who.zones.includes("*")) return true;
@@ -197,7 +210,7 @@ export async function topicsFor(ex: Executor, who: { actor: "rider" | "driver"; 
 
 /**
  * Owner 2026-11-02 "Yes, by topic": the admin a new ticket of this topic goes to, if he may work on it (active,
- * support.reply, covers the zone); else nobody.
+ * support.reply, covers the ticket: its zone, or for a zone-less ticket its country team); else nobody.
  */
 export async function autoAssignee(ex: Executor, zoneId: string | null, category: string, country: string | null, permissionsOf: (role: string) => string[]): Promise<string | null> {
   const s = await settingsOf(ex, (await countryOfZone(ex, zoneId)) ?? country);
@@ -205,8 +218,8 @@ export async function autoAssignee(ex: Executor, zoneId: string | null, category
   if (!adminId) return null;
   const admin = await ex.selectFrom("admins").select(["admin_id", "role", "zone_ids", "active"]).where("admin_id", "=", adminId).executeTakeFirst();
   if (!admin || !admin.active || !permissionsOf(admin.role).includes("support.reply")) return null;
-  const zones = admin.zone_ids ?? ["*"];
-  const covers = zones.includes("*") || (zoneId !== null && zones.includes(zoneId));
+  // S4 B1.33 (v0.18.79): a zone-less ticket goes to the chosen admin of its country team too.
+  const covers = await coversTicket(ex, admin.zone_ids ?? null, zoneId, (await countryOfZone(ex, zoneId)) ?? country);
   return covers ? admin.admin_id : null;
 }
 
@@ -218,7 +231,7 @@ export async function assertTopicOn(ex: Executor, zoneId: string | null, categor
 
 /* ---------------------------------------------------------------- admin commands */
 
-type Row = { ticket_id: string; zone_id: string | null; trip_id: string | null; status: "open" | "pending" | "resolved" | "closed"; category: string; assigned_admin_id: string | null; incident_id: string | null };
+type Row = { ticket_id: string; zone_id: string | null; country: string | null; trip_id: string | null; status: "open" | "pending" | "resolved" | "closed"; category: string; assigned_admin_id: string | null; incident_id: string | null };
 const SOLVED = new Set(["resolved", "closed"]);
 
 export async function claim(trx: Trx, who: Principal, row: Row, now: Date) {
@@ -242,8 +255,8 @@ export async function leave(trx: Trx, who: Principal, row: Row, now: Date) {
 export async function assign(trx: Trx, who: Principal, row: Row, body: { adminId: string | null; reason: string }, now: Date, permissionsOf: (role: string) => string[]) {
   if (body.adminId !== null) {
     const target = await trx.selectFrom("admins").select(["admin_id", "role", "zone_ids", "active"]).where("admin_id", "=", body.adminId).executeTakeFirst();
-    const zones = target?.zone_ids ?? ["*"];
-    const covers = row.zone_id === null ? zones.includes("*") : zones.includes("*") || zones.includes(row.zone_id);
+    // S4 B1.33 (owner Q93, v0.18.79): a zone-less ticket can go to its country team (same rule as the list).
+    const covers = target !== undefined && (await coversTicket(trx, target.zone_ids ?? null, row.zone_id, row.country));
     if (!target || !target.active || !permissionsOf(target.role).includes("support.reply") || !covers) {
       throw badRequest("That admin cannot work on this ticket.", "assignee_not_allowed");
     }
