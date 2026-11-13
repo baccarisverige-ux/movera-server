@@ -14,7 +14,7 @@ import { markSetOffline } from "../drivers/offlineReason.js";
 import type { DocumentKey } from "../documents/files.js";
 import { adminGetFleet, adminRemoveFleetDriver, listFleets, renewFleetCode, reviewFleet } from "../drivers/onboarding.js";
 import { adminDecideInvitation, type InviteDeps } from "../drivers/invitations.js";
-import { driverView, loadDriver, rulesBrokenBy, vehicleFullView, type VehicleRow } from "../drivers/service.js";
+import { driverView, loadDriver, rulesBrokenBy, vehicleFullView, vehicleFullViews, type VehicleRow } from "../drivers/service.js";
 import { vehicleCountry } from "../drivers/readiness.js";
 import { noticeVehicleReview } from "../drivers/reviewNotices.js";
 import { sendFile } from "../drivers/routes.js";
@@ -190,8 +190,8 @@ async function listVehicles(ex: Executor, who: Principal, input: { cursor?: stri
   const counting = input.cursor ? undefined : countTotal(ex, filtered);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
-  const items = [];
-  for (const r of page) items.push(await vehicleFullView(ex, r as unknown as VehicleRow));
+  // SUP3 P7: the page's facts in a few batched reads, not ~6.4 queries per car one after the other.
+  const items = await vehicleFullViews(ex, page as unknown as VehicleRow[]);
   const last = page[page.length - 1];
   return withTotal({ items, nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.vehicle_id) : null }, await totalAfterPage(counting));
 }

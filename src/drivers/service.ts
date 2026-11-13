@@ -548,6 +548,43 @@ export async function vehicleFullView(ex: Executor, v: VehicleRow, viewer?: { dr
   };
 }
 
+/**
+ * SUP3 P7 (audits/fix-plan-2026-11-13/sup3-admin.md): vehicleFullView of a page of cars for an admin (no viewer), each
+ * fact read once per page: fleets, drivers, the countries' onboarding settings, documents + renewals (5 queries for any
+ * page size; one car at a time it was ~6.4 per car, 322 for 50). The same view, field for field (test/admin/
+ * vehicles_list_batched.test.ts).
+ */
+export async function vehicleFullViews(ex: Executor, rows: VehicleRow[]): Promise<Array<Awaited<ReturnType<typeof vehicleFullView>>>> {
+  if (rows.length === 0) return [];
+  const fleetIds = [...new Set(rows.map((v) => v.fleet_id).filter((id): id is string => id !== null))];
+  const driverIds = [...new Set(rows.map((v) => v.driver_id).filter((id): id is string => id !== null))];
+  // One after the other on purpose: a page never holds more than one pool connection (the pool is what runs out at load).
+  const fleets = fleetIds.length ? await ex.selectFrom("fleets").select(["fleet_id", "country"]).where("fleet_id", "in", fleetIds).execute() : [];
+  const people = driverIds.length ? await ex.selectFrom("drivers").select(["driver_id", "online_status", "vehicle_id", "country"]).where("driver_id", "in", driverIds).execute() : [];
+  const documents = await documentSummariesOf(ex, "vehicle", rows.map((v) => v.vehicle_id));
+  const fleetOf = new Map(fleets.map((f) => [f.fleet_id, f]));
+  const personOf = new Map(people.map((d) => [d.driver_id, d]));
+  const countryOf = (v: VehicleRow): string | null => (v.fleet_id ? fleetOf.get(v.fleet_id)?.country ?? null : v.driver_id ? personOf.get(v.driver_id)?.country ?? null : null);
+  const settings = await onboardingSettingsOf(ex, rows.map(countryOf).filter((c): c is string => Boolean(c)));
+  return rows.map((v) => {
+    const country = countryOf(v);
+    const picker = v.fleet_id && v.driver_id ? personOf.get(v.driver_id) : undefined;
+    const inUse = picker !== undefined && picker.vehicle_id === v.vehicle_id && picker.online_status !== "offline";
+    const rules = country ? settings.get(country) : undefined;
+    const car = { year: v.year, seats: v.seats, fuel: v.fuel ?? null };
+    const ruleProblems = rules ? carRuleProblems(car, rules, v.category_ids) : [];
+    const fit = rules ? [...new Set([...rules.vehicles.categories.filter((r) => r.on).map((r) => r.category), ...EXTRA_CATEGORIES])].filter((c) => categoryProblem(car, rules, c) === null) : undefined;
+    return {
+      ...vehicleView(v),
+      ...(v.fleet_id ? { inUse } : {}),
+      ...(ruleProblems.length > 0 ? { ruleProblems } : {}),
+      ...(fit ? { fitCategories: fit } : {}),
+      documents: documents.get(v.vehicle_id) ?? [],
+      requiredDocuments: rules ? requiredOf(rules, "vehicle") : [],
+    };
+  });
+}
+
 /** v0.18.5 (G2-D5.3): the country's ride categories that are on, and the extras, that the car fits now. */
 export async function fitCategories(ex: Executor, v: Pick<VehicleRow, "year" | "seats"> & { fuel?: Fuel | null }, country: string | null): Promise<string[] | undefined> {
   if (!country) return undefined;

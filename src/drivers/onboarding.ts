@@ -60,6 +60,43 @@ export async function fleetView(ex: Executor, row: FleetRow, viewer: "owner" | "
   };
 }
 
+/**
+ * SUP3 P7 (audits/fix-plan-2026-11-13/sup3-admin.md): fleetView of a page of fleets for an admin, 3 queries for any page
+ * (owners, driver counts, car counts) instead of 3 per fleet one after the other. Field for field the same view
+ * (test/admin/vehicles_list_batched.test.ts).
+ */
+export async function adminFleetViews(ex: Executor, rows: FleetRow[]): Promise<Array<Awaited<ReturnType<typeof fleetView>>>> {
+  if (rows.length === 0) return [];
+  const ids = rows.map((r) => r.fleet_id);
+  const owners = await ex.selectFrom("drivers").select(["driver_id", "first_name", "last_name", "email"]).where("driver_id", "in", [...new Set(rows.map((r) => r.owner_driver_id))]).execute();
+  const drivers = await ex.selectFrom("drivers").select(["fleet_id", (eb) => eb.fn.countAll<string>().as("n")]).where("fleet_id", "in", ids).groupBy("fleet_id").execute();
+  const cars = await ex.selectFrom("vehicles").select(["fleet_id", (eb) => eb.fn.countAll<string>().as("n")]).where("fleet_id", "in", ids).groupBy("fleet_id").execute();
+  const ownerOf = new Map(owners.map((o) => [o.driver_id, o]));
+  const driversOf = new Map(drivers.map((d) => [d.fleet_id, Number(d.n)]));
+  const carsOf = new Map(cars.map((c) => [c.fleet_id, Number(c.n)]));
+  return rows.map((row) => {
+    const owner = ownerOf.get(row.owner_driver_id);
+    if (!owner) throw new Error(`fleet ${row.fleet_id}: owner ${row.owner_driver_id} not found`);
+    return {
+      fleetId: row.fleet_id,
+      name: row.name,
+      orgNumber: row.org_number,
+      ...(row.address ? { address: row.address } : {}),
+      country: row.country,
+      cityId: row.city_id,
+      ownerDriverId: row.owner_driver_id,
+      ownerName: `${owner.first_name} ${owner.last_name}`.trim(),
+      ...(owner.email ? { ownerEmail: owner.email } : {}),
+      status: row.status,
+      ...(row.code && row.status === "approved" ? { code: row.code } : {}),
+      driverCount: driversOf.get(row.fleet_id) ?? 0,
+      vehicleCount: carsOf.get(row.fleet_id) ?? 0,
+      createdAt: row.created_at.toISOString(),
+      version: row.version,
+    };
+  });
+}
+
 /** FleetView: the company, the drivers (owner and admins) and the cars (a member sees the approved ones). */
 export async function fleetFullView(ex: Executor, row: FleetRow, viewer: "owner" | "member" | "admin", now: Date = new Date(), asking?: string) {
   const drivers =
@@ -393,8 +430,8 @@ export async function listFleets(ex: Executor, who: Admin, input: { cursor?: str
   const counting = input.cursor ? undefined : countTotal(ex, filtered);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
-  const items = [];
-  for (const r of page) items.push(maskFleetView(await fleetView(ex, r as unknown as FleetRow, "admin"), who));
+  // SUP3 P7: 3 batched reads for the page, not 3 per fleet one after the other.
+  const items = (await adminFleetViews(ex, page as unknown as FleetRow[])).map((view) => maskFleetView(view, who));
   const last = page[page.length - 1];
   return withTotal({ items, nextCursor: rows.length > input.limit && last ? Buffer.from(`${last.created_at.toISOString()}|${last.fleet_id}`).toString("base64url") : null }, await totalAfterPage(counting));
 }
