@@ -151,7 +151,8 @@ export async function adminCancel(trx: Trx, who: Principal, tripId: string, body
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   // The rider pays nothing (owner decision 33); the admin's note stays in the audit.
   const cancellation = { actor: "admin", reasonCode: body.reasonCode, at: now.toISOString(), fee: null };
-  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "admin", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null } });
+  // S5 J6 (owner 2026-11-13): an end without a paid ride follows only the cancel-fee rules; the admin's change is dropped.
+  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "admin", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null, driver_adjustments_minor: 0 } });
   await stopSearch(trx, cancelled, now);
   await payLostDriver(trx, trip, body.driverBonus, now);
   await releaseDriver(trx, trip.driver_id, now);
@@ -414,11 +415,13 @@ export async function adminComplete(trx: Trx, who: Principal, tripId: string, bo
   refuseOldFare(body);
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   sameCurrency(trip, body.driverPay, "The driver's pay");
+  // Supervisor should-fix 5: a pay for a trip with no driver is refused, never silently dropped.
+  if (body.driverPay !== undefined && trip.driver_id === null) throw badRequest("This trip has no driver.", "driver_pay_no_driver");
   // The rider pays what the normal completion works out; the admin's driverPay never reaches the fare (S5 J6).
   const done = await completeTrip(trx, { actor: "admin", subjectId: who.subjectId }, tripId, { expectedVersion: body.expectedVersion }, now);
   let final = done;
   let pay: { before: Money; after: Money } | null = null;
-  if (body.driverPay !== undefined && done.driver_id) {
+  if (body.driverPay !== undefined && done.driver_id !== null) {
     // contract.json#moneyBase.adminFare: the change is from the pay the normal completion works out; an adjustment entry.
     const change = await driverPayChange(trx, done, body.driverPay);
     pay = { before: { amountMinor: payWithoutTip(done), currency: done.currency }, after: body.driverPay };

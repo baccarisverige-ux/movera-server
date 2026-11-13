@@ -194,6 +194,8 @@ async function failSilentTrip(trx: Trx, trip: TripRow, alert: SilentAlert, now: 
       fare_lines: JSON.stringify([]),
       driver_earnings_minor: 0,
       pickup_pay_minor: 0,
+      // S5 J6 (owner 2026-11-13): an end without a paid ride follows only the cancel-fee rules; the admin's change is dropped.
+      driver_adjustments_minor: 0,
       commission_minor: 0,
       wallet_applied_minor: 0,
       cash_collected_minor: 0,

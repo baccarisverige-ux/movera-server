@@ -42,7 +42,7 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
     now,
     // An owed fee the trip carried stays owed: the trip did not complete (§3.7). v0.18.10 (owner G8 Q1): the driver gets
     // the normal finish (TripProjection.finish) and rates the rider.
-    set: { ...money, cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
+    set: { ...money, ...keptChange(trip, money), cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, ended, now);
   // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
@@ -194,7 +194,7 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
     command: "complete",
     actor: who.actor,
     now,
-    set: { ...money, ended_by_command: "complete", ended_at: now, payment_status: "captured", cash_collected_minor: cash, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
+    set: { ...money, ...keptChange(trip, money), ended_by_command: "complete", ended_at: now, payment_status: "captured", cash_collected_minor: cash, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, done, now);
   // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
@@ -265,4 +265,15 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
   const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
   await appendTripEvent(trx, { tripId, kind: "rating_updated", version: updated.version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence: Number(updated.sequence) + 1 }) });
   return answer === null ? { status: 204, body: null } : { status: 201, body: answer };
+}
+
+/**
+ * S5 J6 (supervisor must-fix 3; contract.json#moneyBase.adminFare "the pay never below 0"): at a paid end the admin's
+ * kept change is capped so the driver's pay without the tip is at least 0 after a downward re-price (the rider's early
+ * end, the driver's end on board, a shorter route). The capped value goes on the row and so into the adjustment entry.
+ */
+export function keptChange(trip: TripRow, money: { driver_earnings_minor?: number }): { driver_adjustments_minor: number } {
+  const change = Number(trip.driver_adjustments_minor ?? 0);
+  const pay = Number(money.driver_earnings_minor ?? trip.driver_earnings_minor ?? 0) + Number(trip.pickup_pay_minor ?? 0) + Number(trip.driver_bonus_minor ?? 0);
+  return { driver_adjustments_minor: change < 0 ? Math.max(change, -Math.max(0, pay)) : change };
 }

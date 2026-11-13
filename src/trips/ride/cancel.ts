@@ -19,7 +19,7 @@ import { notify } from "../../notifications/service.js";
 import { contract } from "../../contract/contract.js";
 import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet } from "./money.js";
 import { newPin } from "./steps.js";
-import { creditTrip, earlyEndPrice, type FrozenMoney } from "./finish.js";
+import { creditTrip, earlyEndPrice, keptChange, type FrozenMoney } from "./finish.js";
 import { noticeLanguage, tripZoneId } from "../../notifications/noticeLanguage.js";
 
 /* ---------------------------------------------------------------- no-show */
@@ -52,7 +52,8 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
     command: "no_show",
     actor,
     now,
-    set: { cancellation: JSON.stringify(cancellation), ended_by_command: "no_show", ended_at: now, search_step: null, ...(fee ? feeColumns(fee, share) : {}) },
+    // S5 J6 (owner 2026-11-13): an end without a paid ride follows only the cancel-fee rules; the admin's change is dropped.
+    set: { cancellation: JSON.stringify(cancellation), ended_by_command: "no_show", ended_at: now, search_step: null, driver_adjustments_minor: 0, ...(fee ? feeColumns(fee, share) : {}) },
   });
   if (fee && trip.driver_id) {
     await chargeRiderFee(trx, ended, "no_show", fee, now);
@@ -204,7 +205,7 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
       command: "cancel",
       actor: "driver",
       now,
-      set: { ...money, cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet },
+      set: { ...money, ...keptChange(trip, money), cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet },
     });
     await creditTrip(trx, ended, now);
     // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.

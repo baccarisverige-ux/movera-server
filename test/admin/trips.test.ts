@@ -11,6 +11,7 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 import { adminSession } from "../support/admin.js";
 import { liftEndedPauses } from "../../src/riders/moderation.js";
+import { fileApproval } from "../../src/admin/approvals.js";
 
 let database: TestDatabase;
 let app: FastifyInstance;
@@ -724,5 +725,107 @@ describe("J6: the admin types the driver's pay (driverPay); the rider pays the b
     expect(back.json().driverAdjustments).toBeUndefined();
     const row = await database.db.selectFrom("trips").select("driver_adjustments_minor").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
     expect(Number(row.driver_adjustments_minor)).toBe(0);
+  });
+});
+
+/* Supervisor NO-GO 2026-11-13 (audits/impact/j6-driverpay-supervisor.md) + owner decision 2026-11-13: a trip that ends
+ * without a paid ride follows only the cancel-fee rules; the admin's change never reaches the next driver; the pay
+ * never goes below 0. */
+describe("J6 round 2: the admin's change is cleared or capped where the money says so", () => {
+  beforeEach(clearFees);
+  const SEK = (amountMinor: number) => ({ amountMinor, currency: "SEK" });
+  const payOf = (p: { driverTotal?: { amountMinor: number }; tip?: { amount?: { amountMinor: number } } }) => (p.driverTotal?.amountMinor ?? 0) - (p.tip?.amount?.amountMinor ?? 0);
+  const adjustedRow = (tripId: string) => database.db.selectFrom("trips").select(["driver_adjustments_minor", "version"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+  /** An accepted trip whose driver pay the admin raised by 15 kr. */
+  async function raised() {
+    const { tripId, version } = await accepted();
+    const before = payOf(await adminView(tripId));
+    const res = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: version, driverPay: SEK(before + 1500), reason: "Far pickup" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().driverAdjustments).toEqual(SEK(1500));
+    return { tripId, version: res.json().version as number };
+  }
+
+  it("must-fix 1: a booked ride given back to the list (admin reassign of a held booked ride) clears the old driver's change", async () => {
+    const { tripId, version } = await raised();
+    await database.db.updateTable("trips").set({ kind: "scheduled" }).where("trip_id", "=", tripId).execute();
+    const back = await adminPost(`/trips/${tripId}/reassign`, { expectedVersion: version, reasonCode: "admin_operational", note: "Driver sick" });
+    expect(back.statusCode, back.body).toBe(200);
+    expect(Number((await adjustedRow(tripId)).driver_adjustments_minor)).toBe(0);
+    expect((await adminView(tripId)).driverAdjustments).toBeUndefined();
+  });
+
+  it("must-fix 2: rider cancel and admin cancel after the change: no change on the row, nothing shown, no adjustment entry", async () => {
+    const r = await raised();
+    const cancelled = await call(app, "POST", `/trips/${r.tripId}/cancel`, rider, { expectedVersion: r.version, reasonCode: "plans_changed" });
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    expect(Number((await adjustedRow(r.tripId)).driver_adjustments_minor)).toBe(0);
+    const viewR = await adminView(r.tripId);
+    expect(viewR.driverAdjustments).toBeUndefined();
+    expect((viewR.earningsBreakdown ?? []).map((l: { code: string }) => l.code)).not.toContain("adjustment");
+    expect((await entries(r.tripId)).filter((e) => e.kind === "adjustment")).toEqual([]);
+
+    const a = await raised();
+    const byAdmin = await adminPost(`/trips/${a.tripId}/cancel`, { expectedVersion: a.version, reasonCode: "admin_operational", note: "Road closed" });
+    expect(byAdmin.statusCode, byAdmin.body).toBe(200);
+    expect(Number((await adjustedRow(a.tripId)).driver_adjustments_minor)).toBe(0);
+    expect(byAdmin.json().driverAdjustments).toBeUndefined();
+    expect(byAdmin.json().moneySplit.driverTotal).toEqual(byAdmin.json().driverTotal);
+  });
+
+  it("must-fix 2: a no-show after the change pays only the fee share; a later driver-pay starts from it", async () => {
+    const { tripId, version } = await raised();
+    await step(tripId, "head-to-pickup", version);
+    await step(tripId, "arrive", version + 1);
+    await advance(5 * 60);
+    const noShow = await step(tripId, "no-show", version + 2);
+    expect(noShow.statusCode, noShow.body).toBe(200);
+    expect(Number((await adjustedRow(tripId)).driver_adjustments_minor)).toBe(0);
+    const view = await adminView(tripId);
+    const share = (await entries(tripId)).find((e) => e.kind === "fee_share");
+    expect(view.driverAdjustments).toBeUndefined();
+    expect(view.driverTotal).toEqual(SEK(Number(share?.amount_minor)));
+    expect((await entries(tripId)).filter((e) => e.kind === "adjustment")).toEqual([]);
+  });
+
+  it("must-fix 3: a kept negative change is capped at the paid end so the pay is never below 0 (row and entry)", async () => {
+    const { tripId, version } = await accepted();
+    const { version: v } = await toBoard(tripId, version, 60);
+    await step(tripId, "start", v);
+    const down = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: v + 1, driverPay: SEK(0), reason: "Driver went the wrong way" });
+    expect(down.statusCode, down.body).toBe(200);
+    expect(payOf(down.json())).toBe(0);
+    // The rider ends at once: the driven price is far below the booked one, so the pay without the change shrinks.
+    const ended = await call(app, "POST", `/trips/${tripId}/end-early`, rider, { expectedVersion: down.json().version, reasonCode: "something_else" });
+    expect(ended.statusCode, ended.body).toBe(200);
+    const view = await adminView(tripId);
+    expect(payOf(view)).toBe(0);
+    const paid = await entries(tripId);
+    const earned = paid.filter((e) => e.kind !== "adjustment").reduce((s, e) => s + Number(e.amount_minor), 0);
+    const adjustment = paid.filter((e) => e.kind === "adjustment").reduce((s, e) => s + Number(e.amount_minor), 0);
+    expect(earned + adjustment).toBe(0);
+    expect(Number((await adjustedRow(tripId)).driver_adjustments_minor)).toBe(adjustment);
+  });
+
+  it("should-fix: admin complete with driverPay on a trip with no driver is refused with 400 driver_pay_no_driver", async () => {
+    const { tripId } = await book();
+    const trip = await adminView(tripId);
+    const res = await adminPost(`/trips/${tripId}/complete`, { expectedVersion: trip.version, note: "x", driverPay: SEK(1000) });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json()).toMatchObject({ reason: "driver_pay_no_driver" });
+  });
+
+  it("should-fix: an approval filed before J6 that carries fare is refused when approved (400) and stays pending; nothing written", async () => {
+    const { tripId, version } = await accepted();
+    const filer = await adminSession(app, database.db, "dispatcher", { now: clock.now });
+    const pending = await database.db.transaction().execute((trx) =>
+      fileApproval(trx, { actor: "admin", subjectId: filer.adminId, sessionId: "test", zones: ["Z001"], role: "dispatcher" }, { action: "trip.adjust", targetType: "trip", targetId: tripId, zoneId: "Z001", payload: { tripId, expectedVersion: version, fare: SEK(10000), reason: "old admin" }, approvePermission: "approval.decide" }, clock.now),
+    );
+    const res = await adminPost(`/approvals/${pending.approvalId}/approve`, {});
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json()).toMatchObject({ reason: "fare_is_driver_pay" });
+    const row = await database.db.selectFrom("approvals").select("status").where("approval_id", "=", pending.approvalId).executeTakeFirstOrThrow();
+    expect(row.status).toBe("pending_approval");
+    expect((await adjustedRow(tripId)).version).toBe(version);
   });
 });

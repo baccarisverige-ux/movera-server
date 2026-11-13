@@ -92,7 +92,8 @@ async function expireSearch(trx: Trx, tripId: string, now: Date) {
   await closeOpenOffers(trx, trip, "withdrawn", now, queue);
   await queue.flush(trx, now);
   trip = await trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
-  await applyCommand(trx, trip, { command: "expire", actor: "system", now, set: { ended_by_command: "expire" } });
+  // S5 J6 (owner 2026-11-13): an end without a paid ride follows only the cancel-fee rules; the admin's change is dropped.
+  await applyCommand(trx, trip, { command: "expire", actor: "system", now, set: { ended_by_command: "expire", driver_adjustments_minor: 0 } });
   await endSearchTimers(trx, tripId);
   await endTripSends(trx, tripId, "search_ended", null, now);
 }
@@ -107,7 +108,7 @@ export async function stopBookedNoDriver(trx: Trx, trip: TripRow, now: Date, mar
   await mark();
   const current = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   const searchStep = { id: "nf", kind: "no_driver_found", message: NO_DRIVER_FOUND_TEXT, extraMin: null, at: now.toISOString() };
-  return applyCommand(trx, current, { command: "expire", actor: "system", now, set: { ended_by_command: "expire", ended_at: now, search_step: JSON.stringify(searchStep) } });
+  return applyCommand(trx, current, { command: "expire", actor: "system", now, set: { ended_by_command: "expire", ended_at: now, driver_adjustments_minor: 0, search_step: JSON.stringify(searchStep) } });
 }
 
 /** POST /trips/{tripId}/keep-waiting (owner decision 24). */
