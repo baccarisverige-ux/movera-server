@@ -202,6 +202,29 @@ describe("G3-R1: no position for 5 minutes while online → set offline by the s
     });
   }
 
+  // G34 load test P9 (audits/load-g34/PROOF-2026-11-13.md): the sweep counts from the stored fix (received_at) before
+  // online_since (presence.ts setOfflineWithoutPosition). Guard: on the real go-online path a day-old stored fix never
+  // takes him offline right after going online, because going online needs a fresh fix and stores it.
+  for (const who of [SE, FR]) {
+    it(`${who.country}: G34 P9 — a day-old stored fix does not set him offline right after he goes online`, async () => {
+      await ensureMaintenanceTimers(database.db, clock.now);
+      expect((await goOnline(who, fix(who.home))).statusCode).toBe(200);
+      expect((await call(app, "POST", "/driver/availability", await headersOf(who.phone, "driver"), { expectedVersion: (await me(who)).version, onlineStatus: "offline" })).statusCode).toBe(200);
+      const dayAgo = new Date(clock.now.getTime() - 24 * 3600_000);
+      await database.db.updateTable("driver_locations").set({ received_at: dayAgo, measured_at: dayAgo }).where("driver_id", "=", who.id).execute();
+      // Without a fix in the request he cannot go online at all (the old stored one is not fresh).
+      expect((await goOnline(who)).statusCode).toBe(409);
+      expect((await goOnline(who, fix(who.home))).statusCode).toBe(200);
+      const stored = await database.db.selectFrom("driver_locations").select("received_at").where("driver_id", "=", who.id).executeTakeFirstOrThrow();
+      expect(stored.received_at.getTime()).toBe(clock.now.getTime());
+      // Two sweeps (every 30 s) right after going online, and up to 4 min 50 s: still online.
+      await advance(60);
+      expect((await row(who)).online_status).toBe("online");
+      await advance(230);
+      expect((await row(who)).online_status).toBe("online");
+    });
+  }
+
   it("positions keep him online; a driver on a trip is never set offline; the zone's noFixMinutes is used", async () => {
     await ensureMaintenanceTimers(database.db, clock.now);
     await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "FR-PC", version: 1, document: JSON.stringify({ offers: { autoOffline: { noFixMinutes: 10 } } }), published_at: clock.now, published_by: null }).execute();

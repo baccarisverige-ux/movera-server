@@ -1,4 +1,4 @@
-import { majorText, toMajorNumber, type CurrencyCode } from "../rules/money.js";
+import { CURRENCY_CODES, exponentOf, majorText, toMajorNumber, type CurrencyCode } from "../rules/money.js";
 import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
@@ -199,13 +199,34 @@ async function bookedCauses(ctx: Ctx): Promise<Cause[]> {
   return out;
 }
 
+/**
+ * Sup1 P10 (G34 proof: every sweep sent ALL documents (21,579 at 2k) and ALL pending payouts (41,428) to Node): the SQL now
+ * keeps only rows that can reach a level under ANY country's settings (and the defaults). Node still checks each row
+ * against its own country's limits exactly as before, so the alerts are the same; only rows that never alert stay home.
+ */
+function allSettings(ctx: Ctx): AlertSettings[] {
+  return [new AlertSettings({}), ...ctx.settings.values()];
+}
+/** The largest doc_expiring limit (days) of any country that has the kind on; 400 (the old fixed window) at most. */
+export function docHorizonDays(ctx: Ctx): number | null {
+  const days = allSettings(ctx).map((s) => s.kind("doc_expiring")).filter((k) => k.on).flatMap((k) => [k.limits.info, k.limits.important, k.limits.critical]).filter((v): v is number => typeof v === "number");
+  return days.length === 0 ? null : Math.min(400, Math.max(...days) + 1);
+}
+/** The smallest payout_big limit of any country with the kind on, in the smallest minor unit of any currency: a lower bound. */
+export function payoutFloorMinor(ctx: Ctx): number | null {
+  const limits = allSettings(ctx).map((s) => s.kind("payout_big")).filter((k) => k.on).flatMap((k) => [k.limits.info, k.limits.important, k.limits.critical]).filter((v): v is number => typeof v === "number");
+  const factor = 10 ** Math.min(...CURRENCY_CODES.map((c) => exponentOf(c)));
+  return limits.length === 0 ? null : Math.floor(Math.min(...limits) * factor);
+}
+
 async function driverCauses(ctx: Ctx): Promise<Cause[]> {
   const out: Cause[] = [];
-  const docs = await sql<{ document_id: string; driver_id: string; type: string; expires_at: Date; first_name: string; zone_id: string | null; country: string | null }>`
+  const horizon = docHorizonDays(ctx);
+  const docs = horizon === null ? { rows: [] } : await sql<{ document_id: string; driver_id: string; type: string; expires_at: Date; first_name: string; zone_id: string | null; country: string | null }>`
     SELECT doc.document_id, doc.driver_id, doc.type, doc.expires_at, d.first_name, d.zone_ids[1] AS zone_id, d.country
       FROM documents doc JOIN drivers d ON d.driver_id = doc.driver_id
      WHERE doc.status IN ('approved', 'expired') AND doc.expires_at IS NOT NULL AND d.account_status IN ('active', 'on_hold')
-       AND doc.expires_at <= ${new Date(ctx.now.getTime() + 400 * DAY)}`.execute(ctx.ex);
+       AND doc.expires_at <= ${new Date(ctx.now.getTime() + horizon * DAY)}`.execute(ctx.ex);
   for (const d of docs.rows) {
     const country = countryOf(ctx, d.zone_id, d.country ?? "SE");
     const k = settingsOf(ctx, country).kind("doc_expiring");
@@ -257,9 +278,10 @@ async function moneyCauses(ctx: Ctx): Promise<Cause[]> {
     const k = settingsOf(ctx, country).kind("refund_approval");
     if (k.on) out.push({ key: `refund_approval:${f.refund_id}`, kind: "refund_approval", country, zoneId: f.zone_id, level: k.level, title: T("A refund of {0} waits for approval", [major(f.amount_minor, f.currency)]), detail: T("{0}", [f.trip_id]), ref: { refundId: f.refund_id, tripId: f.trip_id } });
   }
-  const payouts = await sql<{ payout_id: string; driver_id: string; zone_id: string | null; amount_minor: string; currency: string; first_name: string; country: string | null }>`
+  const floor = payoutFloorMinor(ctx);
+  const payouts = floor === null ? { rows: [] } : await sql<{ payout_id: string; driver_id: string; zone_id: string | null; amount_minor: string; currency: string; first_name: string; country: string | null }>`
     SELECT p.payout_id, p.driver_id, coalesce(p.zone_id, d.zone_ids[1]) AS zone_id, p.amount_minor, p.currency, d.first_name, d.country
-      FROM payouts p JOIN drivers d ON d.driver_id = p.driver_id WHERE p.status = 'pending'`.execute(ctx.ex);
+      FROM payouts p JOIN drivers d ON d.driver_id = p.driver_id WHERE p.status = 'pending' AND p.amount_minor >= ${floor}`.execute(ctx.ex);
   for (const p of payouts.rows) {
     const country = countryOf(ctx, p.zone_id, p.country ?? "SE");
     const k = settingsOf(ctx, country).kind("payout_big");
