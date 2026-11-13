@@ -25,6 +25,7 @@ import { ROUND, WITHDRAW } from "../../src/dispatch/runtime/shared.js";
 import { TRIP_ETA } from "../../src/trips/etaNow.js";
 import { RIDE_CHECK_SCAN } from "../../src/safety/rideCheckServer.js";
 import { listIncidents } from "../../src/safety/incidents.js";
+import { LIST_COUNT } from "../../src/admin/listTotal.js";
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import { createPool } from "../../src/db/db.js";
@@ -90,6 +91,9 @@ let traced: Db;
 let now: Date;
 let liveTrip: TripRow;
 const searchTrip = {} as { row: TripRow };
+
+/** L78-S: the admin lists' first-page count (listTotal.ts), checked by its own case below. */
+const notTotal = (sql: string) => !sql.includes('count(*) as "total"');
 
 const nodes = (n: PlanNode): PlanNode[] => [n, ...(n.Plans ?? []).flatMap(nodes)];
 
@@ -161,7 +165,11 @@ class Rollback extends Error {}
 
 const SUPER: Principal = { actor: "admin", subjectId: "adm_qp", sessionId: "s_qp", zones: ["*"], role: "super", perms: ["support.reply"] };
 
+// L78-S: these cases count the statements a list sends, the first page's total included; wait for the count so it is
+// always there (the production wait of 25 ms is tested in test/admin/list_total.test.ts).
+const WAIT_BEFORE = LIST_COUNT.waitAfterPageMs;
 beforeAll(async () => {
+  LIST_COUNT.waitAfterPageMs = 5000;
   const name = `movera_qp_${randomBytes(6).toString("hex")}`;
   await adminQuery(`CREATE DATABASE ${name} TEMPLATE ${TEMPLATE_DB}`);
   database = { name, pool: createPool(urlFor(name), 10) };
@@ -255,6 +263,7 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
+  LIST_COUNT.waitAfterPageMs = WAIT_BEFORE;
   await traced?.destroy().catch(() => undefined);
   if (database === undefined) return;
   if (!database.pool.ended) await database.pool.end();
@@ -336,7 +345,7 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
 
   // ---- admin ----
   it("fixed (0093 trips_created): admin trip list with no filter reads one page on an index (admin/lists.ts)", async () => {
-    await noProblems(() => listTrips(traced, SUPER, { limit: 50 }, now), (s) => s.includes('from "trips"'));
+    await noProblems(() => listTrips(traced, SUPER, { limit: 50 }, now), (s) => s.includes('from "trips"') && notTotal(s));
   });
   it("S05 A5 fixed (0095 trips_zone_ended/_created): nightly KPI day count reads one zone-day of trips on an index, new riders without a walk of every trip (admin/kpis.ts)", async () => {
     // The day is taken from the data, never from the clock. Trips are in Z002 only in runs of 1,000 (g % 3000 >= 2000,
@@ -386,14 +395,39 @@ describe("hot queries at backlog size (global plan step 64, T4)", () => {
       items = (await listIncidents(traced, SUPER, { limit: 51, status: ["open", "investigating"] })).items.length;
       await listIncidents(traced, ZONE, { limit: 51, status: ["open", "investigating"] });
       await listIncidents(traced, ZONE, { limit: 51 });
-    });
+    }, notTotal);
     expect(items).toBe(40);
     expect(problems, problems.join("\n")).toEqual([]);
-    // Three calls, each: the page, then the positions of its drivers in one read.
-    expect(count).toBe(6);
+    // Three calls, each: the page, then the positions of its drivers in one read; L78-S: + each first page's total
+    // (begin, two SET LOCAL, count, commit; checked by its own case below).
+    expect(count).toBe(3 * 2 + 3 * 5);
   });
   it("admin payout list (admin/payouts.ts:272-284)", async () => {
-    await noProblems(() => listPayouts(traced, SUPER, { limit: 50 }));
+    await noProblems(() => listPayouts(traced, SUPER, { limit: 50 }), notTotal);
+  });
+
+  // L78-S (contract v0.18.78 adminListFilters.total, Rule 33): the first-page count reads every matching row by design,
+  // so it is not held to the page rules above; it runs in its own statement under LIST_COUNT.timeoutMs instead. On these
+  // backlog tables it is exact within the budget, and a count that runs past the budget is left out while the page is
+  // the same.
+  it("L78-S: the list totals at backlog size are exact, or left out with the same page when past the budget", async () => {
+    const before = LIST_COUNT.timeoutMs;
+    const exact = async (text: string) => Number((await database.pool.query<{ n: string }>(text)).rows[0]!.n);
+    try {
+      // Exactness here, not speed: a loaded CI runner must not turn this into a timing test (the time is measured apart).
+      LIST_COUNT.timeoutMs = 10_000;
+      const all = await listTrips(traced, SUPER, { limit: 50 }, now);
+      expect(all.total).toBe(await exact("SELECT count(*) AS n FROM trips"));
+      expect((await listIncidents(traced, { ...SUPER, zones: ["Z001"] }, { limit: 51 })).total).toBe(await exact("SELECT count(*) AS n FROM incidents WHERE zone_id = 'Z001'"));
+      expect((await listPayouts(traced, SUPER, { limit: 50 })).total).toBe(await exact("SELECT count(*) AS n FROM payouts"));
+      LIST_COUNT.timeoutMs = 1;
+      const cut = await listTrips(traced, SUPER, { limit: 50 }, now);
+      expect(cut).not.toHaveProperty("total");
+      expect(cut.items).toEqual(all.items);
+      expect(cut.nextCursor).toBe(all.nextCursor);
+    } finally {
+      LIST_COUNT.timeoutMs = before;
+    }
   });
 
   // ---- money (driver app) ----

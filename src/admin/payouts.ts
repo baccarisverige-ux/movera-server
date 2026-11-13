@@ -7,6 +7,7 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "./audit.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
+import { countTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { standardKey } from "../config/service.js";
 
 /**
@@ -295,14 +296,19 @@ export async function listPayouts(ex: Executor, who: Principal, input: { cursor?
   if (input.driverId) q = q.where("payouts.driver_id", "=", input.driverId);
   if (input.from) q = q.where("payouts.period_end", ">", new Date(input.from));
   if (input.to) q = q.where("payouts.period_start", "<", new Date(input.to));
+  // L78-S (v0.18.78 adminListFilters.total).
+  const filtered = q;
   if (input.cursor) {
     const c = readCursor(input.cursor);
     q = q.where(sql<boolean>`(payouts.created_at, payouts.payout_id) < (${c.at}, ${c.id})`);
   }
-  const rows = await q.orderBy("payouts.created_at", "desc").orderBy("payouts.payout_id", "desc").limit(input.limit + 1).execute();
+  const reading = q.orderBy("payouts.created_at", "desc").orderBy("payouts.payout_id", "desc").limit(input.limit + 1).execute();
+  // The page asked first; the count follows it (L78-S, listTotal.ts).
+  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
-  return { items: page.map((r) => payoutView(r as PayoutRow, "admin")), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null };
+  return withTotal({ items: page.map((r) => payoutView(r as PayoutRow, "admin")), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null }, await totalAfterPage(counting));
 }
 
 /** GET /driver/payouts: the driver's own payouts, totals only. */

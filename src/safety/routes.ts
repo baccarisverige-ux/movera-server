@@ -33,6 +33,9 @@ const ListQuery = {
   severity: z.enum(["low", "medium", "high", "critical"]).optional(),
   kind: z.string().max(64).optional(),
   tripId: ID.optional(),
+  // L78-S (v0.18.78 adminListFilters.incidentsByPerson).
+  driverId: ID.optional(),
+  riderId: ID.optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   ...ZoneFilterQuery,

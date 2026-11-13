@@ -33,6 +33,11 @@ const HOT_QUERIES: Array<[string, string]> = [
   ["trip trace", `select lat, lng from trip_locations where trip_id = 't1' and measured_at >= now() - interval '1 hour' order by measured_at`],
   ["driver earnings", `select sum(amount_minor) from earnings_entries where driver_id = 'd1' and at >= now() - interval '7 days'`],
   ["trip bonus paid (P7-S1)", `select coalesce(sum(amount_minor), 0) from earnings_entries where trip_id = 't1' and kind = 'trip'`],
+  // L78-S (contract v0.18.78 adminListFilters.incidentsByPerson + total): a driver's / rider's cases and their count.
+  ["admin incidents by driver (L78-S)", `select * from incidents where driver_id = 'd1' order by opened_at desc, incident_id desc limit 51`],
+  ["admin incidents by rider (L78-S)", `select * from incidents where rider_id = 'r1' order by opened_at desc, incident_id desc limit 51`],
+  ["admin incidents by driver, count (L78-S)", `select count(*) as "total" from incidents where driver_id = 'd1'`],
+  ["admin incidents by rider, count (L78-S)", `select count(*) as "total" from incidents where rider_id = 'r1'`],
 ];
 
 let database: TestDatabase;

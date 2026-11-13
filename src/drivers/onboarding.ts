@@ -10,6 +10,7 @@ import { schemaProblem } from "../contract/schemas.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { recordAcceptance } from "../documents/service.js";
 import { audit } from "../admin/audit.js";
+import { countTotal, totalAfterPage, withTotal } from "../admin/listTotal.js";
 import { maskFleetView, maskInvitationView } from "../admin/masking.js";
 import { ONBOARDING, COUNTRY_CURRENCY, COUNTRY_TIME_ZONE, ageAt, cityOf, makeFleetCode, normalizeFleetCode } from "./onboardingRules.js";
 import { driverView, loadDriver, releaseCar, vehicleFullView, type DriverRow } from "./service.js";
@@ -381,14 +382,19 @@ export async function listFleets(ex: Executor, who: Admin, input: { cursor?: str
     const text = `%${input.q.trim().replace(/[%_\\]/g, "")}%`;
     q = q.where((eb) => eb.or([eb("name", "ilike", text), eb("org_number", "like", text), eb("code", "=", normalizeFleetCode(input.q!)), eb("fleet_id", "=", input.q!.trim())]));
   }
+  // L78-S (v0.18.78 adminListFilters.total).
+  const filtered = q;
   if (input.cursor) {
     const [at, id] = Buffer.from(input.cursor, "base64url").toString("utf8").split("|");
     q = q.where(sql<boolean>`(created_at, fleet_id) < (${new Date(at!)}, ${id!})`);
   }
-  const rows = await q.orderBy("created_at", "desc").orderBy("fleet_id", "desc").limit(input.limit + 1).execute();
+  const reading = q.orderBy("created_at", "desc").orderBy("fleet_id", "desc").limit(input.limit + 1).execute();
+  // The page asked first; the count follows it (L78-S, listTotal.ts).
+  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const rows = await reading;
   const page = rows.slice(0, input.limit);
   const items = [];
   for (const r of page) items.push(maskFleetView(await fleetView(ex, r as unknown as FleetRow, "admin"), who));
   const last = page[page.length - 1];
-  return { items, nextCursor: rows.length > input.limit && last ? Buffer.from(`${last.created_at.toISOString()}|${last.fleet_id}`).toString("base64url") : null };
+  return withTotal({ items, nextCursor: rows.length > input.limit && last ? Buffer.from(`${last.created_at.toISOString()}|${last.fleet_id}`).toString("base64url") : null }, await totalAfterPage(counting));
 }
