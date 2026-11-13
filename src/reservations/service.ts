@@ -18,6 +18,7 @@ import { EstimateRouter, type Router } from "../maps/routing.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
 import { DISPATCH, dispatchKm } from "../dispatch/engine.js";
 import { commissionOf } from "../rules/commission.js";
+import { TERMINAL } from "../rules/transitions.js";
 import { startSearch, stopBookedNoDriver, stopSearch } from "../dispatch/runtime.js";
 import { driverTimes, freeByTime, leaveAtOf, planOf, reservationSettings, rideTypeOf, windowError, type Plan, type ReservationSettings, type RideTypeKey } from "./plan.js";
 import { pokeAlerts } from "../alerts/detector.js";
@@ -156,6 +157,19 @@ export async function checkWindow(ex: Executor, zoneId: string, scheduledAt: Dat
   const error = windowError(now, scheduledAt, s);
   if (error === "booking_too_soon") throw badRequest(`Book at least ${s.minAheadMin} minutes ahead.`, error);
   if (error === "booking_too_far") throw badRequest(`Book at most ${s.maxAheadDays} days ahead.`, error);
+}
+
+/**
+ * v0.18.81 B1.34 (contract.json#bookLater.riderCap, owner Q94 "A) Yes", 2026-11-13: default 3): a rider holds at most
+ * maxOpenPerRider booked rides that have not ended (any zone; the limit of the zone booked). The caller holds the rider
+ * row lock (FOR UPDATE), so two bookings at the same moment are counted one after the other and never both pass.
+ */
+export async function checkOpenBookedCap(ex: Executor, riderId: string, zoneId: string): Promise<void> {
+  const s = await settingsFor(ex, zoneId);
+  const row = await ex.selectFrom("trips").select((eb) => eb.fn.countAll<string>().as("n")).where("rider_id", "=", riderId).where("kind", "=", "scheduled").where("status", "not in", [...TERMINAL]).executeTakeFirst();
+  if (Number(row?.n ?? 0) >= s.maxOpenPerRider) {
+    throw new ApiError("conflict", `You can have at most ${s.maxOpenPerRider} booked rides. Cancel one to book another.`, { reason: "booked_rides_limit" });
+  }
 }
 
 /** The demo admin's Max Trip Distance (Reservations): a booked route longer than maxTripKm is refused at quote. */

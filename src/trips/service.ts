@@ -1,5 +1,5 @@
 import { writeAutoMessage } from "./messages.js";
-import { checkWindow, planBookedRide } from "../reservations/service.js";
+import { checkOpenBookedCap, checkWindow, planBookedRide } from "../reservations/service.js";
 import { appendTripEvent } from "../db/tripLog.js";
 import { checkPaymentMethod } from "./finish.js";
 import { commissionOf } from "../rules/commission.js";
@@ -101,11 +101,16 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   if (zoneRow?.open !== true) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
   // v0.18.17 (contract.json#bookLater.window): the window again at booking (the quote may be minutes old).
   if (body.kind === "scheduled" && quote.scheduled_at) await checkWindow(trx, quote.zone_id, quote.scheduled_at, now);
-  const rider = await trx.selectFrom("riders").select(["status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("rider_id", "=", riderId).executeTakeFirstOrThrow();
+  // v0.18.81 B1.34 (contract.json#bookLater.riderCap): a booked ride locks the rider row first, so two bookings of one
+  // rider at the same moment are counted one after the other (lock order quotes → riders, as before; live rides unchanged).
+  const riderRead = trx.selectFrom("riders").select(["status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("rider_id", "=", riderId);
+  const rider = await (body.kind === "scheduled" ? riderRead.forUpdate() : riderRead).executeTakeFirstOrThrow();
   // v0.18.39 A2: a pause that ended lets the rider book before the hourly sweep clears it.
   if (riderBlocked(rider, now)) throw suspendedError(rider);
   // v0.10.0 §19 Legal: new terms published with reaccept must be accepted before booking.
   if (!(await termsAccepted(trx, "rider", riderId, [quote.zone_id]))) throw new ApiError("conflict", "Accept the new terms first.", { reason: TERMS_REASON });
+  // v0.18.81 B1.34 (owner Q94 "A) Yes", default 3): at most maxOpenPerRider booked rides that have not ended.
+  if (body.kind === "scheduled") await checkOpenBookedCap(trx, riderId, quote.zone_id);
 
   const tripId = newId("trp", now.getTime());
   const driverEarnings = Number(quote.driver_earnings_minor);
