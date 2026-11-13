@@ -431,11 +431,14 @@ describe("refunds and the wallet", () => {
   });
 });
 
+const riderVersion = async (id: string) => (await database.db.selectFrom("riders").select("version").where("rider_id", "=", id).executeTakeFirstOrThrow()).version;
+
 describe("v0.18.39 fix job 0 (A2): Add money to wallet (owner G12 Q5, Q-D, build-spec Q1/Q2)", () => {
   it("SE: finance adds kr with a reason; history, push and audit; limits and currency are checked", async () => {
     await completedTrip();
     await clearFees();
-    const credit = (body: Record<string, unknown>, who = finance, id = riderId) => adminPost(`/riders/${id}/wallet-credit`, body, who);
+    // v0.18.82 S5 J4 (moneyBase.versionGuard): each click carries the rider version the admin last saw.
+    const credit = async (body: Record<string, unknown>, who = finance, id = riderId) => adminPost(`/riders/${id}/wallet-credit`, { expectedVersion: await riderVersion(id), ...body }, who);
     expect((await credit({ amount: { amountMinor: 5000, currency: "SEK" }, reason: "Long wait" }, dispatcher)).statusCode).toBe(403);
     expect((await credit({ amount: { amountMinor: 5000, currency: "SEK" }, reason: " " })).statusCode).toBe(400);
     expect((await credit({ amount: { amountMinor: -100, currency: "SEK" }, reason: "x" })).statusCode).toBe(400);
@@ -469,11 +472,11 @@ describe("v0.18.39 fix job 0 (A2): Add money to wallet (owner G12 Q5, Q-D, build
   it("FR: a rider seen only in Paris gets €; a rider with no country is refused", async () => {
     const { headers } = await signIn(app, TEST_PHONES[5]!, "rider");
     const id = (await call(app, "GET", "/rider/profile", headers)).json().riderId as string;
-    expect((await adminPost(`/riders/${id}/wallet-credit`, { amount: { amountMinor: 1000, currency: "EUR" }, reason: "Goodwill" }, finance)).json()).toMatchObject({ reason: "rider_country_unknown" });
+    expect((await adminPost(`/riders/${id}/wallet-credit`, { expectedVersion: await riderVersion(id), amount: { amountMinor: 1000, currency: "EUR" }, reason: "Goodwill" }, finance)).json()).toMatchObject({ reason: "rider_country_unknown" });
     await database.db.updateTable("riders").set({ last_seen_zone_id: "FR-PC" }).where("rider_id", "=", id).execute();
-    expect((await adminPost(`/riders/${id}/wallet-credit`, { amount: { amountMinor: 1000, currency: "SEK" }, reason: "x" }, finance)).json()).toMatchObject({ reason: "wallet_currency_mismatch" });
-    expect((await adminPost(`/riders/${id}/wallet-credit`, { amount: { amountMinor: 25_001, currency: "EUR" }, reason: "x" }, finance)).json()).toMatchObject({ reason: "wallet_credit_too_large" });
-    const ok = await adminPost(`/riders/${id}/wallet-credit`, { amount: { amountMinor: 25_000, currency: "EUR" }, reason: "Goodwill" }, finance);
+    expect((await adminPost(`/riders/${id}/wallet-credit`, { expectedVersion: await riderVersion(id), amount: { amountMinor: 1000, currency: "SEK" }, reason: "x" }, finance)).json()).toMatchObject({ reason: "wallet_currency_mismatch" });
+    expect((await adminPost(`/riders/${id}/wallet-credit`, { expectedVersion: await riderVersion(id), amount: { amountMinor: 25_001, currency: "EUR" }, reason: "x" }, finance)).json()).toMatchObject({ reason: "wallet_credit_too_large" });
+    const ok = await adminPost(`/riders/${id}/wallet-credit`, { expectedVersion: await riderVersion(id), amount: { amountMinor: 25_000, currency: "EUR" }, reason: "Goodwill" }, finance);
     expect(ok.statusCode, ok.body).toBe(200);
     expect(ok.json().wallet).toEqual({ amountMinor: 25_000, currency: "EUR" });
     const note = await database.db.selectFrom("notifications").select(["title", "body"]).where("subject_id", "=", id).where("kind", "=", "wallet_credit").executeTakeFirstOrThrow();

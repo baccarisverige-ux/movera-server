@@ -21,7 +21,9 @@ const WC = (contract as unknown as {
 }).walletCredit;
 const CURRENCY: Record<string, string> = { SE: "SEK", FR: "EUR", TN: "TND" };
 
+/** v0.18.82 S5 J4 (contract.json#moneyBase.versionGuard, owner 106): the Rider.version the admin last saw; required. */
 export const WalletCreditBody = z.object({
+  expectedVersion: z.number().int().min(1),
   amount: z.object({ amountMinor: z.number().int().positive(), currency: z.string().regex(/^[A-Z]{3}$/) }),
   reason: z.string().trim().min(1).max(WC.reasonMax),
 });
@@ -58,9 +60,12 @@ export async function creditRiderWallet(trx: Trx, who: Principal, riderId: strin
     const seen = await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).where(riderInZones(zones)).executeTakeFirst();
     if (!seen) throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
   }
+  // v0.18.82 S5 J4 (moneyBase.versionGuard, owner 106 "refuse a second click"): checked on the locked rider row, so a
+  // second click (another Idempotency-Key, the same version) gets 409 with the fresh rider and writes nothing.
   const place = await riderPlace(trx, riderId);
   const country = place?.country;
   const currency = country ? CURRENCY[country] : undefined;
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The rider changed since you last saw them.", { projection: adminRiderView(row, currency ?? body.amount.currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who) });
   if (!place || !country || !currency) throw new ApiError("conflict", "The rider's country is not known yet (no trip and no zone).", { reason: "rider_country_unknown" });
   if (body.amount.currency !== currency) throw badRequest(`This rider pays in ${currency}.`, "wallet_currency_mismatch");
   const max = await walletCreditMax(trx, country);

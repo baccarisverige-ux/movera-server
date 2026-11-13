@@ -98,7 +98,7 @@ function bodyFor(route: string): Json | undefined {
     "POST /admin/riders/:riderId/status": { ...v, status: "suspended" },
     "POST /admin/riders/:riderId/moderation": { ...v, level: "warning", reason: "Matrix check" },
     "POST /admin/drivers/:driverId/payout-hold": { held: true, reason: "Matrix check" },
-    "POST /admin/riders/:riderId/wallet-credit": { amount: { amountMinor: 100, currency: "SEK" }, reason: "Matrix check" },
+    "POST /admin/riders/:riderId/wallet-credit": { ...v, amount: { amountMinor: 100, currency: "SEK" }, reason: "Matrix check" },
     "POST /admin/payouts/runs/approve": { country: "SE", periodEnd: "2026-11-02T07:00:00.000Z", reason: "Matrix check" },
     "POST /admin/riders/:riderId/fees/:tripId/mark-paid": { reason: "Matrix check" },
     "POST /admin/documents/:documentId/review": { decision: "rejected" },

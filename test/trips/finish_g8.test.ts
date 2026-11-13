@@ -107,6 +107,8 @@ beforeEach(async () => {
   await moveTo(SPOT_A);
 });
 
+/** v0.18.82 S5 J4 (moneyBase.versionGuard): the trip version the admin last saw, for driver-pay. */
+const tripVersion = async (tripId: string) => (await database.db.selectFrom("trips").select("version").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).version;
 const step = (tripId: string, path: string, version: number, body: Doc = {}) => call(app, "POST", `/trips/${tripId}/${path}`, driverA.headers, { expectedVersion: version, ...body });
 const view = async (tripId: string, who: Record<string, string>) => (await call(app, "GET", `/trips/${tripId}`, who)).json();
 const book = async (pickup: Doc, dropoff: Doc, paymentMethod = "cash", stops: Doc[] = []) => {
@@ -515,7 +517,7 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
     const sent = await call(app, "POST", `/admin/trips/${tripId}/receipt/resend`, admin.headers, { reason: "Rider asked" });
     expect(sent.statusCode, sent.body).toBe(200);
     expect((await database.db.selectFrom("notifications").select("title").where("notification_id", "=", sent.json().notificationId).executeTakeFirstOrThrow()).title).toBe("Votre reçu");
-    const paid = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: 1000, currency: "SEK" }, reason: "Wait" });
+    const paid = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { expectedVersion: await tripVersion(tripId), change: { amountMinor: 1000, currency: "SEK" }, reason: "Wait" });
     expect(paid.statusCode, paid.body).toBe(200);
     expect((await database.db.selectFrom("notifications").select("title").where("kind", "=", "driver_pay_changed").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).title).toBe("Votre part");
     await database.db.updateTable("trips").set({ zone_id: "Z001" }).where("trip_id", "=", tripId).execute();
@@ -524,12 +526,12 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
   it("driver pay: +50 kr after the end moves his one number, an earnings entry, audit and a notice; never below 0; not before the end", async () => {
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
     const live = await accepted();
-    const notEnded = await call(app, "POST", `/admin/trips/${live.tripId}/driver-pay`, admin.headers, { change: { amountMinor: 5000, currency: "SEK" }, reason: "x" });
+    const notEnded = await call(app, "POST", `/admin/trips/${live.tripId}/driver-pay`, admin.headers, { expectedVersion: await tripVersion(live.tripId), change: { amountMinor: 5000, currency: "SEK" }, reason: "x" });
     expect([notEnded.statusCode, notEnded.json().reason]).toEqual([409, "driver_pay_not_ended"]);
     await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", live.tripId).execute();
     await database.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", driverA.id).execute();
     const { tripId, done } = await finished();
-    const paid = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: 5000, currency: "SEK" }, reason: "Long wait at the airport" });
+    const paid = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { expectedVersion: await tripVersion(tripId), change: { amountMinor: 5000, currency: "SEK" }, reason: "Long wait at the airport" });
     expect(paid.statusCode, paid.body).toBe(200);
     expect(paid.json().driverTotal.amountMinor).toBe(done.driverTotal.amountMinor + 5000);
     expect(paid.json().driverAdjustments).toEqual({ amountMinor: 5000, currency: "SEK" });
@@ -540,7 +542,7 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
     const payNotice = await database.db.selectFrom("notifications").select(["kind", "deep_link"]).where("kind", "=", "driver_pay_changed").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
     // v0.18.49 §71 (owner Q9): one spelling for trip links, trips/{id}.
     expect(payNotice.deep_link).toBe(`movera-driver://trips/${tripId}`);
-    const below = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: -90_000, currency: "SEK" }, reason: "x" });
+    const below = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { expectedVersion: await tripVersion(tripId), change: { amountMinor: -90_000, currency: "SEK" }, reason: "x" });
     expect([below.statusCode, below.json().reason]).toEqual([400, "driver_pay_below_zero"]);
   });
 
@@ -602,7 +604,7 @@ describe("checker fixes", () => {
     expect(a.moneySplit.movera.amountMinor).toBe(start.moneySplit.movera.amountMinor - 1000);
     expect((await call(app, "POST", `/admin/trips/${tripId}/refund`, admin.headers, { expectedVersion: a.version, amount: { amountMinor: 1000, currency: "SEK" }, reason: "Detour", fromDriver: true })).statusCode).toBe(201);
     a = await sums();
-    expect((await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: 3000, currency: "SEK" }, reason: "Long wait" })).statusCode).toBe(200);
+    expect((await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { expectedVersion: await tripVersion(tripId), change: { amountMinor: 3000, currency: "SEK" }, reason: "Long wait" })).statusCode).toBe(200);
     const end = await sums();
     expect(end.moneySplit.movera.amountMinor).toBe(a.moneySplit.movera.amountMinor - 3000);
   });
@@ -610,22 +612,25 @@ describe("checker fixes", () => {
   it("(2) one pay change is at most the country's max (SE 1000 kr default, set per zone); (7) a refund from the driver never takes him below 0", async () => {
     const { tripId, done } = await finished();
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
-    const big = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: 100_100, currency: "SEK" }, reason: "x" });
+    const big = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { expectedVersion: await tripVersion(tripId), change: { amountMinor: 100_100, currency: "SEK" }, reason: "x" });
     expect([big.statusCode, big.json().reason]).toEqual([400, "driver_pay_above_max"]);
     await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "Z001", version: 1, document: JSON.stringify({ country: "SE", currency: "SEK", tips: [], raiseSteps: [], driverBonus: { defaultLimit: { amountMinor: 20000, currency: "SEK" }, hardMax: { amountMinor: 100000, currency: "SEK" } }, driverPayChangeMax: { amountMinor: 5000, currency: "SEK" } }), published_at: clock.now, published_by: null }).onConflict((c) => c.doNothing()).execute();
-    const over = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: -5100, currency: "SEK" }, reason: "x" });
+    const over = await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { expectedVersion: await tripVersion(tripId), change: { amountMinor: -5100, currency: "SEK" }, reason: "x" });
     expect(over.json().reason).toBe("driver_pay_above_max");
     await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").where("zone_id", "=", "Z001").execute();
     // Take the driver to 0 with a pay change, then a refund from him takes nothing more.
     const total = done.driverTotal.amountMinor;
-    expect((await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { change: { amountMinor: -total, currency: "SEK" }, reason: "Wrong trip" })).statusCode).toBe(200);
+    expect((await call(app, "POST", `/admin/trips/${tripId}/driver-pay`, admin.headers, { expectedVersion: await tripVersion(tripId), change: { amountMinor: -total, currency: "SEK" }, reason: "Wrong trip" })).statusCode).toBe(200);
     const v = (await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json().version;
     expect((await call(app, "POST", `/admin/trips/${tripId}/refund`, admin.headers, { expectedVersion: v, amount: { amountMinor: 1000, currency: "SEK" }, reason: "x", fromDriver: true })).statusCode).toBe(201);
     expect((await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json().driverTotal.amountMinor).toBe(0);
   });
 
   it("(3) a typed tip is never unlimited; (8) a refused tip keeps the stars", async () => {
-    expect(tipRulesOf({ tipRules: { customAmount: true } }, "TN", "TND", [1000, 3000]).customMax).toEqual({ amountMinor: 60000, currency: "TND" });
+    // v0.18.82 (configDefaults.tipRules.customMax.TN, owner Q-S5-6): Tunisia now has its own default, 30 DT (was 20 × the
+    // highest preset = 60 DT). A country with no default still gets 20 × the highest preset, never unlimited.
+    expect(tipRulesOf({ tipRules: { customAmount: true } }, "TN", "TND", [1000, 3000]).customMax).toEqual({ amountMinor: 30000, currency: "TND" });
+    expect(tipRulesOf({ tipRules: { customAmount: true } }, "XX", "TND", [1000, 3000]).customMax).toEqual({ amountMinor: 60000, currency: "TND" });
     const { tripId } = await finished();
     const rated = await call(app, "POST", `/trips/${tripId}/rating`, rider, { stars: 5, tip: { amountMinor: 1500, currency: "SEK" } });
     expect(rated.statusCode, rated.body).toBe(201);

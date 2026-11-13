@@ -85,7 +85,7 @@ describe("§87 notice language: person, else country (TN fr), else en", () => {
   it("wallet credit to a TN rider with no language: French (fail-before: Swedish)", async () => {
     const { riderId } = await people("TN-TC");
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
-    const res = await call(app, "POST", `/admin/riders/${riderId}/wallet-credit`, admin.headers, { amount: { amountMinor: 5000, currency: "TND" }, reason: "Goodwill" });
+    const res = await call(app, "POST", `/admin/riders/${riderId}/wallet-credit`, admin.headers, { expectedVersion: (await database.db.selectFrom("riders").select("version").where("rider_id", "=", riderId).executeTakeFirstOrThrow()).version, amount: { amountMinor: 5000, currency: "TND" }, reason: "Goodwill" });
     expect(res.statusCode, res.body).toBe(200);
     const notice = (await notices(riderId)).find((n) => n.kind === "wallet_credit")!;
     expect(notice.title).toBe(C.walletCredit.riderText["pushTitle"]!.fr);
