@@ -107,11 +107,12 @@ export const DB_DOWN_MAX_MS = 30_000;
  * the lane an SOS escalation, the alert sweep or a booked ride needs. The general lanes' query stays on the partial
  * index timers_due_general (0091): its NOT IN list is a superset of the index's, which Postgres proves implies it.
  */
-export function timerLanes(o: { dispatchKinds: string[]; tripKinds: string[]; timerLanes: number; dispatchLanes: number; housekeepingKinds?: string[]; housekeepingLanes?: number }): TimerLane[] {
+export function timerLanes(o: { dispatchKinds: string[]; tripKinds: string[]; timerLanes: number; dispatchLanes: number; housekeepingKinds?: string[]; housekeepingLanes?: number; tripLanes?: number }): TimerLane[] {
   const housekeeping = o.housekeepingKinds ?? [];
   return [
     ...Array.from({ length: Math.max(1, o.dispatchLanes) }, () => ({ kinds: o.dispatchKinds })),
-    { kinds: o.tripKinds },
+    // G34 S3: TRIP_LANES loops (default 1) for the per-trip GPS timers; each takes its own timer with SKIP LOCKED.
+    ...Array.from({ length: Math.max(1, o.tripLanes ?? 1) }, () => ({ kinds: o.tripKinds })),
     ...Array.from({ length: Math.max(1, o.timerLanes - 2) }, () => ({ exclude: [...o.tripKinds, ...housekeeping] })),
     ...(housekeeping.length > 0 ? Array.from({ length: Math.max(1, o.housekeepingLanes ?? 1) }, () => ({ kinds: housekeeping, name: "housekeeping" })) : []),
   ];
