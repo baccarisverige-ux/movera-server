@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.79",
+  "version": "0.18.81",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -3169,7 +3169,7 @@
       "cap": 3.0
     },
     "reservations": {
-      "note": "DriverAppConfig.reservations (CONTRACT.md §6). Every field is optional on read: a missing or invalid field keeps this default. Admin ride type ids map normal->normal, airport->airport, long->longTrip, premium->comfortPremium, event->event; Admin lateBackupAfterMin is offlineBackupAfterMin. v0.4.2: there is no leaveNow switch any more (Leave now always opens the trip); a leaveNow field in an older document is ignored. on is the zone switch for every driver (= features.scheduledRides); with Driver.scheduledRides (per driver) it decides who gets new reservations, CONTRACT.md §6.1. v0.18.17 (Book later, owner 2026-11-03 Q1–Q7, contract.json#bookLater): minAheadMin 15 / maxAheadDays 90 (booking window), soonBeforeMin 30 (closer = sent like a live ride at once), listTo and its numbers (who sees it in Scheduled rides), listOpenAll, noticeOn / noticeMaxDrivers / homePopup (the reservation notice), noDriverAlertMin 10, riderReminderMin 60, freeChangeBeforeMin 60; rideTypes.normal.onlineBeforeMin 30 → 60 and every reminderMin [60, 15] → [120, 15] (owner Q5). v0.18.17: maxTripKm 60 (the demo admin's 'Max Trip Distance (Reservations) 60 km', owner 'add if miss anything'). BL-Q1..Q7 (owner 2026-11-03): dispatchBeforeMin 30 (search start), maxTripKm null = no limit, listHomeKm 5, listAtTimeKm 5 / listAtTimeMin 30 (nearAtTime), changeAnswerMin 15. M6 (owner 2026-11-03): reminderMin [120] only (the 15-min reminder is dropped). v0.18.35 (job 4 take-back, owner Q2/Q-B/fix-plan Q2 2026-11-04, contract.json#bookedTakeBack): takeBackLateMin 5 (take a held booked ride back only when the driver would reach the pickup MORE than this many minutes after the pickup time), takeBackKeepIfDriveMin 10 (a driver this many minutes' drive or less from the pickup always keeps it), takeBackUntilMinBeforePickup 15 (only while the pickup is at least this many minutes away; inside it he keeps it).",
+      "note": "DriverAppConfig.reservations (CONTRACT.md §6). Every field is optional on read: a missing or invalid field keeps this default. Admin ride type ids map normal->normal, airport->airport, long->longTrip, premium->comfortPremium, event->event; Admin lateBackupAfterMin is offlineBackupAfterMin. v0.4.2: there is no leaveNow switch any more (Leave now always opens the trip); a leaveNow field in an older document is ignored. on is the zone switch for every driver (= features.scheduledRides); with Driver.scheduledRides (per driver) it decides who gets new reservations, CONTRACT.md §6.1. v0.18.17 (Book later, owner 2026-11-03 Q1–Q7, contract.json#bookLater): minAheadMin 15 / maxAheadDays 90 (booking window), soonBeforeMin 30 (closer = sent like a live ride at once), listTo and its numbers (who sees it in Scheduled rides), listOpenAll, noticeOn / noticeMaxDrivers / homePopup (the reservation notice), noDriverAlertMin 10, riderReminderMin 60, freeChangeBeforeMin 60; rideTypes.normal.onlineBeforeMin 30 → 60 and every reminderMin [60, 15] → [120, 15] (owner Q5). v0.18.17: maxTripKm 60 (the demo admin's 'Max Trip Distance (Reservations) 60 km', owner 'add if miss anything'). BL-Q1..Q7 (owner 2026-11-03): dispatchBeforeMin 30 (search start), maxTripKm null = no limit, listHomeKm 5, listAtTimeKm 5 / listAtTimeMin 30 (nearAtTime), changeAnswerMin 15. M6 (owner 2026-11-03): reminderMin [120] only (the 15-min reminder is dropped). v0.18.35 (job 4 take-back, owner Q2/Q-B/fix-plan Q2 2026-11-04, contract.json#bookedTakeBack): takeBackLateMin 5 (take a held booked ride back only when the driver would reach the pickup MORE than this many minutes after the pickup time), takeBackKeepIfDriveMin 10 (a driver this many minutes' drive or less from the pickup always keeps it), takeBackUntilMinBeforePickup 15 (only while the pickup is at least this many minutes away; inside it he keeps it). v0.18.81 (server B1.34, owner Q94 'A) Yes', 2026-11-13: default 3, range 1-50; contract.json#bookLater.riderCap): maxOpenPerRider 3 (a rider holds at most this many booked rides that have not ended).",
       "on": true,
       "lateWarn": true,
       "offlineBackupAfterMin": 5,
@@ -3258,7 +3258,8 @@
       "takeBackLateMin": 5,
       "takeBackKeepIfDriveMin": 10,
       "takeBackUntilMinBeforePickup": 15,
-      "noDriverStopAfterMin": 15
+      "noDriverStopAfterMin": 15,
+      "maxOpenPerRider": 3
     },
     "countries": {
       "SE": {
@@ -7468,6 +7469,7 @@
   "bookLater": {
     "note": "v0.18.17 (CONTRACT.md §41). Booked rides (Trip.kind scheduled) end to end, every value an admin setting per zone in DriverAppConfig.reservations (Admin › Dispatch › Reservations; defaults contract.json#configDefaults.reservations). Sweden, France and Tunisia alike (owner Q7 'All countries now'). Owner answers 2026-11-03 Q1–Q7 (Rules decisions/driver-g15.md). The airport queue is a separate job.",
     "window": "Q1: POST /quotes and POST /trips with kind=scheduled refuse a pickup less than minAheadMin minutes ahead (400 invalid_request, reason booking_too_soon) or more than maxAheadDays days ahead (reason booking_too_far), from the zone's live driver document. RiderAppConfig.booking.minAheadMin, maxAheadDays and freeChangeBeforeMin are written by the server from the same zone's DriverAppConfig.reservations when it serves the rider document (one source). A booked ride whose route is longer than maxTripKm km (default null = no limit, owner BL-Q5; the demo admin's 'Max Trip Distance (Reservations)' setting) is refused at quote: 400 invalid_request, reason trip_too_long (live rides are not limited by it).",
+    "riderCap": "v0.18.81 (server B1.34, owner Q94 'A) Yes' — one account must not fill a zone's list; owner 2026-11-13: default 3, texts): POST /trips with kind scheduled refuses when the rider already has maxOpenPerRider booked rides that have not ended (kind scheduled, status not in tripStatus.terminal; counted over all zones; the limit is DriverAppConfig.reservations.maxOpenPerRider of the zone booked: the country standard by default, a zone may override it, range 1-50, default 3): 409 conflict, reason booked_rides_limit, message 'You can have at most {n} booked rides. Cancel one to book another.' with the number (the rider app reads it; texts bookLater.texts.bookedRidesLimit). A cancelled or ended booked ride frees a place. Live rides do not count and are not limited by it. Two bookings at the same moment never pass it (the server locks the rider row for a scheduled booking). Checked at POST /trips only, not at POST /quotes, so changing the time of a booked ride (POST /trips/{tripId}/reschedule with a new scheduled quote) is never refused by it. Older apps without the reason show their general booking error.",
     "plan": "Q2: ahead = scheduledAt − booking time. ahead < soonBeforeMin → mode now: the trip takes start_search at booking, like a live ride (the zone's Exclusive then Radar rules). Otherwise mode list: the trip stays requested, is shown in GET /driver/reservations?scope=open to the drivers listTo picks (listOpenAll: after listOpenAllAfterMin minutes to every driver of the zone), and when noticeOn a reservation notice (push kind reservation_new) goes at booking to at most noticeMaxDrivers of them, nearest to the pickup first; when homePopup, still untaken after homePopupAfterMin minutes (and before dispatchAt) a second notice (kind reservation_popup) goes to the same drivers (the driver app shows it as the Home popup). Still untaken at dispatchAt = scheduledAt − dispatchBeforeMin (default 30, owner BL-Q2; never before booking): start_search like a live ride. A booked ride's search never ends by itself (owner Q3 'keep searching', BL-Q7): an ended search starts again; after the pickup time it starts again as Exclusive offers only, until a driver takes it or an admin acts. fixtures/book_later.json#plan.",
     "listTo": {
       "values": [
@@ -7751,7 +7753,8 @@
       "change_too_late",
       "not_a_reservation",
       "trip_too_long",
-      "no_show_too_early"
+      "no_show_too_early",
+      "booked_rides_limit"
     ],
     "timers": "Server timer kinds (durable, contract §timers): resv_popup, resv_open_all, resv_dispatch, resv_no_driver, resv_rider_reminder, resv_driver_reminder, resv_go_online, resv_offline_check, resv_change_ask, resv_overdue. Planned at booking / accept / change, taken back when the trip leaves the state they need.",
     "openQuestions": [],
@@ -7817,6 +7820,11 @@
         "sv": "Bokad resa · {time}",
         "fr": "Course programmée · {time}",
         "en": "Booked ride · {time}"
+      },
+      "bookedRidesLimit": {
+        "sv": "Du kan ha högst {n} bokade resor. Avboka en för att boka en ny.",
+        "fr": "Vous pouvez avoir au maximum {n} courses programmées. Annulez-en une pour en réserver une autre.",
+        "en": "You can have at most {n} booked rides. Cancel one to book another."
       }
     },
     "ownerQuestions": [

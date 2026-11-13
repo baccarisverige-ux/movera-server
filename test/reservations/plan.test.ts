@@ -80,3 +80,13 @@ describe("job 4 take-back (contract.json#bookedTakeBack, owner Q2 / Q-B / fix-pl
     expect(takeBackDecision(before(20), at, null, s).take).toBe(false);
   });
 });
+
+describe("B1.34 maxOpenPerRider (contract.json#bookLater.riderCap, owner 2026-11-13: default 3, range 1-50)", () => {
+  it("B1.34: the contract default is 3; 1-50 whole numbers are taken; anything else keeps the default", () => {
+    expect(RESERVATION_DEFAULTS.maxOpenPerRider).toBe(3);
+    expect(reservationSettings({}).maxOpenPerRider).toBe(3);
+    expect(reservationSettings({ maxOpenPerRider: 1 }).maxOpenPerRider).toBe(1);
+    expect(reservationSettings({ maxOpenPerRider: 50 }).maxOpenPerRider).toBe(50);
+    for (const bad of [0, 51, 2.5, -1, "5", null]) expect(reservationSettings({ maxOpenPerRider: bad }).maxOpenPerRider).toBe(3);
+  });
+});
