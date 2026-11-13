@@ -11,6 +11,7 @@ import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
+import { perMinWithAppFee } from "../rules/fare.js";
 import { randomBytes } from "node:crypto";
 import { defaultSettings, prepareSettings, settingsProblems, type OnboardingSettings } from "../drivers/onboardingSettings.js";
 import { DEFAULT_RAISE_MAX_FACTOR, raiseMaxFactor, validFactor, withRaiseLimit } from "./raiseLimit.js";
@@ -269,7 +270,7 @@ export async function publishDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: st
 }
 
 type Waiting = { freeWaitMin: unknown; perMin: unknown; noShowAfterMin: unknown; noShowFee: unknown };
-type PricingForApps = { categories?: Record<string, { waiting?: Waiting; riderPickupFee?: unknown }> };
+type PricingForApps = { categories?: Record<string, { waiting?: Waiting; riderPickupFee?: unknown; appFeePct?: unknown }> };
 type Doc = Record<string, unknown>;
 
 const SEED_ORDER: readonly string[] = (contract as unknown as { categories: { seed: string[] } }).categories.seed;
@@ -314,6 +315,30 @@ export function appDocWithPricing(doc: ConfigDoc, appDocument: Doc, pricing: Pri
   return next;
 }
 
+const isMoney = (v: unknown): v is { amountMinor: number; currency: string } =>
+  isObject(v) && typeof v["amountMinor"] === "number" && Number.isInteger(v["amountMinor"]) && typeof v["currency"] === "string";
+const isFeePct = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100;
+
+/**
+ * v0.18.85 (contract.json#waitingPriceShown; owner 2026-11-02 "Show price incl. fee", Rules decisions/driver-g6.md:96):
+ * the SERVED rider document's waiting.perMinShown and waiting.byCategory[c].perMinShown, the waiting price per minute with
+ * the category's app fee, as the rider pays it. The headline terms take the headline category's fee. Never stored (the
+ * published document keeps only the pricing values, configDocs.mustMatch); a category without a fee gets none.
+ */
+export function withShownWaitingPrices(document: Doc, pricing: PricingForApps): Doc {
+  const categories = pricing.categories ?? {};
+  const waiting: Doc = isObject(document["waiting"]) ? { ...document["waiting"] } : {};
+  const byCategory: Doc = isObject(waiting["byCategory"]) ? { ...waiting["byCategory"] } : {};
+  const shownOf = (perMin: unknown, pct: unknown) => (isMoney(perMin) && isFeePct(pct) ? perMinWithAppFee(perMin, pct) : undefined);
+  for (const [id, row] of Object.entries(byCategory)) {
+    const shown = isObject(row) ? shownOf(row["perMin"], categories[id]?.appFeePct) : undefined;
+    if (shown && isObject(row)) byCategory[id] = { ...row, perMinShown: shown };
+  }
+  const head = headlineCategory(Object.keys(categories).filter((id) => categories[id]?.waiting !== undefined));
+  const headShown = head ? shownOf(waiting["perMin"], categories[head]?.appFeePct) : undefined;
+  return { ...document, waiting: { ...waiting, ...(headShown ? { perMinShown: headShown } : {}), byCategory } };
+}
+
 /**
  * v0.18.7 (contract.json#pickupWaiting.servedConfig): an app document as it is SERVED: waiting terms and rider pickup fees
  * from the zone's live pricing document (configDocs.mustMatch applied on every read, so an app document published before
@@ -333,6 +358,7 @@ export async function withLivePricing(ex: Executor, doc: ConfigDoc, zoneId: stri
   const pricing = pick<PricingForApps>("pricing");
   let next = pricing ? appDocWithPricing(doc, document, pricing) : document;
   if (doc === "rider_app_config") {
+    if (pricing) next = withShownWaitingPrices(next, pricing);
     const driver = pick<{ waiting?: Doc & { cancelAfterArrivedIsNoShow?: unknown } }>("driver_app_config");
     const flag = driver?.waiting?.cancelAfterArrivedIsNoShow;
     const waiting: Doc = isObject(next["waiting"]) ? next["waiting"] : {};
