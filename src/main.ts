@@ -13,6 +13,7 @@ import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers } from "./jobs/maintenance.js";
 import { HOUSEKEEPING_KINDS } from "./jobs/housekeeping.js";
 import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "./jobs/payouts.js";
+import { freezePaidPayoutSummaries } from "./admin/payoutSummary.js";
 import { NO_FIX_OFFLINE, NO_FIX_SWEEP } from "./drivers/presence.js";
 import { TimerWorker, rearmParkedRecurringTimers, restartParkedOnce } from "./jobs/timers.js";
 import { ALERT_SWEEP, ensureAlertSweep } from "./alerts/detector.js";
@@ -90,6 +91,11 @@ if (db !== undefined) {
   await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS, PAYOUT_CLOSE, PAYOUT_DRIVER], app.log);
   // B1.6b (owner W1 Q70): a trip or safety timer parked before restart-once existed runs once more (once in all).
   await restartParkedOnce(db, RESTART_ONCE_KINDS, app.log);
+  // v0.18.95 BQ-M26 (freeze at deploy): a payout paid before migration 0109 gets its summary frozen once, now. In the
+  // background (never holds the start); safe on several copies (only rows still NULL are written).
+  void freezePaidPayoutSummaries(db)
+    .then((frozen) => (frozen > 0 ? app.log.info({ frozen }, "paid payout summaries frozen") : undefined))
+    .catch((err: unknown) => app.log.error({ err }, "freezing paid payout summaries failed (served live until the next start)"));
   await ensureMaintenanceTimers(db);
   await ensurePricingTimers(db);
   // v0.18.23 (contract.json#alertDesk.serverDetection): the server finds the admin alerts every 30 s.

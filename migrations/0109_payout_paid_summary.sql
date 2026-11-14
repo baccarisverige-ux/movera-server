@@ -1,0 +1,11 @@
+-- v0.18.95 BQ-M26 (contract.json#priceDisplay.payoutSummary.frozenWhenPaid; M24 supervisor N1, Rules
+-- audits/impact/server-m24-m22-supervisor.md:178, audits/impact/m26-payout-frozen.md): a PAID payout's numbers never
+-- change. Payout.summary { driverGets, moveraGets } is frozen per view when the payout is marked paid:
+-- { "admin": PayoutSummary, "driver": PayoutSummary } (src/admin/payoutSummary.ts). NULL = not frozen (unpaid payouts
+-- stay live). Payouts paid before this deploy are frozen once at start by freezePaidPayoutSummaries (main.ts), at the
+-- values of that moment (freeze at deploy): SQL cannot work the view numbers out, so no backfill here.
+-- Rule 46: a nullable column with no default rewrites no row; the ALTER's ACCESS EXCLUSIVE lock is held only for the
+-- catalog change (the runner's lock_timeout stops it waiting behind a long query). Safe to run again (IF NOT EXISTS).
+ALTER TABLE payouts ADD COLUMN IF NOT EXISTS paid_summary jsonb;
+-- undo:
+-- ALTER TABLE payouts DROP COLUMN IF EXISTS paid_summary;

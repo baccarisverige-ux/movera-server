@@ -50,6 +50,8 @@ export interface PayoutsTable {
   created_at: Timestamp;
   paid_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   paid_by: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.95 BQ-M26 (0109): { admin, driver } Payout.summary frozen when marked paid; null while unpaid. */
+  paid_summary: ColumnType<unknown, string | null | undefined, string | null>;
 }
 
 export interface WalletEntriesTable {
