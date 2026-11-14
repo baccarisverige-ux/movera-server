@@ -105,12 +105,13 @@ describe.each(CURRENCIES)("v0.18.89 §90 price fields ($currency)", (c) => {
     for (const viewer of ["driver", "admin", "rider"] as const) expect(schemaProblem("TripProjection", tripProjection(row, viewer)), viewer).toBeNull();
   });
 
-  it("TripFinish.owedToMovera = cash collected for the trip − finish.driverTotal (cash), − driverTotal (card); never to the rider", () => {
+  it("TripFinish.owedToMovera = cash he holds for the trip (fare − wallet on cash, + a cash tip) − finish.driverTotal; never to the rider", () => {
     const tip = { amount: m(c.tip, c.currency), method: "cash", driverShare: m(c.tip, c.currency), at: NOW.toISOString() };
     const ended = { status: "completed", ended_at: NOW, ended_by_command: "complete", payment_status: "captured", ...(c.tip > 0 ? { tip } : {}) };
     const row = tripRow(c, ended);
     const driverTotal = c.earnings + c.pickup + c.bonus + c.tip;
-    const cash = c.fare - c.wallet;
+    // Supervisor must-fix (2026-11-14): a cash tip is in his hand (TripTip method cash; the ledger counts it as cash, finish.ts tip credit).
+    const cash = c.fare - c.wallet + c.tip;
     for (const viewer of ["driver", "admin"] as const) {
       const finish = tripProjection(row, viewer)["finish"] as Doc;
       expect(finish["driverTotal"]).toEqual(m(driverTotal, c.currency));
@@ -120,10 +121,39 @@ describe.each(CURRENCIES)("v0.18.89 §90 price fields ($currency)", (c) => {
     const stored = tripProjection(row, "admin");
     expect((redactProjection(stored, "driver")["finish"] as Doc)["owedToMovera"]).toEqual(m(cash - driverTotal, c.currency));
     expect((redactProjection(stored, "rider")["finish"] as Doc)["owedToMovera"]).toBeUndefined();
-    // Card: he collected nothing, Movera owes him his whole total (a negative balance).
+    // Card: he collected no fare; only a cash tip is in his hand. Movera owes him the rest (a negative balance).
     const card = tripProjection(tripRow(c, { ...ended, payment_method: "card" }), "driver")["finish"] as Doc;
-    expect(card["owedToMovera"]).toEqual(m(-driverTotal, c.currency));
+    expect(card["owedToMovera"]).toEqual(m(c.tip - driverTotal, c.currency));
     for (const viewer of ["driver", "admin", "rider"] as const) expect(schemaProblem("TripProjection", tripProjection(row, viewer)), viewer).toBeNull();
+  });
+});
+
+describe("TripFinish.owedToMovera counts the cash he really holds (supervisor must-fix, 2026-11-14)", () => {
+  const done = { status: "completed", ended_at: NOW, ended_by_command: "complete", payment_status: "captured" };
+  const owed = (row: TripRow) => ((tripProjection(row, "driver")["finish"] as Doc)["owedToMovera"] as { amountMinor: number }).amountMinor;
+  const cashTip = (c: Case, amountMinor: number) => ({ amount: m(amountMinor, c.currency), method: "cash", driverShare: m(amountMinor, c.currency), at: NOW.toISOString() });
+
+  it("SEK cash trip + cash tip 20,00 kr: 162,50 cash + 20,00 tip − 183,60 driverTotal = −1,10 (not −21,10)", () => {
+    const c = CURRENCIES[0];
+    const row = tripRow(c, { ...done, cash_collected_minor: String(c.fare - c.wallet), tip: cashTip(c, 2000) });
+    expect(owed(row)).toBe(16250 + 2000 - 18360);
+    expect(owed(row)).toBe(-110);
+  });
+
+  it("SEK card trip + cash tip: only the tip is in his hand → tip − driverTotal; an in-app tip is not cash", () => {
+    const c = CURRENCIES[0];
+    const card = tripRow(c, { ...done, payment_method: "card", cash_collected_minor: String(c.fare - c.wallet), tip: cashTip(c, 2000) });
+    expect(owed(card)).toBe(2000 - 18360);
+    const inApp = tripRow(c, { ...done, payment_method: "card", tip: { ...cashTip(c, 2000), method: "card" } });
+    expect(owed(inApp)).toBe(-18360);
+  });
+
+  it("TND short count: cash_collected_minor below fare − wallet → the counted cash (3 decimals)", () => {
+    const c = CURRENCIES[2];
+    const row = tripRow(c, { ...done, cash_collected_minor: "10000" });
+    // fare 12.350 − wallet 1.275 = 11.075 planned; he counted 10.000 DT. driverTotal 9.880 + 1.125 + 0.500 = 11.505.
+    expect(owed(row)).toBe(10000 - 11505);
+    expect((tripProjection(row, "driver")["finish"] as Doc)["owedToMovera"]).toEqual(m(-1505, "TND"));
   });
 });
 

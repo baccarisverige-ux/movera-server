@@ -179,6 +179,13 @@ function finishOf(row: TripRow, viewer: Viewer): Record<string, unknown> | null 
   const rating = viewer === "driver" ? row.driver_rating_status : row.rating_status;
   const cashToCollect = Math.max(0, fare - Number(row.wallet_applied_minor ?? 0));
   const driverTotal = driverTotalOf(row);
+  // v0.18.89 §90 (priceDisplay.owedToMovera, "the cash he collected for the trip"; supervisor must-fix 2026-11-14): the cash
+  // he holds = the cash he counted (cash_collected_minor, else fare − walletApplied) on a pay-in-car trip, else 0, plus a
+  // cash tip (TripTip method cash, in his hand). The same cash the ledger books (creditTrip cash, the tip's cash entry).
+  const tip = row.tip as { amount?: Money; method?: string } | null;
+  const cashHeld =
+    (row.payment_method === "cash" ? (row.cash_collected_minor === null || row.cash_collected_minor === undefined ? cashToCollect : Number(row.cash_collected_minor)) : 0) +
+    (tip?.method === "cash" ? Number(tip.amount?.amountMinor ?? 0) : 0);
   return {
     endedEarly: end.endedEarly,
     ...(end.endedBy ? { endedBy: end.endedBy } : {}),
@@ -190,9 +197,9 @@ function finishOf(row: TripRow, viewer: Viewer): Record<string, unknown> | null 
       ? {
           driverTotal: { amountMinor: driverTotal, currency },
           earningsBreakdown: earningsLinesOf(row).map((l) => ({ code: l.code, amount: { amountMinor: l.amountMinor, currency } })),
-          // v0.18.89 §90 (contract.json#priceDisplay.owedToMovera): the cash he collected for the trip (finish.cashToCollect
-          // on a pay-in-car trip, else 0) − finish.driverTotal; above 0 he owes Movera, below 0 Movera owes him.
-          owedToMovera: { amountMinor: (row.payment_method === "cash" ? cashToCollect : 0) - driverTotal, currency },
+          // v0.18.89 §90 (contract.json#priceDisplay.owedToMovera): the cash he holds for the trip − finish.driverTotal;
+          // above 0 he owes Movera, below 0 Movera owes him.
+          owedToMovera: { amountMinor: cashHeld - driverTotal, currency },
         }
       : {}),
     ratingAllowed: rating === "pending",

@@ -612,6 +612,13 @@ describe("v0.18.89 §90 (priceDisplay): the server sends the driver's numbers on
     await moveTo(SODERMALM, 600);
     const { preview, done } = await complete(tripId, v);
     expect(done.finish.owedToMovera).toEqual({ amountMinor: preview.cashDue.amountMinor - done.finish.driverTotal.amountMinor, currency: "SEK" });
+    // A cash tip after the end: in his hand, so it lowers what Movera owes him. Same number as the ledger (earnings
+    // entries of the trip: cash he holds − what he earns), which the payouts sum.
+    expect((await call(app, "POST", `/trips/${tripId}/tip`, rider, { amount: { amountMinor: 2000, currency: "SEK" }, method: "cash" })).statusCode).toBe(201);
+    const after = await view(tripId, driverA.headers);
+    expect(after.finish.owedToMovera.amountMinor).toBe(preview.cashDue.amountMinor + 2000 - after.finish.driverTotal.amountMinor);
+    const ledger = await database.db.selectFrom("earnings_entries").select(["amount_minor", "cash_minor"]).where("trip_id", "=", tripId).execute();
+    expect(after.finish.owedToMovera.amountMinor).toBe(ledger.reduce((s, e) => s + Number(e.cash_minor ?? 0) - Number(e.amount_minor), 0));
     const riderView = await view(tripId, rider);
     expect(riderView.finish.owedToMovera).toBeUndefined();
     expect(riderView.finish.driverTotal).toBeUndefined();
