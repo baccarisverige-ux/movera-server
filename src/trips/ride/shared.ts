@@ -16,6 +16,8 @@ export type WaitingAlert = { kind: "paid_waiting_started" | "no_show_possible"; 
 export type Waiting = {
   arrivedAt: string; /** v0.18.51 §73: when the free waiting starts (live: arrivedAt; booked: the later of arrivedAt and scheduledAt). */ waitFrom?: string; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money;
   rules?: WaitingRuleId[]; freeWaitMin?: number; perMin?: Money; noShowAfterMin?: number; alerts?: WaitingAlert[];
+  /** v0.18.93 (contract.json#autoArrive): how the driver arrived; the stopped clock while he is away; the finished stops. */
+  arrivedBy?: "auto" | "tap"; away?: { since: string }; pausedSeconds?: number; pauseCount?: number;
 };
 export type Who = { actor: "rider" | "driver" | "admin"; subjectId: string };
 
@@ -36,6 +38,8 @@ export const validPickupMoveMeters = (value: unknown): number | null =>
 /** Within this distance of the drop-off the trip shows "Almost there" (near_dropoff). */
 export const NEAR_DROPOFF_METERS = 500;
 export const NEAR_DROPOFF = "near_dropoff";
+/** v0.18.93 (contract.json#autoArrive): the job that arrives the driver / stops the waiting clock from his positions (ride/geofence.ts). */
+export const PICKUP_GEOFENCE = "pickup_geofence";
 /* v0.18.13: the old came-closer check (400 m/min × 50 %, once at the cancel) is replaced by the heading check (headingCheck.ts). */
 /** "Arrived" is accepted within this distance of the pickup (the driver's latest fix). */
 export const ARRIVE_MAX_METERS = 300;

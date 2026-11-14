@@ -29,6 +29,10 @@ export async function noShow(trx: Trx, driverId: string, tripId: string, body: {
   expectVersion(trip, body.expectedVersion, "driver");
   if (body.reasonCode !== undefined && !REASONS["noShow"]!.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not a no-show reason.`, "invalid_reason_code");
   const waiting = trip.waiting as Waiting | null;
+  // v0.18.93 (contract.json#autoArrive.noShow): not while the waiting clock stands still (the driver drove away).
+  if (trip.status === "arrived" && waiting?.away) {
+    throw new ApiError("invalid_transition", "Drive back to the pickup before marking a no-show.", { reason: "driver_away_from_pickup", projection: tripProjection(trip, "driver") });
+  }
   // Guard "waited >= noShowAfterMin" (contract.json#transitions).
   if (trip.status === "arrived" && (waiting === null || now.getTime() < Date.parse(waiting.noShowAt))) {
     throw new ApiError("invalid_transition", "Wait until the no-show time before marking a no-show.", { reason: "no_show_too_early", projection: tripProjection(trip, "driver") });

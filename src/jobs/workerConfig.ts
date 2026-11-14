@@ -8,15 +8,15 @@ import { pricingHandlers } from "../pricing/surge.js";
 import { ALERT_SWEEP, alertSweepHandler, raiseParkedAlert } from "../alerts/detector.js";
 import { dispatchHandlers, ROUND, WITHDRAW } from "../dispatch/runtime.js";
 import { RADAR_ZONE_REPEAT, radarZoneRepeatHandler } from "../dispatch/tools.js";
-import { NEAR_DROPOFF, rideHandlers } from "../trips/ride.js";
+import { NEAR_DROPOFF, PICKUP_GEOFENCE, rideHandlers } from "../trips/ride.js";
 import { callHandlers } from "../calls/service.js";
 import { etaHandler, TRIP_ETA } from "../trips/eta.js";
 import type { Router } from "../maps/routing.js";
 
 export { RESTART_ONCE_KINDS, LOUD_PARKED_KINDS } from "./parkedKinds.js";
 
-/** Trip GPS work (ETA, ride check, near drop-off): its own lane, never on the general lanes (stress H1). */
-export const TRIP_LANE_KINDS: readonly string[] = [TRIP_ETA, RIDE_CHECK_SCAN, NEAR_DROPOFF];
+/** Trip GPS work (ETA, ride check, near drop-off, v0.18.93 the pickup arrival / waiting clock): its own lane, never on the general lanes (stress H1). */
+export const TRIP_LANE_KINDS: readonly string[] = [TRIP_ETA, RIDE_CHECK_SCAN, NEAR_DROPOFF, PICKUP_GEOFENCE];
 
 /**
  * B1.7 (stage S4 wave B1; owner W1 Q71 "Cleaning on its own lane, after a test proves it delays SOS escalation?" = "Yes,

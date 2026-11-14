@@ -39,6 +39,8 @@ export function waitingAlertHandler(kind: WaitingAlert["kind"]): TimerHandler {
     if (!trip || trip.status !== "arrived" || !waiting) return;
     if ((timer.payload as { arrivedAt?: string } | null)?.arrivedAt !== waiting.arrivedAt) return;
     if ((waiting.alerts ?? []).some((a) => a.kind === kind)) return;
+    // v0.18.93 (contract.json#autoArrive): no alert while the clock stands still, nor before its moved moment (booked again at the new arrival).
+    if (waiting.away || timer.firedAt.getTime() < Date.parse(kind === "paid_waiting_started" ? waiting.freeUntil : waiting.noShowAt)) return;
     const next: Waiting = { ...waiting, alerts: [...(waiting.alerts ?? []), { kind, at: timer.firedAt.toISOString() }] };
     await trx.updateTable("trips").set({ waiting: JSON.stringify(next) }).where("trip_id", "=", trip.trip_id).execute();
     const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();

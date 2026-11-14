@@ -2,6 +2,7 @@ import { contract } from "../../contract/contract.js";
 import type { TripRow } from "../../db/tripLog.js";
 import { cancelFee, isFreeCancel, type FeeRule } from "../../rules/cancelFees.js";
 import type { Money, Waiting } from "./shared.js";
+import { clockAt } from "./waitingClock.js";
 
 /**
  * The rider's cancel fee at a moment, from facts already read (contract §3, §5 "Live cancel fees per category";
@@ -44,14 +45,19 @@ export function freeWithoutRules(trip: FeeTrip, now: Date): boolean {
   return false;
 }
 
-/** True when a cancel at `now` would be a no-show (arrived live trip, the zone's switch on, the free waiting over). */
+/** True when a cancel at `now` would be a no-show (arrived live trip, the zone's switch on, the free waiting over).
+ * v0.18.93 (contract.json#autoArrive): the free waiting is read on the waiting clock, frozen at away.since while the driver is away. */
 export function cancelIsNoShow(trip: FeeTrip, cancelAfterArrivedIsNoShow: boolean, now: Date): boolean {
   const waiting = trip.waiting as Waiting | null;
-  return trip.kind !== "scheduled" && trip.status === "arrived" && cancelAfterArrivedIsNoShow && waiting !== null && now.getTime() >= Date.parse(waiting.freeUntil);
+  return trip.kind !== "scheduled" && trip.status === "arrived" && cancelAfterArrivedIsNoShow && waiting !== null && clockAt(waiting, now).getTime() >= Date.parse(waiting.freeUntil);
 }
 
 export function riderCancelFeeAt(trip: FeeTrip, facts: CancelFeeFacts, now: Date): RiderFee | null {
   if (freeWithoutRules(trip, now)) return null;
+  // v0.18.93 round 2 (contract.json#autoArrive.riderCancel, supervisor M3; owner verbatim, Rules decisions/driver-g15.md:64:
+  // "if driver drive away from pickup … if rider cancel he got no cancellation fee"): while the waiting clock stands still
+  // (the driver is away from the pickup) the rider's cancel is free — no cancel fee, no no-show fee, live or booked.
+  if (trip.status === "arrived" && (trip.waiting as Waiting | null)?.away) return null;
   // v0.18.49 §71 (owner Q10 "Category rule B only", contract.json#bookLater.rider.cancel): only the category's free
   // minutes (isFreeCancel below) make a booked cancel free; freeChangeBeforeMin is the change window only.
   const rule = facts.rule;

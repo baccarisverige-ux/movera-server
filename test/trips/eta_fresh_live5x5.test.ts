@@ -7,7 +7,7 @@ import { dispatchHandlers } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { haversineKm, type Router } from "../../src/maps/routing.js";
-import { rideHandlers } from "../../src/trips/ride.js";
+import { PICKUP_GEOFENCE, rideHandlers } from "../../src/trips/ride.js";
 import { etaHandler, TRIP_ETA } from "../../src/trips/eta.js";
 import { ETA_NOW_GAP_MS } from "../../src/trips/etaNow.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -52,7 +52,10 @@ beforeAll(async () => {
     const document = { ...sample(doc), version: 1 };
     await database.db.insertInto("config_live").values({ doc, zone_id: "Z001", version: 1, document: JSON.stringify(document), published_at: clock.now, published_by: null }).execute();
   }
-  worker = new TimerWorker(database.db, { handlers: { ...dispatchHandlers, ...rideHandlers, [TRIP_ETA]: etaHandler(followRouter) }, logger: { warn: () => undefined, error: (d, m) => console.error(m, d) }, clock: () => clock.now });
+  // v0.18.93 (job C9): these cases are about the pickup ETA of a driver who stands at the pickup without being arrived;
+  // the server's automatic arrival within 100 m (contract.json#autoArrive) is tested in auto_arrive_c9.test.ts, so it
+  // does nothing here.
+  worker = new TimerWorker(database.db, { handlers: { ...dispatchHandlers, ...rideHandlers, [TRIP_ETA]: etaHandler(followRouter), [PICKUP_GEOFENCE]: async () => undefined }, logger: { warn: () => undefined, error: (d, m) => console.error(m, d) }, clock: () => clock.now });
   const made = await database.db.transaction().execute((trx) =>
     seedDriver(trx, { phone: TEST_PHONES[1]!, firstName: "Driver", make: "Volvo", model: "V60", year: 2021, color: "Black", plate: "ETA001", categoryIds: ["economy"], zoneIds: ["Z001"] }, clock.now),
   );
