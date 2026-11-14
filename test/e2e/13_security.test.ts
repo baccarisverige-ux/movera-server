@@ -70,21 +70,27 @@ describe("Phase 4: rate limits", () => {
 });
 
 describe("Phase 4: server-side money validation", () => {
-  it("P4-3: an admin cannot set a trip's fare below 0 (adjust, complete): 400 invalid_amount, nothing changes", async () => {
+  it("P4-3: an admin cannot set the driver's pay below 0 (adjust, complete): 400 driver_pay_below_zero, nothing changes; the old fare is refused (S5 J6)", async () => {
     const rider = await sim.rider(2);
     const driver = await sim.driver(0, PLACES.nearSergels);
     const { tripId } = await bookAndAccept(sim, rider, driver);
     await drive(driver, tripId, "in_trip");
     const before = await owner.trip(tripId);
-    const adjust = await owner.tripCommand(tripId, "adjust", { expectedVersion: before.version, fare: { amountMinor: -5000, currency: "SEK" }, reason: "audit" });
+    const adjust = await owner.tripCommand(tripId, "adjust", { expectedVersion: before.version, driverPay: { amountMinor: -5000, currency: "SEK" }, reason: "audit" });
     expect(adjust.status, JSON.stringify(adjust.body)).toBe(400);
-    expect(adjust.body["reason"]).toBe("invalid_amount");
-    const complete = await owner.tripCommand(tripId, "complete", { expectedVersion: before.version, fare: { amountMinor: -1, currency: "SEK" }, note: "audit" });
+    expect(adjust.body["reason"]).toBe("driver_pay_below_zero");
+    const complete = await owner.tripCommand(tripId, "complete", { expectedVersion: before.version, driverPay: { amountMinor: -1, currency: "SEK" }, note: "audit" });
     expect(complete.status, JSON.stringify(complete.body)).toBe(400);
-    expect(complete.body["reason"]).toBe("invalid_amount");
+    expect(complete.body["reason"]).toBe("driver_pay_below_zero");
+    // v0.18.82 (contract.json#moneyBase.adminFare): the old fare (a rider price) is never read as a pay.
+    const old = await owner.tripCommand(tripId, "adjust", { expectedVersion: before.version, fare: { amountMinor: 0, currency: "SEK" }, reason: "audit" });
+    expect(old.status, JSON.stringify(old.body)).toBe(400);
+    expect(old.body["reason"]).toBe("fare_is_driver_pay");
     const after = await owner.trip(tripId);
     expect({ v: after.version, fare: after.fare, status: after.status }).toEqual({ v: before.version, fare: before.fare, status: before.status });
-    // A fare of 0 or more is still an admin's call.
-    expect((await owner.tripCommand(tripId, "complete", { expectedVersion: before.version, fare: { amountMinor: 0, currency: "SEK" }, note: "audit" })).status).toBe(200);
+    // A pay of 0 or more (within the country's limit) is still an admin's call; the rider's fare stays.
+    const done = await owner.tripCommand(tripId, "complete", { expectedVersion: before.version, driverPay: { amountMinor: 0, currency: "SEK" }, note: "audit" });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body["fare"]).toEqual(before.fare);
   });
 });

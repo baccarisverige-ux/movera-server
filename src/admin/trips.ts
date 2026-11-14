@@ -18,8 +18,9 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL, isTripStatus } from "../rules/transitions.js";
 import { applyCommand, expectVersion, touchTrip } from "../trips/commands.js";
-import { driverTotalOf, tripProjection } from "../trips/projection.js";
-import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver, scaledFare } from "../trips/ride.js";
+import { cappedChangeOf, driverTotalOf, tripProjection } from "../trips/projection.js";
+import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver } from "../trips/ride.js";
+import { PAY_TEXT, payChangeMaxOf } from "../trips/finish.js";
 import { audit } from "./audit.js";
 import { creditWallet } from "../riders/wallet.js";
 import { adminUnlockPin } from "../trips/pin.js";
@@ -86,8 +87,32 @@ async function bonusSoFar(ex: Executor, trip: TripRow, scope: BonusScope = "both
 }
 
 /** A trip's fare is never below 0 (audit Phase 4, P4-3: a negative fare made negative driver earnings). */
-function notBelowZero(fare: Money | undefined) {
-  if (fare !== undefined && fare.amountMinor < 0) throw badRequest("The fare cannot be below 0.", "invalid_amount");
+/* ---------------------------------------------------------------- the admin types the driver's pay (S5 J6) */
+
+/**
+ * v0.18.82 S5 J6 (contract.json#moneyBase.adminFare; owner Q-M7 "If admin increase fare it's only for the driver side !!
+ * The rider pay same amount when booked", Q-S5-8 "Admin types driver pay"): the old `fare` (a rider price in admins
+ * before v0.18.82) is refused and never read as a pay, so an older admin can never pay a wrong amount by mistake.
+ */
+function refuseOldFare(body: { fare?: unknown }) {
+  if (body.fare !== undefined) throw badRequest("Type the driver's pay (driverPay); the rider's price cannot be changed.", "fare_is_driver_pay");
+}
+
+/** The driver's pay on the trip without the tip (owner 2026-11-13 "No, without tip": the tip stays on top). */
+const payWithoutTip = (row: TripRow): number => driverTotalOf(row) - Number((row.tip as { amount?: Money } | null)?.amount?.amountMinor ?? 0);
+
+/**
+ * The change the admin's typed pay makes: driverPay − the pay now. Checked like a driver-pay change (owner "The change"):
+ * its size at most CountryRules.driverPayChangeMax (TN 100 DT), the pay never below 0.
+ */
+async function driverPayChange(ex: Executor, row: TripRow, driverPay: Money): Promise<number> {
+  sameCurrency(row, driverPay, "The driver's pay");
+  const before = payWithoutTip(row);
+  if (driverPay.amountMinor < 0) throw badRequest(PAY_TEXT.belowZero(before, row.currency), "driver_pay_below_zero");
+  const change = driverPay.amountMinor - before;
+  const max = await payChangeMaxOf(ex, row.zone_id, row.currency);
+  if (Math.abs(change) > max) throw badRequest(PAY_TEXT.atMost(max, row.currency), "driver_pay_above_max");
+  return change;
 }
 
 async function checkBonus(ex: Executor, trip: TripRow, amount: Money, scope: BonusScope = "both") {
@@ -126,7 +151,8 @@ export async function adminCancel(trx: Trx, who: Principal, tripId: string, body
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   // The rider pays nothing (owner decision 33); the admin's note stays in the audit.
   const cancellation = { actor: "admin", reasonCode: body.reasonCode, at: now.toISOString(), fee: null };
-  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "admin", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null } });
+  // S5 J6 (owner 2026-11-13): an end without a paid ride follows only the cancel-fee rules; the admin's change is dropped.
+  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "admin", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null, driver_adjustments_minor: 0 } });
   await stopSearch(trx, cancelled, now);
   await payLostDriver(trx, trip, body.driverBonus, now);
   await releaseDriver(trx, trip.driver_id, now);
@@ -385,13 +411,27 @@ export async function adminPinUnlock(trx: Trx, who: Principal, tripId: string, b
   return done;
 }
 
-export async function adminComplete(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; note: string; fare?: Money }, now: Date): Promise<TripRow> {
+export async function adminComplete(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; note: string; driverPay?: Money; fare?: unknown }, now: Date): Promise<TripRow> {
+  refuseOldFare(body);
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
-  sameCurrency(trip, body.fare, "The fare");
-  notBelowZero(body.fare);
-  const done = await completeTrip(trx, { actor: "admin", subjectId: who.subjectId }, tripId, { expectedVersion: body.expectedVersion, ...(body.fare ? { fare: body.fare } : {}) }, now);
-  await audit(trx, { adminId: who.subjectId, action: "trip.complete", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { note: body.note, from: trip.status, fare: body.fare ?? null }, at: now });
-  return done;
+  sameCurrency(trip, body.driverPay, "The driver's pay");
+  // Supervisor should-fix 5: a pay for a trip with no driver is refused, never silently dropped.
+  if (body.driverPay !== undefined && trip.driver_id === null) throw badRequest("This trip has no driver.", "driver_pay_no_driver");
+  // The rider pays what the normal completion works out; the admin's driverPay never reaches the fare (S5 J6).
+  const done = await completeTrip(trx, { actor: "admin", subjectId: who.subjectId }, tripId, { expectedVersion: body.expectedVersion }, now);
+  let final = done;
+  let pay: { before: Money; after: Money } | null = null;
+  if (body.driverPay !== undefined && done.driver_id !== null) {
+    // contract.json#moneyBase.adminFare: the change is from the pay the normal completion works out; an adjustment entry.
+    const change = await driverPayChange(trx, done, body.driverPay);
+    pay = { before: { amountMinor: payWithoutTip(done), currency: done.currency }, after: body.driverPay };
+    if (change !== 0) {
+      await credit(trx, { driverId: done.driver_id, tripId, kind: "adjustment", currency: done.currency, amount: change }, now);
+      final = await touchTrip(trx, done, { driver_adjustments_minor: Number(done.driver_adjustments_minor ?? 0) + change }, now);
+    }
+  }
+  await audit(trx, { adminId: who.subjectId, action: "trip.complete", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { note: body.note, from: trip.status, driverPay: body.driverPay ?? null, ...(pay ?? {}) }, at: now });
+  return final;
 }
 
 /* ---------------------------------------------------------------- adjust (two-person rule) */
@@ -399,12 +439,14 @@ export async function adminComplete(trx: Trx, who: Principal, tripId: string, bo
 export const ADJUST_ACTION = "trip.adjust";
 export const REFUND_ACTION = "trip.refund";
 
-type AdjustPayload = { tripId: string; expectedVersion: number; fare?: Money; waitingSeconds?: number; waiveCancelFee?: boolean; reason: string };
+// v0.18.82 S5 J6: driverPay is the driver's new pay; fare is only read to refuse it (an approval filed before J6).
+type AdjustPayload = { tripId: string; expectedVersion: number; driverPay?: Money; fare?: unknown; waitingSeconds?: number; waiveCancelFee?: boolean; reason: string; before?: Money; after?: Money };
 
 async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record<string, unknown>> {
+  refuseOldFare(p);
   const trip = await lockTrip(trx, p.tripId);
   expectVersion(trip, p.expectedVersion, "admin");
-  sameCurrency(trip, p.fare, "The fare");
+  sameCurrency(trip, p.driverPay, "The driver's pay");
   const set: Record<string, unknown> = {};
   if (p.waiveCancelFee) {
     // The rider owes nothing more; the driver keeps the share already credited (owner decision 34).
@@ -417,11 +459,11 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
     set["cancellation"] = JSON.stringify({ ...(trip.cancellation as object), feeStatus: "waived" });
     await refreshOutstanding(trx, trip.rider_id, now);
   }
-  if (p.waitingSeconds !== undefined || p.fare !== undefined) {
+  if (p.waitingSeconds !== undefined || p.driverPay !== undefined) {
     // A paid trip is corrected with a refund, so cash and the record never disagree.
     if (terminal(trip.status)) throw new ApiError("invalid_transition", "This trip is paid; use a refund.", { reason: "use_refund", projection: tripProjection(trip, "admin") });
     // Before accept the offers carry the price; change it once a driver has it.
-    if (["draft", "quoted", "requested", "searching", "offered"].includes(trip.status)) throw new ApiError("invalid_transition", "Change the fare after a driver accepted.", { reason: "adjust_after_accept", projection: tripProjection(trip, "admin") });
+    if (["draft", "quoted", "requested", "searching", "offered"].includes(trip.status)) throw new ApiError("invalid_transition", "Change the fare or the driver's pay after a driver accepted.", { reason: "adjust_after_accept", projection: tripProjection(trip, "admin") });
     let row = trip;
     if (p.waitingSeconds !== undefined) {
       if (!trip.waiting) throw new ApiError("invalid_transition", "The driver has not arrived yet.", { reason: "no_waiting", projection: tripProjection(trip, "admin") });
@@ -436,7 +478,14 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
       });
       row = { ...trip, fare_minor: String(fare.total.amountMinor), fare_lines: fare.fareLines, driver_earnings_minor: String(fare.driverEarnings.amountMinor) };
     }
-    if (p.fare !== undefined) Object.assign(set, scaledFare(row, p.fare.amountMinor));
+    // S5 J6 (owner Q-M7, Q-S5-8, S07 M8 "32 DT, keep change"): only the driver's pay moves, as its own change on the trip
+    // (driverAdjustments). The fare, its lines and the commission stay; every later re-price sets driver_earnings_minor
+    // only, so the change is kept on top. Paid as an adjustment entry when the trip is paid.
+    if (p.driverPay !== undefined) {
+      const change = await driverPayChange(trx, row, p.driverPay);
+      // From the shown (capped) change, so the pay the admin typed is the pay shown.
+      if (change !== 0) set["driver_adjustments_minor"] = cappedChangeOf(row) + change;
+    }
   }
   if (Object.keys(set).length === 0) throw badRequest("Nothing to change.", "nothing_to_change");
   return tripProjection(await touchTrip(trx, trip, set, now), "admin");
@@ -445,9 +494,11 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
 registerApprovalHandler(ADJUST_ACTION, async (trx, payload, _approvedBy, _requestedBy, now) => adjustTrip(trx, payload as AdjustPayload, now));
 
 export async function adminAdjust(trx: Trx, who: Principal, tripId: string, body: Omit<AdjustPayload, "tripId">, now: Date): Promise<{ status: number; body: unknown }> {
+  refuseOldFare(body);
   const trip = await adminTrip(trx, who, tripId);
-  notBelowZero(body.fare);
-  const ran = await runOrRequest<Record<string, unknown>>(trx, who, { action: ADJUST_ACTION, targetType: "trip", targetId: tripId, zoneId: trip.zone_id, payload: { ...body, tripId }, approvePermission: "approval.decide" }, now);
+  // The audit line (trip.adjust) carries the driver's pay before and after (contract.json#moneyBase.adminFare).
+  const pay = body.driverPay !== undefined ? { before: { amountMinor: payWithoutTip(trip), currency: trip.currency }, after: body.driverPay } : {};
+  const ran = await runOrRequest<Record<string, unknown>>(trx, who, { action: ADJUST_ACTION, targetType: "trip", targetId: tripId, zoneId: trip.zone_id, payload: { ...body, ...pay, tripId }, approvePermission: "approval.decide" }, now);
   return ran.ran ? { status: 200, body: ran.result } : { status: 202, body: ran.pending as PendingApproval };
 }
 

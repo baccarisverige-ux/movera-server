@@ -491,6 +491,8 @@ async function backToList(trx: Trx, trip: TripRow, input: { command: "cancel" | 
     now: input.now,
     set: {
       driver_id: null, vehicle_id: null, accepted_at: null, arrived_at: null, waiting: null, driver_summary: null, rider_summary: null, eta: null, heading_check: null, search_step: null,
+      // S5 J6 (supervisor must-fix 1): an admin's change to the old driver's pay is his; the next driver starts from his own pay.
+      driver_adjustments_minor: 0,
       ...(input.command === "cancel" || input.command === "release" ? { cancelled_driver_ids: sql<string[]>`array_append(cancelled_driver_ids, ${trip.driver_id})` } : {}),
       ...(input.set ?? {}),
     },

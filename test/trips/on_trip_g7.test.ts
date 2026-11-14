@@ -490,14 +490,16 @@ describe("items 6 + 7: the admin's trip tools", () => {
     expect(level.json()).toMatchObject({ severity: "medium", version: incident.version + 1 });
   });
 
-  it("existing admin trip commands still work for G7: adjust the price and the waiting, complete", async () => {
+  it("existing admin trip commands still work for G7: adjust the driver's pay (S5 J6: the rider's price stays), complete", async () => {
     const trip = await accepted();
     const v = await onBoard(trip);
     const admin = await adminSession(app, database.db, "super", { now: clock.now });
-    const adjust = await call(app, "POST", `/admin/trips/${trip.tripId}/adjust`, admin.headers, { expectedVersion: v, fare: { amountMinor: 20000, currency: "SEK" }, reason: "Traffic" });
+    const before = await view(trip.tripId, rider);
+    const adjust = await call(app, "POST", `/admin/trips/${trip.tripId}/adjust`, admin.headers, { expectedVersion: v, driverPay: { amountMinor: 20000, currency: "SEK" }, reason: "Traffic" });
     expect(adjust.statusCode, adjust.body).toBe(200);
+    expect(adjust.json().driverTotal).toEqual({ amountMinor: 20000, currency: "SEK" });
     const after = await view(trip.tripId, rider);
-    expect(after.fare).toEqual({ amountMinor: 20000, currency: "SEK" });
+    expect(after.fare).toEqual(before.fare);
     const done = await call(app, "POST", `/admin/trips/${trip.tripId}/complete`, admin.headers, { expectedVersion: after.version, note: "Finished by support" });
     expect(done.statusCode, done.body).toBe(200);
     expect(done.json().status).toBe("completed");
@@ -707,5 +709,63 @@ describe("E13 (audit S02 A2): a straight-line estimate is never kept as the trip
     await worker.runDue();
     const row = await database.db.selectFrom("trips").select("planned_route").where("trip_id", "=", trip.tripId).executeTakeFirstOrThrow();
     expect(row.planned_route).toBeNull();
+  });
+});
+
+/* S5 J6 round 3 (supervisor re-check round 2, must-fix 2; contract.json#moneyBase.adminFare "the pay never below 0",
+ * finish.driverMoney "the same one number"): the admin's kept change is capped before the end too, so the driver never
+ * sees a pay below 0 and the complete preview shows the number the end pays. */
+describe("J6 round 3: a shorter route after the admin's change never shows a pay below 0", () => {
+  const SEK = (amountMinor: number) => ({ amountMinor, currency: "SEK" });
+  const payOf = (p: { driverTotal?: { amountMinor: number }; tip?: { amount?: { amountMinor: number } } }) => (p.driverTotal?.amountMinor ?? 0) - (p.tip?.amount?.amountMinor ?? 0);
+  const entries = (tripId: string) => database.db.selectFrom("earnings_entries").select(["kind", "amount_minor"]).where("trip_id", "=", tripId).execute();
+  /** On board, the admin types pay 0, then the rider shortens the route to Stortorget and the driver accepts. */
+  async function zeroThenShorter() {
+    const trip = await accepted();
+    const v = await onBoard(trip);
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const down = await call(app, "POST", `/admin/trips/${trip.tripId}/adjust`, admin.headers, { expectedVersion: v, driverPay: SEK(0), reason: "Wrong way" });
+    expect(down.statusCode, down.body).toBe(200);
+    expect(payOf(down.json())).toBe(0);
+    const before = await view(trip.tripId, driverA.headers);
+    const quote = await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: before.version, dropoff: GAMLA_STAN, stops: [] });
+    expect(quote.statusCode, quote.body).toBe(201);
+    const asked = await call(app, "PATCH", `/trips/${trip.tripId}`, rider, { expectedVersion: before.version, routeQuoteId: quote.json().routeQuoteId });
+    expect(asked.statusCode, asked.body).toBe(200);
+    const pending = await view(trip.tripId, driverA.headers);
+    const acc = await step(trip.tripId, "route-change/accept", pending.version, { changeId: pending.routeChange.changeId });
+    expect(acc.statusCode, acc.body).toBe(200);
+    const after = await view(trip.tripId, driverA.headers);
+    expect(after.driverEarnings.amountMinor).toBeLessThan(before.driverEarnings.amountMinor);
+    return { tripId: trip.tripId, after, admin };
+  }
+
+  it("the driver and the admin see pay 0 (never below), and the complete preview equals the completed total", async () => {
+    const { tripId, after, admin } = await zeroThenShorter();
+    expect(payOf(after)).toBe(0);
+    expect(after.earningsBreakdown.reduce((s: number, l: { amount: { amountMinor: number } }) => s + l.amount.amountMinor, 0)).toBe(0);
+    const adminSide = (await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json();
+    expect(adminSide.moneySplit.driverTotal).toEqual(SEK(0));
+    await moveTo(GAMLA_STAN);
+    const preview = await call(app, "GET", `/driver/trips/${tripId}/complete-preview`, driverA.headers);
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json().driverTotal).toEqual(SEK(0));
+    const current = await view(tripId, driverA.headers);
+    const done = await step(tripId, "complete", current.version, { previewId: preview.json().previewId });
+    expect(done.statusCode, done.body).toBe(200);
+    expect(done.json().driverTotal).toEqual(preview.json().driverTotal);
+  });
+
+  it("complete after the shorter route (no preview): row, shown pay and entries agree at 0", async () => {
+    const { tripId, after } = await zeroThenShorter();
+    expect(payOf(after)).toBe(0);
+    await moveTo(GAMLA_STAN);
+    const done = await step(tripId, "complete", after.version);
+    expect(done.statusCode, done.body).toBe(200);
+    expect(payOf(done.json())).toBe(0);
+    const paid = await entries(tripId);
+    expect(paid.reduce((s, e) => s + Number(e.amount_minor), 0)).toBe(0);
+    const row = await database.db.selectFrom("trips").select("driver_adjustments_minor").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(Number(row.driver_adjustments_minor)).toBe(paid.filter((e) => e.kind === "adjustment").reduce((s, e) => s + Number(e.amount_minor), 0));
   });
 });
