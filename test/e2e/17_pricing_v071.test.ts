@@ -64,9 +64,12 @@ describe("waiting at a middle stop (§3.8)", () => {
     expect((await stop(tripId, 0, "leave")).body.reason).toBe("stop_not_arrived");
     expect((await stop(tripId, 1, "arrive")).status).toBe(404);
     const before = await a.trip(tripId);
+    // v0.18.98 (job C9b, contract.json#autoArrive.stops.away): the wait stands still while the driver's GPS is more than
+    // leaveMeters from the stop, so the driver is at the stop (the simulator's heartbeat sends his last position).
+    await a.moveTo(STOP);
     const arrived = await stop(tripId, 0, "arrive");
     expect(arrived.status, JSON.stringify(arrived.body)).toBe(200);
-    expect(arrived.body.stopVisits).toEqual([{ stopIndex: 0, arrivedAt: sim.clock.now.toISOString() }]);
+    expect(arrived.body.stopVisits).toEqual([{ stopIndex: 0, arrivedAt: sim.clock.now.toISOString(), arrivedBy: "tap" }]);
     expect((await stop(tripId, 0, "arrive")).body.reason).toBe("stop_already_arrived");
     await sim.advance(4 * 60);
     const left = await stop(tripId, 0, "leave");

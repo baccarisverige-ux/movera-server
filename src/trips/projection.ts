@@ -227,19 +227,26 @@ function finishOf(row: TripRow, viewer: Viewer): Record<string, unknown> | null 
   };
 }
 
-/** stops[i] with the arrivedAt / leftAt of the matching stop visit (contract.json#stopWaits.projection). */
+/**
+ * stops[i] with the arrivedAt / leftAt of the matching stop visit (contract.json#stopWaits.projection); v0.18.98 (job C9b)
+ * also arrivedBy, away, pausedSeconds and pauseCount (absent when the visit has none).
+ */
+const VISIT_KEYS = ["arrivedAt", "leftAt", "arrivedBy", "away", "pausedSeconds", "pauseCount"] as const;
 export function stopsWithVisits(stops: unknown, visits: unknown): unknown[] {
   const list = Array.isArray(stops) ? stops : [];
-  const byIndex = new Map<number, { arrivedAt?: string; leftAt?: string }>();
-  for (const v of Array.isArray(visits) ? (visits as Array<{ stopIndex?: unknown; arrivedAt?: string; leftAt?: string }>) : []) {
+  const byIndex = new Map<number, Record<string, unknown>>();
+  for (const v of Array.isArray(visits) ? (visits as Array<{ stopIndex?: unknown } & Record<string, unknown>>) : []) {
     if (typeof v?.stopIndex === "number") byIndex.set(v.stopIndex, v);
   }
   return list.map((stop, i) => {
     if (!stop || typeof stop !== "object") return stop;
-    // Only the server's visits say arrived / left (a client echo of these keys in a stored stop never counts).
-    const { arrivedAt: _a, leftAt: _l, ...place } = stop as Record<string, unknown>;
+    // Only the server's visits say arrived / left / away (a client echo of these keys in a stored stop never counts).
+    const place = { ...(stop as Record<string, unknown>) };
+    for (const k of VISIT_KEYS) delete place[k];
     const v = byIndex.get(i);
-    return { ...place, ...(v?.arrivedAt ? { arrivedAt: v.arrivedAt } : {}), ...(v?.leftAt ? { leftAt: v.leftAt } : {}) };
+    const out: Record<string, unknown> = { ...place };
+    for (const k of VISIT_KEYS) if (v?.[k] !== undefined && v[k] !== null) out[k] = v[k];
+    return out;
   });
 }
 

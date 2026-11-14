@@ -410,7 +410,8 @@ type LocationFacts = {
   online_since: Date | null;
   has_open_entry: boolean;
   /** v0.18.93 (contract.json#autoArrive): + the trip's kept distances and whether its waiting clock stands still. */
-  active: (NonNullable<Awaited<ReturnType<typeof activeTripOf>>> & { arrive_m: number | null; leave_m: number | null; away: boolean | null; next_scan_at: string | null }) | undefined;
+  /** v0.18.98 (contract.json#autoArrive.stops): + the trip's stops and stop visits (the geofence job at middle stops). */
+  active: (NonNullable<Awaited<ReturnType<typeof activeTripOf>>> & { arrive_m: number | null; leave_m: number | null; away: boolean | null; next_scan_at: string | null; stops: unknown; stop_visits: unknown }) | undefined;
 };
 
 async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts | undefined> {
@@ -420,7 +421,7 @@ async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts 
       (eb) =>
         eb
           .selectFrom("trips")
-          .select(["trip_id", "status", "version", "driver_silent_alert", "pickup", "dropoff", "eta"])
+          .select(["trip_id", "status", "version", "driver_silent_alert", "pickup", "dropoff", "eta", "stops", "stop_visits"])
           // v0.18.93 (contract.json#autoArrive): the kept distances and the stopped clock, read in the same statement.
           .select([
             sql<number | null>`(trips.booking_rules->>'autoArriveMeters')::numeric`.as("arrive_m"),
@@ -436,13 +437,13 @@ async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts 
           .as("t"),
       (join) => join.onTrue(),
     )
-    .select(["d.driver_id", "d.zone_ids", "d.language", "d.online_status", "d.online_since", "t.trip_id", "t.status", "t.version", "t.driver_silent_alert", "t.pickup", "t.dropoff", "t.eta", "t.arrive_m", "t.leave_m", "t.away", "t.next_scan_at"])
+    .select(["d.driver_id", "d.zone_ids", "d.language", "d.online_status", "d.online_since", "t.trip_id", "t.status", "t.version", "t.driver_silent_alert", "t.pickup", "t.dropoff", "t.eta", "t.arrive_m", "t.leave_m", "t.away", "t.next_scan_at", "t.stops", "t.stop_visits"])
     .select(sql<boolean>`EXISTS (SELECT 1 FROM airport_queue_entries e WHERE e.driver_id = d.driver_id AND e.left_at IS NULL)`.as("has_open_entry"))
     .where("d.driver_id", "=", driverId)
     .executeTakeFirst();
   if (row === undefined) return undefined;
   const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
-  const active = row.trip_id === null ? undefined : { trip_id: row.trip_id, status: row.status!, version: row.version!, driver_silent_alert: row.driver_silent_alert!, pickup: row.pickup!, dropoff: row.dropoff!, eta: row.eta!, arrive_m: num(row.arrive_m), leave_m: num(row.leave_m), away: row.away ?? null, next_scan_at: row.next_scan_at ?? null };
+  const active = row.trip_id === null ? undefined : { trip_id: row.trip_id, status: row.status!, version: row.version!, driver_silent_alert: row.driver_silent_alert!, pickup: row.pickup!, dropoff: row.dropoff!, eta: row.eta!, arrive_m: num(row.arrive_m), leave_m: num(row.leave_m), away: row.away ?? null, next_scan_at: row.next_scan_at ?? null, stops: row.stops ?? [], stop_visits: row.stop_visits ?? [] };
   return { driver_id: row.driver_id, zone_ids: row.zone_ids, language: row.language, online_status: row.online_status, online_since: row.online_since, has_open_entry: row.has_open_entry, active: active as LocationFacts["active"] };
 }
 

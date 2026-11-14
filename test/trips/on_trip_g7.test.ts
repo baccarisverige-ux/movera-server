@@ -472,7 +472,8 @@ describe("item 3: route change during the trip (rider proposes, driver accepts o
       const reopened = await view(trip.tripId, headers);
       expect(reopened.stops[0]).toMatchObject({ arrivedAt });
       expect(reopened.stops[0].leftAt).toBeUndefined();
-      expect(reopened.stopVisits).toEqual([{ stopIndex: 0, arrivedAt }]);
+      // v0.18.98 (contract.json#autoArrive.stops.projection.mirror): the mirror carries arrivedBy as stops[i] does.
+      expect(reopened.stopVisits).toEqual([{ stopIndex: 0, arrivedAt, arrivedBy: "tap" }]);
     }
     const removed = await call(app, "POST", `/trips/${trip.tripId}/route-quote`, rider, { expectedVersion: at.json().version, stops: [] });
     expect(removed.json()).toMatchObject({ code: "invalid_request", reason: "visited_stop_changed" });
