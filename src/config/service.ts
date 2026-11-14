@@ -12,6 +12,7 @@ import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
 import { perMinWithAppFee } from "../rules/fare.js";
+import { pricingStepsProblem } from "../rules/commissionSteps.js";
 import { randomBytes } from "node:crypto";
 import { defaultSettings, prepareSettings, settingsProblems, type OnboardingSettings } from "../drivers/onboardingSettings.js";
 import { DEFAULT_RAISE_MAX_FACTOR, raiseMaxFactor, validFactor, withRaiseLimit } from "./raiseLimit.js";
@@ -92,6 +93,15 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   }
   // v0.18.57 §79: CountryRules.emergencyNumbers (country standard only; 1-6 valid rows).
   if (doc === "country_rules") checkEmergencyNumbers(zone.kind, document);
+  // v0.18.86 J5b (contract.json#commissionSteps.validation): the steps have their own reason and details, so they are
+  // checked before the schema (which would answer invalid_document); the warn rule is advisory and never refused here.
+  if (doc === "pricing") {
+    const steps = pricingStepsProblem(document);
+    if (steps !== null) {
+      const details = [...(steps.step === null ? [] : [`step:${steps.step}`]), `problem:${steps.problem}`];
+      throw new ApiError("invalid_request", `The commission steps of ${steps.categoryId} are not valid: ${steps.step === null ? "" : `step ${steps.step}: `}${steps.problem}.`, { reason: "commission_steps_invalid", details });
+    }
+  }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
   const own = document as { zoneId?: string; currency?: string; country?: string; timeZone?: string };
