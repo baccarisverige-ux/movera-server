@@ -183,7 +183,7 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   });
   app.get(`${API_PREFIX}/driver/payouts`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    return driverPayouts(deps.db, who.subjectId, clean(parseBody(DriverPayoutsQuery, request.query)));
+    return driverPayouts(deps.db, who.subjectId, clean(parseBody(DriverPayoutsQuery, request.query)), now());
   });
 
   /* ---- refunds */
