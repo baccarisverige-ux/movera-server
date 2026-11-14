@@ -593,6 +593,38 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
   });
 });
 
+describe("v0.18.89 §90 (priceDisplay): the server sends the driver's numbers on the real routes; the rider never gets them", () => {
+  it("offer driverTotal + cashToCollect; trip cashToCollect from accept; finish owedToMovera = cash − driverTotal (SEK)", async () => {
+    const res = await book(NORRMALM, SODERMALM, "cash");
+    expect(res.statusCode, res.body).toBe(201);
+    const tripId = res.json().tripId as string;
+    await worker.runDue();
+    await database.db.updateTable("offers").set({ pickup_pay_minor: 360 }).where("trip_id", "=", tripId).execute();
+    const [offer] = (await call(app, "GET", "/driver/offers", driverA.headers)).json().items;
+    expect(offer.driverTotal).toEqual({ amountMinor: offer.driverEarnings.amountMinor + 360, currency: "SEK" });
+    expect(offer.cashToCollect).toEqual(offer.fare);
+    const acc = await call(app, "POST", `/offers/${offer.offerId}/accept`, driverA.headers, { expectedVersion: offer.version });
+    expect(acc.statusCode, acc.body).toBe(200);
+    const forDriver = await view(tripId, driverA.headers);
+    expect(forDriver.cashToCollect).toEqual(forDriver.fare);
+    expect((await view(tripId, rider)).cashToCollect).toBeUndefined();
+    const v = await onBoard({ tripId, version: acc.json().version });
+    await moveTo(SODERMALM, 600);
+    const { preview, done } = await complete(tripId, v);
+    expect(done.finish.owedToMovera).toEqual({ amountMinor: preview.cashDue.amountMinor - done.finish.driverTotal.amountMinor, currency: "SEK" });
+    // A cash tip after the end: in his hand, so it lowers what Movera owes him. Same number as the ledger (earnings
+    // entries of the trip: cash he holds − what he earns), which the payouts sum.
+    expect((await call(app, "POST", `/trips/${tripId}/tip`, rider, { amount: { amountMinor: 2000, currency: "SEK" }, method: "cash" })).statusCode).toBe(201);
+    const after = await view(tripId, driverA.headers);
+    expect(after.finish.owedToMovera.amountMinor).toBe(preview.cashDue.amountMinor + 2000 - after.finish.driverTotal.amountMinor);
+    const ledger = await database.db.selectFrom("earnings_entries").select(["amount_minor", "cash_minor"]).where("trip_id", "=", tripId).execute();
+    expect(after.finish.owedToMovera.amountMinor).toBe(ledger.reduce((s, e) => s + Number(e.cash_minor ?? 0) - Number(e.amount_minor), 0));
+    const riderView = await view(tripId, rider);
+    expect(riderView.finish.owedToMovera).toBeUndefined();
+    expect(riderView.finish.driverTotal).toBeUndefined();
+  });
+});
+
 describe("realtime: the stored admin projection never gives the rider the driver's money", () => {
   it("rider stream: no driverTotal / breakdown / debt / moneySplit / tip share; driver stream: no moneySplit, his own ratingAllowed; both get sosAvailable", async () => {
     const { tripId } = await finished();

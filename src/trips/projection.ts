@@ -72,12 +72,15 @@ export function hideDriverMoney(projection: Record<string, unknown>): Record<str
   without("cancellation", ["driverShare"]);
   without("waiting", ["noShowDriverShare"]);
   without("terms", ["noShowDriverSharePct", "cancelDriverSharePct"]);
-  without("routeChange", ["driverEarnings", "earningsDifference"]);
+  // v0.18.89 §90 (contract.json#priceDisplay): also the route change's driverTotal and the trip's owedToMovera.
+  without("routeChange", ["driverEarnings", "earningsDifference", "driverTotal"]);
   // v0.18.10 (contract.json#finish): the driver's one number, Movera's changes, the old debt and who gets what.
-  without("finish", ["driverTotal", "earningsBreakdown"]);
+  without("finish", ["driverTotal", "earningsBreakdown", "owedToMovera"]);
   without("tip", ["driverShare"]);
   // v0.18.87: what Movera keeps now (moneyBase.commissionRow) is driver and admin only.
   for (const key of ["driverTotal", "earningsBreakdown", "driverAdjustments", "debtCollected", "moneySplit", "moveraKeepsNow"]) delete out[key];
+  // v0.18.89 §90 (priceDisplay.tripCashToCollect): the rider's view is unchanged — the cash part only once the wallet paid part.
+  if (out["walletApplied"] === undefined) delete out["cashToCollect"];
   delete out["adminFlag"];
   delete out["pinAttempts"];
   delete out["pinBlocked"];
@@ -174,15 +177,30 @@ function finishOf(row: TripRow, viewer: Viewer): Record<string, unknown> | null 
   const fare = Number(row.fare_minor);
   const end = endInfoOf(row);
   const rating = viewer === "driver" ? row.driver_rating_status : row.rating_status;
+  const cashToCollect = Math.max(0, fare - Number(row.wallet_applied_minor ?? 0));
+  const driverTotal = driverTotalOf(row);
+  // v0.18.89 §90 (priceDisplay.owedToMovera, "the cash he collected for the trip"; supervisor must-fix 2026-11-14): the cash
+  // he holds = the cash he counted (cash_collected_minor, else fare − walletApplied) on a pay-in-car trip, else 0, plus a
+  // cash tip (TripTip method cash, in his hand). The same cash the ledger books (creditTrip cash, the tip's cash entry).
+  const tip = row.tip as { amount?: Money; method?: string } | null;
+  const cashHeld =
+    (row.payment_method === "cash" ? (row.cash_collected_minor === null || row.cash_collected_minor === undefined ? cashToCollect : Number(row.cash_collected_minor)) : 0) +
+    (tip?.method === "cash" ? Number(tip.amount?.amountMinor ?? 0) : 0);
   return {
     endedEarly: end.endedEarly,
     ...(end.endedBy ? { endedBy: end.endedBy } : {}),
     ...(end.reasonCode ? { reasonCode: end.reasonCode } : {}),
     ...(end.repriced !== undefined ? { repriced: end.repriced } : {}),
     total: { amountMinor: fare, currency },
-    cashToCollect: { amountMinor: Math.max(0, fare - Number(row.wallet_applied_minor ?? 0)), currency },
+    cashToCollect: { amountMinor: cashToCollect, currency },
     ...(viewer !== "rider"
-      ? { driverTotal: { amountMinor: driverTotalOf(row), currency }, earningsBreakdown: earningsLinesOf(row).map((l) => ({ code: l.code, amount: { amountMinor: l.amountMinor, currency } })) }
+      ? {
+          driverTotal: { amountMinor: driverTotal, currency },
+          earningsBreakdown: earningsLinesOf(row).map((l) => ({ code: l.code, amount: { amountMinor: l.amountMinor, currency } })),
+          // v0.18.89 §90 (contract.json#priceDisplay.owedToMovera): the cash he holds for the trip − finish.driverTotal;
+          // above 0 he owes Movera, below 0 Movera owes him.
+          owedToMovera: { amountMinor: cashHeld - driverTotal, currency },
+        }
       : {}),
     ratingAllowed: rating === "pending",
   };
@@ -202,6 +220,24 @@ export function stopsWithVisits(stops: unknown, visits: unknown): unknown[] {
     const v = byIndex.get(i);
     return { ...place, ...(v?.arrivedAt ? { arrivedAt: v.arrivedAt } : {}), ...(v?.leftAt ? { leftAt: v.leftAt } : {}) };
   });
+}
+
+/**
+ * v0.18.89 §90 (contract.json#priceDisplay.routeChange): the latest route change, with TripRouteChange.driverTotal for the
+ * driver and the admin = what he gets for the whole trip with the new route (the change's driverEarnings + the trip's
+ * pickupPay + driverBonus). Worked out at read time, so a change stored before v0.18.89 gets it too.
+ */
+export function routeChangeDriverTotal(row: Pick<TripRow, "pickup_pay_minor" | "driver_bonus_minor">, change: { driverEarnings?: Money } | null): Money | null {
+  const earnings = change?.driverEarnings;
+  if (!earnings || typeof earnings.amountMinor !== "number") return null;
+  return { amountMinor: earnings.amountMinor + Number(row.pickup_pay_minor ?? 0) + Number(row.driver_bonus_minor ?? 0), currency: earnings.currency };
+}
+
+function routeChangeView(row: TripRow, viewer: Viewer): unknown {
+  const change = row.route_change as { driverEarnings?: Money } | null;
+  if (viewer === "rider" || !change || typeof change !== "object") return change;
+  const driverTotal = routeChangeDriverTotal(row, change);
+  return driverTotal ? { ...change, driverTotal } : change;
 }
 
 function headingField(row: TripRow, now: Date): Record<string, unknown> {
@@ -267,7 +303,7 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     ...(row.cancellation ? { cancellation: row.cancellation } : {}),
     // v0.18.9 (contract.json#onTrip): the server's ride check (every viewer) and the latest route change.
     ...(row.ride_check ? { rideCheck: row.ride_check } : {}),
-    ...(row.route_change ? { routeChange: row.route_change } : {}),
+    ...(row.route_change ? { routeChange: routeChangeView(row, viewer) } : {}),
     ...(viewer === "admin" && row.admin_flag ? { adminFlag: row.admin_flag } : {}),
   };
   if (row.quote_id) {
@@ -348,6 +384,11 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   const wallet = Number(row.wallet_applied_minor ?? 0);
   if (wallet > 0) {
     projection["walletApplied"] = money(wallet, currency);
+    projection["cashToCollect"] = money(Math.max(0, Number(row.fare_minor) - wallet), currency);
+  }
+  // v0.18.89 §90 (contract.json#priceDisplay.tripCashToCollect): the driver and the admin get it on every pay-in-car trip
+  // from accept, also when the wallet paid nothing (fare − walletApplied); the rider's view is unchanged.
+  if (viewer !== "rider" && row.payment_method === "cash" && row.driver_id && row.accepted_at) {
     projection["cashToCollect"] = money(Math.max(0, Number(row.fare_minor) - wallet), currency);
   }
   // The rider's latest waiting step, while searching or offered, and the busy message on an expired trip (§3.6).

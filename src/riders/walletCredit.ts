@@ -1,4 +1,4 @@
-import { localAmount } from "../rules/money.js";
+import { moneyText } from "../rules/money.js";
 import { z } from "zod";
 import type { Principal } from "../auth/guard.js";
 import { contract } from "../contract/contract.js";
@@ -47,10 +47,8 @@ export async function walletCreditMax(ex: Executor, country: string): Promise<Mo
   return WC.defaultMax[country] ?? null;
 }
 
-export const amountText = (m: Money, lang: string) => {
-  const value = localAmount(m, lang);
-  return m.currency === "SEK" ? `${value} kr` : m.currency === "EUR" ? `${value} €` : `${value} DT`;
-};
+// contract.json#moneyDisplay (owner 2026-11-14): the currency's own format in every language, whole amounts with decimals.
+export const amountText = (m: Money, _lang: string) => moneyText(m);
 
 export async function creditRiderWallet(trx: Trx, who: Principal, riderId: string, body: z.infer<typeof WalletCreditBody>, now: Date) {
   const row = await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).forUpdate().executeTakeFirst();

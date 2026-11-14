@@ -1,4 +1,4 @@
-import { exponentOf, majorText, toMajorString, type CurrencyCode, type Money as WireMoney } from "../rules/money.js";
+import { exponentOf, moneyText, type CurrencyCode } from "../rules/money.js";
 import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
@@ -129,7 +129,7 @@ async function checkBonus(ex: Executor, trip: TripRow, amount: Money, scope: Bon
     if (typeof resv.raiseMax === "number" && Number.isFinite(resv.raiseMax) && resv.raiseMax >= 0) limit = Math.min(limit, Math.round(resv.raiseMax * 10 ** exponentOf(trip.currency as CurrencyCode)));
   }
   if ((await bonusSoFar(ex, trip, scope)) + amount.amountMinor > limit) {
-    throw badRequest(`A trip can carry at most ${majorText({ amountMinor: limit, currency: trip.currency as CurrencyCode })} ${trip.currency} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
+    throw badRequest(`A trip can carry at most ${moneyText({ amountMinor: limit, currency: trip.currency as CurrencyCode })} of bonus; adjust the limit in Pricing.`, "bonus_over_limit");
   }
 }
 
@@ -551,7 +551,7 @@ async function refundRoom(ex: Executor, trip: TripRow, amount: Money) {
   const done = await ex.selectFrom("refunds").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("status", "=", "done").executeTakeFirstOrThrow();
   const paid = trip.cash_collected_minor === null ? Number(trip.fare_minor) : Number(trip.cash_collected_minor) + Number(trip.wallet_applied_minor ?? 0);
   const left = paid - Number(done.n);
-  if (amount.amountMinor > left) throw badRequest(`At most ${majorText({ amountMinor: Math.max(0, left), currency: trip.currency as CurrencyCode })} ${trip.currency} is left to refund.`, "refund_too_large");
+  if (amount.amountMinor > left) throw badRequest(`At most ${moneyText({ amountMinor: Math.max(0, left), currency: trip.currency as CurrencyCode })} is left to refund.`, "refund_too_large");
   return { paid, left };
 }
 
@@ -591,11 +591,12 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
 }
 
 const REFUND_TEXT = { sv: { title: "Återbetalning", body: "Du får tillbaka {amount} för din resa." }, fr: { title: "Remboursement", body: "Vous êtes remboursé de {amount} pour votre course." }, en: { title: "Refund", body: "You get {amount} back for your trip." } } as const;
+/** Price format (owner 2026-11-14; audit price-display gap 14): the refund in the shared money text ("12.350 DT", not "12,350 TND"). */
+export const refundNoticeBody = (amount: Money, lang: keyof typeof REFUND_TEXT): string => REFUND_TEXT[lang].body.replace("{amount}", moneyText(amount));
 async function noticeRefund(trx: Trx, trip: TripRow, amount: Money, now: Date) {
   // v0.18.66 §87: the one notice-language rule (his language, else the trip country's, TN fr, else en).
   const lang = await noticeLanguage(trx, { actor: "rider", id: trip.rider_id }, trip.zone_id);
-  const text = toMajorString(amount as WireMoney).replace(".", ",") + (amount.currency === "SEK" ? " kr" : amount.currency === "EUR" ? " €" : ` ${amount.currency}`);
-  await notify(trx, { audience: "rider", subjectId: trip.rider_id, kind: "refund", title: REFUND_TEXT[lang].title, body: REFUND_TEXT[lang].body.replace("{amount}", text), deepLink: `movera://trips/${trip.trip_id}/receipt`, tripId: trip.trip_id, data: { tripId: trip.trip_id, amount } }, now);
+  await notify(trx, { audience: "rider", subjectId: trip.rider_id, kind: "refund", title: REFUND_TEXT[lang].title, body: refundNoticeBody(amount, lang), deepLink: `movera://trips/${trip.trip_id}/receipt`, tripId: trip.trip_id, data: { tripId: trip.trip_id, amount } }, now);
 }
 
 registerApprovalHandler(REFUND_ACTION, async (trx, payload, _approvedBy, requestedBy, now) => createRefund(trx, payload as RefundPayload, requestedBy, now, true));

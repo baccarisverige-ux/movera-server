@@ -32,6 +32,10 @@ export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<s
     driverEarnings: money(Number(offer.driver_earnings_minor) + bonus),
     ...(bonus > 0 ? { driverBonus: money(bonus) } : {}),
     ...(Number(offer.pickup_pay_minor) > 0 ? { pickupPay: money(offer.pickup_pay_minor) } : {}),
+    // v0.18.89 §90 (contract.json#priceDisplay.offer): what the driver gets = driverEarnings (bonus inside) + pickupPay, the
+    // only number on the offer card; and the cash the rider pays in the car as booked (rider fare − wallet part; else 0).
+    driverTotal: money(Number(offer.driver_earnings_minor) + bonus + Number(offer.pickup_pay_minor)),
+    cashToCollect: money(trip.payment_method === "cash" ? Math.max(0, Number(offer.fare_minor) - Number(trip.wallet_applied_minor ?? 0)) : 0),
     priority: priorityFor(trip, offer.kind),
     source: offer.source,
     ...(offer.group_id ? { groupId: offer.group_id } : {}),
