@@ -84,6 +84,8 @@ export function hideDriverMoney(projection: Record<string, unknown>): Record<str
   if (out["walletApplied"] === undefined) delete out["cashToCollect"];
   // v0.18.92 (moneyBase.lostDriverPaid.tripField): another driver's money, admin only.
   delete out["lostDriverPaid"];
+  // Owner bug 2026-11-01 (TripProjection.driverBonusByKind "Admin view only"): the stored event is the admin projection.
+  delete out["driverBonusByKind"];
   delete out["adminFlag"];
   delete out["pinAttempts"];
   delete out["pinBlocked"];
@@ -117,6 +119,8 @@ export function hidePinFromDriver(out: Record<string, unknown>): Record<string, 
   // v0.18.92: the lost-driver payment is admin only; the driver's moveraKeepsNow only on a paid end (the stored admin
   // projection of an unpaid end carries the admin's row number).
   delete rest["lostDriverPaid"];
+  // Owner bug 2026-11-01 (TripProjection.driverBonusByKind "Admin view only"): never on the driver's stream.
+  delete rest["driverBonusByKind"];
   if (rest["moveraKeepsNow"] !== undefined && !isPaidEnd({ status: String(rest["status"]), payment_status: (rest["paymentStatus"] as string | undefined) ?? null })) delete rest["moveraKeepsNow"];
   return rest;
 }
