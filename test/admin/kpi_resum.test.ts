@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { countDay } from "../../src/admin/kpis.js";
-import { resumStoredKpiDays } from "../../src/admin/kpiResum.js";
+import { resumStoredKpiDays, runKpiResum } from "../../src/admin/kpiResum.js";
 import { commissionOf } from "../../src/rules/commission.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
@@ -42,15 +42,28 @@ afterAll(async () => database.drop());
 
 const tripsNow = () => database.db.selectFrom("trips").selectAll().orderBy("trip_id").execute();
 
+const storedRows = () => database.db.selectFrom("kpi_days").selectAll().orderBy("zone_id").orderBy("day").execute();
+
 describe("S5 J5: one-off re-sum of the stored KPI days (owner 107)", () => {
+  it("a dry run (kpi-resum --dry-run) reports the same before/after and writes nothing (J5 supervisor S3/S5)", async () => {
+    const rowsBefore = JSON.stringify(await storedRows());
+    const tripsBefore = JSON.stringify(await tripsNow());
+    const dry = await runKpiResum(database.db, now, true);
+    expect(dry.changed).toBe(1);
+    expect(dry.before[0]).toMatchObject({ gross: OLD_26.gross, moveraEarnings: OLD_26.movera });
+    expect(dry.after[0]).toMatchObject({ gross: 7_800 + 6_000, driverEarnings: 6_005 + 4_500 });
+    expect(JSON.stringify(await storedRows())).toBe(rowsBefore);
+    expect(JSON.stringify(await tripsNow())).toBe(tripsBefore);
+  });
+
   it("rewrites only the stored rows from the trips, with before/after totals; trips untouched; no new day", async () => {
     const tripsBefore = JSON.stringify(await tripsNow());
     const right = await countDay(database.db, SE, "2026-10-26");
     const result = await database.db.transaction().execute((trx) => resumStoredKpiDays(trx, now));
     expect(result.rows).toBe(2);
     expect(result.changed).toBe(1);
-    expect(result.before).toEqual([{ currency: "SEK", rows: 2, gross: OLD_26.gross, commission: OLD_26.commission, moveraEarnings: OLD_26.movera }]);
-    expect(result.after).toEqual([{ currency: "SEK", rows: 2, gross: 7_800 + 6_000, commission: 1_795 + 1_500, moveraEarnings: 1_795 + 1_500 }]);
+    expect(result.before).toEqual([{ currency: "SEK", rows: 2, gross: OLD_26.gross, commission: OLD_26.commission, moveraEarnings: OLD_26.movera, driverEarnings: OLD_26.earnings, pickupPay: 0, driverBonus: 0 }]);
+    expect(result.after).toEqual([{ currency: "SEK", rows: 2, gross: 7_800 + 6_000, commission: 1_795 + 1_500, moveraEarnings: 1_795 + 1_500, driverEarnings: 6_005 + 4_500, pickupPay: 0, driverBonus: 0 }]);
     const stored = await database.db.selectFrom("kpi_days").select(["gross_minor", "commission_minor", "driver_earnings_minor", "movera_earnings_minor"]).where("zone_id", "=", "Z001").where("day", "=", "2026-10-26").executeTakeFirstOrThrow();
     expect([stored.gross_minor, stored.commission_minor, stored.driver_earnings_minor, stored.movera_earnings_minor].map(Number)).toEqual([right.gross, right.commission, right.driverEarnings, right.moveraEarnings]);
     expect((await database.db.selectFrom("kpi_days").select("zone_id").execute()).length).toBe(2);

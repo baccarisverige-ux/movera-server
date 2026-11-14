@@ -8,7 +8,7 @@ import { seedDriver } from "../drivers/service.js";
 import { seedTestAccounts } from "../drivers/seedTest.js";
 import { seedSampleConfig } from "../config/seedConfig.js";
 import { summarize } from "./kpis.js";
-import { resumStoredKpiDays, type ResumResult } from "./kpiResum.js";
+import { runKpiResum, totalsLine } from "./kpiResum.js";
 
 /**
  * npm run admin -- create --email you@example.com --name "Your Name" [--role super]
@@ -63,18 +63,13 @@ if (command === "kpi-backfill") {
 }
 if (command === "kpi-resum") {
   // S5 J5 (owner 107): one-off; summary rows only, trips never change. R29: staging before/after with the owner's OK first.
-  const rollback = new Error("dry run");
-  let result: ResumResult | undefined;
+  // A dry run changes nothing: no migrations, the re-sum rolls back.
   try {
-    await migrate(pool);
-    await db.transaction().execute(async (trx) => {
-      result = await resumStoredKpiDays(trx, new Date());
-      if (values["dry-run"]) throw rollback;
-    }).catch((error: unknown) => { if (error !== rollback) throw error; });
-    const r = result!;
-    console.log(`kpi re-sum${values["dry-run"] ? " (dry run, rolled back)" : ""}: ${r.rows} stored zone-days read, ${r.changed} changed`);
-    for (const t of r.before) console.log(`before ${t.currency}: ${t.rows} rows, gross ${t.gross}, commission ${t.commission}, moveraEarnings ${t.moveraEarnings}`);
-    for (const t of r.after) console.log(`after  ${t.currency}: ${t.rows} rows, gross ${t.gross}, commission ${t.commission}, moveraEarnings ${t.moveraEarnings}`);
+    if (!values["dry-run"]) await migrate(pool);
+    const r = await runKpiResum(db, new Date(), values["dry-run"] === true);
+    console.log(`kpi re-sum${values["dry-run"] ? " (dry run, rolled back, no migrations)" : ""}: ${r.rows} stored zone-days read, ${r.changed} changed`);
+    for (const t of r.before) console.log(totalsLine("before", t));
+    for (const t of r.after) console.log(totalsLine("after", t));
   } finally {
     await db.destroy();
   }

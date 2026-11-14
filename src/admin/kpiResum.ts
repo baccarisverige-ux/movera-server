@@ -1,5 +1,5 @@
 import { sql } from "kysely";
-import type { Trx } from "../db/db.js";
+import type { Db, Trx } from "../db/db.js";
 import { summarizeDay } from "./kpis.js";
 
 /**
@@ -9,15 +9,21 @@ import { summarizeDay } from "./kpis.js";
  * changes nothing). Run by hand: `npm run admin -- kpi-resum` (R29: staging before/after first, owner OK + quiet hour).
  */
 
-export type ResumTotals = { currency: string; rows: number; gross: number; commission: number; moveraEarnings: number };
+export type ResumTotals = { currency: string; rows: number; gross: number; commission: number; moveraEarnings: number; driverEarnings: number; pickupPay: number; driverBonus: number };
 export type ResumResult = { rows: number; changed: number; before: ResumTotals[]; after: ResumTotals[] };
 
 async function totals(trx: Trx): Promise<ResumTotals[]> {
-  const rows = await sql<{ currency: string; rows: string; gross: string; commission: string; movera: string }>`
+  // J5 supervisor S4: driverEarnings, pickupPay and driverBonus too (J5 reads them from the earnings entries, no longer
+  // from the trip columns), so the staging before/after shows any old paid trip without entries.
+  const rows = await sql<{ currency: string; rows: string; gross: string; commission: string; movera: string; earnings: string; pickup: string; bonus: string }>`
     SELECT currency, count(*) AS rows, coalesce(sum(gross_minor), 0) AS gross, coalesce(sum(commission_minor), 0) AS commission,
-           coalesce(sum(movera_earnings_minor), 0) AS movera
+           coalesce(sum(movera_earnings_minor), 0) AS movera, coalesce(sum(driver_earnings_minor), 0) AS earnings,
+           coalesce(sum(pickup_pay_minor), 0) AS pickup, coalesce(sum(driver_bonus_minor), 0) AS bonus
       FROM kpi_days GROUP BY currency ORDER BY currency`.execute(trx);
-  return rows.rows.map((r) => ({ currency: r.currency, rows: Number(r.rows), gross: Number(r.gross), commission: Number(r.commission), moveraEarnings: Number(r.movera) }));
+  return rows.rows.map((r) => ({
+    currency: r.currency, rows: Number(r.rows), gross: Number(r.gross), commission: Number(r.commission), moveraEarnings: Number(r.movera),
+    driverEarnings: Number(r.earnings), pickupPay: Number(r.pickup), driverBonus: Number(r.bonus),
+  }));
 }
 
 /** A stored row's numbers, to tell which rows the re-sum changed. */
@@ -38,4 +44,24 @@ export async function resumStoredKpiDays(trx: Trx, now: Date): Promise<ResumResu
     if (after.rows[0]?.print !== row.print) changed += 1;
   }
   return { rows: stored.rows.length, changed, before, after: await totals(trx) };
+}
+
+const ROLLBACK = new Error("kpi-resum dry run");
+
+/**
+ * `npm run admin -- kpi-resum [--dry-run]`: one transaction; a dry run computes the same before/after and rolls back, so
+ * nothing is written (J5 supervisor S3/S5: the CLI also skips the migrations on a dry run).
+ */
+export async function runKpiResum(db: Db, now: Date, dryRun: boolean): Promise<ResumResult> {
+  let result: ResumResult | undefined;
+  await db.transaction().execute(async (trx) => {
+    result = await resumStoredKpiDays(trx, now);
+    if (dryRun) throw ROLLBACK;
+  }).catch((error: unknown) => { if (error !== ROLLBACK) throw error; });
+  return result!;
+}
+
+/** One printed line per currency, before or after. */
+export function totalsLine(when: "before" | "after", t: ResumTotals): string {
+  return `${when.padEnd(6)} ${t.currency}: ${t.rows} rows, gross ${t.gross}, commission ${t.commission}, moveraEarnings ${t.moveraEarnings}, driverEarnings ${t.driverEarnings}, pickupPay ${t.pickupPay}, driverBonus ${t.driverBonus}`;
 }

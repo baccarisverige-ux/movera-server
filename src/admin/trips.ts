@@ -113,6 +113,8 @@ async function payLostDriver(trx: Trx, trip: TripRow, bonus: Money | undefined, 
   if (!trip.driver_id) throw badRequest("This trip has no driver to pay.", "no_driver");
   await checkBonus(trx, trip, bonus);
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: bonus.amountMinor }, now);
+  // v0.18.82 S5 J5: the bonus entry counts on the trip's day; an older stored day is re-summed now.
+  await resumTripDay(trx, trip.trip_id, now);
 }
 
 /* ---------------------------------------------------------------- cancel, reassign */
@@ -292,7 +294,11 @@ export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string,
   const bonus = taken ? Number(trip.driver_bonus_minor ?? 0) + body.amount.amountMinor : columns.driver_bonus_minor;
   const updated = await touchTrip(trx, trip, { ...columns, driver_bonus_minor: bonus, commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, Number(trip.driver_earnings_minor ?? 0), Number(trip.pickup_pay_minor ?? 0), bonus) }, now);
   // A completed trip's earnings are already written: the bonus is its own entry now.
-  if (updated.status === "completed" && updated.driver_id) await credit(trx, { driverId: updated.driver_id, tripId, kind: "bonus", currency: trip.currency, amount: body.amount.amountMinor }, now);
+  if (updated.status === "completed" && updated.driver_id) {
+    await credit(trx, { driverId: updated.driver_id, tripId, kind: "bonus", currency: trip.currency, amount: body.amount.amountMinor }, now);
+    // v0.18.82 S5 J5: the trip's (older, stored) day is re-summed now.
+    await resumTripDay(trx, tripId, now);
+  }
   await refreshOpenOffers(trx, updated, now, scope);
   // Only a caller that chose a kind gets the immediate send (older callers: money only, as before).
   let current = updated;
