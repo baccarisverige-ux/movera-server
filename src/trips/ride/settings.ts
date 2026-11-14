@@ -14,6 +14,7 @@ import { perMinWithAppFee, priceFare, type Fare, type FareLine, type PricingDocu
 import { waitingExtrasOf, type WaitingExtras } from "../waitingRules.js";
 import { type Money, type Place, type Waiting, DEFAULT_NO_SHOW_SHARE, DEFAULT_MAX_PICKUP_MOVE_METERS, DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW, validPickupMoveMeters } from "./shared.js";
 import { zoneAt } from "../../config/zoneLookup.js";
+import { geofenceOf } from "./geofence.js";
 
 /* ---------------------------------------------------------------- prices and settings */
 
@@ -73,6 +74,9 @@ export type BookingRules = {
   walletFirst?: boolean;
   /** v0.18.85 (contract.json#waitingPriceShown): the category's app fee % at booking time, for the waiting prices shown (absent before v0.18.85). */
   appFeePct?: number;
+  /** v0.18.93 (contract.json#autoArrive): the zone's waiting.autoArriveMeters / leaveMeters at booking time (absent before v0.18.93). */
+  autoArriveMeters?: number;
+  leaveMeters?: number;
 };
 /** v0.18.33 (owner Q6): does the rider's wallet pay first on this trip? Trips booked before v0.18.33 keep the old rule (yes). */
 export const walletFirstOf = (trip: Pick<TripRow, "booking_rules">): boolean => (trip.booking_rules as BookingRules | null)?.walletFirst !== false;
@@ -166,6 +170,8 @@ export async function bookingRulesFor(ex: Executor, zoneId: string, kind: string
     maxPickupMoveMeters: validPickupMoveMeters(docs.driver?.booking?.maxPickupMoveMeters) ?? DEFAULT_MAX_PICKUP_MOVE_METERS,
     ...waitingAndPinOf(docs.driver, priced?.currency ?? (typeof docs.driver?.currency === "string" ? docs.driver.currency : null)),
     earlyEnd: earlyEndSettingsOf(docs.driver),
+    // v0.18.93 (contract.json#autoArrive.settings.kept): the auto-arrive and leave distances of booking time.
+    ...geofenceOf(docs.driver),
   };
 }
 
@@ -239,6 +245,8 @@ export function tripTerms(trip: Pick<TripRow, "booking_rules" | "currency"> & { 
     cancelDriverSharePct: kept.cancelDriverSharePct ?? DEFAULT_CANCEL_SHARE,
     cancelAfterArrivedIsNoShow: kept.cancelAfterArrivedIsNoShow ?? DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW,
     maxPickupMoveMeters: kept.maxPickupMoveMeters ?? DEFAULT_MAX_PICKUP_MOVE_METERS,
+    // v0.18.93 (contract.json#autoArrive.projection): the trip's distances (a trip booked before has none here).
+    ...(typeof kept.autoArriveMeters === "number" && typeof kept.leaveMeters === "number" ? { autoArriveMeters: kept.autoArriveMeters, leaveMeters: kept.leaveMeters } : {}),
   };
 }
 

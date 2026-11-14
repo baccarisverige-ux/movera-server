@@ -48,7 +48,7 @@ export const LATE_FACTOR = 3;
  */
 export const LANE_LATE_LIMITS: ReadonlyArray<{ group: string; kinds: string[]; lateMs: number }> = [
   // The kind names, not the constants (no import of the trip / dispatch runtime here); test/jobs/heartbeat.test.ts checks them.
-  { group: "trip_timers", kinds: ["trip_eta", "ride_check_scan", "near_dropoff"], lateMs: 60_000 },
+  { group: "trip_timers", kinds: ["trip_eta", "ride_check_scan", "near_dropoff", "pickup_geofence"], lateMs: 60_000 },
   { group: "dispatch", kinds: ["dispatch_round", "withdraw_driver_offers"], lateMs: 30_000 },
 ];
 

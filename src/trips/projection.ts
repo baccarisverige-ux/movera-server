@@ -3,6 +3,7 @@ import { headingView } from "./headingCheck.js";
 import type { TripRow } from "../db/tripLog.js";
 import { bonusFor, priorityFor } from "../dispatch/bonusScope.js";
 import { tripTerms } from "./ride.js";
+import { chargedSecondsAt } from "./ride/waitingClock.js";
 import { contract } from "../contract/contract.js";
 import { debtOf } from "../rules/commission.js";
 import { cancelPreviewOf } from "./cancelPreview.js";
@@ -25,7 +26,7 @@ const iso = (value: Date | null | undefined) => (value ? value.toISOString() : u
 /** Where the stored ETA must point in each status (contract.json#pickupWaiting.eta: to the pickup until boarding, then to the drop-off). */
 const ETA_TARGET_OF: Record<string, "pickup" | "dropoff"> = { accepted: "pickup", driver_to_pickup: "pickup", rider_onboard: "dropoff", in_trip: "dropoff", approaching_dropoff: "dropoff" };
 
-type WaitingRow = { arrivedAt: string; waitFrom?: string; freeWaitMin?: number; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money };
+type WaitingRow = { arrivedAt: string; waitFrom?: string; freeWaitMin?: number; freeUntil: string; noShowAt: string; chargedSeconds: number; noShowFee?: Money; noShowDriverShare?: Money; away?: { since: string } };
 
 /**
  * v0.18.7 (Q5, contract.json#pickupWaiting.runningTotal): while the driver waits, the paid seconds and cost so far at
@@ -47,12 +48,14 @@ function waitingNow(row: TripRow, stored: WaitingRow, now: Date): WaitingRow & {
   // G6 live fix 7: a trip that ended while the driver was waiting (no-show / cancel from arrived) never boarded, so
   // chargedSeconds stayed 0: count the paid seconds up to the end (freeUntil → ended_at).
   if (row.status !== "arrived") {
-    const endedWaiting = waiting.chargedSeconds > 0 || row.boarded_at || !row.ended_at ? 0 : Math.max(0, Math.floor((new Date(row.ended_at).getTime() - Date.parse(waiting.freeUntil)) / 1000));
+    // v0.18.93 (contract.json#autoArrive.money): up to the moment he drove away when it ended while the clock stood still.
+    const endedWaiting = waiting.chargedSeconds > 0 || row.boarded_at || !row.ended_at ? 0 : chargedSecondsAt(waiting, new Date(row.ended_at));
     return { ...waiting, paidMinutes: Math.ceil(Math.max(0, waiting.chargedSeconds, endedWaiting) / 60) };
   }
   const terms = tripTerms(row);
   const perMin = (terms?.["waitPerMin"] as Money | undefined)?.amountMinor;
-  const seconds = Math.max(0, Math.floor((now.getTime() - Date.parse(waiting.freeUntil)) / 1000));
+  // v0.18.93 (contract.json#autoArrive.money): frozen at away.since while the driver is away from the pickup.
+  const seconds = chargedSecondsAt(waiting, now);
   return { ...waiting, chargedSecondsNow: seconds, paidMinutes: Math.ceil(seconds / 60), ...(perMin !== undefined ? { chargedSoFar: { amountMinor: Math.floor((seconds * perMin) / 60 + 0.5), currency: row.currency } } : {}) };
 }
 

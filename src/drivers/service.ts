@@ -6,7 +6,7 @@ import { TERMS_REASON, termsAccepted } from "../content/routes.js";
 import { schemaProblem } from "../contract/schemas.js";
 import type { Executor, Trx } from "../db/db.js";
 import { appendTripEvent } from "../db/tripLog.js";
-import { DRIVER_SILENCE, maybeNearDropoff } from "../trips/ride.js";
+import { DRIVER_SILENCE, maybeNearDropoff, maybePickupGeofence } from "../trips/ride.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { zoneAt } from "../config/zoneLookup.js";
@@ -409,22 +409,38 @@ type LocationFacts = {
   online_status: string;
   online_since: Date | null;
   has_open_entry: boolean;
-  active: Awaited<ReturnType<typeof activeTripOf>>;
+  /** v0.18.93 (contract.json#autoArrive): + the trip's kept distances and whether its waiting clock stands still. */
+  active: (NonNullable<Awaited<ReturnType<typeof activeTripOf>>> & { arrive_m: number | null; leave_m: number | null; away: boolean | null }) | undefined;
 };
 
 async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts | undefined> {
   const row = await trx
     .selectFrom("drivers as d")
     .leftJoinLateral(
-      (eb) => eb.selectFrom("trips").select(["trip_id", "status", "version", "driver_silent_alert", "pickup", "dropoff", "eta"]).whereRef("trips.driver_id", "=", "d.driver_id").where("trips.status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).limit(1).as("t"),
+      (eb) =>
+        eb
+          .selectFrom("trips")
+          .select(["trip_id", "status", "version", "driver_silent_alert", "pickup", "dropoff", "eta"])
+          // v0.18.93 (contract.json#autoArrive): the kept distances and the stopped clock, read in the same statement.
+          .select([
+            sql<number | null>`(trips.booking_rules->>'autoArriveMeters')::numeric`.as("arrive_m"),
+            sql<number | null>`(trips.booking_rules->>'leaveMeters')::numeric`.as("leave_m"),
+            sql<boolean | null>`(trips.waiting->'away') IS NOT NULL`.as("away"),
+          ])
+          .whereRef("trips.driver_id", "=", "d.driver_id")
+          .where("trips.status", "in", [...DRIVER_ASSIGNED])
+          .where(NOT_HELD)
+          .limit(1)
+          .as("t"),
       (join) => join.onTrue(),
     )
-    .select(["d.driver_id", "d.zone_ids", "d.language", "d.online_status", "d.online_since", "t.trip_id", "t.status", "t.version", "t.driver_silent_alert", "t.pickup", "t.dropoff", "t.eta"])
+    .select(["d.driver_id", "d.zone_ids", "d.language", "d.online_status", "d.online_since", "t.trip_id", "t.status", "t.version", "t.driver_silent_alert", "t.pickup", "t.dropoff", "t.eta", "t.arrive_m", "t.leave_m", "t.away"])
     .select(sql<boolean>`EXISTS (SELECT 1 FROM airport_queue_entries e WHERE e.driver_id = d.driver_id AND e.left_at IS NULL)`.as("has_open_entry"))
     .where("d.driver_id", "=", driverId)
     .executeTakeFirst();
   if (row === undefined) return undefined;
-  const active = row.trip_id === null ? undefined : { trip_id: row.trip_id, status: row.status!, version: row.version!, driver_silent_alert: row.driver_silent_alert!, pickup: row.pickup!, dropoff: row.dropoff!, eta: row.eta! };
+  const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+  const active = row.trip_id === null ? undefined : { trip_id: row.trip_id, status: row.status!, version: row.version!, driver_silent_alert: row.driver_silent_alert!, pickup: row.pickup!, dropoff: row.dropoff!, eta: row.eta!, arrive_m: num(row.arrive_m), leave_m: num(row.leave_m), away: row.away ?? null };
   return { driver_id: row.driver_id, zone_ids: row.zone_ids, language: row.language, online_status: row.online_status, online_since: row.online_since, has_open_entry: row.has_open_entry, active: active as LocationFacts["active"] };
 }
 
@@ -485,6 +501,8 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     // no location event, NOTIFY, near-drop-off, ride-check scan or silence check runs on a position that is not current.
     if (!replaced) return { accepted: fresh.length };
     await maybeNearDropoff(trx, active, latest.fix, now);
+    // v0.18.93 (contract.json#autoArrive): the automatic arrival / the waiting clock, as a job right after (a timer row only).
+    await maybePickupGeofence(trx, active, latest.fix, now);
     // v0.18.9 (contract.json#onTrip.rideCheck): the server's ride check looks at the new fixes in a job right after.
     await scheduleRideCheckScan(trx, active, now);
     // Car lost (contract v0.7.0 §15): the position is back, so the silence check runs now and takes the alarm down.

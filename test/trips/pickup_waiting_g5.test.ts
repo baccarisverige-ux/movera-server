@@ -264,6 +264,9 @@ describe("prices from the server: served config and TripProjection.terms (contra
       // v0.18.85 A1 (driver-g6.md:96): the same prices with the 10 % app fee, as the rider pays them.
       waitPerMinShown: { amountMinor: 1349, currency: "SEK" },
       stopWaitPerMinShown: { amountMinor: 550, currency: "SEK" },
+      // v0.18.93 (job C9, contract.json#autoArrive.settings.kept): the auto-arrive and leave distances of booking time.
+      autoArriveMeters: 100,
+      leaveMeters: 200,
     };
     expect((await driverView(tripId)).terms).toEqual(terms);
     // Contract §2: the rider never sees the driver's shares.

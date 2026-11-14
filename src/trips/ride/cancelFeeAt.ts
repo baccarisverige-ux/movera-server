@@ -2,6 +2,7 @@ import { contract } from "../../contract/contract.js";
 import type { TripRow } from "../../db/tripLog.js";
 import { cancelFee, isFreeCancel, type FeeRule } from "../../rules/cancelFees.js";
 import type { Money, Waiting } from "./shared.js";
+import { clockAt } from "./waitingClock.js";
 
 /**
  * The rider's cancel fee at a moment, from facts already read (contract §3, §5 "Live cancel fees per category";
@@ -44,10 +45,11 @@ export function freeWithoutRules(trip: FeeTrip, now: Date): boolean {
   return false;
 }
 
-/** True when a cancel at `now` would be a no-show (arrived live trip, the zone's switch on, the free waiting over). */
+/** True when a cancel at `now` would be a no-show (arrived live trip, the zone's switch on, the free waiting over).
+ * v0.18.93 (contract.json#autoArrive): the free waiting is read on the waiting clock, frozen at away.since while the driver is away. */
 export function cancelIsNoShow(trip: FeeTrip, cancelAfterArrivedIsNoShow: boolean, now: Date): boolean {
   const waiting = trip.waiting as Waiting | null;
-  return trip.kind !== "scheduled" && trip.status === "arrived" && cancelAfterArrivedIsNoShow && waiting !== null && now.getTime() >= Date.parse(waiting.freeUntil);
+  return trip.kind !== "scheduled" && trip.status === "arrived" && cancelAfterArrivedIsNoShow && waiting !== null && clockAt(waiting, now).getTime() >= Date.parse(waiting.freeUntil);
 }
 
 export function riderCancelFeeAt(trip: FeeTrip, facts: CancelFeeFacts, now: Date): RiderFee | null {

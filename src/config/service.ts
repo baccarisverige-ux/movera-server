@@ -6,6 +6,7 @@ import type { ConfigDoc } from "../db/schema.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { arrivedDistanceProblem } from "../trips/ride/settings.js";
+import { geofenceProblem } from "../trips/ride/geofence.js";
 import { checkEmergencyNumbers } from "./emergencyNumbers.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
@@ -90,6 +91,9 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "driver_app_config") {
     const arrived = arrivedDistanceProblem(document);
     if (arrived !== null) throw badRequest(`The arrived distance is not valid: ${arrived}.`, "invalid_arrived_distance");
+    // v0.18.93 (contract.json#autoArrive.settings.validation): the auto-arrive and leave distances.
+    const fence = geofenceProblem(document);
+    if (fence !== null) throw badRequest(`The auto arrive distance is not valid: ${fence}.`, "invalid_auto_arrive_distance");
   }
   // v0.18.57 §79: CountryRules.emergencyNumbers (country standard only; 1-6 valid rows).
   if (doc === "country_rules") checkEmergencyNumbers(zone.kind, document);

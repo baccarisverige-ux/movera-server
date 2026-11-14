@@ -11,7 +11,7 @@ import { haversineKm } from "../../maps/routing.js";
 import type { FareLine } from "../../rules/fare.js";
 import { extrasOf } from "../../rules/priceExtras.js";
 import { lockTripNow } from "../../dispatch/runtime.js";
-import { applyCommand, expectVersion, lockOwnTrip } from "../commands.js";
+import { applyCommand, expectVersion, lockOwnTrip, touchTrip } from "../commands.js";
 import { RIDER_ONBOARD, type TripStatus } from "../../rules/transitions.js";
 import { tripProjection } from "../projection.js";
 import { effectiveWaiting } from "../waitingRules.js";
@@ -21,6 +21,8 @@ import { releaseDriver, feeSplit, walletCovers } from "./money.js";
 import { backToDispatch } from "./cancel.js";
 import { pickupInRunningEvent, WAITING_PAID, WAITING_NO_SHOW } from "./timers.js";
 import { etaNowLocked } from "../etaNow.js";
+import { writeAutoMessage } from "../messages.js";
+import { backAt, chargedSecondsAt, rebookWaitingAlerts, tripGeofence } from "./geofence.js";
 
 /* ---------------------------------------------------------------- the driver's steps */
 
@@ -36,66 +38,17 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
   const trip = await lockOwnTrip(trx, tripId, { actor: "driver", subjectId: driverId });
   expectVersion(trip, expectedVersion, "driver");
   if (command === "arrive") {
-    if (trip.status === "driver_to_pickup") {
-      // Deep fix 2026-11-02 (MED stale / fake GPS for arrive): a position counts only while it is at most the zone's
-      // DriverAppConfig.waiting.positionMaxAgeSeconds old (default 60): the one sent with the step when it says when it
-      // was measured, else the server's latest fix. An old one is 409 position_stale (turn on location).
-      const maxAge = options.legacyPosition ? Number.POSITIVE_INFINITY : await positionMaxAge(trx, trip.zone_id);
-      const fresh = (at: unknown) => options.legacyPosition || (typeof at === "string" || at instanceof Date ? Math.abs(now.getTime() - new Date(at).getTime()) <= maxAge * 1000 : false);
-      const sent = location && fresh((location as Place & { measuredAt?: string }).measuredAt) ? location : null;
-      const stored = sent ? undefined : await trx.selectFrom("driver_locations").select(["lat", "lng", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
-      const here = sent ?? (stored && fresh(stored.measured_at) ? stored : null);
-      if (!here && (location || stored)) throw new ApiError("invalid_transition", "Your position is too old. Turn on location and try again.", { reason: "position_stale", projection: tripProjection(trip, "driver") });
-      if (!here || haversineKm(here, trip.pickup as Place) * 1000 > ARRIVE_MAX_METERS) {
-        throw new ApiError("invalid_transition", "You are not at the pickup yet.", { reason: "not_at_pickup", projection: tripProjection(trip, "driver") });
-      }
+    const waiting = trip.waiting as Waiting | null;
+    // v0.18.93 (contract.json#autoArrive.back): a tap while the waiting clock stands still (the driver drove away) is the
+    // new arrival, with the same position check as the first tap: the clock goes on (freeUntil / noShowAt move later).
+    if (trip.status === "arrived" && waiting?.away) {
+      await tapPosition(trx, trip, driverId, now, location, options);
+      const back = backAt(waiting, now, now);
+      await rebookWaitingAlerts(trx, tripId, back);
+      return touchTrip(trx, trip, { waiting: JSON.stringify(back) }, now);
     }
-    const base = await waitingOf(trx, trip);
-    const kept = await rulesOf(trx, trip);
-    // v0.18.8 (contract.json#arrivedWaiting.rules): the matching admin rule (airport / scheduled / event, far pickup) is
-    // picked now and its numbers are the trip's from here on.
-    const rules = effectiveWaiting(base, kept.waitingRules, {
-      kind: trip.kind,
-      pickupInAirportZone: extrasOf(trip.price_extras).pickupInAirportZone === true,
-      inEvent: kept.waitingRules !== null && kept.waitingRules.rideTypes.event.on ? await pickupInRunningEvent(trx, trip, kept.waitingRules, now) : false,
-      acceptPickupMeters: trip.accept_pickup_meters,
-    });
-    // Owner 2026-11-03 (v0.18.19 includedWaiting): a booked ride's free waiting is the ONE all-zones value of the
-    // reservation policy (admin "Included waiting"); the no-show time is never before its end.
-    if (trip.kind === "scheduled") {
-      const policy = await reservationPolicy(trx);
-      rules.freeWaitMin = policy.includedWaitingMinutes;
-      rules.noShowAfterMin = Math.max(rules.noShowAfterMin, rules.freeWaitMin);
-    }
-    // v0.18.51 §73 (owner 2026-11-07, contract.json#bookedRide0_18_51.waitFrom): a booked ride's free waiting starts at
-    // the later of the driver's Arrived and the pickup time — an early driver's clock waits for the booked time, a late
-    // driver's starts at his Arrived (replaces Owner B "also when the driver arrives late"). A live ride: at Arrived.
-    const start = trip.kind === "scheduled" && trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
-    const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
-    // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
-    // v0.18.51 §73 (owner "Booked fees"): a booked ride's no-show costs the booking fee, so the confirm shows that.
-    // Owner Q2: a category with no booked cancel rule shows (and charges) the normal no-show fee.
-    const normalNoShow: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
-    const noShowFee: Money = trip.kind === "scheduled" ? await bookedNoShowFee(trx, trip, normalNoShow) : normalNoShow;
-    const noShowShare = kept.noShowDriverSharePct;
-    const waiting: Waiting = {
-      arrivedAt: now.toISOString(),
-      waitFrom: start.toISOString(),
-      freeUntil: at(rules.freeWaitMin),
-      noShowAt: at(rules.noShowAfterMin),
-      chargedSeconds: 0,
-      noShowFee,
-      noShowDriverShare: { amountMinor: feeSplit(noShowFee, noShowShare).driver, currency: trip.currency },
-      rules: rules.rules,
-      freeWaitMin: rules.freeWaitMin,
-      perMin: { amountMinor: rules.perMin.amountMinor, currency: trip.currency },
-      noShowAfterMin: rules.noShowAfterMin,
-      alerts: [],
-    };
-    // v0.18.8 (contract.json#arrivedWaiting.alerts): the island messages at the end of the free wait and at the no-show time.
-    await scheduleTimer(trx, { kind: WAITING_PAID, refId: tripId, dueAt: new Date(waiting.freeUntil), payload: { arrivedAt: waiting.arrivedAt } });
-    await scheduleTimer(trx, { kind: WAITING_NO_SHOW, refId: tripId, dueAt: new Date(waiting.noShowAt), payload: { arrivedAt: waiting.arrivedAt } });
-    return applyCommand(trx, trip, { command, actor: "driver", now, set: { arrived_at: now, waiting: JSON.stringify(waiting) } });
+    const here = trip.status === "driver_to_pickup" ? await tapPosition(trx, trip, driverId, now, location, options) : null;
+    return arriveNow(trx, trip, now, "tap", here);
   }
   if ((command === "board" || command === "start_trip") && trip.pin_required && trip.pin_verified_at === null && ["arrived", "driver_to_pickup", "accepted"].includes(trip.status)) {
     // v0.18.8 (contract.json#arrivedWaiting.pin): the rider's PIN first (checked by checkPin before this transaction).
@@ -104,7 +57,8 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
   if (command === "board") {
     // The waiting clock stops: every second after the free wait is charged, 100 % the driver's (§3.5).
     const waiting = trip.waiting as Waiting | null;
-    const charged = waiting ? Math.max(0, Math.floor((now.getTime() - Date.parse(waiting.freeUntil)) / 1000)) : 0;
+    // v0.18.93 (contract.json#autoArrive.money): the clock stands still while the driver is away (at away.since).
+    const charged = waiting ? chargedSecondsAt(waiting, now) : 0;
     // Live 5+5 2026-11-08 (problem 5): the pickup ETA ends here (the boarding event carries none) and the first ETA to
     // the drop-off is computed right away (etaNowLocked below), not up to 30 s later.
     const set: Updateable<TripsTable> = { boarded_at: now, ...noPickupEta(trip) };
@@ -133,6 +87,92 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     return started;
   }
   return applyCommand(trx, trip, { command, actor: "driver", now });
+}
+
+/**
+ * The tap's position check (POST /trips/{tripId}/arrive): the fix sent with the step or the server's latest, fresh, within
+ * ARRIVE_MAX_METERS of the pickup; else 409 position_stale / not_at_pickup.
+ */
+async function tapPosition(trx: Trx, trip: TripRow, driverId: string, now: Date, location: Place | undefined, options: { legacyPosition?: boolean }): Promise<Place> {
+  // Deep fix 2026-11-02 (MED stale / fake GPS for arrive): a position counts only while it is at most the zone's
+  // DriverAppConfig.waiting.positionMaxAgeSeconds old (default 60): the one sent with the step when it says when it
+  // was measured, else the server's latest fix. An old one is 409 position_stale (turn on location).
+  const maxAge = options.legacyPosition ? Number.POSITIVE_INFINITY : await positionMaxAge(trx, trip.zone_id);
+  const fresh = (at: unknown) => options.legacyPosition || (typeof at === "string" || at instanceof Date ? Math.abs(now.getTime() - new Date(at).getTime()) <= maxAge * 1000 : false);
+  const sent = location && fresh((location as Place & { measuredAt?: string }).measuredAt) ? location : null;
+  const stored = sent ? undefined : await trx.selectFrom("driver_locations").select(["lat", "lng", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
+  const here = sent ?? (stored && fresh(stored.measured_at) ? stored : null);
+  if (!here && (location || stored)) throw new ApiError("invalid_transition", "Your position is too old. Turn on location and try again.", { reason: "position_stale", projection: tripProjection(trip, "driver") });
+  if (!here || haversineKm(here, trip.pickup as Place) * 1000 > ARRIVE_MAX_METERS) {
+    throw new ApiError("invalid_transition", "You are not at the pickup yet.", { reason: "not_at_pickup", projection: tripProjection(trip, "driver") });
+  }
+  return here;
+}
+
+/**
+ * The arrive step (the driver's tap, or v0.18.93 the server's automatic arrival, contract.json#autoArrive): the waiting
+ * rules picked now, the island timers, status arrived. `here`: where he is (null when not checked); farther than the
+ * trip's leaveMeters, the clock starts already stopped.
+ */
+async function arriveNow(trx: Trx, trip: TripRow, now: Date, by: "auto" | "tap", here: Place | null): Promise<TripRow> {
+  const tripId = trip.trip_id;
+  const command = "arrive";
+  const base = await waitingOf(trx, trip);
+  const kept = await rulesOf(trx, trip);
+  // v0.18.8 (contract.json#arrivedWaiting.rules): the matching admin rule (airport / scheduled / event, far pickup) is
+  // picked now and its numbers are the trip's from here on.
+  const rules = effectiveWaiting(base, kept.waitingRules, {
+    kind: trip.kind,
+    pickupInAirportZone: extrasOf(trip.price_extras).pickupInAirportZone === true,
+    inEvent: kept.waitingRules !== null && kept.waitingRules.rideTypes.event.on ? await pickupInRunningEvent(trx, trip, kept.waitingRules, now) : false,
+    acceptPickupMeters: trip.accept_pickup_meters,
+  });
+  // Owner 2026-11-03 (v0.18.19 includedWaiting): a booked ride's free waiting is the ONE all-zones value of the
+  // reservation policy (admin "Included waiting"); the no-show time is never before its end.
+  if (trip.kind === "scheduled") {
+    const policy = await reservationPolicy(trx);
+    rules.freeWaitMin = policy.includedWaitingMinutes;
+    rules.noShowAfterMin = Math.max(rules.noShowAfterMin, rules.freeWaitMin);
+  }
+  // v0.18.51 §73 (owner 2026-11-07, contract.json#bookedRide0_18_51.waitFrom): a booked ride's free waiting starts at
+  // the later of the driver's Arrived and the pickup time — an early driver's clock waits for the booked time, a late
+  // driver's starts at his Arrived (replaces Owner B "also when the driver arrives late"). A live ride: at Arrived.
+  const start = trip.kind === "scheduled" && trip.scheduled_at && trip.scheduled_at.getTime() > now.getTime() ? trip.scheduled_at : now;
+  const at = (min: number) => new Date(start.getTime() + min * 60_000).toISOString();
+  // v0.18.7 (Q6): the no-show fee and the driver's part of it ride on the trip, so the confirm can say "You get X kr".
+  // v0.18.51 §73 (owner "Booked fees"): a booked ride's no-show costs the booking fee, so the confirm shows that.
+  // Owner Q2: a category with no booked cancel rule shows (and charges) the normal no-show fee.
+  const normalNoShow: Money = { amountMinor: rules.noShowFee.amountMinor, currency: trip.currency };
+  const noShowFee: Money = trip.kind === "scheduled" ? await bookedNoShowFee(trx, trip, normalNoShow) : normalNoShow;
+  const noShowShare = kept.noShowDriverSharePct;
+  const waiting: Waiting = {
+    arrivedAt: now.toISOString(),
+    waitFrom: start.toISOString(),
+    freeUntil: at(rules.freeWaitMin),
+    noShowAt: at(rules.noShowAfterMin),
+    chargedSeconds: 0,
+    noShowFee,
+    noShowDriverShare: { amountMinor: feeSplit(noShowFee, noShowShare).driver, currency: trip.currency },
+    rules: rules.rules,
+    freeWaitMin: rules.freeWaitMin,
+    perMin: { amountMinor: rules.perMin.amountMinor, currency: trip.currency },
+    noShowAfterMin: rules.noShowAfterMin,
+    alerts: [],
+    // v0.18.93 (contract.json#autoArrive): automatic or tapped; a tap farther than the trip's leaveMeters starts stopped.
+    arrivedBy: by,
+    ...(here && haversineKm(here, trip.pickup as Place) * 1000 > (await tripGeofence(trx, trip)).leaveMeters ? { away: { since: now.toISOString() } } : {}),
+  };
+  // v0.18.8 (contract.json#arrivedWaiting.alerts): the island messages at the end of the free wait and at the no-show time.
+  await scheduleTimer(trx, { kind: WAITING_PAID, refId: tripId, dueAt: new Date(waiting.freeUntil), payload: { arrivedAt: waiting.arrivedAt } });
+  await scheduleTimer(trx, { kind: WAITING_NO_SHOW, refId: tripId, dueAt: new Date(waiting.noShowAt), payload: { arrivedAt: waiting.arrivedAt } });
+  return applyCommand(trx, trip, { command, actor: "driver", now, set: { arrived_at: now, waiting: JSON.stringify(waiting) } });
+}
+
+/** v0.18.93 (contract.json#autoArrive.auto): the server marks the driver arrived (the job of drivers' positions), as his tap does. */
+export async function autoArrive(trx: Trx, trip: TripRow, here: Place, now: Date): Promise<void> {
+  const arrived = await arriveNow(trx, trip, now, "auto", here);
+  // v0.18.56 §78 (chat.autoArrived, owner Q85): the automatic "I've arrived" message also on an automatic arrival, once per trip.
+  await writeAutoMessage(trx, arrived, "arrived", now);
 }
 
 /** Rider at the drop-off soon: the system's near_dropoff, from the driver's fixes (a timer, so it locks the trip on its own). */

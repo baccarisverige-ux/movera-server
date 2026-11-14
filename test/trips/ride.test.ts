@@ -510,10 +510,12 @@ describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTr
     await database.db.updateTable("riders").set({ language: "fr", consents: JSON.stringify({}) }).execute();
     const { tripId, version } = await accepted();
     await step(tripId, "head-to-pickup", version);
-    await moveTo("A", NORRMALM);
+    // v0.18.93 (job C9, contract.json#autoArrive): 150 m from the pickup, outside the 100 m where the server arrives him
+    // by itself, so "almost there" comes first and his tap is the arrival (as on main before C9 at the pickup itself).
+    await moveTo("A", { lat: NORRMALM.lat + 150 / 111_195, lng: NORRMALM.lng });
     await advance(30);
     await advance(30);
-    await step(tripId, "arrive", version + 1);
+    expect((await step(tripId, "arrive", version + 1)).statusCode).toBe(200);
     expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
     const rows = await database.db.selectFrom("notifications").select(["title", "bell", "audience", "body", "deep_link"]).where("trip_id", "=", tripId).where("kind", "=", "trip_update").orderBy("created_at").orderBy("notification_id").execute();
     expect(rows[0]).toMatchObject({ title: "Chauffeur trouvé", bell: true, audience: "rider", body: "Driver A est en route vers vous." });
