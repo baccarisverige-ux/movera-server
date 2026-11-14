@@ -30,8 +30,29 @@ export const SAFETY_READ_ROUTES: ReadonlySet<string> = new Set(
 );
 
 /**
+ * G34 S2 (contract v0.18.83 fastDispatch.shedPolls; owner 2026-11-13 12:21 UTC "Yes, 7 checks"; proof Rules
+ * audits/fix-plan-2026-11-13/sup1-server-performance.md P1-A): the 7 repeat timer checks the phones make by themselves
+ * and whose failure they already ignore (they keep the last value and ask again at the next check, never sooner than
+ * Retry-After). Shed like the admin lists, so under load they answer 503 server_busy at once instead of queueing behind
+ * GPS, accept and trip steps. Matched on the route pattern only (never the raw path). GET /rider/trips/active is NEVER
+ * here (owner): it is also the rider's restore read on cold start / resume and the booking recover read. Nor are
+ * location, accept, trip steps, SOS, GET /driver/profile, GET /trips/:tripId, the streams or any write.
+ */
+export const POLL_READ_ROUTES: ReadonlySet<string> = new Set(
+  [
+    "/driver/airport-queue",
+    "/driver/surge-map",
+    "/notifications",
+    "/driver/reminders",
+    "/driver/onboarding/settings",
+    "/rider/trips",
+    "/trips/:tripId/messages",
+  ].map((route) => `GET ${API_PREFIX}${route}`),
+);
+
+/**
  * Supervisor P4: ONLY new, low-priority work is ever shed — a price quote, the rider's map of cars, address search and
- * the admin panel's lists. Everything else (SOS / safety, offer accept / decline, trip state changes, payment and cash,
+ * the admin panel's lists, and (G34 S2) the phones' 7 repeat checks in POLL_READ_ROUTES. Everything else (SOS / safety, offer accept / decline, trip state changes, payment and cash,
  * trip GPS, every event stream and its resume, sign-in, health checks) is never refused here. B1.24: nor are the admin
  * safety reads (SAFETY_READ_ROUTES). `routePattern` is the matched route (request.routeOptions.url); without one the
  * raw path is compared, so only the routes without an id match then.
@@ -44,6 +65,7 @@ export function sheddable(method: string, url: string, routePattern?: string): b
   if (SAFETY_READ_ROUTES.has(`${method} ${routePattern ?? path}`)) return false;
   if (route.endsWith("/stream") || route.endsWith("/events")) return false;
   if (route === "/rider/nearby-vehicles" || route.startsWith("/places/")) return true;
+  if (routePattern !== undefined && POLL_READ_ROUTES.has(`${method} ${routePattern}`)) return true;
   return route.startsWith("/admin/");
 }
 
