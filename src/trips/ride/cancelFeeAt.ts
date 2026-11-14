@@ -54,6 +54,10 @@ export function cancelIsNoShow(trip: FeeTrip, cancelAfterArrivedIsNoShow: boolea
 
 export function riderCancelFeeAt(trip: FeeTrip, facts: CancelFeeFacts, now: Date): RiderFee | null {
   if (freeWithoutRules(trip, now)) return null;
+  // v0.18.93 round 2 (contract.json#autoArrive.riderCancel, supervisor M3; owner verbatim, Rules decisions/driver-g15.md:64:
+  // "if driver drive away from pickup … if rider cancel he got no cancellation fee"): while the waiting clock stands still
+  // (the driver is away from the pickup) the rider's cancel is free — no cancel fee, no no-show fee, live or booked.
+  if (trip.status === "arrived" && (trip.waiting as Waiting | null)?.away) return null;
   // v0.18.49 §71 (owner Q10 "Category rule B only", contract.json#bookLater.rider.cancel): only the category's free
   // minutes (isFreeCancel below) make a booked cancel free; freeChangeBeforeMin is the change window only.
   const rule = facts.rule;

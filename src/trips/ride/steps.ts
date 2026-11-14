@@ -41,8 +41,10 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     const waiting = trip.waiting as Waiting | null;
     // v0.18.93 (contract.json#autoArrive.back): a tap while the waiting clock stands still (the driver drove away) is the
     // new arrival, with the same position check as the first tap: the clock goes on (freeUntil / noShowAt move later).
+    // Round 2 (supervisor M2, owner "drive away … timing stops", Rules decisions/driver-g7.md:83-84): that tap counts only
+    // within the trip's leaveMeters of the pickup (not the first tap's 300 m), else 409 not_at_pickup and the clock stays stopped.
     if (trip.status === "arrived" && waiting?.away) {
-      await tapPosition(trx, trip, driverId, now, location, options);
+      await tapPosition(trx, trip, driverId, now, location, options, (await tripGeofence(trx, trip)).leaveMeters);
       const back = backAt(waiting, now, now);
       await rebookWaitingAlerts(trx, tripId, back);
       return touchTrip(trx, trip, { waiting: JSON.stringify(back) }, now);
@@ -91,9 +93,10 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
 
 /**
  * The tap's position check (POST /trips/{tripId}/arrive): the fix sent with the step or the server's latest, fresh, within
- * ARRIVE_MAX_METERS of the pickup; else 409 position_stale / not_at_pickup.
+ * ARRIVE_MAX_METERS of the pickup (the back tap while away: `maxMeters` = the trip's leaveMeters); else 409
+ * position_stale / not_at_pickup.
  */
-async function tapPosition(trx: Trx, trip: TripRow, driverId: string, now: Date, location: Place | undefined, options: { legacyPosition?: boolean }): Promise<Place> {
+async function tapPosition(trx: Trx, trip: TripRow, driverId: string, now: Date, location: Place | undefined, options: { legacyPosition?: boolean }, maxMeters = ARRIVE_MAX_METERS): Promise<Place> {
   // Deep fix 2026-11-02 (MED stale / fake GPS for arrive): a position counts only while it is at most the zone's
   // DriverAppConfig.waiting.positionMaxAgeSeconds old (default 60): the one sent with the step when it says when it
   // was measured, else the server's latest fix. An old one is 409 position_stale (turn on location).
@@ -103,7 +106,7 @@ async function tapPosition(trx: Trx, trip: TripRow, driverId: string, now: Date,
   const stored = sent ? undefined : await trx.selectFrom("driver_locations").select(["lat", "lng", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
   const here = sent ?? (stored && fresh(stored.measured_at) ? stored : null);
   if (!here && (location || stored)) throw new ApiError("invalid_transition", "Your position is too old. Turn on location and try again.", { reason: "position_stale", projection: tripProjection(trip, "driver") });
-  if (!here || haversineKm(here, trip.pickup as Place) * 1000 > ARRIVE_MAX_METERS) {
+  if (!here || haversineKm(here, trip.pickup as Place) * 1000 > maxMeters) {
     throw new ApiError("invalid_transition", "You are not at the pickup yet.", { reason: "not_at_pickup", projection: tripProjection(trip, "driver") });
   }
   return here;

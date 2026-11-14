@@ -9,17 +9,21 @@ import { tripProjection } from "../projection.js";
 import { PICKUP_GEOFENCE, positionMaxAge, type Place, type Waiting } from "./shared.js";
 import { WAITING_NO_SHOW, WAITING_PAID } from "./timers.js";
 import { awayFrom, backAt } from "./waitingClock.js";
+import { confirmedBy, type CountingFix } from "./fixConfirm.js";
 
 /**
  * v0.18.93 (job C9, contract.json#autoArrive; owner 2026-11-02 review Q3 "Both: auto + button", Rules
  * decisions/driver-g7.md:83-84): the server marks the driver arrived when his latest fix is within the zone's
  * waiting.autoArriveMeters of the pickup (the Arrived button stays), and the waiting clock stops while he is farther than
- * waiting.leaveMeters before the rider is on board; it goes on at a new arrival (back within autoArriveMeters, or his tap).
+ * waiting.leaveMeters before the rider is on board; it goes on at a new arrival (back within autoArriveMeters, or his tap
+ * within leaveMeters). Round 2 (supervisor M1): each change needs 2 counting fixes in a row (fixConfirm.ts).
  * Pickup only: middle stops keep their taps (contract.json#autoArrive.notInThisVersion).
  */
 
 type Range = [number, number];
-const AA = (contract as unknown as { autoArrive: { settings: { arriveMeters: { default: number; range: Range }; leaveMeters: { default: number; range: Range } }; maxAccuracyMeters: number } }).autoArrive;
+const AA = (contract as unknown as { autoArrive: { settings: { arriveMeters: { default: number; range: Range }; leaveMeters: { default: number; range: Range } }; maxAccuracyMeters: number; confirm: { fixes: number; minGapSeconds: number; maxArriveSpeedKmh: number } } }).autoArrive;
+/** Round 2 (contract.json#autoArrive.confirm, supervisor M1): 2 counting fixes in a row ≥ 5 s apart; arrivals ≤ 15 km/h. */
+export const AUTO_CONFIRM = AA.confirm;
 const ARRIVE_RANGE = AA.settings.arriveMeters.range;
 const LEAVE_RANGE = AA.settings.leaveMeters.range;
 /** A fix counts for the automatic arrival and the waiting clock only when at least this accurate (contract.json#autoArrive.maxAccuracyMeters). */
@@ -101,26 +105,54 @@ export async function maybePickupGeofence(trx: Trx, active: GeofenceFacts, fix: 
 /** The arrive step the server runs for the driver (steps.ts autoArrive), given here so this module does not import steps.ts. */
 export type AutoArrive = (trx: Trx, trip: TripRow, here: Place, now: Date) => Promise<void>;
 
-/** The job: reads the driver's latest stored fix (fresh, accurate) and arrives him, stops or goes on with the waiting clock. */
+/**
+ * The job: reads the driver's latest stored fix (fresh, accurate) and arrives him, stops or goes on with the waiting clock —
+ * round 2 (contract.json#autoArrive.confirm): only when the trip's earlier counting fixes confirm it (one fix never decides).
+ */
 export function pickupGeofenceHandler(autoArrive: AutoArrive): TimerHandler {
   return async (trx, timer) => {
     const now = timer.firedAt;
     const trip = await lockTripNow(trx, timer.refId);
     if (!trip || !trip.driver_id || (trip.status !== "driver_to_pickup" && trip.status !== "arrived")) return;
-    const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "accuracy", "measured_at"]).where("driver_id", "=", trip.driver_id).executeTakeFirst();
+    const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "accuracy", "measured_at", "speed_mps"]).where("driver_id", "=", trip.driver_id).executeTakeFirst();
     if (!fix || fix.accuracy > AUTO_MAX_ACCURACY_METERS) return;
-    if (Math.abs(now.getTime() - fix.measured_at.getTime()) > (await positionMaxAge(trx, trip.zone_id)) * 1000) return;
+    const maxAge = await positionMaxAge(trx, trip.zone_id);
+    if (Math.abs(now.getTime() - fix.measured_at.getTime()) > maxAge * 1000) return;
     const fence = await tripGeofence(trx, trip);
-    const meters = haversineKm(fix, trip.pickup as Place) * 1000;
+    const pickup = trip.pickup as Place;
+    const meters = (p: { lat: number; lng: number }) => haversineKm(p, pickup) * 1000;
+    // The trip's counting fixes up to the latest one, newest first (trip_locations is written before this job is booked).
+    const rows = await trx
+      .selectFrom("trip_locations")
+      .select(["lat", "lng", "measured_at", "speed_mps"])
+      .where("trip_id", "=", trip.trip_id)
+      .where("driver_id", "=", trip.driver_id)
+      .where("accuracy", "<=", AUTO_MAX_ACCURACY_METERS)
+      .where("measured_at", "<=", fix.measured_at)
+      .where("measured_at", ">=", new Date(fix.measured_at.getTime() - maxAge * 1000))
+      .orderBy("measured_at", "desc")
+      .limit(60)
+      .execute();
+    const fixes: CountingFix[] = rows.map((r) => ({ lat: r.lat, lng: r.lng, measuredAt: r.measured_at, speedMps: r.speed_mps, meters: meters(r) }));
+    // The stored latest fix leads (a fix the phone sent again keeps its first row; the latest is never missing).
+    if (fixes[0]?.measuredAt.getTime() !== fix.measured_at.getTime()) fixes.unshift({ lat: fix.lat, lng: fix.lng, measuredAt: fix.measured_at, speedMps: fix.speed_mps, meters: meters(fix) });
+    const rule = { ...AUTO_CONFIRM, windowSeconds: maxAge };
+    const apart = (a: CountingFix, b: CountingFix) => haversineKm(a, b) * 1000;
+    const within = (f: CountingFix) => f.meters <= fence.autoArriveMeters;
     if (trip.status === "driver_to_pickup") {
-      if (meters <= fence.autoArriveMeters) await autoArrive(trx, trip, fix, now);
+      if (confirmedBy(fixes, within, rule, true, apart)) await autoArrive(trx, trip, { lat: fix.lat, lng: fix.lng }, now);
       return;
     }
     const waiting = trip.waiting as Waiting | null;
     if (!waiting) return;
-    if (!waiting.away && meters > fence.leaveMeters) await writeWaiting(trx, trip, awayFrom(waiting, fix.measured_at, now), now);
-    else if (waiting.away && meters <= fence.autoArriveMeters) {
-      const back = backAt(waiting, fix.measured_at, now);
+    if (!waiting.away) {
+      const first = confirmedBy(fixes, (f) => f.meters > fence.leaveMeters, rule, false, apart);
+      if (first) await writeWaiting(trx, trip, awayFrom(waiting, first.measuredAt, now), now);
+      return;
+    }
+    const first = confirmedBy(fixes, within, rule, true, apart);
+    if (first) {
+      const back = backAt(waiting, first.measuredAt, now);
       await rebookWaitingAlerts(trx, trip.trip_id, back);
       await writeWaiting(trx, trip, back, now);
     }
