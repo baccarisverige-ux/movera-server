@@ -10,6 +10,7 @@ import type { FastifyInstance } from "fastify";
 import { createAdmin, createSetupLink } from "../../src/admin/auth.js";
 import type { AdminRole } from "../../src/admin/permissions.js";
 import { buildApp } from "../../src/app.js";
+import type { SmsProvider } from "../../src/sms/sms.js";
 import { seedTestPhones, TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONFIG_CHANNEL } from "../../src/config/service.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "../../src/db/tripLog.js";
@@ -52,7 +53,7 @@ export const BOOTSTRAP_EMAIL = "owner@movera.test";
 
 /** poolMax: the server gets its own pool of this size (the test's own reads keep the default pool). */
 /** env: extra server environment (e.g. a production-size write limit, B1.22). */
-export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date; poolMax?: number; env?: Record<string, string> };
+export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date; poolMax?: number; env?: Record<string, string>; /** v0.18.101: a fake SMS company (none = "SMS not connected"). */ sms?: SmsProvider };
 
 let keyCounter = 0;
 export const newKey = (prefix = "e2e") => `${prefix}-key-${String(++keyCounter).padStart(12, "0")}-${process.pid}`;
@@ -103,7 +104,7 @@ export class Sim {
     sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL]);
     await sim.hub.start();
     if (options.poolMax !== undefined) sim.serverDb = createDb(createPool(sim.database.url, options.poolMax));
-    sim.app = await buildApp({ env, logger: false, db: sim.serverDb ?? db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : {}) });
+    sim.app = await buildApp({ env, logger: false, db: sim.serverDb ?? db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : {}), ...(options.sms ? { sms: options.sms } : {}) });
     // Phase 7: every HTTP response's route, status and server time (Fastify's elapsedTime), for the timing budgets
     // (15_timing.test.ts). E2E_TIMING_OUT=<file> also appends them as JSON lines for the timing report.
     const timingOut = process.env.E2E_TIMING_OUT;

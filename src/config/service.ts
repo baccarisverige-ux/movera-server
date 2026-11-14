@@ -8,6 +8,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { arrivedDistanceProblem } from "../trips/ride/settings.js";
 import { geofenceProblem } from "../trips/ride/geofence.js";
 import { checkEmergencyNumbers } from "./emergencyNumbers.js";
+import { checkSosContactsSms } from "../safety/sosContactsSms.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
@@ -97,6 +98,8 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   }
   // v0.18.57 §79: CountryRules.emergencyNumbers (country standard only; 1-6 valid rows).
   if (doc === "country_rules") checkEmergencyNumbers(zone.kind, document);
+  // v0.18.101 §92: CountryRules.sosContactsSms (country standard only; true / false).
+  if (doc === "country_rules") checkSosContactsSms(zone.kind, document);
   // v0.18.86 J5b (contract.json#commissionSteps.validation): the steps have their own reason and details, so they are
   // checked before the schema (which would answer invalid_document); the warn rule is advisory and never refused here.
   if (doc === "pricing") {

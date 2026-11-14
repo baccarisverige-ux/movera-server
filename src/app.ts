@@ -297,7 +297,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await airportQueueRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.43 §64 fix job 10: blocked pairs (Admin › Trips › Block this pair, Support undo).
     await blockedPairRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, smsConnected: sms !== undefined, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??
       (env.OSRM_URL !== undefined
@@ -327,7 +327,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await reservationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.6 §32 (owner G4-F2..F6): the admin's Dispatch tools and the driver's events.
     await dispatchToolRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}), ...(sms ? { sms } : {}), warn: (data, message) => app.log.warn(data, message) });
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });

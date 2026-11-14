@@ -11,13 +11,16 @@ import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from ".
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { listRideChecks } from "../admin/tripTools.js";
-import { adminIncident, adminIncidentCommand, adminIncidentLevel, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
+import { appendIncidentEvent, adminIncident, adminIncidentCommand, adminIncidentLevel, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
 import { reportRideCheck } from "./rideCheck.js";
+import { deliverSosSms } from "./sosContactsSms.js";
+import type { SmsProvider } from "../sms/sms.js";
 import { TotalQuery } from "../admin/listTotal.js";
 
 /** contract v0.7.0 §15: rider and driver SOS, admin incidents and the incident feed. */
 
-export type SafetyDeps = { db: Db; jwtSecret: string; rideCheckAppMaxPerTrip: number; hub?: NotificationHub; clock?: () => Date };
+/** v0.18.101 §92: `sms` = the SMS company (none = "SMS not connected": the driver's SOS keeps its SMS as skipped). */
+export type SafetyDeps = { db: Db; jwtSecret: string; rideCheckAppMaxPerTrip: number; hub?: NotificationHub; clock?: () => Date; sms?: SmsProvider; warn?: (data: Record<string, unknown>, message: string) => void };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Position = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), accuracyM: z.number().min(0).optional(), at: z.string().datetime() });
@@ -56,6 +59,12 @@ const RideCheckQuery = {
 const LevelBody = z.object({ expectedVersion: z.number().int().min(1), severity: z.enum(["low", "medium", "high", "critical"]), note: z.string().max(1000).optional() });
 const StreamQuery = z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(200).default(100) });
 
+/** v0.18.101 §92: the SMS result changed on the case: one feed event so the admin's case shows it. */
+const incidentUpdated = async (trx: Parameters<typeof appendIncidentEvent>[0], incidentId: string, at: Date) => {
+  const row = await trx.selectFrom("incidents").selectAll().where("incident_id", "=", incidentId).executeTakeFirst();
+  if (row) await appendIncidentEvent(trx, row, "incident_updated", at);
+};
+
 const keyOf = (request: FastifyRequest) => {
   const value = request.headers["idempotency-key"];
   return Array.isArray(value) ? value[0] : value;
@@ -74,7 +83,13 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
       const who = await authenticate(request, guard, [actor]);
       const tripId = tripParam(request);
       const body = parseBody(SosBody, request.body);
-      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await raiseSos(trx, { actor, subjectId: who.subjectId }, tripId, clean(body), now()) }));
+      // v0.18.101 §92: the SMS rows written by this command are handed to the SMS company only after it is saved.
+      const sms = { connected: deps.sms !== undefined, queued: [] as string[] };
+      const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await raiseSos(trx, { actor, subjectId: who.subjectId }, tripId, clean(body), now(), sms) }));
+      const incidentId = (result.body as { incidentId?: string }).incidentId;
+      if (deps.sms && sms.queued.length > 0 && incidentId) {
+        void deliverSosSms(deps.db, deps.sms, incidentId, sms.queued, { now, ...(deps.warn ? { warn: deps.warn } : {}), onUpdated: incidentUpdated }).catch((error: unknown) => deps.warn?.({ incidentId, err: String(error).slice(0, 200) }, "SOS SMS delivery stopped"));
+      }
       return result.body;
     });
     // contract v0.12.0 §22: the card showed (no answer) or was answered (ok | need_help).
