@@ -1,3 +1,4 @@
+import { overOwesLimit } from "../../drivers/owes.js";
 import { driversWithClashingBooking, driversWithCurrentTrip } from "../../reservations/service.js";
 import { driversAtDrivingLimit } from "../../drivers/drivingTime.js";
 import { PERFORMANCE, performanceFromCounts, scoreInputs } from "../../drivers/performance.js";
@@ -250,8 +251,12 @@ export async function candidatesFrom(trx: Trx, trip: TripRow, now: Date, base: P
   // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.dispatch): a driver blocked with this rider is never a
   // candidate — Exclusive, Radar, airport queue, admin money offer, on-trip next trip (one query for the round).
   const blocked = await blockedDriversFor(trx, trip.rider_id, rows.map((r) => r.driver_id));
+  // S5 J8 (contract v0.18.84 debtModel.driverOwes.cashOffers, owner 2026-11-13 14:54): a pay-in-car trip is never offered
+  // to a driver at or over his country's owes-limit (only while it is on) — dispatch rounds, Radar, Exclusive, on-trip /
+  // next-trip and the airport queue all pick from this pool. One grouped query for the whole round (Rule 33).
+  const owing = await overOwesLimit(trx, trip, rows.map((r) => r.driver_id));
   for (const d of rows) {
-    if (blocked.has(d.driver_id)) continue;
+    if (blocked.has(d.driver_id) || owing.has(d.driver_id)) continue;
     const next = d.online_status === "on_trip" ? reach.get(d.driver_id) : undefined;
     if (d.online_status === "on_trip" && next === undefined) continue;
     if (switchedOff.has(d.driver_id)) continue;

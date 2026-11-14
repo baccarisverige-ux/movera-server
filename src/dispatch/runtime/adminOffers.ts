@@ -1,4 +1,5 @@
 import { driversWithCategoryOff } from "../../accounts/phoneData.js";
+import { overOwesLimit, owesDetails, owesLimitOf } from "../../drivers/owes.js";
 import { aheadOf, notifyOffered, currentTripOf } from "../../reservations/service.js";
 import { scopeCovers, sideOfKind, type BonusScope } from "../bonusScope.js";
 import type { Trx } from "../../db/db.js";
@@ -59,13 +60,22 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   const queue = new FeedQueue();
   const made: Record<string, unknown>[] = [];
   const kept: Record<string, unknown>[] = [];
-  const skipped: { driverId: string; reason: string; name: string }[] = [];
+  const skipped: { driverId: string; reason: string; name: string; details?: string[] }[] = [];
+  // S5 J8 (contract v0.18.84 debtModel.driverOwes.cashOffers): a pay-in-car trip skips a driver at or over the owes-limit
+  // (a radar group leaves him out; a direct assign to him alone is 409 driver_owes_movera with owed / limit).
+  const owing = await overOwesLimit(trx, trip, sorted);
+  const owesLimit = owing.size > 0 ? (await owesLimitOf(trx, (await trx.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirst())?.country ?? null)).max : null;
   // v0.18.26 (owner 2026-11-04 "Yes, respect it"): a driver who switched the trip's category off in Ride preferences
   // is skipped here too; the admin sees the reason category_switched_off.
   const switchedOff = await driversWithCategoryOff(trx, sorted, trip.category_id);
   for (const driverId of driverIds) {
     const d = rows.find((r) => r.driver_id === driverId);
     if (!d) throw new ApiError("not_found", "No such driver.", { reason: "driver_not_found" });
+    const owed = owing.get(driverId);
+    if (owed !== undefined && owesLimit) {
+      skipped.push({ driverId, name: d.first_name || driverId, reason: "driver_owes_movera", details: owesDetails(owed, owesLimit) });
+      continue;
+    }
     if (switchedOff.has(driverId)) {
       skipped.push({ driverId, name: d.first_name || driverId, reason: "category_switched_off" });
       continue;
@@ -135,7 +145,7 @@ export async function sendAdminOffers(trx: Trx, trip: TripRow, driverIds: string
   }
   if (made.length === 0 && kept.length === 0) {
     const first = skipped[0]!;
-    throw new ApiError("conflict", `${first.name} cannot take a ride now.`, { reason: first.reason });
+    throw new ApiError("conflict", first.reason === "driver_owes_movera" ? `${first.name} owes Movera over the limit and gets no pay-in-car trips.` : `${first.name} cannot take a ride now.`, { reason: first.reason, ...(first.details ? { details: first.details } : {}) });
   }
   await queue.flush(trx, now);
   // The round timer expires these offers (and lets the search go on) when they run out.

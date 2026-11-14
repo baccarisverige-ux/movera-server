@@ -8,6 +8,7 @@ import { applyCommand } from "../../trips/commands.js";
 import { tripProjection } from "../../trips/projection.js";
 import { ROUND, STEP, END, NO_END, NO_DRIVER_NEARBY_STEP, type Step, OPEN_STATUSES, lockTripNow } from "./shared.js";
 import { pokeAlerts } from "../../alerts/detector.js";
+import { overOwesLimit } from "../../drivers/owes.js";
 import { NO_DRIVER_FOUND_TEXT } from "../engine.js";
 import { startSearch } from "./start.js";
 import { offerView, FeedQueue, closeOpenOffers } from "./offers.js";
@@ -138,6 +139,33 @@ export async function keepWaiting(trx: Trx, riderId: string, tripId: string, ans
   }
   return trx.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
 }
+
+/**
+ * S5 J8 (debtModel.driverOwes.cashOffers "it applies at once"): his open offers of pay-in-car trips are withdrawn while
+ * he is at or over the owes-limit (re-checked here, so a payment that came first leaves them). Same lock order and feed
+ * events as withdrawHandler; card, Apple Pay and wallet offers are not touched.
+ */
+export const withdrawCashHandler: TimerHandler = async (trx, timer) => {
+  const driverId = timer.refId;
+  const now = timer.firedAt;
+  const open = await trx.selectFrom("offers").innerJoin("trips", "trips.trip_id", "offers.trip_id").select(["offers.trip_id", "trips.zone_id", "trips.payment_method"])
+    .where("offers.driver_id", "=", driverId).where("offers.status", "=", "open").where("trips.payment_method", "=", "cash").orderBy("offers.trip_id").execute();
+  if (open.length === 0) return;
+  const queue = new FeedQueue();
+  for (const head of open) {
+    if (!(await overOwesLimit(trx, head, [driverId])).has(driverId)) continue;
+    const trip = await lockTripNow(trx, head.trip_id);
+    if (!trip) continue;
+    const offers = await trx.selectFrom("offers").selectAll().where("trip_id", "=", head.trip_id).where("driver_id", "=", driverId).where("status", "=", "open").forUpdate().execute();
+    for (const offer of offers) {
+      await trx.updateTable("offers").set({ status: "withdrawn", version: offer.version + 1, answered_at: now }).where("offer_id", "=", offer.offer_id).execute();
+      queue.push(driverId, "offer_withdrawn", offerView({ ...offer, status: "withdrawn", version: offer.version + 1 }, trip));
+    }
+    const left = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("trip_id", "=", head.trip_id).where("status", "=", "open").executeTakeFirstOrThrow();
+    if (Number(left.n) === 0 && trip.status === "offered") await scheduleTimer(trx, { kind: ROUND, refId: head.trip_id, dueAt: now, payload: {} });
+  }
+  await queue.flush(trx, now);
+};
 
 /** Closes a driver's open offers on other trips, one trip at a time (trip → offer → driver). */
 export const withdrawHandler: TimerHandler = async (trx, timer) => {

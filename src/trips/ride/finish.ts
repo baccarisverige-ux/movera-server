@@ -16,7 +16,7 @@ import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "../comman
 import { driverTotalOf, earningsLinesOf, tripProjection, type EndInfo } from "../projection.js";
 import { type Money, REASONS, ONBOARD } from "./shared.js";
 import { drivenFare, driven, drivenColumns, earlyEndOf, endedBeforeDropoff, scaledFare, withStopWaiting } from "./settings.js";
-import { releaseDriver, credit, settleCarriedFees, walletPart, spendWallet, cashPart } from "./money.js";
+import { releaseDriver, credit, walletPart, spendWallet, priceWithDebt, settleDebt, cashPart } from "./money.js";
 import { walletBalance } from "../../riders/wallet.js";
 
 /* ---------------------------------------------------------------- the rider ends early */
@@ -31,7 +31,8 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
     throw new ApiError("invalid_transition", `A rider cannot end_early a trip that is ${trip.status}.`, { projection: tripProjection(trip, "rider") });
   }
   // v0.18.10 (owner G8 Q1/Q2): what was driven plus the paid waiting at the stops.
-  const money = await drivenColumns(trx, trip, await drivenFare(trx, trip, now), now);
+  // S5 J8 (contract v0.18.84 debtModel.readAtPayment): an early end is paid, so the rider's debt is read and paid with it.
+  const { money, debt } = await priceWithDebt(trx, trip, await drivenColumns(trx, trip, await drivenFare(trx, trip, now), now), true);
   const wallet = await spendWallet(trx, trip, money.fare_minor, now);
   const reasonCode = body.reasonCode ?? "something_else";
   const cancellation = { actor: "rider", reasonCode, at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
@@ -40,13 +41,13 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
     command: "end_early",
     actor: "rider",
     now,
-    // An owed fee the trip carried stays owed: the trip did not complete (§3.7). v0.18.10 (owner G8 Q1): the driver gets
-    // the normal finish (TripProjection.finish) and rates the rider.
+    // v0.18.10 (owner G8 Q1): the driver gets the normal finish (TripProjection.finish) and rates the rider.
     set: { ...money, ...keptChange(trip, money), cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: cashPart(trip, money.fare_minor - wallet), wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, ended, now);
   // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
   if (ended.driver_id) await credit(trx, { driverId: ended.driver_id, tripId: ended.trip_id, kind: "adjustment", currency: ended.currency, amount: Number(ended.driver_adjustments_minor ?? 0) }, now);
+  await settleDebt(trx, ended, debt, money.fare_minor, now);
   await releaseDriver(trx, trip.driver_id, now);
   return ended;
 }
@@ -151,7 +152,10 @@ export async function completePreview(ex: Executor, driverId: string, tripId: st
   if (!ONBOARD.includes(trip.status)) {
     throw new ApiError("invalid_transition", "The rider is not on board.", { reason: "trip_not_on_board", projection: tripProjection(trip, "driver") });
   }
-  const { early, fare, money, near } = await finalPrice(ex, trip, "driver", undefined, now);
+  const final = await finalPrice(ex, trip, "driver", undefined, now);
+  const { early, near } = final;
+  // S5 J8 (debtModel.readAtPayment): the preview shows the debt complete would read now (read, not locked or paid).
+  const { fare, money } = await priceWithDebt(ex, trip, { ...final.money, fare_minor: final.fare }, false);
   // v0.18.28 (owner Q4): the balance in the trip's currency.
   const wallet = walletPart(await walletBalance(ex, trip.rider_id, trip.currency), trip, fare);
   const previewId = newId("cpv", now.getTime());
@@ -179,9 +183,12 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   const frozen = previewed
     ? await trx.selectFrom("complete_previews").selectAll().where("trip_id", "=", trip.trip_id).where("preview_id", "=", body.previewId!).where("driver_id", "=", who.subjectId).where("expires_at", ">", now).executeTakeFirst()
     : undefined;
-  const { fare, money } = frozen
+  const before = frozen
     ? { fare: Number(frozen.fare_minor), money: frozen.money as FrozenMoney }
     : await finalPrice(trx, trip, who.actor, body.fare, now);
+  // S5 J8 (contract v0.18.84 debtModel.readAtPayment + changeover): the debt is read now, under the wallet row lock; a
+  // copied outstanding_fee line (a trip or preview made before) is replaced by it, so each fee is paid once.
+  const { fare, money, debt } = await priceWithDebt(trx, trip, { ...before.money, fare_minor: before.fare }, true);
   const wallet = await spendWallet(trx, trip, fare, now);
   // With a previewId the cash shown must be the cash part of this price; if not, nothing is completed and the app
   // gets a fresh price to show (409 price_changed, never a 400 that leaves the driver stuck).
@@ -204,7 +211,7 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   await creditTrip(trx, done, now);
   // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
   if (done.driver_id) await credit(trx, { driverId: done.driver_id, tripId: done.trip_id, kind: "adjustment", currency: done.currency, amount: Number(done.driver_adjustments_minor ?? 0) }, now);
-  if (done.payment_method === "cash") await settleCarriedFees(trx, done, cash + wallet, now);
+  await settleDebt(trx, done, debt, cash + wallet, now);
   await releaseDriver(trx, done.driver_id, now);
   // v0.18.9 (contract.json#onTrip.rideCheck): the driver ended the trip far from the drop-off → "Is everything OK?" to both.
   if (who.actor === "driver") {

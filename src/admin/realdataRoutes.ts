@@ -26,6 +26,7 @@ import { driverView, loadDriver } from "../drivers/service.js";
 import { listRatings, moderateRating } from "./ratings.js";
 import { riskSignals } from "./risk.js";
 import { maskDriverView } from "./masking.js";
+import { driverInScope, driverPaidMovera, listOwingDrivers } from "./driversOwing.js";
 
 /**
  * contract v0.9.0 §16 (owner real-data decisions, part 3): payouts with lines, refunds, support tickets, ratings and
@@ -46,6 +47,9 @@ const PayoutsQuery = { ...Page, ...TotalQuery, ...When, status: many(z.enum(["pe
 const DriverPayoutsQuery = z.object({ ...Page, ...When });
 const CreatePayoutBody = z.object({ driverId: ID, from: z.string().datetime(), to: z.string().datetime(), note: z.string().max(1000).optional() });
 const PaidBody = z.object({ note: z.string().max(1000).optional() }).default({});
+const OwingQuery = { cursor: z.string().max(200).optional(), limit: z.coerce.number().int().min(1).max(200).default(50), ...ZoneFilterQuery };
+const MoneyBody = z.object({ amountMinor: z.number().int(), currency: z.string().regex(/^[A-Z]{3}$/) });
+const PaidMoveraBody = z.object({ expectedOwed: MoneyBody, amount: MoneyBody, reason: z.string().max(2000) });
 const RefundsQuery = { ...Page, ...TotalQuery, ...When, status: many(z.enum(["pending_approval", "done", "rejected"])), paymentId: z.string().max(80).optional(), tripId: ID.optional(), ...ZoneFilterQuery };
 const TicketStatus = z.enum(["open", "pending", "resolved", "closed"]);
 const TicketsQuery = { ...Page, ...TotalQuery, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), assignedTo: z.union([z.literal("me"), z.literal("none"), ID]).optional(), ...ZoneFilterQuery };
@@ -171,6 +175,21 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const body = parseBody(PaidBody, request.body ?? {});
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await markPayoutPaid(trx, who, payoutId, clean(body), now()) }));
     return result.body;
+  });
+  // S5 J8 (contract v0.18.84 debtModel.driverOwes.adminList, owner Q-S5-1a "Both"): drivers who owe Movera.
+  app.get(`${API_PREFIX}/admin/drivers-owing`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.read");
+    const query = parseQuery(OwingQuery, request.query);
+    return listOwingDrivers(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)));
+  });
+  // S5 J8 (debtModel.driverOwes.paidMovera): "Driver paid Movera" — a correction entry with a reason, audited.
+  app.post(`${API_PREFIX}/admin/drivers/:driverId/paid-movera`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const driverId = param(request, "driverId");
+    // Scope first (a driver outside the admin's zones is 403/404 before the body is read, like every admin route).
+    await driverInScope(deps.db, who, driverId);
+    const body = parseBody(PaidMoveraBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await driverPaidMovera(trx, who, driverId, body, now()) }))).body;
   });
   // v0.18.39 A2 (owner Q4): pause / release one driver's payouts from his profile.
   app.post(`${API_PREFIX}/admin/drivers/:driverId/payout-hold`, async (request) => {

@@ -17,7 +17,7 @@ import { type Money, type Waiting, REASONS, ONBOARD } from "./shared.js";
 import { rulesOf, waitingOf, bookedNoShowFee } from "./settings.js";
 import { notify } from "../../notifications/service.js";
 import { contract } from "../../contract/contract.js";
-import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet, cashPart } from "./money.js";
+import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet, priceWithDebt, settleDebt, cashPart } from "./money.js";
 import { newPin } from "./steps.js";
 import { creditTrip, earlyEndPrice, keptChange, type FrozenMoney } from "./finish.js";
 import { noticeLanguage, tripZoneId } from "../../notifications/noticeLanguage.js";
@@ -160,7 +160,8 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
     // Ended on board: the rider pays for what was driven, in cash, like an early end (owner decision 8).
     // Builder question 4: one rule with the early complete — re-priced only over the admin's km / minutes.
     const priced = await earlyEndPrice(trx, trip, now);
-    const money = { fare_minor: Number(trip.fare_minor), ...priced.money } as FrozenMoney & { fare_minor: number };
+    // S5 J8 (contract v0.18.84 debtModel.readAtPayment): ended with the rider on board is paid: the debt is read now.
+    const { money, debt } = await priceWithDebt(trx, trip, { fare_minor: Number(trip.fare_minor), ...priced.money } as FrozenMoney & { fare_minor: number }, true);
     const wallet = await spendWallet(trx, trip, money.fare_minor, now);
     const info: EndInfo = { ...priced.info, reasonCode: body.reasonCode };
     const ended = await applyCommand(trx, trip, {
@@ -172,6 +173,7 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
     await creditTrip(trx, ended, now);
     // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
     await credit(trx, { driverId, tripId: ended.trip_id, kind: "adjustment", currency: ended.currency, amount: Number(ended.driver_adjustments_minor ?? 0) }, now);
+    await settleDebt(trx, ended, debt, money.fare_minor, now);
     await releaseDriver(trx, driverId, now);
     // v0.18.9 (contract.json#onTrip.rideCheck): ended on board far from the drop-off → "Is everything OK?" to both.
     await askUnexpectedEnd(trx, ended, now);

@@ -1,3 +1,4 @@
+import { debtsByCurrency } from "./debt.js";
 import type { Executor, Trx } from "../db/db.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
@@ -26,14 +27,8 @@ type RiderRow = {
  * Rider.outstanding is the first of them (riders.outstanding_minor / outstanding_currency keep that one).
  */
 export async function outstandingByCurrency(ex: Executor, riderId: string): Promise<Array<{ amountMinor: number; currency: string }>> {
-  const owed = await ex.selectFrom("rider_fees").select(["currency", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
-  const out: Array<{ amountMinor: number; currency: string }> = [];
-  for (const fee of owed) {
-    const entry = out.find((e) => e.currency === fee.currency);
-    if (entry) entry.amountMinor += Number(fee.amount_minor);
-    else out.push({ amountMinor: Number(fee.amount_minor), currency: fee.currency });
-  }
-  return out;
+  // S5 J8 (contract v0.18.84 debtModel.riderWallet): derived from the wallet — the debt per currency = −min(0, balance).
+  return (await debtsByCurrency(ex, riderId)).map(({ amountMinor, currency }) => ({ amountMinor, currency }));
 }
 
 export function riderView(row: RiderRow, currency: string, byCurrency?: Array<{ amountMinor: number; currency: string }>): Record<string, unknown> {
