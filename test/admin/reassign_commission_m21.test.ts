@@ -218,17 +218,48 @@ describe("BQ-M21: the lost driver's payment is taken off what Movera keeps on a 
     expect(v.driver).not.toHaveProperty("moveraKeepsNow");
   });
 
-  it("migration 0107 backfills trips paid before it: every bonus entry of a trip with no paid end, other drivers' on a paid trip", async () => {
+  it("migration 0107 backfills older trips from the admin audit: reassign and cancel payments, the same driver back too", async () => {
+    // As written before 0107: the audit row (detail.driverBonus) and the bonus entry, no column yet.
+    const audit = (tripId: string, action: "trip.reassign" | "trip.cancel", driverBonus: M | null) =>
+      database.db.insertInto("admin_audit").values({ admin_id: null, action, target_type: "trip", target_id: tripId, zone_id: "Z001", detail: JSON.stringify({ reasonCode: "admin_driver_request", note: "x", driverBonus }), at: clock.now }).execute();
+    // B completed after A lost it with 30 kr, and a second reassign without money.
     const paid = await heldTrip(SE, driverB);
-    await database.db.insertInto("earnings_entries").values({ entry_id: `ern_m21_${++n}`, driver_id: driverA, trip_id: paid, kind: "bonus", currency: "SEK", amount_minor: 3_000, gross_minor: null, commission_minor: null, cash_minor: null, at: clock.now }).execute();
+    await audit(paid, "trip.reassign", money(3_000, "SEK"));
+    await audit(paid, "trip.reassign", null);
     await complete(SE, paid, driverB, "2026-11-23T10:00:00Z", { fare: 20_000, earnings: 15_000, bonus: 1_000 });
-    const expired = await heldTrip(SE, driverA);
-    await database.db.updateTable("trips").set({ status: "expired", ended_at: clock.now }).where("trip_id", "=", expired).execute();
-    await database.db.insertInto("earnings_entries").values({ entry_id: `ern_m21_${++n}`, driver_id: driverA, trip_id: expired, kind: "bonus", currency: "SEK", amount_minor: 700, gross_minor: null, commission_minor: null, cash_minor: null, at: clock.now }).execute();
-    await database.db.updateTable("trips").set({ lost_driver_paid_minor: 0 }).where("trip_id", "in", [paid, expired]).execute();
-    await sql.raw(readFileSync(new URL("../../migrations/0107_lost_driver_paid.sql", import.meta.url), "utf8")).execute(database.db);
+    // Supervisor must-fix 2: A lost it with 25 kr, got it back and completed it (his own entries only).
+    const back = await heldTrip(SE, driverA);
+    await database.db.insertInto("earnings_entries").values({ entry_id: `ern_m21_${++n}`, driver_id: driverA, trip_id: back, kind: "bonus", currency: "SEK", amount_minor: 2_500, gross_minor: null, commission_minor: null, cash_minor: null, at: clock.now }).execute();
+    await audit(back, "trip.reassign", money(2_500, "SEK"));
+    await complete(SE, back, driverA, "2026-11-24T10:00:00Z", { fare: 20_000, earnings: 15_000 });
+    // An admin cancel with 7 kr for the driver.
+    const cancelled = await heldTrip(SE, driverA);
+    await database.db.updateTable("trips").set({ status: "cancelled_by_admin", ended_at: clock.now }).where("trip_id", "=", cancelled).execute();
+    await audit(cancelled, "trip.cancel", money(700, "SEK"));
+    await database.db.updateTable("trips").set({ lost_driver_paid_minor: 0 }).where("trip_id", "in", [paid, back, cancelled]).execute();
+    const file = readFileSync(new URL("../../migrations/0107_lost_driver_paid.sql", import.meta.url), "utf8");
+    // Twice: a re-run after a failure (no-transaction file) gives the same values.
+    for (let run = 0; run < 2; run++) await sql.raw(file).execute(database.db);
     expect(Number((await row(paid)).lost_driver_paid_minor)).toBe(3_000);
-    expect(Number((await row(expired)).lost_driver_paid_minor)).toBe(700);
+    expect(Number((await row(back)).lost_driver_paid_minor)).toBe(2_500);
+    expect(Number((await row(cancelled)).lost_driver_paid_minor)).toBe(700);
     expect((await views(paid)).split.movera).toEqual(money(1_000, "SEK"));
+    expect((await views(back)).split.movera).toEqual(money(2_500, "SEK"));
+  });
+
+  it("a refused payment stores nothing: neither the column nor the bonus entry (one transaction)", async () => {
+    // Over the trip's bonus limit (Pricing): 400 bonus_over_limit.
+    const id = await heldTrip(SE, driverA);
+    const over = await call(app, "POST", `/admin/trips/${id}/reassign`, admin, { expectedVersion: await version(id), reasonCode: "admin_driver_request", note: "x", driverBonus: money(100_000_000, "SEK") });
+    expect(over.statusCode, over.body).toBe(400);
+    // A completed trip cannot be cancelled: the payment checked before the command is rolled back with it.
+    const done = await heldTrip(SE, driverB);
+    await complete(SE, done, driverB, "2026-11-25T10:00:00Z", { fare: 20_000, earnings: 15_000 });
+    const late = await call(app, "POST", `/admin/trips/${done}/cancel`, admin, { expectedVersion: await version(done), reasonCode: "admin_operational", note: "x", driverBonus: money(1_000, "SEK") });
+    expect(late.statusCode).toBeGreaterThanOrEqual(400);
+    for (const tripId of [id, done]) {
+      expect(Number((await row(tripId)).lost_driver_paid_minor)).toBe(0);
+      expect(await database.db.selectFrom("earnings_entries").select("amount_minor").where("trip_id", "=", tripId).where("kind", "=", "bonus").execute()).toEqual([]);
+    }
   });
 });
