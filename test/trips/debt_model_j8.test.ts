@@ -611,3 +611,73 @@ describe("J8: a refund taken from the driver leaves the rider's old debt out on 
     expect(adjustment).toEqual({ amount_minor: "-8000", currency: "TND" });
   });
 });
+
+/* ================================================================ receipt debtIncluded on every paid end (supervisor SF1) */
+
+describe("J8 SF1: the receipt shows debtIncluded on every paid end with the rider on board, not only complete", () => {
+  async function onBoard(tripId: string, version: number) {
+    let v = version;
+    for (const path of ["head-to-pickup", "arrive", "board", "start"]) expect((await step(tripId, path, v++)).statusCode).toBe(200);
+    return v;
+  }
+  async function receipts(tripId: string) {
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const out = { rider: await call(app, "GET", `/trips/${tripId}/receipt`, rider), driver: await call(app, "GET", `/driver/trips/${tripId}/receipt`, drivers.A.headers), admin: await call(app, "GET", `/admin/trips/${tripId}/receipt`, admin.headers) };
+    for (const r of Object.values(out)) expect(r.statusCode, r.body).toBe(200);
+    return { rider: out.rider.json(), driver: out.driver.json(), admin: out.admin.json() };
+  }
+
+  it("SEK rider early end: the trip collected a 65 kr debt; the receipt names it as its own line, the total is unchanged", async () => {
+    await feeOwed(6_500);
+    const { tripId, version } = await accepted();
+    const v = await onBoard(tripId, version);
+    expect((await call(app, "POST", `/trips/${tripId}/end-early`, rider, { expectedVersion: v, reasonCode: "plans_changed" })).statusCode).toBe(200);
+    const row = await database.db.selectFrom("trips").select(["status", "fare_minor"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(row.status).toBe("cancelled_by_rider");
+    const r = await receipts(tripId);
+    // Fail-before: no debtIncluded (only on status completed).
+    for (const one of [r.rider, r.driver, r.admin]) {
+      expect(one.debtIncluded).toEqual(SEK(6_500));
+      expect(one.total).toEqual(SEK(Number(row.fare_minor)));
+      expect(one.fareLines.find((l: { code: string }) => l.code === "outstanding_fee")?.amount).toEqual(SEK(6_500));
+    }
+  });
+
+  it("SEK driver cancel with the rider on board: the same 65 kr debtIncluded line", async () => {
+    await feeOwed(6_500);
+    const { tripId, version } = await accepted();
+    const v = await onBoard(tripId, version);
+    expect((await step(tripId, "cancel", v, { reasonCode: "rider_behavior" })).statusCode).toBe(200);
+    const row = await database.db.selectFrom("trips").select(["status", "fare_minor"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(row.status).toBe("cancelled_by_driver");
+    const r = await receipts(tripId);
+    expect(r.rider.debtIncluded).toEqual(SEK(6_500));
+    expect(r.admin.debtIncluded).toEqual(SEK(6_500));
+    expect(r.rider.total).toEqual(SEK(Number(row.fare_minor)));
+  });
+
+  it("TND (3 decimals) rider early end: 30.000 DT = 20.000 DT ride + 10.000 DT debt; the receipt shows debtIncluded 10.000 DT, total 30.000 DT", async () => {
+    const tripId = await insertTrip(database.db, riderId, { status: "cancelled_by_rider", driverId: drivers.A.id });
+    const TND = (amountMinor: number) => ({ amountMinor, currency: "TND" });
+    await database.db.updateTable("trips").set({
+      zone_id: "TN-TC", currency: "TND", fare_minor: 30_000, booked_fare_minor: 20_000, driver_earnings_minor: 16_000, commission_minor: 4_000, pickup_pay_minor: 0, driver_bonus_minor: 0, driver_adjustments_minor: 0,
+      fare_lines: JSON.stringify([{ code: "base", amount: TND(20_000) }, { code: "outstanding_fee", amount: TND(10_000) }]),
+      ended_by_command: "end_early", ended_at: clock.now, payment_method: "cash", payment_status: "captured", cash_collected_minor: 30_000, wallet_applied_minor: 0,
+    }).where("trip_id", "=", tripId).execute();
+    const r = await receipts(tripId);
+    for (const one of [r.rider, r.driver, r.admin]) {
+      expect(one.debtIncluded).toEqual(TND(10_000));
+      expect(one.total).toEqual(TND(30_000));
+      expect(one.cashPaid).toEqual(TND(30_000));
+    }
+  });
+
+  it("an end that reads no debt keeps no debtIncluded: an admin cancel with a cancel fee", async () => {
+    const tripId = await insertTrip(database.db, riderId, { status: "cancelled_by_admin", driverId: drivers.A.id });
+    await database.db.updateTable("trips").set({
+      fare_minor: 6_500, fare_lines: JSON.stringify([{ code: "cancel_fee", amount: SEK(6_500) }]), ended_by_command: "cancel", ended_at: clock.now, payment_method: "cash", payment_status: "captured", cash_collected_minor: 6_500, wallet_applied_minor: 0,
+    }).where("trip_id", "=", tripId).execute();
+    const r = await receipts(tripId);
+    expect(r.rider).not.toHaveProperty("debtIncluded");
+  });
+});
