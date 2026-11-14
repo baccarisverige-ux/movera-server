@@ -215,11 +215,5 @@ export function toMajorNumber(m: MoneyLike): number {
  * "5.000 DT", "1 250.000 DT" (a space between thousands). New notices use this; older texts still use localAmount.
  */
 export function moneyShown(m: MoneyLike): string {
-  const text = toMajorString(m as Money);
-  const negative = text.startsWith("-");
-  const [whole = "", frac] = (negative ? text.slice(1) : text).split(".");
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  const sign = m.currency === "TND" ? "." : ",";
-  const number = `${negative ? "-" : ""}${grouped}${frac === undefined ? "" : sign + frac}`;
-  return m.currency === "SEK" ? `${number} kr` : m.currency === "EUR" ? `${number} €` : m.currency === "TND" ? `${number} DT` : `${number} ${m.currency}`;
+  return moneyText(m);
 }

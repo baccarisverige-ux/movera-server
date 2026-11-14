@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { localAmount, majorText, moneyText } from "../../src/rules/money.js";
+import { currencySymbol, localAmount, majorText, moneyShown, moneyText } from "../../src/rules/money.js";
 import { amountText as receiptText } from "../../src/trips/finish.js";
 import { amountText as walletText } from "../../src/riders/walletCredit.js";
 import { amountText as driverFee } from "../../src/notifications/driverTripPush.js";
@@ -79,6 +79,21 @@ describe("the legal Terms money", () => {
       expect(termsMoney({ amountMinor: 55, currency: "EUR" }, lang)).toBe("0,55 €");
       expect(termsMoney({ amountMinor: 275, currency: "TND" }, lang)).toBe("0.275 DT");
       expect(termsMoney({ amountMinor: 5000, currency: "TND" }, lang)).toBe("5.000 DT");
+    }
+  });
+});
+
+describe("coverage: money text edges (P89S + A7 one formatter)", () => {
+  it("an unknown currency code is written as the code", () => {
+    expect(currencySymbol("USD")).toBe("USD");
+  });
+  it("negative amounts keep the sign and the thousands space", () => {
+    expect(moneyText({ amountMinor: -290000, currency: "SEK" })).toBe("-2 900,00 kr");
+    expect(moneyText({ amountMinor: -1250500, currency: "TND" })).toBe("-1 250.500 DT");
+  });
+  it("moneyShown (A7) is the same text as moneyText", () => {
+    for (const m of [{ amountMinor: 6500, currency: "SEK" }, { amountMinor: 800, currency: "EUR" }, { amountMinor: 5000, currency: "TND" }]) {
+      expect(moneyShown(m)).toBe(moneyText(m));
     }
   });
 });
