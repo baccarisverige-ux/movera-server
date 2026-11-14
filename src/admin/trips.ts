@@ -318,7 +318,12 @@ export async function adminDriverBonus(trx: Trx, who: Principal, tripId: string,
   const columns = addBonus(trip, body.amount.amountMinor, scope, body.priority);
   // On a taken trip the money is his: driver_bonus_minor grows by the amount (not the max of the two kinds).
   const bonus = taken ? Number(trip.driver_bonus_minor ?? 0) + body.amount.amountMinor : columns.driver_bonus_minor;
-  const updated = await touchTrip(trx, trip, { ...columns, driver_bonus_minor: bonus, commission_minor: commissionOf(Number(trip.fare_minor), trip.fare_lines, Number(trip.driver_earnings_minor ?? 0), Number(trip.pickup_pay_minor ?? 0), bonus) }, now);
+  // v0.18.87 BQ-M19 (contract.json#moneyBase.commission + bonusOutsideCommission): after the paid end the commission is
+  // what Movera kept at the end and is never rewritten; the bonus is a later pay change (its own entry below, in
+  // driverBonus / driverTotal, lower moneySplit.movera and moveraEarnings). Before the paid end it is inside commission.
+  // (addBonus's commission_minor is the before-the-end recompute, so it is replaced here too.)
+  const commission = trip.status === "completed" ? trip.commission_minor : commissionOf(Number(trip.fare_minor), trip.fare_lines, Number(trip.driver_earnings_minor ?? 0), Number(trip.pickup_pay_minor ?? 0), bonus);
+  const updated = await touchTrip(trx, trip, { ...columns, driver_bonus_minor: bonus, commission_minor: commission }, now);
   // A completed trip's earnings are already written: the bonus is its own entry now.
   if (updated.status === "completed" && updated.driver_id) {
     await credit(trx, { driverId: updated.driver_id, tripId, kind: "bonus", currency: trip.currency, amount: body.amount.amountMinor }, now);

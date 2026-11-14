@@ -82,7 +82,18 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
            -- comes from them; adjustment = Movera's pay changes (driver-pay, an admin's pay delta; a refund taken from the
            -- driver is negative).
            e.fee_share, e.earnings, e.pickup, e.bonus, e.adjustments, e.tips,
-           (SELECT coalesce(sum(amount_minor), 0) FROM refunds WHERE status = 'done' AND trip_id IN (SELECT trip_id FROM day_trips)) AS refunds
+           (SELECT coalesce(sum(amount_minor), 0) FROM refunds WHERE status = 'done' AND trip_id IN (SELECT trip_id FROM day_trips)) AS refunds,
+           -- v0.18.87 BQ-M19 (contract.json#moneyBase.bonusOutsideCommission): the bonus entries outside the trip's commission
+           -- (the lost-driver payment, a bonus after the paid end) are Movera's pay changes, taken off once. Inside is what the
+           -- STORED commission holds, never a timestamp: on a paid trip inside = fare − debtCollected − driverEarnings −
+           -- pickupPay − commission (an old row whose commission a later bonus rewrote holds it, so it is not taken off twice);
+           -- outside = the trip's bonus entries − inside; with no paid end every bonus entry is outside. Kept within
+           -- [0, the trip's bonus entries] so an inconsistent row can never add money or take off more than was paid.
+           (SELECT coalesce(sum(GREATEST(0, LEAST(b.paid, b.paid - CASE WHEN ${PAID_END} AND t.commission_minor IS NOT NULL
+                     THEN t.fare_minor - ${DEBT_LINE} - coalesce(t.driver_earnings_minor, 0) - coalesce(t.pickup_pay_minor, 0) - t.commission_minor
+                     ELSE 0 END))), 0)
+              FROM (SELECT trip_id, sum(amount_minor) AS paid FROM earnings_entries WHERE kind = 'bonus' AND trip_id IN (SELECT trip_id FROM day_trips) GROUP BY trip_id) b
+              JOIN trips t ON t.trip_id = b.trip_id) AS bonus_outside
       FROM (SELECT coalesce(sum(amount_minor) FILTER (WHERE kind = 'fee_share'), 0) AS fee_share,
                    coalesce(sum(amount_minor) FILTER (WHERE kind = 'trip'), 0) AS earnings,
                    coalesce(sum(amount_minor) FILTER (WHERE kind = 'pickup_pay'), 0) AS pickup,
@@ -112,7 +123,8 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     // v0.18.13 (audit 2026-11-02 H2): commission_minor already has pickup pay and the driver bonus taken off
     // (rules/commission.ts), so they are not taken off again; refunds Movera paid back are taken off.
     // v0.18.82 S5 J5 (contract.json#kpis.money.moveraEarnings, M3): Movera's pay changes are taken off too.
-    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["adjustments"]) - Number(m["refunds"]),
+    // v0.18.87 BQ-M19 (moneyBase.bonusOutsideCommission): and the bonus entries outside commission, once.
+    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["adjustments"]) - Number(m["bonus_outside"]) - Number(m["refunds"]),
   };
 }
 
