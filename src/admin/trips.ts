@@ -542,7 +542,16 @@ export function refundView(r: { refund_id: string; trip_id: string; currency: st
   };
 }
 
-/** What can still be refunded: what the rider paid (cash taken + wallet), less the refunds already made. */
+/**
+ * What the rider paid on a paid trip end: on a pay-in-car trip the cash taken + the wallet part; on a card / in-app trip
+ * the whole fare (the card paid fare − wallet, BQ-M25: no cash is booked there). An old row without counted cash: the fare.
+ */
+export function paidByRider(trip: Pick<TripRow, "payment_method" | "fare_minor" | "cash_collected_minor" | "wallet_applied_minor">): number {
+  if (trip.payment_method !== "cash" || trip.cash_collected_minor === null) return Number(trip.fare_minor);
+  return Number(trip.cash_collected_minor) + Number(trip.wallet_applied_minor ?? 0);
+}
+
+/** What can still be refunded: what the rider paid (paidByRider), less the refunds already made. */
 async function refundRoom(ex: Executor, trip: TripRow, amount: Money) {
   sameCurrency(trip, amount, "The refund");
   if (!terminal(trip.status) || !["captured", "partially_refunded"].includes(trip.payment_status ?? "")) {
@@ -550,7 +559,7 @@ async function refundRoom(ex: Executor, trip: TripRow, amount: Money) {
   }
   if (amount.amountMinor <= 0) throw badRequest("The refund must be more than 0.", "invalid_amount");
   const done = await ex.selectFrom("refunds").select((eb) => eb.fn.coalesce(eb.fn.sum<string>("amount_minor"), sql<string>`0`).as("n")).where("trip_id", "=", trip.trip_id).where("status", "=", "done").executeTakeFirstOrThrow();
-  const paid = trip.cash_collected_minor === null ? Number(trip.fare_minor) : Number(trip.cash_collected_minor) + Number(trip.wallet_applied_minor ?? 0);
+  const paid = paidByRider(trip);
   const left = paid - Number(done.n);
   if (amount.amountMinor > left) throw badRequest(`At most ${moneyText({ amountMinor: Math.max(0, left), currency: trip.currency as CurrencyCode })} is left to refund.`, "refund_too_large");
   return { paid, left };
