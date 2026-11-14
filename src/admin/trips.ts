@@ -28,6 +28,7 @@ import { registerApprovalHandler, runOrRequest, type PendingApproval } from "./a
 import { resumTripDay } from "./kpis.js";
 import { reassignHeldBooked } from "../reservations/service.js";
 import { noticeLanguage } from "../notifications/noticeLanguage.js";
+import { noticeDriverRefund } from "../notifications/refundDriverNotice.js";
 
 /**
  * The admin's trip tools (contract §3, §3.1; owner decisions 30–34): cancel, reassign, direct assign, radar
@@ -573,6 +574,8 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
       await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "adjustment", currency: trip.currency, amount: -share }, now);
       // v0.18.10 (contract.json#finish.driverMoney): the driver's one number on the trip moves with it.
       await trx.updateTable("trips").set({ driver_adjustments_minor: sql`driver_adjustments_minor - ${share}` }).where("trip_id", "=", trip.trip_id).execute();
+      // v0.18.91 job A7 (contract.json#finish.refund.driverNotice): the driver is told how much and why (bell + push).
+      await noticeDriverRefund(trx, { trip_id: trip.trip_id, zone_id: trip.zone_id, driver_id: trip.driver_id }, { amountMinor: share, currency: trip.currency as CurrencyCode }, refundId, p.reason, now);
     }
   }
   await trx.updateTable("trips").set({ refunded_minor: sql`refunded_minor + ${p.amount.amountMinor}` }).where("trip_id", "=", trip.trip_id).execute();

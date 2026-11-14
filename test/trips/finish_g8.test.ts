@@ -13,6 +13,7 @@ import { TimerWorker } from "../../src/jobs/timers.js";
 import { EstimateRouter } from "../../src/maps/routing.js";
 import { redactProjection } from "../../src/realtime/events.js";
 import { commissionOf } from "../../src/rules/commission.js";
+import { moneyShown } from "../../src/rules/money.js";
 import { adminMethodsOf, paymentOptionsOf, tipRulesOf } from "../../src/trips/finish.js";
 import { earlyEndSettingsOf, rideHandlers } from "../../src/trips/ride.js";
 import { creditWallet } from "../../src/riders/wallet.js";
@@ -570,6 +571,25 @@ describe("receipts, resend, driver pay change, refund from the driver (admin, li
     expect(a.moneySplit.riderPaid.amountMinor).toBe(done.fare.amountMinor - 200);
     expect(a.driverAdjustments.amountMinor).toBeLessThan(0);
     expect(a.driverTotal.amountMinor).toBe(done.driverTotal.amountMinor + a.driverAdjustments.amountMinor);
+    // v0.18.91 job A7 (contract.json#finish.refund.driverNotice): the driver is told how much and why (bell + push).
+    const notice = await database.db.selectFrom("notifications").selectAll().where("kind", "=", "driver_refund_taken").where("trip_id", "=", trip.tripId).execute();
+    expect(notice).toHaveLength(1);
+    expect(notice[0]).toMatchObject({ audience: "driver", subject_id: driverA.id, deep_link: `movera-driver://trips/${trip.tripId}` });
+    const share = { amountMinor: -a.driverAdjustments.amountMinor, currency: "EUR" };
+    expect(notice[0]!.data).toMatchObject({ tripId: trip.tripId, refundId: refund.json().refundId, amount: share, reason: "Detour" });
+    expect(notice[0]!.body).toContain(moneyShown(share));
+    expect(notice[0]!.body).toMatch(/Detour$/);
+    expect(["Avdrag från din utbetalning", "Retenue sur votre versement", "Deduction from your payout"]).toContain(notice[0]!.title);
+    // The rider's own refund notice is unchanged.
+    expect(await database.db.selectFrom("notifications").select("audience").where("kind", "=", "refund").where("trip_id", "=", trip.tripId).execute()).toEqual([{ audience: "rider" }]);
+  });
+
+  it("v0.18.91 A7: a refund Movera pays (not from the driver) sends the driver no notice", async () => {
+    const { tripId } = await finished();
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const refund = await call(app, "POST", `/admin/trips/${tripId}/refund`, admin.headers, { expectedVersion: await tripVersion(tripId), amount: { amountMinor: 1000, currency: "SEK" }, reason: "Movera pays" });
+    expect(refund.statusCode, refund.body).toBe(201);
+    expect(await database.db.selectFrom("notifications").select("kind").where("kind", "=", "driver_refund_taken").where("trip_id", "=", tripId).execute()).toEqual([]);
   });
 });
 
