@@ -5,6 +5,7 @@ import { offerView } from "../../src/dispatch/runtime/offers.js";
 import { schemaProblem } from "../../src/contract/schemas.js";
 import { redactProjection } from "../../src/realtime/events.js";
 import { tripProjection } from "../../src/trips/projection.js";
+import { routeChangePushText, type RouteChange } from "../../src/trips/routeChange.js";
 
 /**
  * Contract v0.18.89 §90 (contract.json#priceDisplay; owner 2026-11-14 "make sure rider and driver app show correct prices
@@ -133,5 +134,24 @@ describe("v0.18.89 contract copy", () => {
     expect(c.version).toBe("0.18.89");
     expect(c.priceDisplay).toBeDefined();
     expect(c.moneyDisplay.wholeAmounts).toBeDefined();
+  });
+});
+
+describe("v0.18.89 §90: the route-change push says the card's number (driverTotal), in the currency's format", () => {
+  // Owner 2026-11-14 (s06:1275 "correct prices every where"; s06:1164 the driver sees only what he gets): push = card.
+  it.each([
+    ["sv", CURRENCIES[0], "Svara inom 30 s: "],
+    ["fr", CURRENCIES[2], "Répondez dans les 30 s : "],
+  ] as const)("%s %s", (lang, c, prefix) => {
+    const newEarnings = c.earnings + 1000;
+    const change = {
+      changeId: "rtc_1", routeQuoteId: "rtq_1", status: "pending", dropoff: PLACE, stops: [], total: m(c.fare + 900, c.currency), difference: m(900, c.currency),
+      askedAt: NOW.toISOString(), answerBy: NOW.toISOString(), driverEarnings: m(newEarnings, c.currency), earningsDifference: m(1000, c.currency),
+    } as RouteChange;
+    const row = tripRow(c, { route_change: change });
+    const card = (tripProjection(row, "driver")["routeChange"] as Doc)["driverTotal"] as { amountMinor: number };
+    expect(card.amountMinor).toBe(newEarnings + c.pickup + c.bonus);
+    const want = c.currency === "SEK" ? "173,60 kr" : "12.505 DT";
+    expect(routeChangePushText(lang, 30, row, change)).toBe(prefix + want);
   });
 });

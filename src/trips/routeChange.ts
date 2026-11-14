@@ -13,7 +13,7 @@ import { contract } from "../contract/contract.js";
 import { lockTripNow } from "../dispatch/runtime.js";
 import { expectVersion, lockOwnTrip, touchTrip } from "./commands.js";
 import { checkMaxStops, routeChangeSettings, type RouteChangeSettings } from "./onTripSettings.js";
-import { tripProjection } from "./projection.js";
+import { routeChangeDriverTotal, tripProjection } from "./projection.js";
 import { pricingOf } from "./ride.js";
 import { notify } from "../notifications/service.js";
 import { noticeLanguage } from "../notifications/noticeLanguage.js";
@@ -279,6 +279,14 @@ const DRIVER_PUSH = (contract as unknown as { onTrip: { routeChange: { driverPus
 export const routeChangePushBody = (lang: Lang, seconds: number, earnings: MoneyLike): string =>
   DRIVER_PUSH.body[lang].replace("{seconds}", String(seconds)).replace("{earnings}", moneyText(earnings));
 
+/**
+ * v0.18.89 §90 (owner 2026-11-14 "correct prices every where", s06:1275; the driver sees only what he gets, s06:1164): the push
+ * says the same number as the route-change card, TripRouteChange.driverTotal (what he gets for the whole trip with the new
+ * route), in the currency's format (moneyDisplay.wholeAmounts); the change's driverEarnings only when no total can be made.
+ */
+export const routeChangePushText = (lang: Lang, seconds: number, trip: Pick<TripRow, "pickup_pay_minor" | "driver_bonus_minor">, change: RouteChange): string =>
+  routeChangePushBody(lang, seconds, routeChangeDriverTotal(trip, change) ?? change.driverEarnings);
+
 async function pushRouteChange(trx: Trx, trip: TripRow, change: RouteChange, seconds: number, now: Date): Promise<void> {
   if (!trip.driver_id) return;
   // v0.18.66 §87: the one notice-language rule (his language, else the trip country's, TN fr, else en).
@@ -288,7 +296,7 @@ async function pushRouteChange(trx: Trx, trip: TripRow, change: RouteChange, sec
     subjectId: trip.driver_id,
     kind: DRIVER_PUSH.kind,
     title: DRIVER_PUSH.title[lang],
-    body: routeChangePushBody(lang, seconds, change.driverEarnings),
+    body: routeChangePushText(lang, seconds, trip, change),
     deepLink: DRIVER_PUSH.deepLink.replace("{tripId}", trip.trip_id),
     tripId: trip.trip_id,
     data: { tripId: trip.trip_id, changeId: change.changeId, answerBy: change.answerBy },

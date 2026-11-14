@@ -220,12 +220,17 @@ export function stopsWithVisits(stops: unknown, visits: unknown): unknown[] {
  * driver and the admin = what he gets for the whole trip with the new route (the change's driverEarnings + the trip's
  * pickupPay + driverBonus). Worked out at read time, so a change stored before v0.18.89 gets it too.
  */
+export function routeChangeDriverTotal(row: Pick<TripRow, "pickup_pay_minor" | "driver_bonus_minor">, change: { driverEarnings?: Money } | null): Money | null {
+  const earnings = change?.driverEarnings;
+  if (!earnings || typeof earnings.amountMinor !== "number") return null;
+  return { amountMinor: earnings.amountMinor + Number(row.pickup_pay_minor ?? 0) + Number(row.driver_bonus_minor ?? 0), currency: earnings.currency };
+}
+
 function routeChangeView(row: TripRow, viewer: Viewer): unknown {
   const change = row.route_change as { driverEarnings?: Money } | null;
-  const earnings = change?.driverEarnings;
-  if (viewer === "rider" || !change || typeof change !== "object" || !earnings || typeof earnings.amountMinor !== "number") return change;
-  const total = earnings.amountMinor + Number(row.pickup_pay_minor ?? 0) + Number(row.driver_bonus_minor ?? 0);
-  return { ...change, driverTotal: { amountMinor: total, currency: earnings.currency } };
+  if (viewer === "rider" || !change || typeof change !== "object") return change;
+  const driverTotal = routeChangeDriverTotal(row, change);
+  return driverTotal ? { ...change, driverTotal } : change;
 }
 
 function headingField(row: TripRow, now: Date): Record<string, unknown> {
