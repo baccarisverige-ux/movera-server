@@ -41,11 +41,31 @@ export function openServerCheck(trip: Pick<TripRow, "ride_check">, now: Date): S
   return Date.parse(check.answerBy) > now.getTime() ? check : null;
 }
 
-/** Called for each position batch of a driver on a trip: the check runs in a job right after (never inside the request). */
-export async function scheduleRideCheckScan(trx: Trx, trip: Pick<TripRow, "trip_id" | "status">, now: Date): Promise<void> {
+/**
+ * v0.18.100 (BQ-V37, contract.json#onTrip.rideCheck.detection.cadence): the earliest time of the trip's next scan, kept in
+ * trips.ride_check_log under this key by each scan (scan time + the zone's scanEverySeconds). Not a trigger name.
+ */
+export const NEXT_SCAN_KEY = "nextScanAt";
+
+/**
+ * Called for each position batch of a driver on a trip: the check runs in a job right after (never inside the request).
+ * v0.18.100 (BQ-V37, owner W1 Q66 = Q-B6): at most one scan per trip every scanEverySeconds: a batch that comes sooner
+ * books the scan for `nextScanAt` (read with the trip in the same statement) instead of now. The first scan is not delayed.
+ */
+export async function scheduleRideCheckScan(trx: Trx, trip: Pick<TripRow, "trip_id" | "status"> & { next_scan_at?: string | null }, now: Date): Promise<void> {
   if (!ONBOARD.has(trip.status)) return;
+  const next = trip.next_scan_at ? Date.parse(trip.next_scan_at) : Number.NaN;
+  const dueAt = Number.isFinite(next) && next > now.getTime() ? new Date(next) : now;
   // E6: a pending scan keeps its due time and attempts (a GPS backlog cannot push it back or un-park a failing one).
-  await scheduleTimer(trx, { kind: RIDE_CHECK_SCAN, refId: trip.trip_id, dueAt: now }, { keepDue: true });
+  await scheduleTimer(trx, { kind: RIDE_CHECK_SCAN, refId: trip.trip_id, dueAt }, { keepDue: true });
+}
+
+/** v0.18.100 (BQ-V37): the scan keeps when the next one may run (the trip row is already locked by the scan). */
+async function keepNextScan(trx: Trx, trip: TripRow, settings: RideCheckSettings, now: Date): Promise<void> {
+  const log = { ...((trip.ride_check_log as Record<string, string> | null) ?? {}), [NEXT_SCAN_KEY]: new Date(now.getTime() + settings.scanEverySeconds * 1000).toISOString() };
+  // askRideCheck below spreads trip.ride_check_log, so it keeps this key.
+  (trip as { ride_check_log: unknown }).ride_check_log = log;
+  await trx.updateTable("trips").set({ ride_check_log: JSON.stringify(log) }).where("trip_id", "=", trip.trip_id).execute();
 }
 
 /** Distance (km) from a point to a line through the points (flat earth around the point: fine for a few km). */
@@ -203,8 +223,9 @@ async function scan(trx: Trx, timer: Timer, router: Router | undefined): Promise
   const trip = await lockTripNow(trx, timer.refId);
   if (!trip || !ONBOARD.has(trip.status) || !trip.driver_id) return;
   const now = timer.firedAt;
-  if (openServerCheck(trip, now)) return;
   const settings = await rideCheckSettings(trx, trip.zone_id);
+  await keepNextScan(trx, trip, settings, now);
+  if (openServerCheck(trip, now)) return;
   if (!settings.on) return;
   const found = await detect(trx, trip, settings, now, router);
   if (!found || recentlyAsked(trip, found.trigger, settings, now)) return;

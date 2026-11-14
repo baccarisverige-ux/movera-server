@@ -410,7 +410,7 @@ type LocationFacts = {
   online_since: Date | null;
   has_open_entry: boolean;
   /** v0.18.93 (contract.json#autoArrive): + the trip's kept distances and whether its waiting clock stands still. */
-  active: (NonNullable<Awaited<ReturnType<typeof activeTripOf>>> & { arrive_m: number | null; leave_m: number | null; away: boolean | null }) | undefined;
+  active: (NonNullable<Awaited<ReturnType<typeof activeTripOf>>> & { arrive_m: number | null; leave_m: number | null; away: boolean | null; next_scan_at: string | null }) | undefined;
 };
 
 async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts | undefined> {
@@ -426,6 +426,8 @@ async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts 
             sql<number | null>`(trips.booking_rules->>'autoArriveMeters')::numeric`.as("arrive_m"),
             sql<number | null>`(trips.booking_rules->>'leaveMeters')::numeric`.as("leave_m"),
             sql<boolean | null>`(trips.waiting->'away') IS NOT NULL`.as("away"),
+            // v0.18.100 (BQ-V37): the earliest time of the next ride-check scan (rideCheckServer.ts NEXT_SCAN_KEY).
+            sql<string | null>`trips.ride_check_log->>'nextScanAt'`.as("next_scan_at"),
           ])
           .whereRef("trips.driver_id", "=", "d.driver_id")
           .where("trips.status", "in", [...DRIVER_ASSIGNED])
@@ -434,13 +436,13 @@ async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts 
           .as("t"),
       (join) => join.onTrue(),
     )
-    .select(["d.driver_id", "d.zone_ids", "d.language", "d.online_status", "d.online_since", "t.trip_id", "t.status", "t.version", "t.driver_silent_alert", "t.pickup", "t.dropoff", "t.eta", "t.arrive_m", "t.leave_m", "t.away"])
+    .select(["d.driver_id", "d.zone_ids", "d.language", "d.online_status", "d.online_since", "t.trip_id", "t.status", "t.version", "t.driver_silent_alert", "t.pickup", "t.dropoff", "t.eta", "t.arrive_m", "t.leave_m", "t.away", "t.next_scan_at"])
     .select(sql<boolean>`EXISTS (SELECT 1 FROM airport_queue_entries e WHERE e.driver_id = d.driver_id AND e.left_at IS NULL)`.as("has_open_entry"))
     .where("d.driver_id", "=", driverId)
     .executeTakeFirst();
   if (row === undefined) return undefined;
   const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
-  const active = row.trip_id === null ? undefined : { trip_id: row.trip_id, status: row.status!, version: row.version!, driver_silent_alert: row.driver_silent_alert!, pickup: row.pickup!, dropoff: row.dropoff!, eta: row.eta!, arrive_m: num(row.arrive_m), leave_m: num(row.leave_m), away: row.away ?? null };
+  const active = row.trip_id === null ? undefined : { trip_id: row.trip_id, status: row.status!, version: row.version!, driver_silent_alert: row.driver_silent_alert!, pickup: row.pickup!, dropoff: row.dropoff!, eta: row.eta!, arrive_m: num(row.arrive_m), leave_m: num(row.leave_m), away: row.away ?? null, next_scan_at: row.next_scan_at ?? null };
   return { driver_id: row.driver_id, zone_ids: row.zone_ids, language: row.language, online_status: row.online_status, online_since: row.online_since, has_open_entry: row.has_open_entry, active: active as LocationFacts["active"] };
 }
 
