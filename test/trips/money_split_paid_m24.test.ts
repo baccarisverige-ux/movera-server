@@ -4,6 +4,7 @@ import type { TripRow } from "../../src/db/tripLog.js";
 import { redactProjection } from "../../src/realtime/events.js";
 import { commissionOf } from "../../src/rules/commission.js";
 import { tripProjection } from "../../src/trips/projection.js";
+import { riderCancel } from "../../src/trips/service.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
@@ -80,11 +81,12 @@ describe("BQ-M24: moneySplit only on a paid trip end (contract: unpaid trips hav
     const noShow = await trip({ status: "no_show", currency: "TND", fare: 5_000, earnings: 2_500, commission: 2_500, endedBy: "no_show", cancellation: { actor: "driver", reasonCode: "rider_no_show", fee: { amountMinor: 5_000, currency: "TND" }, feeStatus: "owed", feeKind: "no_show" } });
     const byAdmin = await trip({ status: "cancelled_by_admin", currency: "TND", fare: 20_000, endedBy: "cancel" });
     const underWay = await trip({ status: "in_trip", currency: "TND", fare: 20_000, earnings: 16_000, boarded: true });
-    const keeps = new Map<string, unknown>([[noShow.trip_id, { amountMinor: 2_500, currency: "TND" }], [byAdmin.trip_id, { amountMinor: 0, currency: "TND" }], [underWay.trip_id, undefined]]);
+    const keeps = new Map<string, unknown>([[noShow.trip_id, { amountMinor: 2_500, currency: "TND" }], [byAdmin.trip_id, { amountMinor: 0, currency: "TND" }], [underWay.trip_id, { amountMinor: 4_000, currency: "TND" }]]);
     for (const t of [noShow, byAdmin, underWay]) {
       const view = tripProjection(t, "admin", { now });
       expect(view["moneySplit"], t.status).toBeUndefined();
-      // v0.18.92: on an end with no paid ride the admin row = Movera's fee share (2.500 DT; 0 on the admin cancel); still running: absent.
+      // v0.18.92: on an end with no paid ride the admin row = Movera's fee share (2.500 DT; 0 on the admin cancel); still
+      // running: commission − lostDriverPaid (4.000 DT) — always one server number (the apps never work money out).
       expect(view["moveraKeepsNow"], t.status).toEqual(keeps.get(t.trip_id));
       expect(tripProjection(t, "driver", { now })["moveraKeepsNow"], t.status).toBeUndefined();
       expect(redactProjection(view, "driver")["moveraKeepsNow"], t.status).toBeUndefined();
@@ -119,6 +121,38 @@ describe("BQ-M24: moneySplit only on a paid trip end (contract: unpaid trips hav
       expect(JSON.stringify(out)).not.toContain("lostDriverPaid");
       expect(out["moveraKeepsNow"]).toBeUndefined();
     }
+  });
+
+  it("v0.18.92 G1: a free rider cancel (SEK) and an admin cancel (TND) keep no quoted pay — driverTotal, driverEarnings and commission 0", async () => {
+    const quoted = async (currency: string, fare: number, earnings: number) => {
+      const rider = await insertRider(database.db);
+      const driver = await insertDriver(database.db);
+      const id = await insertTrip(database.db, rider, { status: "accepted", driverId: driver });
+      const lines = [{ code: "base", amount: { amountMinor: fare, currency } }];
+      await database.db.updateTable("trips").set({
+        currency, fare_minor: fare, booked_fare_minor: fare, fare_lines: JSON.stringify(lines), driver_earnings_minor: earnings, pickup_pay_minor: 500, driver_bonus_minor: 1_000,
+        commission_minor: commissionOf(fare, lines, earnings, 500, 1_000), payment_method: "cash", accepted_at: new Date(now.getTime() - 60_000),
+        booking_rules: JSON.stringify({ cancelRule: null, cancelDriverSharePct: 50, noShowDriverSharePct: 50, waitDriverSharePct: 100, cancelAfterArrivedIsNoShow: true, waiting: null }),
+      }).where("trip_id", "=", id).execute();
+      return (await database.db.selectFrom("trips").selectAll().where("trip_id", "=", id).executeTakeFirstOrThrow()) as unknown as TripRow;
+    };
+    const zeroPay = (t: Record<string, unknown>, currency: string) => {
+      expect(t["driverTotal"]).toEqual({ amountMinor: 0, currency });
+      expect(t["driverEarnings"]).toEqual({ amountMinor: 0, currency });
+      expect(t["commission"]).toEqual({ amountMinor: 0, currency });
+      expect(t["moveraKeepsNow"]).toEqual({ amountMinor: 0, currency });
+      expect(t["moneySplit"]).toBeUndefined();
+    };
+    const se = await quoted("SEK", 25_000, 18_000);
+    expect(tripProjection(se, "admin", { now })["driverTotal"]).toEqual({ amountMinor: 19_500, currency: "SEK" });
+    const cancelled = await database.db.transaction().execute((trx) => riderCancel(trx, se.rider_id, se.trip_id, { expectedVersion: se.version, reasonCode: "plans_changed" }, now));
+    expect((cancelled.cancellation as { fee: unknown }).fee).toBeNull();
+    zeroPay(tripProjection(cancelled, "admin", { now }), "SEK");
+    expect(tripProjection(cancelled, "driver", { now })["driverTotal"]).toEqual({ amountMinor: 0, currency: "SEK" });
+    const tn = await quoted("TND", 20_000, 15_000);
+    const res = await call(app, "POST", `/admin/trips/${tn.trip_id}/cancel`, admin, { expectedVersion: tn.version, reasonCode: "admin_operational", note: "Road closed" });
+    expect(res.statusCode, res.body).toBe(200);
+    zeroPay(res.json(), "TND");
   });
 
   it("privacy: the rider and the driver never get moneySplit (GET views and the stream), paid or not", async () => {

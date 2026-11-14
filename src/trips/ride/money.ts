@@ -148,6 +148,12 @@ export function feeSplit(fee: Money, sharePct: number) {
   return { driver, movera: fee.amountMinor - driver };
 }
 
+/**
+ * v0.18.92 (supervisor G1, contract.json#moneyBase.commissionRow.admin): an end with no paid ride and no fee (a free rider
+ * cancel, an admin cancel) pays nobody: the quote's pay and commission are not kept on the trip (driverTotal 0, commission 0).
+ */
+export const FREE_END_COLUMNS = { driver_earnings_minor: 0, pickup_pay_minor: 0, driver_bonus_minor: 0, commission_minor: 0 } as const;
+
 /** The fee becomes the trip's money: fare = fee (cancel_fee line), the driver's share as earnings. */
 export function feeColumns(fee: Money, sharePct: number) {
   const split = feeSplit(fee, sharePct);

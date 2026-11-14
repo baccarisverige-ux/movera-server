@@ -383,6 +383,9 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
       // v0.18.92 (moneyBase.commissionRow.admin, supervisor G1): an end with no paid ride keeps the quote's commission on the
       // row; what Movera keeps there is its share of the cancel / no-show fee (feeColumns; 0 on a free end) − lostDriverPaid.
       if (row.ended_at !== null && !isPaidEnd(row)) projection["moveraKeepsNow"] = { amountMinor: unpaidEndShareOf(row) - lost, currency };
+      // v0.18.92 (owner rule: the apps never work money out): under way, what Movera keeps if it ends as booked = the trip's
+      // commission − lostDriverPaid, so the admin row is always this one server number.
+      else if (row.ended_at === null && row.commission_minor !== null && row.commission_minor !== undefined) projection["moveraKeepsNow"] = { amountMinor: Number(row.commission_minor) - lost, currency };
     }
   }
   // v0.18.10 (owner G8 Q4): SOS only once a driver is assigned (safety.sos.*Statuses); "Call 112" is always there.

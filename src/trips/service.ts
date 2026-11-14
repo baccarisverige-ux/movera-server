@@ -19,6 +19,7 @@ import { haversineKm } from "../maps/routing.js";
 import { estimateEta, etaForRead } from "./eta.js";
 import { walletCovers } from "./ride/money.js";
 import { afterRiderCancel, bookingRulesFor, newPin, feeSplit, riderCancelFee, riderFeeColumns, riderFeeSharePct, pickupMoveLimitOf } from "./ride.js";
+import { FREE_END_COLUMNS } from "./ride/money.js";
 import type { PricingDocument } from "../rules/fare.js";
 import { checkMaxStops } from "./onTripSettings.js";
 import { checkMinTripLive } from "../quotes/minTrip.js";
@@ -340,7 +341,7 @@ export async function riderCancel(
     ...(body.note ? { note: body.note } : {}),
   };
   // The fee is the trip's money in the same change, so the one trip_projection event shows it (§4).
-  const money = charged ? await riderFeeColumns(trx, trip, charged) : {};
+  const money = charged ? await riderFeeColumns(trx, trip, charged) : FREE_END_COLUMNS;
   // S5 J6 (owner 2026-11-13): an end without a paid ride follows only the cancel-fee rules; the admin's change is dropped.
   const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "rider", now, set: { ...money, cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null, driver_adjustments_minor: 0 } });
   await stopSearch(trx, cancelled, now);
