@@ -11,7 +11,7 @@ import { audit } from "../admin/audit.js";
 import { notify } from "../notifications/service.js";
 import { cancelTimer, scheduleTimer, type Timer } from "../jobs/timers.js";
 import { applyCommand, expectVersion } from "../trips/commands.js";
-import { tripProjection } from "../trips/projection.js";
+import { driverTotalOf, tripProjection } from "../trips/projection.js";
 import { startEta } from "../trips/eta.js";
 import { reservationView } from "./view.js";
 import { EstimateRouter, type Router } from "../maps/routing.js";
@@ -396,6 +396,12 @@ async function itemOf(ex: Executor, trip: TripRow, s: ReservationSettings): Prom
     distanceMeters: trip.distance_meters ?? 0,
     durationSeconds: trip.duration_seconds ?? 0,
     earnings: { amountMinor: Number(trip.driver_earnings_minor ?? 0), currency: trip.currency },
+    // v0.18.96 BQ-M23 (contract.json#priceDisplay.bookedRide; owner s06:1164 "only how much he get", G8 Q3 "One number"):
+    // what the driver gets for this booked ride = earnings + pickup pay + Movera's bonus + Movera's driver-pay change on a
+    // held ride (J6 driverAdjustments, capped so never below 0); no tip before the trip. The same driverTotalOf as
+    // TripProjection.driverTotal, so the row and the trip show one number. Driver view only (rider views have no
+    // DriverReservation).
+    driverTotal: { amountMinor: driverTotalOf(trip), currency: trip.currency },
     status: trip.status,
     mustBeOnlineAt: online.toISOString(),
     canStartAt: online.toISOString(),

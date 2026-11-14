@@ -233,6 +233,24 @@ describe("book later live fixes", () => {
     expect(before.tripId).toBe(trip.tripId);
   });
 
+  it("BQ-M23 (v0.18.96): the Booked rides list (open and accepted) sends driverTotal = earnings + pickup pay + bonus; the rider never gets it", async () => {
+    const trip = await book(minutes(180));
+    // Movera's bonus and a pickup pay on the trip: the list must send what the driver gets, not the bare trip line.
+    await sim.db.updateTable("trips").set({ driver_bonus_minor: 2_500, bonus_exclusive_minor: 2_500, bonus_radar_minor: 2_500, pickup_pay_minor: 1_250 }).where("trip_id", "=", trip.tripId).execute();
+    const stored = await sim.db.selectFrom("trips").select(["driver_earnings_minor", "currency"]).where("trip_id", "=", trip.tripId).executeTakeFirstOrThrow();
+    const total = { amountMinor: Number(stored.driver_earnings_minor) + 2_500 + 1_250, currency: stored.currency };
+    const openRow = (await a.get("/driver/reservations?scope=open")).body.items.find((r: Json) => r.tripId === trip.tripId);
+    expect(openRow.driverTotal).toEqual(total);
+    expect(openRow.earnings).toEqual({ amountMinor: Number(stored.driver_earnings_minor), currency: stored.currency });
+    expect((await a.post(`/driver/reservations/${trip.tripId}/accept`, {})).status).toBe(200);
+    const mine = (await a.get("/driver/reservations?scope=accepted")).body.items.find((r: Json) => r.tripId === trip.tripId);
+    expect(mine.driverTotal).toEqual(total);
+    // Privacy: the rider cannot read the driver's list, and his own trip read has no driver money.
+    expect([401, 403]).toContain((await rider.get("/driver/reservations?scope=open")).status);
+    const seen = await rider.trip(trip.tripId);
+    for (const key of ["driverTotal", "driverEarnings", "driverBonus", "pickupPay"]) expect(seen).not.toHaveProperty(key);
+  });
+
   it("owner leave on time: the drive comes from the server's road router (the same live ETA source as normal rides)", async () => {
     setLeaveRouter({ route: async () => ({ distanceMeters: 15_000, durationSeconds: 1234, source: "osrm" }) } as unknown as Router);
     try {
