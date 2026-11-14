@@ -201,6 +201,12 @@ const schema = z.object({
    * Default 1: one more pooled connection at most per instance, the same housekeeping work as before (it is not urgent).
    */
   HOUSEKEEPING_LANES: z.coerce.number().int().min(1).max(16).default(1),
+  /**
+   * G34 S3 (contract v0.18.83 fastDispatch.lateAlarm; owner 2026-11-13 12:18 UTC, GM S3b): loops per instance for the
+   * per-trip GPS timers (trip_eta, ride_check_scan, near_dropoff). Default 1, as before: more lanes are not proven to help
+   * (sup1 P3); /healthz/jobs reports when these timers fall behind.
+   */
+  TRIP_LANES: z.coerce.number().int().min(1).max(16).default(1),
   /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */

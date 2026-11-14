@@ -16,7 +16,7 @@ import "../riders/walletSchema.js";
 import { withEta } from "../trips/eta.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { audit } from "./audit.js";
-import { countTotal, totalAfterPage, withTotal } from "./listTotal.js";
+import { firstPageTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { maskDriverView, maskRiderView } from "./masking.js";
 
 /** Admin lists (contract §7: cursor pages, newest first) and account status changes. */
@@ -29,7 +29,7 @@ export function readCursor(cursor: string): { at: Date; id: string } {
 }
 export const zonesOf = (who: Principal) => (who.zones.includes("*") ? null : who.zones);
 
-export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string; flagged?: boolean };
+export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string; flagged?: boolean; total?: boolean; scheduledBefore?: string };
 
 export async function listTrips(ex: Executor, who: Principal, input: TripQuery, now: Date = new Date()) {
   let q = ex.selectFrom("trips").selectAll();
@@ -47,6 +47,13 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery, 
   if (input.flagged === false) q = q.where(sql<boolean>`(admin_flag->>'flagged')::boolean IS NOT TRUE`);
   if (input.from) q = q.where("created_at", ">=", new Date(input.from));
   if (input.to) q = q.where("created_at", "<", new Date(input.to));
+  // G34 A2 (contract v0.18.83 adminListFilters.scheduledBefore; owner 2026-11-13 12:24 UTC "Exact contract filter"): a
+  // live trip always passes; a booked ride only when its scheduledAt is at or before the value. It only narrows, for the
+  // page and the count alike, so the Dashboard's waiting read never reads booked rides that are not due.
+  if (input.scheduledBefore) {
+    const before = new Date(input.scheduledBefore);
+    q = q.where((eb) => eb.or([eb("kind", "<>", "scheduled"), eb("scheduled_at", "<=", before)]));
+  }
   if (input.q) {
     // A trip id, or the rider's phone number.
     const text = input.q.trim();
@@ -60,7 +67,7 @@ export async function listTrips(ex: Executor, who: Principal, input: TripQuery, 
   }
   const reading = q.orderBy("created_at", "desc").orderBy("trip_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
@@ -82,7 +89,7 @@ export function riderInZones(zones: string[]) {
   return sql<boolean>`exists (select 1 from trips t where t.rider_id = riders.rider_id and t.zone_id = any(${sql.val(zones.length ? zones : ["-"])}::text[]))`;
 }
 
-export async function listRiders(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string; q?: string }, currency: string) {
+export async function listRiders(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string; q?: string; total?: boolean }, currency: string) {
   let q = ex.selectFrom("riders").selectAll();
   const zones = zonesOf(who);
   if (zones) q = q.where(riderInZones(zones));
@@ -98,7 +105,7 @@ export async function listRiders(ex: Executor, who: Principal, input: { cursor?:
   }
   const reading = q.orderBy("created_at", "desc").orderBy("rider_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
@@ -141,7 +148,7 @@ export function adminRiderView(row: Record<string, unknown>, currency: string, b
   return maskRiderView({ ...riderView(row as never, currency, byCurrency), wallet: { amountMinor: wallet, currency: shown }, wallets: balances, ...(row["deletion_requested_at"] ? { deletionRequestedAt: (row["deletion_requested_at"] as Date).toISOString() } : {}) }, who);
 }
 
-export async function listDrivers(ex: Executor, who: Principal, input: { cursor?: string; limit: number; accountStatus?: string[]; onlineStatus?: string[]; zoneId?: string; categoryId?: string; q?: string }) {
+export async function listDrivers(ex: Executor, who: Principal, input: { cursor?: string; limit: number; accountStatus?: string[]; onlineStatus?: string[]; zoneId?: string; categoryId?: string; q?: string; total?: boolean }) {
   let q = ex.selectFrom("drivers").selectAll();
   const zones = zonesOf(who);
   if (zones) q = q.where(sql<boolean>`zone_ids && ${sql.val(zones.length ? zones : ["-"])}::text[]`);
@@ -160,7 +167,7 @@ export async function listDrivers(ex: Executor, who: Principal, input: { cursor?
   }
   const reading = q.orderBy("created_at", "desc").orderBy("driver_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
@@ -170,7 +177,7 @@ export async function listDrivers(ex: Executor, who: Principal, input: { cursor?
 }
 
 /** Payments in the cash week: one per paid trip (PaymentIntent, purpose trip). */
-export async function listPayments(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string; method?: string; tripId?: string; riderId?: string; zoneId?: string; from?: string; to?: string }) {
+export async function listPayments(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string; method?: string; tripId?: string; riderId?: string; zoneId?: string; from?: string; to?: string; total?: boolean }) {
   let q = ex.selectFrom("trips").selectAll().where("payment_status", "is not", null);
   const zones = zonesOf(who);
   if (zones) q = q.where("zone_id", "in", zones.length ? zones : ["-"]);
@@ -188,7 +195,7 @@ export async function listPayments(ex: Executor, who: Principal, input: { cursor
   }
   const reading = q.orderBy("created_at", "desc").orderBy("trip_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];

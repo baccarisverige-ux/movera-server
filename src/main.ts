@@ -100,7 +100,7 @@ if (db !== undefined) {
   // Owner (v0.18.19 leaveOnTime): booked rides start from the same live road-route ETA as normal rides.
   setLeaveRouter((app as unknown as { router: Router }).router);
   // Job 1 / stress H1 / B1.7: handlers and lanes (dispatch, trip GPS, general, housekeeping lanes) in jobs/workerConfig.ts.
-  const { handlers, lanes, parked } = buildWorkerConfig((app as unknown as { router: Router }).router, { timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES, housekeepingLanes: env.HOUSEKEEPING_LANES });
+  const { handlers, lanes, parked } = buildWorkerConfig((app as unknown as { router: Router }).router, { timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES, housekeepingLanes: env.HOUSEKEEPING_LANES, tripLanes: env.TRIP_LANES });
   worker = new TimerWorker(db, { ...parked, handlers, logger: app.log, pollMs: 200, lanes });
   worker.start();
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.

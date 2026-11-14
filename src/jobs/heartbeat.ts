@@ -40,7 +40,19 @@ export const RECURRING_JOBS: ReadonlyArray<{ kind: string; everyMs: number }> = 
 /** A job is late when it is more than this many periods past its due time. */
 export const LATE_FACTOR = 3;
 
-export type JobState = { kind: string; state: "parked" | "missing" | "late"; lateSeconds?: number };
+/**
+ * G34 S3 (contract v0.18.83 fastDispatch.lateAlarm; owner 2026-11-13 12:18 UTC "60 s / 30 s"; proof sup1 P3: main
+ * answered 200 while a trip timer was 60-155 s late): the per-trip and dispatch timers are one row per trip, so they are
+ * watched as groups. A group is late when its oldest due timer is at least lateMs past due; it is then named with
+ * lateSeconds and overdue (how many of its timers are past due). A parked timer (due 'infinity') is never past due here.
+ */
+export const LANE_LATE_LIMITS: ReadonlyArray<{ group: string; kinds: string[]; lateMs: number }> = [
+  // The kind names, not the constants (no import of the trip / dispatch runtime here); test/jobs/heartbeat.test.ts checks them.
+  { group: "trip_timers", kinds: ["trip_eta", "ride_check_scan", "near_dropoff"], lateMs: 60_000 },
+  { group: "dispatch", kinds: ["dispatch_round", "withdraw_driver_offers"], lateMs: 30_000 },
+];
+
+export type JobState = { kind: string; state: "parked" | "missing" | "late"; lateSeconds?: number; overdue?: number };
 export type JobsHeartbeat = { status: "ok" | "late"; checkedAt: string; jobs: JobState[] };
 
 /**
@@ -64,6 +76,17 @@ export async function jobsHeartbeat(ex: Executor, now: Date): Promise<JobsHeartb
       const lateMs = now.getTime() - Number(row.due_ms);
       if (lateMs > LATE_FACTOR * everyMs) jobs.push({ kind, state: "late", lateSeconds: Math.floor(lateMs / 1000) });
     }
+  }
+  // G34 S3: one read of the due timers on timers_due (due_at), grouped by kind.
+  const due = await sql<{ kind: string; n: number; oldest_ms: number }>`
+    SELECT kind, count(*)::int AS n, (extract(epoch FROM min(due_at)) * 1000)::float8 AS oldest_ms
+    FROM timers WHERE due_at <= ${now} AND kind IN (${sql.join(LANE_LATE_LIMITS.flatMap((group) => group.kinds))})
+    GROUP BY kind`.execute(ex);
+  for (const group of LANE_LATE_LIMITS) {
+    const rows = due.rows.filter((row) => group.kinds.includes(row.kind));
+    if (rows.length === 0) continue;
+    const lateMs = now.getTime() - Math.min(...rows.map((row) => Number(row.oldest_ms)));
+    if (lateMs >= group.lateMs) jobs.push({ kind: group.group, state: "late", lateSeconds: Math.floor(lateMs / 1000), overdue: rows.reduce((sum, row) => sum + row.n, 0) });
   }
   return { status: jobs.length === 0 ? "ok" : "late", checkedAt: now.toISOString(), jobs };
 }

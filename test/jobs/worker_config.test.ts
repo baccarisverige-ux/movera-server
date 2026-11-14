@@ -11,6 +11,7 @@ import { INCIDENT_ESCALATE } from "../../src/safety/incidents.js";
 import { EstimateRouter } from "../../src/maps/routing.js";
 import { TIMER } from "../../src/reservations/timerKinds.js";
 import { TRIP_ETA } from "../../src/trips/eta.js";
+import { readEnv } from "../../src/env.js";
 
 /** S08 A1/A2: every timer kind the code schedules has a handler; trip kinds only on the trip lane. */
 function sources(dir: string): string[] {
@@ -91,5 +92,13 @@ describe("buildWorkerConfig", () => {
     // Today's other lanes are unchanged: 1 dispatch + 1 trip + 2 general.
     expect(lanes).toHaveLength(5);
     expect(lanes.filter((lane) => lane.exclude !== undefined)).toHaveLength(2);
+  });
+  it("G34 S3 (v0.18.83 fastDispatch.lateAlarm): TRIP_LANES defaults to 1 and sets the per-trip lane count; no other lane takes those kinds", () => {
+    expect(readEnv({ MOVERA_ENV: "development" }).TRIP_LANES).toBe(1);
+    for (const kind of TRIP_LANE_KINDS) expect(lanes.filter((lane) => takes(lane, kind))).toHaveLength(1);
+    const three = buildWorkerConfig(new EstimateRouter(), { timerLanes: 4, dispatchLanes: 1, tripLanes: 3 }).lanes;
+    for (const kind of TRIP_LANE_KINDS) expect(three.filter((lane) => takes(lane, kind))).toHaveLength(3);
+    // The other lanes are unchanged: 1 dispatch + 3 trip + 2 general + 1 housekeeping.
+    expect(three).toHaveLength(7);
   });
 });

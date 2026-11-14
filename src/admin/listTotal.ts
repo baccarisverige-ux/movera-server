@@ -1,4 +1,5 @@
 import { sql, type SelectQueryBuilder } from "kysely";
+import { z } from "zod";
 import { poolStats, type Db, type Executor } from "../db/db.js";
 
 /**
@@ -88,6 +89,18 @@ export async function totalAfterPage(pending: PendingTotal | undefined): Promise
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * G34 P4-B (contract v0.18.83 adminListFilters.total.onlyWhenAsked; owner 2026-11-13 12:24 UTC "Yes"): the optional
+ * query key `total` of the 10 lists. total=false: no count at all and total left out (the rows are the same); absent or
+ * total=true: counted as before. The panel asks only when a list page opens or its filter changes.
+ */
+export const TotalQuery = { total: z.enum(["true", "false"]).optional().transform((v) => (v === undefined ? undefined : v === "true")) };
+
+/** The first page's count (countTotal), unless a later page (cursor) or total=false. */
+export function firstPageTotal(ex: Executor, query: AnyQuery, input: { cursor?: string | undefined; total?: boolean | undefined }): PendingTotal | undefined {
+  return input.cursor || input.total === false ? undefined : countTotal(ex, query);
 }
 
 /** The page answer with total when it was counted. */

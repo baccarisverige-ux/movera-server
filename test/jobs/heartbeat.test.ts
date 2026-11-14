@@ -8,7 +8,10 @@ import { NO_FIX_OFFLINE, NO_FIX_SWEEP } from "../../src/drivers/presence.js";
 import { HOUSEKEEPING_KINDS, CLEANUP_QUOTES } from "../../src/jobs/housekeeping.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers } from "../../src/jobs/maintenance.js";
 import { SMART_SURGE_CHECK, ensurePricingTimers } from "../../src/pricing/surge.js";
-import { RECURRING_JOBS } from "../../src/jobs/heartbeat.js";
+import { LANE_LATE_LIMITS, RECURRING_JOBS } from "../../src/jobs/heartbeat.js";
+import { contract } from "../../src/contract/contract.js";
+import { TRIP_LANE_KINDS } from "../../src/jobs/workerConfig.js";
+import { ROUND, WITHDRAW } from "../../src/dispatch/runtime.js";
 import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "../../src/jobs/payouts.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
@@ -132,5 +135,61 @@ describe("RECURRING_JOBS", () => {
     expect(RECURRING_JOBS.map((job) => job.kind).sort()).toEqual(rearmed.filter((kind) => kind !== NO_FIX_SWEEP && kind !== PAYOUT_DRIVER).sort());
     expect(new Set(RECURRING_JOBS.map((job) => job.kind)).size).toBe(RECURRING_JOBS.length);
     for (const job of RECURRING_JOBS) expect(job.everyMs).toBeGreaterThan(0);
+  });
+});
+
+describe("G34 S3 (v0.18.83 fastDispatch.lateAlarm, owner 60 s / 30 s): per-trip and dispatch timers watched as groups", () => {
+  const timer = (kind: string, ref: string, dueAt: Date | "infinity") =>
+    database.db.insertInto("timers").values({ kind, ref_id: ref, due_at: dueAt === "infinity" ? sql`'infinity'::timestamptz` : dueAt, payload: "{}", ...(dueAt === "infinity" ? { attempts: 8 } : {}) }).execute();
+
+  it("the groups, kinds and limits are the contract's", () => {
+    const alarm = (contract.fastDispatch as { lateAlarm: { tripTimers: { kinds: string[]; lateSeconds: number }; dispatch: { kinds: string[]; lateSeconds: number } } }).lateAlarm;
+    expect(LANE_LATE_LIMITS).toEqual([
+      { group: "trip_timers", kinds: alarm.tripTimers.kinds, lateMs: alarm.tripTimers.lateSeconds * 1000 },
+      { group: "dispatch", kinds: alarm.dispatch.kinds, lateMs: alarm.dispatch.lateSeconds * 1000 },
+    ]);
+    // The names are the kinds the worker really books (the trip lane's kinds, the dispatch lane's kinds).
+    expect(LANE_LATE_LIMITS[0]!.kinds).toEqual([...TRIP_LANE_KINDS]);
+    expect(LANE_LATE_LIMITS[1]!.kinds).toEqual([ROUND, WITHDRAW]);
+    expect(alarm.tripTimers.lateSeconds).toBe(60);
+    expect(alarm.dispatch.lateSeconds).toBe(30);
+  });
+
+  it("a per-trip timer 59 s late is on time; 60 s late answers 503 naming trip_timers with lateSeconds and overdue", async () => {
+    await timer("trip_eta", "trp_s3_a", at(-59_000));
+    await timer("ride_check_scan", "trp_s3_b", at(-5_000));
+    expect((await get()).statusCode).toBe(200);
+    await timer("near_dropoff", "trp_s3_c", at(-60_000));
+    const res = await get();
+    expect(res.statusCode).toBe(503);
+    // overdue = every timer of the group past due (3), not only the late one.
+    expect(res.json()).toMatchObject({ status: "late", jobs: [{ kind: "trip_timers", state: "late", lateSeconds: 60, overdue: 3 }] });
+  });
+
+  it("a dispatch round 29 s late is on time; withdraw_driver_offers 30 s late names dispatch; both groups at once", async () => {
+    await timer("dispatch_round", "trp_s3_d", at(-29_000));
+    expect((await get()).statusCode).toBe(200);
+    await timer("withdraw_driver_offers", "trp_s3_e", at(-30_000));
+    let res = await get();
+    expect(res.statusCode).toBe(503);
+    expect(res.json().jobs).toEqual([{ kind: "dispatch", state: "late", lateSeconds: 30, overdue: 2 }]);
+    await timer("trip_eta", "trp_s3_f", at(-125_000));
+    res = await get();
+    expect(res.json().jobs).toEqual([
+      { kind: "trip_timers", state: "late", lateSeconds: 125, overdue: 1 },
+      { kind: "dispatch", state: "late", lateSeconds: 30, overdue: 2 },
+    ]);
+  });
+
+  it("a parked ('infinity') or future trip timer is never late; a dispatch round 29 s late does not count as a trip timer", async () => {
+    await timer("trip_eta", "trp_s3_g", "infinity");
+    await timer("near_dropoff", "trp_s3_h", at(120_000));
+    await timer("dispatch_round", "trp_s3_i", at(-29_000));
+    expect((await get()).statusCode).toBe(200);
+  });
+
+  it("another kind (incident_escalate) far past due never makes a group late", async () => {
+    await timer("incident_escalate", "inc_s3", at(-3_600_000));
+    expect((await get()).statusCode).toBe(200);
   });
 });

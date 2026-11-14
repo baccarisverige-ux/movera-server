@@ -1,7 +1,8 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { isDatabaseBusy } from "../src/db/db.js";
-import { registerLoadShedding, sheddable } from "../src/http/shed.js";
+import { contract } from "../src/contract/contract.js";
+import { POLL_READ_ROUTES, registerLoadShedding, sheddable } from "../src/http/shed.js";
 
 /** Job 1 (stress H3, fix plan R22): back-pressure instead of an endless queue. */
 describe("load shedding", () => {
@@ -65,5 +66,39 @@ describe("load shedding", () => {
     expect(isDatabaseBusy(Object.assign(new Error("deadlock detected"), { code: "40P01" }))).toBe(true);
     expect(isDatabaseBusy(Object.assign(new Error("could not serialize access"), { code: "40001" }))).toBe(true);
     expect(isDatabaseBusy(Object.assign(new Error("duplicate key"), { code: "23505" }))).toBe(false);
+  });
+
+  it("G34 S2 (v0.18.83 fastDispatch.shedPolls, owner \"Yes, 7 checks\"): the 7 repeat phone checks are shed; /rider/trips/active, GPS, accept, trip steps, SOS never", async () => {
+    const shedPolls = (contract.fastDispatch as { shedPolls: { routes: string[] } }).shedPolls;
+    // The server's list is the contract's list, matched on the route pattern ({tripId} = :tripId).
+    const fromContract = shedPolls.routes.map((r) => r.replace(/^(\w+) /, "$1 /api/v1").replace(/\{(\w+)\}/g, ":$1")).sort();
+    expect([...POLL_READ_ROUTES].sort()).toEqual(fromContract);
+    expect(POLL_READ_ROUTES.size).toBe(7);
+    expect(POLL_READ_ROUTES.has("GET /api/v1/rider/trips/active")).toBe(false);
+
+    const app = Fastify();
+    const shed = ["/driver/airport-queue", "/driver/surge-map", "/notifications", "/driver/reminders", "/driver/onboarding/settings", "/rider/trips", "/trips/:tripId/messages"];
+    const neverGet = ["/rider/trips/active", "/driver/profile", "/trips/:tripId", "/trips/:tripId/messages/options", "/rider/trips/:tripId/driver-photo", "/driver/offers/stream", "/trips/:tripId/events"];
+    const neverPost = ["/driver/location", "/offers/:offerId/accept", "/trips/:tripId/arrive", "/trips/:tripId/start", "/trips/:tripId/complete", "/rider/trips/:tripId/cancel", "/rider/trips/:tripId/sos", "/driver/trips/:tripId/sos", "/trips/:tripId/messages"];
+    for (const r of [...shed, ...neverGet]) app.get(`/api/v1${r}`, async () => ({ ok: true }));
+    for (const r of neverPost) app.post(`/api/v1${r}`, async () => ({ ok: true }));
+    let waiting = 500;
+    const stop = registerLoadShedding(app, { maxPoolWaiting: 200, maxLoopDelayMs: 0, poolWaiting: () => waiting });
+    const real = (r: string) => `/api/v1${r.replace(":tripId", "trp_1").replace(":offerId", "ofr_1")}`;
+    for (const r of shed) {
+      const res = await app.inject({ method: "GET", url: `${real(r)}?limit=20` });
+      expect(res.statusCode, r).toBe(503);
+      expect(res.headers["retry-after"], r).toBe("2");
+      expect(res.json(), r).toMatchObject({ code: "unavailable", reason: "server_busy" });
+    }
+    for (const r of neverGet) expect((await app.inject({ method: "GET", url: real(r) })).statusCode, r).toBe(200);
+    for (const r of neverPost) expect((await app.inject({ method: "POST", url: real(r) })).statusCode, `POST ${r}`).toBe(200);
+    // Not busy: the 7 checks are served as before.
+    waiting = 0;
+    for (const r of shed) expect((await app.inject({ method: "GET", url: real(r) })).statusCode, r).toBe(200);
+    // Without a matched route pattern the poll list is never used (an unknown path is not shed as a poll).
+    expect(sheddable("GET", "/api/v1/driver/surge-map")).toBe(false);
+    stop();
+    await app.close();
   });
 });

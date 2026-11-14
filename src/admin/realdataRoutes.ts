@@ -20,7 +20,7 @@ import { alertBook, alertCommand, alertHistory, saveDoc, setMute, setQuiet, type
 import { adminGetSettings, adminPutSettings, SUPPORT_COUNTRIES, topicsFor } from "../support/desk.js";
 import { kpis } from "./kpis.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
-import { countTotal, totalAfterPage, withTotal } from "./listTotal.js";
+import { firstPageTotal, TotalQuery, totalAfterPage, withTotal } from "./listTotal.js";
 import { approvePayoutRun, createPayout, driverPayouts, holdDriverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
 import { driverView, loadDriver } from "../drivers/service.js";
 import { listRatings, moderateRating } from "./ratings.js";
@@ -40,13 +40,13 @@ const Page = { cursor: z.string().max(512).optional(), limit: z.coerce.number().
 const When = { from: z.string().datetime().optional(), to: z.string().datetime().optional() };
 const Bool = z.enum(["true", "false"]).transform((v) => v === "true");
 
-const PayoutsQuery = { ...Page, ...When, status: many(z.enum(["pending", "pending_approval", "paid", "failed", "held"])), driverId: ID.optional(), ...ZoneFilterQuery };
+const PayoutsQuery = { ...Page, ...TotalQuery, ...When, status: many(z.enum(["pending", "pending_approval", "paid", "failed", "held"])), driverId: ID.optional(), ...ZoneFilterQuery };
 const DriverPayoutsQuery = z.object({ ...Page, ...When });
 const CreatePayoutBody = z.object({ driverId: ID, from: z.string().datetime(), to: z.string().datetime(), note: z.string().max(1000).optional() });
 const PaidBody = z.object({ note: z.string().max(1000).optional() }).default({});
-const RefundsQuery = { ...Page, ...When, status: many(z.enum(["pending_approval", "done", "rejected"])), paymentId: z.string().max(80).optional(), tripId: ID.optional(), ...ZoneFilterQuery };
+const RefundsQuery = { ...Page, ...TotalQuery, ...When, status: many(z.enum(["pending_approval", "done", "rejected"])), paymentId: z.string().max(80).optional(), tripId: ID.optional(), ...ZoneFilterQuery };
 const TicketStatus = z.enum(["open", "pending", "resolved", "closed"]);
-const TicketsQuery = { ...Page, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), assignedTo: z.union([z.literal("me"), z.literal("none"), ID]).optional(), ...ZoneFilterQuery };
+const TicketsQuery = { ...Page, ...TotalQuery, status: many(TicketStatus), priority: z.enum(["low", "normal", "high", "urgent"]).optional(), tripId: ID.optional(), riderId: ID.optional(), driverId: ID.optional(), q: z.string().max(200).optional(), assignedTo: z.union([z.literal("me"), z.literal("none"), ID]).optional(), ...ZoneFilterQuery };
 const OwnTicketsQuery = z.object({ ...Page, status: TicketStatus.optional() });
 const TicketBody = z.object({ tripId: ID.optional(), category: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), subject: z.string().min(1).max(200), text: z.string().min(1).max(5000) });
 /** v0.18.30 (contract.json#smallFixes.ticketReasons): a bad category or subject / text gets its own reason. */
@@ -101,7 +101,7 @@ const keyOf = (request: FastifyRequest) => {
 const clean = <T extends Record<string, unknown>>(o: T) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
 
 /** GET /admin/refunds (RefundPage): the refunds of the admin's zones, newest first. */
-export async function listRefunds(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; paymentId?: string; tripId?: string; from?: string; to?: string }) {
+export async function listRefunds(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; paymentId?: string; tripId?: string; from?: string; to?: string; total?: boolean }) {
   let q = ex.selectFrom("refunds").innerJoin("trips", "trips.trip_id", "refunds.trip_id").selectAll("refunds");
   const zones = zonesOf(who);
   if (zones) q = q.where("trips.zone_id", "in", zones.length ? zones : ["-"]);
@@ -120,7 +120,7 @@ export async function listRefunds(ex: Executor, who: Principal, input: { cursor?
   }
   const reading = q.orderBy("refunds.created_at", "desc").orderBy("refunds.refund_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];

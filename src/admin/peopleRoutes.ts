@@ -21,7 +21,7 @@ import { sendFile } from "../drivers/routes.js";
 import { scheduleTimer } from "../jobs/timers.js";
 import { audit } from "./audit.js";
 import { cursorOf, readCursor } from "./lists.js";
-import { countTotal, totalAfterPage, withTotal } from "./listTotal.js";
+import { firstPageTotal, TotalQuery, totalAfterPage, withTotal } from "./listTotal.js";
 import { maskDriverView } from "./masking.js";
 import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminUpdateVehicle } from "./vehicleActions.js";
 
@@ -33,8 +33,8 @@ const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Version = { expectedVersion: z.number().int().min(1) };
 const many = z.union([z.string(), z.array(z.string())]).optional().transform((v): string[] | undefined => (v === undefined ? undefined : Array.isArray(v) ? v : [v]));
 const Page = { cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) };
-const FleetsQuery = z.object({ ...Page, status: many, country: z.string().length(2).optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
-const VehiclesQuery = z.object({ ...Page, status: many, driverId: ID.optional(), fleetId: ID.optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
+const FleetsQuery = z.object({ ...Page, ...TotalQuery, status: many, country: z.string().length(2).optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
+const VehiclesQuery = z.object({ ...Page, ...TotalQuery, status: many, driverId: ID.optional(), fleetId: ID.optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
 const FleetReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional() });
 const VersionBody = z.object(Version);
 const VehicleReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional(), categoryIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,39}$/)).max(20).optional() });
@@ -164,7 +164,7 @@ async function zoneOfVehicle(ex: Executor, v: VehicleRow): Promise<string | null
  */
 const CAR_ZONE = sql<string | null>`(CASE WHEN vehicles.fleet_id IS NOT NULL THEN car_fleet.zone_id ELSE car_owner.zone_ids[1] END)`;
 
-async function listVehicles(ex: Executor, who: Principal, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; driverId?: string | undefined; fleetId?: string | undefined; zoneId?: string | undefined; q?: string | undefined }) {
+async function listVehicles(ex: Executor, who: Principal, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; driverId?: string | undefined; fleetId?: string | undefined; zoneId?: string | undefined; q?: string | undefined; total?: boolean | undefined }) {
   let q = ex
     .selectFrom("vehicles")
     .leftJoin("fleets as car_fleet", "car_fleet.fleet_id", "vehicles.fleet_id")
@@ -187,7 +187,7 @@ async function listVehicles(ex: Executor, who: Principal, input: { cursor?: stri
   }
   const reading = q.orderBy("vehicles.created_at", "desc").orderBy("vehicles.vehicle_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   // SUP3 P7: the page's facts in a few batched reads, not ~6.4 queries per car one after the other.

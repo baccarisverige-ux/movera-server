@@ -4,7 +4,7 @@ import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import type { IncidentsTable } from "../db/schema.js";
 import { audit } from "../admin/audit.js";
-import { countTotal, totalAfterPage, withTotal } from "../admin/listTotal.js";
+import { firstPageTotal, totalAfterPage, withTotal } from "../admin/listTotal.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
@@ -268,7 +268,7 @@ function readCursor(cursor: string): { at: Date; id: string } {
   return { at: new Date(at), id };
 }
 
-export type IncidentQuery = { cursor?: string; limit: number; status?: string[]; severity?: string; kind?: string; tripId?: string; driverId?: string; riderId?: string; zoneId?: string; from?: string; to?: string };
+export type IncidentQuery = { cursor?: string; limit: number; status?: string[]; severity?: string; kind?: string; tripId?: string; driverId?: string; riderId?: string; zoneId?: string; from?: string; to?: string; total?: boolean };
 
 export async function listIncidents(ex: Executor, who: Principal, input: IncidentQuery) {
   let q = ex.selectFrom("incidents").selectAll();
@@ -292,7 +292,7 @@ export async function listIncidents(ex: Executor, who: Principal, input: Inciden
   }
   const reading = q.orderBy("opened_at", "desc").orderBy("incident_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const fixes = await latestFixes(ex, page.map((r) => r.driver_id));

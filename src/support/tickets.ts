@@ -6,7 +6,7 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "../admin/audit.js";
 import { cursorOf, readCursor } from "../admin/lists.js";
-import { countTotal, totalAfterPage, withTotal } from "../admin/listTotal.js";
+import { firstPageTotal, totalAfterPage, withTotal } from "../admin/listTotal.js";
 import { permissionsOf, isAdminRole } from "../admin/permissions.js";
 import * as desk from "./desk.js";
 import { pokeAlerts } from "../alerts/detector.js";
@@ -194,7 +194,7 @@ async function inScope(ex: Executor, who: Principal, zoneId: string | null, coun
   return desk.coversTicket(ex, who.zones, zoneId, country);
 }
 
-export async function adminTickets(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; priority?: string; tripId?: string; riderId?: string; driverId?: string; q?: string; assignedTo?: string }, now: Date = new Date()) {
+export async function adminTickets(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; priority?: string; tripId?: string; riderId?: string; driverId?: string; q?: string; assignedTo?: string; total?: boolean }, now: Date = new Date()) {
   let q = ex.selectFrom("support_tickets").selectAll();
   // v0.18.15: me | none | an admin id (a claim never runs out by itself, owner "Never").
   if (input.assignedTo === "none") q = q.where("assigned_admin_id", "is", null);
@@ -221,7 +221,7 @@ export async function adminTickets(ex: Executor, who: Principal, input: { cursor
   }
   const reading = q.orderBy("updated_at", "desc").orderBy("ticket_id", "desc").limit(input.limit + 1).execute();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
-  const counting = input.cursor ? undefined : countTotal(ex, filtered);
+  const counting = firstPageTotal(ex, filtered, input);
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
