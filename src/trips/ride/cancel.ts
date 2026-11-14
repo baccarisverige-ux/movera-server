@@ -17,7 +17,7 @@ import { type Money, type Waiting, REASONS, ONBOARD } from "./shared.js";
 import { rulesOf, waitingOf, bookedNoShowFee } from "./settings.js";
 import { notify } from "../../notifications/service.js";
 import { contract } from "../../contract/contract.js";
-import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet } from "./money.js";
+import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet, cashPart } from "./money.js";
 import { newPin } from "./steps.js";
 import { creditTrip, earlyEndPrice, keptChange, type FrozenMoney } from "./finish.js";
 import { noticeLanguage, tripZoneId } from "../../notifications/noticeLanguage.js";
@@ -167,7 +167,7 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
       command: "cancel",
       actor: "driver",
       now,
-      set: { ...money, ...keptChange(trip, money), cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet },
+      set: { ...money, ...keptChange(trip, money), cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "cancel", ended_at: now, payment_status: "captured", cash_collected_minor: cashPart(trip, money.fare_minor - wallet), wallet_applied_minor: wallet },
     });
     await creditTrip(trx, ended, now);
     // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.

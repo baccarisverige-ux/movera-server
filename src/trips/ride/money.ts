@@ -205,6 +205,16 @@ export function walletPart(walletMinor: number, trip: TripRow, fareMinor: number
   return Math.max(0, Math.min(walletMinor, fareMinor, Number(trip.wallet_applied_minor ?? 0)));
 }
 
+/**
+ * BQ-M25 (contract.json#priceDisplay.owedToMovera "the cash he collected for the trip"; payouts "cash collected = − the
+ * cash the driver took"): the cash taken in the car on a trip end. Only a pay-in-car (cash) trip is paid in cash: the
+ * counted cash, else what the rider owes after the wallet. A card / Apple Pay / wallet trip is never cash (0), so the
+ * ledger, the payout and TripFinish.owedToMovera agree.
+ */
+export function cashPart(trip: Pick<TripRow, "payment_method">, owedMinor: number, countedMinor?: number): number {
+  return trip.payment_method === "cash" ? (countedMinor ?? owedMinor) : 0;
+}
+
 export async function spendWallet(trx: Trx, trip: TripRow, fareMinor: number, now: Date): Promise<number> {
   // v0.18.28 (owner Q4): only the balance in the trip's currency pays it.
   const applied = walletPart(await walletBalance(trx, trip.rider_id, trip.currency, true), trip, fareMinor);

@@ -16,7 +16,7 @@ import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "../comman
 import { driverTotalOf, earningsLinesOf, tripProjection, type EndInfo } from "../projection.js";
 import { type Money, REASONS, ONBOARD } from "./shared.js";
 import { drivenFare, driven, drivenColumns, earlyEndOf, endedBeforeDropoff, scaledFare, withStopWaiting } from "./settings.js";
-import { releaseDriver, credit, settleCarriedFees, walletPart, spendWallet } from "./money.js";
+import { releaseDriver, credit, settleCarriedFees, walletPart, spendWallet, cashPart } from "./money.js";
 import { walletBalance } from "../../riders/wallet.js";
 
 /* ---------------------------------------------------------------- the rider ends early */
@@ -42,7 +42,7 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
     now,
     // An owed fee the trip carried stays owed: the trip did not complete (§3.7). v0.18.10 (owner G8 Q1): the driver gets
     // the normal finish (TripProjection.finish) and rates the rider.
-    set: { ...money, ...keptChange(trip, money), cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: money.fare_minor - wallet, wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
+    set: { ...money, ...keptChange(trip, money), cancellation: JSON.stringify(cancellation), end_info: JSON.stringify(info), ended_by_command: "end_early", ended_at: now, payment_status: "captured", cash_collected_minor: cashPart(trip, money.fare_minor - wallet), wallet_applied_minor: wallet, rating_status: "pending", driver_rating_status: "pending" },
   });
   await creditTrip(trx, ended, now);
   // S5 J6 (contract.json#moneyBase.adminFare): the admin's change to the driver's pay is paid with the trip.
@@ -62,8 +62,9 @@ export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
   // v0.18.82 S5 J5 (contract.json#moneyBase.commission, B2.4 / S07 M5): the entry holds the trip's ONE commission
   // (fare − debtCollected − driverEarnings − pickupPay − driverBonus), the same number as trips.commission_minor, on every
   // paid end (complete, the rider's early end, the driver's end on board). Entries written before keep their value.
+  // BQ-M25: the entry's cash is the cash taken in the car — 0 on a card / in-app trip, whatever the row holds.
   const gross = fare - debtOf(trip.fare_lines);
-  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "trip", currency: trip.currency, amount: earnings, gross, commission: commissionOf(fare, trip.fare_lines, earnings, pickupPay, bonus), cash: Number(trip.cash_collected_minor ?? 0) }, now);
+  await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "trip", currency: trip.currency, amount: earnings, gross, commission: commissionOf(fare, trip.fare_lines, earnings, pickupPay, bonus), cash: cashPart(trip, Number(trip.cash_collected_minor ?? 0)) }, now);
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "pickup_pay", currency: trip.currency, amount: pickupPay }, now);
   // A Movera bonus on the trip is paid when the trip ends with this driver.
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: bonus }, now);
@@ -189,7 +190,8 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   if (body.cashCollected && body.cashCollected.amountMinor > fare - wallet) {
     throw badRequest(`At most ${moneyText({ amountMinor: fare - wallet, currency: trip.currency as CurrencyCode })} is collected in cash on this trip.`, "cash_above_fare");
   }
-  const cash = body.cashCollected?.amountMinor ?? fare - wallet;
+  // BQ-M25: a card / in-app trip takes no cash (0), so its payout and TripFinish.owedToMovera agree.
+  const cash = cashPart(trip, fare - wallet, body.cashCollected?.amountMinor);
   const done = await applyCommand(trx, trip, {
     command: "complete",
     actor: who.actor,

@@ -176,7 +176,8 @@ export async function receiptOf(ex: Executor, trip: TripRow, viewer: ReceiptView
   const m = (amountMinor: number): Money => ({ amountMinor, currency: trip.currency });
   const wallet = Number(trip.wallet_applied_minor ?? 0);
   const fare = Number(trip.fare_minor);
-  const cash = trip.cash_collected_minor === null ? Math.max(0, fare - wallet) : Number(trip.cash_collected_minor);
+  // BQ-M25: cash only on a pay-in-car trip (a card / in-app trip shows 0 cash paid, even on a row written before).
+  const cash = trip.payment_method !== "cash" ? 0 : trip.cash_collected_minor === null ? Math.max(0, fare - wallet) : Number(trip.cash_collected_minor);
   const debt = trip.status === "completed" ? debtOf(trip.fare_lines) : 0;
   const tip = trip.tip as { amount: Money; method: string } | null;
   const end = endInfoOf(trip);
