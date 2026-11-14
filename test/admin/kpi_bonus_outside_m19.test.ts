@@ -197,9 +197,10 @@ describe("BQ-M19: an admin bonus after the paid end keeps the commission; movera
     const day = await countDay(database.db, SE, "2026-11-13");
     expect(day.driverBonus).toBe(before.driverBonus + 5_000);
     expect(day.moveraEarnings).toBe(before.moveraEarnings - 5_000);
-    // Not a paid trip: no moveraKeepsNow on any view.
+    // Not a paid trip: no moveraKeepsNow on the driver view; v0.18.92 (supervisor G1): the admin row = Movera's fee share (0,
+    // a free admin cancel) − the lost-driver payment, the same −50 kr the day's moveraEarnings lost.
     const cancelled = await row(id);
-    expect(tripProjection(cancelled, "admin")).not.toHaveProperty("moveraKeepsNow");
+    expect(tripProjection(cancelled, "admin")["moveraKeepsNow"]).toEqual({ amountMinor: -5_000, currency: "SEK" });
     expect(tripProjection(cancelled, "driver")).not.toHaveProperty("moveraKeepsNow");
   });
 

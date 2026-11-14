@@ -9,6 +9,7 @@ import { audit } from "./audit.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
 import { firstPageTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { standardKey } from "../config/service.js";
+import { payoutSummaries, type PayoutSummary } from "./payoutSummary.js";
 
 /**
  * Payouts (contract v0.9.0 §16, contract.json#payouts, fixtures/payouts.json; owner decisions of 2026-10-27).
@@ -88,8 +89,8 @@ type PayoutRow = {
   last_name?: string | null;
 };
 
-/** The Payout an admin sees (with the lines), or the driver (totals only: the driver app shows only the total). */
-export function payoutView(row: PayoutRow, viewer: "admin" | "driver") {
+/** The Payout an admin sees (with the lines), or the driver (totals only); v0.18.89 §90: both with summary (two amounts). */
+export function payoutView(row: PayoutRow, viewer: "admin" | "driver", summary?: PayoutSummary) {
   const money = (minor: number | string) => ({ amountMinor: Number(minor), currency: row.currency });
   const lines = (row.lines as { code: string; amountMinor: number; count?: number }[]).map((line) => ({ code: line.code, amount: money(line.amountMinor), ...(line.count !== undefined ? { count: line.count } : {}) }));
   return {
@@ -104,6 +105,8 @@ export function payoutView(row: PayoutRow, viewer: "admin" | "driver") {
     ...(row.paid_at ? { paidAt: row.paid_at.toISOString() } : {}),
     source: row.source,
     tripCount: row.trip_count,
+    // v0.18.89 §90 BQ-M22 (contract.json#priceDisplay.payoutSummary): Driver gets / Movera gets, amounts only.
+    ...(summary ? { summary } : {}),
     ...(viewer === "admin"
       ? {
           lines,
@@ -169,6 +172,12 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
     made.push(row as PayoutRow);
   }
   return made;
+}
+
+/** payoutView for a page of payouts, each with its summary (one batched read for the page). */
+export async function payoutViews(ex: Executor, rows: readonly PayoutRow[], viewer: "admin" | "driver") {
+  const summaries = await payoutSummaries(ex, rows, viewer);
+  return rows.map((row) => payoutView(row, viewer, summaries.get(row.payout_id)));
 }
 
 /** The first payout of makePayouts (kept for callers that make one period of one currency). */
@@ -341,7 +350,7 @@ export async function listPayouts(ex: Executor, who: Principal, input: { cursor?
   const rows = await reading;
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
-  return withTotal({ items: page.map((r) => payoutView(r as PayoutRow, "admin")), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null }, await totalAfterPage(counting));
+  return withTotal({ items: await payoutViews(ex, page as PayoutRow[], "admin"), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null }, await totalAfterPage(counting));
 }
 
 /** GET /driver/payouts: the driver's own payouts, totals only. */
@@ -356,7 +365,7 @@ export async function driverPayouts(ex: Executor, driverId: string, input: { cur
   const rows = await q.orderBy("created_at", "desc").orderBy("payout_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
-  return { items: page.map((r) => payoutView(r as PayoutRow, "driver")), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null };
+  return { items: await payoutViews(ex, page as PayoutRow[], "driver"), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null };
 }
 
 async function payoutForAdmin(ex: Executor, who: Principal, payoutId: string, lock = false): Promise<PayoutRow> {
@@ -383,7 +392,7 @@ export async function createPayout(trx: Trx, who: Principal, body: { driverId: s
   const made = all[0];
   if (made === undefined) throw new ApiError("invalid_transition", "Nothing to pay in this period: every trip is already in a payout.", { reason: "nothing_to_pay" });
   for (const p of all) await audit(trx, { adminId: who.subjectId, action: "payout.create", targetType: "payout", targetId: p.payout_id, zoneId: p.zone_id, detail: { driverId: body.driverId, from: body.from, to: body.to, currency: p.currency, amountMinor: Number(p.amount_minor), ...(body.note ? { note: body.note } : {}) }, at: now });
-  return payoutView(await payoutForAdmin(trx, who, made.payout_id), "admin");
+  return (await payoutViews(trx, [await payoutForAdmin(trx, who, made.payout_id)], "admin"))[0]!;
 }
 
 /** POST /admin/payouts/{payoutId}/paid: Mark as paid. */
@@ -393,7 +402,7 @@ export async function markPayoutPaid(trx: Trx, who: Principal, payoutId: string,
   if (row.status === "pending_approval") throw new ApiError("conflict", "This payout's run is not approved yet.", { reason: "run_not_approved" });
   await trx.updateTable("payouts").set({ status: "paid", paid_at: now, paid_by: who.subjectId, ...(body.note ? { note: body.note } : {}) }).where("payout_id", "=", payoutId).execute();
   await audit(trx, { adminId: who.subjectId, action: "payout.paid", targetType: "payout", targetId: payoutId, zoneId: row.zone_id, detail: body.note ? { note: body.note } : {}, at: now });
-  return payoutView(await payoutForAdmin(trx, who, payoutId), "admin");
+  return (await payoutViews(trx, [await payoutForAdmin(trx, who, payoutId)], "admin"))[0]!;
 }
 
 /**

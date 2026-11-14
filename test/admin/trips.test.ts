@@ -771,7 +771,8 @@ describe("J6 round 2: the admin's change is cleared or capped where the money sa
     expect(byAdmin.statusCode, byAdmin.body).toBe(200);
     expect(Number((await adjustedRow(a.tripId)).driver_adjustments_minor)).toBe(0);
     expect(byAdmin.json().driverAdjustments).toBeUndefined();
-    expect(byAdmin.json().moneySplit.driverTotal).toEqual(byAdmin.json().driverTotal);
+    // BQ-M24: an admin cancel is no paid end: no moneySplit (contract: unpaid trips have no moneySplit).
+    expect(byAdmin.json().moneySplit).toBeUndefined();
   });
 
   it("must-fix 2: a no-show after the change pays only the fee share; a later driver-pay starts from it", async () => {

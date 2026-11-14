@@ -20,6 +20,7 @@ import { TERMINAL, isTripStatus } from "../rules/transitions.js";
 import { applyCommand, expectVersion, touchTrip } from "../trips/commands.js";
 import { cappedChangeOf, driverTotalOf, tripProjection } from "../trips/projection.js";
 import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver } from "../trips/ride.js";
+import { FREE_END_COLUMNS } from "../trips/ride/money.js";
 import { PAY_TEXT, payChangeMaxOf } from "../trips/finish.js";
 import { audit } from "./audit.js";
 import { creditWallet } from "../riders/wallet.js";
@@ -163,7 +164,7 @@ export async function adminCancel(trx: Trx, who: Principal, tripId: string, body
   const cancellation = { actor: "admin", reasonCode: body.reasonCode, at: now.toISOString(), fee: null };
   await keepLostDriverPay(trx, trip, body.driverBonus);
   // S5 J6 (owner 2026-11-13): an end without a paid ride follows only the cancel-fee rules; the admin's change is dropped.
-  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "admin", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null, driver_adjustments_minor: 0 } });
+  const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "admin", now, set: { ...FREE_END_COLUMNS, cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null, driver_adjustments_minor: 0 } });
   await stopSearch(trx, cancelled, now);
   await payLostDriver(trx, trip, body.driverBonus, now);
   await releaseDriver(trx, trip.driver_id, now);

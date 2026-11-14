@@ -201,7 +201,9 @@ describe("BQ-M21: the lost driver's payment is taken off what Movera keeps on a 
     await reassign(id, money(1_000, "SEK"));
     const last = await database.db.selectFrom("trip_events").select(["projection"]).where("trip_id", "=", id).orderBy("sequence", "desc").limit(1).executeTakeFirstOrThrow();
     const stored = last.projection as Record<string, unknown>;
-    expect((stored["moneySplit"] as Split).lostDriverPaid).toEqual(money(1_000, "SEK"));
+    // v0.18.92 (BQ-M24: no moneySplit before the paid end): the admin's TripProjection.lostDriverPaid.
+    expect(stored["moneySplit"]).toBeUndefined();
+    expect(stored["lostDriverPaid"]).toEqual(money(1_000, "SEK"));
     expect(JSON.stringify(redactProjection(stored, "driver"))).not.toContain("lostDriverPaid");
     expect(JSON.stringify(redactProjection(stored, "rider"))).not.toContain("lostDriverPaid");
   });
@@ -210,12 +212,18 @@ describe("BQ-M21: the lost driver's payment is taken off what Movera keeps on a 
     const id = await heldTrip(SE, driverB);
     const res = await call(app, "POST", `/admin/trips/${id}/cancel`, admin, { expectedVersion: await version(id), reasonCode: "admin_operational", note: "Road closed", driverBonus: money(4_000, "SEK") });
     expect(res.statusCode, res.body).toBe(200);
-    const answer = res.json() as { moneySplit?: Split };
-    expect(answer.moneySplit?.lostDriverPaid).toEqual(money(4_000, "SEK"));
+    // v0.18.92 (BQ-M24: no moneySplit on an unpaid end): the admin's TripProjection.lostDriverPaid, and the admin row =
+    // Movera's fee share (0, a free admin cancel) − the 40 kr it paid.
+    const answer = res.json() as { moneySplit?: Split; lostDriverPaid?: M; moveraKeepsNow?: M };
+    expect(answer.moneySplit).toBeUndefined();
+    expect(answer.lostDriverPaid).toEqual(money(4_000, "SEK"));
+    expect(answer.moveraKeepsNow).toEqual(money(-4_000, "SEK"));
     const v = await views(id);
-    expect(v.split.lostDriverPaid).toEqual(money(4_000, "SEK"));
-    expect(sumUp(v.split)).toBe(v.split.riderPaid.amountMinor);
+    expect(v.adminRoute["lostDriverPaid"]).toEqual(money(4_000, "SEK"));
+    expect(v.adminRoute["moveraKeepsNow"]).toEqual(money(-4_000, "SEK"));
     expect(v.driver).not.toHaveProperty("moveraKeepsNow");
+    expect(v.driverStream).not.toHaveProperty("moveraKeepsNow");
+    for (const d of [v.driver, v.driverStream, v.rider, v.riderStream]) expect(JSON.stringify(d)).not.toContain("lostDriverPaid");
   });
 
   it("migration 0107 backfills older trips from the admin audit: reassign and cancel payments, the same driver back too", async () => {

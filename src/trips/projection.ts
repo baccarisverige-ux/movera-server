@@ -5,6 +5,7 @@ import { bonusFor, priorityFor } from "../dispatch/bonusScope.js";
 import { tripTerms } from "./ride.js";
 import { contract } from "../contract/contract.js";
 import { debtOf } from "../rules/commission.js";
+import { cancelPreviewOf } from "./cancelPreview.js";
 
 /**
  * TripProjection (contract §2) from a trips row, per viewer: the rider never sees the driver's money
@@ -81,6 +82,10 @@ export function hideDriverMoney(projection: Record<string, unknown>): Record<str
   for (const key of ["driverTotal", "earningsBreakdown", "driverAdjustments", "debtCollected", "moneySplit", "moveraKeepsNow"]) delete out[key];
   // v0.18.89 §90 (priceDisplay.tripCashToCollect): the rider's view is unchanged — the cash part only once the wallet paid part.
   if (out["walletApplied"] === undefined) delete out["cashToCollect"];
+  // v0.18.92 (moneyBase.lostDriverPaid.tripField): another driver's money, admin only.
+  delete out["lostDriverPaid"];
+  // Owner bug 2026-11-01 (TripProjection.driverBonusByKind "Admin view only"): the stored event is the admin projection.
+  delete out["driverBonusByKind"];
   delete out["adminFlag"];
   delete out["pinAttempts"];
   delete out["pinBlocked"];
@@ -109,6 +114,14 @@ export function hidePinFromDriver(out: Record<string, unknown>): Record<string, 
   void _p;
   void _a;
   hideReversalDetails(rest);
+  // v0.18.89 §90 (priceDisplay.cancelPreview): the rider's cancel fee preview is the rider's and the admin's.
+  delete rest["cancelPreview"];
+  // v0.18.92: the lost-driver payment is admin only; the driver's moveraKeepsNow only on a paid end (the stored admin
+  // projection of an unpaid end carries the admin's row number).
+  delete rest["lostDriverPaid"];
+  // Owner bug 2026-11-01 (TripProjection.driverBonusByKind "Admin view only"): never on the driver's stream.
+  delete rest["driverBonusByKind"];
+  if (rest["moveraKeepsNow"] !== undefined && !isPaidEnd({ status: String(rest["status"]), payment_status: (rest["paymentStatus"] as string | undefined) ?? null })) delete rest["moveraKeepsNow"];
   return rest;
 }
 
@@ -166,6 +179,10 @@ const PAID_STATUSES = new Set(["captured", "partially_refunded", "refunded"]);
 /** v0.18.90 BQ-M21 (moneyBase.lostDriverPaid): Movera's payments on this trip to the driver(s) who lost it (reassign / cancel). */
 export const lostDriverPaidOf = (row: { lost_driver_paid_minor?: string | number | null }): number => Math.max(0, Number(row.lost_driver_paid_minor ?? 0));
 export const isPaidEnd = (row: { status: string; payment_status: string | null }): boolean => row.status === "completed" || PAID_STATUSES.has(row.payment_status ?? "");
+
+/** v0.18.92: Movera's share of the fee of an end with no paid ride (feeColumns wrote it as commission), 0 when no fee was charged. */
+const unpaidEndShareOf = (row: Pick<TripRow, "cancellation" | "commission_minor">): number =>
+  Number((row.cancellation as { fee?: Money | null } | null)?.fee?.amountMinor ?? 0) > 0 ? Number(row.commission_minor ?? 0) : 0;
 
 /** An ended trip with a fare the driver collected or the rider paid (complete, the rider's early end, a driver cancel on board). */
 const FINISH_COMMANDS = new Set(["complete", "end_early"]);
@@ -348,7 +365,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     // view only: the driver's view stays what Movera keeps from HIS trip (another driver's money is never sent to him).
     const lost = viewer === "admin" ? lostDriverPaidOf(row) : 0;
     const movera = { amountMinor: riderPaid - driverPart - debt - lost, currency };
-    if (viewer === "admin") {
+    // BQ-M24 (contract.json#moneyBase.commissionRow.admin "while the trip is not paid yet (no moneySplit)"): only on a paid end.
+    if (viewer === "admin" && isPaidEnd(row)) {
       projection["moneySplit"] = {
         riderPaid: { amountMinor: riderPaid, currency },
         driverTotal: { amountMinor: driverPart, currency },
@@ -363,6 +381,16 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     // keep"): what Movera keeps NOW on a paid trip (= moneySplit.movera, later pay changes and bonuses included), on the
     // driver and admin views, for the "Movera commission" rows. Absent before a paid end (the apps hide the row).
     if (isPaidEnd(row)) projection["moveraKeepsNow"] = { ...movera };
+    if (viewer === "admin") {
+      // v0.18.92 (contract.json#moneyBase.lostDriverPaid.tripField): the lost-driver payment on every trip, paid or not.
+      if (lost > 0) projection["lostDriverPaid"] = { amountMinor: lost, currency };
+      // v0.18.92 (moneyBase.commissionRow.admin, supervisor G1): an end with no paid ride keeps the quote's commission on the
+      // row; what Movera keeps there is its share of the cancel / no-show fee (feeColumns; 0 on a free end) − lostDriverPaid.
+      if (row.ended_at !== null && !isPaidEnd(row)) projection["moveraKeepsNow"] = { amountMinor: unpaidEndShareOf(row) - lost, currency };
+      // v0.18.92 (owner rule: the apps never work money out): under way, what Movera keeps if it ends as booked = the trip's
+      // commission − lostDriverPaid, so the admin row is always this one server number.
+      else if (row.ended_at === null && row.commission_minor !== null && row.commission_minor !== undefined) projection["moveraKeepsNow"] = { amountMinor: Number(row.commission_minor) - lost, currency };
+    }
   }
   // v0.18.10 (owner G8 Q4): SOS only once a driver is assigned (safety.sos.*Statuses); "Call 112" is always there.
   if (viewer === "rider") projection["sosAvailable"] = SOS_RIDER.has(row.status);
@@ -380,6 +408,10 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (row.chained) projection["chain"] = { queued: Boolean(row.next_after_trip_id), ...(row.chain_free_cancel_at ? { freeCancelAt: new Date(row.chain_free_cancel_at).toISOString() } : {}) };
   // v0.18.33 (owner Q6, contract.json#afterTestRules.walletFirst): the rider's per-ride wallet switch (rider and admin views).
   if (viewer !== "driver") projection["walletFirst"] = (row.booking_rules as { walletFirst?: boolean } | null)?.walletFirst !== false;
+  // v0.18.89 §90 BQ-M22 (contract.json#priceDisplay.cancelPreview): what a rider cancel costs now / after the free minutes
+  // (rider and admin views; never the driver's, nor his stream: hidePinFromDriver).
+  const cancelPreview = viewer !== "driver" ? cancelPreviewOf(row, overrides.now ?? new Date()) : null;
+  if (cancelPreview) projection["cancelPreview"] = cancelPreview;
   // The wallet pays first; the driver collects the rest in cash (shown once the wallet covers part of it).
   const wallet = Number(row.wallet_applied_minor ?? 0);
   if (wallet > 0) {

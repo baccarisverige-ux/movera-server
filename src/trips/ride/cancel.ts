@@ -7,14 +7,14 @@ import { liveDocument } from "../../config/service.js";
 import type { Executor, Trx } from "../../db/db.js";
 import type { TripRow } from "../../db/tripLog.js";
 import { ApiError, badRequest } from "../../http/errors.js";
-import { cancelFee, isFreeCancel } from "../../rules/cancelFees.js";
+import { cancelIsNoShow, freeWithoutRules, riderCancelFeeAt, type RiderFee } from "./cancelFeeAt.js";
 import { startSearch, stopSearch } from "../../dispatch/runtime.js";
 import { applyCommand, expectVersion, lockOwnTrip } from "../commands.js";
 import { nextStatus } from "../../rules/transitions.js";
 import { tripProjection, type EndInfo } from "../projection.js";
 import { headingSettingsFor, isFreeCancel as headingFreeCancel, NOT_HEADING_REASON, noticeTakenBack, type HeadingState } from "../headingCheck.js";
 import { type Money, type Waiting, REASONS, ONBOARD } from "./shared.js";
-import { rulesOf, waitingOf, outstandingLine, bookedNoShowFee } from "./settings.js";
+import { rulesOf, waitingOf, bookedNoShowFee } from "./settings.js";
 import { notify } from "../../notifications/service.js";
 import { contract } from "../../contract/contract.js";
 import { releaseDriver, credit, chargeRiderFee, feeSplit, feeColumns, spendWallet } from "./money.js";
@@ -71,63 +71,21 @@ export async function markNoShow(trx: Trx, trip: TripRow, actor: "driver" | "adm
 /**
  * The rider's cancel fee (contract §3, §5 "Live cancel fees per category"): nothing before a driver accepted or
  * inside the free minutes; a live trip is charged only while the driver is heading to the pickup (headingCheck.ts). The fee is on the booked fare without an outstanding fee.
+ * The rule itself is riderCancelFeeAt (cancelFeeAt.ts), shared with TripProjection.cancelPreview (v0.18.89 §90); here the
+ * facts are read from the database (the trip's kept rules, else today's; the zone's heading check settings).
  */
-export type RiderFee = { fee: Money; kind: "cancel" | "no_show" };
-
-/** v0.18.49 §71 (owner Q10 update, contract.json#afterTestRules.bookedCancel.graceAfterBookingMin): 5 min, fixed. */
-const BOOKED_GRACE_MS = (contract as unknown as { afterTestRules: { bookedCancel: { graceAfterBookingMin: number } } }).afterTestRules.bookedCancel.graceAfterBookingMin * 60_000;
+export type { RiderFee } from "./cancelFeeAt.js";
 
 export async function riderCancelFee(ex: Executor, trip: TripRow, now: Date): Promise<RiderFee | null> {
-  // v0.18.33 (fix job 5, owner fix-plan Q3, contract.json#afterTestRules.bookedCancel): a BOOKED ride cancelled after
-  // the category's free minutes costs the fee even when no driver took it yet (Movera keeps it, owner Q5).
-  const bookedNoDriver = trip.kind === "scheduled" && trip.scheduled_at !== null && (trip.accepted_at === null || trip.driver_id === null);
-  if (!bookedNoDriver && (trip.accepted_at === null || trip.driver_id === null)) return null;
-  // v0.18.33 (owner Q3): a live trip queued behind the driver's current trip: he is not on his way yet, the cancel is free.
-  if (trip.next_after_trip_id) return null;
-  // Owner Q5: a chained trip whose rider has waited more than lateFreeCancelMin since accept may cancel free.
-  if (trip.chained && trip.chain_free_cancel_at && now.getTime() >= trip.chain_free_cancel_at.getTime()) return null;
-  // Its pickup time passed with no driver: Movera did not deliver it, always free (rider app terms, owner P17 "no fee").
-  if (bookedNoDriver && now.getTime() >= trip.scheduled_at!.getTime()) return null;
-  // v0.18.49 §71 (owner Q10 update): the first graceAfterBookingMin minutes after booking a booked ride cancels free, so a
-  // short-notice booking does not owe the fee at once.
-  if (trip.kind === "scheduled" && now.getTime() - trip.created_at.getTime() < BOOKED_GRACE_MS) return null;
-  // v0.18.49 §71 (owner Q10 "Category rule B only", contract.json#bookLater.rider.cancel): only the category's free
-  // minutes (isFreeCancel below) make a booked cancel free; freeChangeBeforeMin is the change window only (before:
-  // more than freeChangeBeforeMin before pickup was always free, finding B6).
+  if (freeWithoutRules(trip, now)) return null;
   const rules = await rulesOf(ex, trip);
-  const rule = rules.cancelRule;
-  if (rule === null) return null;
-  const owed = outstandingLine(trip);
-  const fare = { amountMinor: Number(trip.booked_fare_minor) - (owed ? owed.amount.amountMinor : 0), currency: trip.currency };
-  const minutesSinceAccept = trip.accepted_at ? (now.getTime() - trip.accepted_at.getTime()) / 60_000 : 0;
-  const minutesBeforePickup = trip.scheduled_at ? (trip.scheduled_at.getTime() - now.getTime()) / 60_000 : 0;
-  const kind = trip.kind === "scheduled" ? "reservation" : "live";
-  // v0.18.7 (Q2, contract.json#pickupWaiting.cancelAfterArrived): inside the free minutes the rider always cancels free,
-  // also after the driver arrived (owner 2026-10-29). After them, a cancel with the driver at the pickup is a no-show
-  // when the zone says so (admin setting, default on): the no-show fee with the no-show share.
-  if (isFreeCancel({ kind, rule, minutesSinceAccept, minutesBeforePickup })) return null;
-  // Checker M1: it is a no-show only from waiting.freeUntil on, the moment the driver himself could mark one (a
-  // reservation's clock runs from the booked time); a cancel seconds after arrival is the normal cancel fee.
+  if (rules.cancelRule === null) return null;
   const waiting = trip.waiting as Waiting | null;
-  // v0.18.51 §73 (owner 2026-11-07 "If rider cancel do booking fee … (for only reservation)"): a booked ride's cancel
-  // after arrival is the booked late-cancel fee below (feeKind cancel), never turned into the no-show fee.
-  if (trip.kind !== "scheduled" && trip.status === "arrived" && rules.cancelAfterArrivedIsNoShow && waiting !== null && now.getTime() >= Date.parse(waiting.freeUntil)) {
-    const noShow = (waiting.noShowFee ?? (await waitingOf(ex, trip)).noShowFee).amountMinor;
-    return noShow > 0 ? { fee: { amountMinor: noShow, currency: trip.currency }, kind: "no_show" } : null;
-  }
-  const amount = cancelFee({ kind, rule, fare: fare as Parameters<typeof cancelFee>[0]["fare"], minutesSinceAccept, minutesBeforePickup });
-  if (amount.amountMinor <= 0) return null;
-  if (trip.kind === "live" && trip.status !== "arrived") {
-    // v0.18.13 (owner G5-8, contract.json#pickupWaiting.headingCheck.riderCancel): after the free minutes the rider pays
-    // only while the driver is heading to the pickup (checked with every ETA tick); not heading for notHeadingMinutes in
-    // a row = free. Checker 1: no check yet (a trip accepted before the deploy, no position so far) = the normal fee rules.
-    const settings = await headingSettingsFor(ex, trip.zone_id);
-    if (settings.on) {
-      const state = trip.heading_check as HeadingState | null;
-      if (state !== null && headingFreeCancel(state, settings, now)) return null;
-    }
-  }
-  return { fee: amount, kind: "cancel" };
+  const noShowFee = cancelIsNoShow(trip, rules.cancelAfterArrivedIsNoShow, now) ? (waiting!.noShowFee ?? (await waitingOf(ex, trip)).noShowFee).amountMinor : 0;
+  // Checker 1: no check yet (a trip accepted before the deploy, no position so far) = the normal fee rules.
+  const state = trip.heading_check as HeadingState | null;
+  const settings = trip.kind === "live" && trip.status !== "arrived" && state !== null ? await headingSettingsFor(ex, trip.zone_id) : null;
+  return riderCancelFeeAt(trip, { rule: rules.cancelRule, cancelAfterArrivedIsNoShow: rules.cancelAfterArrivedIsNoShow, noShowFeeMinor: noShowFee, headingFree: (at) => settings !== null && settings.on && headingFreeCancel(state, settings, at) }, now);
 }
 
 /** The driver's share of a rider fee: the cancel share, or the no-show share when the cancel counted as a no-show (v0.18.7). */
