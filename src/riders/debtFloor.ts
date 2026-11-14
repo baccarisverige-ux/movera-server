@@ -1,3 +1,4 @@
+import { waitingExtrasOf } from "../trips/waitingRules.js";
 import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
 import type { Trx } from "../db/db.js";
@@ -33,10 +34,19 @@ function ruleMax(rule: FeeRuleJson | undefined, currency: string): number {
 /** The largest cancel or no-show fee of every live pricing and rider document of the country (standard + its zones). */
 export async function largestFee(trx: Trx, country: string, currency: string): Promise<number> {
   const keys = (await trx.selectFrom("zones").select("zone_id").where("country", "=", country).execute()).map((z) => z.zone_id);
-  const docs = await trx.selectFrom("config_live").select(["doc", "document"]).where("doc", "in", ["pricing", "rider_app_config"]).where("zone_id", "in", [standardKey(country), ...keys]).execute();
-  let largest = 0;
+  const docs = await trx.selectFrom("config_live").select(["doc", "document"]).where("doc", "in", ["pricing", "rider_app_config", "driver_app_config"]).where("zone_id", "in", [standardKey(country), ...keys]).execute();
+  // Must-fix 4 (supervisor J8 round 1): the driver document's waiting rules may set their own no-show fee (far pickup,
+  // airport / event / scheduled rides); a far pickup with no fee of its own uses the contract default (85 kr / 8.10 €).
+  // waitingExtrasOf reads them exactly as the no-show does, the default included, so a zone with no driver document counts too.
+  const extrasFees = (waiting: unknown) => {
+    const x = waitingExtrasOf(waiting, currency);
+    return [x.farPickup.noShowFee, x.rideTypes.airport.noShowFee, x.rideTypes.event.noShowFee, x.rideTypes.scheduled.noShowFee].map((m) => minor(m, currency));
+  };
+  let largest = Math.max(0, ...extrasFees(undefined));
   for (const { doc, document } of docs) {
-    if (doc === "pricing") {
+    if (doc === "driver_app_config") {
+      largest = Math.max(largest, ...extrasFees((document as { waiting?: unknown }).waiting));
+    } else if (doc === "pricing") {
       const cats = (document as { categories?: Record<string, { waiting?: { noShowFee?: unknown } }> }).categories ?? {};
       for (const c of Object.values(cats)) largest = Math.max(largest, minor(c?.waiting?.noShowFee, currency));
     } else {

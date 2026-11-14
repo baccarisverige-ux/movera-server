@@ -1,4 +1,5 @@
 import { followFloor } from "../riders/debtFloor.js";
+import { checkCountryCashOffers } from "../drivers/owes.js";
 import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
@@ -292,7 +293,14 @@ export async function publishDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: st
   }
   // S5 J8 (contract v0.18.84 debtModel.dbFloor, owner 2026-11-13 15:00 "Any amount"): saving Max rider debt or a cancel /
   // no-show fee moves the wallet floor of the country's currency down when it needs more room, in this same transaction.
-  if (input.doc === "country_rules" || input.doc === "pricing" || input.doc === "rider_app_config") await followFloor(trx, zone.country, now);
+  // Must-fix 4: the driver document's waiting rules carry no-show fees too (far pickup, airport / event / scheduled).
+  if (input.doc === "country_rules" || input.doc === "pricing" || input.doc === "rider_app_config" || input.doc === "driver_app_config") await followFloor(trx, zone.country, now);
+  // S5 J8 should-fix S2 (contract debtModel.driverOwes.cashOffers "a change applies at once … his open cash offers are
+  // withdrawn"): a country owes-limit that is on after this save checks every driver of the country holding an open
+  // pay-in-car offer (the withdraw job re-checks his owed; one query over open offers).
+  if (input.doc === "country_rules" && zone.kind === "standard" && (document as { driverOwesLimit?: { enabled?: unknown } }).driverOwesLimit?.enabled === true) {
+    await checkCountryCashOffers(trx, zone.country, now);
+  }
   // One audit line per publish, with the app documents it rewrote (v0.7.1, contract.json#pricingHistory).
   await audit(trx, { adminId: input.publishedBy, action: "config.publish", targetType: "config", targetId: input.doc, zoneId: input.zoneId, detail: { version, ...(input.note ? { note: input.note } : {}), ...(input.doc === "pricing" ? { appDocuments } : {}), ...(input.restoredFrom ? { restoredFrom: input.restoredFrom } : {}) }, at: now });
   return { doc: input.doc, ...scopeFields(input.zoneId), version, publishedAt, ...(input.doc === "pricing" ? { appDocuments } : {}), ...(input.restoredFrom ? { restoredFrom: input.restoredFrom } : {}) };

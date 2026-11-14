@@ -58,14 +58,16 @@ export async function owedByDriver(ex: Executor, driverIds: readonly string[], c
     .where("e.currency", "=", currency)
     .groupBy("e.driver_id")
     .execute();
+  // Must-fix 2 (owner Q-M3 / Q-S5-7: the negative rest carries over): an open payout below 0 counts as owed, less the
+  // "Driver paid Movera" entries linked to it (driversOwing.ts); a payout they cover in full is paid and drops out.
   const carried = await ex
-    .selectFrom("payouts")
-    .select(["driver_id", sql<string>`coalesce(sum(amount_minor), 0)`.as("sum")])
-    .where("driver_id", "in", ids)
-    .where("currency", "=", currency)
-    .where("amount_minor", "<", "0")
-    .where("status", "in", ["pending", "pending_approval"])
-    .groupBy("driver_id")
+    .selectFrom("payouts as p")
+    .select(["p.driver_id", sql<string>`coalesce(sum(p.amount_minor + coalesce((SELECT sum(x.amount_minor) FROM earnings_entries x WHERE x.payout_id = p.payout_id AND x.kind = 'paid_to_movera'), 0)), 0)`.as("sum")])
+    .where("p.driver_id", "in", ids)
+    .where("p.currency", "=", currency)
+    .where("p.amount_minor", "<", "0")
+    .where("p.status", "in", ["pending", "pending_approval"])
+    .groupBy("p.driver_id")
     .execute();
   const net = new Map<string, number>();
   for (const r of unpaid) net.set(r.driver_id, (net.get(r.driver_id) ?? 0) + Number(r.sum));
@@ -99,6 +101,14 @@ export async function overOwesLimit(ex: Executor, trip: { zone_id: string; payme
 
 /** The 409 details of debtModel.driverOwes.cashOffers ("owed:<minor> <CUR>", "limit:<minor> <CUR>"). */
 export const owesDetails = (owed: number, limit: Money): string[] => [`owed:${owed} ${limit.currency}`, `limit:${limit.amountMinor} ${limit.currency}`];
+
+/** S2: every driver of the country with an open pay-in-car offer gets the withdraw check (after a limit switched on / lowered). */
+export async function checkCountryCashOffers(trx: Trx, country: string, now: Date): Promise<number> {
+  const rows = await trx.selectFrom("offers").innerJoin("trips", "trips.trip_id", "offers.trip_id").innerJoin("zones", "zones.zone_id", "trips.zone_id")
+    .select("offers.driver_id").distinct().where("offers.status", "=", "open").where("trips.payment_method", "=", "cash").where("zones.country", "=", country).execute();
+  for (const r of rows) await scheduleTimer(trx, { kind: WITHDRAW_CASH, refId: r.driver_id, dueAt: now, payload: {} });
+  return rows.length;
+}
 
 /**
  * debtModel.driverOwes.cashOffers "it applies at once": once his owed may have risen (a paid end of a pay-in-car trip,

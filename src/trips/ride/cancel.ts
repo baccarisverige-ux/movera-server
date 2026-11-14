@@ -161,7 +161,7 @@ export async function driverCancel(trx: Trx, driverId: string, tripId: string, b
     // Builder question 4: one rule with the early complete — re-priced only over the admin's km / minutes.
     const priced = await earlyEndPrice(trx, trip, now);
     // S5 J8 (contract v0.18.84 debtModel.readAtPayment): ended with the rider on board is paid: the debt is read now.
-    const { money, debt } = await priceWithDebt(trx, trip, { fare_minor: Number(trip.fare_minor), ...priced.money } as FrozenMoney & { fare_minor: number }, true);
+    const { money, debt } = await priceWithDebt(trx, trip, { fare_minor: Number(trip.fare_minor), ...priced.money } as FrozenMoney & { fare_minor: number }, true, now);
     const wallet = await spendWallet(trx, trip, money.fare_minor, now);
     const info: EndInfo = { ...priced.info, reasonCode: body.reasonCode };
     const ended = await applyCommand(trx, trip, {

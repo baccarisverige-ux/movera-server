@@ -224,7 +224,7 @@ describe("book later (owner Q1–Q7)", () => {
     const earnings = await sim.db.selectFrom("earnings_entries").select("entry_id").where("trip_id", "=", trip.tripId).execute();
     expect(earnings).toEqual([]);
     // The fee is settled before the next ride (outstandingFee); clear it so later cases start clean.
-    await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", trip.tripId).execute();
+    await sim.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("trip_id", "=", trip.tripId).execute();
     // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
     await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
     await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();
@@ -242,7 +242,7 @@ describe("book later (owner Q1–Q7)", () => {
       sim.publish(owner, "rider_app_config", "Z001", (doc) => ({ ...doc, cancelFees: { ...doc["cancelFees"], reservation: { ...doc["cancelFees"]["reservation"], economy: { ...doc["cancelFees"]["reservation"]["economy"], freeMin } } } }));
     await setFreeMin(120);
     const settle = async (tripId: string) => {
-      await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", tripId).execute();
+      await sim.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("trip_id", "=", tripId).execute();
       // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
       await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
       await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();
@@ -277,7 +277,7 @@ describe("book later (owner Q1–Q7)", () => {
 
   it("v0.18.49 §71 owner Q10 update: free for 5 min after booking (graceAfterBookingMin), then the category rule (fail-before: fee 2 min after a short-notice booking)", async () => {
     const settle = async (tripId: string) => {
-      await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", tripId).execute();
+      await sim.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("trip_id", "=", tripId).execute();
       // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
       await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
       await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();

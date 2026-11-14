@@ -37,7 +37,7 @@ CREATE TRIGGER rider_wallets_floor BEFORE INSERT OR UPDATE OF balance_minor ON r
 -- Only now is the old "never below 0" rule (0096) dropped: the floor already guards every write.
 ALTER TABLE rider_wallets DROP CONSTRAINT IF EXISTS rider_wallets_balance_nonneg;
 
--- undo (only while no balance is below 0):
+-- undo: (only while no balance is below 0)
 -- ALTER TABLE rider_wallets ADD CONSTRAINT rider_wallets_balance_nonneg CHECK (balance_minor >= 0) NOT VALID;
 -- DROP TRIGGER IF EXISTS rider_wallets_floor ON rider_wallets;
 -- DROP FUNCTION IF EXISTS rider_wallets_floor_check();
