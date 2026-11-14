@@ -76,7 +76,8 @@ export function hideDriverMoney(projection: Record<string, unknown>): Record<str
   // v0.18.10 (contract.json#finish): the driver's one number, Movera's changes, the old debt and who gets what.
   without("finish", ["driverTotal", "earningsBreakdown"]);
   without("tip", ["driverShare"]);
-  for (const key of ["driverTotal", "earningsBreakdown", "driverAdjustments", "debtCollected", "moneySplit"]) delete out[key];
+  // v0.18.87: what Movera keeps now (moneyBase.commissionRow) is driver and admin only.
+  for (const key of ["driverTotal", "earningsBreakdown", "driverAdjustments", "debtCollected", "moneySplit", "moveraKeepsNow"]) delete out[key];
   delete out["adminFlag"];
   delete out["pinAttempts"];
   delete out["pinBlocked"];
@@ -152,6 +153,10 @@ export function earningsLinesOf(row: MoneyRow): Array<{ code: string; amountMino
   return lines.filter((l) => l.code === "trip" || l.amountMinor !== 0);
 }
 export const driverTotalOf = (row: MoneyRow): number => earningsLinesOf(row).reduce((sum, l) => sum + l.amountMinor, 0);
+
+/** v0.18.87: a paid trip end (completed, the rider's early end, the driver's end on board, admin complete), as in KPIs. */
+const PAID_STATUSES = new Set(["captured", "partially_refunded", "refunded"]);
+export const isPaidEnd = (row: { status: string; payment_status: string | null }): boolean => row.status === "completed" || PAID_STATUSES.has(row.payment_status ?? "");
 
 /** An ended trip with a fare the driver collected or the rider paid (complete, the rider's early end, a driver cancel on board). */
 const FINISH_COMMANDS = new Set(["complete", "end_early"]);
@@ -289,21 +294,28 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   }
   const debt = debtOf(lines);
   if (viewer !== "rider" && debt > 0) projection["debtCollected"] = { amountMinor: debt, currency };
-  if (viewer === "admin") {
+  if (viewer !== "rider") {
     const refunded = Number(row.refunded_minor ?? 0);
     const tip = tipMinor(row);
     // Checker (1): the parts always add up to what the rider paid. Movera is the rest after the driver's one number (which
     // holds the tip, pay changes and refunds taken from him) and the old fee; a refund Movera pays lowers Movera's part.
     const riderPaid = Number(row.fare_minor) + tip - refunded;
     const driverPart = row.driver_id ? driverTotalOf(row) : 0;
-    projection["moneySplit"] = {
-      riderPaid: { amountMinor: riderPaid, currency },
-      driverTotal: { amountMinor: driverPart, currency },
-      movera: { amountMinor: riderPaid - driverPart - debt, currency },
-      debtCollected: { amountMinor: debt, currency },
-      ...(tip > 0 ? { tip: { amountMinor: tip, currency } } : {}),
-      refunded: { amountMinor: refunded, currency },
-    };
+    const movera = { amountMinor: riderPaid - driverPart - debt, currency };
+    if (viewer === "admin") {
+      projection["moneySplit"] = {
+        riderPaid: { amountMinor: riderPaid, currency },
+        driverTotal: { amountMinor: driverPart, currency },
+        movera,
+        debtCollected: { amountMinor: debt, currency },
+        ...(tip > 0 ? { tip: { amountMinor: tip, currency } } : {}),
+        refunded: { amountMinor: refunded, currency },
+      };
+    }
+    // v0.18.87 BQ-M19 (contract.json#moneyBase.commissionRow, owner 2026-11-13 "Movera commission is how much movera
+    // keep"): what Movera keeps NOW on a paid trip (= moneySplit.movera, later pay changes and bonuses included), on the
+    // driver and admin views, for the "Movera commission" rows. Absent before a paid end (the apps hide the row).
+    if (isPaidEnd(row)) projection["moveraKeepsNow"] = { ...movera };
   }
   // v0.18.10 (owner G8 Q4): SOS only once a driver is assigned (safety.sos.*Statuses); "Call 112" is always there.
   if (viewer === "rider") projection["sosAvailable"] = SOS_RIDER.has(row.status);
