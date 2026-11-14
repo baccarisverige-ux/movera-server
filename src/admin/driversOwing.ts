@@ -6,6 +6,7 @@ import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "./audit.js";
 import { owedByDriver, owesLimitOf, type OwesLimit } from "../drivers/owes.js";
+import { freezePayoutSummary } from "./payoutSummary.js";
 
 /**
  * S5 J8, contract v0.18.84 debtModel.driverOwes.adminList + paidMovera (owner Q-S5-1a "Both", 2026-11-12 ~17:02):
@@ -130,6 +131,8 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
     left -= take;
     if (take === rest) {
       await trx.updateTable("payouts").set({ status: "paid", paid_at: now, paid_by: who.subjectId, note: "Driver paid Movera" }).where("payout_id", "=", p.payout_id).execute();
+      // Owner M26 (payoutSummary.frozenWhenPaid, "a paid payout's numbers never change"): frozen now, as Mark as paid does.
+      await freezePayoutSummary(trx, { payout_id: p.payout_id, currency });
       await audit(trx, { adminId: who.subjectId, action: "payout.paid", targetType: "payout", targetId: p.payout_id, zoneId: p.zone_id, detail: { note: "Driver paid Movera", reason }, at: now });
     }
   }

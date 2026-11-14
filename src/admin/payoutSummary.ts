@@ -10,7 +10,7 @@ import { isPaidEnd, tripProjection } from "../trips/projection.js";
  *   manual and a weekly payout never count a day twice, a late or carried entry counts in the payout that pays it, and a
  *   paid payout's numbers never move to another payout.
  * - driverGets = Σ the payout's entries (trip, tip, pickup pay, bonus, pay change, fee share, a lost-driver payment): his
- *   money once = Payout.amount + the cash he collected.
+ *   money once = Payout.amount + the cash he collected − what he paid Movera (J8 paid_to_movera entries are left out).
  * - moveraGets = for each trip whose `trip` entry is in the payout, what Movera keeps now on it, read with the VIEWER's
  *   moveraKeepsNow (admin: moneySplit.movera, the lost-driver payments taken off; driver: what Movera keeps from HIS trip —
  *   another driver's money is never sent to him, moneyBase.lostDriverPaid.driverView; the two views may differ) + Movera's
@@ -58,6 +58,10 @@ export async function payoutSummaries(ex: Executor, all: readonly PayoutKey[], v
     let moveraGets = 0;
     const counted = new Set<string>();
     for (const e of byPayout.get(payout.payout_id) ?? []) {
+      // J8 x M22 (owner s06:1277 "Driver gets" = his earnings for the period, all trips): money the driver paid Movera
+      // ("Driver paid Movera", kind paid_to_movera) is not earnings and not Movera's commission: in neither number,
+      // in the payout it closes or in the next one. The payout's own amount and lines still count it.
+      if (e.kind === "paid_to_movera") continue;
       const amount = Number(e.amount_minor);
       driverGets += amount;
       const trip = e.trip_id ? trips.get(e.trip_id) : undefined;
