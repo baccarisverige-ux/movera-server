@@ -61,7 +61,7 @@ export async function feeIntoWallet(trx: Trx, fee: { tripId: string; riderId: st
  * Changeover (debtModel.changeover, supervisor M3 + "two server copies"): a fee written by an older server copy (rider_fees
  * owed, no wallet entry yet) is moved into the wallet before the debt is read. Idempotent (feeIntoWallet).
  */
-export async function sweepOwedFees(trx: Trx, riderId: string, currency?: string): Promise<void> {
+export async function sweepOwedFees(trx: Trx, riderId: string, currency?: string, now: Date = new Date()): Promise<void> {
   let q = trx
     .selectFrom("rider_fees")
     .select(["trip_id", "rider_id", "currency", "amount_minor", "created_at"])
@@ -71,6 +71,54 @@ export async function sweepOwedFees(trx: Trx, riderId: string, currency?: string
   if (currency !== undefined) q = q.where("currency", "=", currency);
   for (const f of await q.orderBy("created_at").orderBy("trip_id").execute()) {
     await feeIntoWallet(trx, { tripId: f.trip_id, riderId: f.rider_id, amount: { amountMinor: Number(f.amount_minor), currency: f.currency }, at: f.created_at }, f.created_at);
+  }
+  await liftOldCopySettlements(trx, riderId, currency, now);
+  if (currency !== undefined) await settleFeesToWallet(trx, riderId, currency, null, now);
+}
+
+/**
+ * Must-fix 3 (supervisor J8 round 1, the deploy window): while the new copy runs 0103, an old server copy may still mark a
+ * fee paid / waived / refunded in rider_fees (its complete collected the copied line, or an admin corrected it) while the
+ * fee's −fee already sits in the wallet. Such a row has a fee entry but settled_in_wallet false (every J8 settlement sets
+ * it). Its −fee is lifted once with an adjustment (+fee), so the rider never pays that fee a second time.
+ */
+async function liftOldCopySettlements(trx: Trx, riderId: string, currency: string | undefined, now: Date): Promise<void> {
+  let q = trx
+    .selectFrom("rider_fees")
+    .innerJoin("wallet_entries as w", (j) => j.onRef("w.trip_id", "=", "rider_fees.trip_id").on("w.kind", "=", "fee"))
+    .select(["rider_fees.trip_id", "rider_fees.currency", "w.amount_minor as fee_entry"])
+    .where("rider_fees.rider_id", "=", riderId)
+    .where("rider_fees.status", "in", ["paid", "waived", "refunded"])
+    .where("rider_fees.settled_in_wallet", "=", false);
+  if (currency !== undefined) q = q.where("rider_fees.currency", "=", currency);
+  for (const f of await q.orderBy("rider_fees.trip_id").forUpdate("rider_fees").execute()) {
+    const back = -Number(f.fee_entry);
+    if (back > 0) {
+      await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: riderId, kind: "adjustment", currency: f.currency, amount_minor: back, trip_id: f.trip_id, at: now }).execute();
+      await moveIntoDebt(trx, riderId, f.currency, back, now);
+    }
+    await trx.updateTable("rider_fees").set({ settled_in_wallet: true }).where("trip_id", "=", f.trip_id).execute();
+  }
+}
+
+/**
+ * Must-fix 5 (contract debtModel.riderWallet "settled oldest first"): the fee rows in the wallet follow the wallet. While
+ * the owed rows of a currency add up to more than the wallet debt, the oldest is marked paid (by `carriedBy`, the trip
+ * that paid it, or null when credit in the wallet paid it). Only rows already in the wallet (a fee entry) count.
+ */
+export async function settleFeesToWallet(trx: Trx, riderId: string, currency: string, carriedBy: string | null, now: Date): Promise<void> {
+  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").where("currency", "=", currency)
+    .where(({ exists, selectFrom }) => exists(selectFrom("wallet_entries").select("entry_id").whereRef("wallet_entries.trip_id", "=", "rider_fees.trip_id").where("wallet_entries.kind", "=", "fee")))
+    .orderBy("created_at").orderBy("trip_id").forUpdate().execute();
+  if (owed.length === 0) return;
+  const debt = await riderDebt(trx, riderId, currency);
+  let sum = owed.reduce((total, f) => total + Number(f.amount_minor), 0);
+  for (const fee of owed) {
+    if (sum <= debt) break;
+    sum -= Number(fee.amount_minor);
+    await trx.updateTable("rider_fees").set({ status: "paid", carried_by: carriedBy, settled_at: now, settled_in_wallet: true }).where("trip_id", "=", fee.trip_id).execute();
+    const source = await trx.selectFrom("trips").select("cancellation").where("trip_id", "=", fee.trip_id).executeTakeFirst();
+    if (source?.cancellation) await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...(source.cancellation as object), feeStatus: "paid" }) }).where("trip_id", "=", fee.trip_id).execute();
   }
 }
 
@@ -92,6 +140,7 @@ export async function riderDebt(ex: Executor, riderId: string, currency: string,
 /** The oldest unpaid fee in a currency (FareLine.sourceTripId of the outstanding_fee line), null when none. */
 async function oldestOwedFee(ex: Executor, riderId: string, currency: string): Promise<string | null> {
   const row = await ex.selectFrom("rider_fees").select("trip_id").where("rider_id", "=", riderId).where("status", "=", "owed").where("currency", "=", currency).orderBy("created_at").orderBy("trip_id").executeTakeFirst();
+  // (After settleFeesToWallet the oldest owed row is the oldest fee the wallet still owes.)
   return row?.trip_id ?? null;
 }
 
@@ -127,16 +176,7 @@ export async function payDebt(trx: Trx, trip: Pick<TripRow, "trip_id" | "rider_i
   if (paidMinor <= 0) return;
   await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: trip.rider_id, kind: "debt_paid", currency: trip.currency, amount_minor: paidMinor, trip_id: trip.trip_id, at: now }).execute();
   await moveIntoDebt(trx, trip.rider_id, trip.currency, paidMinor, now);
-  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", trip.rider_id).where("status", "=", "owed").where("currency", "=", trip.currency).orderBy("created_at").orderBy("trip_id").forUpdate().execute();
-  let left = paidMinor;
-  for (const fee of owed) {
-    const amount = Number(fee.amount_minor);
-    if (amount > left) break;
-    left -= amount;
-    await trx.updateTable("rider_fees").set({ status: "paid", carried_by: trip.trip_id, settled_at: now }).where("trip_id", "=", fee.trip_id).execute();
-    const source = await trx.selectFrom("trips").select("cancellation").where("trip_id", "=", fee.trip_id).executeTakeFirst();
-    if (source?.cancellation) await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...(source.cancellation as object), feeStatus: "paid" }) }).where("trip_id", "=", fee.trip_id).execute();
-  }
+  await settleFeesToWallet(trx, trip.rider_id, trip.currency, trip.trip_id, now);
 }
 
 /**
@@ -145,7 +185,7 @@ export async function payDebt(trx: Trx, trip: Pick<TripRow, "trip_id" | "rider_i
  * simply reads the lower debt when it is paid (no fee_on_running_trip refusal any more).
  */
 export async function correctFee(trx: Trx, fee: { trip_id: string; rider_id: string; currency: string; amount_minor: string | number }, now: Date): Promise<number> {
-  await sweepOwedFees(trx, fee.rider_id, fee.currency);
+  await sweepOwedFees(trx, fee.rider_id, fee.currency, now);
   const debt = await riderDebt(trx, fee.rider_id, fee.currency, true);
   const back = Math.min(Number(fee.amount_minor), debt);
   if (back > 0) {
@@ -157,15 +197,30 @@ export async function correctFee(trx: Trx, fee: { trip_id: string; rider_id: str
 
 /** Every currency the rider owes in, oldest unpaid fee first (Rider.outstandingByCurrency, derived from the wallet). */
 export async function debtsByCurrency(ex: Executor, riderId: string): Promise<Array<{ amountMinor: number; currency: string; sourceTripId: string | null }>> {
-  const rows = await ex.selectFrom("rider_wallets").select(["currency", "balance_minor"]).where("rider_id", "=", riderId).where("balance_minor", "<", "0").execute();
-  if (rows.length === 0) return [];
-  const fees = await ex.selectFrom("rider_fees").select(["trip_id", "currency", "created_at"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
+  return (await debtsOfRiders(ex, [riderId])).get(riderId) ?? [];
+}
+
+/** The same for a page of riders in two queries (must-fix 5: the admin rider list reads the wallet, src/admin/lists.ts). */
+export async function debtsOfRiders(ex: Executor, riderIds: readonly string[]): Promise<Map<string, Array<{ amountMinor: number; currency: string; sourceTripId: string | null }>>> {
+  const out = new Map<string, Array<{ amountMinor: number; currency: string; sourceTripId: string | null }>>();
+  if (riderIds.length === 0) return out;
+  const ids = [...new Set(riderIds)];
+  const rows = await ex.selectFrom("rider_wallets").select(["rider_id", "currency", "balance_minor"]).where("rider_id", "in", ids).where("balance_minor", "<", "0").execute();
+  if (rows.length === 0) return out;
+  const fees = await ex.selectFrom("rider_fees").select(["rider_id", "trip_id", "currency", "created_at"]).where("rider_id", "in", [...new Set(rows.map((r) => r.rider_id))]).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
   const first = new Map<string, { tripId: string; at: number }>();
-  for (const f of fees) if (!first.has(f.currency)) first.set(f.currency, { tripId: f.trip_id, at: f.created_at.getTime() });
-  return rows
-    .map((r) => ({ amountMinor: -Number(r.balance_minor), currency: r.currency, sourceTripId: first.get(r.currency)?.tripId ?? null, at: first.get(r.currency)?.at ?? Number.MAX_SAFE_INTEGER }))
-    .sort((a, b) => a.at - b.at || a.currency.localeCompare(b.currency))
-    .map(({ amountMinor, currency, sourceTripId }) => ({ amountMinor, currency, sourceTripId }));
+  for (const f of fees) if (!first.has(`${f.rider_id}:${f.currency}`)) first.set(`${f.rider_id}:${f.currency}`, { tripId: f.trip_id, at: f.created_at.getTime() });
+  for (const r of rows) {
+    const oldest = first.get(`${r.rider_id}:${r.currency}`);
+    const list = out.get(r.rider_id) ?? [];
+    list.push({ amountMinor: -Number(r.balance_minor), currency: r.currency, sourceTripId: oldest?.tripId ?? null, at: oldest?.at ?? Number.MAX_SAFE_INTEGER } as never);
+    out.set(r.rider_id, list);
+  }
+  for (const [id, list] of out) {
+    const sorted = (list as unknown as Array<{ amountMinor: number; currency: string; sourceTripId: string | null; at: number }>).sort((a, b) => a.at - b.at || a.currency.localeCompare(b.currency));
+    out.set(id, sorted.map(({ amountMinor, currency, sourceTripId }) => ({ amountMinor, currency, sourceTripId })));
+  }
+  return out;
 }
 
 /* ---------------------------------------------------------------- Max rider debt (booking) */

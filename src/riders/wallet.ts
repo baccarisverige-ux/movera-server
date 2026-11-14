@@ -1,3 +1,4 @@
+import { settleFeesToWallet } from "./debt.js";
 import { sql } from "kysely";
 import { z } from "zod";
 import type { Executor, Trx } from "../db/db.js";
@@ -91,6 +92,8 @@ export async function creditWallet(trx: Trx, riderId: string, amount: { amountMi
   await moveWallet(trx, riderId, amount.currency, amount.amountMinor, now);
   const entryId = newId("wlt", now.getTime());
   await trx.insertInto("wallet_entries").values({ entry_id: entryId, rider_id: riderId, kind, currency: amount.currency, amount_minor: amount.amountMinor, trip_id: tripId, at: now }).execute();
+  // S5 J8 (must-fix 5): money in the wallet lowers the debt; the oldest fee rows it covers say paid (by credit).
+  await settleFeesToWallet(trx, riderId, amount.currency, null, now);
   return entryId;
 }
 

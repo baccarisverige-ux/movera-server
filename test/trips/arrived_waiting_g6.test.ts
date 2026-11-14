@@ -90,7 +90,7 @@ beforeEach(async () => {
   await database.db.deleteFrom("timers").execute();
   await database.db.deleteFrom("offers").execute();
   await database.db.deleteFrom("area_events").execute();
-  await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  await database.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
   // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
   await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null, wallet_minor: 0 }).execute();
@@ -492,7 +492,7 @@ describe("item 3: admin Reverse no-show (reason required, driver share kept unle
 
   it("a fee already paid is refunded to the rider's wallet (feeStatus refunded) — France, in euro", async () => {
     const { tripId, version } = await noShowTrip("FR");
-    await database.db.updateTable("rider_fees").set({ status: "paid" }).where("trip_id", "=", tripId).execute();
+    await database.db.updateTable("rider_fees").set({ status: "paid", settled_in_wallet: true }).where("trip_id", "=", tripId).execute();
     // S5 J8 (debtModel.riderWallet): paid means the wallet debt it made is gone too (a debt_paid brought it back to 0).
     await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("currency", "=", "EUR").execute();
     const admin = await adminSession(app, database.db, "super", { now: clock.now });

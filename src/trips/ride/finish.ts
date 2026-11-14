@@ -32,7 +32,7 @@ export async function endEarly(trx: Trx, riderId: string, tripId: string, body: 
   }
   // v0.18.10 (owner G8 Q1/Q2): what was driven plus the paid waiting at the stops.
   // S5 J8 (contract v0.18.84 debtModel.readAtPayment): an early end is paid, so the rider's debt is read and paid with it.
-  const { money, debt } = await priceWithDebt(trx, trip, await drivenColumns(trx, trip, await drivenFare(trx, trip, now), now), true);
+  const { money, debt } = await priceWithDebt(trx, trip, await drivenColumns(trx, trip, await drivenFare(trx, trip, now), now), true, now);
   const wallet = await spendWallet(trx, trip, money.fare_minor, now);
   const reasonCode = body.reasonCode ?? "something_else";
   const cancellation = { actor: "rider", reasonCode, at: now.toISOString(), fee: null, ...(body.note ? { note: body.note } : {}) };
@@ -153,7 +153,7 @@ export async function completePreview(ex: Executor, driverId: string, tripId: st
   const final = await finalPrice(ex, trip, "driver", undefined, now);
   const { early, near } = final;
   // S5 J8 (debtModel.readAtPayment): the preview shows the debt complete would read now (read, not locked or paid).
-  const { fare, money } = await priceWithDebt(ex, trip, { ...final.money, fare_minor: final.fare }, false);
+  const { fare, money } = await priceWithDebt(ex, trip, { ...final.money, fare_minor: final.fare }, false, now);
   // v0.18.28 (owner Q4): the balance in the trip's currency.
   const wallet = walletPart(await walletBalance(ex, trip.rider_id, trip.currency), trip, fare);
   const previewId = newId("cpv", now.getTime());
@@ -186,7 +186,7 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
     : await finalPrice(trx, trip, who.actor, body.fare, now);
   // S5 J8 (contract v0.18.84 debtModel.readAtPayment + changeover): the debt is read now, under the wallet row lock; a
   // copied outstanding_fee line (a trip or preview made before) is replaced by it, so each fee is paid once.
-  const { fare, money, debt } = await priceWithDebt(trx, trip, { ...before.money, fare_minor: before.fare }, true);
+  const { fare, money, debt } = await priceWithDebt(trx, trip, { ...before.money, fare_minor: before.fare }, true, now);
   const wallet = await spendWallet(trx, trip, fare, now);
   // With a previewId the cash shown must be the cash part of this price; if not, nothing is completed and the app
   // gets a fresh price to show (409 price_changed, never a 400 that leaves the driver stuck).

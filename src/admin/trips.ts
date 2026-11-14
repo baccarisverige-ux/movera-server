@@ -380,12 +380,12 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
   if (fee && fee.status === "owed") {
     // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
     await correctFee(trx, fee, now);
-    await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
+    await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
     await refreshOutstanding(trx, trip.rider_id, now);
     feeStatus = "waived";
   } else if (fee && fee.status === "paid") {
     await creditWallet(trx, trip.rider_id, { amountMinor: Number(fee.amount_minor), currency: fee.currency }, trip.trip_id, now);
-    await trx.updateTable("rider_fees").set({ status: "refunded", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
+    await trx.updateTable("rider_fees").set({ status: "refunded", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
     // Checker round 1 (M3): live 0.18.7 apps know only paid / owed / waived (statusWords.feeStatus): the wire says waived,
     // refundedAt + refundedToWallet tell the money went back.
     feeStatus = "waived";
@@ -455,7 +455,7 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
     if (!fee || fee.status !== "owed") throw new ApiError("conflict", "There is no unpaid fee on this trip.", { reason: "no_fee_to_waive", projection: tripProjection(trip, "admin") });
     // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
     await correctFee(trx, fee, now);
-    await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
+    await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
     set["cancellation"] = JSON.stringify({ ...(trip.cancellation as object), feeStatus: "waived" });
     await refreshOutstanding(trx, trip.rider_id, now);
   }

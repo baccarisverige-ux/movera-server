@@ -29,7 +29,7 @@ export async function markRiderFeePaid(trx: Trx, who: Principal, riderId: string
   // S5 J8 (contract v0.18.84 debtModel.adminCorrections): a correction entry in the wallet (+the fee, at most what is
   // still owed); a ride open now simply reads the lower debt when it is paid (no fee_on_running_trip any more).
   await correctFee(trx, fee, now);
-  await trx.updateTable("rider_fees").set({ status: "paid", carried_by: null, settled_at: now }).where("trip_id", "=", tripId).execute();
+  await trx.updateTable("rider_fees").set({ status: "paid", carried_by: null, settled_at: now, settled_in_wallet: true }).where("trip_id", "=", tripId).execute();
   // The original trip says paid too (no version change: nothing the driver or rider acts on changed).
   await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...((trip.cancellation ?? {}) as object), feeStatus: "paid" }) }).where("trip_id", "=", tripId).execute();
   await refreshOutstanding(trx, riderId, now);

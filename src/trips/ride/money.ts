@@ -7,7 +7,7 @@ import type { Executor, Trx } from "../../db/db.js";
 import type { TripRow } from "../../db/tripLog.js";
 import { newId } from "../../ids.js";
 import type { Money } from "./shared.js";
-import { debtForPayment, debtsByCurrency, feeIntoWallet, payDebt, sweepOwedFees, withDebt } from "../../riders/debt.js";
+import { debtForPayment, debtsByCurrency, feeIntoWallet, payDebt, settleFeesToWallet, sweepOwedFees, withDebt } from "../../riders/debt.js";
 import { moveWallet, walletBalance } from "../../riders/wallet.js";
 import { checkCashOffersSoon } from "../../drivers/owes.js";
 import { appendTripEvent } from "../../db/tripLog.js";
@@ -141,6 +141,8 @@ export async function refreshOutstanding(trx: Trx, riderId: string, now: Date) {
 export async function chargeRiderFee(trx: Trx, trip: TripRow, kind: "cancel" | "no_show", fee: Money, now: Date) {
   await trx.insertInto("rider_fees").values({ trip_id: trip.trip_id, rider_id: trip.rider_id, kind, currency: fee.currency, amount_minor: fee.amountMinor, status: "owed", created_at: now }).execute();
   await feeIntoWallet(trx, { tripId: trip.trip_id, riderId: trip.rider_id, amount: fee, at: now }, now);
+  // Credit in the wallet pays it at once (must-fix 5): the row says paid, the trip's feeStatus too.
+  await settleFeesToWallet(trx, trip.rider_id, fee.currency, null, now);
   await refreshOutstanding(trx, trip.rider_id, now);
 }
 
@@ -166,8 +168,8 @@ export function feeColumns(fee: Money, sharePct: number) {
  * outstanding_fee line (a trip made before J8) is dropped and the rider's debt in the trip's currency, read now under
  * the wallet row lock, is added as the one outstanding_fee line. `lock` false (preview) only reads.
  */
-export async function priceWithDebt<M extends { fare_minor?: number; fare_lines?: string }>(trx: Executor, trip: TripRow, money: M, lock: boolean): Promise<{ fare: number; money: M & { fare_minor: number; fare_lines: string }; debt: number }> {
-  if (lock) await sweepOwedFees(trx as Trx, trip.rider_id, trip.currency);
+export async function priceWithDebt<M extends { fare_minor?: number; fare_lines?: string }>(trx: Executor, trip: TripRow, money: M, lock: boolean, now: Date = new Date()): Promise<{ fare: number; money: M & { fare_minor: number; fare_lines: string }; debt: number }> {
+  if (lock) await sweepOwedFees(trx as Trx, trip.rider_id, trip.currency, now);
   const debt = await debtForPayment(trx, trip, lock);
   const lines = money.fare_lines !== undefined ? (JSON.parse(money.fare_lines) as Parameters<typeof withDebt>[1]) : ((trip.fare_lines as Parameters<typeof withDebt>[1]) ?? []);
   const priced = withDebt(money.fare_minor ?? Number(trip.fare_minor), lines, trip.currency, debt);
