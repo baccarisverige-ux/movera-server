@@ -5,6 +5,7 @@ import { bonusFor, priorityFor } from "../dispatch/bonusScope.js";
 import { tripTerms } from "./ride.js";
 import { contract } from "../contract/contract.js";
 import { debtOf } from "../rules/commission.js";
+import { cancelPreviewOf } from "./cancelPreview.js";
 
 /**
  * TripProjection (contract §2) from a trips row, per viewer: the rider never sees the driver's money
@@ -109,6 +110,8 @@ export function hidePinFromDriver(out: Record<string, unknown>): Record<string, 
   void _p;
   void _a;
   hideReversalDetails(rest);
+  // v0.18.89 §90 (priceDisplay.cancelPreview): the rider's cancel fee preview is the rider's and the admin's.
+  delete rest["cancelPreview"];
   return rest;
 }
 
@@ -381,6 +384,10 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (row.chained) projection["chain"] = { queued: Boolean(row.next_after_trip_id), ...(row.chain_free_cancel_at ? { freeCancelAt: new Date(row.chain_free_cancel_at).toISOString() } : {}) };
   // v0.18.33 (owner Q6, contract.json#afterTestRules.walletFirst): the rider's per-ride wallet switch (rider and admin views).
   if (viewer !== "driver") projection["walletFirst"] = (row.booking_rules as { walletFirst?: boolean } | null)?.walletFirst !== false;
+  // v0.18.89 §90 BQ-M22 (contract.json#priceDisplay.cancelPreview): what a rider cancel costs now / after the free minutes
+  // (rider and admin views; never the driver's, nor his stream: hidePinFromDriver).
+  const cancelPreview = viewer !== "driver" ? cancelPreviewOf(row, overrides.now ?? new Date()) : null;
+  if (cancelPreview) projection["cancelPreview"] = cancelPreview;
   // The wallet pays first; the driver collects the rest in cash (shown once the wallet covers part of it).
   const wallet = Number(row.wallet_applied_minor ?? 0);
   if (wallet > 0) {
