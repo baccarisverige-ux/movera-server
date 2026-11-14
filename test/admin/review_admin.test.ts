@@ -191,6 +191,8 @@ describe("review: admin tools", () => {
     expect(b.statusCode).toBe(200);
     const re = await adminPost(`/trips/${tripId}/reassign`, { expectedVersion: b.json().version, reasonCode: "admin_operational", note: "x", driverBonus: sek(20000) });
     expect(re.json()).toMatchObject({ reason: "bonus_over_limit" });
+    // BQ-O17 (moneyDisplay.wholeAmounts): the limit is written with its decimals ("200,00 kr"), never "200 SEK".
+    expect(re.json().message).toMatch(/^A trip can carry at most \d[\d ]*,\d{2} kr of bonus; adjust the limit in Pricing\.$/);
   });
 
   it("R4 the refund cap is what was paid: nothing collected, nothing to refund", async () => {
@@ -200,7 +202,7 @@ describe("review: admin tools", () => {
     const done = await step(tripId, "complete", v + 1, { cashCollected: sek(0) });
     expect(done.json().status).toBe("completed");
     const res = await adminPost(`/trips/${tripId}/refund`, { expectedVersion: done.json().version, amount: sek(21700), reason: "x" });
-    expect(res.json()).toMatchObject({ reason: "refund_too_large" });
+    expect(res.json()).toMatchObject({ reason: "refund_too_large", message: "At most 0,00 kr is left to refund." }); // BQ-O17
   });
 
   it("R5 wallet money that arrives after boarding stays in the wallet", async () => {

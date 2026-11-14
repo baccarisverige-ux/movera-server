@@ -108,6 +108,7 @@ describe("scenario 9: admin actions (what the server exposes)", () => {
     version = (await owner.trip(tripId)).version;
     const tooMuch = await owner.tripCommand(tripId, "refund", { expectedVersion: version, amount: { amountMinor: 21700 - 10000 + 1, currency: "SEK" }, reason: "x" });
     expect(tooMuch.body.reason).toBe("refund_too_large");
+    expect(tooMuch.body.message).toBe("At most 117,00 kr is left to refund."); // BQ-O17: whole amounts keep their decimals
     const refunds = (await rider.get("/rider/refunds")).body;
     expect(JSON.stringify(refunds)).toContain("5000");
   });
@@ -161,6 +162,7 @@ describe("scenario 9: admin actions (what the server exposes)", () => {
     const res = await completeAtDropoff(a, tripId, { cashCollected: { amountMinor: 100_000_000, currency: "SEK" } });
     expect(res.status).toBe(400);
     expect(res.body.reason).toBe("cash_above_fare");
+    expect(res.body.message).toBe("At most 217,00 kr is collected in cash on this trip."); // BQ-O17
     // The exact fare (what the driver app's complete sends by default) completes.
     const ok = await a.command(tripId, "complete", { cashCollected: { amountMinor: 21700, currency: "SEK" } });
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
