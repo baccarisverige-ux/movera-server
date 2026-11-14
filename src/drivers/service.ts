@@ -220,7 +220,7 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
       ? { fleet: { fleetId: fleet.fleet_id, name: fleet.name, role: fleet.owner_driver_id === row.driver_id ? "owner" : "member", status: fleet.status, linkedAt: (row.fleet_linked_at ?? fleet.created_at).toISOString() } }
       : {}),
     // v0.18.13 (contract.json#drivingLimits.projection): counted driving time against the limit.
-    ...(viewer === "driver" ? { drivingTime: await drivingTimeOf(ex, { driver_id: row.driver_id, zone_ids: row.zone_ids, driving_since: row.driving_since ?? null }, now) } : {}),
+    ...(viewer === "driver" ? { drivingTime: await drivingTimeOf(ex, { driver_id: row.driver_id, zone_ids: row.zone_ids, driving_since: row.driving_since ?? null, offlineSince: row.online_status === "offline" ? (row.went_offline_at ?? null) : null }, now) } : {}),
     ...(row.account_type === "fleet" ? { payoutTo: "self" } : row.account_type === "driver" && fleet ? { payoutTo: "fleet" } : {}),
     ...(row.account_type ? { pendingFleetInvitations: pendingInvitations } : {}),
     // v0.18.0 (§27): the lists of the country's onboarding settings (the admin's), else the contract defaults.
@@ -362,7 +362,8 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
     if (!(await hasFreshPosition(trx, driverId, now))) throw await refuse("Turn on location to go online.", DRIVER_HOME.locationRequired.reason);
     // v0.18.13 (contract.json#drivingLimits): the counter starts again after the offline rest; over the limit → refused.
     const since = await resetOnOnline(trx, { driver_id: row.driver_id, zone_ids: row.zone_ids, went_offline_at: row.went_offline_at ?? null, driving_since: row.driving_since ?? null }, now);
-    const time = await drivingTimeOf(trx, { driver_id: row.driver_id, zone_ids: row.zone_ids, driving_since: since }, now);
+    // BQ-V21: refused while resting → canDriveAt counts from when he went offline (the admin's reset hours).
+    const time = await drivingTimeOf(trx, { driver_id: row.driver_id, zone_ids: row.zone_ids, driving_since: since, offlineSince: row.online_status === "offline" ? (row.went_offline_at ?? null) : null }, now);
     if (time.reached) {
       throw new ApiError("conflict", "You reached the driving-time limit. Rest offline before driving again.", {
         reason: "driving_limit_reached",

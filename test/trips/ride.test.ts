@@ -8,6 +8,7 @@ import { driverPerformance } from "../../src/drivers/performance.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { driverCancelReasonsOf, rideHandlers, takeBackNotHeading } from "../../src/trips/ride.js";
+import { headingSettingsFor } from "../../src/trips/headingCheck.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -604,6 +605,80 @@ describe("v0.18.13 driving-time limits on the server (decisions/driving-time-lim
     const back = await goOnline();
     expect(back.statusCode, back.body).toBe(200);
     expect(back.json().drivingTime).toMatchObject({ drivenMinutes: 0, reached: false });
+  });
+
+  /** BQ-V21 (decisions/driving-time-limits.md:2-4): the admin's per-country numbers in DriverAppConfig.drivingLimits. */
+  async function limits(drivingLimits: Record<string, unknown> | null) {
+    const doc: Record<string, unknown> = { ...sample("driver_app_config") };
+    if (drivingLimits === null) delete doc["drivingLimits"];
+    else doc["drivingLimits"] = drivingLimits;
+    await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify(doc), published_at: clock.now, published_by: null }).execute();
+  }
+
+  it("BQ-V21: the admin's max driving and offline reset are used; an offline driver sees the server's real canDriveAt and a rested count", async () => {
+    try {
+      await database.db.updateTable("trips").set({ accepted_at: null, boarded_at: null }).where("driver_id", "=", drivers.A.id).execute();
+      await moveTo("A", SPOTS.A);
+      await goOffline();
+      // Admin: 1 h of driving at most, the counter starts again after 2 h offline in a row.
+      await limits({ maxHoursPerDay: 1, restMinutes: 30, resetAfterOfflineHours: 2 });
+      // The count of the test above started again when he went online; this one starts from his whole last day.
+      await database.db.updateTable("drivers").set({ driving_since: null }).where("driver_id", "=", drivers.A.id).execute();
+      await drove(30, 35, 5);
+      // He went offline 30 minutes ago (the trip was finished by then; the stamp is what the reset reads).
+      const offAt = new Date(clock.now.getTime() - 30 * 60_000);
+      await database.db.updateTable("drivers").set({ went_offline_at: offAt }).where("driver_id", "=", drivers.A.id).execute();
+      let me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+      expect(me.drivingTime).toMatchObject({ drivenMinutes: 65, maxMinutes: 60, reached: true, resetAfterOfflineHours: 2 });
+      // Offline already: he may drive again 2 h after he went offline, not 2 h after this read.
+      expect(me.drivingTime.canDriveAt).toBe(new Date(offAt.getTime() + 2 * 3600_000).toISOString());
+      // 2 h offline in a row have passed: the server's count is rested before he even taps online.
+      clock.now = new Date(offAt.getTime() + 2 * 3600_000 + 60_000);
+      drivers.A.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+      me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+      expect(me.drivingTime).toMatchObject({ drivenMinutes: 0, maxMinutes: 60, reached: false, resetAfterOfflineHours: 2 });
+      expect(me.drivingTime.canDriveAt).toBeUndefined();
+      await moveTo("A", SPOTS.A);
+      const back = await goOnline();
+      expect(back.statusCode, back.body).toBe(200);
+      expect(back.json().drivingTime).toMatchObject({ drivenMinutes: 0, reached: false, resetAfterOfflineHours: 2 });
+      await goOffline();
+      // An older admin publish without the field (or without drivingLimits at all): the contract defaults 12 h / 6 h.
+      await limits({ maxHoursPerDay: 1 });
+      me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+      expect(me.drivingTime).toMatchObject({ maxMinutes: 60, resetAfterOfflineHours: 6 });
+      await limits(null);
+      me = (await call(app, "GET", "/driver/profile", drivers.A.headers)).json();
+      expect(me.drivingTime).toMatchObject({ maxMinutes: 720, resetAfterOfflineHours: 6 });
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    }
+  });
+
+  it("BQ-V22: the heading check reads the zone's admin % and minutes; missing or bad values = 80 % / 2 min", async () => {
+    try {
+      const doc = (headingCheck: Record<string, unknown> | null) => {
+        const d: Record<string, unknown> = { ...sample("driver_app_config") };
+        if (headingCheck === null) delete d["headingCheck"];
+        else d["headingCheck"] = headingCheck;
+        return d;
+      };
+      const publish = async (d: Record<string, unknown>) => {
+        await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+        await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify(d), published_at: clock.now, published_by: null }).execute();
+      };
+      await publish(doc({ on: true, headingPct: 90, notHeadingMinutes: 4, reassign: false, notice: true, noticeEveryMin: 1 }));
+      expect(await headingSettingsFor(database.db, "Z001")).toMatchObject({ headingPct: 90, notHeadingMinutes: 4 });
+      await publish(doc({ on: true, reassign: false, notice: true, noticeEveryMin: 1 }));
+      expect(await headingSettingsFor(database.db, "Z001")).toMatchObject({ headingPct: 80, notHeadingMinutes: 2 });
+      await publish(doc({ headingPct: 40, notHeadingMinutes: 31 }));
+      expect(await headingSettingsFor(database.db, "Z001")).toMatchObject({ headingPct: 80, notHeadingMinutes: 2 });
+      await publish(doc(null));
+      expect(await headingSettingsFor(database.db, "Z001")).toMatchObject({ headingPct: 80, notHeadingMinutes: 2 });
+    } finally {
+      await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").execute();
+    }
   });
 });
 
