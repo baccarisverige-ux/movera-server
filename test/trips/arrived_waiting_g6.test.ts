@@ -269,10 +269,9 @@ describe("item 1: every admin waiting rule, picked by the server at arrive (cont
     }
     // Price format (owner 2026-11-14 "make sure rider and driver app show correct prices every where"; contract
     // moneyDisplay §81): the Terms money follows the currency, not the language, and whole amounts keep their
-    // decimals. fixtures/arrived_waiting.json#termsMoney still holds the older en / whole-amount texts (contract gap 2
-    // of audits/price-display-2026-11-14), so the amounts are checked against moneyDisplay instead.
-    const display: Record<string, string> = { "1226": "12,26 kr", "6500": "65,00 kr", "50": "0,50 €", "810": "8,10 €", "800": "8,00 €" };
-    for (const c of fixtures.termsMoney) expect(termsMoney(c.amount, c.lang)).toBe(display[String(c.amount.amountMinor)]);
+    // decimals. Since v0.18.90 fixtures/arrived_waiting.json#termsMoney holds these texts (contract gap 2 of
+    // audits/price-display-2026-11-14 closed; the older ones are textBefore0_18_89), TND with 3 decimals included.
+    for (const c of fixtures.termsMoney) expect(termsMoney(c.amount, c.lang), `${c.lang} ${c.amount.amountMinor} ${c.amount.currency}`).toBe(c.text);
   });
 
   it("France: euro terms from the Paris documents; a far pickup without its own fee takes the default 8,10 €", async () => {
