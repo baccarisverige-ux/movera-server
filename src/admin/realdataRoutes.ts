@@ -40,6 +40,8 @@ const Page = { cursor: z.string().max(512).optional(), limit: z.coerce.number().
 const When = { from: z.string().datetime().optional(), to: z.string().datetime().optional() };
 const Bool = z.enum(["true", "false"]).transform((v) => v === "true");
 
+// BQ-V38 (v0.18.102 payoutMode.approveGuard): the run total the admin saw, one Money per currency.
+const RunMoney = z.object({ amountMinor: z.number().int(), currency: z.string().regex(/^[A-Z]{3}$/) });
 const PayoutsQuery = { ...Page, ...TotalQuery, ...When, status: many(z.enum(["pending", "pending_approval", "paid", "failed", "held"])), driverId: ID.optional(), ...ZoneFilterQuery };
 const DriverPayoutsQuery = z.object({ ...Page, ...When });
 const CreatePayoutBody = z.object({ driverId: ID, from: z.string().datetime(), to: z.string().datetime(), note: z.string().max(1000).optional() });
@@ -160,7 +162,7 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
   // v0.18.39 A2 (owner Q4): approve a manual country's payout run.
   app.post(`${API_PREFIX}/admin/payouts/runs/approve`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.edit");
-    const body = parseBody(z.object({ country: z.string().regex(/^[A-Z]{2}$/), periodEnd: z.string().datetime(), reason: z.string().max(300).optional().default("") }), request.body);
+    const body = parseBody(z.object({ country: z.string().regex(/^[A-Z]{2}$/), periodEnd: z.string().datetime(), reason: z.string().max(300).optional().default(""), expectedCount: z.number().int().min(1).optional(), expectedTotal: z.array(RunMoney).min(1).max(10).optional() }), request.body);
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await approvePayoutRun(trx, who, body, now()) }))).body;
   });
   app.post(`${API_PREFIX}/admin/payouts/:payoutId/paid`, async (request) => {
