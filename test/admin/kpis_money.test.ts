@@ -22,11 +22,18 @@ async function trip(zoneId: string, status: string, endedAt: string, money: { fa
     zone_id: zoneId, currency: money.currency ?? "SEK", fare_minor: money.fare, commission_minor: money.commission ?? 0, driver_earnings_minor: money.earnings ?? 0,
     pickup_pay_minor: money.pickup ?? 0, driver_bonus_minor: money.bonus ?? 0, ended_at: new Date(endedAt),
   }).where("trip_id", "=", id).execute();
+  // A completed trip writes its earnings entries (src/trips/ride/finish.ts creditTrip); v0.18.82 S5 J5 reads the driver's
+  // money of the day from them (contract.json#moneyBase.kpiMoney).
+  if (status === "completed") {
+    for (const [kind, amount] of [["trip", money.earnings ?? 0], ["pickup_pay", money.pickup ?? 0], ["bonus", money.bonus ?? 0]] as const) {
+      if (amount !== 0 || kind === "trip") await entry(id, kind, amount, money.currency ?? "SEK");
+    }
+  }
   return id;
 }
 let n = 0;
-const entry = (tripId: string, kind: "tip" | "fee_share", amount: number) =>
-  database.db.insertInto("earnings_entries").values({ entry_id: `ern_${++n}`, driver_id: driverId, trip_id: tripId, kind, currency: "SEK", amount_minor: amount, gross_minor: null, commission_minor: null, cash_minor: null, at: now }).execute();
+const entry = (tripId: string, kind: "tip" | "fee_share" | "trip" | "pickup_pay" | "bonus", amount: number, currency = "SEK") =>
+  database.db.insertInto("earnings_entries").values({ entry_id: `ern_${++n}`, driver_id: driverId, trip_id: tripId, kind, currency, amount_minor: amount, gross_minor: null, commission_minor: null, cash_minor: null, at: now }).execute();
 const fee = (tripId: string, kind: "cancel" | "no_show", amount: number, status: "owed" | "paid" | "waived") =>
   database.db.insertInto("rider_fees").values({ trip_id: tripId, rider_id: riderId, kind, currency: "SEK", amount_minor: amount, status, carried_by: null, created_at: now, settled_at: null }).execute();
 const refund = (tripId: string, amount: number) =>

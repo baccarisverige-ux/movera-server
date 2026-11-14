@@ -6,6 +6,7 @@ import { appendTripEvent, lockTrip, type TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
 import { audit } from "../admin/audit.js";
+import { resumTripDay } from "../admin/kpis.js";
 import { notify } from "../notifications/service.js";
 import { debtOf } from "../rules/commission.js";
 import { localAmount, majorText, type CurrencyCode } from "../rules/money.js";
@@ -298,6 +299,9 @@ export async function adminDriverPay(trx: Trx, who: Principal, tripId: string, b
   if (after < 0) throw badRequest(PAY_TEXT.belowZero(before, trip.currency), "driver_pay_below_zero");
   await credit(trx, { driverId: trip.driver_id, tripId, kind: "adjustment", currency: trip.currency, amount: body.change.amountMinor }, now);
   const updated = await touchTrip(trx, trip, { driver_adjustments_minor: Number(trip.driver_adjustments_minor ?? 0) + body.change.amountMinor }, now);
+  // v0.18.82 S5 J5 (moneyBase.kpiMoney): a pay change is Movera's money on the TRIP's day; an older, already stored day
+  // is re-summed now (like a refund), so Reports › Money never waits for a re-sum.
+  await resumTripDay(trx, tripId, now);
   await audit(trx, { adminId: who.subjectId, action: "trip.driver_pay", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { reason: body.reason, change: body.change, before: { amountMinor: before, currency: trip.currency }, after: { amountMinor: after, currency: trip.currency } }, at: now });
   const lang = await languageOf(trx, "drivers", trip.driver_id, trip.zone_id);
   const sign = body.change.amountMinor > 0 ? "+" : "−";

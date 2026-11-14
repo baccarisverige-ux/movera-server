@@ -85,9 +85,12 @@ describe("scenario 3: request → offer → accept → arrive → start → comp
     expect(Number(entry.gross_minor) - Number(entry.amount_minor)).toBe(plain.moveraShare.amountMinor);
     expect(Number(entry.cash_minor)).toBe(plain.total.amountMinor);
     // The driver's earnings report: gross, commission and net agree with the trip (pickup pay is Movera's, on top).
+    // v0.18.82 S5 J5 (contract.json#moneyBase.commission, S07 M5): the report's commission is the trip's ONE commission
+    // (moveraShare − pickup pay − bonus = TripProjection.commission), no longer moveraShare (the second number).
     const [day] = (await near.get("/driver/earnings?period=day")).body.periods;
     const pickupPay = views.driver.pickupPay?.amountMinor ?? 0;
-    expect(day).toMatchObject({ tripCount: 1, gross: plain.total, commission: plain.moveraShare, cashCollected: plain.total, pickupPay: { amountMinor: pickupPay } });
+    expect(day).toMatchObject({ tripCount: 1, gross: plain.total, commission: { amountMinor: plain.moveraShare.amountMinor - pickupPay, currency: "SEK" }, cashCollected: plain.total, pickupPay: { amountMinor: pickupPay } });
+    expect(day.commission).toEqual(views.driver.commission);
     expect(day.net.amountMinor).toBe(plain.driverEarnings.amountMinor + pickupPay);
 
     // The stream sequence never goes back and every version is newer than the last.

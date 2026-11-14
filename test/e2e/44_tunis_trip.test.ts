@@ -120,7 +120,9 @@ describe("Grand Tunis: quote → cash trip → receipt, earnings, admin, tip, ra
     const driverView = await driver.trip(tripId);
     const pickupPay = driverView["pickupPay"]?.amountMinor ?? 0;
     const [day] = (await driver.get("/driver/earnings?period=day&currency=TND")).body["periods"];
-    expect(day).toMatchObject({ tripCount: 1, gross: fare, cashCollected: fare, commission: { amountMinor: fare["amountMinor"] - earnings["amountMinor"], currency: "TND" } });
+    // v0.18.82 S5 J5 (contract.json#moneyBase.commission): the trip's one commission, pickup pay out (was fare − earnings).
+    expect(day).toMatchObject({ tripCount: 1, gross: fare, cashCollected: fare, commission: { amountMinor: fare["amountMinor"] - earnings["amountMinor"] - pickupPay, currency: "TND" } });
+    expect(day.commission).toEqual(driverView["commission"]);
     expect(day.net).toEqual({ amountMinor: earnings["amountMinor"] + pickupPay, currency: "TND" });
 
     // Admin: the trip in TN-TC, completed, the same money.
