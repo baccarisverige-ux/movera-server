@@ -135,6 +135,15 @@ const SOS = (contract as unknown as { safety: { sos: { riderStatuses: string[]; 
 const SOS_RIDER = new Set(SOS.riderStatuses);
 const SOS_DRIVER = new Set(SOS.driverStatuses);
 
+/**
+ * J8 (debtModel.readAtPayment): the paid ends with the rider on board, where the rider's old debt is read and paid:
+ * complete, the rider's early end and the driver's cancel on board. A driver cancel before boarding goes back to
+ * dispatch (never cancelled_by_driver); the rider's and the admin's cancel have another status and read no debt.
+ */
+export function debtPaidEnd(trip: Pick<TripRow, "status" | "ended_by_command">): boolean {
+  return trip.status === "completed" || trip.ended_by_command === "end_early" || (trip.status === "cancelled_by_driver" && trip.ended_by_command === "cancel");
+}
+
 export type EndInfo = { endedEarly: boolean; endedBy?: "rider" | "driver"; reasonCode?: string; repriced?: boolean; shortKm?: number; shortMin?: number };
 
 /** What ended the trip (trips.end_info, set at the end; older trips: from the ending command). */
