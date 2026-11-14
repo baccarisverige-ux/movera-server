@@ -217,11 +217,20 @@ describe("rider account", () => {
     const previous = (await book(await economyQuote(other), other)).json().tripId as string;
     await database.db.updateTable("trips").set({ status: "cancelled_by_rider" }).where("trip_id", "=", previous).execute();
     await database.db.insertInto("rider_fees").values({ trip_id: previous, rider_id: riderId, kind: "cancel", currency: "SEK", amount_minor: 6500, status: "owed", created_at: clock.now }).execute();
-    await database.db.updateTable("riders").set({ outstanding_minor: 6500, outstanding_currency: "SEK", outstanding_source_trip_id: previous }).where("rider_id", "=", riderId).execute();
+    // S5 J8 (debtModel.riderWallet): the fee is a negative wallet balance; Rider.outstanding is derived from it.
+    const { feeIntoWallet } = await import("../../src/riders/debt.js");
+    const { refreshOutstanding } = await import("../../src/trips/ride/money.js");
+    await database.db.transaction().execute(async (trx) => {
+      await feeIntoWallet(trx, { tripId: previous, riderId, amount: { amountMinor: 6500, currency: "SEK" }, at: clock.now }, clock.now);
+      await refreshOutstanding(trx, riderId, clock.now);
+    });
     expect((await call(app, "GET", "/rider/profile", other)).json()).toMatchObject({ outstanding: { amountMinor: 6500, currency: "SEK" }, outstandingByCurrency: [{ amountMinor: 6500, currency: "SEK" }] });
+    // Never in the price (debtModel.readAtPayment): the quote is the ride alone, walletDebt tells the 65 kr (0.18.84+ apps).
     const quote = await economyQuote(other);
-    expect(quote.total).toEqual({ amountMinor: 28200, currency: "SEK" });
-    expect(quote.fareLines.at(-1)).toEqual({ code: "outstanding_fee", amount: { amountMinor: 6500, currency: "SEK" }, sourceTripId: previous });
+    expect(quote.total).toEqual({ amountMinor: 21700, currency: "SEK" });
+    expect(quote.fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
+    await database.db.deleteFrom("wallet_entries").where("trip_id", "=", previous).execute();
+    await database.db.deleteFrom("rider_wallets").where("rider_id", "=", riderId).execute();
     await database.db.deleteFrom("rider_fees").where("trip_id", "=", previous).execute();
     await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).where("rider_id", "=", riderId).execute();
   });

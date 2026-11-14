@@ -27,6 +27,8 @@ afterEach(async () => {
   await sim.db.updateTable("offers").set({ status: "withdrawn" }).where("status", "=", "open").execute();
   await sim.db.updateTable("drivers").set({ online_status: "online" }).where("online_status", "=", "on_trip").execute();
   await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+  await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
   await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
   await sim.advance(5);
   await a.moveTo(PLACES.nearSergels);

@@ -16,7 +16,7 @@ import { standardKey } from "../config/service.js";
  * paid once. amount = trips + waiting + pickup pay + bonus + tips + fees − cash collected, and may be negative.
  */
 
-export type PayoutLineCode = "trips" | "waiting" | "pickup_pay" | "bonus" | "tips" | "cash_collected" | "fees";
+export type PayoutLineCode = "trips" | "waiting" | "pickup_pay" | "bonus" | "tips" | "cash_collected" | "fees" | "paid_to_movera";
 export const PAYOUT_LINES = (contract as unknown as { payouts: { lines: PayoutLineCode[] } }).payouts.lines;
 
 export type PayoutEntry = { kind: string; amountMinor: number; cashMinor: number; waitingMinor: number };
@@ -61,6 +61,10 @@ export function payoutLines(entries: readonly PayoutEntry[]): { lines: { code: P
         break;
       case "fee_share":
         sums.fees += entry.amountMinor;
+        break;
+      // S5 J8 (contract v0.18.84 debtModel.driverOwes.paidMovera): money he paid Movera another way (Swish, bank).
+      case "paid_to_movera":
+        sums.paid_to_movera += entry.amountMinor;
         break;
     }
   }

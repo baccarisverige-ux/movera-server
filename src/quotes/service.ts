@@ -1,3 +1,5 @@
+import { riderDebt, DEBT_MODEL_SINCE } from "../riders/debt.js";
+import { contractAtLeast } from "../drivers/reminders.js";
 import { checkTripLength, checkWindow } from "../reservations/service.js";
 import { checkMaxStops } from "../trips/onTripSettings.js";
 import { contract } from "../contract/contract.js";
@@ -48,6 +50,8 @@ export type QuoteView = {
   surge?: { multiplier: number; until?: string };
   /** v0.18.30 (contract.json#smallFixes.quotePickupTime, owner Q8): the booked pickup time; null on a live quote. */
   pickupAt: string | null;
+  /** S5 J8 (contract v0.18.84 debtModel.quoteInfo): the rider's debt in the quote's currency, information only. */
+  walletDebt?: { amountMinor: number; currency: string };
 };
 
 export type QuoteWarning = { reason: "same_pickup_dropoff"; meters: number; limitMeters: number };
@@ -103,7 +107,7 @@ function quotePoints(body: QuoteRequest): LatLng[] {
   return [body.pickup, ...body.stops, body.dropoff].map((p) => ({ lat: p.lat, lng: p.lng }));
 }
 
-export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: string, request: unknown, now: Date): Promise<QuoteList> {
+export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: string, request: unknown, now: Date, options: { contractVersion?: unknown } = {}): Promise<QuoteList> {
   const problem = schemaProblem("QuoteRequest", request);
   if (problem !== null) throw badRequest(`The quote request is not valid: ${problem}.`, "invalid_body");
   const body = request as QuoteRequest;
@@ -128,20 +132,11 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
   if (kind === "scheduled") await checkTripLength(trx, zone.zoneId, km);
   const minutes = leg.durationSeconds / 60;
 
-  // An unpaid cash fee from an earlier trip rides along on the next price (§3.7, owner decision 7).
-  // v0.18.7 (Q3, contract.json#pickupWaiting.debtByCurrency): only the fees owed in THIS zone's currency; 100 kr owed in
-  // Stockholm never becomes 100 € on a Paris quote (the debt waits for the next Swedish trip).
-  const owedHere = await trx
-    .selectFrom("rider_fees")
-    .select(["trip_id", "amount_minor"])
-    .where("rider_id", "=", riderId)
-    .where("status", "=", "owed")
-    .where("currency", "=", pricing.document.currency)
-    .orderBy("created_at")
-    .orderBy("trip_id")
-    .execute();
-  const owed = owedHere.reduce((sum, f) => sum + Number(f.amount_minor), 0);
-  const outstanding = owed > 0 ? { outstandingFee: { amountMinor: owed, currency: pricing.document.currency }, outstandingSourceTripId: owedHere[0]!.trip_id } : {};
+  // S5 J8 (contract v0.18.84 debtModel.readAtPayment, owner Q-M2 "read at payment"): the rider's debt is never copied
+  // into a price any more; it is read when the trip is paid. Quote.walletDebt (debtModel.quoteInfo, owner Q-S5-5) shows it
+  // under the price, information only, in THIS zone's currency (v0.18.7 Q3: never another currency's debt).
+  const debtHere = await riderDebt(trx, riderId, pricing.document.currency);
+  const walletDebt = debtHere > 0 && contractAtLeast(options.contractVersion, DEBT_MODEL_SINCE) ? { walletDebt: { amountMinor: debtHere, currency: pricing.document.currency } } : {};
 
   // v0.7.1 (§3.5, §16): the rider's fixed route; the airport fees from the airport zones (the server decides).
   const extras: PriceExtras = { ...riderExtras(body as unknown as Record<string, unknown>), ...(await airportExtras(trx, body.pickup, body.dropoff)) };
@@ -163,7 +158,7 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
     let fare;
     try {
       // Stops are quoted with no waiting; the fare at the end adds what really happened.
-      fare = priceFare(pricing.document, { categoryId, km, minutes, kind, stopWaitSeconds: body.stops.map(() => 0), surgeMultiplier: surge.multiplier, ...extras, ...outstanding });
+      fare = priceFare(pricing.document, { categoryId, km, minutes, kind, stopWaitSeconds: body.stops.map(() => 0), surgeMultiplier: surge.multiplier, ...extras });
     } catch (error) {
       if (error instanceof FareError) throw new ApiError("unavailable", "Prices for this area are not usable right now.", { reason: "pricing_invalid" });
       throw error;
@@ -210,6 +205,7 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
       surgeMultiplier: fare.surgeMultiplier,
       pickupAt: kind === "scheduled" ? new Date(body.scheduledAt!).toISOString() : null,
       ...(fare.surgeMultiplier > 1 ? { surge: { multiplier: fare.surgeMultiplier, ...(surge.until ? { until: surge.until } : {}) } } : {}),
+      ...walletDebt,
     });
   }
   const warning = await samePointWarning(trx, zone.zoneId, body);

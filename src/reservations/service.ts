@@ -1,4 +1,5 @@
 import { blockedDriversFor } from "../blockedPairs/service.js";
+import { overOwesLimit } from "../drivers/owes.js";
 import { NOT_HELD } from "./view.js";
 import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
@@ -233,8 +234,11 @@ export async function listedDrivers(ex: Executor, trip: TripRow, s: ReservationS
   const pickup = trip.pickup as { lat: number; lng: number };
   // v0.18.43 §64 (fix job 10, contract.json#blockedPairs.dispatch): never listed to (nor claimable by) a blocked driver.
   const blocked = await blockedDriversFor(ex, trip.rider_id, rows.map((r) => r.driver_id));
+  // S5 J8 (debtModel.driverOwes.cashOffers): a booked pay-in-car ride is not listed to (nor claimable by) a driver at or
+  // over the owes-limit; a booked ride he already accepted stays his (owner 2026-11-13 15:01 "He keeps it").
+  const owing = await overOwesLimit(ex, trip, rows.map((r) => r.driver_id));
   let seen = rows
-    .filter((r) => !trip.cancelled_driver_ids.includes(r.driver_id) && !blocked.has(r.driver_id))
+    .filter((r) => !trip.cancelled_driver_ids.includes(r.driver_id) && !blocked.has(r.driver_id) && !owing.has(r.driver_id))
     .map((r) => ({ ...r, km: r.lat !== null && r.lng !== null ? dispatchKm(pickup, { lat: r.lat, lng: r.lng }) : null }));
   const rule = openAll ? "all" : s.listTo;
   if (rule === "category") seen = seen.filter((r) => r.vehicle_status === "approved" && (r.vehicle_category_ids ?? []).includes(trip.category_id));

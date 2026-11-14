@@ -1,4 +1,3 @@
-import { sql } from "kysely";
 import { z } from "zod";
 import type { Principal } from "../auth/guard.js";
 import { adminCoversZone } from "../auth/guard.js";
@@ -6,7 +5,7 @@ import type { Trx } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
 import { audit } from "../admin/audit.js";
 import { adminRiderView, riderWallets } from "../admin/lists.js";
-import { TERMINAL } from "../rules/transitions.js";
+import { correctFee } from "./debt.js";
 import { refreshOutstanding } from "../trips/ride/money.js";
 
 /**
@@ -27,9 +26,9 @@ export async function markRiderFeePaid(trx: Trx, who: Principal, riderId: string
   if (trip && !adminCoversZone(who, trip.zone_id)) throw new ApiError("forbidden", "This trip is outside your zones.", { reason: "zone_out_of_scope" });
   const fee = trip ? await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", tripId).where("rider_id", "=", riderId).forUpdate().executeTakeFirst() : undefined;
   if (!trip || !fee || fee.status !== "owed") throw new ApiError("invalid_transition", "This rider owes no fee for that trip.", { reason: "fee_not_owed", projection: adminRiderView(rider, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who) });
-  // A ride going now already carries the fee in its price: mark it after that ride (same rule as waive).
-  const carrying = await trx.selectFrom("trips").select("trip_id").where("rider_id", "=", riderId).where("status", "not in", [...TERMINAL]).where(sql<boolean>`fare_lines @> '[{"code":"outstanding_fee"}]'::jsonb`).executeTakeFirst();
-  if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; mark it as paid when that ride is over.", { reason: "fee_on_running_trip", projection: adminRiderView(rider, currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who) });
+  // S5 J8 (contract v0.18.84 debtModel.adminCorrections): a correction entry in the wallet (+the fee, at most what is
+  // still owed); a ride open now simply reads the lower debt when it is paid (no fee_on_running_trip any more).
+  await correctFee(trx, fee, now);
   await trx.updateTable("rider_fees").set({ status: "paid", carried_by: null, settled_at: now }).where("trip_id", "=", tripId).execute();
   // The original trip says paid too (no version change: nothing the driver or rider acts on changed).
   await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...((trip.cancellation ?? {}) as object), feeStatus: "paid" }) }).where("trip_id", "=", tripId).execute();

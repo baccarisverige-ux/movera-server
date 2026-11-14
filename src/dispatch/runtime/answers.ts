@@ -14,6 +14,7 @@ import { type OfferRow, loadOffer, offerView, riderRatingForOffer, FeedQueue, cl
 import { endSearchTimers } from "./end.js";
 import { chainLateFreeCancelMin, onTripFits } from "./candidates.js";
 import { leaveOnAccept } from "../../airportQueue/service.js";
+import { overOwesLimit, owesDetails, owesLimitOf } from "../../drivers/owes.js";
 
 /* ---------------------------------------------------------------- driver answers */
 
@@ -47,6 +48,14 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   if (driver.offline_after_trip) throw new ApiError("conflict", "You are going offline after your trip.", { reason: "going_offline", projection: offerView(offer, trip) });
   // v0.18.65 §86: he stopped next trips on the trip sheet's radar; an accept in the race window before the withdraw job.
   if (busy && driver.next_trips_off) throw new ApiError("conflict", "You stopped next trips for this trip.", { reason: "next_trips_off", projection: offerView(offer, trip) });
+  // S5 J8 (contract v0.18.84 debtModel.driverOwes.cashOffers): an accept of a pay-in-car offer that still reaches the
+  // server after he got to the owes-limit (before the withdraw job closed it) is refused; rides he already took stay his.
+  const owing = await overOwesLimit(trx, trip, [driverId]);
+  if (owing.has(driverId)) {
+    const country = (await trx.selectFrom("zones").select("country").where("zone_id", "=", trip.zone_id).executeTakeFirstOrThrow()).country;
+    const limit = (await owesLimitOf(trx, country)).max!;
+    throw new ApiError("conflict", "You get no pay-in-car trips until you pay Movera.", { reason: "driver_owes_movera", details: owesDetails(owing.get(driverId)!, limit), projection: offerView(offer, trip) });
+  }
   // v0.18.17: an admin-assigned booked ride taken before its dispatch time is held for later (no on_trip, no ETA yet).
   // v0.18.33 (fix job 5, owner Q7, contract.json#afterTestRules.bookedNext): a driver on a trip may take a booked ride
   // offered to him as Exclusive when he still reaches it in time; it is held as his next trip (he stays on this one).

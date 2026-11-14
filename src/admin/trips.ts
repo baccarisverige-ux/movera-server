@@ -2,6 +2,7 @@ import { exponentOf, majorText, toMajorString, type CurrencyCode, type Money as 
 import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
+import { correctFee } from "../riders/debt.js";
 import { commissionOf } from "../rules/commission.js";
 import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
 import { boxAround, driversNear } from "../dispatch/nearArea.js";
@@ -377,8 +378,8 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
   let feeStatus = cancellation["feeStatus"] as string | undefined;
   let refunded = false;
   if (fee && fee.status === "owed") {
-    const carrying = await trx.selectFrom("trips").select("trip_id").where("rider_id", "=", trip.rider_id).where("status", "not in", [...TERMINAL]).where(sql<boolean>`fare_lines @> '[{"code":"outstanding_fee"}]'::jsonb`).executeTakeFirst();
-    if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; reverse it when that ride is over.", { reason: "fee_on_running_trip", projection: tripProjection(trip, "admin") });
+    // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
+    await correctFee(trx, fee, now);
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
     await refreshOutstanding(trx, trip.rider_id, now);
     feeStatus = "waived";
@@ -452,9 +453,8 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
     // The rider owes nothing more; the driver keeps the share already credited (owner decision 34).
     const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", trip.trip_id).forUpdate().executeTakeFirst();
     if (!fee || fee.status !== "owed") throw new ApiError("conflict", "There is no unpaid fee on this trip.", { reason: "no_fee_to_waive", projection: tripProjection(trip, "admin") });
-    // A ride going now already carries it in its price: waive it after that ride, or refund it then.
-    const carrying = await trx.selectFrom("trips").select("trip_id").where("rider_id", "=", trip.rider_id).where("status", "not in", [...TERMINAL]).where(sql<boolean>`fare_lines @> '[{"code":"outstanding_fee"}]'::jsonb`).executeTakeFirst();
-    if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; waive it when that ride is over.", { reason: "fee_on_running_trip", projection: tripProjection(trip, "admin") });
+    // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
+    await correctFee(trx, fee, now);
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
     set["cancellation"] = JSON.stringify({ ...(trip.cancellation as object), feeStatus: "waived" });
     await refreshOutstanding(trx, trip.rider_id, now);

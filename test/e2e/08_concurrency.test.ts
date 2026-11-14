@@ -24,6 +24,8 @@ afterEach(async () => {
   const active = await rider.get("/rider/trips/active");
   if (active.status === 200 && ["searching", "offered", "accepted", "driver_to_pickup"].includes(active.body.status)) await rider.command(active.body.tripId, "cancel", { reasonCode: "plans_changed" });
   await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+  await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
   await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
   await sim.advance(5);
   await a.moveTo(PLACES.nearSergels);

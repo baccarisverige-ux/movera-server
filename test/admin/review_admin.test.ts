@@ -135,6 +135,8 @@ const adminPost = (path: string, body: Record<string, unknown>, who = admin) => 
 const adminView = async (tripId: string) => (await call(app, "GET", `/admin/trips/${tripId}`, admin)).json();
 const clearFees = async () => {
   await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+  await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null, wallet_minor: 0 }).execute();
   await database.db.deleteFrom("rider_wallets").execute();
 };
@@ -218,23 +220,23 @@ describe("review: admin tools", () => {
     expect((await call(app, "GET", "/wallet", rider)).json().balance.amountMinor).toBe(5000);
   });
 
-  it("R6 a fee that a running trip already carries cannot be waived until that trip is over", async () => {
+  it("R6 (S5 J8, debtModel.adminCorrections) a fee can be waived while a ride is open; that ride then reads the lower debt", async () => {
     const ns = await accepted();
     await step(ns.tripId, "head-to-pickup", ns.version);
     await step(ns.tripId, "arrive", ns.version + 1);
     await advance(5 * 60);
     const noShow = await step(ns.tripId, "no-show", ns.version + 2);
     expect(noShow.json().status).toBe("no_show");
-    const next = await accepted(); // quoted with the owed fee as an outstanding_fee line
-    const line = (await adminView(next.tripId)).fareLines.find((l: { code: string }) => l.code === "outstanding_fee");
-    expect(line?.amount.amountMinor).toBeGreaterThan(0);
+    const next = await accepted(); // the debt is never copied into the price any more
+    expect((await adminView(next.tripId)).fareLines.find((l: { code: string }) => l.code === "outstanding_fee")).toBeUndefined();
     const waived = await adminPost(`/trips/${ns.tripId}/adjust`, { expectedVersion: noShow.json().version, waiveCancelFee: true, reason: "emergency" });
-    expect(waived.json()).toMatchObject({ reason: "fee_on_running_trip" });
+    expect(waived.statusCode, waived.body).toBe(200);
     const { version: v } = await toBoard(next.tripId, next.version, 60);
     await step(next.tripId, "start", v);
-    await step(next.tripId, "complete", v + 1);
+    const done = await step(next.tripId, "complete", v + 1);
+    expect(done.json().fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
     const fee = await database.db.selectFrom("rider_fees").select("status").where("trip_id", "=", ns.tripId).executeTakeFirstOrThrow();
-    expect(fee.status).toBe("paid");
+    expect(fee.status).toBe("waived");
   });
   it("R7 the fare cannot be adjusted while offers carry it", async () => {
     await database.db.deleteFrom("offers").where("status", "!=", "open").execute();

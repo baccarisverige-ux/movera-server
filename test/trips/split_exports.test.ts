@@ -28,7 +28,7 @@ describe("split modules keep their public names", () => {
       "runRound", "sendAdminOffers", "startSearch", "stepHandler", "stopBookedNoDriver", "stopSearch", "withdrawHandler",
     ].sort());
     expect(Object.keys(runtime.dispatchHandlers).sort()).toEqual([
-      runtime.ROUND, runtime.STEP, runtime.END, runtime.WITHDRAW, "resv_popup", "resv_open_all", "resv_dispatch", "resv_no_driver", "resv_rider_reminder",
+      runtime.ROUND, runtime.STEP, runtime.END, runtime.WITHDRAW, "withdraw_cash_offers", "resv_popup", "resv_open_all", "resv_dispatch", "resv_no_driver", "resv_rider_reminder",
       "resv_driver_reminder", "resv_go_online", "resv_offline_check", "resv_change_ask", "resv_overdue", "resv_leave_check", "resv_no_driver_stop", "trip_eta",
     ].sort());
   });
