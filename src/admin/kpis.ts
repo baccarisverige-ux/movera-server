@@ -40,10 +40,19 @@ const PAID_END = sql`(status = 'completed' OR payment_status IN ('captured', 'pa
 /** The trip's outstanding_fee line (an older fee it carried, counted on its own day), 0 when none (rules/commission.ts debtOf). */
 const DEBT_LINE = sql`coalesce((SELECT sum((l->'amount'->>'amountMinor')::bigint) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(fare_lines) = 'array' THEN fare_lines ELSE '[]'::jsonb END) l WHERE l->>'code' = 'outstanding_fee'), 0)`;
 
+/** DEBT_LINE read from the trips row aliased t. */
+const TRIP_DEBT_LINE = sql`coalesce((SELECT sum((l->'amount'->>'amountMinor')::bigint) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.fare_lines) = 'array' THEN t.fare_lines ELSE '[]'::jsonb END) l WHERE l->>'code' = 'outstanding_fee'), 0)`;
+
 /** The figures of one zone for one zone-local day (YYYY-MM-DD), counted from the trips. */
 export async function countDay(ex: Executor, zone: Zone, day: string): Promise<Figures> {
   const bounds = sql`(${day}::date::timestamp AT TIME ZONE ${zone.time_zone})`;
   const next = sql`((${day}::date + 1)::timestamp AT TIME ZONE ${zone.time_zone})`;
+  // The day's ended trips whose money is counted. v0.18.87 BQ-M19 (supervisor must-fix 1): expired and failed too — a
+  // reassigned trip with a lost-driver bonus that then finds no driver ends expired, and that bonus is Movera's money.
+  // Those trips have no fare, fee, refund or other earnings entry, so only their bonus entries count.
+  const DAY_TRIPS = sql`SELECT trip_id FROM trips
+       WHERE zone_id = ${zone.zone_id} AND coalesce(ended_at, updated_at) >= ${bounds} AND coalesce(ended_at, updated_at) < ${next}
+         AND status IN ('completed', 'no_show', 'cancelled_by_rider', 'cancelled_by_driver', 'cancelled_by_admin', 'cancelled_by_system', 'expired', 'failed')`;
   // v0.18.82 S5 J5 (contract.json#moneyBase.kpiMoney, owner 107): money counts every PAID trip end — completed, ended
   // early by the rider, ended by the driver with the rider on board (payment captured / partially_refunded / refunded;
   // a completed trip is paid at completion, and older completed rows without a payment status stay counted as before).
@@ -73,27 +82,13 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     SELECT count(*) AS n FROM drivers WHERE zone_ids[1] = ${zone.zone_id} AND created_at >= ${bounds} AND created_at < ${next}`.execute(ex);
   // v0.10.3 money of the same trips (the trip's day): fees charged (not waived), the driver's share of them, tips, refunds done.
   const money = await sql<Record<string, string>>`
-    WITH day_trips AS (
-      SELECT trip_id FROM trips
-       WHERE zone_id = ${zone.zone_id} AND coalesce(ended_at, updated_at) >= ${bounds} AND coalesce(ended_at, updated_at) < ${next}
-         AND status IN ('completed', 'no_show', 'cancelled_by_rider', 'cancelled_by_driver', 'cancelled_by_admin', 'cancelled_by_system'))
+    WITH day_trips AS (${DAY_TRIPS})
     SELECT (SELECT coalesce(sum(amount_minor), 0) FROM rider_fees WHERE status NOT IN ('waived', 'refunded') AND trip_id IN (SELECT trip_id FROM day_trips)) AS fees,
            -- One read of the day's earnings entries. v0.18.82 S5 J5 (moneyBase.kpiMoney): the driver's money of the day's trips
            -- comes from them; adjustment = Movera's pay changes (driver-pay, an admin's pay delta; a refund taken from the
            -- driver is negative).
            e.fee_share, e.earnings, e.pickup, e.bonus, e.adjustments, e.tips,
-           (SELECT coalesce(sum(amount_minor), 0) FROM refunds WHERE status = 'done' AND trip_id IN (SELECT trip_id FROM day_trips)) AS refunds,
-           -- v0.18.87 BQ-M19 (contract.json#moneyBase.bonusOutsideCommission): the bonus entries outside the trip's commission
-           -- (the lost-driver payment, a bonus after the paid end) are Movera's pay changes, taken off once. Inside is what the
-           -- STORED commission holds, never a timestamp: on a paid trip inside = fare − debtCollected − driverEarnings −
-           -- pickupPay − commission (an old row whose commission a later bonus rewrote holds it, so it is not taken off twice);
-           -- outside = the trip's bonus entries − inside; with no paid end every bonus entry is outside. Kept within
-           -- [0, the trip's bonus entries] so an inconsistent row can never add money or take off more than was paid.
-           (SELECT coalesce(sum(GREATEST(0, LEAST(b.paid, b.paid - CASE WHEN ${PAID_END} AND t.commission_minor IS NOT NULL
-                     THEN t.fare_minor - ${DEBT_LINE} - coalesce(t.driver_earnings_minor, 0) - coalesce(t.pickup_pay_minor, 0) - t.commission_minor
-                     ELSE 0 END))), 0)
-              FROM (SELECT trip_id, sum(amount_minor) AS paid FROM earnings_entries WHERE kind = 'bonus' AND trip_id IN (SELECT trip_id FROM day_trips) GROUP BY trip_id) b
-              JOIN trips t ON t.trip_id = b.trip_id) AS bonus_outside
+           (SELECT coalesce(sum(amount_minor), 0) FROM refunds WHERE status = 'done' AND trip_id IN (SELECT trip_id FROM day_trips)) AS refunds
       FROM (SELECT coalesce(sum(amount_minor) FILTER (WHERE kind = 'fee_share'), 0) AS fee_share,
                    coalesce(sum(amount_minor) FILTER (WHERE kind = 'trip'), 0) AS earnings,
                    coalesce(sum(amount_minor) FILTER (WHERE kind = 'pickup_pay'), 0) AS pickup,
@@ -101,6 +96,29 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
                    coalesce(sum(amount_minor) FILTER (WHERE kind = 'adjustment'), 0) AS adjustments,
                    coalesce(sum(amount_minor) FILTER (WHERE kind = 'tip'), 0) AS tips
               FROM earnings_entries WHERE trip_id IN (SELECT trip_id FROM day_trips)) e`.execute(ex);
+  // v0.18.87 BQ-M19 (contract.json#moneyBase.bonusOutsideCommission): the bonus entries outside the trip's commission
+  // (the lost-driver payment, a bonus after the paid end) are Movera's pay changes, taken off once. Inside is what the
+  // STORED commission holds, never a timestamp: on a paid trip inside = fare − debtCollected − driverEarnings − pickupPay −
+  // commission (an old row whose commission a later bonus rewrote holds it, so it is not taken off twice); outside = the
+  // trip's bonus entries − inside; with no paid end every bonus entry is outside.
+  const bonusRows = await sql<{ trip_id: string; paid: string; inside: string }>`
+    WITH day_trips AS (${DAY_TRIPS})
+    SELECT b.trip_id, b.paid,
+           CASE WHEN (t.status = 'completed' OR t.payment_status IN ('captured', 'partially_refunded', 'refunded')) AND t.commission_minor IS NOT NULL
+                THEN t.fare_minor - ${TRIP_DEBT_LINE} - coalesce(t.driver_earnings_minor, 0) - coalesce(t.pickup_pay_minor, 0) - t.commission_minor
+                ELSE 0 END AS inside
+      FROM (SELECT trip_id, sum(amount_minor) AS paid FROM earnings_entries WHERE kind = 'bonus' AND trip_id IN (SELECT trip_id FROM day_trips) GROUP BY trip_id) b
+      JOIN trips t ON t.trip_id = b.trip_id`.execute(ex);
+  let bonusOutside = 0;
+  for (const r of bonusRows.rows) {
+    const paid = Number(r.paid);
+    const inside = Number(r.inside);
+    // Kept within [0, the trip's bonus entries]: a row whose commission did not come from its own columns can never add
+    // money or take off more than was paid. Not in the contract text yet, so every time it acts it is logged (ids and
+    // amounts only, no personal data) — the one-off kpi-resum re-sums old days (owner 107).
+    if (inside < 0 || inside > paid) console.warn(JSON.stringify({ msg: "kpi bonus outside commission clamped", zoneId: zone.zone_id, day, tripId: r.trip_id, entries: paid, inside }));
+    bonusOutside += Math.max(0, Math.min(paid, paid - inside));
+  }
   const t = trips.rows[0]!;
   const m = money.rows[0]!;
   const fees = Number(m["fees"]);
@@ -124,7 +142,7 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     // (rules/commission.ts), so they are not taken off again; refunds Movera paid back are taken off.
     // v0.18.82 S5 J5 (contract.json#kpis.money.moveraEarnings, M3): Movera's pay changes are taken off too.
     // v0.18.87 BQ-M19 (moneyBase.bonusOutsideCommission): and the bonus entries outside commission, once.
-    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["adjustments"]) - Number(m["bonus_outside"]) - Number(m["refunds"]),
+    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["adjustments"]) - bonusOutside - Number(m["refunds"]),
   };
 }
 

@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { countDay, summarize } from "../../src/admin/kpis.js";
 import { redactProjection } from "../../src/realtime/events.js";
 import { commissionOf } from "../../src/rules/commission.js";
+import { applyCommand } from "../../src/trips/commands.js";
 import { tripProjection } from "../../src/trips/projection.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -114,6 +115,25 @@ describe("BQ-M19: bonus entries outside commission are taken off moveraEarnings 
     expect(day.moveraEarnings).toBe(4_000 - 500);
   });
 
+  it("SEK supervisor must-fix 2: an inconsistent row is clamped (never adds money) and the clamp is logged with ids and amounts only", async () => {
+    // Commission 10 kr lower than its own columns give (inside 30 kr) but only a 20 kr bonus entry: outside kept at 0.
+    const { id } = await trip(SE, "completed", "2026-11-06T10:00:00Z", { driverId: driverA, fare: 30_000, earnings: 24_000, bonus: 2_000, paid: true, commission: 3_000 });
+    await entry(id, driverA, "bonus", 2_000, "SEK");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const day = await countDay(database.db, SE, "2026-11-06");
+      expect(day.moveraEarnings).toBe(3_000);
+      const logged = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("kpi bonus outside commission clamped"));
+      expect(logged.map((m) => JSON.parse(m))).toEqual([{ msg: "kpi bonus outside commission clamped", zoneId: "Z001", day: "2026-11-06", tripId: id, entries: 2_000, inside: 3_000 }]);
+      // A consistent day logs nothing.
+      warn.mockClear();
+      await countDay(database.db, SE, "2026-11-04");
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes("clamped"))).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("TND (3 decimals): reassign with an old 2.000 DT fee on the trip, a bonus after the end, a cancel with a lost-driver bonus", async () => {
     // 12.500 DT incl. a 2.000 DT outstanding_fee line, 8.000 DT earnings, 0.500 DT pickup, 1.000 DT bonus at the end.
     const reassigned = await trip(TN, "completed", "2026-11-02T09:00:00Z", { driverId: driverB, fare: 12_500, lines: debtLines(10_500, 2_000, "TND"), earnings: 8_000, pickup: 500, bonus: 1_000, paid: true });
@@ -181,6 +201,20 @@ describe("BQ-M19: an admin bonus after the paid end keeps the commission; movera
     const cancelled = await row(id);
     expect(tripProjection(cancelled, "admin")).not.toHaveProperty("moveraKeepsNow");
     expect(tripProjection(cancelled, "driver")).not.toHaveProperty("moveraKeepsNow");
+  });
+
+  it("SEK supervisor must-fix 1: reassign with a 30 kr lost-driver bonus, then the trip expires (no driver) → the day shows −30 kr", async () => {
+    const id = await insertTrip(database.db, riderId, { status: "accepted", driverId: driverA });
+    await database.db.updateTable("trips").set({ zone_id: "Z001" }).where("trip_id", "=", id).execute();
+    const before = await countDay(database.db, SE, "2026-11-13");
+    const res = await call(app, "POST", `/admin/trips/${id}/reassign`, admin, { expectedVersion: await version(id), reasonCode: "admin_driver_request", note: "Driver stuck", driverBonus: { amountMinor: 3_000, currency: "SEK" } });
+    expect(res.statusCode, res.body).toBe(200);
+    // The new search finds no driver: the system expire (src/dispatch/runtime/end.ts).
+    await database.db.transaction().execute(async (trx) => applyCommand(trx, await trx.selectFrom("trips").selectAll().where("trip_id", "=", id).executeTakeFirstOrThrow(), { command: "expire", actor: "system", now: clock.now, set: { ended_by_command: "expire", driver_adjustments_minor: 0 } }));
+    expect((await row(id)).status).toBe("expired");
+    const day = await countDay(database.db, SE, "2026-11-13");
+    expect(day.driverBonus).toBe(before.driverBonus + 3_000);
+    expect(day.moveraEarnings).toBe(before.moveraEarnings - 3_000);
   });
 
   it("moveraKeepsNow: equals moneySplit.movera on a paid trip (driver, admin, driver stream); never to the rider; absent before the paid end", async () => {
