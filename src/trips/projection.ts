@@ -123,8 +123,22 @@ export function endInfoOf(trip: Pick<TripRow, "end_info" | "ended_by_command" | 
   return { endedEarly: false };
 }
 
-type MoneyRow = Pick<TripRow, "driver_earnings_minor" | "pickup_pay_minor" | "driver_bonus_minor" | "tip" | "driver_adjustments_minor">;
+type MoneyRow = Pick<TripRow, "driver_earnings_minor" | "pickup_pay_minor" | "driver_bonus_minor" | "tip" | "driver_adjustments_minor"> & Partial<Pick<TripRow, "ended_at">>;
 const tipMinor = (row: Pick<TripRow, "tip">) => Number((row.tip as { amount?: Money } | null)?.amount?.amountMinor ?? 0);
+
+/**
+ * S5 J6 (contract.json#moneyBase.adminFare "the pay never below 0"; supervisor re-check round 2): the one cap of the
+ * admin's kept change. Before the end a negative change is shown at most as large as the pay without the tip (earnings +
+ * pickup pay + bonus), so a downward re-price (a shorter route, the driven price) never shows a pay below 0, and the paid
+ * end writes this same value (keptChange). After the end the row holds what was paid and written (post-end pay changes,
+ * refunds taken from the driver, which may reach into the tip), so it is shown as it is.
+ */
+export function cappedChangeOf(row: MoneyRow): number {
+  const change = Number(row.driver_adjustments_minor ?? 0);
+  if (change >= 0 || (row.ended_at !== undefined && row.ended_at !== null)) return change;
+  const pay = Number(row.driver_earnings_minor ?? 0) + Number(row.pickup_pay_minor ?? 0) + Number(row.driver_bonus_minor ?? 0);
+  return Math.max(change, -Math.max(0, pay));
+}
 
 /** contract.json#finish.driverMoney (owner G8 Q3): the driver's one number for a trip and its lines (trip line always). */
 export function earningsLinesOf(row: MoneyRow): Array<{ code: string; amountMinor: number }> {
@@ -133,7 +147,7 @@ export function earningsLinesOf(row: MoneyRow): Array<{ code: string; amountMino
     { code: "pickup_pay", amountMinor: Number(row.pickup_pay_minor ?? 0) },
     { code: "bonus", amountMinor: Number(row.driver_bonus_minor ?? 0) },
     { code: "tip", amountMinor: tipMinor(row) },
-    { code: "adjustment", amountMinor: Number(row.driver_adjustments_minor ?? 0) },
+    { code: "adjustment", amountMinor: cappedChangeOf(row) },
   ];
   return lines.filter((l) => l.code === "trip" || l.amountMinor !== 0);
 }
@@ -270,7 +284,7 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (viewer !== "rider" && row.driver_id) {
     projection["driverTotal"] = { amountMinor: driverTotalOf(row), currency };
     projection["earningsBreakdown"] = earningsLinesOf(row).map((l) => ({ code: l.code, amount: { amountMinor: l.amountMinor, currency } }));
-    const adjustments = Number(row.driver_adjustments_minor ?? 0);
+    const adjustments = cappedChangeOf(row);
     if (adjustments !== 0) projection["driverAdjustments"] = { amountMinor: adjustments, currency };
   }
   const debt = debtOf(lines);

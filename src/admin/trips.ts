@@ -18,7 +18,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL, isTripStatus } from "../rules/transitions.js";
 import { applyCommand, expectVersion, touchTrip } from "../trips/commands.js";
-import { driverTotalOf, tripProjection } from "../trips/projection.js";
+import { cappedChangeOf, driverTotalOf, tripProjection } from "../trips/projection.js";
 import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver } from "../trips/ride.js";
 import { PAY_TEXT, payChangeMaxOf } from "../trips/finish.js";
 import { audit } from "./audit.js";
@@ -483,7 +483,8 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
     // only, so the change is kept on top. Paid as an adjustment entry when the trip is paid.
     if (p.driverPay !== undefined) {
       const change = await driverPayChange(trx, row, p.driverPay);
-      if (change !== 0) set["driver_adjustments_minor"] = Number(trip.driver_adjustments_minor ?? 0) + change;
+      // From the shown (capped) change, so the pay the admin typed is the pay shown.
+      if (change !== 0) set["driver_adjustments_minor"] = cappedChangeOf(row) + change;
     }
   }
   if (Object.keys(set).length === 0) throw badRequest("Nothing to change.", "nothing_to_change");

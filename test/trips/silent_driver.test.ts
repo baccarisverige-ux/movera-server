@@ -271,4 +271,22 @@ describe("a driver silent with the rider on board (owner decision 2026-10-26)", 
     await advance(31 * MIN);
     expect((await adminView(tripId)).driverSilentAlert?.kind).toBe("driver_silent");
   });
+
+  it("J6 round 3: a system fail after the admin changed the pay drops the change (only the cancel-fee rules; nothing paid)", async () => {
+    const { tripId, version } = await onBoard();
+    const admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    const before = await adminView(tripId);
+    const pay = (before.driverTotal?.amountMinor ?? 0) - (before.tip?.amount?.amountMinor ?? 0);
+    const raised = await call(app, "POST", `/admin/trips/${tripId}/adjust`, admin, { expectedVersion: version, driverPay: { amountMinor: pay + 1500, currency: "SEK" }, reason: "Long wait" });
+    expect(raised.statusCode, raised.body).toBe(200);
+    expect(raised.json().driverAdjustments).toEqual({ amountMinor: 1500, currency: "SEK" });
+    await advance(180 * MIN);
+    const view = await adminView(tripId);
+    expect(view.status).toBe("failed");
+    expect(view.driverAdjustments).toBeUndefined();
+    expect(view.driverTotal).toEqual({ amountMinor: 0, currency: "SEK" });
+    const row = await database.db.selectFrom("trips").select("driver_adjustments_minor").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(Number(row.driver_adjustments_minor)).toBe(0);
+    expect(await database.db.selectFrom("earnings_entries").selectAll().where("trip_id", "=", tripId).execute()).toEqual([]);
+  });
 });

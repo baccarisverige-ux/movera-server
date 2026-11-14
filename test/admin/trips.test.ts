@@ -807,6 +807,23 @@ describe("J6 round 2: the admin's change is cleared or capped where the money sa
     expect(Number((await adjustedRow(tripId)).driver_adjustments_minor)).toBe(adjustment);
   });
 
+  it("round 3: the driver's end on board after a downward re-price caps the change (row = entry, pay 0)", async () => {
+    const { tripId, version } = await accepted();
+    const { version: v } = await toBoard(tripId, version, 60);
+    await step(tripId, "start", v);
+    const down = await adminPost(`/trips/${tripId}/adjust`, { expectedVersion: v + 1, driverPay: SEK(0), reason: "Wrong way" });
+    expect(down.statusCode, down.body).toBe(200);
+    // A downward re-price after the change (as a shorter route would do): the driver's share is now 50 kr.
+    await database.db.updateTable("trips").set({ driver_earnings_minor: 5000 }).where("trip_id", "=", tripId).execute();
+    const ended = await call(app, "POST", `/trips/${tripId}/cancel`, drivers.A.headers, { expectedVersion: down.json().version, reasonCode: "rider_requested_early_end" });
+    expect(ended.statusCode, ended.body).toBe(200);
+    const view = await adminView(tripId);
+    expect(payOf(view)).toBe(0);
+    const paid = await entries(tripId);
+    expect(paid.reduce((s, e) => s + Number(e.amount_minor), 0)).toBe(0);
+    expect(Number((await adjustedRow(tripId)).driver_adjustments_minor)).toBe(paid.filter((e) => e.kind === "adjustment").reduce((s, e) => s + Number(e.amount_minor), 0));
+  });
+
   it("should-fix: admin complete with driverPay on a trip with no driver is refused with 400 driver_pay_no_driver", async () => {
     const { tripId } = await book();
     const trip = await adminView(tripId);

@@ -273,7 +273,7 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
  * end, the driver's end on board, a shorter route). The capped value goes on the row and so into the adjustment entry.
  */
 export function keptChange(trip: TripRow, money: { driver_earnings_minor?: number }): { driver_adjustments_minor: number } {
-  const change = Number(trip.driver_adjustments_minor ?? 0);
-  const pay = Number(money.driver_earnings_minor ?? trip.driver_earnings_minor ?? 0) + Number(trip.pickup_pay_minor ?? 0) + Number(trip.driver_bonus_minor ?? 0);
-  return { driver_adjustments_minor: change < 0 ? Math.max(change, -Math.max(0, pay)) : change };
+  // The one cap (projection.ts cappedChangeOf), read through the adjustment line on the row as it ends.
+  const asEnding = { ...trip, ended_at: null, driver_earnings_minor: String(money.driver_earnings_minor ?? trip.driver_earnings_minor ?? 0) };
+  return { driver_adjustments_minor: earningsLinesOf(asEnding).find((l) => l.code === "adjustment")?.amountMinor ?? 0 };
 }
