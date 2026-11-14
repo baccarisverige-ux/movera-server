@@ -355,8 +355,29 @@ export async function listPayouts(ex: Executor, who: Principal, input: { cursor?
   return withTotal({ items: await payoutViews(ex, page as PayoutRow[], "admin"), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null }, await totalAfterPage(counting));
 }
 
-/** GET /driver/payouts: the driver's own payouts, totals only. */
-export async function driverPayouts(ex: Executor, driverId: string, input: { cursor?: string; limit: number; from?: string; to?: string }) {
+/**
+ * v0.18.94 job A5 / BQ-M13 (contract.json#payouts.schedule.nextPayout; owner G10-2 "Admin sets day and time" … "driver
+ * app shows next payout", Rules decisions/driver-g10.md:6): when the driver's next payout is made — the end of his period
+ * that holds `now` (his country's schedule, his first zone's time zone else his country's, as the payout job). Null while
+ * his payouts are paused (no scheduled payout is made then) or he is unknown.
+ */
+export async function nextPayoutOf(ex: Executor, driverId: string, now: Date): Promise<{ nextPayoutAt: string; nextPayoutLocal: string; nextPayoutTimeZone: string } | null> {
+  const row = await ex
+    .selectFrom("drivers as d")
+    .leftJoin("zones as z", (j) => j.on(sql<boolean>`z.zone_id = d.zone_ids[1]`))
+    .select([sql<string | null>`z.time_zone`.as("time_zone"), sql<string | null>`coalesce(z.country, d.country)`.as("country"), "d.payout_hold_at"])
+    .where("d.driver_id", "=", driverId)
+    .executeTakeFirst();
+  if (row === undefined || row.payout_hold_at !== null) return null;
+  const timeZone = row.time_zone ?? countryTimeZone(row.country) ?? SCHEDULE.countryTimeZones["SE"]!;
+  const live = row.country ? await ex.selectFrom("config_live").select("document").where("doc", "=", "country_rules").where("zone_id", "=", standardKey(row.country)).executeTakeFirst() : undefined;
+  const { end } = await periodOf(ex, now, timeZone, payoutScheduleOf(live?.document as { payoutSchedule?: Partial<PayoutSchedule> } | undefined));
+  const local = await sql<{ local: string }>`SELECT to_char(${end}::timestamptz AT TIME ZONE ${timeZone}, 'YYYY-MM-DD"T"HH24:MI') AS local`.execute(ex);
+  return { nextPayoutAt: end.toISOString(), nextPayoutLocal: local.rows[0]!.local, nextPayoutTimeZone: timeZone };
+}
+
+/** GET /driver/payouts: the driver's own payouts, totals only; v0.18.94 (A5) with his next payout moment. */
+export async function driverPayouts(ex: Executor, driverId: string, input: { cursor?: string; limit: number; from?: string; to?: string }, now: Date = new Date()) {
   let q = ex.selectFrom("payouts").selectAll().where("driver_id", "=", driverId);
   if (input.from) q = q.where("period_end", ">", new Date(input.from));
   if (input.to) q = q.where("period_start", "<", new Date(input.to));
@@ -367,7 +388,8 @@ export async function driverPayouts(ex: Executor, driverId: string, input: { cur
   const rows = await q.orderBy("created_at", "desc").orderBy("payout_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
-  return { items: await payoutViews(ex, page as PayoutRow[], "driver"), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null };
+  const next = await nextPayoutOf(ex, driverId, now);
+  return { items: await payoutViews(ex, page as PayoutRow[], "driver"), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.payout_id) : null, ...(next ?? {}) };
 }
 
 async function payoutForAdmin(ex: Executor, who: Principal, payoutId: string, lock = false): Promise<PayoutRow> {

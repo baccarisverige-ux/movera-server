@@ -80,6 +80,10 @@ describe("payouts (contract.json#payouts, fixtures/payouts.json)", () => {
     const mine = await driver.get("/driver/payouts");
     expect(mine.body["items"][0]["amount"]).toEqual(made.body["amount"]);
     expect(mine.body["items"][0]["lines"]).toBeUndefined();
+    // v0.18.94 job A5 (contract.json#payouts.schedule.nextPayout): the next payout moment, default Monday 08:00 Stockholm.
+    expect(mine.body["nextPayoutTimeZone"]).toBe("Europe/Stockholm");
+    expect(mine.body["nextPayoutLocal"]).toMatch(/^\d{4}-\d{2}-\d{2}T08:00$/);
+    expect(new Date(mine.body["nextPayoutAt"]).getUTCDay()).toBe(1);
     const paid = await owner.post(`/admin/payouts/${made.body["payoutId"]}/paid`, { note: "Swish 26/10" });
     expect(paid.body).toMatchObject({ status: "paid", paidBy: owner.id });
     expect((await owner.post(`/admin/payouts/${made.body["payoutId"]}/paid`, {})).body["reason"]).toBe("already_paid");
