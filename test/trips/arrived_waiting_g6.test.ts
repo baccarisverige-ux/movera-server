@@ -267,7 +267,12 @@ describe("item 1: every admin waiting rule, picked by the server at arrive (cont
       const got = effectiveWaiting(c.base, waitingExtrasOf(c.rules, c.currency), c.trip);
       expect({ ...got }, c.id).toEqual(c.expect);
     }
-    for (const c of fixtures.termsMoney) expect(termsMoney(c.amount, c.lang)).toBe(c.text);
+    // Price format (owner 2026-11-14 "make sure rider and driver app show correct prices every where"; contract
+    // moneyDisplay §81): the Terms money follows the currency, not the language, and whole amounts keep their
+    // decimals. fixtures/arrived_waiting.json#termsMoney still holds the older en / whole-amount texts (contract gap 2
+    // of audits/price-display-2026-11-14), so the amounts are checked against moneyDisplay instead.
+    const display: Record<string, string> = { "1226": "12,26 kr", "6500": "65,00 kr", "50": "0,50 €", "810": "8,10 €", "800": "8,00 €" };
+    for (const c of fixtures.termsMoney) expect(termsMoney(c.amount, c.lang)).toBe(display[String(c.amount.amountMinor)]);
   });
 
   it("France: euro terms from the Paris documents; a far pickup without its own fee takes the default 8,10 €", async () => {
@@ -536,11 +541,12 @@ describe("item 4: the waiting / no-show / cancel rules in the Terms (SE + FR, sv
   it("GET /legal/SE?zoneId=Z001 fills paragraph 3.5 with Stockholm's live numbers; without zoneId the paragraph is left out", async () => {
     const filled = (await call(app, "GET", "/legal/SE?zoneId=Z001", {})).json();
     expect(filled.terms.text.en).toContain("3.1 Waiting at pickup.");
-    expect(filled.terms.text.en).toContain("free waiting 5 min, then 12.26 kr per minute; no-show after 5 min, fee 65 kr.");
-    expect(filled.terms.text.en).toContain("Airport pickup: free waiting 15 min; no-show after 20 min, fee 65 kr.");
-    expect(filled.terms.text.en).toContain("Pickup over 5 km away: free waiting 1 min; no-show after 1 min, fee 85 kr.");
-    expect(filled.terms.text.sv).toContain("därefter 12,26 kr per minut");
-    expect(filled.terms.text.fr).toContain("puis 12,26 kr par minute");
+    // Gap 15 (contract waitingPriceShown): the waiting price as the rider pays it, with the 10 % app fee (12,26 kr → 13,49 kr).
+    expect(filled.terms.text.en).toContain("free waiting 5 min, then 13,49 kr per minute; no-show after 5 min, fee 65,00 kr.");
+    expect(filled.terms.text.en).toContain("Airport pickup: free waiting 15 min; no-show after 20 min, fee 65,00 kr.");
+    expect(filled.terms.text.en).toContain("Pickup over 5 km away: free waiting 1 min; no-show after 1 min, fee 85,00 kr.");
+    expect(filled.terms.text.sv).toContain("därefter 13,49 kr per minut");
+    expect(filled.terms.text.fr).toContain("puis 13,49 kr par minute");
     const plain = (await call(app, "GET", "/legal/SE", {})).json();
     expect(plain.terms.text.en).toContain("3.2 No-show.");
     expect(plain.terms.text.en).not.toContain("3.5 ");
@@ -551,8 +557,8 @@ describe("item 4: the waiting / no-show / cancel rules in the Terms (SE + FR, sv
   it("GET /legal/FR?zoneId=FR-PC: the Paris numbers in euro, in French", async () => {
     const filled = (await call(app, "GET", "/legal/FR?zoneId=FR-PC", {})).json();
     expect(filled.terms.text.fr).toContain("3.1 Attente à la prise en charge.");
-    expect(filled.terms.text.fr).toContain("puis 12,26 € par minute ; absence du passager après 5 min, frais 65 €.");
-    expect(filled.terms.text.en).toContain("then €12.26 per minute");
+    expect(filled.terms.text.fr).toContain("puis 13,49 € par minute ; absence du passager après 5 min, frais 65,00 €.");
+    expect(filled.terms.text.en).toContain("then 13,49 € per minute");
   });
 });
 

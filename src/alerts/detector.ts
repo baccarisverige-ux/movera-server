@@ -1,4 +1,4 @@
-import { CURRENCY_CODES, exponentOf, majorText, toMajorNumber, type CurrencyCode } from "../rules/money.js";
+import { CURRENCY_CODES, exponentOf, moneyText, toMajorNumber, type CurrencyCode } from "../rules/money.js";
 import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
@@ -260,7 +260,7 @@ async function driverCauses(ctx: Ctx): Promise<Cause[]> {
   return out;
 }
 
-export const major = (minor: string | number, currency: string) => `${majorText({ amountMinor: Number(minor), currency: currency as CurrencyCode })} ${currency === "SEK" ? "kr" : currency === "EUR" ? "€" : currency === "TND" ? "DT" : currency}`;
+export const major = (minor: string | number, currency: string) => moneyText({ amountMinor: Number(minor), currency: currency as CurrencyCode });
 
 async function moneyCauses(ctx: Ctx): Promise<Cause[]> {
   const out: Cause[] = [];

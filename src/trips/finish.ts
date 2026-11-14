@@ -9,7 +9,7 @@ import { audit } from "../admin/audit.js";
 import { resumTripDay } from "../admin/kpis.js";
 import { notify } from "../notifications/service.js";
 import { debtOf } from "../rules/commission.js";
-import { localAmount, majorText, type CurrencyCode } from "../rules/money.js";
+import { moneyText, type CurrencyCode } from "../rules/money.js";
 import { expectVersion, lockOwnTrip, readOwnTrip, touchTrip } from "./commands.js";
 import { driverTotalOf, endInfoOf, tripProjection } from "./projection.js";
 import { credit } from "./ride.js";
@@ -228,19 +228,16 @@ export async function adminReceipt(ex: Executor, who: Principal, tripId: string)
 
 /** English error texts of the tip and driver-pay checks (exported for tests). */
 export const TIP_TEXT = {
-  choose: (amounts: number[], currency: string) => `Choose one of the amounts: ${amounts.map((a) => majorText({ amountMinor: a, currency: currency as CurrencyCode })).join(", ")} ${currency}.`,
-  atMost: (max: number, currency: string) => `At most ${majorText({ amountMinor: max, currency: currency as CurrencyCode })} ${currency}.`,
+  choose: (amounts: number[], currency: string) => `Choose one of the amounts: ${amounts.map((a) => moneyText({ amountMinor: a, currency: currency as CurrencyCode })).join(", ")}.`,
+  atMost: (max: number, currency: string) => `At most ${moneyText({ amountMinor: max, currency: currency as CurrencyCode })}.`,
 };
 export const PAY_TEXT = {
-  atMost: (max: number, currency: string) => `One change is at most ${majorText({ amountMinor: max, currency: currency as CurrencyCode })} ${currency}.`,
-  belowZero: (before: number, currency: string) => `The driver's pay on this trip is ${majorText({ amountMinor: before, currency: currency as CurrencyCode })} ${currency}; it cannot go below 0.`,
+  atMost: (max: number, currency: string) => `One change is at most ${moneyText({ amountMinor: max, currency: currency as CurrencyCode })}.`,
+  belowZero: (before: number, currency: string) => `The driver's pay on this trip is ${moneyText({ amountMinor: before, currency: currency as CurrencyCode })}; it cannot go below 0.`,
 };
 const fill = (text: string, values: Record<string, string>) => text.replace(/\{(\w+)\}/g, (all, key: string) => values[key] ?? all);
-export const amountText = (m: Money, lang: string) => {
-  // The currency's own decimals (SEK/EUR 2, TND 3; CONTRACT.md §1 "Money"), never a fixed 100.
-  const value = localAmount(m, lang);
-  return m.currency === "SEK" ? `${value} kr` : m.currency === "EUR" ? `${value} €` : m.currency === "TND" ? `${value} DT` : `${value} ${m.currency}`;
-};
+// contract.json#moneyDisplay (owner 2026-11-14): the currency's own format in every language, whole amounts with decimals.
+export const amountText = (m: Money, _lang: string) => moneyText(m);
 /** v0.18.66 §87: the one notice-language rule (the person's language, else the trip country's, TN fr, else en; was sv). */
 const languageOf = (ex: Executor, table: "riders" | "drivers", id: string, zoneId: string): Promise<string> =>
   noticeLanguage(ex, { actor: table === "riders" ? "rider" : "driver", id }, zoneId);

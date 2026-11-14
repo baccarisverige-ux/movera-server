@@ -257,7 +257,7 @@ for (const c of COUNTRIES) {
 
     it("payment_failed; green 'Paid' when the payment goes through", async () => {
       const t = await trip(c.zone, c.currency, { status: "completed", payment_status: "failed", updated_at: min(10) });
-      expect(await raised("payment_failed")).toMatchObject({ level: "important", title: `Lina's payment of ${c.currency === "SEK" ? "250 kr" : "250 €"} failed` });
+      expect(await raised("payment_failed")).toMatchObject({ level: "important", title: `Lina's payment of ${c.currency === "SEK" ? "250,00 kr" : "250,00 €"} failed` });
       await db().updateTable("trips").set({ payment_status: "captured", updated_at: NOW }).where("trip_id", "=", t.id).execute();
       expect(text((await solved("payment_failed")).solved_t)).toBe(`Paid ${c.local}`);
     });
