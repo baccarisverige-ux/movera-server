@@ -212,7 +212,7 @@ export function toMajorNumber(m: MoneyLike): number {
 /**
  * v0.18.89 moneyDisplay.wholeAmounts (owner 2026-11-14 "whole amounts keep their decimals"): the shown text of an amount,
  * always with the currency's decimals and the format of the currency, not of the language — "65,00 kr", "8,00 €",
- * "5.000 DT", "1 250.000 DT" (a space between thousands). New notices use this; older texts still use localAmount.
+ * "5.000 DT", "1 250.000 DT" (a space between thousands). The same text as moneyText (P89S #230), which every server text uses.
  */
 export function moneyShown(m: MoneyLike): string {
   return moneyText(m);
