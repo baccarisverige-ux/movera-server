@@ -128,7 +128,8 @@ function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; e
     expiresAt: row.expiresAt.toISOString(),
     tripId: trip.trip_id,
     total: sum(row.fare),
-    cashDue: sum(row.fare - row.wallet),
+    // v0.18.99 BQ-M25b (contract.json#priceDisplay.nonCashZero): 0 on a trip not paid in the car (the cash it books, cashPart).
+    cashDue: sum(cashPart(trip, row.fare - row.wallet)),
     driverEarnings: sum(earnings),
     driverTotal: sum(driverTotalOf(asEnded)),
     earningsBreakdown: earningsLinesOf(asEnded).map((l) => ({ code: l.code, amount: sum(l.amountMinor) })),
@@ -184,7 +185,9 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   const wallet = await spendWallet(trx, trip, fare, now);
   // With a previewId the cash shown must be the cash part of this price; if not, nothing is completed and the app
   // gets a fresh price to show (409 price_changed, never a 400 that leaves the driver stuck).
-  if (previewed && body.cashCollected && body.cashCollected.amountMinor !== fare - wallet) throw new PriceChanged(trip.trip_id);
+  // v0.18.99 BQ-M25b (contract.json#priceDisplay.nonCashZero.complete): only on a cash trip. On any other trip no cash is
+  // taken (cashPart 0), so its cashDue 0 or an older app's fare − wallet is not compared.
+  if (previewed && trip.payment_method === "cash" && body.cashCollected && body.cashCollected.amountMinor !== fare - wallet) throw new PriceChanged(trip.trip_id);
   // The rider owes the fare (outstanding fees included) less what the wallet paid; more cash than that is a miscount,
   // and it would raise the driver's cash balance and the trip's refund room above the fare.
   if (body.cashCollected && body.cashCollected.amountMinor > fare - wallet) {
