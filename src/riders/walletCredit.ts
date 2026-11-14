@@ -10,6 +10,7 @@ import { creditWallet } from "./wallet.js";
 import { audit } from "../admin/audit.js";
 import { adminRiderView, riderInZones, riderWallets, zonesOf } from "../admin/lists.js";
 import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
+import { COUNTRY_WALLET_CURRENCY, riderPlace } from "./place.js";
 
 /**
  * v0.18.39 A2 (owner G12 Q5 "Real credit + limit", Q-D "Max 250 euro and equivalent", build-spec Q1 "One admin
@@ -19,7 +20,9 @@ type Money = { amountMinor: number; currency: string };
 const WC = (contract as unknown as {
   walletCredit: { defaultMax: Record<string, Money>; reasonMax: number; riderText: Record<string, Record<string, string>> };
 }).walletCredit;
-const CURRENCY: Record<string, string> = { SE: "SEK", FR: "EUR", TN: "TND" };
+const CURRENCY = COUNTRY_WALLET_CURRENCY;
+// BQ-A30c: riderPlace moved to ./place.ts (shared with the admin rider view); re-exported for existing callers.
+export { riderPlace };
 
 /** v0.18.82 S5 J4 (contract.json#moneyBase.versionGuard, owner 106): the Rider.version the admin last saw; required. */
 export const WalletCreditBody = z.object({
@@ -27,14 +30,6 @@ export const WalletCreditBody = z.object({
   amount: z.object({ amountMinor: z.number().int().positive(), currency: z.string().regex(/^[A-Z]{3}$/) }),
   reason: z.string().trim().min(1).max(WC.reasonMax),
 });
-
-/** The rider's zone and country: the zone of his latest trip, else his last seen zone; null when unknown. */
-export async function riderPlace(ex: Executor, riderId: string): Promise<{ zoneId: string; country: string } | null> {
-  const trip = await ex.selectFrom("trips").innerJoin("zones", "zones.zone_id", "trips.zone_id").select(["zones.zone_id", "zones.country"]).where("trips.rider_id", "=", riderId).orderBy("trips.created_at", "desc").limit(1).executeTakeFirst();
-  if (trip) return { zoneId: trip.zone_id, country: trip.country };
-  const seen = await ex.selectFrom("riders").innerJoin("zones", "zones.zone_id", "riders.last_seen_zone_id").select(["zones.zone_id", "zones.country"]).where("riders.rider_id", "=", riderId).executeTakeFirst();
-  return seen ? { zoneId: seen.zone_id, country: seen.country } : null;
-}
 
 /**
  * CountryRules.walletCreditMax of the COUNTRY (fix job 0, owner A2-1 "Per country, in Pricing"): the country Standard's
