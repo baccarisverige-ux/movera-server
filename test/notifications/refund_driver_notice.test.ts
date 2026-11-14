@@ -43,4 +43,13 @@ describe("driver_refund_taken texts (sv / fr / en)", () => {
     const body = driverRefundText("en", { amountMinor: 100, currency: "EUR" }, "x".repeat(250)).body;
     expect(body.endsWith(`Reason: ${"x".repeat(200)}…`)).toBe(true);
   });
+  it("the cut never splits an emoji or a letter with its accent (200 characters as people see them)", () => {
+    const family = "👨‍👩‍👧";
+    const body = driverRefundText("en", { amountMinor: 100, currency: "EUR" }, "a".repeat(199) + family + "tail").body;
+    expect(body.endsWith(`Reason: ${"a".repeat(199)}${family}…`)).toBe(true);
+    const flags = "🇸🇪".repeat(250);
+    const cut = driverRefundText("en", { amountMinor: 100, currency: "EUR" }, flags).body.split("Reason: ")[1]!;
+    expect(cut).toBe(`${"🇸🇪".repeat(200)}…`);
+    expect(driverRefundText("en", { amountMinor: 100, currency: "EUR" }, "é".repeat(200)).body.endsWith("é".repeat(200))).toBe(true);
+  });
 });

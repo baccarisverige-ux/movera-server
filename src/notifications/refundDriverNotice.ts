@@ -23,10 +23,17 @@ export const DRIVER_REFUND_NOTICE = {
 
 const REASON_MAX = 200;
 
-/** The notice's title and body in `lang`; the reason trimmed and cut at 200 characters with "…". */
+const graphemes = new Intl.Segmenter("en", { granularity: "grapheme" });
+
+/** At most `max` characters as people see them (an emoji, a flag or a letter with its accent is one); longer gets "…". */
+function cutReason(text: string, max: number): string {
+  const parts = Array.from(graphemes.segment(text), (part) => part.segment);
+  return parts.length > max ? `${parts.slice(0, max).join("")}…` : text;
+}
+
+/** The notice's title and body in `lang`; the reason trimmed and cut at 200 characters with "…" (never inside an emoji). */
 export function driverRefundText(lang: Lang, share: Money, reason: string): { title: string; body: string } {
-  const trimmed = reason.trim();
-  const why = trimmed.length > REASON_MAX ? `${trimmed.slice(0, REASON_MAX)}…` : trimmed;
+  const why = cutReason(reason.trim(), REASON_MAX);
   const body = DRIVER_REFUND_NOTICE.body[lang].replace("{amount}", moneyShown(share)).replace("{reason}", why);
   return { title: DRIVER_REFUND_NOTICE.title[lang], body };
 }
