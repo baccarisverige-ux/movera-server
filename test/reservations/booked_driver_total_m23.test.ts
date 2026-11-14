@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { driverReservations } from "../../src/reservations/service.js";
+import { adminAdjust } from "../../src/admin/trips.js";
+import type { Principal } from "../../src/auth/guard.js";
 import { tripProjection } from "../../src/trips/projection.js";
 import type { TripRow } from "../../src/db/tripLog.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -14,6 +16,7 @@ import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
  */
 
 let database: TestDatabase;
+const SUPER: Principal = { actor: "admin", subjectId: "adm_m23", sessionId: "s_m23", zones: ["*"], role: "super", perms: [] } as unknown as Principal;
 let riderId: string;
 const NOW = new Date("2026-11-20T08:00:00Z");
 const AT = new Date("2026-11-20T14:00:00Z");
@@ -72,5 +75,51 @@ describe("BQ-M23 Booked rides: DriverReservation.driverTotal = what the driver g
     const trip = (await database.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow()) as unknown as TripRow;
     const rider = tripProjection(trip, "rider") as Record<string, unknown>;
     for (const key of ["driverTotal", "driverEarnings", "driverBonus", "pickupPay", "earnings"]) expect(rider).not.toHaveProperty(key);
+  });
+});
+
+/**
+ * BQ-M23 supervisor must-fix 1 (Rules audits/impact/m23-booked-drivertotal-supervisor.md; owner G8 Q3 "One number",
+ * contract.json#finish.driverMoney.rule; J6): an admin can change the driver's pay of a booked ride he holds (status
+ * accepted, POST /admin/trips/{id}/adjust driverPay). The Booked rides row then shows the new pay, the same number as
+ * the trip's driverTotal (TripProjection, driverTotalOf): the change is kept, capped so the pay never shows below 0.
+ */
+describe("BQ-M23 MF1: Booked rides driverTotal includes the admin's driver-pay change (J6)", () => {
+  const adjust = async (tripId: string, amountMinor: number, currency: string) => {
+    const trip = await database.db.selectFrom("trips").select("version").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    const out = await database.db.transaction().execute((trx) => adminAdjust(trx, SUPER, tripId, { expectedVersion: trip.version, driverPay: { amountMinor, currency }, reason: "M23 test" } as never, NOW));
+    expect(out.status).toBe(200);
+  };
+  const tripTotal = async (tripId: string) => {
+    const trip = (await database.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow()) as unknown as TripRow;
+    return (tripProjection(trip, "driver") as Record<string, unknown>)["driverTotal"];
+  };
+
+  for (const c of [
+    { currency: "SEK", earnings: 18_950, pickupPay: 1_500, bonus: 2_000, up: 24_450, down: 20_450 },
+    { currency: "TND", earnings: 12_350, pickupPay: 650, bonus: 2_000, up: 17_000, down: 13_000 },
+  ]) {
+    it(`${c.currency}: admin types the pay up, then down; the row's driverTotal = the typed pay = the trip's driverTotal`, async () => {
+      const driverId = await insertDriver(database.db);
+      const tripId = await booked(driverId, c);
+      await adjust(tripId, c.up, c.currency);
+      expect((await row(driverId, tripId))["driverTotal"]).toEqual({ amountMinor: c.up, currency: c.currency });
+      expect(await tripTotal(tripId)).toEqual({ amountMinor: c.up, currency: c.currency });
+      await adjust(tripId, c.down, c.currency);
+      const item = await row(driverId, tripId);
+      expect(item["driverTotal"]).toEqual({ amountMinor: c.down, currency: c.currency });
+      expect(await tripTotal(tripId)).toEqual(item["driverTotal"]);
+      // earnings stays the trip line (the change is its own line, not in earnings).
+      expect(item["earnings"]).toEqual({ amountMinor: c.earnings, currency: c.currency });
+    });
+  }
+
+  it("the change is capped: a big cut shown on the row never takes the pay below 0", async () => {
+    const driverId = await insertDriver(database.db);
+    const tripId = await booked(driverId, { currency: "TND", earnings: 3_000, pickupPay: 0, bonus: 0 });
+    // A later re-price shrank the earnings under a kept cut: the stored change (−5 DT) is more than the pay (3 DT).
+    await database.db.updateTable("trips").set({ driver_adjustments_minor: -5_000 }).where("trip_id", "=", tripId).execute();
+    expect((await row(driverId, tripId))["driverTotal"]).toEqual({ amountMinor: 0, currency: "TND" });
+    expect(await tripTotal(tripId)).toEqual({ amountMinor: 0, currency: "TND" });
   });
 });
