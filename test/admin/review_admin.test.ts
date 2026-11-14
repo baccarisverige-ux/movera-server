@@ -208,7 +208,9 @@ describe("review: admin tools", () => {
     const refund = (await adminPost(`/trips/${first.tripId}/refund`, { expectedVersion: first.version, amount: sek(5000), reason: "x" })).json();
     const next = await accepted();
     const { version: v, boarded } = await toBoard(next.tripId, next.version, 60);
-    expect(boarded).not.toHaveProperty("cashToCollect"); // driver: collect the full 217 kr
+    // driver: collect the full 217 kr — no wallet part; v0.18.89 §90 (priceDisplay.tripCashToCollect) sends cashToCollect = the fare.
+    expect(boarded).not.toHaveProperty("walletApplied");
+    expect(boarded.cashToCollect).toEqual(sek(21700));
     await call(app, "POST", `/rider/refunds/${refund.refundId}/destination`, rider, { method: "wallet" });
     await step(next.tripId, "start", v);
     const done = await step(next.tripId, "complete", v + 1, { cashCollected: sek(21700) });
