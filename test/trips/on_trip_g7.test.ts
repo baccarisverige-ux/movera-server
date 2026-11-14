@@ -745,7 +745,9 @@ describe("J6 round 3: a shorter route after the admin's change never shows a pay
     expect(payOf(after)).toBe(0);
     expect(after.earningsBreakdown.reduce((s: number, l: { amount: { amountMinor: number } }) => s + l.amount.amountMinor, 0)).toBe(0);
     const adminSide = (await call(app, "GET", `/admin/trips/${tripId}`, admin.headers)).json();
-    expect(adminSide.moneySplit.driverTotal).toEqual(SEK(0));
+    // BQ-M24: no moneySplit before the paid end; the admin's driverTotal is the same number.
+    expect(adminSide.moneySplit).toBeUndefined();
+    expect(adminSide.driverTotal).toEqual(SEK(0));
     await moveTo(GAMLA_STAN);
     const preview = await call(app, "GET", `/driver/trips/${tripId}/complete-preview`, driverA.headers);
     expect(preview.statusCode, preview.body).toBe(200);

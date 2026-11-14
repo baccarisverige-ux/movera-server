@@ -348,7 +348,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     // view only: the driver's view stays what Movera keeps from HIS trip (another driver's money is never sent to him).
     const lost = viewer === "admin" ? lostDriverPaidOf(row) : 0;
     const movera = { amountMinor: riderPaid - driverPart - debt - lost, currency };
-    if (viewer === "admin") {
+    // BQ-M24 (contract.json#moneyBase.commissionRow.admin "while the trip is not paid yet (no moneySplit)"): only on a paid end.
+    if (viewer === "admin" && isPaidEnd(row)) {
       projection["moneySplit"] = {
         riderPaid: { amountMinor: riderPaid, currency },
         driverTotal: { amountMinor: driverPart, currency },
