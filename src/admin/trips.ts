@@ -576,7 +576,10 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
   // "Take from driver": the driver loses their share of the refunded money (owner decision 31).
   if (p.fromDriver && trip.driver_id && paid > 0) {
     // Deep fix 2026-11-02 (g7-g9 M1): the rider's old debt collected on this trip is not part of the ride the driver earned on.
-    const debt = trip.status === "completed" ? (((trip.fare_lines as Array<{ code: string; amount: Money }>) ?? []).filter((l) => l.code === "outstanding_fee").reduce((sum, l) => sum + l.amount.amountMinor, 0)) : 0;
+    // J8 (debtModel.readAtPayment): the debt is collected on every paid end with the rider on board: complete, the
+    // rider's early end and the driver's cancel on board (never in a booked price), so it is left out on all three.
+    const debtPaid = trip.status === "completed" || trip.ended_by_command === "end_early" || (trip.status === "cancelled_by_driver" && trip.ended_by_command === "cancel");
+    const debt = debtPaid ? (((trip.fare_lines as Array<{ code: string; amount: Money }>) ?? []).filter((l) => l.code === "outstanding_fee").reduce((sum, l) => sum + l.amount.amountMinor, 0)) : 0;
     const fare = Number(trip.fare_minor) - debt;
     // Checker (7): never more than the driver still has on this trip (his one number never goes below 0).
     const share = Math.min(driverTotalOf(trip), fare > 0 ? Math.round((Math.min(p.amount.amountMinor, fare) * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0);

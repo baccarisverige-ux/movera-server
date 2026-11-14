@@ -547,3 +547,67 @@ describe("J8 round 2: Tunisia in TND, 3 decimals (must-fix 6)", () => {
     expect(refused.json()).toMatchObject({ reason: "rider_debt_above_max", details: ["debt:84000 TND", "max:84000 TND"] });
   });
 });
+
+/* ================================================================ refund "take from driver" leaves the debt out (J8 money fix 3) */
+
+describe("J8: a refund taken from the driver leaves the rider's old debt out on every paid end, not only complete", () => {
+  /** Rider on board of an accepted trip; returns the version to end it with. */
+  async function onBoard(tripId: string, version: number) {
+    let v = version;
+    for (const path of ["head-to-pickup", "arrive", "board", "start"]) expect((await step(tripId, path, v++)).statusCode).toBe(200);
+    return v;
+  }
+  /** The admin refunds the ride part (fare − debt) taken from the driver; returns the driver's adjustment and the row. */
+  async function refundRidePart(tripId: string) {
+    const row = await database.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    const debt = ((row.fare_lines as Array<{ code: string; amount: { amountMinor: number } }>) ?? []).filter((l) => l.code === "outstanding_fee").reduce((s, l) => s + l.amount.amountMinor, 0);
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const ride = Number(row.fare_minor) - debt;
+    const res = await call(app, "POST", `/admin/trips/${tripId}/refund`, admin.headers, { expectedVersion: row.version, amount: { amountMinor: ride, currency: row.currency }, reason: "Ride refunded", fromDriver: true });
+    expect(res.statusCode, res.body).toBe(201);
+    const adjustment = await database.db.selectFrom("earnings_entries").select("amount_minor").where("trip_id", "=", tripId).where("kind", "=", "adjustment").where("amount_minor", "<", "0").executeTakeFirst();
+    return { row, debt, ride, taken: -Number(adjustment?.amount_minor ?? 0) };
+  }
+
+  it("SEK rider early end: the trip collected a 65 kr debt; refunding the whole ride part takes his whole earnings, never a share of the debt", async () => {
+    await feeOwed(6_500);
+    const { tripId, version } = await accepted();
+    const v = await onBoard(tripId, version);
+    const ended = await call(app, "POST", `/trips/${tripId}/end-early`, rider, { expectedVersion: v, reasonCode: "plans_changed" });
+    expect(ended.statusCode, ended.body).toBe(200);
+    const { row, debt, ride, taken } = await refundRidePart(tripId);
+    expect(row.status).toBe("cancelled_by_rider");
+    expect(debt).toBe(6_500);
+    // Fail-before: round(ride × earnings ÷ (ride + 65 kr)), the debt counted as ride money.
+    expect(taken, `ride ${ride} earnings ${row.driver_earnings_minor}`).toBe(Number(row.driver_earnings_minor));
+  });
+
+  it("SEK driver cancel with the rider on board: the same, the 65 kr debt is not ride money", async () => {
+    await feeOwed(6_500);
+    const { tripId, version } = await accepted();
+    const v = await onBoard(tripId, version);
+    const ended = await step(tripId, "cancel", v, { reasonCode: "rider_behavior" });
+    expect(ended.statusCode, ended.body).toBe(200);
+    const { row, debt, taken } = await refundRidePart(tripId);
+    expect(row.status).toBe("cancelled_by_driver");
+    expect(debt).toBe(6_500);
+    expect(taken).toBe(Number(row.driver_earnings_minor));
+  });
+
+  it("TND (3 decimals) rider early end: 30.000 DT = 20.000 DT ride + 10.000 DT debt, he earned 16.000 DT; a 10.000 DT refund takes 8.000 DT", async () => {
+    const tripId = await insertTrip(database.db, riderId, { status: "cancelled_by_rider", driverId: drivers.A.id });
+    const TND = (amountMinor: number) => ({ amountMinor, currency: "TND" });
+    await database.db.updateTable("trips").set({
+      zone_id: "TN-TC", currency: "TND", fare_minor: 30_000, booked_fare_minor: 20_000, driver_earnings_minor: 16_000, commission_minor: 4_000, pickup_pay_minor: 0, driver_bonus_minor: 0, driver_adjustments_minor: 0,
+      fare_lines: JSON.stringify([{ code: "base", amount: TND(20_000) }, { code: "outstanding_fee", amount: TND(10_000) }]),
+      ended_by_command: "end_early", ended_at: clock.now, payment_method: "cash", payment_status: "captured", cash_collected_minor: 30_000, wallet_applied_minor: 0,
+    }).where("trip_id", "=", tripId).execute();
+    const row = await database.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const res = await call(app, "POST", `/admin/trips/${tripId}/refund`, admin.headers, { expectedVersion: row.version, amount: TND(10_000), reason: "Ride refunded", fromDriver: true });
+    expect(res.statusCode, res.body).toBe(201);
+    const adjustment = await database.db.selectFrom("earnings_entries").select(["amount_minor", "currency"]).where("trip_id", "=", tripId).where("kind", "=", "adjustment").executeTakeFirstOrThrow();
+    // 10.000 × 16.000 ÷ 20.000 = 8.000 DT. Fail-before: 10.000 × 16.000 ÷ 30.000 = 5.333 DT.
+    expect(adjustment).toEqual({ amount_minor: "-8000", currency: "TND" });
+  });
+});
