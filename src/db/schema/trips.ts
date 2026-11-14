@@ -33,6 +33,8 @@ export interface TripsTable {
   commission_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   pickup_pay_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
   driver_bonus_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
+  /** v0.18.90 BQ-M21 (moneyBase.lostDriverPaid): what Movera paid on this trip to the driver(s) who lost it (admin reassign / cancel driverBonus). */
+  lost_driver_paid_minor: ColumnType<string, number | string | undefined, number | string>;
   priority: Generated<boolean>;
   /** Owner bug 2026-11-01: the admin's money per kind of offer (NULL = driver_bonus_minor / priority for both). */
   bonus_exclusive_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;

@@ -132,11 +132,20 @@ async function checkBonus(ex: Executor, trip: TripRow, amount: Money, scope: Bon
   }
 }
 
-/** Movera's money for the driver who lost the trip (owner decisions 32, 33): a bonus entry, at once. */
-async function payLostDriver(trx: Trx, trip: TripRow, bonus: Money | undefined, now: Date) {
+/**
+ * v0.18.90 BQ-M21 (contract.json#moneyBase.lostDriverPaid): the lost-driver payment is checked and kept on the trip
+ * BEFORE the trip's command, so the command's projection and stored event already take it off what Movera keeps.
+ */
+async function keepLostDriverPay(trx: Trx, trip: TripRow, bonus: Money | undefined) {
   if (!bonus) return;
   if (!trip.driver_id) throw badRequest("This trip has no driver to pay.", "no_driver");
   await checkBonus(trx, trip, bonus);
+  await trx.updateTable("trips").set({ lost_driver_paid_minor: sql`lost_driver_paid_minor + ${bonus.amountMinor}` }).where("trip_id", "=", trip.trip_id).execute();
+}
+
+/** Movera's money for the driver who lost the trip (owner decisions 32, 33): a bonus entry, at once (after keepLostDriverPay). */
+async function payLostDriver(trx: Trx, trip: TripRow, bonus: Money | undefined, now: Date) {
+  if (!bonus || !trip.driver_id) return;
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: bonus.amountMinor }, now);
   // v0.18.82 S5 J5: the bonus entry counts on the trip's day; an older stored day is re-summed now.
   await resumTripDay(trx, trip.trip_id, now);
@@ -151,6 +160,7 @@ export async function adminCancel(trx: Trx, who: Principal, tripId: string, body
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
   // The rider pays nothing (owner decision 33); the admin's note stays in the audit.
   const cancellation = { actor: "admin", reasonCode: body.reasonCode, at: now.toISOString(), fee: null };
+  await keepLostDriverPay(trx, trip, body.driverBonus);
   // S5 J6 (owner 2026-11-13): an end without a paid ride follows only the cancel-fee rules; the admin's change is dropped.
   const cancelled = await applyCommand(trx, trip, { command: "cancel", actor: "admin", now, set: { cancellation: JSON.stringify(cancellation), ended_by_command: "cancel", ended_at: now, search_step: null, driver_adjustments_minor: 0 } });
   await stopSearch(trx, cancelled, now);
@@ -163,6 +173,7 @@ export async function adminCancel(trx: Trx, who: Principal, tripId: string, body
 export async function adminReassign(trx: Trx, who: Principal, tripId: string, body: ReasonBody, now: Date): Promise<TripRow> {
   if (!ADMIN_REASONS.includes(body.reasonCode)) throw badRequest(`${body.reasonCode} is not an admin reason.`, "invalid_reason_code");
   const trip = await lockForAdmin(trx, who, tripId, body.expectedVersion);
+  await keepLostDriverPay(trx, trip, body.driverBonus);
   await payLostDriver(trx, trip, body.driverBonus, now);
   // v0.18.50 §72 (L6): a booked ride a driver holds goes back to the list like Unassign (he is not barred from it).
   const back = trip.kind === "scheduled" && trip.status === "accepted" && trip.next_after_trip_id === null

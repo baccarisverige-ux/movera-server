@@ -96,7 +96,11 @@ export function hideReversalDetails(out: Record<string, unknown>): void {
 export function hidePinFromDriver(out: Record<string, unknown>): Record<string, unknown> {
   // v0.18.10: "who gets what" (moneySplit) is the admin's.
   const { pickupPin: _p, pinAttempts: _a, pinBlocked: _b, adminFlag: _f, moneySplit: _m, ...rest } = out;
-  void _m;
+  // v0.18.90 BQ-M21 (moneyBase.lostDriverPaid.driverView): the stored (admin) projection's moveraKeepsNow has the lost
+  // driver's payment taken off; the driver's stream gets what Movera keeps from his own trip (the payment added back).
+  const lost = (_m as { lostDriverPaid?: { amountMinor?: unknown } } | undefined)?.lostDriverPaid?.amountMinor;
+  const keeps = rest["moveraKeepsNow"] as { amountMinor: number; currency: string } | undefined;
+  if (keeps && typeof lost === "number" && lost > 0) rest["moveraKeepsNow"] = { ...keeps, amountMinor: keeps.amountMinor + lost };
   void _f;
   void _b;
   void _p;
@@ -156,6 +160,8 @@ export const driverTotalOf = (row: MoneyRow): number => earningsLinesOf(row).red
 
 /** v0.18.87: a paid trip end (completed, the rider's early end, the driver's end on board, admin complete), as in KPIs. */
 const PAID_STATUSES = new Set(["captured", "partially_refunded", "refunded"]);
+/** v0.18.90 BQ-M21 (moneyBase.lostDriverPaid): Movera's payments on this trip to the driver(s) who lost it (reassign / cancel). */
+export const lostDriverPaidOf = (row: { lost_driver_paid_minor?: string | number | null }): number => Math.max(0, Number(row.lost_driver_paid_minor ?? 0));
 export const isPaidEnd = (row: { status: string; payment_status: string | null }): boolean => row.status === "completed" || PAID_STATUSES.has(row.payment_status ?? "");
 
 /** An ended trip with a fare the driver collected or the rider paid (complete, the rider's early end, a driver cancel on board). */
@@ -301,7 +307,11 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     // holds the tip, pay changes and refunds taken from him) and the old fee; a refund Movera pays lowers Movera's part.
     const riderPaid = Number(row.fare_minor) + tip - refunded;
     const driverPart = row.driver_id ? driverTotalOf(row) : 0;
-    const movera = { amountMinor: riderPaid - driverPart - debt, currency };
+    // v0.18.90 BQ-M21 (contract.json#moneyBase.lostDriverPaid, owner 2026-11-13 "Movera commission is how much movera
+    // keep"): what Movera paid on this trip to the driver(s) who lost it is taken off what Movera keeps — on the admin
+    // view only: the driver's view stays what Movera keeps from HIS trip (another driver's money is never sent to him).
+    const lost = viewer === "admin" ? lostDriverPaidOf(row) : 0;
+    const movera = { amountMinor: riderPaid - driverPart - debt - lost, currency };
     if (viewer === "admin") {
       projection["moneySplit"] = {
         riderPaid: { amountMinor: riderPaid, currency },
@@ -310,6 +320,7 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
         debtCollected: { amountMinor: debt, currency },
         ...(tip > 0 ? { tip: { amountMinor: tip, currency } } : {}),
         refunded: { amountMinor: refunded, currency },
+        ...(lost > 0 ? { lostDriverPaid: { amountMinor: lost, currency } } : {}),
       };
     }
     // v0.18.87 BQ-M19 (contract.json#moneyBase.commissionRow, owner 2026-11-13 "Movera commission is how much movera
