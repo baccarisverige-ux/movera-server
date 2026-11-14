@@ -134,7 +134,7 @@ async function toBoard(tripId: string, version: number, waitSeconds: number) {
 const adminPost = (path: string, body: Record<string, unknown>, who = admin) => call(app, "POST", `/admin${path}`, who, body);
 const adminView = async (tripId: string) => (await call(app, "GET", `/admin/trips/${tripId}`, admin)).json();
 const clearFees = async () => {
-  await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  await database.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
   // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
   await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null, wallet_minor: 0 }).execute();

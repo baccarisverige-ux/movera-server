@@ -85,9 +85,10 @@ beforeEach(async () => {
   await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("status", "not in", ["completed", "cancelled_by_admin", "cancelled_by_rider", "cancelled_by_driver", "no_show", "expired"]).execute();
   await database.db.deleteFrom("timers").execute();
   await database.db.deleteFrom("offers").execute();
-  await database.db.deleteFrom("earnings_entries").where("payout_id", "is", null).execute();
+  // Every entry first (a payout run of a test links entries to its payout), then the payouts.
+  await database.db.deleteFrom("earnings_entries").execute();
   await database.db.deleteFrom("payouts").execute();
-  await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  await database.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
   await database.db.deleteFrom("rider_wallets").execute();
   await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").execute();
   const signedIn = await signIn(app, TEST_PHONES[0]!, "rider");
@@ -400,5 +401,149 @@ describe("J8 DB floor (debtModel.dbFloor, owner 15:00 'Any amount')", () => {
     const { checkDocument } = await import("../../src/config/service.js");
     const zone = { zoneId: "standard-SE", name: "Standard SE", country: "SE", currency: "SEK", timeZone: "Europe/Stockholm", kind: "standard", open: true, center: { lat: 0, lng: 0 } } as never;
     expect(() => checkDocument("country_rules", zone, { country: "SE", currency: "SEK", driverOwesLimit: { enabled: true, max: null } })).toThrow(expect.objectContaining({ options: expect.objectContaining({ reason: "owes_limit_needs_amount" }) }));
+  });
+});
+
+/* ================================================================ supervisor round 1 must-fixes (2026-11-14) */
+
+describe("J8 round 2: Driver paid Movera settles the carried rest first (must-fix 2, owner Q-M3 / Q-S5-7)", () => {
+  async function carried(amount: number, id: string) {
+    await database.db.insertInto("payouts").values({ payout_id: id, driver_id: drivers.A.id, zone_id: "Z001", currency: "SEK", amount_minor: -amount, lines: JSON.stringify([]), trip_count: 0, source: "weekly", period_start: new Date(clock.now.getTime() - 14 * 86_400_000), period_end: new Date(clock.now.getTime() - 7 * 86_400_000), note: null, created_by: null, created_at: clock.now }).execute();
+  }
+  async function nextPayoutLines() {
+    const { makePayouts } = await import("../../src/admin/payouts.js");
+    // This week's run: one ordinary trip-less bonus so a payout is made at all.
+    await database.db.insertInto("earnings_entries").values({ entry_id: `ern_week_${clock.now.getTime()}`, driver_id: drivers.A.id, trip_id: null, kind: "bonus", currency: "SEK", amount_minor: 1_000, at: clock.now }).execute();
+    const made = await database.db.transaction().execute((trx) => makePayouts(trx, { driverId: drivers.A.id, from: new Date(clock.now.getTime() - 86_400_000), to: new Date(clock.now.getTime() + 1000), source: "manual", by: null }, clock.now));
+    return made.flatMap((p) => (p.lines as Array<{ code: string; amountMinor: number }>));
+  }
+  const url = () => `/admin/drivers/${drivers.A.id}/paid-movera`;
+
+  it("P1 −100 kr pending, the driver pays 100 kr: P1 is paid, owed 0, and the next payout holds no +100 kr", async () => {
+    await carried(10_000, "pyt_leak_full");
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const paid = await call(app, "POST", url(), admin.headers, { expectedOwed: SEK(10_000), amount: SEK(10_000), reason: "Bank transfer" });
+    expect(paid.statusCode, paid.body).toBe(200);
+    expect(paid.json()).toMatchObject({ owed: SEK(0) });
+    expect((await database.db.selectFrom("payouts").select(["status", "paid_by"]).where("payout_id", "=", "pyt_leak_full").executeTakeFirstOrThrow())).toEqual({ status: "paid", paid_by: admin.adminId });
+    expect((await nextPayoutLines()).map((l) => l.code)).not.toContain("paid_to_movera");
+  });
+
+  it("a part payment of 60 kr on a −100 kr payout: owed 40 kr, P1 stays open, and the next payout still holds no +60 kr", async () => {
+    await carried(10_000, "pyt_leak_part");
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const paid = await call(app, "POST", url(), admin.headers, { expectedOwed: SEK(10_000), amount: SEK(6_000), reason: "Swish" });
+    expect(paid.json()).toMatchObject({ owed: SEK(4_000) });
+    expect((await database.db.selectFrom("payouts").select("status").where("payout_id", "=", "pyt_leak_part").executeTakeFirstOrThrow()).status).toBe("pending");
+    expect((await nextPayoutLines()).map((l) => l.code)).not.toContain("paid_to_movera");
+    const { owedByDriver } = await import("../../src/drivers/owes.js");
+    expect((await owedByDriver(database.db, [drivers.A.id], "SEK")).get(drivers.A.id)).toBe(4_000);
+  });
+});
+
+describe("J8 round 2: an old server copy settles a fee during the deploy (must-fix 3)", () => {
+  it("a fee the old copy marked paid while its −fee sits in the wallet is lifted once, so it is never charged again", async () => {
+    const feeTrip = await feeOwed(6_500);
+    expect(await balance()).toBe(-6_500);
+    // The old copy (no J8 code) collected the copied line and marked the row paid; the wallet was never told.
+    await database.db.updateTable("rider_fees").set({ status: "paid", settled_at: clock.now }).where("trip_id", "=", feeTrip).execute();
+    const { tripId, version } = await accepted();
+    const done = await driveAndComplete(tripId, version);
+    expect(done.json().fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
+    expect(await balance()).toBe(0);
+    const lifted = await database.db.selectFrom("wallet_entries").select(["kind", "amount_minor"]).where("trip_id", "=", feeTrip).orderBy("entry_id").execute();
+    expect(lifted).toEqual([{ kind: "fee", amount_minor: "-6500" }, { kind: "adjustment", amount_minor: "6500" }]);
+    const { sweepOwedFees } = await import("../../src/riders/debt.js");
+    await database.db.transaction().execute((trx) => sweepOwedFees(trx, riderId, "SEK"));
+    expect(await balance()).toBe(0);
+  });
+});
+
+describe("J8 round 2: the floor counts the driver document's no-show fees, through the admin publish (must-fix 4)", () => {
+  it("publishing a driver document with a 2,000 kr airport no-show fee moves the SEK floor to −(300 + 4 × 2,000) kr", async () => {
+    await database.db.updateTable("wallet_floors").set({ floor_minor: -90_000 }).where("currency", "=", "SEK").execute();
+    // The zone's driver document as live today (the sample), then the admin's draft and publish through the routes.
+    await database.db.deleteFrom("config_live").where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
+    await database.db.insertInto("config_live").values({ doc: "driver_app_config", zone_id: "Z001", version: 1, document: JSON.stringify(sample("driver_app_config")), published_at: clock.now, published_by: null }).execute();
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const draft = (await call(app, "GET", "/admin/config/driver_app_config?zoneId=Z001", admin.headers)).json();
+    expect(draft.version, JSON.stringify(draft)).toBe(1);
+    const doc = sample("driver_app_config");
+    doc.waiting.rideTypes.airport.noShowFee = SEK(200_000);
+    const put = await call(app, "PUT", "/admin/config/driver_app_config", admin.headers, { expectedVersion: draft.version, zoneId: "Z001", document: doc });
+    expect(put.statusCode, put.body).toBe(200);
+    const pub = await call(app, "POST", "/admin/config/driver_app_config/publish", admin.headers, { expectedVersion: put.json().version, zoneId: "Z001" });
+    expect(pub.statusCode, pub.body).toBe(200);
+    const floor = Number((await database.db.selectFrom("wallet_floors").select("floor_minor").where("currency", "=", "SEK").executeTakeFirstOrThrow()).floor_minor);
+    expect(floor).toBe(-(30_000 + 4 * 200_000));
+  });
+});
+
+describe("J8 round 2: fee rows follow the wallet, oldest first; the admin list reads the wallet (must-fix 5)", () => {
+  it("50 kr credit and a 30 kr fee: the fee row is paid at once and the admin list shows no debt", async () => {
+    const { creditWallet } = await import("../../src/riders/wallet.js");
+    await database.db.transaction().execute((trx) => creditWallet(trx, riderId, SEK(5_000), null, clock.now, "adjustment"));
+    const feeTrip = await feeOwed(3_000);
+    expect(await balance()).toBe(2_000);
+    expect((await database.db.selectFrom("rider_fees").select("status").where("trip_id", "=", feeTrip).executeTakeFirstOrThrow()).status).toBe("paid");
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    const listed = (await call(app, "GET", `/admin/riders?q=${riderId}`, admin.headers)).json().items[0];
+    expect(listed.outstandingByCurrency ?? []).toEqual([]);
+  });
+
+  it("money into the wallet settles the OLDEST fee row first; the debt line names the next one", async () => {
+    const older = await feeOwed(3_000);
+    clock.now = new Date(clock.now.getTime() + 1000);
+    const newer = await feeOwed(4_000);
+    const { creditWallet } = await import("../../src/riders/wallet.js");
+    await database.db.transaction().execute((trx) => creditWallet(trx, riderId, SEK(3_000), null, clock.now, "adjustment"));
+    const rows = await database.db.selectFrom("rider_fees").select(["trip_id", "status"]).where("trip_id", "in", [older, newer]).orderBy("created_at").execute();
+    expect(rows).toEqual([{ trip_id: older, status: "paid" }, { trip_id: newer, status: "owed" }]);
+    const admin = await adminSession(app, database.db, "super", { now: clock.now });
+    expect((await call(app, "GET", `/admin/riders?q=${riderId}`, admin.headers)).json().items[0].outstandingByCurrency).toEqual([SEK(4_000)]);
+    const { tripId, version } = await accepted();
+    const done = await driveAndComplete(tripId, version);
+    expect(done.json().fareLines).toEqual(expect.arrayContaining([{ code: "outstanding_fee", amount: SEK(4_000), sourceTripId: newer }]));
+  });
+});
+
+describe("J8 round 2: Tunisia in TND, 3 decimals (must-fix 6)", () => {
+  const TND = (amountMinor: number) => ({ amountMinor, currency: "TND" });
+
+  it("limit 150.000 DT on and owed 150.000 DT: no cash offers, the Home line in TND; max rider debt 84.000 DT; floor −252.000 DT", async () => {
+    await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "standard-TN", version: 1, document: JSON.stringify({ country: "TN", currency: "TND", driverOwesLimit: { enabled: true, max: TND(150_000) } }), published_at: clock.now, published_by: null }).execute();
+    await database.db.updateTable("drivers").set({ country: "TN" }).where("driver_id", "=", drivers.A.id).execute();
+    try {
+      await database.db.insertInto("earnings_entries").values({ entry_id: "ern_tn_owed", driver_id: drivers.A.id, trip_id: null, kind: "adjustment", currency: "TND", amount_minor: -150_000, at: clock.now }).execute();
+      const { overOwesLimit, owesLimitOf } = await import("../../src/drivers/owes.js");
+      expect(await owesLimitOf(database.db, "TN")).toEqual({ enabled: true, max: TND(150_000) });
+      expect([...(await overOwesLimit(database.db, { zone_id: "TN-TC", payment_method: "cash" }, [drivers.A.id, drivers.B.id]))]).toEqual([[drivers.A.id, 150_000]]);
+      expect((await overOwesLimit(database.db, { zone_id: "TN-TC", payment_method: "card" }, [drivers.A.id])).size).toBe(0);
+      const lines = (await call(app, "GET", "/driver/reminders", { ...drivers.A.headers, ...NEW_APP })).json();
+      expect(lines.items).toEqual(expect.arrayContaining([{ kind: "owes_movera_over_limit", level: "due_soon", owed: TND(150_000), limit: TND(150_000) }]));
+    } finally {
+      await database.db.updateTable("drivers").set({ country: "SE" }).where("driver_id", "=", drivers.A.id).execute();
+    }
+    const { maxRiderDebtOf } = await import("../../src/riders/debt.js");
+    expect(await maxRiderDebtOf(database.db, "TN", "TND")).toEqual(TND(84_000));
+    expect(Number((await database.db.selectFrom("wallet_floors").select("floor_minor").where("currency", "=", "TND").executeTakeFirstOrThrow()).floor_minor)).toBe(-252_000);
+    // A TND debt of exactly 84.000 DT is saved (above the floor) and refuses a pay-in-car booking in Tunisia.
+    const tnFee = await insertTrip(database.db, riderId, { status: "no_show" });
+    await database.db.updateTable("trips").set({ zone_id: "TN-TC", currency: "TND" }).where("trip_id", "=", tnFee).execute();
+    const { chargeRiderFee } = await import("../../src/trips/ride/money.js");
+    const row = await database.db.selectFrom("trips").selectAll().where("trip_id", "=", tnFee).executeTakeFirstOrThrow();
+    await database.db.transaction().execute((trx) => chargeRiderFee(trx, row, "no_show", TND(84_000), clock.now));
+    const pricing = sample("pricing_document");
+    const tnd = JSON.parse(JSON.stringify(pricing).replaceAll('"SEK"', '"TND"'));
+    await database.db.insertInto("config_live").values({ doc: "pricing", zone_id: "TN-TC", version: 1, document: JSON.stringify({ ...tnd, zoneId: "TN-TC" }), published_at: clock.now, published_by: null }).execute();
+    await database.db.updateTable("zones").set({ open: true }).where("zone_id", "=", "TN-TC").execute();
+    const TUNIS = { address: "Avenue Habib Bourguiba", lat: 36.8, lng: 10.18 };
+    const TUNIS_DROP = { address: "La Marsa", lat: 36.88, lng: 10.32 };
+    const quote = (await call(app, "POST", "/quotes", { ...rider, ...NEW_APP }, { pickup: TUNIS, dropoff: TUNIS_DROP, stops: [], categoryIds: ["economy"] })).json();
+    expect(quote.zoneId, JSON.stringify(quote)).toBe("TN-TC");
+    expect(quote.quotes[0].walletDebt).toEqual(TND(84_000));
+    const refused = await call(app, "POST", "/trips", rider, { quoteId: quote.quotes[0].quoteId, categoryId: "economy", pickup: TUNIS, dropoff: TUNIS_DROP, stops: [], kind: "live", paymentMethod: "cash" });
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json()).toMatchObject({ reason: "rider_debt_above_max", details: ["debt:84000 TND", "max:84000 TND"] });
   });
 });

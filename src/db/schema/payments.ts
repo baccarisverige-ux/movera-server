@@ -12,6 +12,8 @@ export interface RiderFeesTable {
   carried_by: string | null;
   created_at: Timestamp;
   settled_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** S5 J8 (migration 0101): J8 settled this fee in the wallet (debt_paid, a correction, credit); false = an old copy did. */
+  settled_in_wallet: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
 export interface EarningsEntriesTable {

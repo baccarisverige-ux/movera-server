@@ -27,7 +27,7 @@ INSERT INTO rider_wallets (rider_id, currency, balance_minor, updated_at)
 SELECT rider_id, currency, delta, now() FROM sums
 ON CONFLICT (rider_id, currency) DO UPDATE SET balance_minor = rider_wallets.balance_minor + EXCLUDED.balance_minor, updated_at = now();
 
--- undo (moves the money back out; only before any fee entry was paid):
+-- undo: (moves the money back out; only before any fee entry was paid)
 -- WITH d AS (DELETE FROM wallet_entries w WHERE w.kind = 'fee' AND w.at < '<deploy time>' RETURNING rider_id, currency, amount_minor),
 --      s AS (SELECT rider_id, currency, sum(amount_minor) AS delta FROM d GROUP BY 1, 2)
 -- UPDATE rider_wallets w SET balance_minor = w.balance_minor - s.delta FROM s WHERE w.rider_id = s.rider_id AND w.currency = s.currency;

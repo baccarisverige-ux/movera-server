@@ -224,7 +224,7 @@ describe("no-show and unpaid fees", () => {
   });
 
   it("a trip that carried the fee but did not complete leaves it owed", async () => {
-    await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+    await database.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
     // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
     await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
     await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
@@ -238,7 +238,7 @@ describe("no-show and unpaid fees", () => {
     const trip = await riderView(next.tripId);
     await call(app, "POST", `/trips/${next.tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
     expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toEqual({ amountMinor: 6500, currency: "SEK" });
-    await database.db.updateTable("rider_fees").set({ status: "waived" }).execute();
+    await database.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).execute();
     // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
     await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
     await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
@@ -247,7 +247,7 @@ describe("no-show and unpaid fees", () => {
 
 describe("the rider's cancel after accept", () => {
   beforeEach(async () => {
-    await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+    await database.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
     // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
     await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
     await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
@@ -533,7 +533,7 @@ describe("v0.18.13 rider pushes for the trip moments (G13, contract.json#riderTr
     const trip = await riderView(tripId);
     await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: trip.version, reasonCode: "plans_changed" });
     expect(await pushes(tripId)).toEqual(["driver_found", "driver_arriving", "driver_arrived"]);
-    await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+    await database.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
     // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
     await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
     await database.db.updateTable("riders").set({ language: null, outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
