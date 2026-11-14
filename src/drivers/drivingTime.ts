@@ -64,10 +64,19 @@ export async function countedSeconds(ex: Executor, driverId: string, from: Date,
   return Math.max(0, Math.round(Number(row.rows[0]?.s ?? 0)));
 }
 
-/** Driver.drivingTime now. */
-export async function drivingTimeOf(ex: Executor, driver: { driver_id: string; zone_ids: string[]; driving_since: Date | null }, now: Date): Promise<DrivingTime> {
+/**
+ * Driver.drivingTime now. BQ-V21 (decisions/driving-time-limits.md:4 "6 hours offline so reset all time"): pass
+ * `offlineSince` (went_offline_at of a driver who is offline now) and the projection is the server's real numbers for
+ * him: after resetAfterOfflineHours offline in a row the count is already rested (he sees 0, not "Rest until"), and while
+ * resting canDriveAt = went offline + resetAfterOfflineHours (before: now + resetAfterOfflineHours on every read, a time
+ * that moved away). Without it (online, dispatch) the count is as before and canDriveAt = now + the reset.
+ */
+export async function drivingTimeOf(ex: Executor, driver: { driver_id: string; zone_ids: string[]; driving_since: Date | null; offlineSince?: Date | null }, now: Date): Promise<DrivingTime> {
   const limits = await drivingLimitsFor(ex, driver.zone_ids[0]);
-  const from = new Date(Math.max(now.getTime() - DAY_MS, driver.driving_since?.getTime() ?? 0));
+  const resetMs = limits.resetAfterOfflineHours * 3600_000;
+  const offlineSince = driver.offlineSince && driver.offlineSince.getTime() <= now.getTime() ? driver.offlineSince : null;
+  const restedAt = offlineSince && now.getTime() - offlineSince.getTime() >= resetMs ? offlineSince.getTime() + resetMs : 0;
+  const from = new Date(Math.max(now.getTime() - DAY_MS, driver.driving_since?.getTime() ?? 0, restedAt));
   const seconds = await countedSeconds(ex, driver.driver_id, from, now);
   const maxMinutes = Math.round(limits.maxHoursPerDay * 60);
   const reached = maxMinutes > 0 && seconds >= maxMinutes * 60;
@@ -76,7 +85,7 @@ export async function drivingTimeOf(ex: Executor, driver: { driver_id: string; z
     maxMinutes,
     reached,
     resetAfterOfflineHours: limits.resetAfterOfflineHours,
-    ...(reached ? { canDriveAt: new Date(now.getTime() + limits.resetAfterOfflineHours * 3600_000).toISOString() } : {}),
+    ...(reached ? { canDriveAt: new Date((offlineSince ?? now).getTime() + resetMs).toISOString() } : {}),
   };
 }
 
