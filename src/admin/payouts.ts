@@ -176,7 +176,7 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
 
 /** payoutView for a page of payouts, each with its summary (one batched read for the page). */
 export async function payoutViews(ex: Executor, rows: readonly PayoutRow[], viewer: "admin" | "driver") {
-  const summaries = await payoutSummaries(ex, rows);
+  const summaries = await payoutSummaries(ex, rows, viewer);
   return rows.map((row) => payoutView(row, viewer, summaries.get(row.payout_id)));
 }
 

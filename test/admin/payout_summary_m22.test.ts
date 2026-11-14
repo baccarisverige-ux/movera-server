@@ -14,8 +14,10 @@ import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
  * driverGets = the sum of each of the period's trips' driverTotal + each of his entries not inside a trip's driverTotal
  * (cancel / no-show shares, a lost-driver payment), each once. moveraGets = what Movera keeps now on each of the period's
  * trips (the admin view's moveraKeepsNow = moneySplit.movera) + Movera's share of the period's cancel / no-show fees.
- * v0.18.90 (moneyBase.lostDriverPaid.kpi): a lost-driver payment is taken off once — through the admin moneySplit.movera
- * of the trip, never again from the lost driver's own entry. Sweden (SEK), France (EUR), Tunisia (TND, 3 decimals).
+ * v0.18.92 (payoutSummary.entries; supervisor MF1 / MF2 / G2): the payout's OWN entries (payout_id), never the date
+ * period (manual + weekly over one week, late / carried entries); driverGets = Σ its entries; moveraGets per viewer (the
+ * driver's view never takes another driver's lost-driver payment off; the admin's does, once: through a paid trip's
+ * moneySplit.movera, or, on a trip with no paid end, from the lost driver's bonus entry in the payout that pays it).
  */
 
 let database: TestDatabase;
@@ -27,22 +29,24 @@ const IN = new Date("2026-11-04T10:00:00Z");
 type Money = { amountMinor: number; currency: string };
 
 let n = 0;
-const entry = (tripId: string, driverId: string, kind: "trip" | "pickup_pay" | "bonus" | "fee_share" | "tip" | "adjustment", amount: number, currency: string, cash = 0) =>
-  database.db.insertInto("earnings_entries").values({ entry_id: `ern_m22_${++n}`, driver_id: driverId, trip_id: tripId, kind, currency, amount_minor: amount, gross_minor: null, commission_minor: null, cash_minor: cash, at: IN }).execute();
+const entry = (tripId: string, driverId: string, kind: "trip" | "pickup_pay" | "bonus" | "fee_share" | "tip" | "adjustment", amount: number, currency: string, cash = 0, at = IN) =>
+  database.db.insertInto("earnings_entries").values({ entry_id: `ern_m22_${++n}`, driver_id: driverId, trip_id: tripId, kind, currency, amount_minor: amount, gross_minor: null, commission_minor: null, cash_minor: cash, at }).execute();
 
-async function trip(driverId: string, m: { status: string; currency: string; fare: number; lines?: Array<{ code: string; amount: Money }>; earnings: number; commission?: number; paid?: boolean; tip?: number; change?: number }): Promise<TripRow> {
+async function trip(driverId: string, m: { status: string; currency: string; fare: number; lines?: Array<{ code: string; amount: Money }>; earnings: number; commission?: number; paid?: boolean; tip?: number; change?: number; lost?: number }): Promise<TripRow> {
   const id = await insertTrip(database.db, riderId, { status: m.status, driverId });
   const lines = m.lines ?? [{ code: m.paid ? "base" : "cancel_fee", amount: { amountMinor: m.fare, currency: m.currency } }];
   await database.db.updateTable("trips").set({
     currency: m.currency, fare_minor: m.fare, booked_fare_minor: m.fare, fare_lines: JSON.stringify(lines), driver_earnings_minor: m.earnings, pickup_pay_minor: 0, driver_bonus_minor: 0,
-    commission_minor: m.commission ?? commissionOf(m.fare, lines, m.earnings, 0, 0), driver_adjustments_minor: m.change ?? 0, payment_method: "cash", ended_at: IN,
+    commission_minor: m.commission ?? commissionOf(m.fare, lines, m.earnings, 0, 0), driver_adjustments_minor: m.change ?? 0, lost_driver_paid_minor: m.lost ?? 0, payment_method: "cash", ended_at: IN,
     ended_by_command: m.paid ? "complete" : "no_show", payment_status: m.paid ? "captured" : null, cash_collected_minor: m.paid ? m.fare : null,
     tip: m.tip ? JSON.stringify({ amount: { amountMinor: m.tip, currency: m.currency }, method: "cash", driverShare: { amountMinor: m.tip, currency: m.currency } }) : null,
   }).where("trip_id", "=", id).execute();
   return (await database.db.selectFrom("trips").selectAll().where("trip_id", "=", id).executeTakeFirstOrThrow()) as unknown as TripRow;
 }
-const pay = (driverId: string) => database.db.transaction().execute((trx) => makePayouts(trx, { driverId, from: FROM, to: TO, source: "manual", by: null }, new Date("2026-11-10T00:00:00Z")));
+const pay = (driverId: string, range: { from?: Date; to?: Date; source?: "manual" | "weekly"; entriesFrom?: Date } = {}) =>
+  database.db.transaction().execute((trx) => makePayouts(trx, { driverId, from: range.from ?? FROM, to: range.to ?? TO, source: range.source ?? "manual", by: null, ...(range.entriesFrom ? { entriesFrom: range.entriesFrom } : {}) }, new Date("2026-11-20T00:00:00Z")));
 const adminMovera = (t: TripRow) => (tripProjection(t, "admin") as { moneySplit: { movera: Money } }).moneySplit.movera.amountMinor;
+const sek = (amountMinor: number) => ({ amountMinor, currency: "SEK" });
 async function summaries(driverId: string) {
   const mine = (await driverPayouts(database.db, driverId, { limit: 10 })).items;
   const admin = (await listPayouts(database.db, SUPER, { limit: 10, driverId })).items;
@@ -58,16 +62,16 @@ afterAll(async () => {
 });
 
 describe("BQ-M22: Payout.summary { driverGets, moveraGets } (priceDisplay.payoutSummary)", () => {
-  it("SEK: trips with a tip and a later pay change, a no-show share, and a reassigned trip — each amount once", async () => {
+  it("SEK: tip, pay change, no-show share and a reassigned trip — each amount once; the driver's and the admin's Movera gets differ by the lost-driver payment (MF2)", async () => {
     const a = await insertDriver(database.db);
     const b = await insertDriver(database.db);
-    // X: 200 kr, he gets 150 kr + a 20 kr cash tip + a 10 kr pay change → driverTotal 180 kr; Movera keeps 40 kr.
+    // X: 200 kr, he gets 150 kr + a 20 kr cash tip + a 10 kr pay change → 180 kr; Movera keeps 40 kr.
     const x = await trip(b, { status: "completed", currency: "SEK", fare: 20_000, earnings: 15_000, paid: true, tip: 2_000, change: 1_000 });
     await entry(x.trip_id, b, "trip", 15_000, "SEK", 20_000);
     await entry(x.trip_id, b, "tip", 2_000, "SEK", 2_000);
     await entry(x.trip_id, b, "adjustment", 1_000, "SEK");
-    // Y: reassigned — A lost it and was paid 30 kr (his own bonus entry), B completed it for 150 kr.
-    const y = await trip(b, { status: "completed", currency: "SEK", fare: 20_000, earnings: 15_000, paid: true });
+    // Y: reassigned — A lost it and was paid 30 kr (his bonus entry; lost_driver_paid 30 kr), B completed it for 150 kr.
+    const y = await trip(b, { status: "completed", currency: "SEK", fare: 20_000, earnings: 15_000, paid: true, lost: 3_000 });
     await entry(y.trip_id, a, "bonus", 3_000, "SEK");
     await entry(y.trip_id, b, "trip", 15_000, "SEK", 20_000);
     // Z: a 65 kr no-show, half his (32,50 kr), half Movera's (feeColumns: commission = Movera's share).
@@ -75,17 +79,69 @@ describe("BQ-M22: Payout.summary { driverGets, moveraGets } (priceDisplay.payout
     await entry(z.trip_id, b, "fee_share", 3_250, "SEK");
     expect(await pay(a)).toHaveLength(1);
     expect(await pay(b)).toHaveLength(1);
+    expect(adminMovera(y)).toBe(2_000);
 
     const forB = await summaries(b);
-    const expected = { driverGets: { amountMinor: 18_000 + 15_000 + 3_250, currency: "SEK" }, moveraGets: { amountMinor: 4_000 + adminMovera(y) + 3_250, currency: "SEK" } };
-    expect(forB.mine[0]!.summary).toEqual(expected);
-    expect(forB.admin[0]!.summary).toEqual(expected);
-    // Movera's part of Y is the admin moneySplit.movera (v0.18.90: the lost-driver payment taken off there, once).
-    expect(adminMovera(y)).toBeLessThanOrEqual(5_000);
-    // A: the 30 kr is his money; Movera's part is never taken off again from his entry.
+    // Admin: Movera keeps 40 + 20 (the 30 kr lost-driver payment off once) + 32,50 kr.
+    expect(forB.admin[0]!.summary).toEqual({ driverGets: sek(36_250), moveraGets: sek(4_000 + 2_000 + 3_250) });
+    // Driver: what Movera keeps from HIS trips (50 kr on Y) — another driver's money is never shown to him.
+    expect(forB.mine[0]!.summary).toEqual({ driverGets: sek(36_250), moveraGets: sek(4_000 + 5_000 + 3_250) });
+    // A: the 30 kr is his money; Y has a paid end, so it is taken off only through Y (admin), never again here.
     const forA = await summaries(a);
-    expect(forA.mine[0]!.summary).toEqual({ driverGets: { amountMinor: 3_000, currency: "SEK" }, moveraGets: { amountMinor: 0, currency: "SEK" } });
-    expect(forA.admin[0]!.summary).toEqual(forA.mine[0]!.summary);
+    expect(forA.mine[0]!.summary).toEqual({ driverGets: sek(3_000), moveraGets: sek(0) });
+    expect(forA.admin[0]!.summary).toEqual({ driverGets: sek(3_000), moveraGets: sek(0) });
+  });
+
+  it("G2 SEK: a lost-driver payment on a trip with no paid end (admin cancel) is taken off once — in the admin view of the payout that pays it", async () => {
+    const a = await insertDriver(database.db);
+    const w = await trip(a, { status: "cancelled_by_admin", currency: "SEK", fare: 25_000, earnings: 0, lost: 1_500 });
+    await entry(w.trip_id, a, "bonus", 1_500, "SEK");
+    await pay(a);
+    const { mine, admin } = await summaries(a);
+    expect(admin[0]!.summary).toEqual({ driverGets: sek(1_500), moveraGets: sek(-1_500) });
+    expect(mine[0]!.summary).toEqual({ driverGets: sek(1_500), moveraGets: sek(0) });
+  });
+
+  it("MF1 SEK: a manual payout and the weekly payout of the same week never count a trip twice", async () => {
+    const e = await insertDriver(database.db);
+    const t1 = await trip(e, { status: "completed", currency: "SEK", fare: 12_000, earnings: 10_000, paid: true });
+    await entry(t1.trip_id, e, "trip", 10_000, "SEK", 12_000, new Date("2026-11-03T10:00:00Z"));
+    const t2 = await trip(e, { status: "completed", currency: "SEK", fare: 10_000, earnings: 8_000, paid: true });
+    await entry(t2.trip_id, e, "trip", 8_000, "SEK", 10_000, new Date("2026-11-06T10:00:00Z"));
+    expect(await pay(e, { to: new Date("2026-11-05T00:00:00Z") })).toHaveLength(1);
+    expect(await pay(e, { source: "weekly" })).toHaveLength(1);
+    const { mine, admin } = await summaries(e);
+    const byAmount = (list: typeof mine) => list.map((p) => p.summary).sort((x, y) => x!.driverGets.amountMinor - y!.driverGets.amountMinor);
+    expect(byAmount(mine)).toEqual([{ driverGets: sek(8_000), moveraGets: sek(2_000) }, { driverGets: sek(10_000), moveraGets: sek(2_000) }]);
+    expect(byAmount(admin)).toEqual(byAmount(mine));
+  });
+
+  it("MF1 SEK: a late pay change of an already paid week is in the payout that pays it (carried entries); the paid payout does not move", async () => {
+    const f = await insertDriver(database.db);
+    const g = await trip(f, { status: "completed", currency: "SEK", fare: 20_000, earnings: 15_000, paid: true });
+    await entry(g.trip_id, f, "trip", 15_000, "SEK", 20_000);
+    const [first] = await pay(f, { source: "weekly" });
+    // After the payout: a 10 kr pay change dated in the paid week; the next weekly run carries it (entriesFrom).
+    await database.db.updateTable("trips").set({ driver_adjustments_minor: 1_000 }).where("trip_id", "=", g.trip_id).execute();
+    await entry(g.trip_id, f, "adjustment", 1_000, "SEK", 0, new Date("2026-11-05T10:00:00Z"));
+    const [second] = await pay(f, { source: "weekly", from: TO, to: new Date("2026-11-16T00:00:00Z"), entriesFrom: new Date(0) });
+    expect(second).toBeDefined();
+    const { admin } = await summaries(f);
+    const of = (id: string) => admin.find((p) => p.payoutId === id)!.summary;
+    // The paid payout keeps his 150 kr; the next one pays (and shows) the 10 kr; Movera's 40 kr (50 − 10, kept now) once, on the trip's payout.
+    expect(of(first!.payout_id)).toEqual({ driverGets: sek(15_000), moveraGets: sek(4_000) });
+    expect(of(second!.payout_id)).toEqual({ driverGets: sek(1_000), moveraGets: sek(0) });
+  });
+
+  it("S3 SEK: the lost driver gets the trip back and completes it — his earlier 25 kr payment is in his Driver gets", async () => {
+    const h = await insertDriver(database.db);
+    const k = await trip(h, { status: "completed", currency: "SEK", fare: 20_000, earnings: 15_000, paid: true, lost: 2_500 });
+    await entry(k.trip_id, h, "bonus", 2_500, "SEK");
+    await entry(k.trip_id, h, "trip", 15_000, "SEK", 20_000);
+    await pay(h);
+    const { mine, admin } = await summaries(h);
+    expect(admin[0]!.summary).toEqual({ driverGets: sek(17_500), moveraGets: sek(2_500) });
+    expect(mine[0]!.summary).toEqual({ driverGets: sek(17_500), moveraGets: sek(5_000) });
   });
 
   it("TND (3 decimals): contract example — rider 22.000 DT (20.000 + 2.000 app fee), driver 16.000 DT, Movera gets 6.000 DT", async () => {

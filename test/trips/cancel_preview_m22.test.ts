@@ -26,6 +26,8 @@ type Setup = {
   currency: string; status: string; kind?: "live" | "scheduled"; fare: number; withDriver?: boolean; acceptedMin?: number | null; scheduledMin?: number; createdMin?: number;
   rule: { freeMin: number; type: "fixed" | "percent"; value: number; min: Money | null; max: Money | null } | null; noShowOn?: boolean; noShowFee?: number;
   waiting?: { arrivedMin: number; freeUntilMin: number }; queued?: boolean; chainFreeMin?: number; noRules?: boolean;
+  /** Not heading to the pickup since this minute (the zone default: free after 2 min in a row). */
+  notHeadingFromMin?: number;
 };
 async function trip(s: Setup): Promise<TripRow> {
   const withDriver = s.withDriver ?? true;
@@ -43,6 +45,7 @@ async function trip(s: Setup): Promise<TripRow> {
     zone_id: "Z001", currency: s.currency, fare_minor: s.fare, booked_fare_minor: s.fare, fare_lines: JSON.stringify([{ code: "base", amount: { amountMinor: s.fare, currency: s.currency } }]),
     booking_rules: s.noRules ? null : JSON.stringify(rules), accepted_at: withDriver && s.acceptedMin !== null ? at(s.acceptedMin ?? 0) : null,
     scheduled_at: s.scheduledMin !== undefined ? at(s.scheduledMin) : null, created_at: at(s.createdMin ?? -60), waiting: waiting ? JSON.stringify(waiting) : null,
+    heading_check: s.notHeadingFromMin !== undefined ? JSON.stringify({ heading: false, checkedAt: at(s.notHeadingFromMin + 1).toISOString(), notHeadingSince: at(s.notHeadingFromMin).toISOString(), freeAfter: at(s.notHeadingFromMin + 2).toISOString(), meters: 3_000 }) : null,
     next_after_trip_id: s.queued ? "trp_before" : null, chained: s.chainFreeMin !== undefined, chain_free_cancel_at: s.chainFreeMin !== undefined ? at(s.chainFreeMin) : null,
   }).where("trip_id", "=", id).execute();
   return (await database.db.selectFrom("trips").selectAll().where("trip_id", "=", id).executeTakeFirstOrThrow()) as unknown as TripRow;
@@ -116,6 +119,14 @@ describe("BQ-M22: TripProjection.cancelPreview (priceDisplay.cancelPreview)", ()
     const chained = await trip({ currency: "SEK", status: "driver_to_pickup", fare: 25_000, rule: SEK_RULE, chainFreeMin: 5 });
     expect(await sameAsCancel(chained, at(3))).toEqual({ feeNow: { amountMinor: 3_500, currency: "SEK" }, kind: "cancel" });
     expect(await sameAsCancel(chained, at(6))).toEqual({ feeNow: { amountMinor: 0, currency: "SEK" }, kind: "cancel" });
+  });
+
+  it("supervisor S1 SEK: the heading check makes the cancel free (not heading for 2 min in a row) — feeNow 0, as the real cancel", async () => {
+    const t = await trip({ currency: "SEK", status: "driver_to_pickup", fare: 25_000, rule: SEK_RULE, notHeadingFromMin: 3 });
+    // Still inside the 2 min of not heading: the fee.
+    expect(await sameAsCancel(t, at(4))).toEqual({ feeNow: { amountMinor: 3_500, currency: "SEK" }, kind: "cancel" });
+    // From freeAfter (3 + 2 min) on: free.
+    expect(await sameAsCancel(t, at(6))).toEqual({ feeNow: { amountMinor: 0, currency: "SEK" }, kind: "cancel" });
   });
 
   it("not sent: live while searching, an ended trip, a trip with no cancel rule or no kept rules", async () => {
