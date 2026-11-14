@@ -7,6 +7,8 @@ import { isTripStatus, TERMINAL } from "../rules/transitions.js";
 import { tripProjection } from "../trips/projection.js";
 import { rideCheckSettings, type RideCheckSettings } from "../trips/onTripSettings.js";
 import { queueRideCheckPush } from "./rideCheckPush.js";
+// v0.18.98 (job C9b): the shared stop visit (arrivedBy / away / pausedSeconds / pauseCount on top of arrivedAt / leftAt).
+import type { StopVisit } from "../trips/ride/stopClock.js";
 
 /**
  * v0.18.9 (contract.json#onTrip.rideCheck, owner G7 decisions 1 + 2): the server starts ride checks itself from the
@@ -29,7 +31,6 @@ const MAX_ACCURACY_M = 50;
 type Side = "rider" | "driver";
 export type ServerRideCheck = { checkId: string; trigger: string; askedAt: string; answerBy: string; answers: Partial<Record<Side, "ok" | "need_help">>; alertedAt?: string };
 type Fix = LatLng & { measured_at: Date };
-type StopVisit = { stopIndex: number; arrivedAt: string; leftAt?: string };
 
 const pointOf = (p: unknown): LatLng => ({ lat: Number((p as LatLng).lat), lng: Number((p as LatLng).lng) });
 
@@ -195,7 +196,9 @@ export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSetting
   const newest = fixes[fixes.length - 1];
   if (!newest) return null;
   const boardedLongEnough = trip.boarded_at !== null && now.getTime() - trip.boarded_at.getTime() >= settings.stopMinutes * 60_000;
-  const atStop = ((trip.stop_visits as StopVisit[] | null) ?? []).some((v) => !v.leftAt);
+  // v0.18.98 supervisor M2 (job C9b): an open stop counts as "at the stop" only while the driver is not away from it
+  // (stops[i].away), so a stop arrived (also automatically) and never left does not switch long_stop off for the trip.
+  const atStop = ((trip.stop_visits as StopVisit[] | null) ?? []).some((v) => !v.leftAt && !v.away);
   const nearDropoff = haversineKm(newest, pointOf(trip.dropoff)) <= NEAR_DROPOFF_KM;
   if (boardedLongEnough && !atStop && !nearDropoff && isLongStop(fixes, settings.stopMinutes)) return { trigger: "long_stop", at: newest, measured: Math.max(settings.stopMinutes, stoppedMinutes(fixes)) };
   const route = await routeOf(trx, trip, router);

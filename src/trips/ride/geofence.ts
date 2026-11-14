@@ -175,13 +175,17 @@ export function pickupGeofenceHandler(autoArrive: AutoArrive): TimerHandler {
       const stops = (trip.stops as Place[] | null) ?? [];
       const visits = visitsOf(trip);
       const next = nextStopIndex(stops.length, visits);
-      if (next !== null && confirmedBy(fixesTo(stops[next]!), within, rule, true, apart)) {
+      const open = openVisitOf(visits);
+      const openStop = open ? stops[open.stopIndex] : undefined;
+      // Supervisor M1 (Rules audits/impact/c9b-middle-stops-supervisor.md): while the driver waits at an open stop (not
+      // away), both fixes of the pair must also be farther than autoArriveMeters from it, so two stops close together
+      // (next door, the same building) never close the first one by themselves; then only his tap arrives the next stop.
+      const leftOpen = (f: CountingFix) => !openStop || Boolean(open!.away) || haversineKm(f, openStop) * 1000 > fence.autoArriveMeters;
+      if (next !== null && confirmedBy(fixesTo(stops[next]!), (f) => within(f) && leftOpen(f), rule, true, apart)) {
         // The same step as the driver's tap (version + 1, trip_projection); an earlier open stop gets leftAt = now.
         await touchTrip(trx, trip, { stop_visits: JSON.stringify(arriveAtStop(visits, next, now, "auto")) }, now);
         return;
       }
-      const open = openVisitOf(visits);
-      const openStop = open ? stops[open.stopIndex] : undefined;
       if (!open || !openStop) return;
       const first = confirmedBy(fixesTo(openStop), open.away ? within : beyond, rule, Boolean(open.away), apart);
       if (!first) return;

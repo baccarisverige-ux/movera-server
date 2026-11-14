@@ -147,10 +147,10 @@ async function toInTrip(tripId: string, version: number, pickup: { lat: number; 
   return { tripId, version: (await driverView(tripId)).version as number };
 }
 /** A Tunis trip (TND) with one stop, given to driver A (the Tunis dispatch is not under test), in_trip. */
-async function inTripTunis(): Promise<{ tripId: string; version: number }> {
-  const quote = (await call(app, "POST", "/quotes", rider, { pickup: TUNIS, dropoff: TUNIS_DROP, stops: [TUNIS_STOP], categoryIds: ["economy"] })).json().quotes?.[0];
+async function inTripTunis(stops: Doc[] = [TUNIS_STOP]): Promise<{ tripId: string; version: number }> {
+  const quote = (await call(app, "POST", "/quotes", rider, { pickup: TUNIS, dropoff: TUNIS_DROP, stops, categoryIds: ["economy"] })).json().quotes?.[0];
   expect(quote, "a TND quote").toBeDefined();
-  const res = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: TUNIS, dropoff: TUNIS_DROP, stops: [TUNIS_STOP], kind: "live", paymentMethod: "cash" });
+  const res = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: TUNIS, dropoff: TUNIS_DROP, stops, kind: "live", paymentMethod: "cash" });
   expect(res.statusCode, res.body).toBe(201);
   const tripId = res.json().tripId as string;
   await database.db.updateTable("offers").set({ status: "withdrawn" }).where("trip_id", "=", tripId).execute();
@@ -350,7 +350,8 @@ describe("C9b (3): money = fixtures/auto_arrive.json#stops (preview line = final
 });
 
 describe("C9b (4): the first stop tap's position check (fixtures/auto_arrive.json#firstTap)", () => {
-  for (const c of FIXTURE.firstTap as Array<{ id: string; meters: number | null; ageSeconds: number | null; contractVersion: string | null; expect: string }>) {
+  for (const fixtureTap of FIXTURE.firstTap as Array<{ id: string; meters: number | null; ageSeconds: number | null; contractVersion: string | null; expect: string }>) {
+    const c = fixtureTap;
     it(`${c.id} → ${c.expect}`, async () => {
       const { tripId, version } = await inTrip();
       if (c.meters === null) {
@@ -429,3 +430,68 @@ describe("C9b (6): a route change keeps a visited stop's away / pausedSeconds / 
     expect(after.stops[1].arrivedAt).toBeUndefined();
   });
 });
+
+/* ---------------------------------------------------------------- supervisor round 1 (Rules audits/impact/c9b-middle-stops-supervisor.md) */
+
+const PLACES = {
+  SEK: { inTrip: (stops: Doc[]) => inTrip(stops), stop: STOP_A },
+  TND: { inTrip: (stops: Doc[]) => inTripTunis(stops), stop: TUNIS_STOP },
+} as const;
+
+for (const currency of ["SEK", "TND"] as const) {
+  const { stop } = PLACES[currency];
+  const start = PLACES[currency].inTrip;
+  const named = (address: string, meters: number) => ({ address, ...north(stop, meters) });
+
+  describe(`C9b M1 (${currency}): no auto arrival at the next stop while the driver still waits at the open stop`, () => {
+    it("two stops 60 m apart, parked at stop 0: another confirming pair does NOT arrive stop 1 nor close stop 0; his tap does", async () => {
+      const { tripId } = await start([{ ...stop }, named("Next door", 60)]);
+      const arrived = await autoAtStop(tripId, 0, stop);
+      // Still parked 40 m north of stop 0 (20 m from stop 1): a fresh confirming pair.
+      await pairAfter(clock.now.toISOString(), 30, north(stop, 40));
+      const still = await driverView(tripId);
+      expect(still.stops[0].leftAt, "stop 0 stays open").toBeUndefined();
+      expect(still.stops[1].arrivedAt, "stop 1 not auto-arrived").toBeUndefined();
+      expect(still.version).toBe(arrived.version);
+      clock.now = new Date(clock.now.getTime() + 5000);
+      const tap = await stopTap(tripId, 1, "arrive", still.version, { location: here(north(stop, 60)) });
+      expect(tap.statusCode, tap.body).toBe(200);
+      expect(tap.json().stops[1]).toMatchObject({ arrivedBy: "tap" });
+      expect(tap.json().stops[0].leftAt).toBe(tap.json().stops[1].arrivedAt);
+    });
+
+    it("two stops 150 m apart: driving on to stop 1 (both fixes > 100 m from stop 0) still arrives it automatically", async () => {
+      const { tripId } = await start([{ ...stop }, named("Down the road", 150)]);
+      await autoAtStop(tripId, 0, stop);
+      const trip = await autoAtStop(tripId, 1, north(stop, 150 - 40));
+      expect(trip.stops[1]).toMatchObject({ arrivedBy: "auto" });
+      expect(trip.stops[0].leftAt).toBe(trip.stops[1]!.arrivedAt);
+    });
+  });
+
+  describe(`C9b M2 (${currency}): the ride check's long_stop counts an open stop as "at the stop" only while not away`, () => {
+    /** The car stands still at `at` for `seconds` (a fix every 30 s, the job worker after each). */
+    async function standStill(at: { lat: number; lng: number }, seconds: number) {
+      const from = clock.now.toISOString();
+      for (let s = 30; s <= seconds; s += 30) await fixAfter(from, s, at);
+    }
+    it("open stop, driver away (400 m) and still for 3 min → long_stop is asked", async () => {
+      const { tripId } = await start([{ ...stop }]);
+      const arrived = await autoAtStop(tripId, 0, stop);
+      await pairAfter(arrived.stops[0].arrivedAt, 60, north(stop, 400));
+      expect((await driverView(tripId)).stops[0].away).toBeDefined();
+      await standStill(north(stop, 400), 180);
+      const seen = await riderView(tripId);
+      expect(seen.stops[0].away).toBeDefined();
+      expect(seen.rideCheck?.trigger).toBe("long_stop");
+    });
+    it("open stop, driver waiting at it (not away) for 3 min → no long_stop", async () => {
+      const { tripId } = await start([{ ...stop }]);
+      await autoAtStop(tripId, 0, stop);
+      await standStill(north(stop, 40), 180);
+      const seen = await riderView(tripId);
+      expect(seen.stops[0].away).toBeUndefined();
+      expect(seen.rideCheck?.trigger).not.toBe("long_stop");
+    });
+  });
+}
