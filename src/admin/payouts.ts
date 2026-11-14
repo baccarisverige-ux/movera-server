@@ -9,7 +9,7 @@ import { audit } from "./audit.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
 import { firstPageTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { standardKey } from "../config/service.js";
-import { payoutSummaries, type PayoutSummary } from "./payoutSummary.js";
+import { freezePayoutSummary, payoutSummaries, type PayoutSummary } from "./payoutSummary.js";
 
 /**
  * Payouts (contract v0.9.0 §16, contract.json#payouts, fixtures/payouts.json; owner decisions of 2026-10-27).
@@ -85,6 +85,8 @@ type PayoutRow = {
   created_at: Date;
   paid_at: Date | null;
   paid_by: string | null;
+  /** v0.18.95 BQ-M26 (0109): both views of Payout.summary, frozen when marked paid; null while unpaid. */
+  paid_summary?: unknown;
   first_name?: string | null;
   last_name?: string | null;
 };
@@ -326,7 +328,7 @@ export async function closePeriodsBatch(trx: Trx, now: Date, options: { after?: 
 /** Kept name for the jobs (v0.9.0): the schedule now comes from the country (closePeriods). */
 export const closeWeeks = closePeriods;
 
-const SELECT_PAYOUT = ["payouts.payout_id", "payouts.driver_id", "payouts.zone_id", "payouts.currency", "payouts.amount_minor", "payouts.lines", "payouts.trip_count", "payouts.source", "payouts.status", "payouts.period_start", "payouts.period_end", "payouts.note", "payouts.created_at", "payouts.paid_at", "payouts.paid_by", "drivers.first_name", "drivers.last_name"] as const;
+const SELECT_PAYOUT = ["payouts.payout_id", "payouts.driver_id", "payouts.zone_id", "payouts.currency", "payouts.amount_minor", "payouts.lines", "payouts.trip_count", "payouts.source", "payouts.status", "payouts.period_start", "payouts.period_end", "payouts.note", "payouts.created_at", "payouts.paid_at", "payouts.paid_by", "payouts.paid_summary", "drivers.first_name", "drivers.last_name"] as const;
 
 export async function listPayouts(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; driverId?: string; from?: string; to?: string; total?: boolean }) {
   let q = ex.selectFrom("payouts").innerJoin("drivers", "drivers.driver_id", "payouts.driver_id").select(SELECT_PAYOUT);
@@ -401,6 +403,8 @@ export async function markPayoutPaid(trx: Trx, who: Principal, payoutId: string,
   if (row.status === "paid") throw new ApiError("invalid_transition", "This payout is already paid.", { reason: "already_paid" });
   if (row.status === "pending_approval") throw new ApiError("conflict", "This payout's run is not approved yet.", { reason: "run_not_approved" });
   await trx.updateTable("payouts").set({ status: "paid", paid_at: now, paid_by: who.subjectId, ...(body.note ? { note: body.note } : {}) }).where("payout_id", "=", payoutId).execute();
+  // v0.18.95 BQ-M26 (payoutSummary.frozenWhenPaid): the numbers at this moment are the payout's numbers from now on.
+  await freezePayoutSummary(trx, row);
   await audit(trx, { adminId: who.subjectId, action: "payout.paid", targetType: "payout", targetId: payoutId, zoneId: row.zone_id, detail: body.note ? { note: body.note } : {}, at: now });
   return (await payoutViews(trx, [await payoutForAdmin(trx, who, payoutId)], "admin"))[0]!;
 }
