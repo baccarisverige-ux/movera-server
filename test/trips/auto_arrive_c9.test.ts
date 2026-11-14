@@ -67,16 +67,24 @@ afterAll(async () => {
   await database.drop();
 });
 
-/** The driver's phone sends one fix now (accuracy 5 m unless said). */
-async function fixAt(at: { lat: number; lng: number }, accuracy = 5) {
-  const res = await call(app, "POST", "/driver/location", driverA.headers, { fixes: [{ ...at, accuracy, measuredAt: clock.now.toISOString() }] });
+/** The driver's phone sends one fix now (accuracy 5 m unless said; speedMps only when given). */
+async function fixAt(at: { lat: number; lng: number }, accuracy = 5, speedMps?: number) {
+  const res = await call(app, "POST", "/driver/location", driverA.headers, { fixes: [{ ...at, accuracy, measuredAt: clock.now.toISOString(), ...(speedMps === undefined ? {} : { speedMps }) }] });
   expect(res.statusCode, res.body).toBe(200);
 }
 /** The clock moves to `seconds` after `from`, the fix is sent at that moment, then the job worker runs. */
-async function fixAfter(from: string, seconds: number, at: { lat: number; lng: number }, accuracy = 5) {
+async function fixAfter(from: string, seconds: number, at: { lat: number; lng: number }, accuracy = 5, speedMps?: number) {
   clock.now = new Date(Date.parse(from) + seconds * 1000);
-  await fixAt(at, accuracy);
+  await fixAt(at, accuracy, speedMps);
   await worker.runDue();
+}
+/**
+ * Round 2 (contract.json#autoArrive.confirm, supervisor M1): one fix never decides; two counting fixes in a row 5 s apart
+ * at the same place (a standing car) confirm. The moment is the first fix of the pair.
+ */
+async function pairAfter(from: string, seconds: number, at: { lat: number; lng: number }) {
+  await fixAfter(from, seconds, at);
+  await fixAfter(from, seconds + 5, at);
 }
 
 beforeEach(async () => {
@@ -116,9 +124,7 @@ async function headingToPickup(): Promise<{ tripId: string; version: number }> {
 }
 /** The driver's phone reaches 40 m from the pickup: the server marks him arrived (no tap). */
 async function autoArrived(tripId: string) {
-  clock.now = new Date(clock.now.getTime() + 1000);
-  await fixAt(north(NORRMALM, 40));
-  await worker.runDue();
+  await pairAfter(clock.now.toISOString(), 1, north(NORRMALM, 40));
   const trip = await driverView(tripId);
   expect(trip.status).toBe("arrived");
   return trip as Doc & { version: number; waiting: Doc & { arrivedAt: string; freeUntil: string; noShowAt: string } };
@@ -185,14 +191,14 @@ describe("C9 (b): the waiting clock stops while the driver is more than 200 m aw
     const { tripId } = await headingToPickup();
     const arrived = await autoArrived(tripId);
     const t0 = arrived.waiting.arrivedAt;
-    await fixAfter(t0, 120, north(NORRMALM, 400));
+    await pairAfter(t0, 120, north(NORRMALM, 400));
     const away = await driverView(tripId);
     expect(away.version).toBe(arrived.version);
     expect(away.waiting.away).toEqual({ since: new Date(Date.parse(t0) + 120_000).toISOString() });
     // Frozen while away: 6 min after arrival nothing is charged.
     clock.now = new Date(Date.parse(t0) + 360_000);
     expect((await riderView(tripId)).waiting).toMatchObject({ chargedSecondsNow: 0 });
-    await fixAfter(t0, 420, north(NORRMALM, 50));
+    await pairAfter(t0, 420, north(NORRMALM, 50));
     const back = await driverView(tripId);
     expect(back.waiting.away).toBeUndefined();
     expect(back.waiting).toMatchObject({ pausedSeconds: 300, pauseCount: 1 });
@@ -210,11 +216,11 @@ describe("C9 (b): the waiting clock stops while the driver is more than 200 m aw
     const { tripId } = await headingToPickup();
     const arrived = await autoArrived(tripId);
     const t0 = arrived.waiting.arrivedAt;
-    await fixAfter(t0, 100, north(NORRMALM, 150));
+    await pairAfter(t0, 100, north(NORRMALM, 150));
     expect((await driverView(tripId)).waiting.away).toBeUndefined();
-    await fixAfter(t0, 400, north(NORRMALM, 500));
+    await pairAfter(t0, 400, north(NORRMALM, 500));
     expect((await driverView(tripId)).waiting.away).toEqual({ since: new Date(Date.parse(t0) + 400_000).toISOString() });
-    await fixAfter(t0, 500, north(NORRMALM, 150));
+    await pairAfter(t0, 500, north(NORRMALM, 150));
     expect((await driverView(tripId)).waiting.away).toBeDefined();
     clock.now = new Date(Date.parse(t0) + 700_000);
     const boarded = await step(tripId, "board", arrived.version);
@@ -228,7 +234,7 @@ describe("C9 (b): the waiting clock stops while the driver is more than 200 m aw
     const { tripId } = await headingToPickup();
     const arrived = await autoArrived(tripId);
     const t0 = arrived.waiting.arrivedAt;
-    await fixAfter(t0, 200, north(NORRMALM, 300));
+    await pairAfter(t0, 200, north(NORRMALM, 300));
     clock.now = new Date(Date.parse(t0) + 900_000);
     driverA.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
     const away = await call(app, "POST", `/trips/${tripId}/no-show`, driverA.headers, { expectedVersion: arrived.version });
@@ -253,7 +259,7 @@ describe("C9 (b): the waiting clock stops while the driver is more than 200 m aw
     const { tripId } = await headingToPickup();
     const arrived = await autoArrived(tripId);
     const t0 = arrived.waiting.arrivedAt;
-    await fixAfter(t0, 60, north(NORRMALM, 600));
+    await pairAfter(t0, 60, north(NORRMALM, 600));
     clock.now = new Date(Date.parse(t0) + 600_000);
     rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
     const res = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: arrived.version, reasonCode: "plans_changed" });
@@ -268,21 +274,191 @@ describe("C9 (b): the waiting clock stops while the driver is more than 200 m aw
     const tripId = res.json().tripId as string;
     await database.db.updateTable("offers").set({ status: "withdrawn" }).where("trip_id", "=", tripId).execute();
     await database.db.updateTable("trips").set({ status: "driver_to_pickup", driver_id: driverA.id, accepted_at: clock.now, version: res.json().version + 1 }).where("trip_id", "=", tripId).execute();
-    clock.now = new Date(clock.now.getTime() + 1000);
-    await fixAt(north(PARIS, 30));
-    await worker.runDue();
+    await pairAfter(clock.now.toISOString(), 1, north(PARIS, 30));
     const arrived = await driverView(tripId);
     expect(arrived.status).toBe("arrived");
     const t0 = arrived.waiting.arrivedAt as string;
     const perMin = arrived.waiting.perMin as { amountMinor: number; currency: string };
     expect(perMin.currency).toBe("EUR");
-    await fixAfter(t0, 60, north(PARIS, 250));
-    await fixAfter(t0, 240, north(PARIS, 10));
+    await pairAfter(t0, 60, north(PARIS, 250));
+    await pairAfter(t0, 240, north(PARIS, 10));
     clock.now = new Date(Date.parse(t0) + (5 * 60 + 180 + 60) * 1000);
     driverA.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
     const boarded = await step(tripId, "board", arrived.version);
     expect(boarded.statusCode, boarded.body).toBe(200);
     expect(boarded.json().waiting.chargedSeconds).toBe(60);
     expect(boarded.json().fareLines).toEqual(expect.arrayContaining([{ code: "waiting", amount: { amountMinor: perMin.amountMinor, currency: "EUR" } }]));
+  });
+});
+
+/** South of a pickup by about `meters`. */
+const south = (at: { lat: number; lng: number }, meters: number) => north(at, -meters);
+
+describe("C9 round 2 M1 (contract.json#autoArrive.confirm): one GPS fix never decides", () => {
+  it("a single jumped fix 20 m from the pickup (accuracy 5 m) between fixes 400 m away: no arrival; a real stop then arrives", async () => {
+    const { tripId } = await headingToPickup();
+    const t = clock.now.toISOString();
+    await fixAfter(t, 1, north(NORRMALM, 400));
+    await fixAfter(t, 6, north(NORRMALM, 20));
+    expect((await driverView(tripId)).status).toBe("driver_to_pickup");
+    await fixAfter(t, 11, north(NORRMALM, 390));
+    expect((await driverView(tripId)).status).toBe("driver_to_pickup");
+    // The real arrival: two fixes 5 s apart, standing (no speed sent; 0 m between them).
+    await pairAfter(t, 60, north(NORRMALM, 30));
+    const arrived = await driverView(tripId);
+    expect(arrived.status).toBe("arrived");
+    expect(arrived.waiting.arrivedBy).toBe("auto");
+  });
+
+  it("a drive past the pickup at 50 km/h (speedMps 13.9, every 2 s through the 100 m circle): no arrival", async () => {
+    const { tripId } = await headingToPickup();
+    const t = clock.now.toISOString();
+    let s = 1;
+    for (const m of [-90, -60, -30, 0, 30, 60, 90]) {
+      await fixAfter(t, s, m < 0 ? south(NORRMALM, -m) : north(NORRMALM, m), 5, 13.9);
+      s += 2;
+    }
+    expect((await driverView(tripId)).status).toBe("driver_to_pickup");
+  });
+
+  it("a drive past with no speed on the fixes: 60 m before and 60 m after the pickup 5 s apart (86 km/h between them) is no arrival", async () => {
+    const { tripId } = await headingToPickup();
+    const t = clock.now.toISOString();
+    await fixAfter(t, 1, south(NORRMALM, 60));
+    await fixAfter(t, 6, north(NORRMALM, 60));
+    expect((await driverView(tripId)).status).toBe("driver_to_pickup");
+  });
+
+  it("jitter at the arrive border (95 m / 105 m by turns, slow): no arrival", async () => {
+    const { tripId } = await headingToPickup();
+    const t = clock.now.toISOString();
+    for (let i = 0; i < 6; i++) await fixAfter(t, 1 + i * 5, north(NORRMALM, i % 2 === 0 ? 105 : 95));
+    expect((await driverView(tripId)).status).toBe("driver_to_pickup");
+  });
+
+  it("waiting: one outlier fix 500 m away does not stop the clock; jitter at the leave border (190 / 210 m) does not either", async () => {
+    const { tripId } = await headingToPickup();
+    const arrived = await autoArrived(tripId);
+    const t0 = arrived.waiting.arrivedAt;
+    await fixAfter(t0, 30, north(NORRMALM, 500));
+    await fixAfter(t0, 35, north(NORRMALM, 30));
+    expect((await driverView(tripId)).waiting.away).toBeUndefined();
+    for (let i = 0; i < 6; i++) await fixAfter(t0, 60 + i * 5, north(NORRMALM, i % 2 === 0 ? 210 : 190));
+    expect((await driverView(tripId)).waiting.away).toBeUndefined();
+    // The real leave: two fixes beyond 200 m, 5 s apart → stopped from the first.
+    await fixAfter(t0, 120, north(NORRMALM, 400));
+    expect((await driverView(tripId)).waiting.away).toBeUndefined();
+    await fixAfter(t0, 125, north(NORRMALM, 450));
+    expect((await driverView(tripId)).waiting.away).toEqual({ since: new Date(Date.parse(t0) + 120_000).toISOString() });
+  });
+
+  it("away: one fix back within 100 m, jitter at the arrive border, or a drive past at speed does not restart the clock; a real return does", async () => {
+    const { tripId } = await headingToPickup();
+    const arrived = await autoArrived(tripId);
+    const t0 = arrived.waiting.arrivedAt;
+    await pairAfter(t0, 60, north(NORRMALM, 400));
+    expect((await driverView(tripId)).waiting.away).toBeDefined();
+    await fixAfter(t0, 100, north(NORRMALM, 20));
+    await fixAfter(t0, 105, north(NORRMALM, 400));
+    for (let i = 0; i < 4; i++) await fixAfter(t0, 110 + i * 5, north(NORRMALM, i % 2 === 0 ? 105 : 95));
+    for (const [k, m] of [-60, -20, 20, 60].entries()) await fixAfter(t0, 140 + k * 2, m < 0 ? south(NORRMALM, -m) : north(NORRMALM, m), 5, 13.9);
+    expect((await driverView(tripId)).waiting.away).toBeDefined();
+    await pairAfter(t0, 200, north(NORRMALM, 30));
+    const back = await driverView(tripId);
+    expect(back.waiting.away).toBeUndefined();
+    // Stopped from 60 s (first fix of the leave pair) to 200 s (first fix of the return pair).
+    expect(back.waiting).toMatchObject({ pausedSeconds: 140, pauseCount: 1 });
+  });
+});
+
+describe("C9 round 2 M2: the back tap counts only within the trip's leaveMeters", () => {
+  it("away, a tap from 250 m (inside the first tap's 300 m, beyond leave 200 m): 409 not_at_pickup, still stopped; from 150 m: the clock goes on", async () => {
+    const { tripId } = await headingToPickup();
+    const arrived = await autoArrived(tripId);
+    const t0 = arrived.waiting.arrivedAt;
+    await pairAfter(t0, 60, north(NORRMALM, 600));
+    clock.now = new Date(Date.parse(t0) + 300_000);
+    driverA.headers = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+    await fixAt(north(NORRMALM, 250));
+    const far = await step(tripId, "arrive", arrived.version);
+    expect(far.statusCode).toBe(409);
+    expect(far.json().reason).toBe("not_at_pickup");
+    expect((await driverView(tripId)).waiting.away).toBeDefined();
+    clock.now = new Date(Date.parse(t0) + 310_000);
+    await fixAt(north(NORRMALM, 150));
+    const near = await step(tripId, "arrive", arrived.version);
+    expect(near.statusCode, near.body).toBe(200);
+    expect(near.json().waiting.away).toBeUndefined();
+    expect(near.json().waiting).toMatchObject({ pausedSeconds: 250, pauseCount: 1 });
+  });
+});
+
+describe("C9 round 2 M3 (owner decisions/driver-g15.md:64): a rider cancel while the driver is away is free", () => {
+  it("SEK: the free wait ended, then the driver drove away: the rider cancels with no fee (before: the 65 kr no-show fee)", async () => {
+    const { tripId } = await headingToPickup();
+    const arrived = await autoArrived(tripId);
+    const t0 = arrived.waiting.arrivedAt;
+    await pairAfter(t0, 400, north(NORRMALM, 600));
+    expect((await driverView(tripId)).waiting.away).toEqual({ since: new Date(Date.parse(t0) + 400_000).toISOString() });
+    clock.now = new Date(Date.parse(t0) + 600_000);
+    rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+    const res = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: arrived.version, reasonCode: "plans_changed" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().cancellation?.fee ?? null).toBeNull();
+    const fees = await database.db.selectFrom("rider_fees").select("status").where("trip_id", "=", tripId).execute();
+    expect(fees).toEqual([]);
+  });
+
+  it("SEK: away inside the free wait, cancel after the cancel rule's free minutes: no fee (before: the normal cancel fee)", async () => {
+    const { tripId } = await headingToPickup();
+    const arrived = await autoArrived(tripId);
+    const t0 = arrived.waiting.arrivedAt;
+    await pairAfter(t0, 60, north(NORRMALM, 600));
+    clock.now = new Date(Date.parse(t0) + 900_000);
+    rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+    const res = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: arrived.version, reasonCode: "plans_changed" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().cancellation?.fee ?? null).toBeNull();
+  });
+
+  it("SEK control: the driver is back at the pickup after the free wait: the cancel is the no-show fee again", async () => {
+    const { tripId } = await headingToPickup();
+    const arrived = await autoArrived(tripId);
+    const t0 = arrived.waiting.arrivedAt;
+    clock.now = new Date(Date.parse(t0) + 600_000);
+    rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+    const res = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: arrived.version, reasonCode: "plans_changed" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().cancellation).toMatchObject({ feeKind: "no_show", fee: { currency: "SEK" } });
+  });
+
+  it("TND (Tunis, 3 decimals): the free wait ended, then the driver drove away: the rider cancels with no fee (before: the 6.500 DT no-show fee)", async () => {
+    const TUNIS = { address: "Avenue Habib Bourguiba", lat: 36.8, lng: 10.18 };
+    const TUNIS_DROP = { address: "La Marsa", lat: 36.878, lng: 10.325 };
+    const inTunis = (doc: unknown) => JSON.parse(JSON.stringify(doc).replace(/"SEK"/g, '"TND"').replace(/"Z001"/g, '"TN-TC"').replace(/"SE"/g, '"TN"').replace(/Europe\/Stockholm/g, "Africa/Tunis"));
+    await publish("pricing", "TN-TC", inTunis(sample("pricing_document")));
+    await publish("rider_app_config", "TN-TC", inTunis(sample("rider_app_config")));
+    await publish("driver_app_config", "TN-TC", inTunis(sample("driver_app_config")));
+    await database.db.updateTable("zones").set({ open: true }).where("zone_id", "=", "TN-TC").execute();
+    const quote = (await call(app, "POST", "/quotes", rider, { pickup: TUNIS, dropoff: TUNIS_DROP, stops: [], categoryIds: ["economy"] })).json().quotes?.[0];
+    expect(quote, "a TND quote").toBeDefined();
+    const res = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: TUNIS, dropoff: TUNIS_DROP, stops: [], kind: "live", paymentMethod: "cash" });
+    expect(res.statusCode, res.body).toBe(201);
+    const tripId = res.json().tripId as string;
+    await database.db.updateTable("offers").set({ status: "withdrawn" }).where("trip_id", "=", tripId).execute();
+    await database.db.updateTable("trips").set({ status: "driver_to_pickup", driver_id: driverA.id, accepted_at: clock.now, version: res.json().version + 1 }).where("trip_id", "=", tripId).execute();
+    await pairAfter(clock.now.toISOString(), 1, north(TUNIS, 30));
+    const arrived = await driverView(tripId);
+    expect(arrived.status).toBe("arrived");
+    expect(arrived.currency ?? arrived.waiting.perMin.currency).toBe("TND");
+    const t0 = arrived.waiting.arrivedAt as string;
+    // The free wait (5 min) ended at the pickup, then he drove away (before round 2: the 6.500 DT no-show fee).
+    await pairAfter(t0, 400, north(TUNIS, 600));
+    expect((await driverView(tripId)).waiting.away).toBeDefined();
+    clock.now = new Date(Date.parse(t0) + 600_000);
+    rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
+    const cancel = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: arrived.version, reasonCode: "plans_changed" });
+    expect(cancel.statusCode, cancel.body).toBe(200);
+    expect(cancel.json().cancellation?.fee ?? null).toBeNull();
   });
 });
