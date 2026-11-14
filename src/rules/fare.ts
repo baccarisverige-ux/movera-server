@@ -1,4 +1,5 @@
 import { contract } from "../contract/contract.js";
+import { driverRidePart, type CommissionStep } from "./commissionSteps.js";
 import { Frac } from "./fraction.js";
 
 /**
@@ -18,6 +19,8 @@ export type CategoryPricing = {
   maximum: MoneyJson | null;
   appFeePct: number;
   commissionPct: number;
+  /** v0.18.86 J5b (contract.json#commissionSteps): steps picked by the commission base; absent, null or [] = commissionPct. */
+  commissionSteps?: CommissionStep[] | null;
   extraStopFee: MoneyJson;
   stopWaitPerMin: MoneyJson;
   /** v0.7.1: the ONE seat fee, only on child_seat (owner 2026-10-27): every child_seat trip adds it once. */
@@ -203,9 +206,12 @@ export function priceFare(doc: PricingDocument, input: FareInput): Fare {
   const out: Array<{ code: string; amount: bigint; sourceTripId?: string }> = lines.map(([code, value]) => ({ code, amount: value.halfUp() }));
   const sum = out.reduce((s, l) => s + l.amount, 0n);
   if (total !== sum) out.push({ code: "rounding", amount: total - sum });
-  const commission = Frac.ONE.sub(Frac.dec(cat.commissionPct).div(Frac.of(100)));
-  const driverRaw = before.sub(waiting).mul(commission).halfUp() + waitLines;
-  const driver = driverRaw < total ? driverRaw : total;
+  // v0.18.86 J5b (contract.json#pricing.moneySplit.driverEarnings, #commissionSteps.pick): the driver's ride part is
+  // picked by the exact commission base (ride part + extras − waiting − stop waiting), no steps = commissionPct as
+  // before; waiting and stop waiting stay 100 % his; max(0, min(total before outstanding_fee, …)).
+  const driverRaw = driverRidePart(before.sub(waiting), cat).driverRidePart + waitLines;
+  const capped = driverRaw < total ? driverRaw : total;
+  const driver = capped < 0n ? 0n : capped;
   if (input.outstandingFee && input.outstandingFee.amountMinor !== 0) {
     out.push({ code: "outstanding_fee", amount: amt(input.outstandingFee).n, ...(input.outstandingSourceTripId ? { sourceTripId: input.outstandingSourceTripId } : {}) });
     total += amt(input.outstandingFee).n;
