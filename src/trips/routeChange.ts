@@ -1,4 +1,4 @@
-import { toMajorString, type Money as WireMoney } from "../rules/money.js";
+import { moneyText, type MoneyLike } from "../rules/money.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { commissionOf } from "../rules/commission.js";
 import type { Trx } from "../db/db.js";
@@ -275,19 +275,20 @@ const DRIVER_PUSH = (contract as unknown as { onTrip: { routeChange: { driverPus
  * (push only, not after answerBy), in his language, with his new earnings, so it reaches him with the app in the
  * background; the trip stream still carries it (trip_projection, version + 1).
  */
+/** Price format (owner 2026-11-14; audit price-display gap 14): the driver's new earnings in the shared money text. */
+export const routeChangePushBody = (lang: Lang, seconds: number, earnings: MoneyLike): string =>
+  DRIVER_PUSH.body[lang].replace("{seconds}", String(seconds)).replace("{earnings}", moneyText(earnings));
+
 async function pushRouteChange(trx: Trx, trip: TripRow, change: RouteChange, seconds: number, now: Date): Promise<void> {
   if (!trip.driver_id) return;
   // v0.18.66 §87: the one notice-language rule (his language, else the trip country's, TN fr, else en).
   const lang: Lang = await noticeLanguage(trx, { actor: "driver", id: trip.driver_id }, trip.zone_id);
-  const amount = toMajorString(change.driverEarnings as WireMoney).replace(".", ",");
-  const cur = change.driverEarnings.currency;
-  const earnings = cur === "SEK" ? `${amount} kr` : cur === "EUR" ? `${amount} €` : `${amount} ${cur}`;
   await notify(trx, {
     audience: "driver",
     subjectId: trip.driver_id,
     kind: DRIVER_PUSH.kind,
     title: DRIVER_PUSH.title[lang],
-    body: DRIVER_PUSH.body[lang].replace("{seconds}", String(seconds)).replace("{earnings}", earnings),
+    body: routeChangePushBody(lang, seconds, change.driverEarnings),
     deepLink: DRIVER_PUSH.deepLink.replace("{tripId}", trip.trip_id),
     tripId: trip.trip_id,
     data: { tripId: trip.trip_id, changeId: change.changeId, answerBy: change.answerBy },

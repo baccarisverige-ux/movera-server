@@ -56,7 +56,7 @@ describe("L1: the driver is told when the trip is taken from him (fail-before: n
       expect(got[0]).toMatchObject({ title: "Course annulée", bell: true, deep_link: `movera-driver://trips/${tripId}` });
       expect((got[0]!.data as { moment: string }).moment).toBe("rider_cancelled");
       // His share of the cancel fee (the sample economy rule: 35 kr, 100 % to the driver).
-      expect(got[0]!.body).toBe("Le passager a annulé la course. Vous recevez 35 kr.");
+      expect(got[0]!.body).toBe("Le passager a annulé la course. Vous recevez 35,00 kr.");
       expect((got[0]!.data as { fee?: unknown }).fee).toEqual({ amountMinor: 3500, currency: "SEK" });
     } finally {
       await sim.db.updateTable("drivers").set({ language: null }).where("driver_id", "=", a.id).execute();

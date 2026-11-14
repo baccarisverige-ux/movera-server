@@ -168,29 +168,40 @@ export function roundToStep(amountMinor: number, stepMinor: number): number {
 export type MoneyLike = { amountMinor: number; currency: string };
 
 /**
- * English major-unit text for error messages: whole amounts without decimals ("20"), else every digit of the
- * currency's exponent (12675 SEK → "126.75", 5350 TND → "5.350"). Never a fixed 100 (TND has 3 decimals).
+ * contract.json#moneyDisplay (v0.18.59 §81; owner 2026-11-14 "make sure rider and driver app show correct prices every
+ * where"): the amount in major units as every app, admin page and server text writes it. The format follows the
+ * currency, never the language: SEK and EUR with a comma and 2 decimals ("126,75"), TND with a dot and 3 decimals; a
+ * space between thousands ("1 250.500", "2 900,00", as the admin writes them). Whole amounts keep their decimals
+ * ("20,00", "5.000"). Never a fixed 100.
  */
 export function majorText(m: MoneyLike): string {
-  const unit = 10 ** exponentOf(m.currency as CurrencyCode);
-  const text = m.amountMinor % unit === 0 ? String(m.amountMinor / unit) : toMajorString(m as Money);
-  return m.currency === "TND" ? groupThousands(text) : text;
+  const text = groupThousands(toMajorString(m as Money));
+  return m.currency === "TND" ? text : text.replace(".", ",");
 }
 
-/** v0.18.59 §81: a space between thousands of the integer part ("1250.500" → "1 250.500"). */
+/** v0.18.59 §81: a space between thousands of the integer part ("1250.500" → "1 250.500", "-2900.00" → "-2 900.00"). */
 function groupThousands(text: string): string {
   const [whole = "", frac] = text.split(".");
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
   return frac === undefined ? grouped : `${grouped}.${frac}`;
 }
 
-/** The amount for a notice in sv-SE / fr-FR / en-GB (TND: "12.350" in every language, §81), whole amounts without decimals, else the currency's own decimals. */
-export function localAmount(m: MoneyLike, lang: string): string {
-  // v0.18.59 §81 (owner 2026-11-10): TND is written with a dot and a space between thousands in every language ("12.350").
-  if (m.currency === "TND") return majorText(m);
-  const digits = exponentOf(m.currency as CurrencyCode);
-  const unit = 10 ** digits;
-  return (m.amountMinor / unit).toLocaleString(lang === "en" ? "en-GB" : lang === "fr" ? "fr-FR" : "sv-SE", { minimumFractionDigits: m.amountMinor % unit === 0 ? 0 : digits, maximumFractionDigits: digits });
+/** The symbol of `currency` in money texts (contract.json#moneyDisplay patterns): "kr", "€", "DT", else the code. */
+export function currencySymbol(currency: string): string {
+  return currency === "SEK" ? "kr" : currency === "EUR" ? "€" : currency === "TND" ? "DT" : currency;
+}
+
+/** The one money text of every server text (push, bell, SMS, e-mail, error, Terms): "126,75 kr", "7,41 €", "12.350 DT", "35,00 kr". */
+export function moneyText(m: MoneyLike): string {
+  return `${majorText(m)} ${currencySymbol(m.currency)}`;
+}
+
+/**
+ * The amount for a notice: since the owner's 2026-11-14 ruling the format follows the currency, not the language
+ * ([majorText]); `lang` is kept so the notice callers stay unchanged.
+ */
+export function localAmount(m: MoneyLike, _lang: string): string {
+  return majorText(m);
 }
 
 /** amountMinor in the currency's major unit as a number (for limits written in major units). */

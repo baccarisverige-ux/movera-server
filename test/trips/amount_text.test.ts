@@ -6,13 +6,13 @@ import { amountText } from "../../src/trips/finish.js";
 describe("amountText", () => {
   it("TND keeps 3 decimals", () => {
     expect(amountText({ amountMinor: 5350, currency: "TND" }, "fr")).toBe("5.350 DT");
-    expect(amountText({ amountMinor: 1000, currency: "TND" }, "fr")).toBe("1 DT");
+    expect(amountText({ amountMinor: 1000, currency: "TND" }, "fr")).toBe("1.000 DT");
     expect(amountText({ amountMinor: 40, currency: "TND" }, "en")).toBe("0.040 DT");
     expect(amountText({ amountMinor: 12350, currency: "TND" }, "sv")).toBe("12.350 DT");
   });
-  it("SEK and EUR are unchanged", () => {
+  it("SEK and EUR: 2 decimals with a comma, whole amounts too (owner 2026-11-14)", () => {
     expect(amountText({ amountMinor: 12675, currency: "SEK" }, "sv")).toBe("126,75 kr");
-    expect(amountText({ amountMinor: 10000, currency: "SEK" }, "sv")).toBe("100 kr");
+    expect(amountText({ amountMinor: 10000, currency: "SEK" }, "sv")).toBe("100,00 kr");
     expect(amountText({ amountMinor: 250, currency: "EUR" }, "fr")).toBe("2,50 €");
   });
 });

@@ -1,4 +1,4 @@
-import { majorText, type CurrencyCode } from "../../rules/money.js";
+import { moneyText, type CurrencyCode } from "../../rules/money.js";
 import { blockPair, dontMatchSettings } from "../../blockedPairs/service.js";
 import { applyPersonRules, hasBadWord, ratingRules } from "../../admin/reviewRules.js";
 import { checkTags } from "../../admin/ratings.js";
@@ -180,7 +180,7 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
   // The rider owes the fare (outstanding fees included) less what the wallet paid; more cash than that is a miscount,
   // and it would raise the driver's cash balance and the trip's refund room above the fare.
   if (body.cashCollected && body.cashCollected.amountMinor > fare - wallet) {
-    throw badRequest(`At most ${majorText({ amountMinor: fare - wallet, currency: trip.currency as CurrencyCode })} ${trip.currency} is collected in cash on this trip.`, "cash_above_fare");
+    throw badRequest(`At most ${moneyText({ amountMinor: fare - wallet, currency: trip.currency as CurrencyCode })} is collected in cash on this trip.`, "cash_above_fare");
   }
   const cash = body.cashCollected?.amountMinor ?? fare - wallet;
   const done = await applyCommand(trx, trip, {

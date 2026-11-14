@@ -1,4 +1,5 @@
-import { majorText } from "../rules/money.js";
+import { moneyText } from "../rules/money.js";
+import { perMinWithAppFee } from "../rules/fare.js";
 import { contract } from "../contract/contract.js";
 import { liveDocument } from "../config/service.js";
 import type { Executor } from "../db/db.js";
@@ -15,20 +16,28 @@ type Lines = { category: Record<Lang, string>; cancelFixed: Record<Lang, string>
 const AW = (contract as unknown as { arrivedWaiting: { termsTexts: { lines: Lines }; rules: { texts: Record<WaitingRuleId, Record<Lang, string>> } } }).arrivedWaiting;
 const LABELS = (contract as unknown as { categories: { labels: Record<string, string> } }).categories.labels;
 
-/** sv / fr '12,26 kr', '0,50 €'; en '12.26 kr', '€0.50'; whole amounts without decimals (fixtures/arrived_waiting.json#termsMoney). */
-export function termsMoney(m: Money, lang: Lang): string {
-  let num = majorText(m);
-  if (m.currency === "TND") return `${num} DT`; // v0.18.59 §81: dot in every language
-  if (lang !== "en") num = num.replace(".", ",");
-  if (m.currency === "SEK") return `${num} kr`;
-  if (m.currency === "EUR") return lang === "en" ? `€${num}` : `${num} €`;
-  return `${num} ${m.currency}`;
+/**
+ * The Terms' money (price format, owner 2026-11-14 "make sure rider and driver app show correct prices every where";
+ * contract.json#moneyDisplay §81): the format follows the currency, not the text's language, and whole amounts keep their
+ * decimals — '13,49 kr', '0,55 €', '5.000 DT', '65,00 kr' in sv, fr and en. (fixtures/arrived_waiting.json#termsMoney
+ * still shows the older en / whole-amount texts: contract gap 2 of audits/price-display-2026-11-14.)
+ */
+export function termsMoney(m: Money, _lang: Lang): string {
+  return moneyText(m);
 }
+
+/**
+ * Gap 15 (contract.json#waitingPriceShown, owner 2026-11-02 "Show price incl. fee", Rules decisions/driver-g6.md:96): the
+ * Terms tell the rider the price per minute as he pays it, with the category's app fee (12,26 kr + 10 % = 13,49 kr), as
+ * the rider app shows it; a category without an app fee keeps its raw price.
+ */
+const shownPerMin = (perMin: Money, appFeePct: unknown): Money =>
+  typeof appFeePct === "number" && Number.isFinite(appFeePct) && appFeePct >= 0 && appFeePct <= 100 ? perMinWithAppFee(perMin, appFeePct) : perMin;
 
 const fill = (template: string, values: Record<string, string | number>) => template.replace(/\{(\w+)\}/g, (all, k: string) => (k in values ? String(values[k]) : all));
 const minutes = (n: number, lang: Lang) => (lang === "en" ? String(n) : String(n).replace(".", ","));
 
-type PricingDoc = { currency: string; categories: Record<string, { label?: string; waiting?: CategoryWaiting; stopWaitPerMin?: Money }> };
+type PricingDoc = { currency: string; categories: Record<string, { label?: string; waiting?: CategoryWaiting; stopWaitPerMin?: Money; appFeePct?: unknown }> };
 type FeeRule = { freeMin: number; type: string; value: number };
 
 export async function waitingRulesText(ex: Executor, zoneId: string, lang: Lang): Promise<string | null> {
@@ -42,7 +51,7 @@ export async function waitingRulesText(ex: Executor, zoneId: string, lang: Lang)
   const out: string[] = [];
   for (const id of ids) {
     const w = pricing.categories[id]!.waiting!;
-    out.push(fill(AW.termsTexts.lines.category[lang], { category: label(id), free: minutes(w.freeWaitMin, lang), perMin: termsMoney(w.perMin, lang), noShowAfter: minutes(w.noShowAfterMin, lang), noShowFee: termsMoney(w.noShowFee, lang) }));
+    out.push(fill(AW.termsTexts.lines.category[lang], { category: label(id), free: minutes(w.freeWaitMin, lang), perMin: termsMoney(shownPerMin(w.perMin, pricing.categories[id]!.appFeePct), lang), noShowAfter: minutes(w.noShowAfterMin, lang), noShowFee: termsMoney(w.noShowFee, lang) }));
     const rule = rider?.cancelFees?.live?.[id];
     if (rule && rule.value > 0) {
       if (rule.type === "fixed") out.push(fill(AW.termsTexts.lines.cancelFixed[lang], { category: label(id), freeMin: minutes(rule.freeMin, lang), fee: termsMoney({ amountMinor: rule.value, currency: pricing.currency }, lang) }));
@@ -68,7 +77,7 @@ export async function waitingRulesText(ex: Executor, zoneId: string, lang: Lang)
   }
   const stopPrice = pricing.categories[head]!.stopWaitPerMin;
   if (stopPrice && (stopPrice.amountMinor > 0 || extras.stopFreeWaitMin > 0)) {
-    out.push(fill(AW.termsTexts.lines.stops[lang], { free: minutes(extras.stopFreeWaitMin, lang), perMin: termsMoney(stopPrice, lang) }));
+    out.push(fill(AW.termsTexts.lines.stops[lang], { free: minutes(extras.stopFreeWaitMin, lang), perMin: termsMoney(shownPerMin(stopPrice, pricing.categories[head]!.appFeePct), lang) }));
   }
   return out.join("\n");
 }

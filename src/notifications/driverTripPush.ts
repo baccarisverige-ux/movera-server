@@ -1,4 +1,4 @@
-import { localAmount, type CurrencyCode } from "../rules/money.js";
+import { moneyText, type CurrencyCode } from "../rules/money.js";
 import { contract } from "../contract/contract.js";
 import type { Executor } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
@@ -36,10 +36,8 @@ export function driverMomentOf(before: Pick<TripRow, "driver_id" | "next_after_t
   return null;
 }
 
-export const amountText = (amountMinor: number, currency: string, lang: Lang) => {
-  const value = localAmount({ amountMinor, currency: currency as CurrencyCode }, lang);
-  return currency === "SEK" ? `${value} kr` : currency === "EUR" ? `${value} €` : currency === "TND" ? `${value} DT` : `${value} ${currency}`;
-};
+// contract.json#moneyDisplay (owner 2026-11-14): the currency's own format in every language, whole amounts with decimals.
+export const amountText = (amountMinor: number, currency: string, _lang: Lang) => moneyText({ amountMinor, currency: currency as CurrencyCode });
 
 /** Writes the driver's notice for `moment` on the trip as it is after the step (its cancellation carries his share). */
 export async function pushDriverTripMoment(ex: Executor, driverId: string, after: Pick<TripRow, "trip_id" | "zone_id" | "cancellation">, moment: DriverTripMoment, now: Date): Promise<void> {

@@ -451,7 +451,8 @@ describe("v0.18.39 fix job 0 (A2): Add money to wallet (owner G12 Q5, Q-D, build
     expect((await call(app, "GET", "/wallet/entries", rider)).json().items[0]).toMatchObject({ kind: "adjustment", amount: { amountMinor: 290_000, currency: "SEK" } });
     const note = await database.db.selectFrom("notifications").select(["kind", "title", "body"]).where("subject_id", "=", riderId).where("kind", "=", "wallet_credit").executeTakeFirstOrThrow();
     expect(note.title).toBe("Pengar i din plånbok");
-    expect(note.body).toMatch(/^Movera har lagt till 2\s900 kr i din plånbok\.$/);
+    // Price format (owner 2026-11-14): whole amounts keep their decimals.
+    expect(note.body).toMatch(/^Movera har lagt till 2\s900,00 kr i din plånbok\.$/);
     expect((await audits(riderId)).filter((a: string) => a === "rider.wallet_credit")).toHaveLength(1);
     // The admin's own country limit (country standard) wins over the default.
     await database.db.insertInto("config_live").values({ doc: "country_rules", zone_id: "standard-SE", version: 9, document: JSON.stringify({ country: "SE", walletCreditMax: { amountMinor: 10_000, currency: "SEK" } }), published_at: clock.now, published_by: null })
@@ -481,7 +482,7 @@ describe("v0.18.39 fix job 0 (A2): Add money to wallet (owner G12 Q5, Q-D, build
     expect(ok.json().wallet).toEqual({ amountMinor: 25_000, currency: "EUR" });
     const note = await database.db.selectFrom("notifications").select(["title", "body"]).where("subject_id", "=", id).where("kind", "=", "wallet_credit").executeTakeFirstOrThrow();
     expect(note.title).toBe("Argent dans votre portefeuille");
-    expect(note.body).toMatch(/^Movera a ajouté 250\s€ à votre portefeuille\.$/);
+    expect(note.body).toMatch(/^Movera a ajouté 250,00 € à votre portefeuille\.$/);
   });
 });
 
