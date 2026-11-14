@@ -1,12 +1,26 @@
 import type { Db } from "../../src/db/db.js";
 import { newId } from "../../src/ids.js";
 
+/**
+ * Seed phones (BQ-O16): unique by construction, never by luck. Math.random once gave two drivers in one test database
+ * the same number (duplicate drivers_phone_key in test/cleanup/payouts.test.ts). Now: a per-process counter plus the
+ * worker (VITEST_POOL_ID, else pid), so two seeds in one run never share a number. The +4672 (rider) / +4673 (driver)
+ * ranges are never typed in by hand in tests (those use +4670…), so a seed never takes a fixed test number either.
+ */
+let seedPhoneCount = 0;
+const seedWorker = Number(process.env.VITEST_POOL_ID ?? process.pid) % 1000;
+export function seedPhone(prefix: "+4672" | "+4673"): string {
+  seedPhoneCount += 1;
+  if (seedPhoneCount > 9_999) throw new Error("seedPhone: more than 9 999 seeded phones in one worker; widen the number");
+  return `${prefix}${String(seedWorker).padStart(3, "0")}${String(seedPhoneCount).padStart(4, "0")}`;
+}
+
 /** Minimal rows for database tests; real commands build these through the trip service. */
 export async function insertRider(db: Db, overrides: { riderId?: string; phone?: string } = {}): Promise<string> {
   const riderId = overrides.riderId ?? newId("rdr");
   await db
     .insertInto("riders")
-    .values({ rider_id: riderId, phone: overrides.phone ?? `+4670${Math.floor(1_000_000 + Math.random() * 8_999_999)}`, email: null, language: null })
+    .values({ rider_id: riderId, phone: overrides.phone ?? seedPhone("+4672"), email: null, language: null })
     .execute();
   return riderId;
 }
@@ -15,7 +29,7 @@ export async function insertDriver(db: Db, overrides: { driverId?: string } = {}
   const driverId = overrides.driverId ?? newId("drv");
   await db
     .insertInto("drivers")
-    .values({ driver_id: driverId, phone: `+4673${Math.floor(1_000_000 + Math.random() * 8_999_999)}`, online_since: null, vehicle_id: null, scheduled_rides: null })
+    .values({ driver_id: driverId, phone: seedPhone("+4673"), online_since: null, vehicle_id: null, scheduled_rides: null })
     .execute();
   return driverId;
 }
