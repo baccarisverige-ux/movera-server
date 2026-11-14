@@ -379,6 +379,10 @@ async function rideTypeFor(ex: Executor, trip: TripRow, s: ReservationSettings):
   return rideTypeOf(trip, airport, s);
 }
 
+/** v0.18.96 BQ-M23: DriverReservation.driverTotal in minor units = driverEarnings + pickupPay + driverBonus of the trip. */
+export const bookedDriverTotalOf = (trip: Pick<TripRow, "driver_earnings_minor" | "pickup_pay_minor" | "driver_bonus_minor">): number =>
+  Number(trip.driver_earnings_minor ?? 0) + Number(trip.pickup_pay_minor ?? 0) + Number(trip.driver_bonus_minor ?? 0);
+
 async function itemOf(ex: Executor, trip: TripRow, s: ReservationSettings): Promise<Record<string, unknown>> {
   const rideType = stateOf(trip)?.rideType ?? (await rideTypeFor(ex, trip, s));
   const times = s.rideTypes[rideType];
@@ -396,6 +400,10 @@ async function itemOf(ex: Executor, trip: TripRow, s: ReservationSettings): Prom
     distanceMeters: trip.distance_meters ?? 0,
     durationSeconds: trip.duration_seconds ?? 0,
     earnings: { amountMinor: Number(trip.driver_earnings_minor ?? 0), currency: trip.currency },
+    // v0.18.96 BQ-M23 (contract.json#priceDisplay.bookedRide; owner s06:1164 "only how much he get"): what the driver gets
+    // for this booked ride = earnings + pickup pay + Movera's bonus, the same formula as Offer.driverTotal; the Booked
+    // rides list shows only this number (driver view only; rider views have no DriverReservation).
+    driverTotal: { amountMinor: bookedDriverTotalOf(trip), currency: trip.currency },
     status: trip.status,
     mustBeOnlineAt: online.toISOString(),
     canStartAt: online.toISOString(),
