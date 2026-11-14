@@ -1,3 +1,4 @@
+import { followFloor } from "../riders/debtFloor.js";
 import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
@@ -104,6 +105,14 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
     if (steps !== null) {
       const details = [...(steps.step === null ? [] : [`step:${steps.step}`]), `problem:${steps.problem}`];
       throw new ApiError("invalid_request", `The commission steps of ${steps.categoryId} are not valid: ${steps.step === null ? "" : `step ${steps.step}: `}${steps.problem}.`, { reason: "commission_steps_invalid", details });
+    }
+  }
+  // S5 J8 (contract v0.18.84 debtModel.driverOwes.limit): the owes-limit switched on needs an amount above 0 in the
+  // country's currency (400 owes_limit_needs_amount); off may keep or clear the amount (TN 150 DT stored, OFF).
+  if (doc === "country_rules") {
+    const owes = (document as { driverOwesLimit?: { enabled?: unknown; max?: { amountMinor?: unknown; currency?: unknown } | null } } | null)?.driverOwesLimit;
+    if (owes?.enabled === true && !(owes.max && typeof owes.max.amountMinor === "number" && owes.max.amountMinor > 0 && owes.max.currency === zone.currency)) {
+      throw badRequest(`Set an amount above 0 in ${zone.currency} to switch the owes-limit on.`, "owes_limit_needs_amount");
     }
   }
   const problem = schemaProblem(SCHEMA[doc], document);
@@ -278,6 +287,9 @@ export async function publishDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: st
     const keys = zone.kind === "standard" ? [input.zoneId, ...(await zonesUsingStandard(trx, "country_rules", zone.country))] : [input.zoneId];
     await rewriteAppDocs(trx, keys, (doc, d) => withCountryRules(doc, d, document as unknown as CountryRules), { ...by, note: `tips and limits v${version}: tips, raise steps, driver bonus`, adoptStandard: zone.kind !== "standard" }, now);
   }
+  // S5 J8 (contract v0.18.84 debtModel.dbFloor, owner 2026-11-13 15:00 "Any amount"): saving Max rider debt or a cancel /
+  // no-show fee moves the wallet floor of the country's currency down when it needs more room, in this same transaction.
+  if (input.doc === "country_rules" || input.doc === "pricing" || input.doc === "rider_app_config") await followFloor(trx, zone.country, now);
   // One audit line per publish, with the app documents it rewrote (v0.7.1, contract.json#pricingHistory).
   await audit(trx, { adminId: input.publishedBy, action: "config.publish", targetType: "config", targetId: input.doc, zoneId: input.zoneId, detail: { version, ...(input.note ? { note: input.note } : {}), ...(input.doc === "pricing" ? { appDocuments } : {}), ...(input.restoredFrom ? { restoredFrom: input.restoredFrom } : {}) }, at: now });
   return { doc: input.doc, ...scopeFields(input.zoneId), version, publishedAt, ...(input.doc === "pricing" ? { appDocuments } : {}), ...(input.restoredFrom ? { restoredFrom: input.restoredFrom } : {}) };

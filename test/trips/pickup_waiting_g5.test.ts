@@ -11,6 +11,9 @@ import { etaHandler, TRIP_ETA } from "../../src/trips/eta.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, fixedRouter, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
+import { feeIntoWallet } from "../../src/riders/debt.js";
+
+const NEW_APP = { "x-contract-version": "0.18.84" };
 
 /**
  * Driver group 5 (contract v0.18.7 §33, contract.json#pickupWaiting; Rules decisions/driver-g5.md, driver-g6.md):
@@ -38,6 +41,10 @@ const SPOTS = { A: { lat: 59.3335, lng: 18.0655 }, B: { lat: 59.336, lng: 18.07 
 const drivers: Record<"A" | "B", { id: string; headers: Record<string, string> }> = {} as never;
 let rider: Record<string, string>;
 let riderId: string;
+/** S5 J8: a fee row written by hand is put into the wallet the way the server does (a fee entry, −fee). */
+async function intoWallet(tripId: string, amount: number, currency: string) {
+  await database.db.transaction().execute((trx) => feeIntoWallet(trx, { tripId, riderId, amount: { amountMinor: amount, currency }, at: clock.now }, clock.now));
+}
 
 type Doc = Record<string, unknown>;
 async function publish(doc: "rider_app_config" | "driver_app_config" | "pricing", zoneId: string, document: Doc) {
@@ -84,6 +91,9 @@ beforeEach(async () => {
   await database.db.deleteFrom("timers").execute();
   await database.db.deleteFrom("offers").execute();
   await database.db.deleteFrom("rider_fees").execute();
+  // S5 J8 (debtModel.riderWallet): the unpaid fees live in the wallet (negative balance) and its fee entries.
+  await database.db.deleteFrom("wallet_entries").where("kind", "in", ["fee", "debt_paid", "adjustment"]).execute();
+  await database.db.deleteFrom("rider_wallets").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();
   // Back to the defaults between tests (a test may publish other settings).
   await publish("driver_app_config", "Z001", driverDoc());
@@ -142,20 +152,26 @@ describe("Q3: an owed fee is charged only in its own currency (contract.json#pic
     await advance(180);
     const cancelled = await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: version, reasonCode: "plans_changed" });
     expect(cancelled.json().cancellation.fee).toEqual({ amountMinor: 3500, currency: "SEK" });
+    // S5 J8 (debtModel.riderWallet): the debt is the wallet balance in that currency (fee entry −fee).
     await database.db.updateTable("rider_fees").set({ amount_minor: 10000 }).where("trip_id", "=", tripId).execute();
+    await database.db.updateTable("wallet_entries").set({ amount_minor: -10000 }).where("trip_id", "=", tripId).where("kind", "=", "fee").execute();
+    await database.db.updateTable("rider_wallets").set({ balance_minor: -10000 }).where("rider_id", "=", riderId).where("currency", "=", "SEK").execute();
     await database.db.updateTable("riders").set({ outstanding_minor: 10000 }).where("rider_id", "=", riderId).execute();
 
     const profile = (await call(app, "GET", "/rider/profile", rider)).json();
     expect(profile.outstanding).toEqual({ amountMinor: 10000, currency: "SEK" });
     expect(profile.outstandingByCurrency).toEqual([{ amountMinor: 10000, currency: "SEK" }]);
 
-    const paris = (await call(app, "POST", "/quotes", rider, { pickup: PARIS, dropoff: PARIS_DROP, stops: [], categoryIds: ["economy"] })).json();
+    // S5 J8 (debtModel.quoteInfo): never in a price; Quote.walletDebt (apps on 0.18.84+) in the quote's own currency only.
+    const paris = (await call(app, "POST", "/quotes", { ...rider, ...NEW_APP }, { pickup: PARIS, dropoff: PARIS_DROP, stops: [], categoryIds: ["economy"] })).json();
     expect(paris.zoneId).toBe("FR-PC");
     expect(paris.quotes[0].total.currency).toBe("EUR");
     expect(paris.quotes[0].fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
+    expect(paris.quotes[0]).not.toHaveProperty("walletDebt");
 
-    const stockholm = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json();
-    expect(stockholm.quotes[0].fareLines).toEqual(expect.arrayContaining([{ code: "outstanding_fee", amount: { amountMinor: 10000, currency: "SEK" }, sourceTripId: tripId }]));
+    const stockholm = (await call(app, "POST", "/quotes", { ...rider, ...NEW_APP }, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json();
+    expect(stockholm.quotes[0].fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
+    expect(stockholm.quotes[0].walletDebt).toEqual({ amountMinor: 10000, currency: "SEK" });
   });
 
   it("two currencies owed: each quote carries only its own; the profile lists both, oldest first", async () => {
@@ -168,14 +184,15 @@ describe("Q3: an owed fee is charged only in its own currency (contract.json#pic
     await database.db.updateTable("trips").set({ status: "cancelled_by_rider" }).where("trip_id", "=", parisTrip.tripId).execute();
     clock.now = new Date(clock.now.getTime() + 1000);
     await database.db.insertInto("rider_fees").values({ trip_id: parisTrip.tripId, rider_id: riderId, kind: "cancel", currency: "EUR", amount_minor: 500, status: "owed", created_at: clock.now }).execute();
+    await intoWallet(parisTrip.tripId, 500, "EUR");
 
     const profile = (await call(app, "GET", "/rider/profile", rider)).json();
     expect(profile.outstanding).toEqual({ amountMinor: 3500, currency: "SEK" });
     expect(profile.outstandingByCurrency).toEqual([{ amountMinor: 3500, currency: "SEK" }, { amountMinor: 500, currency: "EUR" }]);
-    const paris = (await call(app, "POST", "/quotes", rider, { pickup: PARIS, dropoff: PARIS_DROP, stops: [], categoryIds: ["economy"] })).json().quotes[0];
-    expect(paris.fareLines).toEqual(expect.arrayContaining([{ code: "outstanding_fee", amount: { amountMinor: 500, currency: "EUR" }, sourceTripId: parisTrip.tripId }]));
-    const stockholm = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
-    expect(stockholm.fareLines).toEqual(expect.arrayContaining([{ code: "outstanding_fee", amount: { amountMinor: 3500, currency: "SEK" }, sourceTripId: tripId }]));
+    const paris = (await call(app, "POST", "/quotes", { ...rider, ...NEW_APP }, { pickup: PARIS, dropoff: PARIS_DROP, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+    expect(paris.walletDebt).toEqual({ amountMinor: 500, currency: "EUR" });
+    const stockholm = (await call(app, "POST", "/quotes", { ...rider, ...NEW_APP }, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+    expect(stockholm.walletDebt).toEqual({ amountMinor: 3500, currency: "SEK" });
   });
 
   it("a paid Swedish cash trip settles only Swedish fees; the euro debt stays", async () => {
@@ -190,17 +207,20 @@ describe("Q3: an owed fee is charged only in its own currency (contract.json#pic
     await database.db.deleteFrom("timers").execute();
     clock.now = new Date(clock.now.getTime() + 1000);
     await database.db.insertInto("rider_fees").values({ trip_id: frTrip, rider_id: riderId, kind: "cancel", currency: "EUR", amount_minor: 500, status: "owed", created_at: clock.now }).execute();
+    await intoWallet(frTrip, 500, "EUR");
     // The next Swedish ride carries the 35 kr and is paid in full in cash.
     // Three minutes passed: the drivers send fresh positions (a fix older than 2 minutes counts as gone).
     for (const key of ["A", "B"] as const) await moveTo(key, SPOTS[key]);
     const next = await accepted();
-    expect(next.quote.fareLines).toEqual(expect.arrayContaining([{ code: "outstanding_fee", amount: { amountMinor: 3500, currency: "SEK" }, sourceTripId: tripId }]));
+    // S5 J8: the 35 kr is read when the trip is paid (never in the quote).
+    expect(next.quote.fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
     let v = await arrived(next.tripId, next.version);
     v = (await step(next.tripId, "board", v)).json().version;
     v = (await step(next.tripId, "start", v)).json().version;
     await moveTo("A", SODERMALM);
-    const done = await step(next.tripId, "complete", v, { cashCollected: { amountMinor: next.quote.total.amountMinor, currency: "SEK" } });
+    const done = await step(next.tripId, "complete", v, { cashCollected: { amountMinor: next.quote.total.amountMinor + 3500, currency: "SEK" } });
     expect(done.json().status).toBe("completed");
+    expect(done.json().fareLines).toEqual(expect.arrayContaining([{ code: "outstanding_fee", amount: { amountMinor: 3500, currency: "SEK" }, sourceTripId: tripId }]));
     const fees = await database.db.selectFrom("rider_fees").select(["currency", "status"]).where("rider_id", "=", riderId).orderBy("created_at").execute();
     expect(fees).toEqual([{ currency: "SEK", status: "paid" }, { currency: "EUR", status: "owed" }]);
     expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toEqual({ amountMinor: 500, currency: "EUR" });

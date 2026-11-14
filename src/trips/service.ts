@@ -1,3 +1,4 @@
+import { maxRiderDebtOf, riderDebt } from "../riders/debt.js";
 import { writeAutoMessage } from "./messages.js";
 import { checkOpenBookedCap, checkWindow, planBookedRide } from "../reservations/service.js";
 import { appendTripEvent } from "../db/tripLog.js";
@@ -113,10 +114,22 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   // v0.18.81 B1.34 (owner Q94 "A) Yes", default 3): at most maxOpenPerRider booked rides that have not ended.
   if (body.kind === "scheduled") await checkOpenBookedCap(trx, riderId, quote.zone_id);
 
+  // S5 J8 (contract v0.18.84 debtModel.maxRiderDebt, owner Q-S5-4 "Block only cash trip"): a pay-in-car booking while the
+  // rider's debt in the trip's currency is at or above the country's Max rider debt is refused; card, Apple Pay and wallet
+  // bookings stay allowed (the debt is added to that payment). Checked only here: fees of rides already running are saved.
+  const debt = await riderDebt(trx, riderId, quote.currency);
+  if (debt > 0 && body.paymentMethod === "cash") {
+    const country = (await trx.selectFrom("zones").select("country").where("zone_id", "=", quote.zone_id).executeTakeFirstOrThrow()).country;
+    const max = await maxRiderDebtOf(trx, country, quote.currency);
+    if (max !== null && debt >= max.amountMinor) {
+      throw new ApiError("conflict", "Trips paid in the car are paused until your unpaid fees are paid.", { reason: "rider_debt_above_max", details: [`debt:${debt} ${quote.currency}`, `max:${max.amountMinor} ${quote.currency}`] });
+    }
+  }
   const tripId = newId("trp", now.getTime());
   const driverEarnings = Number(quote.driver_earnings_minor);
   // v0.8.0 (contract.json#bookingSnapshot): the trip keeps every rule of booking time; v0.18.8 also the zone's PIN switch.
-  const bookingRules = await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote), body.walletFirst);
+  const bookingRules = await bookingRulesFor(trx, quote.zone_id, body.kind, body.categoryId, await quotedPricing(trx, quote), debt > 0 ? true : body.walletFirst);
+  // S5 J8 (debtModel.walletSwitch, owner Q-M1): while the rider owes in the trip's currency, walletFirst false is ignored.
   // v0.18.33 (fix job 5 R29, contract.json#afterTestRules.walletFirst): the wallet pays first from booking on — the part
   // of the fare the balance in the trip's currency covers is reserved now (worked out again at boarding).
   const walletApplied = bookingRules.walletFirst ? await walletCovers(trx, riderId, quote.currency, Number(quote.total_minor)) : 0;

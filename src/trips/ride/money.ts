@@ -7,8 +7,9 @@ import type { Executor, Trx } from "../../db/db.js";
 import type { TripRow } from "../../db/tripLog.js";
 import { newId } from "../../ids.js";
 import type { Money } from "./shared.js";
-import { outstandingLine } from "./settings.js";
+import { debtForPayment, debtsByCurrency, feeIntoWallet, payDebt, sweepOwedFees, withDebt } from "../../riders/debt.js";
 import { moveWallet, walletBalance } from "../../riders/wallet.js";
+import { checkCashOffersSoon } from "../../drivers/owes.js";
 import { appendTripEvent } from "../../db/tripLog.js";
 import { scheduleTimer } from "../../jobs/timers.js";
 import { NOT_HELD } from "../../reservations/view.js";
@@ -123,23 +124,23 @@ export async function credit(trx: Trx, entry: { driverId: string; tripId: string
 }
 
 /**
- * Rider.outstanding = the sum of owed fees in ONE currency, the oldest owed fee's; that fee names the source trip (§3.7).
- * v0.18.7 (Q3, contract.json#pickupWaiting.debtByCurrency): a fee is never summed into another currency; the quote reads
- * rider_fees itself for its own currency.
+ * Rider.outstanding / outstanding_currency / outstanding_source_trip_id (§3.7, older apps): S5 J8 (contract v0.18.84
+ * debtModel.riderWallet) derives them from the wallet — per currency the debt = −min(0, balance); outstanding = the
+ * debt of the oldest owed currency, its oldest unpaid fee names the source trip.
  */
 export async function refreshOutstanding(trx: Trx, riderId: string, now: Date) {
-  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor", "currency"]).where("rider_id", "=", riderId).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute();
-  const currency = owed[0]?.currency ?? null;
-  const total = owed.filter((f) => f.currency === currency).reduce((sum, f) => sum + Number(f.amount_minor), 0);
-  await trx.updateTable("riders").set({ outstanding_minor: total, outstanding_currency: currency, outstanding_source_trip_id: owed[0]?.trip_id ?? null, updated_at: now }).where("rider_id", "=", riderId).execute();
+  const first = (await debtsByCurrency(trx, riderId))[0];
+  await trx.updateTable("riders").set({ outstanding_minor: first?.amountMinor ?? 0, outstanding_currency: first?.currency ?? null, outstanding_source_trip_id: first?.sourceTripId ?? null, updated_at: now }).where("rider_id", "=", riderId).execute();
 }
 
 /**
- * A rider fee in cash nobody collected: owed by the rider (carried to the next trip), the driver's share credited
- * at once; Movera carries the risk (§3.7, owner decision 7).
+ * A rider fee in cash nobody collected (§3.7, owner decision 7: the driver's share is credited at once, Movera carries
+ * the risk). S5 J8 (debtModel.riderWallet, owner Q-M1): it goes into the rider's wallet as a negative balance (a fee
+ * entry), down to the database floor (0102); the rider_fees row is its history.
  */
 export async function chargeRiderFee(trx: Trx, trip: TripRow, kind: "cancel" | "no_show", fee: Money, now: Date) {
   await trx.insertInto("rider_fees").values({ trip_id: trip.trip_id, rider_id: trip.rider_id, kind, currency: fee.currency, amount_minor: fee.amountMinor, status: "owed", created_at: now }).execute();
+  await feeIntoWallet(trx, { tripId: trip.trip_id, riderId: trip.rider_id, amount: fee, at: now }, now);
   await refreshOutstanding(trx, trip.rider_id, now);
 }
 
@@ -167,25 +168,30 @@ export function feeColumns(fee: Money, sharePct: number) {
 }
 
 /**
- * A cash trip that carried an owed fee completed and was paid: the fees it carried are paid (§3.7). The line holds
- * the sum owed when the rider was quoted, so the oldest owed fees up to that sum are the ones it paid.
+ * S5 J8 (contract v0.18.84 debtModel.readAtPayment + changeover): the price of a trip being paid now. Any copied
+ * outstanding_fee line (a trip made before J8) is dropped and the rider's debt in the trip's currency, read now under
+ * the wallet row lock, is added as the one outstanding_fee line. `lock` false (preview) only reads.
  */
-export async function settleCarriedFees(trx: Trx, trip: TripRow, cash: number, now: Date) {
-  const line = outstandingLine(trip);
-  if (!line) return;
-  // The ride is paid first; only cash beyond it pays old fees (a short count leaves them owed).
-  const towardFees = Math.max(0, Math.min(line.amount.amountMinor, cash - (Number(trip.fare_minor) - line.amount.amountMinor)));
-  // v0.18.7 (Q3): a cash trip pays only the fees owed in its own currency.
-  const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", trip.rider_id).where("status", "=", "owed").where("currency", "=", trip.currency).orderBy("created_at").orderBy("trip_id").forUpdate().execute();
-  let left = towardFees;
-  for (const fee of owed) {
-    const amount = Number(fee.amount_minor);
-    if (amount > left) break;
-    left -= amount;
-    await trx.updateTable("rider_fees").set({ status: "paid", carried_by: trip.trip_id, settled_at: now }).where("trip_id", "=", fee.trip_id).execute();
-    const source = await trx.selectFrom("trips").select("cancellation").where("trip_id", "=", fee.trip_id).executeTakeFirst();
-    if (source?.cancellation) await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...(source.cancellation as object), feeStatus: "paid" }) }).where("trip_id", "=", fee.trip_id).execute();
-  }
+export async function priceWithDebt<M extends { fare_minor?: number; fare_lines?: string }>(trx: Executor, trip: TripRow, money: M, lock: boolean): Promise<{ fare: number; money: M & { fare_minor: number; fare_lines: string }; debt: number }> {
+  if (lock) await sweepOwedFees(trx as Trx, trip.rider_id, trip.currency);
+  const debt = await debtForPayment(trx, trip, lock);
+  const lines = money.fare_lines !== undefined ? (JSON.parse(money.fare_lines) as Parameters<typeof withDebt>[1]) : ((trip.fare_lines as Parameters<typeof withDebt>[1]) ?? []);
+  const priced = withDebt(money.fare_minor ?? Number(trip.fare_minor), lines, trip.currency, debt);
+  return { fare: priced.fareMinor, money: { ...money, fare_minor: priced.fareMinor, fare_lines: JSON.stringify(priced.lines) }, debt: debt.amountMinor };
+}
+
+/**
+ * The paid trip settles the debt it carried (debt_paid entry, oldest fees marked paid). Paid in the car, the ride is
+ * paid first: only what was collected beyond it pays the debt (a short count leaves the rest owed, as before J8).
+ */
+export async function settleDebt(trx: Trx, trip: TripRow, debt: number, paidMinor: number, now: Date) {
+  // S5 J8 (debtModel.driverOwes.cashOffers): the cash he kept may have taken him to his owes-limit: his open pay-in-car
+  // offers are checked at once (a withdraw job; accepted rides stay his).
+  if (trip.payment_method === "cash" && trip.driver_id !== null) await checkCashOffersSoon(trx, trip.driver_id, now);
+  if (debt <= 0) return;
+  const ride = Number(trip.fare_minor) - debt;
+  const paid = trip.payment_method === "cash" ? Math.max(0, Math.min(debt, paidMinor - ride)) : debt;
+  await payDebt(trx, trip, paid, now);
   await refreshOutstanding(trx, trip.rider_id, now);
 }
 
@@ -200,7 +206,10 @@ export async function walletCovers(ex: Executor, riderId: string, currency: stri
  * The trip is paid: the wallet pays the part the driver was shown at boarding (never more, so money that reaches
  * the wallet later stays there), the driver collects the rest in cash.
  */
-/** What the rider's wallet pays of a fare (the part reserved on the trip, at most the wallet and the fare). */
+/**
+ * What the rider's wallet pays of a fare (the part reserved on the trip, at most the wallet and the fare). S5 J8 M2
+ * (debtModel): walletApplied = max(0, min(balance, fare)) — a negative balance (a debt) never lowers the cash to collect.
+ */
 export function walletPart(walletMinor: number, trip: TripRow, fareMinor: number): number {
   return Math.max(0, Math.min(walletMinor, fareMinor, Number(trip.wallet_applied_minor ?? 0)));
 }

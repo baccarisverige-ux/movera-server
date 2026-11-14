@@ -225,6 +225,8 @@ describe("book later (owner Q1–Q7)", () => {
     expect(earnings).toEqual([]);
     // The fee is settled before the next ride (outstandingFee); clear it so later cases start clean.
     await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", trip.tripId).execute();
+    // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+    await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
     await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();
     // Its pickup time passed and still no driver: Movera did not deliver it → free.
     const missed = await book(minutes(180));
@@ -241,6 +243,8 @@ describe("book later (owner Q1–Q7)", () => {
     await setFreeMin(120);
     const settle = async (tripId: string) => {
       await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", tripId).execute();
+      // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+      await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
       await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();
     };
     try {
@@ -274,6 +278,8 @@ describe("book later (owner Q1–Q7)", () => {
   it("v0.18.49 §71 owner Q10 update: free for 5 min after booking (graceAfterBookingMin), then the category rule (fail-before: fee 2 min after a short-notice booking)", async () => {
     const settle = async (tripId: string) => {
       await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("trip_id", "=", tripId).execute();
+      // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+      await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
       await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null, outstanding_source_trip_id: null }).execute();
     };
     // Booked 30 min before pickup (inside economy's 60 free minutes from the start): 2 min after booking → free.

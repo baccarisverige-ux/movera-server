@@ -16,6 +16,11 @@ export const STEP = "search_step";
 export const END = "search_end";
 /** Withdraws a driver's open offers after they took another trip or went offline (one trip lock at a time). */
 export const WITHDRAW = "withdraw_driver_offers";
+/**
+ * S5 J8 (contract v0.18.84 debtModel.driverOwes.cashOffers): withdraws a driver's open PAY-IN-CAR offers once his owed
+ * reached his country's owes-limit (checked again when it runs); his other offers and accepted trips stay.
+ */
+export const WITHDRAW_CASH = "withdraw_cash_offers";
 
 export type Place = { lat: number; lng: number };
 export type Step = { id: string; kind: string; message: string; extraMin?: number | null; atSec: number };

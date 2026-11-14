@@ -4,9 +4,9 @@ import { etaHandler } from "../trips/eta.js";
 import { EstimateRouter } from "../maps/routing.js";
 import type { Timer, TimerHandler } from "../jobs/timers.js";
 import type { Trx } from "../db/db.js";
-import { END, ROUND, STEP, WITHDRAW } from "./runtime/shared.js";
+import { END, ROUND, STEP, WITHDRAW, WITHDRAW_CASH } from "./runtime/shared.js";
 import { roundHandler } from "./runtime/rounds.js";
-import { endHandler, stepHandler, withdrawHandler } from "./runtime/end.js";
+import { endHandler, stepHandler, withdrawHandler, withdrawCashHandler } from "./runtime/end.js";
 
 /**
  * Automatic dispatch at run time (contract v0.5.1 §3.6) on durable timers, so a restart loses nothing:
@@ -30,7 +30,7 @@ export { stopSearch, stopBookedNoDriver, stepHandler, endHandler, keepWaiting, w
 // Kept here, not in runtime/end.ts, so the map is built only after every runtime/*.ts module has loaded (as before the split).
 // v0.18.7: the ETA tick booked at accept rides with the dispatch handlers (straight-line estimate here; main.ts sets the
 // server's real router over it, [TRIP_ETA]: etaHandler(router)).
-export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler,
+export const dispatchHandlers: Record<string, TimerHandler> = { [ROUND]: roundHandler, [STEP]: stepHandler, [END]: endHandler, [WITHDRAW]: withdrawHandler, [WITHDRAW_CASH]: withdrawCashHandler,
   // v0.18.17 (contract.json#bookLater.timers): the booked-ride timers (kinds from the leaf module reservations/timerKinds.ts,
   // which loads before this line even though reservations/service.ts imports this module; S02 C3).
   ...Object.fromEntries(RESERVATION_TIMER_KINDS.map((kind) => [kind, (trx: Trx, timer: Timer) => reservationTimer(trx, timer)])), // "trip_eta" spelled out and the handler made on first use: trips/eta.ts imports this module, so when eta.ts loads

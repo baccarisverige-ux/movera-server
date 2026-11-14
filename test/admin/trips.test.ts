@@ -211,6 +211,8 @@ const adminView = async (tripId: string) => (await call(app, "GET", `/admin/trip
 const audits = async (tripId: string) => (await call(app, "GET", `/admin/audit?targetId=${tripId}`, admin)).json().items.map((a: { action: string }) => a.action);
 const clearFees = async () => {
   await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+  await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null, wallet_minor: 0 }).execute();
   await database.db.deleteFrom("rider_wallets").execute();
 };
@@ -400,7 +402,8 @@ describe("refunds and the wallet", () => {
     expect(done.json().fare.amountMinor).toBe(21700);
     expect((await call(app, "GET", "/wallet", rider)).json().balance.amountMinor).toBe(0);
     const ledger = (await call(app, "GET", "/wallet/entries", rider)).json().items.map((e: { kind: string; amount: { amountMinor: number } }) => [e.kind, e.amount.amountMinor]);
-    expect(ledger).toEqual([["charge", -5000], ["refund", 5000]]);
+    // S5 J8 (debtModel.riderWallet): older fee / correction entries of earlier tests sit below these two.
+    expect(ledger.slice(0, 2)).toEqual([["charge", -5000], ["refund", 5000]]);
     // The driver's earnings are the same; Movera covers the wallet part.
     expect((await entries(next.tripId)).find((e) => e.kind === "trip")).toMatchObject({ amount_minor: "15760", cash_minor: "16700" });
   });
@@ -520,8 +523,11 @@ describe("v0.18.39 fix job 0 (owner A2-2): Mark as paid on an owed fee, with a r
   });
   it("an owed fee left alone is still added by itself to the next trip (no 'Ask rider to pay')", async () => {
     await owedNoShow();
-    const quote = (await call(app, "POST", "/quotes", rider, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
-    expect(JSON.stringify(quote.fareLines)).toContain("outstanding_fee");
+    // S5 J8 (contract v0.18.84 debtModel.readAtPayment): it waits in the wallet (negative) and is read when the next trip
+    // is paid; the quote shows it as walletDebt (apps on 0.18.84+), never in the price.
+    const quote = (await call(app, "POST", "/quotes", { ...rider, "x-contract-version": "0.18.84" }, { pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+    expect(JSON.stringify(quote.fareLines)).not.toContain("outstanding_fee");
+    expect(quote.walletDebt?.amountMinor).toBeGreaterThan(0);
   });
 });
 

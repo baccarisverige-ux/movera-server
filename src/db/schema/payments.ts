@@ -18,7 +18,7 @@ export interface EarningsEntriesTable {
   entry_id: string;
   driver_id: string;
   trip_id: string | null;
-  kind: "trip" | "pickup_pay" | "fee_share" | "adjustment" | "tip" | "bonus";
+  kind: "trip" | "pickup_pay" | "fee_share" | "adjustment" | "tip" | "bonus" | "paid_to_movera";
   currency: string;
   amount_minor: ColumnType<string, number | string, number | string>;
   gross_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
@@ -57,7 +57,7 @@ export interface PayoutsTable {
 export interface WalletEntriesTable {
   entry_id: string;
   rider_id: string;
-  kind: "topup" | "charge" | "refund" | "payout" | "adjustment";
+  kind: "topup" | "charge" | "refund" | "payout" | "adjustment" | "fee" | "debt_paid";
   currency: string;
   amount_minor: ColumnType<string, number | string, number | string>;
   trip_id: string | null;
