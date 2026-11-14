@@ -8,6 +8,7 @@ import { tripProjection, type Viewer } from "./projection.js";
 import type { Updateable } from "kysely";
 import { momentOf, pushTripMoment } from "../notifications/tripPush.js";
 import { driverMomentOf, pushDriverTripMoment } from "../notifications/driverTripPush.js";
+import { FREE_END_COLUMNS } from "./ride/money.js";
 
 /**
  * Every lifecycle change goes through here (contract §3): the transition table decides (else 409
@@ -25,6 +26,15 @@ const viewerOf = (actor: Actor): Viewer => (actor === "system" ? "admin" : actor
 const LISTED: ReadonlySet<string> = new Set(["requested", "accepted"]);
 /** Before the driver drives: a booked ride being searched (searching, offered) that ends is "cancelled" too. */
 const BEFORE_START: ReadonlySet<string> = new Set(["requested", "searching", "offered", "accepted"]);
+/**
+ * BQ-M27 (M24 supervisor N2; contract.json#moneyBase.commissionRow.admin): the system ends with no paid ride — a search
+ * that runs out or a booked ride with no driver (expired; also after a driver gave the trip back before pickup) and a
+ * system cancel (cancelled_by_system) — pay nobody: the quote's driver pay, pickup pay, bonus and commission are not kept
+ * on the trip (FREE_END_COLUMNS, as the free rider cancel and the admin cancel since v0.18.92 G1). A caller's own `set`
+ * still wins (a future system end that carries money says so itself).
+ */
+const FREE_SYSTEM_ENDS: ReadonlySet<string> = new Set(["expired", "cancelled_by_system"]);
+
 const listChange = (from: string, to: string) => LISTED.has(from) || LISTED.has(to) || (BEFORE_START.has(from) && isTripStatus(to) && TERMINAL.has(to));
 
 export async function applyCommand(
@@ -42,7 +52,7 @@ export async function applyCommand(
   const version = trip.version + 1;
   await trx
     .updateTable("trips")
-    .set({ ...(input.set ?? {}), status: to, version, updated_at: input.now })
+    .set({ ...(FREE_SYSTEM_ENDS.has(to) ? FREE_END_COLUMNS : {}), ...(input.set ?? {}), status: to, version, updated_at: input.now })
     .where("trip_id", "=", trip.trip_id)
     .execute();
   await expireStaleRouteChange(trx, trip, input.now);
