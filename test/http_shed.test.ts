@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { isDatabaseBusy } from "../src/db/db.js";
 import { contract } from "../src/contract/contract.js";
-import { POLL_READ_ROUTES, registerLoadShedding, sheddable } from "../src/http/shed.js";
+import { POLL_READ_ROUTES, registerLoadShedding, SAFETY_READ_ROUTES, SHARE_READ_ROUTES, sheddable } from "../src/http/shed.js";
 
 /** Job 1 (stress H3, fix plan R22): back-pressure instead of an endless queue. */
 describe("load shedding", () => {
@@ -98,6 +98,46 @@ describe("load shedding", () => {
     for (const r of shed) expect((await app.inject({ method: "GET", url: real(r) })).statusCode, r).toBe(200);
     // Without a matched route pattern the poll list is never used (an unknown path is not shed as a poll).
     expect(sheddable("GET", "/api/v1/driver/surge-map")).toBe(false);
+    stop();
+    await app.close();
+  });
+});
+
+/** v0.18.116 §94 BQ-S10 (contract.json#shareTrip.limits.note): the public share reads are shed first, and are never safety reads. */
+describe("S10: the public reads of a shared trip link under load", () => {
+  it("both are sheddable by their route pattern (never by the raw path, which holds the token) and are not safety reads", () => {
+    expect(sheddable("GET", "/api/v1/share/AAAAAAAAAAAAAAAAAAAAAA", "/api/v1/share/:token")).toBe(true);
+    expect(sheddable("GET", "/s/AAAAAAAAAAAAAAAAAAAAAA", "/s/:token")).toBe(true);
+    for (const route of SHARE_READ_ROUTES) expect(SAFETY_READ_ROUTES.has(route)).toBe(false);
+    // The rider's own share routes are a write and a small read on his trip: not shed.
+    expect(sheddable("POST", "/api/v1/rider/trips/trp_1/share", "/api/v1/rider/trips/:tripId/share")).toBe(false);
+    expect(sheddable("GET", "/api/v1/rider/trips/trp_1/share", "/api/v1/rider/trips/:tripId/share")).toBe(false);
+    expect(sheddable("DELETE", "/api/v1/rider/trips/trp_1/share", "/api/v1/rider/trips/:tripId/share")).toBe(false);
+  });
+
+  it("they answer 503 at half the queue an admin list is still served at; SOS is never refused", async () => {
+    let waiting = 0;
+    const app = Fastify();
+    app.get("/api/v1/share/:token", async () => ({ ok: true }));
+    app.get("/s/:token", async () => "ok");
+    app.get("/api/v1/admin/trips", async () => ({ ok: true }));
+    app.post("/api/v1/rider/trips/:tripId/sos", async () => ({ ok: true }));
+    const stop = registerLoadShedding(app, { maxPoolWaiting: 200, maxLoopDelayMs: 0, poolWaiting: () => waiting });
+    const codes = async () => [
+      (await app.inject({ method: "GET", url: "/api/v1/share/AAAAAAAAAAAAAAAAAAAAAA" })).statusCode,
+      (await app.inject({ method: "GET", url: "/s/AAAAAAAAAAAAAAAAAAAAAA" })).statusCode,
+      (await app.inject({ method: "GET", url: "/api/v1/admin/trips" })).statusCode,
+      (await app.inject({ method: "POST", url: "/api/v1/rider/trips/trp_1/sos" })).statusCode,
+    ];
+    waiting = 100;
+    expect(await codes()).toEqual([200, 200, 200, 200]);
+    waiting = 101;
+    expect(await codes()).toEqual([503, 503, 200, 200]);
+    const busy = await app.inject({ method: "GET", url: "/s/AAAAAAAAAAAAAAAAAAAAAA" });
+    expect(busy.headers["retry-after"]).toBe("2");
+    expect(busy.body).not.toContain("AAAAAAAAAAAAAAAAAAAAAA");
+    waiting = 201;
+    expect(await codes()).toEqual([503, 503, 503, 200]);
     stop();
     await app.close();
   });
