@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { sql } from "kysely";
+import { sql, type KyselyPlugin } from "kysely";
 import { alertBook, SOLVED_ALERTS_CAP } from "../../src/admin/alerts.js";
 import { permissionsOf } from "../../src/admin/permissions.js";
 import type { Principal } from "../../src/auth/guard.js";
@@ -180,5 +180,67 @@ describe("S7: zones, groups and countries still filter before the cap", () => {
     // Finance does not read the safety or drivers group.
     const finance: Principal = { actor: "admin", subjectId: "adm_cap_fin", sessionId: "s3", zones: ["Z001"], role: "finance", perms: permissionsOf("finance") };
     expect(await read(finance)).toEqual([]);
+  });
+});
+
+/**
+ * Supervisor note N1 (Rules audits/impact/alert-cap-safety-supervisor.md): the book read the open and the solved alerts
+ * with two statements on the pool, so they did not see the same moment. An alert that turned open → solved between
+ * them came twice (same alertId); one that opened again between them was in neither, for one poll.
+ * The hook below changes the alert right after the FIRST read of admin_alerts_live comes back, on another connection:
+ * exactly the moment between the two reads. Now the book reads both in one statement (one snapshot).
+ * Fails before: the alert is twice in the list (test 1) / missing from the list (test 2).
+ */
+describe("S7 N1: an alert that changes state while the book is read appears exactly once", () => {
+  /** A db that runs `change` once, right after the first read of admin_alerts_live has returned. */
+  function interleaved(change: () => Promise<unknown>) {
+    const alertReads = new Set<unknown>();
+    let reads = 0;
+    const plugin: KyselyPlugin = {
+      transformQuery(args) {
+        if (JSON.stringify(args.node).includes("admin_alerts_live")) alertReads.add(args.queryId);
+        return args.node;
+      },
+      async transformResult(args) {
+        if (alertReads.delete(args.queryId) && ++reads === 1) await change();
+        return args.result;
+      },
+    };
+    return { db: db().withPlugin(plugin), reads: () => reads };
+  }
+  const readWith = async (hooked: ReturnType<typeof interleaved>) => (await alertBook(hooked.db, superAdmin, "SE", NOW)).alerts as Live[];
+
+  it("an SOS solved between the two reads is in the list once, not twice", async () => {
+    await alert({ id: "sos:inc_race", kind: "sos", since: ago(10) });
+    await alert({ id: "long_wait:still_open", kind: "long_wait", level: "important", since: ago(20) });
+    await solvedOffline(3);
+    const hooked = interleaved(() =>
+      db().updateTable("admin_alerts_live").set({ state: "solved", cause_live: false, solved_at: NOW, solved_t: JSON.stringify({ t: "Solved", a: [] }) } as never).where("alert_id", "=", "sos:inc_race").execute(),
+    );
+
+    const list = await readWith(hooked);
+    expect(hooked.reads()).toBeGreaterThan(0);
+    expect(ids(list).filter((id) => id === "sos:inc_race")).toHaveLength(1);
+    expect(new Set(ids(list)).size).toBe(list.length);
+    expect(list).toHaveLength(5);
+    // The next read shows it solved, once.
+    const next = await read();
+    expect(next.filter((a) => a.alertId === "sos:inc_race")).toMatchObject([{ state: "solved" }]);
+  });
+
+  it("an SOS that opens again between the two reads is still in the list, once", async () => {
+    await alert({ id: "sos:inc_reopen", kind: "sos", state: "solved", since: ago(30), solvedAt: ago(5) });
+    await alert({ id: "long_wait:still_open", kind: "long_wait", level: "important", since: ago(20) });
+    await solvedOffline(3);
+    const hooked = interleaved(() =>
+      db().updateTable("admin_alerts_live").set({ state: "open", cause_live: true, solved_at: null, solved_t: null } as never).where("alert_id", "=", "sos:inc_reopen").execute(),
+    );
+
+    const list = await readWith(hooked);
+    expect(hooked.reads()).toBeGreaterThan(0);
+    expect(ids(list).filter((id) => id === "sos:inc_reopen")).toHaveLength(1);
+    expect(list).toHaveLength(5);
+    const next = await read();
+    expect(next[0]).toMatchObject({ alertId: "sos:inc_reopen", state: "open" });
   });
 });
