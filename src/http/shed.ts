@@ -58,6 +58,18 @@ export const POLL_READ_ROUTES: ReadonlySet<string> = new Set(
  */
 export const SHARE_READ_ROUTES: ReadonlySet<string> = new Set([`GET ${API_PREFIX}/share/:token`, "GET /s/:token"]);
 export const SHARE_SHED_AT = 0.5;
+/** The two share paths as sent (a path that matches no route, e.g. an over-long token, has no route pattern). */
+export const isSharePath = (url: string): boolean => url.startsWith("/s/") || url.startsWith(`${API_PREFIX}/share/`);
+/**
+ * contract.json#shareTrip.public.headers (supervisor SF-4): EVERY answer of the share paths is never cached, never
+ * indexed and sends no referrer: the handlers, the load-shed 503 below and the 404 of a path that matches no route.
+ */
+export function setShareHeaders(reply: { header(name: string, value: string): unknown }): void {
+  reply.header("Cache-Control", "no-store");
+  reply.header("Referrer-Policy", "no-referrer");
+  reply.header("X-Robots-Tag", "noindex, nofollow");
+  reply.header("X-Content-Type-Options", "nosniff");
+}
 
 /**
  * Supervisor P4: ONLY new, low-priority work is ever shed — a price quote, the rider's map of cars, address search and
@@ -106,6 +118,7 @@ export function registerLoadShedding(app: FastifyInstance, options: ShedOptions)
     if (pool || late) {
       request.log.warn({ shed: pool ? "pool" : "loop", poolWaiting: options.poolWaiting(), loopLateMs: Math.round(lateMs) }, "load shed");
       reply.header("Retry-After", "2");
+      if (first !== 1) setShareHeaders(reply);
       return reply.status(503).send(new ApiError("unavailable", "The server is busy. Try again in a moment.", { reason: "server_busy", retryAfterSeconds: 2 }).body(request.id));
     }
   });

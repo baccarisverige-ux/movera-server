@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { Writable } from "node:stream";
 import { sql } from "kysely";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { buildApp } from "../../src/app.js";
 import { CLEANUP_TRIP_SHARES, HOUSEKEEPING_KINDS, housekeepingHandlers } from "../../src/jobs/housekeeping.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
+import { shareKey, shareToken } from "../../src/safety/tripShare.js";
 import { bookAndAccept, drive, newKey, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
 /**
@@ -179,6 +180,59 @@ describe("S10 privacy: the public answer is a fixed allow-list", () => {
   });
 });
 
+describe("S10 round 2 (supervisor MF-1, SF-3, SF-4)", () => {
+  it("MF-1: a trip queued behind the driver's current trip never shows the car's spot (it is another rider's trip) and does not say 'on the way to pick up'", async () => {
+    const { tripId, token } = await sharedTrip();
+    await a.moveTo(PLACES.odenplan);
+    // Not queued: the car's spot is shown.
+    expect(((await json(token)).json() as Json)["position"]).not.toBeNull();
+    // Queued: accepted with next_after_trip_id set (the driver still carries another rider).
+    await sim.db.updateTable("trips").set({ next_after_trip_id: tripId }).where("trip_id", "=", tripId).execute();
+    const res = await json(token);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as Json;
+    expect(Object.keys(body).sort()).toEqual(["car", "eta", "phase", "position", "refreshSeconds", "state", "updatedAt"]);
+    expect(body).toMatchObject({ state: "live", phase: "queued", position: null, eta: null });
+    expect(res.body).not.toContain(String(PLACES.odenplan.lat));
+    expect(res.body).not.toContain(String(PLACES.odenplan.lng));
+    for (const lang of ["en", "sv", "fr"]) {
+      const html = (await page(token, { headers: { "accept-language": lang } })).body;
+      expect(html).not.toContain("maps.google.com");
+      expect(html).not.toContain(String(PLACES.odenplan.lat));
+      expect(html).not.toMatch(/On the way to pick up|På väg för att hämta|En route vers la prise en charge/);
+    }
+    expect((await page(token, { headers: { "accept-language": "en" } })).body).toContain("The driver is finishing another trip first");
+    // The first trip ended (the server clears next_after_trip_id): the car's spot is back.
+    await sim.db.updateTable("trips").set({ next_after_trip_id: null }).where("trip_id", "=", tripId).execute();
+    expect((await json(token)).json()).toMatchObject({ phase: "to_pickup", position: { lat: PLACES.odenplan.lat } });
+  });
+
+  it("SF-3: the link key is derived from the server's secret with its own label, never the secret itself", () => {
+    const secret = "s".repeat(48);
+    const key = shareKey(secret);
+    expect(key).toHaveLength(32);
+    expect(key.equals(Buffer.from(secret))).toBe(false);
+    const token = shareToken(key, "shr_TEST");
+    expect(token).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(shareToken(shareKey(secret), "shr_TEST")).toBe(token);
+    expect(shareToken(key, "shr_OTHER")).not.toBe(token);
+    // Not what the secret itself would sign.
+    expect(token).not.toBe(createHmac("sha256", secret).update("movera-trip-share-v1:shr_TEST").digest().subarray(0, 16).toString("base64url"));
+  });
+
+  it("SF-4: a token longer than a path value may be still answers no-store + noindex on both share paths", async () => {
+    const long = "A".repeat(300);
+    for (const path of [`/s/${long}`, `/api/v1/share/${long}`, `/s/${long}/x`]) {
+      const res = await read(path);
+      expect(res.statusCode, path.slice(0, 20)).toBe(404);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.headers["x-robots-tag"]).toBe("noindex, nofollow");
+      expect(res.headers["referrer-policy"]).toBe("no-referrer");
+      expect(res.body).not.toContain(long);
+    }
+  });
+});
+
 describe("S10 the rider's routes", () => {
   it("a link is made only on the rider's own trip with a driver; the server keeps only the token's hash", async () => {
     const booked = await rider.book();
@@ -338,15 +392,24 @@ describe("S10 the link ends", () => {
     expect((await json(token)).statusCode).toBe(200);
   });
 
-  it("while the trip has no driver again the link shows nothing; it is not ended for good", async () => {
+  it("SF-1: while the trip has no driver again (driver cancelled, new search) the link says 'looking for a new car', keeps reloading and shows no car; it is not ended", async () => {
     const { tripId, token } = await sharedTrip();
+    const plate = await plateOf(tripId);
     const before = await sim.db.selectFrom("trips").select(["status", "driver_id"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
     await sim.db.updateTable("trips").set({ status: "searching", driver_id: null }).where("trip_id", "=", tripId).execute();
     const res = await json(token);
-    expect(res.statusCode).toBe(410);
-    expect(res.json()).toEqual(ENDED);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ state: "searching", updatedAt: sim.clock.now.toISOString(), refreshSeconds: 20 });
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const html = await page(token, { headers: { "accept-language": "en" } });
+    expect(html.statusCode).toBe(200);
+    expect(html.body).toContain("Looking for a new car");
+    expect(html.body).toContain('<meta http-equiv="refresh" content="20">');
+    expect(html.body).not.toContain(plate);
+    expect(html.body).not.toContain("maps.google.com");
+    expect(html.body).not.toContain("This trip has ended");
     await sim.db.updateTable("trips").set(before).where("trip_id", "=", tripId).execute();
-    expect((await json(token)).statusCode).toBe(200);
+    expect((await json(token)).json()).toMatchObject({ state: "live", car: { plate } });
   });
 
   it("at the 6 h cap, even if the trip is still live", async () => {

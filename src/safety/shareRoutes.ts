@@ -8,7 +8,8 @@ import { runIdempotent } from "../http/idempotency.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { parseBody } from "../http/validate.js";
 import { pageLanguage, renderSharePage, type SharePage } from "./sharePage.js";
-import { createShare, listShares, looksLikeToken, readShare, revokeShares, SHARE, shareToken, type ShareItem } from "./tripShare.js";
+import { setShareHeaders } from "../http/shed.js";
+import { createShare, listShares, looksLikeToken, readShare, revokeShares, SHARE, shareKey, shareToken, type ShareItem } from "./tripShare.js";
 
 /**
  * Contract v0.18.116 §94 (contract.json#shareTrip; BQ-S10): the rider's three share routes and the two public reads.
@@ -58,14 +59,15 @@ export async function shareRoutes(app: FastifyInstance, deps: ShareDeps): Promis
   const tripParam = (request: FastifyRequest) => parseBody(z.object({ tripId: ID }), request.params).tripId;
   const idem = (request: FastifyRequest, riderId: string) => ({ actor: "rider" as const, subjectId: riderId, key: keyOf(request), method: request.method, route: request.url.split("?")[0]!, body: request.body ?? null });
   const base = deps.linkBase?.replace(/\/+$/, "");
-  const urlOf = (request: FastifyRequest, shareId: string) => `${base ?? `${request.protocol}://${request.host}`}/s/${shareToken(deps.jwtSecret, shareId)}`;
+  const key = shareKey(deps.jwtSecret);
+  const urlOf = (request: FastifyRequest, shareId: string) => `${base ?? `${request.protocol}://${request.host}`}/s/${shareToken(key, shareId)}`;
 
   const path = `${API_PREFIX}/rider/trips/:tripId/share`;
   app.post(path, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider"]);
     const tripId = tripParam(request);
     // The stored (replayed) answer has no url: it is made again from the link's id, here, on every answer.
-    const result = await runIdempotent<ShareItem>(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 201, body: await createShare(trx, who.subjectId, tripId, deps.jwtSecret, now()) }));
+    const result = await runIdempotent<ShareItem>(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 201, body: await createShare(trx, who.subjectId, tripId, key, now()) }));
     return reply.status(201).send({ ...result.body, url: urlOf(request, result.body.shareId) });
   });
   app.get(path, async (request) => {
@@ -97,12 +99,7 @@ export async function shareRoutes(app: FastifyInstance, deps: ShareDeps): Promis
     const token = (request.params as { token?: unknown }).token;
     return typeof token === "string" ? token : "";
   };
-  const publicHeaders = (reply: FastifyReply) => {
-    reply.header("Cache-Control", "no-store");
-    reply.header("Referrer-Policy", "no-referrer");
-    reply.header("X-Robots-Tag", "noindex, nofollow");
-    reply.header("X-Content-Type-Options", "nosniff");
-  };
+  const publicHeaders = (reply: FastifyReply) => setShareHeaders(reply);
 
   app.get(`${API_PREFIX}/share/:token`, async (request, reply) => {
     publicHeaders(reply);
@@ -112,6 +109,7 @@ export async function shareRoutes(app: FastifyInstance, deps: ShareDeps): Promis
     const read = await readShare(deps.db, token, now());
     if (read.state === "not_found") throw notFound("Link not found.", "share_not_found");
     if (read.state === "ended") return reply.status(410).send({ state: "ended", reason: "share_ended" });
+    // Live, or "searching" (no driver right now): each its own closed shape.
     return read.view;
   });
 
@@ -130,6 +128,7 @@ export async function shareRoutes(app: FastifyInstance, deps: ShareDeps): Promis
     const read = await readShare(deps.db, token, now());
     if (read.state === "not_found") return send(404, null, { kind: "not_found" });
     if (read.state === "ended") return send(410, read.country, { kind: "ended" });
+    if (read.state === "searching") return send(200, read.country, { kind: "searching", refreshSeconds: read.view.refreshSeconds });
     return send(200, read.country, { kind: "live", view: read.view, timeZone: read.timeZone });
   });
 }

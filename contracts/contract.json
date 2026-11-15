@@ -10259,17 +10259,17 @@
     "notLive": "A link can be made only while the trip has a driver: the statuses above (the same list as safety.sos.riderStatuses). Before a driver, after the end, and for a booked (scheduled) ride still in accepted whose driver the rider is not shown yet: 409 invalid_transition, reason trip_not_live.",
     "maxHours": 6,
     "retentionDays": 30,
-    "ends": "A link stops, whichever comes first: (a) when the trip reaches any tripStatus.terminal status (drop-off = completed; also every cancelled status, no_show, expired, failed), checked every time the link is read, so no timer is needed; (b) when the rider stops sharing; (c) when the zone's switch is off, read on every view; (d) maxHours hours after the link was made. An ended link never shows trip data again: 410 with { state: 'ended', reason: 'share_ended' }. (c) is kept: a link seen while the switch is off stays ended when the switch is turned on again. Not an end: while the trip has no driver again (the driver cancelled and a new search runs) the link answers the same 410, and works again, with the new car, once a driver is assigned.",
+    "ends": "A link stops, whichever comes first: (a) when the trip reaches any tripStatus.terminal status (drop-off = completed; also every cancelled status, no_show, expired, failed), checked every time the link is read, so no timer is needed; (b) when the rider stops sharing; (c) when the zone's switch is off, read on every view; (d) maxHours hours after the link was made. An ended link never shows trip data again: 410 with { state: 'ended', reason: 'share_ended' }. (c) is kept: a link seen while the switch is off stays ended when the switch is turned on again. Not an end: a trip that has no driver again (public.searching). (c) is seen when the link is read: a switch turned off and on again with no read in between leaves the link working, and a server copy may serve its cached switch for some seconds after a publish.",
     "link": {
       "url": "<share base>/s/<token>: the server's own public origin (server env SHARE_LINK_BASE, not a secret, so the host can change with no app release).",
-      "token": "128 bits as base64url, 22 characters, that cannot be guessed: the server makes them from the new link's id with a secret only the server holds (HMAC-SHA256, cut to 128 bits). The server stores only the SHA-256 of the token, never the token and never the URL: a copy of the database cannot open a link. A token is never written to a log, an audit row, an error message or the idempotency store.",
+      "token": "128 bits as base64url, 22 characters, that cannot be guessed: the server makes them from the new link's id with a key of its own that the server derives from its secret with a fixed label (HMAC-SHA256, cut to 128 bits). The server stores only the SHA-256 of the token, never the token and never the URL: a copy of the database cannot open a link. A token is never written to a log, an audit row, an error message or the idempotency store.",
       "tokenPattern": "^[A-Za-z0-9_-]{22}$"
     },
     "routes": {
       "create": "POST /rider/trips/{tripId}/share {} + Idempotency-Key → 201 TripShareLink { shareId, tripId, url, createdAt, expiresAt, endsAtDropoff: true }. The signed-in rider's own trip only; another rider's trip is 404 trip_not_found. 409 invalid_transition, reason trip_not_live (notLive) or too_many_shares (limits.maxActivePerTrip live links already); 403 forbidden, reason share_trip_off (the zone's switch is off). Counted by the general write limit.",
       "list": "GET /rider/trips/{tripId}/share → TripShareList { items: [TripShareItem { shareId, tripId, createdAt, expiresAt, endsAtDropoff }] }: the trip's live links, oldest first, without url (the app keeps the URL it got). An ended trip answers an empty list.",
       "revoke": "DELETE /rider/trips/{tripId}/share + Idempotency-Key → 204. 'Stop sharing': every live link of the trip ends at once; no live link is still 204.",
-      "publicJson": "GET /api/v1/share/{token} (no sign-in, no standard headers needed) → 200 PublicTripShare; an ended link → 410 PublicTripShareEnded { state: 'ended', reason: 'share_ended' }; a bad or unknown token → 404 not_found, reason share_not_found, the same body for every miss so tokens cannot be probed.",
+      "publicJson": "GET /api/v1/share/{token} (no sign-in, no standard headers needed) → 200 PublicTripShare, or 200 PublicTripShareSearching while the trip has no driver (public.searching); an ended link → 410 PublicTripShareEnded { state: 'ended', reason: 'share_ended' }; a bad or unknown token → 404 not_found, reason share_not_found, the same body for every miss so tokens cannot be probed.",
       "publicPage": "GET /s/{token} (outside /api/v1; no sign-in): the same answer as an HTML page, 200 / 410 / 404, rendered by the server from the same allow-list. 429 is a short HTML page too; 503 is the standard error body. No script; the page reloads itself every public.refreshSeconds seconds while live."
     },
     "public": {
@@ -10298,7 +10298,7 @@
         "lng",
         "at"
       ],
-      "shape": "PublicTripShare { state: 'live', phase, car: { make, model, color, plate }, eta: { minutes, target: pickup | dropoff, arriveAround } | null, position: { lat, lng, at } | null, updatedAt, refreshSeconds }. A FIXED ALLOW-LIST: the answer is built field by field from this list and never from TripProjection; a field not listed here is never sent.",
+      "shape": "PublicTripShare { state: 'live', phase (phases, or queuedPhase), car: { make, model, color, plate }, eta: { minutes, target: pickup | dropoff, arriveAround } | null, position: { lat, lng, at } | null, updatedAt, refreshSeconds }. A FIXED ALLOW-LIST: the answer is built field by field from this list and never from TripProjection; a field not listed here is never sent.",
       "phases": {
         "to_pickup": [
           "accepted",
@@ -10314,7 +10314,7 @@
         ]
       },
       "etaRule": "eta comes from the trip's stored ETA (TripEta): minutes = the seconds still left at the time of the read, rounded up to whole minutes, at least 1; target = pickup before the rider is in the car, dropoff after; arriveAround = that arrival instant as HH:MM in the trip zone's time zone. null when the server has no ETA, and in phase at_pickup.",
-      "positionRule": "position is the car's latest GPS fix the server has (from POST /driver/location), lat / lng with 5 decimals, at = when it was measured; null when there is none or it is older than positionMaxAgeSeconds. The page shows it only as the link positionLink ('Open in Maps'): no map tiles, no map key.",
+      "positionRule": "position is the car's latest GPS fix the server has (from POST /driver/location), lat / lng with 5 decimals, at = when it was measured; null when there is none or it is older than positionMaxAgeSeconds. The page shows it only as the link positionLink ('Open in Maps'): no map tiles, no map key. Queued trip (supervisor MF-1): while the trip waits behind the driver's current trip (accepted with the server's next_after_trip_id set) the car still carries ANOTHER rider, so position is always null, eta is null and phase is queuedPhase, never to_pickup; the car's spot is shown again only when that other trip has ended.",
       "positionMaxAgeSeconds": 300,
       "positionLink": "https://maps.google.com/?q={lat},{lng}",
       "refreshSeconds": 20,
@@ -10329,8 +10329,10 @@
         "driver photo",
         "any id other than the token in the address (no tripId, riderId, driverId, shareId, zoneId)"
       ],
-      "headers": "Both public routes answer with Cache-Control: no-store, Referrer-Policy: no-referrer, X-Robots-Tag: noindex, nofollow and X-Content-Type-Options: nosniff. The HTML page also carries Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none', and <meta name=\"robots\" content=\"noindex, nofollow\">.",
-      "preview": "Messaging apps fetch a link to build a preview. The page has no Open Graph / preview tags and its <title> is only 'Movera' + texts.title, so a preview never carries trip data."
+      "headers": "Both public routes answer with Cache-Control: no-store, Referrer-Policy: no-referrer, X-Robots-Tag: noindex, nofollow and X-Content-Type-Options: nosniff. The HTML page also carries Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none', and <meta name=\"robots\" content=\"noindex, nofollow\">. The same four headers are on every answer of the two share paths, also the load-shed 503 and the 404 of a path that matches no route (an over-long token).",
+      "preview": "Messaging apps fetch a link to build a preview. The page has no Open Graph / preview tags and its <title> is only 'Movera' + texts.title, so a preview never carries trip data.",
+      "queuedPhase": "queued",
+      "searching": "While the trip has no driver (the driver cancelled and a new search runs; also a held booked ride whose driver the rider is not shown yet) the link is NOT ended: both public routes answer 200 with PublicTripShareSearching { state: 'searching', updatedAt, refreshSeconds } and the page says texts.searching and keeps reloading. No car, plate, time or position is sent. When a driver is assigned the link shows the new car."
     },
     "limits": {
       "maxActivePerTrip": 3,
@@ -10356,7 +10358,9 @@
         "notFound": "Länken hittades inte",
         "privacy": "Sidan visar bara bilen, registreringsnumret, ankomsttiden och bilens position. Den slutar fungera när resan är klar.",
         "message": "Följ min Movera-resa live: {url}",
-        "tooMany": "För många visningar just nu. Försök igen om en minut."
+        "tooMany": "För många visningar just nu. Försök igen om en minut.",
+        "queued": "Föraren avslutar en annan resa först",
+        "searching": "Söker en ny bil"
       },
       "fr": {
         "title": "Trajet partagé",
@@ -10374,7 +10378,9 @@
         "notFound": "Lien introuvable",
         "privacy": "Cette page montre seulement la voiture, l'immatriculation, l'heure d'arrivée et la position de la voiture. Elle cesse de fonctionner à la fin du trajet.",
         "message": "Suivez mon trajet Movera en direct : {url}",
-        "tooMany": "Trop de consultations pour le moment. Réessayez dans une minute."
+        "tooMany": "Trop de consultations pour le moment. Réessayez dans une minute.",
+        "queued": "Le chauffeur termine d'abord une autre course",
+        "searching": "Recherche d'une nouvelle voiture"
       },
       "en": {
         "title": "Shared trip",
@@ -10392,7 +10398,9 @@
         "notFound": "Link not found",
         "privacy": "This page shows only the car, the plate, the arrival time and the car's position. It stops working when the trip is over.",
         "message": "Follow my Movera ride live: {url}",
-        "tooMany": "Too many views right now. Try again in a minute."
+        "tooMany": "Too many views right now. Try again in a minute.",
+        "queued": "The driver is finishing another trip first",
+        "searching": "Looking for a new car"
       }
     },
     "contacts": "Trusted contacts are the rider's emergency contacts on the server (phoneDataToServer.riderEmergencyContacts, GET | PUT /rider/emergency-contacts): no second list. v0.18.116: EmergencyContact gains the optional shareTrips (boolean): 'Share trips with this contact'. The server keeps it on the rider's list and returns it; a value that is not true / false is 400 invalid_request; a driver PUT that carries it is accepted and the field is not kept. The server sends nothing to a contact: the rider's phone sends the message (texts.<lang>.message with {url}).",
