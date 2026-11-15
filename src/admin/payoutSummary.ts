@@ -30,6 +30,10 @@ import { isPaidEnd, tripProjection } from "../trips/projection.js";
  * such an entry can be booked in a LATER payout than the trip entry. Each one lowers Movera gets once, in the payout that
  * pays it: the trip's payout adds back its bonus entries booked elsewhere (or not booked yet), and a payout with such a
  * bonus entry but not the trip's entry takes it off. A lost-driver payment (written before the end) is not one of them.
+ * BQ-M29 (M28 builder / M28 supervisor §3.2 "BQ-M29 must REUSE the M28 machinery"): the same for a paid trip's own `adjustment`
+ * entries (the change kept at the paid end, a pay change after the end, the driver's share taken back by a refund): they
+ * are inside driver_adjustments_minor, so inside moveraKeepsNow, and each one moves Movera gets once, in the payout that
+ * pays it. An adjustment of a trip with no paid end (a no-show's share taken back) is not one of them (as before).
  */
 
 type Money = { amountMinor: number; currency: string };
@@ -56,18 +60,19 @@ export async function payoutSummaries(ex: Executor, all: readonly PayoutKey[], v
     .select(["payout_id", "kind", "trip_id", "driver_id", "amount_minor", "at", "bonus_id"])
     .where("payout_id", "in", payouts.map((p) => p.payout_id))
     .execute();
-  const tripIds = [...new Set(entries.filter((e) => e.kind !== "tip" && e.kind !== "pickup_pay" && e.kind !== "adjustment").map((e) => e.trip_id).filter((id): id is string => id !== null))];
+  const tripIds = [...new Set(entries.filter((e) => e.kind !== "tip" && e.kind !== "pickup_pay").map((e) => e.trip_id).filter((id): id is string => id !== null))];
   const trips = new Map<string, TripRow>();
   if (tripIds.length) for (const t of await ex.selectFrom("trips").selectAll().where("trip_id", "in", tripIds).execute()) trips.set(t.trip_id, t as unknown as TripRow);
   const byPayout = new Map<string, typeof entries>();
   for (const e of entries) if (e.payout_id) byPayout.set(e.payout_id, [...(byPayout.get(e.payout_id) ?? []), e]);
-  // BQ-M28: the trip's own bonus entries (any payout or none) of the paid trips whose trip entry is on this page.
+  // BQ-M28 / BQ-M29: the trip's own bonus and adjustment entries (any payout or none) of the paid trips whose trip entry is on
+  // this page: the driver's, written at or after the paid end.
   const ownBonus = (e: { kind: string; driver_id: string; at: Date | string }, trip: TripRow) =>
-    e.kind === "bonus" && isPaidEnd(trip) && e.driver_id === trip.driver_id && (trip.ended_at === null || new Date(e.at).getTime() >= new Date(trip.ended_at).getTime());
+    (e.kind === "bonus" || e.kind === "adjustment") && isPaidEnd(trip) && e.driver_id === trip.driver_id && (trip.ended_at === null || new Date(e.at).getTime() >= new Date(trip.ended_at).getTime());
   const paidTripIds = [...new Set(entries.filter((e) => e.kind === "trip" && e.trip_id !== null && trips.has(e.trip_id) && isPaidEnd(trips.get(e.trip_id)!)).map((e) => e.trip_id!))];
   const bonusesOf = new Map<string, Array<{ payout_id: string | null; amount: number }>>();
   if (paidTripIds.length) {
-    const rows = await ex.selectFrom("earnings_entries").select(["payout_id", "trip_id", "driver_id", "kind", "amount_minor", "at"]).where("kind", "=", "bonus").where("trip_id", "in", paidTripIds).execute();
+    const rows = await ex.selectFrom("earnings_entries").select(["payout_id", "trip_id", "driver_id", "kind", "amount_minor", "at"]).where("kind", "in", ["bonus", "adjustment"]).where("trip_id", "in", paidTripIds).execute();
     for (const b of rows) if (b.trip_id && ownBonus(b, trips.get(b.trip_id)!)) bonusesOf.set(b.trip_id, [...(bonusesOf.get(b.trip_id) ?? []), { payout_id: b.payout_id, amount: Number(b.amount_minor) }]);
   }
   for (const payout of payouts) {
@@ -95,10 +100,11 @@ export async function payoutSummaries(ex: Executor, all: readonly PayoutKey[], v
       if (e.kind === "trip" && !counted.has(`trip:${trip.trip_id}`)) {
         counted.add(`trip:${trip.trip_id}`);
         moveraGets += (tripProjection(trip, viewer)["moveraKeepsNow"] as Money | undefined)?.amountMinor ?? 0;
-        // BQ-M28: its bonus entries booked in another payout (or none yet) are taken off there, never here.
+        // BQ-M28 / BQ-M29: its bonus and adjustment entries booked in another payout (or none yet) count there, never here.
         for (const b of bonusesOf.get(trip.trip_id) ?? []) if (b.payout_id !== payout.payout_id) moveraGets += b.amount;
       } else if (ownBonus(e, trip) && !tripsHere.has(trip.trip_id)) {
-        // BQ-M28: a paid trip's bonus booked here while its trip entry is in another payout (or none yet): taken off here.
+        // BQ-M28 / BQ-M29: a paid trip's bonus or pay change booked here while its trip entry is in another payout (or none
+        // yet): counted here (a + change lowers Movera gets, a − change raises it).
         moveraGets -= amount;
       } else if (e.kind === "fee_share" && !counted.has(`fee:${trip.trip_id}`)) {
         counted.add(`fee:${trip.trip_id}`);
