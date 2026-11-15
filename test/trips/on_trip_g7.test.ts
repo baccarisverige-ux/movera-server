@@ -147,7 +147,7 @@ const report = (tripId: string, who: "rider" | "driver", checkId: string, trigge
 
 describe("settings with defaults (owner rule 16, decision 2: 2 km)", () => {
   it("ride check and route change defaults; a value outside its range reads as the default", () => {
-    expect(rideCheckSettingsOf(undefined)).toEqual({ on: true, stopMinutes: 2, offRouteKm: 2, endFarMeters: 500, noAnswerSeconds: 120, repeatMinutes: 10, noAnswerAlarm: false });
+    expect(rideCheckSettingsOf(undefined)).toEqual({ on: true, stopMinutes: 2, offRouteKm: 2, endFarMeters: 500, noAnswerSeconds: 120, repeatMinutes: 10, noAnswerAlarm: false, scanEverySeconds: 30 });
     expect(rideCheckSettingsOf({ rideCheck: { offRouteKm: 99, stopMinutes: 5, on: "yes" } })).toMatchObject({ offRouteKm: 2, stopMinutes: 5, on: true });
     expect(routeChangeSettingsOf({ routeChange: { answerSeconds: 5, driverCanRefuse: false } })).toEqual({ on: true, driverCanRefuse: false, answerSeconds: 60, beforePickup: true, fixedPriceTrips: "block" });
     expect(MAX_STOPS_DEFAULT).toBe(3);
@@ -194,6 +194,59 @@ describe("settings with defaults (owner rule 16, decision 2: 2 km)", () => {
   });
 });
 
+describe("v0.18.100 BQ-V37 (owner W1 Q66 = Q-B6): the ride-check scan runs at most once every scanEverySeconds per trip", () => {
+  const scanTimer = async (tripId: string) =>
+    database.db.selectFrom("timers").select(["due_at"]).where("kind", "=", RIDE_CHECK_SCAN).where("ref_id", "=", tripId).executeTakeFirst();
+
+  it("the setting: default 30 s, range 10-60 (owner 2026-11-15: at most 60 s), outside it reads as 30 (per zone, in the driver document)", () => {
+    expect(rideCheckSettingsOf(undefined).scanEverySeconds).toBe(30);
+    expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 60 } }).scanEverySeconds).toBe(60);
+    expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 10 } }).scanEverySeconds).toBe(10);
+    // owner 2026-11-15: 60 s is the highest allowed value; 61 and the old top 120 are refused (read as the default 30).
+    expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 61 } }).scanEverySeconds).toBe(30);
+    expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 120 } }).scanEverySeconds).toBe(30);
+    for (const bad of [9, 61, 121, 0, -5, "30", null]) expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: bad } }).scanEverySeconds, String(bad)).toBe(30);
+  });
+
+  it("Stockholm default: a GPS batch 5 s after a scan books the next scan 30 s after it, not now; it then finds off_route", async () => {
+    const trip = await accepted();
+    await onBoard(trip);
+    await moveTo({ lat: 59.326, lng: 18.068 }, 20); // on the way: the first scan runs at once (not delayed)
+    const firstScan = clock.now.getTime();
+    expect(Number((await scanTimer(trip.tripId))!.due_at)).toBe(firstScan);
+    await worker.runDue();
+    expect(await scanTimer(trip.tripId)).toBeUndefined();
+    await moveTo(FAR_EAST, 5); // 5 s later and 5 km off the route
+    expect(Number((await scanTimer(trip.tripId))!.due_at)).toBe(firstScan + 30_000);
+    await worker.runDue();
+    expect((await view(trip.tripId, rider)).rideCheck).toBeUndefined();
+    await moveTo(FAR_EAST, 5); // another batch: the pending scan keeps its time (never later)
+    expect(Number((await scanTimer(trip.tripId))!.due_at)).toBe(firstScan + 30_000);
+    await advance(20);
+    const rc = (await view(trip.tripId, rider)).rideCheck;
+    expect(rc).toMatchObject({ trigger: "off_route" });
+    expect(Date.parse(rc.askedAt)).toBe(firstScan + 30_000);
+  });
+
+  it("Paris, the admin sets 60 s: the next scan waits 60 s; 10 s scans every 10 s", async () => {
+    await publish("driver_app_config", "FR-PC", driverDoc({ rideCheck: { scanEverySeconds: 60 } }, true));
+    const trip = await forcedParis();
+    await onBoard(trip, PARIS);
+    await moveTo({ lat: 48.856, lng: 2.352 }, 20);
+    const firstScan = clock.now.getTime();
+    await worker.runDue();
+    await moveTo({ lat: 48.855, lng: 2.354 }, 5);
+    expect(Number((await scanTimer(trip.tripId))!.due_at)).toBe(firstScan + 60_000);
+    // The admin change applies from the trip's next scan.
+    await publish("driver_app_config", "FR-PC", driverDoc({ rideCheck: { scanEverySeconds: 10 } }, true));
+    await advance(55);
+    const second = clock.now.getTime();
+    expect(await scanTimer(trip.tripId)).toBeUndefined();
+    await moveTo({ lat: 48.854, lng: 2.356 }, 1);
+    expect(Number((await scanTimer(trip.tripId))!.due_at)).toBe(second + 10_000);
+  });
+});
+
 describe("item 5: max stops, enforced by the server (default 3, per zone)", () => {
   const stop = (i: number) => ({ address: `Stop ${i}`, lat: 59.326 + i * 0.001, lng: 18.07 });
   it("Stockholm: 4 stops refused at the quote with maxStops=3; 3 are fine", async () => {
@@ -235,7 +288,8 @@ describe("items 1 + 2: the server's ride check, asked to the rider AND the drive
     await moveTo({ lat: 59.326, lng: 18.068 }, 20); // on the way: nothing
     await worker.runDue();
     expect((await view(trip.tripId, rider)).rideCheck).toBeUndefined();
-    await moveTo(FAR_EAST, 20);
+    // v0.18.100 (BQ-V37): the next scan may run 30 s (scanEverySeconds default) after the one above.
+    await moveTo(FAR_EAST, 30);
     await worker.runDue();
     const riderSide = await view(trip.tripId, rider);
     const driverSide = await view(trip.tripId, driverA.headers);

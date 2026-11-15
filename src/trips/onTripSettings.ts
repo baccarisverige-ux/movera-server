@@ -16,7 +16,7 @@ type OnTripContract = {
 };
 const C = contract as unknown as OnTripContract;
 
-export type RideCheckSettings = { on: boolean; stopMinutes: number; offRouteKm: number; endFarMeters: number; noAnswerSeconds: number; repeatMinutes: number; noAnswerAlarm: boolean };
+export type RideCheckSettings = { on: boolean; stopMinutes: number; offRouteKm: number; endFarMeters: number; noAnswerSeconds: number; repeatMinutes: number; noAnswerAlarm: boolean; scanEverySeconds: number };
 export type FixedPriceTrips = "block" | "switch_to_normal";
 export type RouteChangeSettings = { on: boolean; driverCanRefuse: boolean; answerSeconds: number; beforePickup: boolean; fixedPriceTrips: FixedPriceTrips };
 
@@ -43,6 +43,8 @@ export function rideCheckSettingsOf(driverDoc: unknown): RideCheckSettings {
     noAnswerSeconds: num(r["noAnswerSeconds"], RC_RANGES["noAnswerSeconds"], d.noAnswerSeconds),
     repeatMinutes: num(r["repeatMinutes"], RC_RANGES["repeatMinutes"], d.repeatMinutes),
     noAnswerAlarm: bool(r["noAnswerAlarm"], d.noAnswerAlarm),
+    // v0.18.100 (BQ-V37, owner W1 Q66 = Q-B6): the scan runs at most once every this many seconds per trip (default 30).
+    scanEverySeconds: num(r["scanEverySeconds"], RC_RANGES["scanEverySeconds"], d.scanEverySeconds),
   };
 }
 
