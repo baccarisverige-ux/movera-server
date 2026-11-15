@@ -8,6 +8,7 @@ import { lockTrip } from "../db/tripLog.js";
 import { ApiError, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
+import { haversineKm } from "../maps/routing.js";
 import { statusTarget } from "../trips/etaNow.js";
 import { tripProjection } from "../trips/projection.js";
 
@@ -28,7 +29,7 @@ type ShareContract = {
   maxHours: number;
   retentionDays: number;
   link: { tokenPattern: string };
-  public: { fields: string[]; car: string[]; phases: Record<string, string[]>; queuedPhase: string; refreshSeconds: number; positionMaxAgeSeconds: number; positionLink: string };
+  public: { fields: string[]; car: string[]; phases: Record<string, string[]>; queuedPhase: string; refreshSeconds: number; positionMaxAgeSeconds: number; hideWithinMetersOfDropoff: number; positionLink: string };
   limits: { maxActivePerTrip: number; perAddressPerMinute: number; perTokenPerMinute: number };
   texts: Record<"sv" | "fr" | "en", Record<string, string>>;
 };
@@ -38,6 +39,26 @@ const LIVE_STATUSES: ReadonlySet<string> = new Set(SHARE.statuses);
 const PHASE_OF: Record<string, string> = Object.fromEntries(Object.entries(SHARE.public.phases).flatMap(([phase, statuses]) => statuses.map((status) => [status, phase])));
 const TOKEN = new RegExp(SHARE.link.tokenPattern);
 const HOUR_MS = 3_600_000;
+/** The rider is in the car (contract tripStatus.riderOnboard = the on_trip phase). */
+const RIDER_IN_CAR: ReadonlySet<string> = new Set((contract as unknown as { tripStatus: { riderOnboard: string[] } }).tripStatus.riderOnboard);
+/**
+ * Owner Q-B 2026-11-15 "Hide last 500 m" (Rules decisions/driver-g14.md): within this many metres (straight line) of
+ * the trip's drop-off the car's position is not sent. contract.json#shareTrip.public.hideWithinMetersOfDropoff.
+ */
+export const HIDE_NEAR_DROPOFF_METERS = SHARE.public.hideWithinMetersOfDropoff;
+
+/**
+ * May the car's spot be sent? Only with the rider in the car (owner Q-A "Hide until rider is in": never on the way to
+ * the pickup or waiting at it, which is often the rider's home) and farther than HIDE_NEAR_DROPOFF_METERS from the
+ * drop-off (owner Q-B: protects "never the destination"). A drop-off without coordinates hides it (closed by default).
+ * Only the yes / no leaves this function: the drop-off and the distance are never part of the answer.
+ */
+export function mayShowPosition(status: string, car: { lat: number; lng: number }, dropoff: unknown): boolean {
+  if (!RIDER_IN_CAR.has(status)) return false;
+  const to = dropoff as { lat?: unknown; lng?: unknown } | null;
+  if (!to || typeof to.lat !== "number" || typeof to.lng !== "number") return false;
+  return haversineKm(car, { lat: to.lat, lng: to.lng }) * 1000 > HIDE_NEAR_DROPOFF_METERS;
+}
 
 /**
  * Supervisor SF-3: the links have a key of their own, derived from the server's secret with a fixed label (the secret
@@ -145,7 +166,7 @@ export async function readShare(db: Db, token: string, now: Date): Promise<Share
     .innerJoin("trips as t", "t.trip_id", "s.trip_id")
     .innerJoin("zones as z", "z.zone_id", "t.zone_id")
     .leftJoin("driver_locations as l", "l.driver_id", "t.driver_id")
-    .select(["s.share_id", "s.expires_at", "s.revoked_at", "t.status", "t.kind", "t.driver_id", "t.zone_id", "t.driver_summary", "t.eta", "t.next_after_trip_id", "z.country", "z.time_zone", "l.lat", "l.lng", "l.measured_at"])
+    .select(["s.share_id", "s.expires_at", "s.revoked_at", "t.status", "t.kind", "t.driver_id", "t.zone_id", "t.driver_summary", "t.eta", "t.next_after_trip_id", "t.dropoff", "z.country", "z.time_zone", "l.lat", "l.lng", "l.measured_at"])
     .where("s.token_hash", "=", tokenHash(token))
     .executeTakeFirst();
   if (row === undefined) return { state: "not_found" };
@@ -173,7 +194,7 @@ export async function readShare(db: Db, token: string, now: Date): Promise<Share
     const left = Math.max(0, stored.etaSeconds - (now.getTime() - Date.parse(stored.at)) / 1000);
     eta = { minutes: Math.max(1, Math.ceil(left / 60)), target, arriveAround: clockTime(new Date(now.getTime() + left * 1000), row.time_zone) };
   }
-  const fresh = !queued && row.measured_at !== null && row.lat !== null && row.lng !== null && now.getTime() - row.measured_at.getTime() <= SHARE.public.positionMaxAgeSeconds * 1000;
+  const fresh = !queued && row.measured_at !== null && row.lat !== null && row.lng !== null && mayShowPosition(row.status, { lat: row.lat, lng: row.lng }, row.dropoff) && now.getTime() - row.measured_at.getTime() <= SHARE.public.positionMaxAgeSeconds * 1000;
   const view: PublicShare = {
     state: "live",
     phase: queued ? SHARE.public.queuedPhase : PHASE_OF[row.status]!,
