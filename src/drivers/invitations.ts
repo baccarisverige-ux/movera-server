@@ -10,7 +10,7 @@ import { loadFleet, ownedFleet, coversFleet, type Admin, type FleetRow } from ".
 import { ONBOARDING, normalizeFleetCode, sameEmail, sameName } from "./onboardingRules.js";
 import { driverView, loadDriver, type DriverRow } from "./service.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
-import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
+import { personCountry, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 
 /**
  * Joining a fleet is a two-sided invitation (contract v0.5.3 §14, contract.json#driverOnboarding.fleetInvitations;
@@ -161,11 +161,19 @@ async function insertInvitation(trx: Trx, values: { fleetId: string; direction: 
  * already invited this driver's number, both sides agree and the driver is linked at once.
  */
 export async function requestJoin(trx: Trx, deps: InviteDeps, driverId: string, body: { code: string; ownerName: string; ownerEmail: string }, now: Date, options: { quietIfPending?: boolean } = {}) {
-  const row = await loadDriver(trx, driverId, true);
+  // BQ-FLEETCUR MF1: the fleet row is locked before the driver row (the lock order of every fleet path); the driver's
+  // checks run on a first read, then again on the locked row.
+  let row = await loadDriver(trx, driverId);
   const refuse = async (message: string, reason: string) => new ApiError("invalid_transition", message, { reason, projection: await driverView(trx, row, "driver", now) });
-  if (row.account_type === "fleet") throw await refuse("A fleet account has its own fleet.", "fleet_account");
-  if (row.fleet_id !== null) throw await refuse("You are already in a fleet; leave it first.", "already_in_fleet");
-  const fleet = await matchFleet(trx, driverId, body, now);
+  const notInFleet = async () => {
+    if (row.account_type === "fleet") throw await refuse("A fleet account has its own fleet.", "fleet_account");
+    if (row.fleet_id !== null) throw await refuse("You are already in a fleet; leave it first.", "already_in_fleet");
+  };
+  await notInFleet();
+  const fleet = await loadFleet(trx, (await matchFleet(trx, driverId, body, now)).fleet_id, true);
+  row = await loadDriver(trx, driverId, true);
+  await notInFleet();
+  await mustBeFleetCountry(trx, driverId, fleet, await driverView(trx, row, "driver", now));
   const open = await pendingOf(trx, { driverId, direction: "driver_request" }, now);
   if (open !== undefined) {
     if (options.quietIfPending) return viewOf(trx, open, "driver", now);
@@ -191,14 +199,16 @@ export async function requestJoin(trx: Trx, deps: InviteDeps, driverId: string, 
 /** POST /driver/fleet/invite { phone }: an owner_invite the driver must accept; a number without an account waits. */
 export async function inviteByPhone(trx: Trx, deps: InviteDeps, ownerId: string, body: { phone: string }, now: Date) {
   if (!PHONE.test(body.phone)) throw badRequest("Send the phone number in international form, e.g. +46701234567.", "invalid_phone");
-  const owner = await loadDriver(trx, ownerId, true);
+  // BQ-FLEETCUR MF1: the fleet row first, then the drivers (one lock order).
   const fleet = await ownedFleet(trx, ownerId, true);
+  const owner = await loadDriver(trx, ownerId, true);
   if (fleet.status !== "approved") throw new ApiError("invalid_transition", "Your fleet is not approved yet.", { reason: "fleet_not_approved" });
   if (body.phone === owner.phone) throw badRequest("That is your own number.", "own_phone");
   const driver = (await trx.selectFrom("drivers").selectAll().where("phone", "=", body.phone).forUpdate().executeTakeFirst()) as unknown as DriverRow | undefined;
   if (driver !== undefined) {
     if (driver.account_type === "fleet") throw badRequest("That number belongs to a fleet account.", "fleet_account");
     if (driver.fleet_id !== null) throw new ApiError("conflict", driver.fleet_id === fleet.fleet_id ? "That driver is already in your fleet." : "That driver is in another fleet.", { reason: "already_in_fleet" });
+    await mustBeFleetCountry(trx, driver.driver_id, fleet);
     const request = await pendingOf(trx, { driverId: driver.driver_id, fleetId: fleet.fleet_id, direction: "driver_request" }, now);
     if (request !== undefined) {
       // The driver asked first: this invite is the owner's acceptance.
@@ -232,6 +242,16 @@ export async function attachInvitesToNewDriver(trx: Trx, driverId: string, phone
   }
 }
 
+/**
+ * BQ-FLEETCUR (owner 2026-11-15: a fleet works in ONE country and earns in ONE currency): a driver joins only a fleet
+ * of his own country (his country, else his first zone's: the server's one person-country rule, personCountry). A
+ * driver of no known country is refused too. 409 conflict `fleet_other_country`.
+ */
+export async function mustBeFleetCountry(ex: Executor, driverId: string, fleet: { country: string }, projection?: unknown): Promise<void> {
+  const country = await personCountry(ex, "driver", driverId);
+  if (country !== fleet.country) throw new ApiError("conflict", "A driver can join only a fleet of his own country.", { reason: "fleet_other_country", ...(projection !== undefined ? { projection } : {}) });
+}
+
 /* ---------------------------------------------------------------- answering */
 
 async function load(trx: Trx, invitationId: string): Promise<InvitationRow> {
@@ -263,7 +283,12 @@ async function link(trx: Trx, deps: InviteDeps, row: InvitationRow, driver: Driv
   void deps;
   if (driver.fleet_id !== null) throw new ApiError("conflict", "The driver is already in a fleet.", { reason: "already_in_fleet" });
   if (driver.account_type === "fleet") throw new ApiError("conflict", "A fleet account cannot join another fleet.", { reason: "fleet_account" });
-  if (fleet.status !== "approved") throw new ApiError("invalid_transition", "The fleet is not approved.", { reason: "fleet_not_approved" });
+  // BQ-FLEETCUR MF1: the fleet is re-read under FOR UPDATE (every caller already holds it, or takes it here) and that
+  // copy is checked: an owner's country change in flight is waited for, never read stale.
+  const locked = await loadFleet(trx, fleet.fleet_id, true);
+  if (locked.status !== "approved") throw new ApiError("invalid_transition", "The fleet is not approved.", { reason: "fleet_not_approved" });
+  // BQ-FLEETCUR: every link (driver/owner/admin accept, either side's auto-accept) checks the country.
+  await mustBeFleetCountry(trx, driver.driver_id, locked);
   const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driver.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
   if (active) throw new ApiError("invalid_transition", "The driver is on a trip; try after it.", { reason: "on_trip" });
   await decide(trx, row, "accepted", by, now);

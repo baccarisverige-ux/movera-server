@@ -176,6 +176,17 @@ describe("joining the fleet", () => {
     expect(wrongCode.json()).toMatchObject({ reason: "fleet_join_mismatch" });
   });
 
+  // BQ-FLEETCUR (owner 2026-11-15: a fleet works in ONE country): the Paris driver cannot join the Swedish fleet, even
+  // with the right code; he moves his details to Sweden (still on hold, in no fleet) and then joins.
+  it("a driver of another country is refused with the right code; in Sweden he may ask", async () => {
+    const french = await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
+    expect(french.statusCode).toBe(409);
+    expect(french.json()).toMatchObject({ code: "conflict", reason: "fleet_other_country" });
+    const moved = await call(app, "POST", "/driver/onboarding", member, details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", language: "fr", accountType: "driver", company: undefined }));
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json()).toMatchObject({ country: "SE", zoneIds: ["Z001"] });
+  });
+
   it("a matching request waits for the owner, who accepts it; then the driver is linked", async () => {
     const res = await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode.toLowerCase().replace("mv-", "mv "), ownerName: "  åkesson   FREDRIK ", ownerEmail: "Fredrik@Example.SE" });
     expect(res.statusCode).toBe(201);
@@ -244,7 +255,7 @@ describe("the fleet's cars", () => {
   });
 
   it("an active member goes online with the car; the owner cannot take it while it is in use", async () => {
-    // The Paris driver joined a Swedish fleet; activate through a Super admin to keep the test about cars.
+    // The driver (Stockholm since BQ-FLEETCUR) is activated through a Super admin to keep the test about cars.
     const sup = await adminSession(app, database.db, "super", { now: clock.now });
     const d = (await call(app, "GET", `/admin/drivers/${memberId}`, sup.headers)).json().version;
     // v0.10.1: activation is refused until every required document is approved, and says which are missing.
@@ -258,8 +269,8 @@ describe("the fleet's cars", () => {
     // The documents tests below upload the member's own files; take the seeded approvals away again.
     await database.db.deleteFrom("documents").where("owner_id", "=", memberId).where("reviewed_by", "=", "seed").execute();
     const m = await me(member);
-    // v0.18.4 (decision 2): with a fresh position (the member drives in Paris).
-    const online = await call(app, "POST", "/driver/availability", member, { expectedVersion: m.version, onlineStatus: "online", location: { lat: 48.8566, lng: 2.3522, accuracy: 5, measuredAt: clock.now.toISOString() } });
+    // v0.18.4 (decision 2): with a fresh position (the member drives in Stockholm).
+    const online = await call(app, "POST", "/driver/availability", member, { expectedVersion: m.version, onlineStatus: "online", location: { lat: 59.3326, lng: 18.0649, accuracy: 5, measuredAt: clock.now.toISOString() } });
     expect(online.json()).toMatchObject({ onlineStatus: "online" });
     expect((await call(app, "GET", "/driver/vehicles", owner)).json().items[0]).toMatchObject({ driverId: memberId, inUse: true });
     const o = await me(owner);
