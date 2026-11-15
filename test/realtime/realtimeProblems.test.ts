@@ -28,7 +28,7 @@ import { CONTRACTS_DIR } from "../../src/contract/contract.js";
  */
 
 const CHANNELS = [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, ADMIN_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL];
-const ENV = () => readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: "stream-test-secret".padEnd(48, "s"), STREAM_SESSION_CHECK_MS: "300" });
+const ENV = () => readEnv({ MOVERA_ENV: "staging", DATABASE_URL: database.url, JWT_SECRET: "stream-test-secret".padEnd(48, "s"), STREAM_SESSION_CHECK_MS: "300", STREAM_CLOSE_SPREAD_MS: "1000" });
 
 let database: TestDatabase;
 let app: FastifyInstance;
@@ -253,7 +253,8 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
     }
   });
 
-  // A5 / P5: the hint listeners return on the null catch-up signal after a LISTEN reconnect.
+  // A5 / P5: the hint listeners return on the null catch-up signal after a LISTEN reconnect. B1.18: the close is
+  // spread over STREAM_CLOSE_SPREAD_MS (1 s in this file, see ENV; 30 s by default, test/realtime/reconnectHints.test.ts).
   it("A5/P5: after a LISTEN reconnect the rider's settings stream closes, so the app reconnects and re-reads the trip it may have missed (src/realtime/streams.ts:155)", async () => {
     const rider = (await signIn(app, TEST_PHONES[3]!, "rider")).headers;
     const trip = await bookTrip(rider);
