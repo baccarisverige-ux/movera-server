@@ -11,7 +11,7 @@ import { notify } from "../notifications/service.js";
 import { debtOf } from "../rules/commission.js";
 import { moneyText, type CurrencyCode } from "../rules/money.js";
 import { expectVersion, lockOwnTrip, readOwnTrip, touchTrip } from "./commands.js";
-import { driverTotalOf, endInfoOf, tripProjection } from "./projection.js";
+import { debtPaidEnd, driverTotalOf, endInfoOf, tripProjection } from "./projection.js";
 import { credit } from "./ride.js";
 import { noticeLanguage } from "../notifications/noticeLanguage.js";
 
@@ -178,7 +178,9 @@ export async function receiptOf(ex: Executor, trip: TripRow, viewer: ReceiptView
   const fare = Number(trip.fare_minor);
   // BQ-M25: cash only on a pay-in-car trip (a card / in-app trip shows 0 cash paid, even on a row written before).
   const cash = trip.payment_method !== "cash" ? 0 : trip.cash_collected_minor === null ? Math.max(0, fare - wallet) : Number(trip.cash_collected_minor);
-  const debt = trip.status === "completed" ? debtOf(trip.fare_lines) : 0;
+  // J8 (supervisor SF1; finish.receipt / moneyBase.commission "Receipt.debtIncluded show it as its own line"): the debt
+  // is paid on every paid end with the rider on board, so the line shows on all of them (the same rule as the refund).
+  const debt = debtPaidEnd(trip) ? debtOf(trip.fare_lines) : 0;
   const tip = trip.tip as { amount: Money; method: string } | null;
   const end = endInfoOf(trip);
   const refunded = refunds.reduce((sum, r) => sum + Number(r.amount_minor), 0);

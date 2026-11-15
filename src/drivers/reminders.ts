@@ -1,3 +1,5 @@
+import { owesState } from "./owes.js";
+import { DEBT_MODEL_SINCE } from "../riders/debt.js";
 import type { Executor } from "../db/db.js";
 import { contract } from "../contract/contract.js";
 import { notify } from "../notifications/service.js";
@@ -32,6 +34,9 @@ export type Reminder = {
   fleetName?: string;
   fix?: { target: string; documentType?: string; scope?: Scope; vehicleId?: string; contentSlot?: string; invitationId?: string };
   actions?: Array<{ target: string; invitationId?: string }>;
+  /** S5 J8 (debtModel.driverOwes.homeLine): owes_movera_over_limit only. */
+  owed?: { amountMinor: number; currency: string };
+  limit?: { amountMinor: number; currency: string };
 };
 
 type DriverLike = { driver_id: string; country: string | null; account_type: string | null; account_status: string; fleet_id: string | null; vehicle_id: string | null; language?: string | null; created_at?: Date; email?: string | null; email_verified_at?: Date | null; first_activated_at?: Date | null };
@@ -154,6 +159,13 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date,
   if (driver.email && !driver.email_verified_at && contractAtLeast(options.contractVersion, EMAIL_LINE_SINCE)) {
     const red = driver.account_status !== "active" && driver.first_activated_at == null && (countrySettings ?? (await onboardingSettings(ex, driver.country))).emailVerifiedForApproval === true;
     items.push({ kind: "email_not_verified", level: red ? "blocks_online" : "due_soon", fix: { target: "verify_email" } });
+  }
+  // S5 J8 (contract v0.18.84 debtModel.driverOwes.homeLine): while his country's owes-limit is on and he owes Movera at or
+  // over it, an orange line (due_soon: it never blocks going online, owner 2026-11-13 14:54) says he gets no cash trips;
+  // only for apps on 0.18.84 or later. Not counted in blocksOnline nor in waitsOnDriver.
+  if (contractAtLeast(options.contractVersion, DEBT_MODEL_SINCE)) {
+    const owes = await owesState(ex, driver.driver_id);
+    if (owes?.over && owes.limit.max) items.push({ kind: "owes_movera_over_limit", level: "due_soon", owed: owes.owed, limit: owes.limit.max });
   }
   // v0.18.3 (R10): "not active yet" only once every document is done (none needed, rejected, expired, in review or waiting);
   // v0.18.76 (supervisor round 3): nor when a red email_not_verified line was actually sent.

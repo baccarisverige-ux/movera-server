@@ -1,3 +1,4 @@
+import { debtsOfRiders } from "../riders/debt.js";
 import { isTestDriver } from "../drivers/readiness.js";
 import { sql } from "kysely";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
@@ -111,15 +112,9 @@ export async function listRiders(ex: Executor, who: Principal, input: { cursor?:
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   // v0.18.7 (Q3): what each rider owes per currency, oldest debt first (contract.json#pickupWaiting.debtByCurrency).
-  const owed = page.length ? await ex.selectFrom("rider_fees").select(["rider_id", "currency", "amount_minor"]).where("rider_id", "in", page.map((r) => r.rider_id)).where("status", "=", "owed").orderBy("created_at").orderBy("trip_id").execute() : [];
-  const byRider = new Map<string, Array<{ amountMinor: number; currency: string }>>();
-  for (const fee of owed) {
-    const list = byRider.get(fee.rider_id) ?? [];
-    const entry = list.find((e) => e.currency === fee.currency);
-    if (entry) entry.amountMinor += Number(fee.amount_minor);
-    else list.push({ amountMinor: Number(fee.amount_minor), currency: fee.currency });
-    byRider.set(fee.rider_id, list);
-  }
+  // S5 J8 (must-fix 5, debtModel.riderWallet): read from the wallet (−min(0, balance)), never the sum of fee rows.
+  const debts = await debtsOfRiders(ex, page.map((r) => r.rider_id));
+  const byRider = new Map<string, Array<{ amountMinor: number; currency: string }>>([...debts].map(([id, list]) => [id, list.map(({ amountMinor, currency }) => ({ amountMinor, currency }))]));
   const wallets = await riderWallets(ex, page.map((r) => r.rider_id));
   return withTotal({ items: page.map((r) => adminRiderView(r, currency, byRider.get(r.rider_id) ?? [], wallets.get(r.rider_id), who)), nextCursor: rows.length > input.limit && last ? cursorOf(last.created_at, last.rider_id) : null }, await totalAfterPage(counting));
 }

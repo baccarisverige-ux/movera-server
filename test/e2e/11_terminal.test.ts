@@ -103,7 +103,9 @@ describe("scenario 11: completed, cancelled and expired trips never become activ
     await sim.advance(5 * 60 + 5);
     expect((await driver.command(tripId, "no-show", { reasonCode: "rider_no_show" })).body.status).toBe("no_show");
     await tryEverything(tripId, driver, null);
-    await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+    await sim.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
+    // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+    await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
     await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
   });
 

@@ -2,6 +2,7 @@ import { exponentOf, moneyText, type CurrencyCode } from "../rules/money.js";
 import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
+import { correctFee } from "../riders/debt.js";
 import { commissionOf } from "../rules/commission.js";
 import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
 import { boxAround, driversNear } from "../dispatch/nearArea.js";
@@ -18,7 +19,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { TERMINAL, isTripStatus } from "../rules/transitions.js";
 import { applyCommand, expectVersion, touchTrip } from "../trips/commands.js";
-import { cappedChangeOf, driverTotalOf, tripProjection } from "../trips/projection.js";
+import { cappedChangeOf, debtPaidEnd, driverTotalOf, tripProjection } from "../trips/projection.js";
 import { backToDispatch, completeTrip, credit, fareWithWaiting, markNoShow, refreshOutstanding, releaseDriver } from "../trips/ride.js";
 import { FREE_END_COLUMNS } from "../trips/ride/money.js";
 import { PAY_TEXT, payChangeMaxOf } from "../trips/finish.js";
@@ -395,14 +396,14 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
   let feeStatus = cancellation["feeStatus"] as string | undefined;
   let refunded = false;
   if (fee && fee.status === "owed") {
-    const carrying = await trx.selectFrom("trips").select("trip_id").where("rider_id", "=", trip.rider_id).where("status", "not in", [...TERMINAL]).where(sql<boolean>`fare_lines @> '[{"code":"outstanding_fee"}]'::jsonb`).executeTakeFirst();
-    if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; reverse it when that ride is over.", { reason: "fee_on_running_trip", projection: tripProjection(trip, "admin") });
-    await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
+    // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
+    await correctFee(trx, fee, now);
+    await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
     await refreshOutstanding(trx, trip.rider_id, now);
     feeStatus = "waived";
   } else if (fee && fee.status === "paid") {
     await creditWallet(trx, trip.rider_id, { amountMinor: Number(fee.amount_minor), currency: fee.currency }, trip.trip_id, now);
-    await trx.updateTable("rider_fees").set({ status: "refunded", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
+    await trx.updateTable("rider_fees").set({ status: "refunded", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
     // Checker round 1 (M3): live 0.18.7 apps know only paid / owed / waived (statusWords.feeStatus): the wire says waived,
     // refundedAt + refundedToWallet tell the money went back.
     feeStatus = "waived";
@@ -470,10 +471,9 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
     // The rider owes nothing more; the driver keeps the share already credited (owner decision 34).
     const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", trip.trip_id).forUpdate().executeTakeFirst();
     if (!fee || fee.status !== "owed") throw new ApiError("conflict", "There is no unpaid fee on this trip.", { reason: "no_fee_to_waive", projection: tripProjection(trip, "admin") });
-    // A ride going now already carries it in its price: waive it after that ride, or refund it then.
-    const carrying = await trx.selectFrom("trips").select("trip_id").where("rider_id", "=", trip.rider_id).where("status", "not in", [...TERMINAL]).where(sql<boolean>`fare_lines @> '[{"code":"outstanding_fee"}]'::jsonb`).executeTakeFirst();
-    if (carrying) throw new ApiError("conflict", "The rider's current ride already includes this fee; waive it when that ride is over.", { reason: "fee_on_running_trip", projection: tripProjection(trip, "admin") });
-    await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now }).where("trip_id", "=", trip.trip_id).execute();
+    // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
+    await correctFee(trx, fee, now);
+    await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
     set["cancellation"] = JSON.stringify({ ...(trip.cancellation as object), feeStatus: "waived" });
     await refreshOutstanding(trx, trip.rider_id, now);
   }
@@ -576,7 +576,9 @@ async function createRefund(trx: Trx, p: RefundPayload, createdBy: string, now: 
   // "Take from driver": the driver loses their share of the refunded money (owner decision 31).
   if (p.fromDriver && trip.driver_id && paid > 0) {
     // Deep fix 2026-11-02 (g7-g9 M1): the rider's old debt collected on this trip is not part of the ride the driver earned on.
-    const debt = trip.status === "completed" ? (((trip.fare_lines as Array<{ code: string; amount: Money }>) ?? []).filter((l) => l.code === "outstanding_fee").reduce((sum, l) => sum + l.amount.amountMinor, 0)) : 0;
+    // J8 (debtModel.readAtPayment): the debt is collected on every paid end with the rider on board: complete, the
+    // rider's early end and the driver's cancel on board (never in a booked price), so it is left out on all three.
+    const debt = debtPaidEnd(trip) ? (((trip.fare_lines as Array<{ code: string; amount: Money }>) ?? []).filter((l) => l.code === "outstanding_fee").reduce((sum, l) => sum + l.amount.amountMinor, 0)) : 0;
     const fare = Number(trip.fare_minor) - debt;
     // Checker (7): never more than the driver still has on this trip (his one number never goes below 0).
     const share = Math.min(driverTotalOf(trip), fare > 0 ? Math.round((Math.min(p.amount.amountMinor, fare) * Number(trip.driver_earnings_minor ?? 0)) / fare) : 0);

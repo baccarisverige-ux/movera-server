@@ -20,7 +20,9 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   // Fees owed from an earlier case are cleared so each case prices alone; both cars back where they wait.
-  await sim.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  await sim.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
+  // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+  await sim.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
   await sim.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
   await sim.advance(5);
   await a.moveTo(PLACES.nearSergels);
@@ -64,9 +66,10 @@ describe("scenario 4: rider cancels at each stage; driver cancels; no-show; fees
     expect(res.body).toMatchObject({ status: "cancelled_by_rider", fare: { amountMinor: 3500 }, cancellation: { fee: { amountMinor: 3500, currency: "SEK" }, feeStatus: "owed" } });
     expect(await ledger(tripId)).toEqual([{ kind: "fee_share", amount_minor: "3500" }]);
     expect((await rider.get("/rider/profile")).body.outstanding).toEqual({ amountMinor: 3500, currency: "SEK" });
-    // The next quote carries the unpaid fee (§3.7).
+    // S5 J8 (contract v0.18.84 debtModel.readAtPayment): the unpaid fee waits in the wallet; it is read when the next
+    // trip is paid, never copied into the next quote.
     const next = (await rider.quote({ categoryIds: ["economy"] })).body.quotes[0];
-    expect(next.fareLines).toEqual(expect.arrayContaining([{ code: "outstanding_fee", amount: { amountMinor: 3500, currency: "SEK" }, sourceTripId: tripId }]));
+    expect(next.fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
   });
 
   it("arrived, after the free minutes: a cancel counts as a no-show (v0.18.7 Q2, admin switch on by default): the 65 kr no-show fee, 80 % to the driver", async () => {

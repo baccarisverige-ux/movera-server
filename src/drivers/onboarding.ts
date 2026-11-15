@@ -343,9 +343,11 @@ export async function fleetEarnings(ex: Executor, ownerId: string, input: { from
   if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) throw badRequest("from must be before to.", "invalid_range");
   const drivers = await ex.selectFrom("drivers").select(["driver_id", "first_name", "last_name"]).where("fleet_id", "=", fleet.fleet_id).orderBy("fleet_linked_at").execute();
   const ids = drivers.map((d) => d.driver_id);
+  // J8 (supervisor MF1; contract `fleets` "only the driver earnings", owner s06:1277): a "Driver paid Movera" entry
+  // (kind paid_to_movera) is money FROM the driver, never earnings, so it is left out of the sum.
   const sums = ids.length
     ? await sql<{ driver_id: string; trips: string; net: string }>`
-        SELECT driver_id, count(*) FILTER (WHERE kind = 'trip') AS trips, coalesce(sum(amount_minor), 0) AS net
+        SELECT driver_id, count(*) FILTER (WHERE kind = 'trip') AS trips, coalesce(sum(amount_minor) FILTER (WHERE kind <> 'paid_to_movera'), 0) AS net
           FROM earnings_entries WHERE driver_id = ANY(${ids}) AND currency = ${currency} AND at >= ${from} AND at < ${to} GROUP BY driver_id`.execute(ex)
     : { rows: [] as { driver_id: string; trips: string; net: string }[] };
   const byDriver = new Map(sums.rows.map((r) => [r.driver_id, r]));

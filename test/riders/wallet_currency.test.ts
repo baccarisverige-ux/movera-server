@@ -120,8 +120,12 @@ describe("S07 M12 / E16: a spend never takes the balance below 0", () => {
     expect(await bal()).toBe("20");
   });
 
-  it("the database refuses a negative balance (CHECK rider_wallets_balance_nonneg)", async () => {
+  it("S5 J8 (debtModel.dbFloor, migration 0102): below 0 is allowed down to the currency's floor, never below it", async () => {
     await move(10);
-    await expect(database.db.updateTable("rider_wallets").set({ balance_minor: "-1" }).where("rider_id", "=", riderId).execute()).rejects.toThrow(/rider_wallets_balance_nonneg/);
+    // A debt (an unpaid fee) is a negative balance now; the 0096 CHECK was replaced by the moving floor.
+    await database.db.updateTable("rider_wallets").set({ balance_minor: "-1" }).where("rider_id", "=", riderId).execute();
+    const floor = Number((await database.db.selectFrom("wallet_floors").select("floor_minor").where("currency", "=", "SEK").executeTakeFirstOrThrow()).floor_minor);
+    await expect(database.db.updateTable("rider_wallets").set({ balance_minor: String(floor - 1) }).where("rider_id", "=", riderId).execute()).rejects.toThrow(/below its floor/);
+    await database.db.updateTable("rider_wallets").set({ balance_minor: "0" }).where("rider_id", "=", riderId).execute();
   });
 });

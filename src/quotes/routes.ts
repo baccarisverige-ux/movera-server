@@ -22,7 +22,7 @@ export async function quoteRoutes(app: FastifyInstance, deps: QuoteDeps): Promis
     const result = await runIdempotent(
       deps.db,
       { actor: "rider", subjectId: who.subjectId, key, method: "POST", route: request.url.split("?")[0]!, body: request.body ?? null },
-      async (trx) => ({ status: 201, body: await createQuotes(trx, { router }, who.subjectId, request.body ?? {}, deps.clock?.() ?? new Date()) }),
+      async (trx) => ({ status: 201, body: await createQuotes(trx, { router }, who.subjectId, request.body ?? {}, deps.clock?.() ?? new Date(), { contractVersion: request.headers["x-contract-version"] }) }),
     );
     // v0.18.4 (G3-R4): asking a price makes the rider "online" in the pickup's zone.
     const pickup = (request.body as { pickup?: { lat?: unknown; lng?: unknown } } | undefined)?.pickup;

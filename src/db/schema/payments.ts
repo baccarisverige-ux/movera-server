@@ -12,13 +12,15 @@ export interface RiderFeesTable {
   carried_by: string | null;
   created_at: Timestamp;
   settled_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** S5 J8 (migration 0101): J8 settled this fee in the wallet (debt_paid, a correction, credit); false = an old copy did. */
+  settled_in_wallet: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
 export interface EarningsEntriesTable {
   entry_id: string;
   driver_id: string;
   trip_id: string | null;
-  kind: "trip" | "pickup_pay" | "fee_share" | "adjustment" | "tip" | "bonus";
+  kind: "trip" | "pickup_pay" | "fee_share" | "adjustment" | "tip" | "bonus" | "paid_to_movera";
   currency: string;
   amount_minor: ColumnType<string, number | string, number | string>;
   gross_minor: ColumnType<string | null, number | string | null | undefined, number | string | null>;
@@ -57,7 +59,7 @@ export interface PayoutsTable {
 export interface WalletEntriesTable {
   entry_id: string;
   rider_id: string;
-  kind: "topup" | "charge" | "refund" | "payout" | "adjustment";
+  kind: "topup" | "charge" | "refund" | "payout" | "adjustment" | "fee" | "debt_paid";
   currency: string;
   amount_minor: ColumnType<string, number | string, number | string>;
   trip_id: string | null;

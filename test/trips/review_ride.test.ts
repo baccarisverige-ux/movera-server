@@ -57,7 +57,9 @@ beforeEach(async () => {
   await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("status", "not in", ["completed", "cancelled_by_admin", "cancelled_by_rider", "cancelled_by_driver", "no_show", "expired"]).execute();
   await database.db.deleteFrom("timers").execute();
   await database.db.deleteFrom("offers").execute();
-  await database.db.updateTable("rider_fees").set({ status: "waived" }).where("status", "=", "owed").execute();
+  await database.db.updateTable("rider_fees").set({ status: "waived", settled_in_wallet: true }).where("status", "=", "owed").execute();
+  // S5 J8 (debtModel.riderWallet): the unpaid fee is a negative wallet balance; the reset clears it too.
+  await database.db.updateTable("rider_wallets").set({ balance_minor: 0 }).where("balance_minor", "<", "0").execute();
   await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_source_trip_id: null }).execute();
   rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
   for (const key of ["A", "B"] as const) {
@@ -166,7 +168,8 @@ describe("review: money", () => {
     await advance(5 * 60);
     expect((await step(first.tripId, "no-show", first.version + 2)).json().status).toBe("no_show");
     const next = await accepted();
-    expect(next.quote.total.amountMinor).toBe(28200);
+    // S5 J8 (debtModel.readAtPayment): the quote is the ride's 217 kr; the 65 kr is read when it is paid.
+    expect(next.quote.total.amountMinor).toBe(21700);
     let v = next.version;
     await step(next.tripId, "head-to-pickup", v++);
     await step(next.tripId, "arrive", v++);
