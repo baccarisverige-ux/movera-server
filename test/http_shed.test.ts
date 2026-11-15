@@ -136,6 +136,14 @@ describe("S10: the public reads of a shared trip link under load", () => {
     const busy = await app.inject({ method: "GET", url: "/s/AAAAAAAAAAAAAAAAAAAAAA" });
     expect(busy.headers["retry-after"]).toBe("2");
     expect(busy.body).not.toContain("AAAAAAAAAAAAAAAAAAAAAA");
+    // SF-4: the shed answer of a share path is never cached or indexed either.
+    for (const url of ["/s/AAAAAAAAAAAAAAAAAAAAAA", "/api/v1/share/AAAAAAAAAAAAAAAAAAAAAA"]) {
+      const shed = await app.inject({ method: "GET", url });
+      expect(shed.statusCode).toBe(503);
+      expect(shed.headers["cache-control"]).toBe("no-store");
+      expect(shed.headers["x-robots-tag"]).toBe("noindex, nofollow");
+      expect(shed.headers["referrer-policy"]).toBe("no-referrer");
+    }
     waiting = 201;
     expect(await codes()).toEqual([503, 503, 503, 200]);
     stop();
