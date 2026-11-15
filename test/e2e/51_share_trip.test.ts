@@ -6,7 +6,7 @@ import { buildApp } from "../../src/app.js";
 import { CLEANUP_TRIP_SHARES, HOUSEKEEPING_KINDS, housekeepingHandlers } from "../../src/jobs/housekeeping.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
-import { HIDE_NEAR_DROPOFF_METERS, shareKey, shareToken } from "../../src/safety/tripShare.js";
+import { HIDE_NEAR_DROPOFF_METERS, HIDE_NEAR_STOP_METERS, shareKey, shareToken } from "../../src/safety/tripShare.js";
 import { bookAndAccept, drive, newKey, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
 /**
@@ -298,6 +298,49 @@ describe("S10 round 3: owner answers Q-A and Q-B (decisions/driver-g14.md, 19:32
     // Back outside the 500 m: shown again (the rule is the distance, nothing is remembered).
     await a.moveTo(far);
     expect(((await json(token)).json() as Json)["position"]).toEqual({ lat: far.lat, lng: far.lng, at: expect.any(String) });
+  });
+});
+
+describe("S10 round 3b: the same 500 m hide around every middle stop (session decision under the owner's overnight rule; follows 'never the destination')", () => {
+  it("within 500 m of any middle stop the position and the Maps link are hidden; a stop without coordinates hides it; stops and distances are never sent", async () => {
+    expect(HIDE_NEAR_STOP_METERS).toBe(500);
+    const { tripId, token } = await sharedTrip();
+    await drive(a, tripId, "in_trip");
+    const setStops = (stops: unknown[]) => sim.db.updateTable("trips").set({ stops: JSON.stringify(stops) }).where("trip_id", "=", tripId).execute();
+    const car = PLACES.odenplan; // about 3 km from the drop-off
+    await a.moveTo(car);
+    const shown = async () => {
+      expect((await json(token)).json()).toMatchObject({ phase: "on_trip", position: { lat: car.lat, lng: car.lng } });
+      expect((await page(token)).body).toContain("maps.google.com");
+    };
+    const hiddenNow = async () => {
+      const res = await json(token);
+      const body = res.json() as Json;
+      expect(Object.keys(body).sort()).toEqual(["car", "eta", "phase", "position", "refreshSeconds", "state", "updatedAt"]);
+      expect(body).toMatchObject({ phase: "on_trip", position: null });
+      const html = (await page(token, { headers: { "accept-language": "en" } })).body;
+      for (const text of [res.body, html]) {
+        expect(text).not.toContain(String(car.lat));
+        expect(text).not.toContain(String(car.lng));
+        expect(text).not.toContain("Stop street");
+        expect(text).not.toContain("59.3465");
+        expect(text).not.toMatch(/"stops?":|distance|met(er|re)s/i);
+      }
+      expect(html).not.toContain("maps.google.com");
+      expect(html).toContain("On the trip");
+    };
+    await shown();
+    // A stop about 400 m north of the car: hidden. (A second stop far away does not help.)
+    await setStops([{ address: "Far street 1", lat: 59.38, lng: 18.0498 }, { address: "Stop street 2", lat: 59.3465, lng: 18.0498 }]);
+    await hiddenNow();
+    // The stop about 720 m away: shown.
+    await setStops([{ address: "Stop street 2", lat: 59.3494, lng: 18.0498 }]);
+    await shown();
+    // A stop the server has no coordinates for: hidden (closed by default).
+    await setStops([{ address: "Stop street 2" }]);
+    await hiddenNow();
+    await setStops([]);
+    await shown();
   });
 });
 

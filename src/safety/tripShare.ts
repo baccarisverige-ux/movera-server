@@ -46,6 +46,8 @@ const RIDER_IN_CAR: ReadonlySet<string> = new Set((contract as unknown as { trip
  * the trip's drop-off the car's position is not sent. contract.json#shareTrip.public.hideWithinMetersOfDropoff.
  */
 export const HIDE_NEAR_DROPOFF_METERS = SHARE.public.hideWithinMetersOfDropoff;
+/** Round 3b: the same distance around every middle stop of the trip. */
+export const HIDE_NEAR_STOP_METERS = HIDE_NEAR_DROPOFF_METERS;
 
 /**
  * May the car's spot be sent? Only with the rider in the car (owner Q-A "Hide until rider is in": never on the way to
@@ -53,11 +55,17 @@ export const HIDE_NEAR_DROPOFF_METERS = SHARE.public.hideWithinMetersOfDropoff;
  * drop-off (owner Q-B: protects "never the destination"). A drop-off without coordinates hides it (closed by default).
  * Only the yes / no leaves this function: the drop-off and the distance are never part of the answer.
  */
-export function mayShowPosition(status: string, car: { lat: number; lng: number }, dropoff: unknown): boolean {
+export function mayShowPosition(status: string, car: { lat: number; lng: number }, dropoff: unknown, stops: unknown = []): boolean {
   if (!RIDER_IN_CAR.has(status)) return false;
-  const to = dropoff as { lat?: unknown; lng?: unknown } | null;
-  if (!to || typeof to.lat !== "number" || typeof to.lng !== "number") return false;
-  return haversineKm(car, { lat: to.lat, lng: to.lng }) * 1000 > HIDE_NEAR_DROPOFF_METERS;
+  // Round 3b (session decision under the owner's overnight rule, following "never the destination"; for the owner to
+  // review): the same distance around EVERY middle stop. Anything that is not a list of places hides the position.
+  if (stops !== null && stops !== undefined && !Array.isArray(stops)) return false;
+  for (const place of [dropoff, ...((stops as unknown[] | null | undefined) ?? [])]) {
+    const to = place as { lat?: unknown; lng?: unknown } | null;
+    if (!to || typeof to.lat !== "number" || typeof to.lng !== "number") return false;
+    if (haversineKm(car, { lat: to.lat, lng: to.lng }) * 1000 <= HIDE_NEAR_STOP_METERS) return false;
+  }
+  return true;
 }
 
 /**
@@ -166,7 +174,7 @@ export async function readShare(db: Db, token: string, now: Date): Promise<Share
     .innerJoin("trips as t", "t.trip_id", "s.trip_id")
     .innerJoin("zones as z", "z.zone_id", "t.zone_id")
     .leftJoin("driver_locations as l", "l.driver_id", "t.driver_id")
-    .select(["s.share_id", "s.expires_at", "s.revoked_at", "t.status", "t.kind", "t.driver_id", "t.zone_id", "t.driver_summary", "t.eta", "t.next_after_trip_id", "t.dropoff", "z.country", "z.time_zone", "l.lat", "l.lng", "l.measured_at"])
+    .select(["s.share_id", "s.expires_at", "s.revoked_at", "t.status", "t.kind", "t.driver_id", "t.zone_id", "t.driver_summary", "t.eta", "t.next_after_trip_id", "t.dropoff", "t.stops", "z.country", "z.time_zone", "l.lat", "l.lng", "l.measured_at"])
     .where("s.token_hash", "=", tokenHash(token))
     .executeTakeFirst();
   if (row === undefined) return { state: "not_found" };
@@ -194,7 +202,7 @@ export async function readShare(db: Db, token: string, now: Date): Promise<Share
     const left = Math.max(0, stored.etaSeconds - (now.getTime() - Date.parse(stored.at)) / 1000);
     eta = { minutes: Math.max(1, Math.ceil(left / 60)), target, arriveAround: clockTime(new Date(now.getTime() + left * 1000), row.time_zone) };
   }
-  const fresh = !queued && row.measured_at !== null && row.lat !== null && row.lng !== null && mayShowPosition(row.status, { lat: row.lat, lng: row.lng }, row.dropoff) && now.getTime() - row.measured_at.getTime() <= SHARE.public.positionMaxAgeSeconds * 1000;
+  const fresh = !queued && row.measured_at !== null && row.lat !== null && row.lng !== null && mayShowPosition(row.status, { lat: row.lat, lng: row.lng }, row.dropoff, row.stops) && now.getTime() - row.measured_at.getTime() <= SHARE.public.positionMaxAgeSeconds * 1000;
   const view: PublicShare = {
     state: "live",
     phase: queued ? SHARE.public.queuedPhase : PHASE_OF[row.status]!,
