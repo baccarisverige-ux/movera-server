@@ -241,13 +241,18 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     ...(hub !== undefined ? { realtime: hub.healthSnapshot() } : {}),
   }));
   // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
-  // PM-1: the LISTEN link's state is shown (`realtime`), but it does not make the copy "not ready": a copy whose
-  // LISTEN link is down still serves every request and stream read, and a 503 here would make the host restart
-  // copies for as long as the link is down (the same reason /healthz/jobs is not the hosting health check).
+  // PM-1: the LISTEN link's state is shown (`realtime`). Round 4 (owner 2026-11-15 "Wait up to 30 s (Rec.)"): a NEW
+  // copy answers 503 until its first LISTEN connect, at most LISTEN_READY_WAIT_MS (30 s) after its start, so a deploy
+  // does not swap a copy with working realtime for one without; after that it is ready anyway. Once ready, a LISTEN
+  // drop never makes it "not ready" again: the copy still serves every request and stream read, and a 503 would make
+  // the host take working copies out of service (the same reason /healthz/jobs is not the hosting health check).
   app.get("/readyz", async () => {
     if (probeDb === undefined) return { status: "ready", database: "not_configured" };
     if (!(await databaseAnswers(probeDb, READY_TIMEOUT_MS))) {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
+    }
+    if (hub !== undefined && !hub.readyForTraffic()) {
+      throw new ApiError("unavailable", "The live link to the database is still connecting.", { reason: "realtime_starting", retryAfterSeconds: 5 });
     }
     return { status: "ready", database: "ok", ...(hub !== undefined ? { realtime: hub.healthSnapshot().status } : {}) };
   });

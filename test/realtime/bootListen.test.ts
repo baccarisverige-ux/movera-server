@@ -103,9 +103,22 @@ describe("PM-1 boot: the HTTP server comes up while the LISTEN link is down", ()
     console.log(`PM-1 boot proof (LISTEN refused): /healthz ${up.health === undefined ? "no answer" : `200 realtime ${up.health.realtime?.status}`} after ${up.afterMs} ms; process ${up.exit === null ? "alive" : `exited ${up.exit}`}`);
     expect(up.exit).toBeNull();
     expect(up.health).toMatchObject({ status: "ok", database: "ok", realtime: { status: "down", reconnects: 0 } });
-    const ready = await get(server.port, "/readyz");
+    // Round 4 (owner "Wait up to 30 s"): the new copy is not ready until its first LISTEN connect, at most 30 s
+    // after the start; then ready anyway, so a link that stays down never blocks a deploy for ever.
+    const early = await get(server.port, "/readyz");
+    expect(early).toMatchObject({ code: 503, body: { code: "unavailable", reason: "realtime_starting" } });
+    let ready = early;
+    const begun = Date.now();
+    while (ready?.code !== 200 && Date.now() - begun < 40_000) {
+      await sleep(500);
+      ready = await get(server.port, "/readyz");
+    }
+    console.log(`PM-1 boot proof (LISTEN refused): /readyz 503 at boot; 200 about ${Math.round((up.afterMs + (Date.now() - begun)) / 1000)} s after the process started`);
     expect(ready).toEqual({ code: 200, body: { status: "ready", database: "ok", realtime: "down" } });
-  }, 60_000);
+    // Not before the 30 s were over (the process started at least `up.afterMs` + this wait ago).
+    expect(up.afterMs + (Date.now() - begun)).toBeGreaterThanOrEqual(25_000);
+    expect(server.exit()).toBeNull();
+  }, 120_000);
 
   // MF-1 (supervisor round 2): a wrong LISTEN address is not a link problem and must fail the boot, so the host
   // keeps the old copy (which has working realtime) instead of putting a copy live that will never hear anything.
@@ -127,7 +140,7 @@ describe("PM-1 boot: the HTTP server comes up while the LISTEN link is down", ()
     console.log(`PM-1 boot proof (LISTEN silent): /healthz ${up.health === undefined ? "no answer" : `200 realtime ${up.health.realtime?.status}`} after ${up.afterMs} ms; process ${up.exit === null ? "alive" : `exited ${up.exit}`}`);
     expect(up.exit).toBeNull();
     expect(up.health).toMatchObject({ status: "ok", database: "ok", realtime: { status: "down" } });
-    expect(await get(server.port, "/readyz")).toEqual({ code: 200, body: { status: "ready", database: "ok", realtime: "down" } });
+    expect(await get(server.port, "/readyz")).toMatchObject({ code: 503, body: { code: "unavailable", reason: "realtime_starting" } });
 
     proxy.heal();
     let health: Health | undefined;

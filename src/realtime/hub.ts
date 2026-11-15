@@ -63,6 +63,14 @@ function healsByItself(error: unknown): boolean {
 }
 
 /**
+ * PM-1 round 4 (owner 2026-11-15 "Wait up to 30 s (Rec.)"): a NEW server copy is "not ready" (/readyz 503) until its
+ * first LISTEN connect, for at most this long after start(); then it is ready anyway, so a database link that stays
+ * down never blocks a deploy for ever. The host keeps the old copy serving meanwhile. Once ready, always ready: a
+ * LISTEN drop later in the day never makes a copy "not ready" (the host would take working copies out of service).
+ */
+export const LISTEN_READY_WAIT_MS = 30_000;
+
+/**
  * PM-1 SF-4: while the link stays down, "realtime listen reconnect failed" is logged for the first failed attempt and
  * then at most this often (with the number of failures since), not once per attempt (every 2.5–10 s, for ever).
  */
@@ -77,7 +85,7 @@ export const RECONNECT_WARN_EVERY_MS = 60_000;
  */
 export const CATCH_UP_BATCH = { size: 200, everyMs: 100 };
 
-export type HubTuning = { everyMs: number; timeoutMs: number; reconnectBaseMs: number; reconnectMaxMs: number; catchUpBatch: number; catchUpEveryMs: number; connectTimeoutMs: number };
+export type HubTuning = { everyMs: number; timeoutMs: number; reconnectBaseMs: number; reconnectMaxMs: number; catchUpBatch: number; catchUpEveryMs: number; connectTimeoutMs: number; readyWaitMs: number };
 const HUB_TUNING: HubTuning = {
   everyMs: HEALTH_CHECK_MS,
   timeoutMs: HEALTH_CHECK_TIMEOUT_MS,
@@ -86,6 +94,7 @@ const HUB_TUNING: HubTuning = {
   catchUpBatch: CATCH_UP_BATCH.size,
   catchUpEveryMs: CATCH_UP_BATCH.everyMs,
   connectTimeoutMs: LISTEN_CONNECT_TIMEOUT_MS,
+  readyWaitMs: LISTEN_READY_WAIT_MS,
 };
 
 /** The wait before reconnect attempt `attempt` (0 = the first): half to all of min(max, base · 2^attempt). */
@@ -114,6 +123,9 @@ export class NotificationHub {
   private abortConnect: (() => void) | undefined;
   /** Whether a connect ever worked: the first one (also a late one after a failed start) is not a "reconnect". */
   private connectedOnce = false;
+  /** Round 4: when start() was first called, and whether this copy was ever ready for traffic (then it stays so). */
+  private startedAt: number | undefined;
+  private wasReady = false;
   /** SF-4: when "reconnect failed" was last logged in this outage, and the failed attempts since. */
   private lastFailWarning: number | undefined;
   private failedSinceWarning = 0;
@@ -140,6 +152,7 @@ export class NotificationHub {
    *    retried, so the boot fails and a deploy with a wrong DATABASE_LISTEN_URL never replaces the working copy.
    */
   start(): Promise<void> {
+    this.startedAt ??= Date.now();
     this.ready ??= this.connect().catch((error: unknown) => {
       if (!healsByItself(error)) throw error;
       this.log.warn({ err: error }, "realtime listen connect failed at start; retrying");
@@ -344,6 +357,17 @@ export class NotificationHub {
     let n = 0;
     for (const set of this.listeners.values()) n += set.size;
     return n;
+  }
+
+  /**
+   * For /readyz (round 4, owner "Wait up to 30 s"): false only while a new copy is still waiting for its FIRST
+   * LISTEN connect and less than `readyWaitMs` (30 s) have passed since start(). True once it connected, or once the
+   * wait is over - and from then on for ever, whatever the link does (healthSnapshot() keeps telling the truth).
+   */
+  readyForTraffic(now: number = Date.now()): boolean {
+    if (this.wasReady) return true;
+    if (this.connectedOnce || this.startedAt === undefined || now - this.startedAt >= this.health.readyWaitMs) this.wasReady = true;
+    return this.wasReady;
   }
 
   /** For /healthz: whether the LISTEN connection is up, how often it came back, and when it last heard anything. */

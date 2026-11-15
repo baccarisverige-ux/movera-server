@@ -1,7 +1,7 @@
 import type net from "node:net";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LISTEN_CONNECT_TIMEOUT_MS, NotificationHub, RECONNECT_BACKOFF } from "../../src/realtime/hub.js";
+import { LISTEN_CONNECT_TIMEOUT_MS, LISTEN_READY_WAIT_MS, NotificationHub, RECONNECT_BACKOFF } from "../../src/realtime/hub.js";
 import { adminUrl } from "../support/globalSetup.js";
 import { startSilentProxy } from "../support/silentProxy.js";
 
@@ -339,6 +339,59 @@ describe("PM-1: a silent LISTEN link (fake pg client, fake clock)", () => {
     dropConnection(hub);
     await vi.advanceTimersByTimeAsync(RECONNECT_BACKOFF.baseMs);
     expect(warns.length).toBe(before + 1);
+    await hub.stop();
+  });
+
+  // Round 4 (owner 2026-11-15 "Wait up to 30 s (Rec.)", Rules decisions/session-2026-11-06.md): a new copy is not
+  // ready for traffic until its first LISTEN connect, for at most 30 s; once ready, always ready.
+  it("N-2: the ready wait is 30 s; a copy whose link stays silent is not ready until then, and ready from then on", async () => {
+    expect(LISTEN_READY_WAIT_MS).toBe(30_000);
+    db.connect = "silent";
+    const hub = new NotificationHub(URL, ["ch"]);
+    const begun = Date.now();
+    void hub.start();
+    await vi.advanceTimersByTimeAsync(LISTEN_READY_WAIT_MS - 1);
+    const before = hub.readyForTraffic();
+    await vi.advanceTimersByTimeAsync(1);
+    const after = hub.readyForTraffic();
+    console.log(`PM-1 proof (ready wait, silent link): ready at ${Date.now() - begun - 1} ms: ${before}; at ${Date.now() - begun} ms: ${after}; status ${hub.healthSnapshot().status}`);
+    expect(before).toBe(false);
+    expect(after).toBe(true);
+    expect(hub.healthSnapshot().status).toBe("down");
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(hub.readyForTraffic()).toBe(true);
+    await hub.stop();
+  });
+
+  it("N-2: a copy whose link connects after 5 s is not ready until it connects, then ready; a later drop keeps it ready", async () => {
+    db.connect = "silent";
+    const hub = new NotificationHub(URL, ["ch"]);
+    const begun = Date.now();
+    void hub.start();
+    await vi.advanceTimersByTimeAsync(LISTEN_CONNECT_TIMEOUT_MS);
+    expect(hub.readyForTraffic()).toBe(false);
+    db.connect = "ok";
+    let readyAt: number | undefined;
+    for (let t = 0; t < 15_000 && readyAt === undefined; t += 50) {
+      await vi.advanceTimersByTimeAsync(50);
+      if (hub.readyForTraffic()) readyAt = Date.now() - begun;
+    }
+    console.log(`PM-1 proof (ready wait, link up after 5 s): ready ${readyAt} ms after the start (status ${hub.healthSnapshot().status})`);
+    expect(readyAt).toBeLessThan(LISTEN_READY_WAIT_MS);
+    expect(hub.healthSnapshot().status).toBe("ok");
+    // Mid-day drop, still inside the first 30 s of the copy's life: ready stays.
+    db.connect = "down";
+    dropConnection(hub);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(hub.healthSnapshot().status).toBe("down");
+    expect(hub.readyForTraffic()).toBe(true);
+    await hub.stop();
+  });
+
+  it("N-2: a hub that connected at once is ready at once", async () => {
+    const hub = new NotificationHub(URL, ["ch"]);
+    await hub.start();
+    expect(hub.readyForTraffic()).toBe(true);
     await hub.stop();
   });
 
