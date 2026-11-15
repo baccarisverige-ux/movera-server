@@ -178,6 +178,18 @@ export interface TripGapRoadsTable {
   created_at: Timestamp;
 }
 
+/** v0.18.116 §94 (migration 0114): a rider's live trip link. Only the token's SHA-256 is kept. */
+export interface TripSharesTable {
+  share_id: string;
+  token_hash: Buffer;
+  trip_id: string;
+  rider_id: string;
+  zone_id: string;
+  created_at: Timestamp;
+  expires_at: Timestamp;
+  revoked_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+}
+
 export interface RatingsTable {
   trip_id: string;
   rater: "rider" | "driver";

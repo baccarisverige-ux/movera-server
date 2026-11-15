@@ -119,6 +119,11 @@ const schema = z.object({
     .transform((value) => value.split(",").map((m) => m.trim()).filter(Boolean)),
   /** The zone an app gets when it asks for settings without naming one. */
   DEFAULT_ZONE_ID: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).default("Z001"),
+  /**
+   * v0.18.116 §94 (Share my trip): the origin the rider's live links start with, e.g. https://go.movera.example (the
+   * link is <base>/s/<token>). Not a secret. Unset: the origin the request came to (this server's own address).
+   */
+  SHARE_LINK_BASE: z.string().url().optional(),
   /** Where the admin panel lives; setup links point at its /setup-password page. */
   ADMIN_PANEL_URL: z.string().url().default("http://localhost:5173"),
   /**
