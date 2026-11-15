@@ -16,7 +16,7 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
     : (await sql<{ start: Date }>`SELECT (date_trunc(${input.period}, ${now}::timestamptz AT TIME ZONE ${tz}) AT TIME ZONE ${tz}) AS start`.execute(ex)).rows[0]!.start;
   if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) throw badRequest("from must be before to.", "invalid_range");
   // S07 T5: each period's end in the same query (one more query per period before).
-  const rows = await sql<{ start: Date; end: Date; trips: string; gross: string; commission: string; earnings: string; pickup: string; fees: string; tips: string; adjustments: string; cash: string }>`
+  const rows = await sql<{ start: Date; end: Date; trips: string; gross: string; commission: string; earnings: string; pickup: string; fees: string; tips: string; adjustments: string; bonus: string; cash: string }>`
     SELECT (date_trunc(${input.period}, at AT TIME ZONE ${tz}) AT TIME ZONE ${tz}) AS start,
            ((date_trunc(${input.period}, at AT TIME ZONE ${tz}) + ${`1 ${input.period}`}::interval) AT TIME ZONE ${tz}) AS end,
            count(*) FILTER (WHERE kind = 'trip') AS trips,
@@ -27,6 +27,7 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
            coalesce(sum(amount_minor) FILTER (WHERE kind = 'fee_share'), 0) AS fees,
            coalesce(sum(amount_minor) FILTER (WHERE kind = 'tip'), 0) AS tips,
            coalesce(sum(amount_minor) FILTER (WHERE kind = 'adjustment'), 0) AS adjustments,
+           coalesce(sum(amount_minor) FILTER (WHERE kind = 'bonus'), 0) AS bonus,
            coalesce(sum(cash_minor) FILTER (WHERE kind IN ('trip', 'tip')), 0) AS cash
       FROM earnings_entries
      WHERE driver_id = ${driverId} AND at >= ${from} AND at < ${to} AND currency = ${input.currency}
@@ -36,7 +37,9 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
   const money = (v: string | number) => ({ amountMinor: Number(v), currency: input.currency });
   const periods = [];
   for (const r of rows.rows) {
-    const net = Number(r.earnings) + Number(r.pickup) + Number(r.fees) + Number(r.tips) + Number(r.adjustments);
+    // BQ-NET (V44 supervisor SF1): net is what the payout pays for the period's entries, so every bonus entry counts —
+    // the trip bonus at the paid end, an admin bonus after the paid end and the lost-driver payment (payouts.ts bonus line).
+    const net = Number(r.earnings) + Number(r.pickup) + Number(r.fees) + Number(r.tips) + Number(r.adjustments) + Number(r.bonus);
     periods.push({
       periodStart: r.start.toISOString(),
       periodEnd: r.end.toISOString(),
