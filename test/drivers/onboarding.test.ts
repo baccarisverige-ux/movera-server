@@ -183,6 +183,7 @@ describe("joining the fleet", () => {
     expect(french.statusCode).toBe(409);
     expect(french.json()).toMatchObject({ code: "conflict", reason: "fleet_other_country" });
     const moved = await call(app, "POST", "/driver/onboarding", member, details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", language: "fr", accountType: "driver", company: undefined }));
+    expect(moved.statusCode).toBe(200);
     expect(moved.json()).toMatchObject({ country: "SE", zoneIds: ["Z001"] });
   });
 

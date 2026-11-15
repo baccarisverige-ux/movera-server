@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
-import { fleetEarnings } from "../../src/drivers/onboarding.js";
+import { requestJoin } from "../../src/drivers/invitations.js";
+import { fleetEarnings, submitOnboarding } from "../../src/drivers/onboarding.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver } from "../support/seed.js";
@@ -116,6 +117,16 @@ describe("BQ-FLEETCUR: a driver joins only a fleet of his own country", () => {
     expect(await fleetOf(tnDriver)).toBe("flt_fcur_tn");
   });
 
+  it("a driver with no country and no zone is refused (his country is unknown, never assumed)", async () => {
+    const nowhere = await insertDriver(database.db);
+    await database.db.updateTable("drivers").set({ account_type: "driver", country: null, zone_ids: [] }).where("driver_id", "=", nowhere).execute();
+    await invitationRow(seFleetId, nowhere, "driver_request", "inv_fcur_nowhere");
+    const res = await call(app, "POST", `/admin/fleets/${seFleetId}/invitations/inv_fcur_nowhere/accept`, admin.headers);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "conflict", reason: "fleet_other_country" });
+    expect(await fleetOf(nowhere)).toBeNull();
+  });
+
   it("a Swedish driver joins the Swedish fleet; then he cannot move his details to France while in it", async () => {
     expect((await joinSe(sven)).statusCode).toBe(201);
     const pending = (await call(app, "GET", "/driver/fleet/invitations", owner)).json().items.find((i: { driverId?: string; status: string }) => i.driverId === svenId && i.status === "pending");
@@ -172,5 +183,60 @@ describe("BQ-FLEETCUR: fleet earnings count only the fleet's currency", () => {
     const v = await view(ownerId);
     expect(v.items.find((i) => i.driverId === member)).toMatchObject({ trips: 1, earnings: m(16_000, "TND") });
     expect(v.total).toEqual(m(16_000, "TND"));
+  });
+});
+
+/* ------------------------------------- MF1: the owner's country change and a join race (two connections, one wins) */
+
+describe("BQ-FLEETCUR MF1: an owner moving his fleet to France and a Swedish driver joining never both win", () => {
+  const deps = {} as never;
+  const ownerToFrance = (ownerId: string) => (trx: Parameters<typeof submitOnboarding>[0]) => submitOnboarding(trx, deps, ownerId, details({ email: "fredrik@example.se", country: "FR", cityId: "paris", language: "fr" }), clock.now);
+  async function race(phone: string, first: "owner" | "join") {
+    const ownerHeaders = (await signIn(app, phone, "driver")).headers;
+    const ownerId = (await call(app, "POST", "/driver/onboarding", ownerHeaders, details())).json().driverId as string;
+    const f = (await call(app, "GET", "/driver/fleet", ownerHeaders)).json().fleet;
+    const code = (await call(app, "POST", `/admin/fleets/${f.fleetId}/review`, admin.headers, { expectedVersion: f.version, decision: "approved" })).json().code as string;
+    const member = await insertDriver(database.db);
+    await database.db.updateTable("drivers").set({ account_type: "driver", country: "SE", zone_ids: ["Z001"] }).where("driver_id", "=", member).execute();
+    const invitationId = `inv_fcur_race_${first}`;
+    await invitationRow(f.fleetId, member, "owner_invite", invitationId);
+    // The driver asks with the code while the owner's invite waits: POST /driver/fleet/join links him at once (matchFleet -> link).
+    const join = (trx: Parameters<typeof requestJoin>[0]) => requestJoin(trx, deps, member, { code, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" }, clock.now);
+    // The first transaction does its work and stays open; the second starts on another connection meanwhile.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let ready!: () => void;
+    const started = new Promise<void>((r) => (ready = r));
+    const firstWork = first === "owner" ? ownerToFrance(ownerId) : join;
+    const secondWork = first === "owner" ? join : ownerToFrance(ownerId);
+    const one = database.db.transaction().execute(async (trx) => {
+      const out = await firstWork(trx as never);
+      ready();
+      await gate;
+      return out;
+    });
+    await started;
+    const two = database.db.transaction().execute(async (trx) => secondWork(trx as never));
+    await new Promise((r) => setTimeout(r, 300));
+    release();
+    const [a, b] = await Promise.allSettled([one, two]);
+    const fleet = await database.db.selectFrom("fleets").select("country").where("fleet_id", "=", f.fleetId).executeTakeFirstOrThrow();
+    return { results: [a.status, b.status], loser: [a, b].find((x) => x.status === "rejected") as PromiseRejectedResult | undefined, fleetCountry: fleet.country, memberFleet: await fleetOf(member), fleetId: f.fleetId };
+  }
+
+  it("the owner first: the join waits for him, then is refused (the fleet is French now)", async () => {
+    const r = await race(TEST_PHONES[3]!, "owner");
+    expect(r.results).toEqual(["fulfilled", "rejected"]);
+    expect(r.loser!.reason).toMatchObject({ options: { reason: "fleet_other_country" } });
+    expect(r.fleetCountry).toBe("FR");
+    expect(r.memberFleet).toBeNull();
+  });
+
+  it("the join first: the owner's change waits for it, then is refused (the fleet has a driver now)", async () => {
+    const r = await race(TEST_PHONES[4]!, "join");
+    expect(r.results).toEqual(["fulfilled", "rejected"]);
+    expect(r.loser!.reason).toMatchObject({ options: { reason: "fleet_other_country" } });
+    expect(r.fleetCountry).toBe("SE");
+    expect(r.memberFleet).toBe(r.fleetId);
   });
 });

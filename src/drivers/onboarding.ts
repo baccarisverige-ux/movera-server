@@ -145,6 +145,10 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
   const problem = schemaProblem("DriverOnboardingRequest", body);
   if (problem !== null) throw badRequest(`The details are not valid: ${problem}.`, "invalid_body");
   const d = body as OnboardingBody;
+  // BQ-FLEETCUR MF1: the fleet row is locked BEFORE the driver row, the one lock order of every fleet path (link(),
+  // accept, admin accept, invite, review): a country change and a join on the same fleet wait for each other.
+  const peek = await loadDriver(trx, driverId);
+  if (peek.fleet_id !== null) await loadFleet(trx, peek.fleet_id, true);
   const row = await loadDriver(trx, driverId, true);
   if (row.account_status !== "pending" && row.account_status !== "on_hold") {
     throw new ApiError("invalid_transition", "Your details are already approved; ask support to change them.", { reason: "details_locked", projection: await driverView(trx, row, "driver", now) });
@@ -167,7 +171,8 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
   // BQ-FLEETCUR (one country per fleet): a member cannot move his country away from his fleet's, and an owner cannot
   // move his fleet to another country while it has other drivers.
   if (row.fleet_id !== null) {
-    const fleet = await trx.selectFrom("fleets").select(["country", "owner_driver_id"]).where("fleet_id", "=", row.fleet_id).executeTakeFirstOrThrow();
+    // Under the fleet lock (MF1): a join that committed first is counted; one that comes later waits and sees the new country.
+    const fleet = await loadFleet(trx, row.fleet_id, true);
     const others = fleet.owner_driver_id === driverId ? await trx.selectFrom("drivers").select("driver_id").where("fleet_id", "=", row.fleet_id).where("driver_id", "<>", driverId).executeTakeFirst() : { driver_id: driverId };
     if (fleet.country !== d.country && others !== undefined) {
       throw new ApiError("conflict", "A fleet works in one country: the country cannot change while in a fleet.", { reason: "fleet_other_country", projection: await driverView(trx, row, "driver", now) });
