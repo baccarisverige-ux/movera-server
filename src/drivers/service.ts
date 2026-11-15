@@ -43,6 +43,18 @@ export const ETA_FIX_MAX_AGE_SECONDS = STALE_AFTER_SECONDS;
 /** Fixes older than this, or from the future, are dropped. */
 const MAX_FIX_AGE_MS = 10 * 60 * 1000;
 const MAX_FIX_AHEAD_MS = 60 * 1000;
+/**
+ * S7 B3.1 (owner W2 Q112 "Yes, short limit", 2026-11-15): the longest one row-lock wait of the GPS transaction (the trip
+ * row a trip command holds, or a timer row a job runs). The same 2 s as a timer transaction (jobs/timers.ts
+ * TIMER_LOCK_TIMEOUT_MS): like a timer, a GPS batch is a whole transaction that queues behind a trip command and is sent
+ * again. A normal command holds the trip row far shorter, so the limit never refuses a healthy race
+ * (test/e2e/50_gps_vs_trip_command.test.ts); the 50 / 200 ms limits (presence.ts, alerts/detector.ts) guard optional
+ * savepoint steps and would. 2 s is under the driver app's 10 s send tick and 15 s request limit, and it frees the
+ * pooled connection instead of holding it up to DATABASE_STATEMENT_TIMEOUT_MS (30 s). When it runs out Postgres raises
+ * 55P03, nothing of the batch is stored, and app.ts answers 503 server_busy with Retry-After: 2 (db.ts isDatabaseBusy),
+ * which the driver app's sender pauses on and then sends its fix again.
+ */
+export const GPS_LOCK_TIMEOUT_MS = 2000;
 
 export type DriverRow = {
   offline_after_trip?: boolean;
@@ -439,6 +451,10 @@ async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts 
     )
     .select(["d.driver_id", "d.zone_ids", "d.language", "d.online_status", "d.online_since", "t.trip_id", "t.status", "t.version", "t.driver_silent_alert", "t.pickup", "t.dropoff", "t.eta", "t.arrive_m", "t.leave_m", "t.away", "t.next_scan_at", "t.stops", "t.stop_visits"])
     .select(sql<boolean>`EXISTS (SELECT 1 FROM airport_queue_entries e WHERE e.driver_id = d.driver_id AND e.left_at IS NULL)`.as("has_open_entry"))
+    // S7 B3.1 (Q112): SET LOCAL lock_timeout for this transaction (is_local = true), set by this first statement so the
+    // GPS path keeps its statement budget (test/drivers/location_statements.test.ts). This read takes no lock; every
+    // write of the batch comes after it. No driver row = no value set, and nothing is written then.
+    .select(sql<string>`set_config('lock_timeout', ${`${GPS_LOCK_TIMEOUT_MS}ms`}, true)`.as("lock_limit"))
     .where("d.driver_id", "=", driverId)
     .executeTakeFirst();
   if (row === undefined) return undefined;
@@ -475,12 +491,15 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
   // Live 5+5 2026-11-08 (problem 4): the position it replaces comes back in the same statement (a WITH reads the row
   // as it was), so the ETA check below sees where the driver was; no row back = an older fix, nothing replaced.
   const replaced = await trx
-    .with("prev", (db) => db.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driverId))
+    .with("prev", (db) => db.selectFrom("driver_locations").select(["lat", "lng", "measured_at"]).where("driver_id", "=", driverId))
     .insertInto("driver_locations")
     .values(values)
     .onConflict((c) => c.column("driver_id").doUpdateSet(values).where("driver_locations.measured_at", "<=", latest.at))
-    .returning([sql<number | null>`(SELECT lat FROM prev)`.as("prev_lat"), sql<number | null>`(SELECT lng FROM prev)`.as("prev_lng")])
+    .returning([sql<number | null>`(SELECT lat FROM prev)`.as("prev_lat"), sql<number | null>`(SELECT lng FROM prev)`.as("prev_lng"), sql<Date | null>`(SELECT measured_at FROM prev)`.as("prev_at")])
     .executeTakeFirst();
+  // S7 B3.2 (owner W2 Q113 "Yes, skip repeats", 2026-11-15): a new fix = measured after the stored one (or the first).
+  // The same fix sent again still replaced the row above (received_at, G5) but is not new.
+  const isNew = replaced !== undefined && (replaced.prev_at === null || replaced.prev_at.getTime() < latest.at.getTime());
 
   // v0.18.36 §60 (fix job 9, contract.json#airportQueue): join, stay in or leave an airport queue.
   await onDriverPosition(trx, driverId, latest.fix, now, { driver: facts, hasOpenEntry: facts.has_open_entry });
@@ -501,8 +520,13 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
       .onConflict((c) => c.columns(["trip_id", "measured_at", "driver_id"]).doNothing())
       .execute();
     // E4 (audit S03 B2): a batch older than the stored fix (out of order on a bad connection) only fills the trace above;
-    // no location event, NOTIFY, near-drop-off, ride-check scan or silence check runs on a position that is not current.
-    if (!replaced) return { accepted: fresh.length };
+    // no location event, NOTIFY, near-drop-off or silence check runs on a position that is not current.
+    // S7 B3.2 safety (v1 R18): the ride-check scan is booked all the same. Long stop is read from the fix times in the
+    // trace this batch just filled, so the standing fixes that arrive late must be looked at too (a timer row only).
+    if (!replaced) {
+      await scheduleRideCheckScan(trx, active, now);
+      return { accepted: fresh.length };
+    }
     await maybeNearDropoff(trx, active, latest.fix, now);
     // v0.18.93 (contract.json#autoArrive): the automatic arrival / the waiting clock, as a job right after (a timer row only).
     await maybePickupGeofence(trx, active, latest.fix, now);
@@ -516,7 +540,9 @@ async function storeFixes(trx: Trx, driverId: string, fixes: Fix[], _tripId: str
     // while driver_silent_alert is off (then this step skips it), so this order adds no lock cycle
     // (test/e2e/50_gps_vs_trip_command.test.ts races GPS posts against Finish + Collect cash).
     // One location event per batch, with the newest fix; it never changes the projection version (§4).
-    await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
+    // S7 B3.2 (Q113): none for the same fix sent again (a phone standing still): no event, no NOTIFY, no rider reads,
+    // and no trip row write at all. Everything above (trace, checks, timers) still ran for it.
+    if (isNew) await appendTripEvent(trx, { tripId: active.trip_id, kind: "location", version: active.version, occurredAt: now, location: { ...latest.fix, measuredAt: latest.at.toISOString() } });
   }
   // A row back = this batch's newest fix is now the stored position; none = an older fix, the stored one is read later.
   return { accepted: fresh.length, ...(replaced ? { position: { lat: latest.fix.lat, lng: latest.fix.lng } } : {}) };
