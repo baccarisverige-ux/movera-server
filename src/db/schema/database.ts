@@ -10,10 +10,15 @@ import type { IdempotencyKeysTable, TimersTable, TestPhonesTable, SignInWaitlist
 import type { AdminsTable, AdminSetupLinksTable, AdminSignInFailuresTable, ConfigDraftsTable, ConfigLiveTable, ConfigHistoryTable, ApprovalsTable, AdminAuditTable, AdminLiveEventsTable, AdminLivePrunedTable, KpiDaysTable, ContentItemsTable } from "./admin.js";
 import type { ZonesTable, SurgeSamplesTable, QuotesTable, SurgeSchedulesTable, SmartSurgeStateTable, CategoriesTable } from "./pricing.js";
 import type { SearchesTable, OffersTable, OfferEventsTable, DispatchControlsTable, DispatchEventsTable, DispatchPresetsTable, DriverGroupsTable, RadarZonesTable, RadarZoneRulesTable, RadarZoneSendsTable, AreaEventsTable, ReservationPolicyTable, AirportQueueAreasTable, AirportQueueEntriesTable } from "./dispatch.js";
+import type { BonusCampaignsTable, BonusProgressTable, BonusTripsCountedTable, BonusRiderDaysTable } from "./bonuses.js";
 import type { RiderFeesTable, EarningsEntriesTable, PayoutsTable, WalletEntriesTable, RefundsTable } from "./payments.js";
 import type { SupportTicketsTable, SupportSettingsTable, AdminAlertBookTable, AdminAlertRecordsTable, AdminAlertQuietTable, AdminIncidentSettingsTable, ReviewRulesTable, ReviewPeopleTable, TicketMessagesTable, IncidentsTable, IncidentEventsTable } from "./support.js";
 
 export interface Database {
+  bonus_campaigns: BonusCampaignsTable;
+  bonus_progress: BonusProgressTable;
+  bonus_trips_counted: BonusTripsCountedTable;
+  bonus_rider_days: BonusRiderDaysTable;
   surge_schedules: SurgeSchedulesTable;
   smart_surge_state: SmartSurgeStateTable;
   categories: CategoriesTable;

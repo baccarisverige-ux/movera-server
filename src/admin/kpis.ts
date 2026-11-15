@@ -119,6 +119,19 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     if (inside < 0 || inside > paid) console.warn(JSON.stringify({ msg: "kpi bonus outside commission clamped", zoneId: zone.zone_id, day, tripId: r.trip_id, entries: paid, inside }));
     bonusOutside += Math.max(0, Math.min(paid, paid - inside));
   }
+  // v0.18.103 BQ-V44 (contract.json#bonusCampaigns.money.kpi, supervisor MF8): the bonus campaign awards of the zone,
+  // on the zone-local day of the award's SERVER time (the entry's at = earnedAt). They have no trip, so the trip read
+  // above never sees them: driverBonus + and moveraEarnings − once (moneyBase.bonusOutsideCommission.campaign). Here in
+  // countDay, so the live day, the nightly summary, resumTripDay and kpi-resum all count them the same way. From the
+  // zone's campaigns (an award lies inside its window, so start_date ≤ day ≤ end_date) to their entries by bonus_progress.
+  const campaigns = await sql<{ n: string }>`
+    SELECT coalesce(sum(e.amount_minor), 0) AS n
+      FROM bonus_campaigns c
+      JOIN bonus_progress p ON p.bonus_id = c.bonus_id AND p.entry_id IS NOT NULL
+      JOIN earnings_entries e ON e.entry_id = p.entry_id AND e.bonus_id = c.bonus_id
+     WHERE c.zone_id = ${zone.zone_id} AND c.start_date <= ${day}::date AND c.end_date >= ${day}::date
+       AND e.at >= ${bounds} AND e.at < ${next}`.execute(ex);
+  const campaignBonus = Number(campaigns.rows[0]!.n);
   const t = trips.rows[0]!;
   const m = money.rows[0]!;
   const fees = Number(m["fees"]);
@@ -130,7 +143,7 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     commission: Number(t["commission"]),
     driverEarnings: Number(m["earnings"]),
     pickupPay: Number(m["pickup"]),
-    driverBonus: Number(m["bonus"]),
+    driverBonus: Number(m["bonus"]) + campaignBonus,
     cashCollected: Number(t["cash"]),
     walletApplied: Number(t["wallet"]),
     newRiders: Number(riders.rows[0]!.n),
@@ -142,7 +155,8 @@ export async function countDay(ex: Executor, zone: Zone, day: string): Promise<F
     // (rules/commission.ts), so they are not taken off again; refunds Movera paid back are taken off.
     // v0.18.82 S5 J5 (contract.json#kpis.money.moveraEarnings, M3): Movera's pay changes are taken off too.
     // v0.18.87 BQ-M19 (moneyBase.bonusOutsideCommission): and the bonus entries outside commission, once.
-    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["adjustments"]) - bonusOutside - Number(m["refunds"]),
+    // v0.18.103 BQ-V44 (MF8): and the bonus campaign awards of the day, once.
+    moveraEarnings: Number(t["commission"]) + fees - Number(m["fee_share"]) - Number(m["adjustments"]) - bonusOutside - campaignBonus - Number(m["refunds"]),
   };
 }
 

@@ -5,6 +5,7 @@ import { legalRoutes } from "./legal/routes.js";
 import { zoneRoutes } from "./zones/routes.js";
 import { airportQueueRoutes } from "./airportQueue/routes.js";
 import { blockedPairRoutes } from "./blockedPairs/routes.js";
+import { bonusRoutes } from "./bonuses/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
@@ -297,6 +298,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await airportQueueRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.43 §64 fix job 10: blocked pairs (Admin › Trips › Block this pair, Support undo).
     await blockedPairRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    // v0.18.103 BQ-V44 (contract.json#bonusCampaigns): Admin › Drivers › Bonuses and the driver's Campaigns.
+    await bonusRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??

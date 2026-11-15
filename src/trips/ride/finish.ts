@@ -18,6 +18,7 @@ import { type Money, REASONS, ONBOARD } from "./shared.js";
 import { drivenFare, driven, drivenColumns, earlyEndOf, endedBeforeDropoff, scaledFare, withStopWaiting } from "./settings.js";
 import { releaseDriver, credit, walletPart, spendWallet, priceWithDebt, settleDebt, cashPart } from "./money.js";
 import { walletBalance } from "../../riders/wallet.js";
+import { countTrip } from "../../bonuses/counting.js";
 
 /* ---------------------------------------------------------------- the rider ends early */
 
@@ -69,6 +70,9 @@ export async function creditTrip(trx: Trx, trip: TripRow, now: Date) {
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "pickup_pay", currency: trip.currency, amount: pickupPay }, now);
   // A Movera bonus on the trip is paid when the trip ends with this driver.
   await credit(trx, { driverId: trip.driver_id, tripId: trip.trip_id, kind: "bonus", currency: trip.currency, amount: bonus }, now);
+  // v0.18.103 BQ-V44 (contract.json#bonusCampaigns.counting.trips): every paid end goes through here, so the trip
+  // counts toward the bonus campaigns in the same transaction (in a savepoint: it never fails the trip end, MF1).
+  await countTrip(trx, trip, now);
 }
 
 /**

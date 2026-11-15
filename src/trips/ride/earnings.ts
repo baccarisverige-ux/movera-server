@@ -51,6 +51,9 @@ export async function driverEarnings(ex: Executor, driverId: string, input: { pe
       adjustments: money(r.adjustments),
       cashCollected: money(r.cash),
       fees: money(r.fees),
+      // v0.18.103 BQ-V44 (bonusCampaigns.money.earnings; NET supervisor V44-N1/N3): every bonus entry of the period (trip
+      // bonuses and campaigns) as its own field — the SAME sum BQ-NET already puts in net, so net does not change.
+      bonus: money(r.bonus),
       net: money(net),
     });
   }
