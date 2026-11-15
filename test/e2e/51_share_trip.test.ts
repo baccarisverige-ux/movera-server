@@ -6,7 +6,7 @@ import { buildApp } from "../../src/app.js";
 import { CLEANUP_TRIP_SHARES, HOUSEKEEPING_KINDS, housekeepingHandlers } from "../../src/jobs/housekeeping.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
-import { HIDE_NEAR_DROPOFF_METERS, HIDE_NEAR_STOP_METERS, shareKey, shareToken } from "../../src/safety/tripShare.js";
+import { HIDE_NEAR_DROPOFF_METERS, HIDE_NEAR_STOP_METERS, mayShowPosition, shareKey, shareToken } from "../../src/safety/tripShare.js";
 import { bookAndAccept, drive, newKey, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
 /**
@@ -341,6 +341,53 @@ describe("S10 round 3b: the same 500 m hide around every middle stop (session de
     await hiddenNow();
     await setStops([]);
     await shown();
+  });
+});
+
+describe("S10 round 3c: the pickup is a hide zone too (Q-D, session decision under the owner's overnight rule); NaN / Infinity hide (SF-9)", () => {
+  it("Q-D: the rider is in the car but the car is still within 500 m of the pickup: no position and no Maps link; shown once it is farther away", async () => {
+    const { tripId, token } = await sharedTrip();
+    await drive(a, tripId, "rider_onboard");
+    // drive() put the car at the pickup to arrive; then about 100 m away.
+    for (const at of [PLACES.sergels, PLACES.nearSergels]) {
+      await a.moveTo(at);
+      const res = await json(token);
+      const body = res.json() as Json;
+      expect(Object.keys(body).sort()).toEqual(["car", "eta", "phase", "position", "refreshSeconds", "state", "updatedAt"]);
+      expect(body).toMatchObject({ state: "live", phase: "on_trip", position: null });
+      const html = (await page(token, { headers: { "accept-language": "en" } })).body;
+      for (const text of [res.body, html]) {
+        expect(text).not.toContain(String(at.lat));
+        expect(text).not.toContain(String(at.lng));
+        expect(text).not.toContain(PLACES.sergels.address);
+        expect(text).not.toMatch(/"pickup":|distance|met(er|re)s/i);
+      }
+      expect(html).not.toContain("maps.google.com");
+      expect(html).toContain("On the trip");
+    }
+    await drive(a, tripId, "in_trip");
+    await a.moveTo(PLACES.nearSergels);
+    expect(((await json(token)).json() as Json)["position"]).toBeNull();
+    // About 1 km from the pickup (and 3 km from the drop-off): shown.
+    await a.moveTo(PLACES.odenplan);
+    expect((await json(token)).json()).toMatchObject({ phase: "on_trip", position: { lat: PLACES.odenplan.lat, lng: PLACES.odenplan.lng } });
+    expect((await page(token)).body).toContain("maps.google.com");
+  });
+
+  it("SF-9: a pickup, drop-off or stop whose lat / lng is NaN or Infinity hides the position", () => {
+    const car = { lat: 59.3429, lng: 18.0498 };
+    const pickup = { lat: 59.3326, lng: 18.0649 };
+    const dropoff = { lat: 59.3143, lng: 18.0735 };
+    expect(mayShowPosition("in_trip", car, dropoff, [], pickup)).toBe(true);
+    for (const bad of [NaN, Infinity, -Infinity]) {
+      expect(mayShowPosition("in_trip", car, { lat: bad, lng: 18.07 }, [], pickup), `drop-off lat ${bad}`).toBe(false);
+      expect(mayShowPosition("in_trip", car, { lat: 59.31, lng: bad }, [], pickup), `drop-off lng ${bad}`).toBe(false);
+      expect(mayShowPosition("in_trip", car, dropoff, [{ lat: bad, lng: 18.07 }], pickup), `stop lat ${bad}`).toBe(false);
+      expect(mayShowPosition("in_trip", car, dropoff, [], { lat: 59.33, lng: bad }), `pickup lng ${bad}`).toBe(false);
+    }
+    // No pickup the server can place: hidden.
+    expect(mayShowPosition("in_trip", car, dropoff, [], null)).toBe(false);
+    expect(mayShowPosition("in_trip", car, dropoff, [], { address: "x" })).toBe(false);
   });
 });
 
