@@ -128,9 +128,11 @@ describe("BQ-M22: Payout.summary { driverGets, moveraGets } (priceDisplay.payout
     expect(second).toBeDefined();
     const { admin } = await summaries(f);
     const of = (id: string) => admin.find((p) => p.payoutId === id)!.summary;
-    // The paid payout keeps his 150 kr; the next one pays (and shows) the 10 kr; Movera's 40 kr (50 − 10, kept now) once, on the trip's payout.
-    expect(of(first!.payout_id)).toEqual({ driverGets: sek(15_000), moveraGets: sek(4_000) });
-    expect(of(second!.payout_id)).toEqual({ driverGets: sek(1_000), moveraGets: sek(0) });
+    // The paid payout keeps his 150 kr; the next one pays (and shows) the 10 kr. BQ-M29 (pay change counted where it is
+    // paid, as BQ-M28's late bonus): Movera's 40 kr (50 − 10, kept now) once in all — 50 kr on the trip's payout, −10 kr on
+    // the payout that pays the pay change (before M29: 40 kr on the trip's payout, 0 on the second).
+    expect(of(first!.payout_id)).toEqual({ driverGets: sek(15_000), moveraGets: sek(5_000) });
+    expect(of(second!.payout_id)).toEqual({ driverGets: sek(1_000), moveraGets: sek(-1_000) });
   });
 
   it("S3 SEK: the lost driver gets the trip back and completes it — his earlier 25 kr payment is in his Driver gets", async () => {
