@@ -268,6 +268,80 @@ describe("PM-1: a silent LISTEN link (fake pg client, fake clock)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  // MF-1 (supervisor round 2): only what can heal by itself is retried at the first start. A wrong LISTEN address
+  // (unknown database, wrong password or user) must fail the boot as before, so a deploy with a wrong
+  // DATABASE_LISTEN_URL never replaces the working copy.
+  it.each([
+    ["3D000", 'database "nope" does not exist'],
+    ["28P01", 'password authentication failed for user "movera"'],
+    ["28000", 'role "nobody" does not exist'],
+  ])("MF-1: start() that meets a permanent error (%s) rejects, and nothing is retried", async (code, message) => {
+    const warns: string[] = [];
+    vi.mocked(pg.Client.prototype.connect).mockImplementation(function (this: pg.Client) {
+      db.connects.push(Date.now());
+      return Promise.reject(Object.assign(new Error(message), { code }));
+    } as unknown as pg.Client["connect"]);
+    const hub = new NotificationHub(URL, ["ch"], { warn: (_data, text) => void warns.push(text) });
+    const outcome = hub.start().then(
+      () => "started",
+      (error: unknown) => `rejected: ${(error as { code?: string }).code}`,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await Promise.race([outcome, Promise.resolve("still hanging")])).toBe(`rejected: ${code}`);
+    await vi.advanceTimersByTimeAsync(60_000);
+    console.log(`PM-1 proof (permanent error at boot, ${code}): start() ${await outcome}; connect attempts in 60 s: ${db.connects.length}; timers left ${vi.getTimerCount()}`);
+    expect(db.connects).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(warns).toEqual([]);
+    expect(hub.healthSnapshot().status).toBe("down");
+    await hub.stop();
+  });
+
+  it("MF-1: a malformed LISTEN address rejects at start too", async () => {
+    vi.mocked(pg.Client.prototype.connect).mockImplementation(function (this: pg.Client) {
+      db.connects.push(Date.now());
+      return Promise.reject(new TypeError("Invalid URL"));
+    } as unknown as pg.Client["connect"]);
+    const hub = new NotificationHub("not a url", ["ch"]);
+    await expect(hub.start()).rejects.toThrow(/Invalid URL/);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(db.connects).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    await hub.stop();
+  });
+
+  // SF-4 (supervisor round 2): a link that stays down is not one warning per attempt for ever.
+  it("SF-4: while the link stays down the retry warning is thinned: the first failure, then at most one a minute", async () => {
+    const warns: { at: number; data: Record<string, unknown> }[] = [];
+    const hub = new NotificationHub(URL, ["ch"], { warn: (data, text) => void (text === "realtime listen reconnect failed" && warns.push({ at: Date.now(), data: data as Record<string, unknown> })) });
+    await hub.start();
+    db.connect = "down";
+    db.connects = [];
+    const begun = Date.now();
+    dropConnection(hub);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    const gaps = warns.slice(1).map((w, i) => w.at - warns[i]!.at);
+    console.log(`PM-1 proof (SF-4): ${db.connects.length} failed attempts in 10 min, ${warns.length} warnings; first after ${warns[0]!.at - begun} ms; shortest gap ${Math.min(...gaps)} ms`);
+    expect(db.connects.length).toBeGreaterThan(100);
+    // The first failure is reported at once.
+    expect(warns[0]!.at).toBe(db.connects[0]!);
+    expect(warns.length).toBeGreaterThanOrEqual(9);
+    expect(warns.length).toBeLessThanOrEqual(11);
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(60_000);
+    // Each later warning says how many failures it stands for.
+    expect(warns[1]!.data).toMatchObject({ failedSinceLastWarning: expect.any(Number) });
+    // After a connect that worked, the next failure is reported at once again.
+    db.connect = "ok";
+    await vi.advanceTimersByTimeAsync(RECONNECT_BACKOFF.maxMs);
+    expect(hub.healthSnapshot().status).toBe("ok");
+    const before = warns.length;
+    db.connect = "down";
+    dropConnection(hub);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BACKOFF.baseMs);
+    expect(warns.length).toBe(before + 1);
+    await hub.stop();
+  });
+
   it("stop() while the first start is still retrying ends the retries and leaves no timer", async () => {
     db.connect = "silent";
     const hub = new NotificationHub(URL, ["ch"]);
@@ -374,6 +448,29 @@ describe("PM-1: a silent LISTEN link (real pg through a TCP proxy that goes sile
     } finally {
       await hub.stop();
       await proxy.close();
+    }
+  });
+
+  // MF-1 with the real driver: the LISTEN address names a database that does not exist.
+  it("MF-1: start() against a database that does not exist rejects (3D000) and the hub does not retry", async () => {
+    const made = hubClients();
+    const wrong = new globalThis.URL(adminUrl());
+    wrong.pathname = "/movera_pm1_no_such_database";
+    const warns: string[] = [];
+    const hub = new NotificationHub(wrong.toString(), ["pm1_probe"], { warn: (_data, message) => void warns.push(message) }, TUNING);
+    try {
+      const outcome = await hub.start().then(
+        () => "started",
+        (error: unknown) => `rejected: ${(error as { code?: string }).code}`,
+      );
+      await sleep(1_500);
+      console.log(`PM-1 probe (real pg, unknown database): start() ${outcome}; clients made in 1.5 s: ${made.length}; warnings ${warns.length}; status ${hub.healthSnapshot().status}`);
+      expect(outcome).toBe("rejected: 3D000");
+      expect(made).toHaveLength(1);
+      expect(made.filter(socketOpen)).toHaveLength(0);
+      expect(warns).toEqual([]);
+    } finally {
+      await hub.stop();
     }
   });
 

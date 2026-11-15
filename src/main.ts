@@ -56,7 +56,8 @@ if (env.DATABASE_URL !== undefined) {
   db = createDb(pool);
   healthDb = createDb(createHealthPool(env.DATABASE_URL));
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
-  // PM-1 SF-2 + N-1: waits for the first LISTEN attempt only (5 s at most) and never rejects. If the link is not up
+  // PM-1 SF-2 + N-1: waits for the first LISTEN attempt only (5 s at most). MF-1: a wrong LISTEN address (unknown
+  // database, wrong password or user) rejects here and stops the start, as before. If only the link is not up
   // yet the server starts anyway (/healthz says realtime "down", /readyz shows it) and the hub keeps trying with its
   // back-off; streams opened meanwhile read on open and are told to catch up when it connects.
   await hub.start();

@@ -35,6 +35,11 @@ afterAll(async () => {
   await database.drop();
 });
 
+/**
+ * A free port for the child's HTTP server. SF-5: "open, close, use" has a small race (another process may take the
+ * port in between); it cannot be port 0 because PORT must be 1–65535 (src/env.ts) and the child's output is not read.
+ * The worst case is a failed test, never a false pass: the tests need /healthz of THIS child to answer as expected.
+ */
 async function freePort(): Promise<number> {
   const server = net.createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -90,9 +95,9 @@ async function healthWithin(server: Boot, ms: number): Promise<{ health?: Health
 
 describe("PM-1 boot: the HTTP server comes up while the LISTEN link is down", () => {
   it("N-1: LISTEN connection refused at boot (connection-class error): HTTP up, realtime down, never a dark process", async () => {
-    const closed = await freePort();
+    // SF-5: port 1 is never listened on (as test/db/readiness.test.ts uses it): refused for sure, no port race.
     const url = new URL(database.url);
-    url.port = String(closed);
+    url.port = "1";
     const server = boot(url.toString(), await freePort());
     const up = await healthWithin(server, 40_000);
     console.log(`PM-1 boot proof (LISTEN refused): /healthz ${up.health === undefined ? "no answer" : `200 realtime ${up.health.realtime?.status}`} after ${up.afterMs} ms; process ${up.exit === null ? "alive" : `exited ${up.exit}`}`);
@@ -101,6 +106,19 @@ describe("PM-1 boot: the HTTP server comes up while the LISTEN link is down", ()
     const ready = await get(server.port, "/readyz");
     expect(ready).toEqual({ code: 200, body: { status: "ready", database: "ok", realtime: "down" } });
   }, 60_000);
+
+  // MF-1 (supervisor round 2): a wrong LISTEN address is not a link problem and must fail the boot, so the host
+  // keeps the old copy (which has working realtime) instead of putting a copy live that will never hear anything.
+  it("MF-1: LISTEN address with a database that does not exist: the boot fails (exit code not 0), nothing is served", async () => {
+    const url = new URL(database.url);
+    url.pathname = "/movera_pm1_no_such_database";
+    const server = boot(url.toString(), await freePort());
+    const up = await healthWithin(server, 20_000);
+    console.log(`PM-1 boot proof (LISTEN unknown database): /healthz ${up.health === undefined ? "no answer" : `200 realtime ${up.health.realtime?.status}`} after ${up.afterMs} ms; process ${up.exit === null ? "alive" : `exited ${up.exit}`}`);
+    expect(up.health).toBeUndefined();
+    expect(up.exit).not.toBeNull();
+    expect(up.exit).not.toBe(0);
+  }, 40_000);
 
   it("SF-2: LISTEN link silent at boot: HTTP up within the 5 s try, realtime down; the hub connects by itself when the link answers", async () => {
     proxy = await startSilentProxy(database.url, "accept");

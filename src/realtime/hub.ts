@@ -1,4 +1,5 @@
 import pg from "pg";
+import { isDatabaseConnectionError } from "../db/ready.js";
 import { recordNotify } from "../telemetry/load.js";
 
 /**
@@ -47,6 +48,25 @@ export const RECONNECT_BACKOFF = { baseMs: 1_000, maxMs: 5_000 };
  * 1.5 s (db/db.ts createHealthPool). A short limit is safe here because the attempts go on for ever, at boot too.
  */
 export const LISTEN_CONNECT_TIMEOUT_MS = 5_000;
+const CONNECT_TIMED_OUT = "MOVERA_LISTEN_CONNECT_TIMEOUT";
+
+/**
+ * PM-1 MF-1: whether a failed FIRST connect can heal by itself, so the hub may keep trying in the background: its own
+ * timeout (or pg's), or a "database cannot be reached right now" error - the same rule as waitForDatabase
+ * (db/ready.ts). Anything else (unknown database, wrong password or user, a bad address) is a wrong setting: it
+ * never heals, so start() rejects and the boot fails.
+ */
+function healsByItself(error: unknown): boolean {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  if (e?.code === CONNECT_TIMED_OUT || e?.message === "timeout expired") return true;
+  return isDatabaseConnectionError(error);
+}
+
+/**
+ * PM-1 SF-4: while the link stays down, "realtime listen reconnect failed" is logged for the first failed attempt and
+ * then at most this often (with the number of failures since), not once per attempt (every 2.5–10 s, for ever).
+ */
+export const RECONNECT_WARN_EVERY_MS = 60_000;
 
 /**
  * B1.16 (staggered catch-up): after a reconnect, the "first" listeners get the catch-up signal (null) at once; the
@@ -94,6 +114,9 @@ export class NotificationHub {
   private abortConnect: (() => void) | undefined;
   /** Whether a connect ever worked: the first one (also a late one after a failed start) is not a "reconnect". */
   private connectedOnce = false;
+  /** SF-4: when "reconnect failed" was last logged in this outage, and the failed attempts since. */
+  private lastFailWarning: number | undefined;
+  private failedSinceWarning = 0;
   private readonly health: HubTuning;
 
   constructor(
@@ -106,14 +129,19 @@ export class NotificationHub {
   }
 
   /**
-   * Opens the LISTEN connection. The promise settles after the FIRST attempt (at most `connectTimeoutMs`): connected,
-   * or not yet - then the hub keeps trying in the background with the reconnect back-off until it is connected or
-   * stopped, and healthSnapshot() says "down" meanwhile. It never rejects (PM-1 SF-2 + N-1): main.ts awaits it before
-   * app.listen, so a rejection there ended the process on one slow try, or (a connection-class error, which
-   * guardProcess keeps alive) left a process that listened on nothing.
+   * Opens the LISTEN connection. The promise settles after the FIRST attempt (at most `connectTimeoutMs`):
+   *  - connected;
+   *  - a link problem (the hub's timeout, or a "database cannot be reached right now" error, see healsByItself):
+   *    it resolves all the same and the hub keeps trying in the background with the reconnect back-off until it is
+   *    connected or stopped; healthSnapshot() says "down" meanwhile (PM-1 SF-2 + N-1: main.ts awaits this before
+   *    app.listen, so a rejection there ended the process on one slow try, or - a connection-class error, which
+   *    guardProcess keeps alive - left a process that listened on nothing);
+   *  - any other error (MF-1: unknown database, wrong password or user, a bad address): it REJECTS and nothing is
+   *    retried, so the boot fails and a deploy with a wrong DATABASE_LISTEN_URL never replaces the working copy.
    */
   start(): Promise<void> {
     this.ready ??= this.connect().catch((error: unknown) => {
+      if (!healsByItself(error)) throw error;
       this.log.warn({ err: error }, "realtime listen connect failed at start; retrying");
       this.reconnectSoon();
     });
@@ -155,7 +183,7 @@ export class NotificationHub {
         clearTimeout(timer);
         reject(error);
       };
-      timer = setTimeout(() => giveUp(new Error(`realtime listen connect timed out after ${limit} ms`)), limit);
+      timer = setTimeout(() => giveUp(Object.assign(new Error(`realtime listen connect timed out after ${limit} ms`), { code: CONNECT_TIMED_OUT })), limit);
     });
     const abort = () => giveUp(new Error("realtime hub stopped"));
     this.abortConnect = abort;
@@ -235,12 +263,21 @@ export class NotificationHub {
         await this.connect();
         if (this.closed) return;
         this.attempt = 0;
+        this.lastFailWarning = undefined;
+        this.failedSinceWarning = 0;
         if (again) this.reconnects += 1;
         // Anything may have happened while we were away: every stream reads what it missed. (Also after a first
         // connect that came late: streams may have opened while the hub was still down.)
         this.tellCatchUp();
       } catch (error) {
-        this.log.warn({ err: error, attempt: this.attempt }, "realtime listen reconnect failed");
+        // SF-4: the first failure of an outage at once, then at most one line a minute.
+        this.failedSinceWarning += 1;
+        const now = Date.now();
+        if (this.lastFailWarning === undefined || now - this.lastFailWarning >= RECONNECT_WARN_EVERY_MS) {
+          this.log.warn({ err: error, attempt: this.attempt, failedSinceLastWarning: this.failedSinceWarning }, "realtime listen reconnect failed");
+          this.lastFailWarning = now;
+          this.failedSinceWarning = 0;
+        }
         this.reconnectSoon();
       }
     }, delay);

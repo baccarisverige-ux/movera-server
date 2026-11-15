@@ -8,6 +8,11 @@ import net from "node:net";
  * again; what the silence caught stays silent toward the client: no answer and no close, ever - not even to the
  * client's own goodbye (allowHalfOpen: a caught socket's FIN is not answered), as on a link that drops everything.
  * So a client that only says goodbye keeps its socket; only a client that destroys it is rid of it.
+ *
+ * SF-6: for the NotificationHub's LISTEN client only. "listen" mode looks for the text `LISTEN` anywhere in a chunk
+ * the client sends, which is right for the hub's plain `LISTEN "channel"` queries and nothing else: other traffic
+ * (a query that merely contains the word, a split packet, TLS) would be caught wrongly or not at all. Do not reuse
+ * it for the app pool or any other client without changing that.
  */
 export type SilentMode = "accept" | "listen";
 export type SilentProxy = {
