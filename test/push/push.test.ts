@@ -32,6 +32,12 @@ function fakeGoogle(fcm: (body: { message: { token: string } }) => { status: num
     }
     if (url.includes("/webApps?")) return reply(200, { apps: [{ appId: "1:42:web:driver", displayName: "Movera Driver web" }, { appId: "1:42:web:rider", displayName: "Movera Rider web" }] });
     if (url.endsWith("/webApps/1%3A42%3Aweb%3Adriver/config")) return reply(200, { projectId: "movera-test", appId: "1:42:web:driver", apiKey: "public-web-key", messagingSenderId: "42", authDomain: "movera-test.firebaseapp.com" });
+    // v0.18.105 (BQ-V43): the Android apps (rider's has no config file here) and the driver's google-services.json.
+    if (url.includes("/androidApps?")) return reply(200, { apps: [{ appId: "1:42:android:old", packageName: "se.movera.driver", state: "DELETED" }, { appId: "1:42:android:driver", packageName: "se.movera.driver", state: "ACTIVE" }, { appId: "1:42:android:rider", packageName: "com.movera.rider" }] });
+    if (url.endsWith("/androidApps/1%3A42%3Aandroid%3Adriver/config")) {
+      const file = { project_info: { project_number: "42", project_id: "movera-test" }, client: [{ client_info: { mobilesdk_app_id: "1:42:android:other", android_client_info: { package_name: "se.movera.other" } }, api_key: [{ current_key: "other-key" }] }, { client_info: { mobilesdk_app_id: "1:42:android:driver", android_client_info: { package_name: "se.movera.driver" } }, api_key: [{ current_key: "public-android-key" }] }] };
+      return reply(200, { configFilename: "google-services.json", configFileContents: Buffer.from(JSON.stringify(file)).toString("base64") });
+    }
     return reply(404, {});
   };
   return { calls, fetch };
@@ -274,5 +280,35 @@ describe("GET /push/config and disabled mode", () => {
     expect(rider.json()).toEqual({ provider: "fcm", enabled: false });
     expect((await on.inject({ method: "GET", url: "/api/v1/push/config?app=admin" })).statusCode).toBe(400);
     expect((await on.inject({ method: "GET", url: "/api/v1/push/config" })).statusCode).toBe(400);
+  });
+
+  it("v0.18.105 BQ-V43: platform=android gives the Android app's public settings by package name, read once", async () => {
+    const res = await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=android" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      provider: "fcm",
+      enabled: true,
+      projectId: "movera-test",
+      androidConfig: { apiKey: "public-android-key", appId: "1:42:android:driver", messagingSenderId: "42", projectId: "movera-test" },
+    });
+    expect(res.headers["cache-control"]).toBe("public, max-age=300");
+    await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=android" });
+    expect(google.calls.filter((c) => c.url.includes("/androidApps?"))).toHaveLength(1);
+    expect(google.calls.find((c) => c.url.includes("/androidApps?"))!.url).toBe("https://firebase.googleapis.com/v1beta1/projects/movera-test/androidApps?pageSize=100");
+    // The deleted app is never used; the web answer stays the v0.18.3 one (no androidConfig).
+    expect(google.calls.some((c) => c.url.includes("android%3Aold"))).toBe(false);
+    const web = (await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=web" })).json();
+    expect(web).not.toHaveProperty("androidConfig");
+    expect(web.webConfig.appId).toBe("1:42:web:driver");
+  });
+
+  it("v0.18.105 BQ-V43: an Android app Firebase cannot give, iOS (no APNs key yet), no service account: enabled false", async () => {
+    expect((await on.inject({ method: "GET", url: "/api/v1/push/config?app=rider&platform=android" })).json()).toEqual({ provider: "fcm", enabled: false });
+    const ios = await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=ios" });
+    expect(ios.statusCode).toBe(200);
+    expect(ios.json()).toEqual({ provider: "fcm", enabled: false });
+    expect(google.calls.some((c) => c.url.includes("iosApps"))).toBe(false);
+    expect((await off.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=android" })).json()).toEqual({ provider: "fcm", enabled: false });
+    expect((await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=windows" })).statusCode).toBe(400);
   });
 });
