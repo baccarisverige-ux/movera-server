@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
+import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { summarizeDay } from "../../src/admin/kpis.js";
 import { buildApp } from "../../src/app.js";
@@ -8,6 +9,7 @@ import { award, countingHooks, forgetBonusCampaigns, type CampaignRow } from "..
 import { e164, samePhone } from "../../src/bonuses/rules.js";
 import { forgetGeometry } from "../../src/config/geometryCache.js";
 import type { TripRow } from "../../src/db/tripLog.js";
+import { GPS_LOCK_TIMEOUT_MS } from "../../src/drivers/service.js";
 import { readEnv } from "../../src/env.js";
 import { commissionOf } from "../../src/rules/commission.js";
 import { driverEarnings } from "../../src/trips/ride/earnings.js";
@@ -27,7 +29,10 @@ import { call, fixedRouter, signIn, testWorld } from "../support/world.js";
  * - "offline 9 min, back online, backdated batch" through the real location handler adds nothing;
  * - MF7 phones compared in E.164 form (spaces, 00 prefix);
  * - EarningsPeriod.bonus is the period's bonus entries and is NOT added to net a second time;
- * - the KPI summary row (summarizeDay, used by the nightly job and resumTripDay) holds the award once.
+ * - the KPI summary row (summarizeDay, used by the nightly job and resumTripDay) holds the award once;
+ * - SF1 (Rules audits/impact/v44-supervisor-rebase.md §2, probes P1, P2, P4): the 2 s GPS lock limit (S7 Q112) and the
+ *   online-minute count: a held bonus_progress row skips one batch's count (200) and the next batch catches up; the
+ *   award comes once, later; a held trip row answers 503 with the count rolled back, and the resend counts once.
  */
 
 let database: TestDatabase;
@@ -315,4 +320,112 @@ describe("money around the award (NET V44-N1, MF8)", () => {
     const again = await database.db.selectFrom("kpi_days").selectAll().where("zone_id", "=", "Z001").where("day", "=", day as never).executeTakeFirstOrThrow();
     expect({ b: again.driver_bonus_minor, m: again.movera_earnings_minor }).toEqual({ b: first.driver_bonus_minor, m: first.movera_earnings_minor });
   });
+});
+
+describe("SF1: the 2 s GPS lock limit (S7 Q112) and the online-minute count (supervisor probes P1, P2, P4)", () => {
+  const phone = TEST_PHONES[5]!;
+  /** The driver online since `since`, in the zone, with `seconds` counted up to `last` in campaign `bonusId`. */
+  async function hoursDriver(bonusId: string, since: string, seconds: number, last: string) {
+    forgetBonusCampaigns();
+    await signIn(app, phone, "driver");
+    const d = (await database.db.selectFrom("drivers").select("driver_id").where("phone", "=", phone).executeTakeFirstOrThrow()).driver_id;
+    await database.db.updateTable("drivers").set({ zone_ids: ["Z001"], account_status: "active", online_status: "online", online_since: new Date(since) }).where("driver_id", "=", d).execute();
+    const at = new Date(last);
+    await database.db.insertInto("bonus_progress").values({ bonus_id: bonusId, driver_id: d, online_seconds: seconds, last_inside_at: at, last_received_at: at, last_lat: IN.lat, last_lng: IN.lng, updated_at: at }).execute();
+    return d;
+  }
+  /** POST /driver/location at server time `now` with one fix measured at `measuredAt` (default: now). */
+  async function post(now: string, measuredAt = now) {
+    clock.now = new Date(now);
+    const headers = (await signIn(app, phone, "driver")).headers;
+    const started = Date.now();
+    const res = await call(app, "POST", "/driver/location", headers, { fixes: [{ ...IN, accuracy: 5, measuredAt: new Date(measuredAt).toISOString() }] });
+    return { res, waited: Date.now() - started };
+  }
+  /** A second connection that holds a row lock until release() (another copy's transaction that is stuck). */
+  async function hold(query: string, values: string[]) {
+    const holder = new pg.Client({ connectionString: database.url });
+    await holder.connect();
+    await holder.query("BEGIN");
+    expect((await holder.query(query, values)).rowCount).toBe(1);
+    return async () => {
+      await holder.query("ROLLBACK");
+      await holder.end();
+    };
+  }
+  const holdProgress = (bonusId: string, d: string) => hold("SELECT 1 FROM bonus_progress WHERE bonus_id = $1 AND driver_id = $2 FOR UPDATE", [bonusId, d]);
+  const storedAt = async (d: string) => (await database.db.selectFrom("driver_locations").select("measured_at").where("driver_id", "=", d).executeTakeFirst())?.measured_at.toISOString();
+  const offline = (d: string) => database.db.updateTable("drivers").set({ online_status: "offline", zone_ids: [] }).where("driver_id", "=", d).execute();
+
+  it("P1: his bonus_progress row is held for one batch: the post answers 200 after the lock limit, the position is stored, nothing is counted; the next batch adds the whole time", async () => {
+    const c = await campaign({ measure: "online_hours", target: 2 });
+    const d = await hoursDriver(c.bonusId, "2026-11-21T08:00:00Z", 600, "2026-11-21T08:10:00Z");
+    const release = await holdProgress(c.bonusId, d);
+    try {
+      const { res, waited } = await post("2026-11-21T08:10:30Z");
+      expect(res.statusCode, res.body).toBe(200);
+      expect(waited).toBeGreaterThanOrEqual(GPS_LOCK_TIMEOUT_MS - 100);
+      expect(await storedAt(d)).toBe("2026-11-21T08:10:30.000Z");
+    } finally {
+      await release();
+    }
+    expect((await progress(c.bonusId, d))!).toMatchObject({ online_seconds: 600, last_inside_at: new Date("2026-11-21T08:10:00Z") });
+    // 30 s later: the time since the LAST COUNTED fix (60 s), not only since the skipped batch.
+    expect((await post("2026-11-21T08:11:00Z")).res.statusCode).toBe(200);
+    expect((await progress(c.bonusId, d))!.online_seconds).toBe(660);
+    expect(await entries(c.bonusId)).toHaveLength(0);
+    await offline(d);
+  }, 30_000);
+
+  it("P2: the row is held on the batch that reaches the target: 200 and no entry; the next batch counts and pays, exactly ONE entry", async () => {
+    const c = await campaign({ measure: "online_hours", target: 1 });
+    const d = await hoursDriver(c.bonusId, "2026-11-21T09:00:00Z", 3570, "2026-11-21T09:59:30Z");
+    const release = await holdProgress(c.bonusId, d);
+    try {
+      const { res, waited } = await post("2026-11-21T10:00:00Z");
+      expect(res.statusCode, res.body).toBe(200);
+      expect(waited).toBeGreaterThanOrEqual(GPS_LOCK_TIMEOUT_MS - 100);
+    } finally {
+      await release();
+    }
+    expect(await entries(c.bonusId)).toHaveLength(0);
+    expect((await progress(c.bonusId, d))!).toMatchObject({ online_seconds: 3570, earned_at: null });
+    expect((await post("2026-11-21T10:00:30Z")).res.statusCode).toBe(200);
+    expect((await progress(c.bonusId, d))!).toMatchObject({ online_seconds: 3600, earned_at: new Date("2026-11-21T10:00:30Z") });
+    expect((await post("2026-11-21T10:01:00Z")).res.statusCode).toBe(200);
+    const paid = await entries(c.bonusId);
+    expect(paid).toHaveLength(1);
+    expect(paid[0]).toMatchObject({ driver_id: d, kind: "bonus", trip_id: null, amount_minor: "15000", at: new Date("2026-11-21T10:00:30Z") });
+    await offline(d);
+  }, 30_000);
+
+  it("P4: on a trip with the trip row held: 503 server_busy after the lock limit and the count is rolled back; the fix sent again counts once", async () => {
+    const c = await campaign({ measure: "online_hours", target: 2 });
+    const d = await hoursDriver(c.bonusId, "2026-11-21T11:00:00Z", 600, "2026-11-21T11:10:00Z");
+    const tripId = await insertTrip(database.db, await insertRider(database.db), { status: "in_trip", driverId: d });
+    await database.db.updateTable("drivers").set({ online_status: "on_trip" }).where("driver_id", "=", d).execute();
+    const before = await storedAt(d);
+    // A trip command that is stuck holds the trip row (db/tripLog.ts lockTrip), as in test/e2e/52.
+    const release = await hold("SELECT 1 FROM trips WHERE trip_id = $1 FOR NO KEY UPDATE", [tripId]);
+    try {
+      const { res, waited } = await post("2026-11-21T11:10:50Z");
+      expect(res.statusCode, res.body).toBe(503);
+      expect(res.json()).toMatchObject({ reason: "server_busy", retryable: true });
+      expect(waited).toBeGreaterThanOrEqual(GPS_LOCK_TIMEOUT_MS - 100);
+    } finally {
+      await release();
+    }
+    // The whole transaction went back: the position and the count with it.
+    expect(await storedAt(d)).toBe(before);
+    expect((await progress(c.bonusId, d))!).toMatchObject({ online_seconds: 600, last_inside_at: new Date("2026-11-21T11:10:00Z") });
+    // The driver app sends the fix it still holds 10 s later: counted once (50 s since the last counted fix).
+    expect((await post("2026-11-21T11:11:00Z", "2026-11-21T11:10:50Z")).res.statusCode).toBe(200);
+    expect((await progress(c.bonusId, d))!.online_seconds).toBe(650);
+    // The same fix once more (a phone standing still): nothing added.
+    expect((await post("2026-11-21T11:11:10Z", "2026-11-21T11:10:50Z")).res.statusCode).toBe(200);
+    expect((await progress(c.bonusId, d))!.online_seconds).toBe(650);
+    expect(await entries(c.bonusId)).toHaveLength(0);
+    await database.db.updateTable("trips").set({ driver_id: null }).where("trip_id", "=", tripId).execute();
+    await offline(d);
+  }, 30_000);
 });
