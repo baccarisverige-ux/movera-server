@@ -36,15 +36,12 @@ export function renderSharePage(lang: Lang, page: SharePage): string {
   let body: string;
   if (page.kind === "live") {
     const v = page.view;
-    const queued = v.phase === SHARE.public.queuedPhase;
-    const phase = say(queued ? "queued" : v.phase === "to_pickup" ? "toPickup" : v.phase === "at_pickup" ? "atPickup" : "onTrip");
+    const phase = say(v.phase === SHARE.public.queuedPhase ? "queued" : v.phase === "to_pickup" ? "toPickup" : v.phase === "at_pickup" ? "atPickup" : "onTrip");
     const eta = v.eta ? `<p class="eta">${say("arriving", { min: String(v.eta.minutes) })} · ${say("around", { time: v.eta.arriveAround })}</p>` : "";
     const car = [v.car.color, v.car.make, v.car.model].filter((part) => part !== "").join(" ");
     const position = v.position
       ? `<p><a class="map" rel="noopener noreferrer" href="${e(SHARE.public.positionLink.replace("{lat}", String(v.position.lat)).replace("{lng}", String(v.position.lng)))}">${say("openInMaps")}</a></p>`
-      : queued
-        ? ""
-        : `<p class="small">${say("noPosition")}</p>`;
+      : ""; // hidden by rule (before the rider is in, the last 500 m, a queued trip) or no fresh fix: no position line
     body =
       `<div class="card"><p class="phase">${phase}</p>${eta}</div>` +
       `<div class="card"><dl><dt>${say("car")}</dt><dd>${e(car)}</dd><dt>${say("plate")}</dt><dd class="plate">${e(v.car.plate)}</dd></dl></div>` +
