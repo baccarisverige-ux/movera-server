@@ -13,7 +13,7 @@ import { tapPosition } from "./ride/tapPosition.js";
 /**
  * Waiting at a middle stop (contract v0.7.1 §3.8, contract.json#stopWaits; owner 2026-10-27): no free minutes. The
  * driver app taps "Framme vid stoppet" (arrive) and, when the trip goes on, leave; stop_waiting runs from one to
- * the other and is 100 % the driver's. v0.18.98 (job C9b): the server also marks the next stop arrived and stops the
+ * the other and is 100 % the driver's. v0.18.108 (job C9b): the server also marks the next stop arrived and stops the
  * wait while the driver is away (ride/geofence.ts, ride/stopClock.ts).
  */
 
@@ -25,7 +25,7 @@ const ON_THE_WAY = new Set(["in_trip", "approaching_dropoff"]);
 /**
  * Seconds charged at each extra stop, one entry per stop: arrival to leaving (an open stop until `end`), less the zone's
  * free minutes at each stop kept on the trip (v0.18.8, contract.json#arrivedWaiting.rules.stops; 0 before v0.18.8).
- * v0.18.98 (job C9b, contract.json#stopWaits.charge): less the stop's pausedSeconds, and frozen at away.since while the
+ * v0.18.108 (job C9b, contract.json#stopWaits.charge): less the stop's pausedSeconds, and frozen at away.since while the
  * driver is away (also on a stop left, or a trip completed, while away): time away never costs the rider.
  */
 export function stopWaitSeconds(trip: Pick<TripRow, "stop_visits" | "stops"> & { booking_rules?: unknown }, end: Date): number[] {
@@ -38,12 +38,12 @@ export function stopWaitSeconds(trip: Pick<TripRow, "stop_visits" | "stops"> & {
   });
 }
 
-/** v0.18.98 (contract.json#autoArrive.stops.tap): the first stop tap's server limit (as the pickup tap, ARRIVE_MAX_METERS). */
+/** v0.18.108 (contract.json#autoArrive.stops.tap): the first stop tap's server limit (as the pickup tap, ARRIVE_MAX_METERS). */
 export const STOP_TAP_MAX_METERS = ARRIVE_MAX_METERS;
 const NOT_AT_STOP = { reason: "not_at_stop", message: "You are not at the stop yet." };
 
 /**
- * POST /driver/trips/{tripId}/stops/{i}/arrive | leave. v0.18.98 (job C9b, contract.json#stopWaits.arrive,
+ * POST /driver/trips/{tripId}/stops/{i}/arrive | leave. v0.18.108 (job C9b, contract.json#stopWaits.arrive,
  * #autoArrive.stops.tap / back): `checkPosition` (driver apps on X-Contract-Version ≥ 0.18.108, renumbered from 0.18.98) — the first tap needs a
  * fresh position within 300 m of stops[i], else 409 position_stale / not_at_stop; older apps (supervisor S1): the stored
  * fix, any age, within 300 m when there is one.

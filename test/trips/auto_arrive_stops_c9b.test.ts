@@ -12,7 +12,7 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, fixedRouter, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
 /**
- * Job C9b (contract v0.18.98 §92, contract.json#autoArrive.stops, #stopWaits; owner 2026-11-02 "At the pickup AND at
+ * Job C9b (contract v0.18.108 §93, contract.json#autoArrive.stops, #stopWaits; owner 2026-11-02 "At the pickup AND at
  * stops", Rules decisions/driver-g7.md:84; plan Rules handover/build-plans-2026-11-13/C9b-plan.md): at a middle stop the
  * server marks the NEXT stop arrived after 2 slow confirming fixes within the trip's autoArriveMeters, the stop wait stands
  * still while the driver is farther than leaveMeters and goes on at a new arrival (fixes, or the back tap within

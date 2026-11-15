@@ -9,7 +9,7 @@ import { stopWaitSeconds, type StopVisit } from "../../src/trips/stops.js";
 import { stopsWithVisits } from "../../src/trips/projection.js";
 
 /**
- * Job C9b (contract v0.18.98 §92, contract.json#autoArrive.stops / #stopWaits.charge; owner 2026-11-02 "At the pickup AND
+ * Job C9b (contract v0.18.108 §93, contract.json#autoArrive.stops / #stopWaits.charge; owner 2026-11-02 "At the pickup AND
  * at stops", Rules decisions/driver-g7.md:84): the pure stop clock replays every case of fixtures/auto_arrive.json#stops
  * (SEK and TND, half-up): away, back (fix or tap), leave / complete while away, the charged seconds after the free
  * minutes and the stop_waiting line priced as the fare prices it.

@@ -410,7 +410,7 @@ type LocationFacts = {
   online_since: Date | null;
   has_open_entry: boolean;
   /** v0.18.93 (contract.json#autoArrive): + the trip's kept distances and whether its waiting clock stands still. */
-  /** v0.18.98 (contract.json#autoArrive.stops): + the trip's stops and stop visits (the geofence job at middle stops). */
+  /** v0.18.108 (contract.json#autoArrive.stops): + the trip's stops and stop visits (the geofence job at middle stops). */
   active: (NonNullable<Awaited<ReturnType<typeof activeTripOf>>> & { arrive_m: number | null; leave_m: number | null; away: boolean | null; next_scan_at: string | null; stops: unknown; stop_visits: unknown }) | undefined;
 };
 

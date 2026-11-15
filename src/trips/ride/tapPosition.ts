@@ -6,7 +6,7 @@ import { tripProjection } from "../projection.js";
 import { ARRIVE_MAX_METERS, positionMaxAge, type Place } from "./shared.js";
 
 /**
- * A driver tap's position check: the pickup Arrived (steps.ts) and, v0.18.98 (job C9b, contract.json#autoArrive.stops.tap /
+ * A driver tap's position check: the pickup Arrived (steps.ts) and, v0.18.108 (job C9b, contract.json#autoArrive.stops.tap /
  * back), the stop tap. Deep fix 2026-11-02 (MED stale / fake GPS for arrive): a position counts only while it is at most
  * the zone's DriverAppConfig.waiting.positionMaxAgeSeconds old (default 60): the one sent with the tap when it says when it
  * was measured, else the server's latest fix. Only an old one → 409 position_stale (turn on location); none, or farther

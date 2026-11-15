@@ -86,7 +86,7 @@ describe("complete-preview (contract v0.18.1 §26)", () => {
     await drive(a, tripId, "in_trip");
     const booked = (await a.trip(tripId))["fare"];
     const at = async (verb: "arrive" | "leave") => a.post(`/driver/trips/${tripId}/stops/0/${verb}`, { expectedVersion: (await a.trip(tripId))["version"] });
-    // v0.18.98 (job C9b, contract.json#autoArrive.stops.away): the stop wait stands still while the driver's GPS is more
+    // v0.18.108 (job C9b, contract.json#autoArrive.stops.away): the stop wait stands still while the driver's GPS is more
     // than leaveMeters away, so he waits at the stop (the simulator's heartbeat sends his last position).
     await a.moveTo(PLACES.odenplan);
     expect((await at("arrive")).status).toBe(200);

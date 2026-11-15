@@ -228,7 +228,7 @@ function finishOf(row: TripRow, viewer: Viewer): Record<string, unknown> | null 
 }
 
 /**
- * stops[i] with the arrivedAt / leftAt of the matching stop visit (contract.json#stopWaits.projection); v0.18.98 (job C9b)
+ * stops[i] with the arrivedAt / leftAt of the matching stop visit (contract.json#stopWaits.projection); v0.18.108 (job C9b)
  * also arrivedBy, away, pausedSeconds and pauseCount (absent when the visit has none).
  */
 const VISIT_KEYS = ["arrivedAt", "leftAt", "arrivedBy", "away", "pausedSeconds", "pauseCount"] as const;

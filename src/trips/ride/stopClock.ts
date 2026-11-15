@@ -1,22 +1,22 @@
 /**
- * v0.18.98 (job C9b, contract.json#autoArrive.stops.away / back / money, #stopWaits.charge; owner 2026-11-02 "At the
+ * v0.18.108 (job C9b, contract.json#autoArrive.stops.away / back / money, #stopWaits.charge; owner 2026-11-02 "At the
  * pickup AND at stops", Rules decisions/driver-g7.md:84): the wait at a middle stop stands still while the driver is
  * farther than the trip's leaveMeters and goes on at a new arrival. Pure (no imports but types), beside the pickup's
  * waitingClock.ts, so the fare, the projection and the job read the same numbers.
  */
 
-/** One stop the driver arrived at (trips.stop_visits, jsonb; the new fields are absent on a visit before v0.18.98). */
+/** One stop the driver arrived at (trips.stop_visits, jsonb; the new fields are absent on a visit before v0.18.108). */
 export type StopVisit = {
   stopIndex: number;
   arrivedAt: string;
   leftAt?: string;
-  /** v0.18.98: how the stop was arrived ("auto": the server's geofence job; "tap": the driver). */
+  /** v0.18.108: how the stop was arrived ("auto": the server's geofence job; "tap": the driver). */
   arrivedBy?: "auto" | "tap";
-  /** v0.18.98: the stop wait stands still from `since` (kept on a stop left while away, as a record). */
+  /** v0.18.108: the stop wait stands still from `since` (kept on a stop left while away, as a record). */
   away?: { since: string };
-  /** v0.18.98: seconds of finished away spells at this stop. */
+  /** v0.18.108: seconds of finished away spells at this stop. */
   pausedSeconds?: number;
-  /** v0.18.98: finished away spells at this stop. */
+  /** v0.18.108: finished away spells at this stop. */
   pauseCount?: number;
 };
 
@@ -65,7 +65,7 @@ export function arriveAtStop(visits: StopVisit[], stopIndex: number, now: Date, 
 }
 
 /**
- * v0.18.98 round 2 (supervisor M1, contract.json#autoArrive.stops.auto): one fix counts toward the auto arrival at the
+ * v0.18.108 round 2 (supervisor M1, contract.json#autoArrive.stops.auto): one fix counts toward the auto arrival at the
  * next stop when it is within arriveMeters of it and, while an earlier stop is open and not away, farther than
  * arriveMeters from that open stop (two stops close together: he is still waiting at the open one).
  */

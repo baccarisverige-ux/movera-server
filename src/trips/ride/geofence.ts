@@ -19,7 +19,7 @@ import { touchTrip } from "../commands.js";
  * waiting.autoArriveMeters of the pickup (the Arrived button stays), and the waiting clock stops while he is farther than
  * waiting.leaveMeters before the rider is on board; it goes on at a new arrival (back within autoArriveMeters, or his tap
  * within leaveMeters). Round 2 (supervisor M1): each change needs 2 counting fixes in a row (fixConfirm.ts).
- * v0.18.98 (job C9b, contract.json#autoArrive.stops; owner "At the pickup AND at stops"): the same job, the same kept
+ * v0.18.108 (job C9b, contract.json#autoArrive.stops; owner "At the pickup AND at stops"): the same job, the same kept
  * distances and the same 2-fix confirm at the middle stops while in_trip / approaching_dropoff: the NEXT stop is arrived
  * (stops[i].arrivedBy auto), the open stop's wait stands still while the driver is away and goes on when he is back
  * (ride/stopClock.ts).
@@ -111,7 +111,7 @@ export async function maybePickupGeofence(trx: Trx, active: GeofenceFacts, fix: 
     const meters = metersTo(active.pickup as Place);
     may = active.status === "driver_to_pickup" ? meters <= arrive : active.away ? meters <= arrive : meters > leave;
   } else {
-    // v0.18.98 (contract.json#autoArrive.stops.auto): booked only while the trip has an unvisited or open stop.
+    // v0.18.108 (contract.json#autoArrive.stops.auto): booked only while the trip has an unvisited or open stop.
     const stops = Array.isArray(active.stops) ? (active.stops as Place[]) : [];
     const visits = visitsOf({ stop_visits: active.stop_visits });
     const next = nextStopIndex(stops.length, visits);
@@ -122,7 +122,7 @@ export async function maybePickupGeofence(trx: Trx, active: GeofenceFacts, fix: 
   if (may) await scheduleTimer(trx, { kind: PICKUP_GEOFENCE, refId: active.trip_id, dueAt: now, payload: {} });
 }
 
-/** v0.18.98: the open stop's away / back from a fix, with no version change; a trip_projection event goes out (as writeWaiting). */
+/** v0.18.108: the open stop's away / back from a fix, with no version change; a trip_projection event goes out (as writeWaiting). */
 async function writeStopVisits(trx: Trx, trip: TripRow, visits: StopVisit[], now: Date): Promise<void> {
   await trx.updateTable("trips").set({ stop_visits: JSON.stringify(visits) }).where("trip_id", "=", trip.trip_id).execute();
   const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
@@ -171,7 +171,7 @@ export function pickupGeofenceHandler(autoArrive: AutoArrive): TimerHandler {
     const within = (f: CountingFix) => f.meters <= fence.autoArriveMeters;
     const beyond = (f: CountingFix) => f.meters > fence.leaveMeters;
     if (ON_THE_WAY.has(trip.status)) {
-      // v0.18.98 (contract.json#autoArrive.stops): the next stop first (in order), then the open stop's away / back.
+      // v0.18.108 (contract.json#autoArrive.stops): the next stop first (in order), then the open stop's away / back.
       const stops = (trip.stops as Place[] | null) ?? [];
       const visits = visitsOf(trip);
       const next = nextStopIndex(stops.length, visits);

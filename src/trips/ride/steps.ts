@@ -95,7 +95,7 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
 /**
  * The tap's position check (POST /trips/{tripId}/arrive): the fix sent with the step or the server's latest, fresh, within
  * ARRIVE_MAX_METERS of the pickup (the back tap while away: `maxMeters` = the trip's leaveMeters); else 409
- * position_stale / not_at_pickup (tapPosition.ts, shared with the stop tap since v0.18.98).
+ * position_stale / not_at_pickup (tapPosition.ts, shared with the stop tap since v0.18.108).
  */
 function pickupTapPosition(trx: Trx, trip: TripRow, driverId: string, now: Date, location: Place | undefined, options: { legacyPosition?: boolean }, maxMeters = ARRIVE_MAX_METERS): Promise<Place> {
   return tapPosition(trx, trip, driverId, now, location, options, { place: trip.pickup as Place, maxMeters, reason: "not_at_pickup", message: "You are not at the pickup yet." });
