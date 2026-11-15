@@ -198,12 +198,14 @@ describe("v0.18.100 BQ-V37 (owner W1 Q66 = Q-B6): the ride-check scan runs at mo
   const scanTimer = async (tripId: string) =>
     database.db.selectFrom("timers").select(["due_at"]).where("kind", "=", RIDE_CHECK_SCAN).where("ref_id", "=", tripId).executeTakeFirst();
 
-  it("the setting: default 30 s, range 10-120, outside it reads as 30 (per zone, in the driver document)", () => {
+  it("the setting: default 30 s, range 10-60 (owner 2026-11-15: at most 60 s), outside it reads as 30 (per zone, in the driver document)", () => {
     expect(rideCheckSettingsOf(undefined).scanEverySeconds).toBe(30);
     expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 60 } }).scanEverySeconds).toBe(60);
     expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 10 } }).scanEverySeconds).toBe(10);
-    expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 120 } }).scanEverySeconds).toBe(120);
-    for (const bad of [9, 121, 0, -5, "30", null]) expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: bad } }).scanEverySeconds, String(bad)).toBe(30);
+    // owner 2026-11-15: 60 s is the highest allowed value; 61 and the old top 120 are refused (read as the default 30).
+    expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 61 } }).scanEverySeconds).toBe(30);
+    expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: 120 } }).scanEverySeconds).toBe(30);
+    for (const bad of [9, 61, 121, 0, -5, "30", null]) expect(rideCheckSettingsOf({ rideCheck: { scanEverySeconds: bad } }).scanEverySeconds, String(bad)).toBe(30);
   });
 
   it("Stockholm default: a GPS batch 5 s after a scan books the next scan 30 s after it, not now; it then finds off_route", async () => {
