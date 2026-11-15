@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Principal } from "../../src/auth/guard.js";
 import { driverPayouts, listPayouts, makePayouts, markPayoutPaid } from "../../src/admin/payouts.js";
-import { adminDriverBonus } from "../../src/admin/trips.js";
+import { adminDriverBonus, adminReassign } from "../../src/admin/trips.js";
 import type { TripRow } from "../../src/db/tripLog.js";
 import { commissionOf } from "../../src/rules/commission.js";
 import { tripProjection } from "../../src/trips/projection.js";
@@ -148,5 +148,53 @@ describe.each(CASES)("BQ-M28 ($name): an after-paid-end bonus lowers Movera gets
     const p2 = await pay(d, WEEK2);
     expect((await summary(d, p2.payout_id)).admin.moveraGets).toEqual(m(-c.bonus, c.currency));
     expect(await summary(d, p1.payout_id)).toEqual({ mine: base, admin: base });
+  });
+});
+
+/**
+ * MF2 (M28 supervisor, audits/impact/m28-late-bonus-supervisor.md §3.3 / §4): a lost-driver payment to the SAME driver who
+ * later ends the trip (a booked ride he holds is sent back to the list, trips.ts:180-182 "he is not barred from it", and he
+ * takes it again) is NOT one of the trip's own bonuses: it is written before the end (at < ended_at), lives in
+ * lost_driver_paid_minor, not driver_bonus_minor. With the trip entry and the payment in different payouts, both views stay
+ * as before M28: admin takes it off once through the trip's moneySplit.movera, the driver view never does.
+ */
+const WEEK0 = { from: new Date("2026-10-26T00:00:00Z"), to: new Date("2026-11-02T00:00:00Z") };
+const LOST_AT = new Date("2026-11-01T10:00:00Z");
+describe.each(CASES)("BQ-M28 MF2 ($name): a lost-driver payment to the driver who later ends the trip is not his own bonus", (c) => {
+  const lines = "lines" in c ? [...c.lines] : undefined;
+  const lost = c.bonus * 2;
+
+  it("reassign with driverBonus (booked ride back to the list), the same driver completes it; trip and payment in different payouts", async () => {
+    const d = await insertDriver(database.db);
+    const id = await insertTrip(database.db, riderId, { status: "accepted", driverId: d, kind: "scheduled" });
+    await database.db.updateTable("trips").set({ currency: c.currency, scheduled_at: new Date("2026-11-04T09:00:00Z") }).where("trip_id", "=", id).execute();
+    // The admin sends the held booked ride back to the list and pays the driver for it (the real code path).
+    const held = await row(id);
+    await database.db.transaction().execute((trx) => adminReassign(trx, SUPER, id, { expectedVersion: held.version, reasonCode: "admin_driver_request", note: "Back to the list", driverBonus: m(lost, c.currency) }, LOST_AT));
+    const back = await row(id);
+    expect(back.driver_id).toBeNull();
+    expect(Number(back.lost_driver_paid_minor)).toBe(lost);
+    const paidOut = await database.db.selectFrom("earnings_entries").select(["driver_id", "kind", "amount_minor", "at"]).where("trip_id", "=", id).execute();
+    expect(paidOut.map((e) => [e.driver_id, e.kind, Number(e.amount_minor)])).toEqual([[d, "bonus", lost]]);
+
+    // He takes it again and completes it (as finish.ts leaves the row), in the next week.
+    const fareLines = lines ?? [{ code: "base", amount: m(c.fare, c.currency) }];
+    await database.db.updateTable("trips").set({
+      driver_id: d, status: "completed", fare_minor: c.fare, booked_fare_minor: c.fare, fare_lines: JSON.stringify(fareLines), driver_earnings_minor: c.earnings, pickup_pay_minor: 0, driver_bonus_minor: 0,
+      commission_minor: commissionOf(c.fare, fareLines, c.earnings, 0, 0), driver_adjustments_minor: 0, payment_method: "cash", ended_at: IN, ended_by_command: "complete", payment_status: "captured", cash_collected_minor: c.fare,
+    }).where("trip_id", "=", id).execute();
+    await entry(id, d, "trip", c.earnings, c.currency, c.fare);
+
+    const p0 = await pay(d, WEEK0);
+    const p1 = await pay(d, WEEK1);
+    const zero = await summary(d, p0.payout_id);
+    const one = await summary(d, p1.payout_id);
+    // The payment's payout: Driver gets it; Movera gets is not moved by it (it is taken off through the trip, admin only).
+    expect(zero.admin).toEqual({ driverGets: m(lost, c.currency), moveraGets: m(0, c.currency) });
+    expect(zero.mine).toEqual(zero.admin);
+    // The trip's payout: admin = moneySplit.movera (the lost payment off once), driver = what Movera keeps from HIS trip.
+    expect(one.admin).toEqual({ driverGets: m(c.earnings, c.currency), moveraGets: m(c.movera - lost, c.currency) });
+    expect(one.mine).toEqual({ driverGets: m(c.earnings, c.currency), moveraGets: m(c.movera, c.currency) });
+    expect(one.admin.moveraGets.amountMinor).toBe(await keepsNow(id));
   });
 });
