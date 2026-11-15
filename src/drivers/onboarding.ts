@@ -164,6 +164,15 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
   if (row.account_type !== null && row.account_type !== d.accountType) {
     throw badRequest("The account type cannot change; ask support.", "account_type_locked");
   }
+  // BQ-FLEETCUR (one country per fleet): a member cannot move his country away from his fleet's, and an owner cannot
+  // move his fleet to another country while it has other drivers.
+  if (row.fleet_id !== null) {
+    const fleet = await trx.selectFrom("fleets").select(["country", "owner_driver_id"]).where("fleet_id", "=", row.fleet_id).executeTakeFirstOrThrow();
+    const others = fleet.owner_driver_id === driverId ? await trx.selectFrom("drivers").select("driver_id").where("fleet_id", "=", row.fleet_id).where("driver_id", "<>", driverId).executeTakeFirst() : { driver_id: driverId };
+    if (fleet.country !== d.country && others !== undefined) {
+      throw new ApiError("conflict", "A fleet works in one country: the country cannot change while in a fleet.", { reason: "fleet_other_country", projection: await driverView(trx, row, "driver", now) });
+    }
+  }
 
   // G30 v0.18.76 (contract.json#emailVerified.writePaths.driverSignUp, owner Q3): never blocked; saved trimmed and
   // lower-cased, Not verified unless it is the address he already verified.
@@ -315,7 +324,11 @@ export async function getDriverFleet(ex: Executor, driverId: string, now: Date) 
   return fleetFullView(ex, fleet, fleet.owner_driver_id === driverId ? "owner" : "member", now, driverId);
 }
 
-/** GET /driver/fleet/earnings?from&to (the owner): every driver's net earnings in the period; default this week. */
+/**
+ * GET /driver/fleet/earnings?from&to (the owner): every driver's net earnings in the period; default this week.
+ * BQ-FLEETCUR: a fleet earns in ONE currency (its country's), so only entries in that currency are counted (trips
+ * too); joining checks the country (invitations.ts mustBeFleetCountry), this is the defense in depth.
+ */
 export async function fleetEarnings(ex: Executor, ownerId: string, input: { from?: string | undefined; to?: string | undefined }, now: Date) {
   const fleet = await ownedFleet(ex, ownerId);
   const tz = COUNTRY_TIME_ZONE[fleet.country] ?? "Europe/Stockholm";
@@ -328,7 +341,7 @@ export async function fleetEarnings(ex: Executor, ownerId: string, input: { from
   const sums = ids.length
     ? await sql<{ driver_id: string; trips: string; net: string }>`
         SELECT driver_id, count(*) FILTER (WHERE kind = 'trip') AS trips, coalesce(sum(amount_minor), 0) AS net
-          FROM earnings_entries WHERE driver_id = ANY(${ids}) AND at >= ${from} AND at < ${to} GROUP BY driver_id`.execute(ex)
+          FROM earnings_entries WHERE driver_id = ANY(${ids}) AND currency = ${currency} AND at >= ${from} AND at < ${to} GROUP BY driver_id`.execute(ex)
     : { rows: [] as { driver_id: string; trips: string; net: string }[] };
   const byDriver = new Map(sums.rows.map((r) => [r.driver_id, r]));
   let total = 0;
