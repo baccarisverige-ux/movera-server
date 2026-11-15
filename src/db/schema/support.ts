@@ -28,6 +28,8 @@ export interface SupportTicketsTable {
   country: ColumnType<string | null, string | null | undefined, string | null>;
   feedback_text: ColumnType<string | null, string | null | undefined, string | null>;
   feedback_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** v0.18.112 BQ-A04 (migration 0112): open + the first rider / driver message with no support answer after it; else NULL. */
+  waiting_since: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
 /** v0.18.15 (migration 0049): Admin › Support › Settings per country. */
