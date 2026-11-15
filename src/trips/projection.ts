@@ -197,7 +197,8 @@ function finishOf(row: TripRow, viewer: Viewer): Record<string, unknown> | null 
   const fare = Number(row.fare_minor);
   const end = endInfoOf(row);
   const rating = viewer === "driver" ? row.driver_rating_status : row.rating_status;
-  const cashToCollect = Math.max(0, fare - Number(row.wallet_applied_minor ?? 0));
+  // v0.18.99 BQ-M25b (contract.json#priceDisplay.nonCashZero): nothing is collected in the car on a trip not paid there.
+  const cashToCollect = row.payment_method === "cash" ? Math.max(0, fare - Number(row.wallet_applied_minor ?? 0)) : 0;
   const driverTotal = driverTotalOf(row);
   // v0.18.89 §90 (priceDisplay.owedToMovera, "the cash he collected for the trip"; supervisor must-fix 2026-11-14): the cash
   // he holds = the cash he counted (cash_collected_minor, else fare − walletApplied) on a pay-in-car trip, else 0, plus a
@@ -419,7 +420,8 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   const wallet = Number(row.wallet_applied_minor ?? 0);
   if (wallet > 0) {
     projection["walletApplied"] = money(wallet, currency);
-    projection["cashToCollect"] = money(Math.max(0, Number(row.fare_minor) - wallet), currency);
+    // v0.18.99 BQ-M25b (contract.json#priceDisplay.nonCashZero): 0 on a trip not paid in the car.
+    projection["cashToCollect"] = money(row.payment_method === "cash" ? Math.max(0, Number(row.fare_minor) - wallet) : 0, currency);
   }
   // v0.18.89 §90 (contract.json#priceDisplay.tripCashToCollect): the driver and the admin get it on every pay-in-car trip
   // from accept, also when the wallet paid nothing (fare − walletApplied); the rider's view is unchanged.
