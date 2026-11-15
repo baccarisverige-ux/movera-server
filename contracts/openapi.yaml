@@ -18915,8 +18915,9 @@ paths:
         every time the link is read, so no timer is needed; (b) when the rider stops sharing; (c) when the zone''s switch
         is off, read on every view; (d) maxHours hours after the link was made. An ended link never shows trip data again:
         410 with { state: ''ended'', reason: ''share_ended'' }. (c) is kept: a link seen while the switch is off stays ended
-        when the switch is turned on again. Not an end: while the trip has no driver again (the driver cancelled and a new
-        search runs) the link answers the same 410, and works again, with the new car, once a driver is assigned.'
+        when the switch is turned on again. Not an end: a trip that has no driver again (public.searching). (c) is seen when
+        the link is read: a switch turned off and on again with no read in between leaves the link working, and a server copy
+        may serve its cached switch for some seconds after a publish.'
       tags:
       - Rider · Safety
       x-actor:
@@ -19031,16 +19032,18 @@ paths:
       operationId: publicTripShare
       summary: A shared trip (no sign-in)
       description: 'v0.18.116 (contract.json#shareTrip): GET /api/v1/share/{token} (no sign-in, no standard headers needed)
-        → 200 PublicTripShare; an ended link → 410 PublicTripShareEnded { state: ''ended'', reason: ''share_ended'' }; a bad
-        or unknown token → 404 not_found, reason share_not_found, the same body for every miss so tokens cannot be probed.
-        Both public routes answer with Cache-Control: no-store, Referrer-Policy: no-referrer, X-Robots-Tag: noindex, nofollow
-        and X-Content-Type-Options: nosniff. The HTML page also carries Content-Security-Policy: default-src ''none''; style-src
-        ''unsafe-inline''; img-src ''self''; base-uri ''none''; form-action ''none''; frame-ancestors ''none'', and <meta
-        name="robots" content="noindex, nofollow">. The public reads (both routes together) have their own budget, outside
-        the general write limit (rateLimit): perAddressPerMinute per client address and perTokenPerMinute per link, a fixed
-        60 s window in each server copy''s memory, like telemetry.limits. Over it: 429 rate_limited, reason share_too_many,
-        Retry-After. Under load the public reads are shed first (503 unavailable, Retry-After), before any signed-in route;
-        they are never in the safety set: a contact''s page may fail under load, SOS must not.'
+        → 200 PublicTripShare, or 200 PublicTripShareSearching while the trip has no driver (public.searching); an ended link
+        → 410 PublicTripShareEnded { state: ''ended'', reason: ''share_ended'' }; a bad or unknown token → 404 not_found,
+        reason share_not_found, the same body for every miss so tokens cannot be probed. Both public routes answer with Cache-Control:
+        no-store, Referrer-Policy: no-referrer, X-Robots-Tag: noindex, nofollow and X-Content-Type-Options: nosniff. The HTML
+        page also carries Content-Security-Policy: default-src ''none''; style-src ''unsafe-inline''; img-src ''self''; base-uri
+        ''none''; form-action ''none''; frame-ancestors ''none'', and <meta name="robots" content="noindex, nofollow">. The
+        same four headers are on every answer of the two share paths, also the load-shed 503 and the 404 of a path that matches
+        no route (an over-long token). The public reads (both routes together) have their own budget, outside the general
+        write limit (rateLimit): perAddressPerMinute per client address and perTokenPerMinute per link, a fixed 60 s window
+        in each server copy''s memory, like telemetry.limits. Over it: 429 rate_limited, reason share_too_many, Retry-After.
+        Under load the public reads are shed first (503 unavailable, Retry-After), before any signed-in route; they are never
+        in the safety set: a contact''s page may fail under load, SOS must not.'
       tags:
       - Public · Share trip
       x-actor: []
@@ -19049,9 +19052,9 @@ paths:
         in: path
         required: true
         description: '128 bits as base64url, 22 characters, that cannot be guessed: the server makes them from the new link''s
-          id with a secret only the server holds (HMAC-SHA256, cut to 128 bits). The server stores only the SHA-256 of the
-          token, never the token and never the URL: a copy of the database cannot open a link. A token is never written to
-          a log, an audit row, an error message or the idempotency store.'
+          id with a key of its own that the server derives from its secret with a fixed label (HMAC-SHA256, cut to 128 bits).
+          The server stores only the SHA-256 of the token, never the token and never the URL: a copy of the database cannot
+          open a link. A token is never written to a log, an audit row, an error message or the idempotency store.'
         schema:
           type: string
           pattern: ^[A-Za-z0-9_-]{22}$
@@ -19078,7 +19081,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PublicTripShare'
+                oneOf:
+                - $ref: '#/components/schemas/PublicTripShare'
+                - $ref: '#/components/schemas/PublicTripShareSearching'
         '404':
           description: 'not_found, reason share_not_found: the same answer for every miss.'
           headers:
@@ -19117,10 +19122,12 @@ paths:
         public routes answer with Cache-Control: no-store, Referrer-Policy: no-referrer, X-Robots-Tag: noindex, nofollow and
         X-Content-Type-Options: nosniff. The HTML page also carries Content-Security-Policy: default-src ''none''; style-src
         ''unsafe-inline''; img-src ''self''; base-uri ''none''; form-action ''none''; frame-ancestors ''none'', and <meta
-        name="robots" content="noindex, nofollow">. Messaging apps fetch a link to build a preview. The page has no Open Graph
-        / preview tags and its <title> is only ''Movera'' + texts.title, so a preview never carries trip data. The page''s
-        language: the viewer''s Accept-Language (sv / fr / en, first match), else the trip zone''s country language (configDefaults.countries.<country>.defaultLanguage:
-        SE sv, FR fr, TN fr), else en.'
+        name="robots" content="noindex, nofollow">. The same four headers are on every answer of the two share paths, also
+        the load-shed 503 and the 404 of a path that matches no route (an over-long token). Messaging apps fetch a link to
+        build a preview. The page has no Open Graph / preview tags and its <title> is only ''Movera'' + texts.title, so a
+        preview never carries trip data. The page''s language: the viewer''s Accept-Language (sv / fr / en, first match),
+        else the trip zone''s country language (configDefaults.countries.<country>.defaultLanguage: SE sv, FR fr, TN fr),
+        else en.'
       tags:
       - Public · Share trip
       x-actor: []
@@ -19129,9 +19136,9 @@ paths:
         in: path
         required: true
         description: '128 bits as base64url, 22 characters, that cannot be guessed: the server makes them from the new link''s
-          id with a secret only the server holds (HMAC-SHA256, cut to 128 bits). The server stores only the SHA-256 of the
-          token, never the token and never the URL: a copy of the database cannot open a link. A token is never written to
-          a log, an audit row, an error message or the idempotency store.'
+          id with a key of its own that the server derives from its secret with a fixed label (HMAC-SHA256, cut to 128 bits).
+          The server stores only the SHA-256 of the token, never the token and never the URL: a copy of the database cannot
+          open a link. A token is never written to a log, an audit row, an error message or the idempotency store.'
         schema:
           type: string
           pattern: ^[A-Za-z0-9_-]{22}$
@@ -38314,9 +38321,10 @@ components:
           format: uri
           description: '<share base>/s/<token>: the server''s own public origin (server env SHARE_LINK_BASE, not a secret,
             so the host can change with no app release). 128 bits as base64url, 22 characters, that cannot be guessed: the
-            server makes them from the new link''s id with a secret only the server holds (HMAC-SHA256, cut to 128 bits).
-            The server stores only the SHA-256 of the token, never the token and never the URL: a copy of the database cannot
-            open a link. A token is never written to a log, an audit row, an error message or the idempotency store.'
+            server makes them from the new link''s id with a key of its own that the server derives from its secret with a
+            fixed label (HMAC-SHA256, cut to 128 bits). The server stores only the SHA-256 of the token, never the token and
+            never the URL: a copy of the database cannot open a link. A token is never written to a log, an audit row, an
+            error message or the idempotency store.'
       additionalProperties: false
     TripShareList:
       type: object
@@ -38334,13 +38342,13 @@ components:
       additionalProperties: false
     PublicTripShare:
       type: object
-      description: 'v0.18.116 (contract.json#shareTrip): PublicTripShare { state: ''live'', phase, car: { make, model, color,
-        plate }, eta: { minutes, target: pickup | dropoff, arriveAround } | null, position: { lat, lng, at } | null, updatedAt,
-        refreshSeconds }. A FIXED ALLOW-LIST: the answer is built field by field from this list and never from TripProjection;
-        a field not listed here is never sent. Never: any phone number (rider, driver, contacts); any name (rider, driver
-        first name or surname, contacts); the pickup, stop and drop-off addresses and coordinates; the destination, its city
-        or area; saved places; fare, price, payment, tip; rating; driver photo; any id other than the token in the address
-        (no tripId, riderId, driverId, shareId, zoneId).'
+      description: 'v0.18.116 (contract.json#shareTrip): PublicTripShare { state: ''live'', phase (phases, or queuedPhase),
+        car: { make, model, color, plate }, eta: { minutes, target: pickup | dropoff, arriveAround } | null, position: { lat,
+        lng, at } | null, updatedAt, refreshSeconds }. A FIXED ALLOW-LIST: the answer is built field by field from this list
+        and never from TripProjection; a field not listed here is never sent. Never: any phone number (rider, driver, contacts);
+        any name (rider, driver first name or surname, contacts); the pickup, stop and drop-off addresses and coordinates;
+        the destination, its city or area; saved places; fare, price, payment, tip; rating; driver photo; any id other than
+        the token in the address (no tripId, riderId, driverId, shareId, zoneId).'
       required:
       - state
       - phase
@@ -38360,6 +38368,7 @@ components:
           - to_pickup
           - at_pickup
           - on_trip
+          - queued
           x-statuses:
             to_pickup:
             - accepted
@@ -38423,7 +38432,10 @@ components:
           - type: object
             description: 'position is the car''s latest GPS fix the server has (from POST /driver/location), lat / lng with
               5 decimals, at = when it was measured; null when there is none or it is older than positionMaxAgeSeconds. The
-              page shows it only as the link positionLink (''Open in Maps''): no map tiles, no map key.'
+              page shows it only as the link positionLink (''Open in Maps''): no map tiles, no map key. Queued trip (supervisor
+              MF-1): while the trip waits behind the driver''s current trip (accepted with the server''s next_after_trip_id
+              set) the car still carries ANOTHER rider, so position is always null, eta is null and phase is queuedPhase,
+              never to_pickup; the car''s spot is shown again only when that other trip has ended.'
             required:
             - lat
             - lng
@@ -38465,8 +38477,9 @@ components:
         every time the link is read, so no timer is needed; (b) when the rider stops sharing; (c) when the zone''s switch
         is off, read on every view; (d) maxHours hours after the link was made. An ended link never shows trip data again:
         410 with { state: ''ended'', reason: ''share_ended'' }. (c) is kept: a link seen while the switch is off stays ended
-        when the switch is turned on again. Not an end: while the trip has no driver again (the driver cancelled and a new
-        search runs) the link answers the same 410, and works again, with the new car, once a driver is assigned.'
+        when the switch is turned on again. Not an end: a trip that has no driver again (public.searching). (c) is seen when
+        the link is read: a switch turned off and on again with no read in between leaves the link working, and a server copy
+        may serve its cached switch for some seconds after a publish.'
       required:
       - state
       - reason
@@ -38479,4 +38492,26 @@ components:
           type: string
           enum:
           - share_ended
+      additionalProperties: false
+    PublicTripShareSearching:
+      type: object
+      description: 'v0.18.116 (contract.json#shareTrip): While the trip has no driver (the driver cancelled and a new search
+        runs; also a held booked ride whose driver the rider is not shown yet) the link is NOT ended: both public routes answer
+        200 with PublicTripShareSearching { state: ''searching'', updatedAt, refreshSeconds } and the page says texts.searching
+        and keeps reloading. No car, plate, time or position is sent. When a driver is assigned the link shows the new car.'
+      required:
+      - state
+      - updatedAt
+      - refreshSeconds
+      properties:
+        state:
+          type: string
+          enum:
+          - searching
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+        refreshSeconds:
+          type: integer
+          enum:
+          - 20
       additionalProperties: false

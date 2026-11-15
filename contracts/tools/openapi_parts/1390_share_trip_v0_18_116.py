@@ -36,7 +36,7 @@ _POS = obj(OrderedDict([("lat", n(minimum=-90, maximum=90)), ("lng", n(minimum=-
            _PUB["position"], _PUB["positionRule"], addl=False)
 S["PublicTripShare"] = obj(OrderedDict([
     ("state", s(enum=["live"])),
-    ("phase", s(enum=list(_PUB["phases"].keys()), **{"x-statuses": _PUB["phases"]})),
+    ("phase", s(enum=list(_PUB["phases"].keys()) + [_PUB["queuedPhase"]], **{"x-statuses": _PUB["phases"]})),
     ("car", _CAR),
     ("eta", {"oneOf": [_ETA, {"type": "null"}]}),
     ("position", {"oneOf": [_POS, {"type": "null"}]}),
@@ -46,6 +46,8 @@ S["PublicTripShare"] = obj(OrderedDict([
 assert list(S["PublicTripShare"]["properties"].keys()) == _PUB["fields"], "PublicTripShare = shareTrip.public.fields"
 S["PublicTripShareEnded"] = obj(OrderedDict([("state", s(enum=["ended"])), ("reason", s(enum=["share_ended"]))]), ["state", "reason"],
                                 _V116 + _ST["ends"], addl=False)
+S["PublicTripShareSearching"] = obj(OrderedDict([("state", s(enum=["searching"])), ("updatedAt", ref("Timestamp")), ("refreshSeconds", i(enum=[_PUB["refreshSeconds"]]))]),
+                                    ["state", "updatedAt", "refreshSeconds"], _V116 + _PUB["searching"], addl=False)
 _TOKEN = [{"name": "token", "in": "path", "required": True, "description": _ST["link"]["token"],
            "schema": s(pattern=_ST["link"]["tokenPattern"])}]
 _HDRS = {k: {"schema": {"type": "string"}} for k in ("Cache-Control", "Referrer-Policy", "X-Robots-Tag", "X-Content-Type-Options")}
@@ -63,6 +65,7 @@ def _public(o, ended, missing):
 _public(op("get", "/share/{token}", "publicTripShare", "A shared trip (no sign-in)", [], "Public · Share trip", params=_TOKEN, ok=(200, "PublicTripShare"),
            desc=_V116 + _ST["routes"]["publicJson"] + " " + _PUB["headers"] + " " + _ST["limits"]["note"]),
         err("The link has ended (share_ended): no trip data.", "PublicTripShareEnded"), err("not_found, reason share_not_found: the same answer for every miss."))
+PATHS["/share/{token}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"] = {"oneOf": [ref("PublicTripShare"), ref("PublicTripShareSearching")]}
 _html = {"text/html": {"schema": {"type": "string", "description": "The share page. No script, no preview tags with trip data."}}}
 _o = _public(op("get", "/s/{token}", "publicTripSharePage", "The shared trip page (HTML, no sign-in)", [], "Public · Share trip", params=_TOKEN,
                 content=_html, desc=_V116 + _ST["routes"]["publicPage"] + " " + _PUB["headers"] + " " + _PUB["preview"] + " " + _ST["language"]),

@@ -6,7 +6,7 @@ import { zoneRoutes } from "./zones/routes.js";
 import { airportQueueRoutes } from "./airportQueue/routes.js";
 import { blockedPairRoutes } from "./blockedPairs/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
+import Fastify, { type FastifyReply, type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
 import { isDatabaseBusy, type Db } from "./db/db.js";
 import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
@@ -48,6 +48,7 @@ import { dispatchRoutes } from "./dispatch/routes.js";
 import { reservationRoutes } from "./reservations/routes.js";
 import { dispatchToolRoutes } from "./dispatch/toolRoutes.js";
 import { shareRoutes, SHARE_LIMITS } from "./safety/shareRoutes.js";
+import { isSharePath, setShareHeaders } from "./http/shed.js";
 import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
@@ -123,6 +124,17 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     },
     requestIdHeader: false,
     bodyLimit: 1024 * 1024,
+    // v0.18.116 §94 (supervisor SF-4): Fastify answers a path value over its length limit (and a badly encoded path)
+    // itself, before any hook, echoing the path. On the two share paths that answer is the same 404 as every other
+    // miss, never cached or indexed, and without the path; every other path keeps Fastify's own answer.
+    frameworkErrors: (error, request, typedReply) => {
+      const reply = typedReply as unknown as FastifyReply;
+      if (isSharePath(request.raw.url ?? "")) {
+        setShareHeaders(reply);
+        return reply.status(404).send(notFound("Link not found.", "share_not_found").body(request.id));
+      }
+      return reply.status(error.statusCode ?? 400).send({ error: "Bad Request", code: error.code, message: error.message, statusCode: error.statusCode ?? 400 });
+    },
     // Trust exactly TRUST_PROXY_HOPS proxies: the address is the one the nearest trusted proxy saw.
     trustProxy: env.TRUST_PROXY_HOPS > 0 ? (_address: string, hop: number) => hop < env.TRUST_PROXY_HOPS : false,
   });
@@ -224,6 +236,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const error = request.url.startsWith(API_PREFIX)
       ? notFound("This operation is not enabled on this server.", "operation_not_enabled")
       : notFound();
+    // v0.18.116 §94 (supervisor SF-4): a share path that matches no route (an over-long token) is not cached or indexed either.
+    if (isSharePath(request.url)) setShareHeaders(reply);
     return reply.status(404).send(error.body(request.id));
   });
 

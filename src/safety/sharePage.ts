@@ -8,7 +8,7 @@ import { clockTime, SHARE, type PublicShare } from "./tripShare.js";
  * preview never carries trip data. Every value is escaped: the plate and the car model are typed by drivers.
  */
 
-export type SharePage = { kind: "live"; view: PublicShare; timeZone: string } | { kind: "ended" } | { kind: "not_found" } | { kind: "too_many" };
+export type SharePage = { kind: "live"; view: PublicShare; timeZone: string } | { kind: "searching"; refreshSeconds: number } | { kind: "ended" } | { kind: "not_found" } | { kind: "too_many" };
 
 /** contract.json#shareTrip.language: the viewer's Accept-Language (first of sv / fr / en), else the zone's country, else en. */
 export function pageLanguage(acceptLanguage: string | undefined, country: string | null): Lang {
@@ -36,12 +36,15 @@ export function renderSharePage(lang: Lang, page: SharePage): string {
   let body: string;
   if (page.kind === "live") {
     const v = page.view;
-    const phase = say(v.phase === "to_pickup" ? "toPickup" : v.phase === "at_pickup" ? "atPickup" : "onTrip");
+    const queued = v.phase === SHARE.public.queuedPhase;
+    const phase = say(queued ? "queued" : v.phase === "to_pickup" ? "toPickup" : v.phase === "at_pickup" ? "atPickup" : "onTrip");
     const eta = v.eta ? `<p class="eta">${say("arriving", { min: String(v.eta.minutes) })} · ${say("around", { time: v.eta.arriveAround })}</p>` : "";
     const car = [v.car.color, v.car.make, v.car.model].filter((part) => part !== "").join(" ");
     const position = v.position
       ? `<p><a class="map" rel="noopener noreferrer" href="${e(SHARE.public.positionLink.replace("{lat}", String(v.position.lat)).replace("{lng}", String(v.position.lng)))}">${say("openInMaps")}</a></p>`
-      : `<p class="small">${say("noPosition")}</p>`;
+      : queued
+        ? ""
+        : `<p class="small">${say("noPosition")}</p>`;
     body =
       `<div class="card"><p class="phase">${phase}</p>${eta}</div>` +
       `<div class="card"><dl><dt>${say("car")}</dt><dd>${e(car)}</dd><dt>${say("plate")}</dt><dd class="plate">${e(v.car.plate)}</dd></dl></div>` +
@@ -49,9 +52,10 @@ export function renderSharePage(lang: Lang, page: SharePage): string {
       `<p class="small">${say("updated", { time: clockTime(new Date(v.updatedAt), page.timeZone) })}</p>` +
       `<p class="small">${say("privacy")}</p>`;
   } else {
-    body = `<div class="card"><p>${say(page.kind === "ended" ? "ended" : page.kind === "not_found" ? "notFound" : "tooMany")}</p></div>`;
+    body = `<div class="card"><p${page.kind === "searching" ? ' class="phase"' : ""}>${say(page.kind === "searching" ? "searching" : page.kind === "ended" ? "ended" : page.kind === "not_found" ? "notFound" : "tooMany")}</p></div>`;
   }
-  const refresh = page.kind === "live" ? `<meta http-equiv="refresh" content="${page.view.refreshSeconds}">` : "";
+  const seconds = page.kind === "live" ? page.view.refreshSeconds : page.kind === "searching" ? page.refreshSeconds : null;
+  const refresh = seconds !== null ? `<meta http-equiv="refresh" content="${seconds}">` : "";
   return (
     `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
     `<meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer">${refresh}` +
