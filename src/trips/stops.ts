@@ -1,6 +1,7 @@
 import type { Trx } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
 import { ApiError } from "../http/errors.js";
+import { haversineKm } from "../maps/routing.js";
 import { expectVersion, lockOwnTrip, touchTrip } from "./commands.js";
 import { tripProjection } from "./projection.js";
 import { chargedStopSeconds } from "./waitingRules.js";
@@ -44,7 +45,8 @@ const NOT_AT_STOP = { reason: "not_at_stop", message: "You are not at the stop y
 /**
  * POST /driver/trips/{tripId}/stops/{i}/arrive | leave. v0.18.98 (job C9b, contract.json#stopWaits.arrive,
  * #autoArrive.stops.tap / back): `checkPosition` (driver apps on X-Contract-Version ≥ 0.18.98) — the first tap needs a
- * fresh position within 300 m of stops[i], else 409 position_stale / not_at_stop; older apps keep the old check (none).
+ * fresh position within 300 m of stops[i], else 409 position_stale / not_at_stop; older apps (supervisor S1): the stored
+ * fix, any age, within 300 m when there is one.
  * While stops[i].away is set, arrive is the back tap (any app): fresh position within the trip's leaveMeters, else 409
  * not_at_stop and the wait stays stopped. Leave while away: leftAt = now (the charge stops at away.since).
  */
@@ -80,6 +82,13 @@ export async function stopCommand(
     if (visit) refuse("stop_already_arrived", "You already arrived at this stop.");
     if (stopIndex > 0 && !visits.some((v) => v.stopIndex === stopIndex - 1)) refuse("stop_out_of_order", "Arrive at the stops in order.");
     if (options.checkPosition) await tapPosition(trx, trip, driverId, now, options.location, {}, { place: stops[stopIndex]!, maxMeters: STOP_TAP_MAX_METERS, ...NOT_AT_STOP });
+    else {
+      // Supervisor S1 (Rules audits/impact/c9b-middle-stops-supervisor.md): the header is the client's, so an older app
+      // (no X-Contract-Version, or lower) is checked against the server's stored fix, any age, as the pickup's old path;
+      // refused only when a stored fix exists and is farther than 300 m (no stored fix: accepted, never stuck).
+      const stored = await trx.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driverId).executeTakeFirst();
+      if (stored && haversineKm(stored, stops[stopIndex]!) * 1000 > STOP_TAP_MAX_METERS) refuse(NOT_AT_STOP.reason, NOT_AT_STOP.message);
+    }
     // Arriving at the next stop closes an earlier one the driver forgot to leave.
     next = arriveAtStop(visits, stopIndex, now, "tap");
   } else {

@@ -351,7 +351,11 @@ describe("C9b (3): money = fixtures/auto_arrive.json#stops (preview line = final
 
 describe("C9b (4): the first stop tap's position check (fixtures/auto_arrive.json#firstTap)", () => {
   for (const fixtureTap of FIXTURE.firstTap as Array<{ id: string; meters: number | null; ageSeconds: number | null; contractVersion: string | null; expect: string }>) {
-    const c = fixtureTap;
+    // Supervisor S1 (asked by the coordinator 2026-11-14): an older app's first stop tap is refused when the server's stored
+    // fix (any age) is farther than 300 m. CONFLICT: contract e81132a / d02ad08 #firstTap still says "ok" for
+    // tap_400m_old_app and tap_400m_no_header; the contract fixture must follow (or S1 be dropped).
+    const oldApp = fixtureTap.contractVersion === null || fixtureTap.contractVersion < "0.18.98";
+    const c = oldApp && fixtureTap.meters !== null && fixtureTap.meters > 300 ? { ...fixtureTap, expect: "not_at_stop" } : fixtureTap;
     it(`${c.id} → ${c.expect}`, async () => {
       const { tripId, version } = await inTrip();
       if (c.meters === null) {
@@ -492,6 +496,42 @@ for (const currency of ["SEK", "TND"] as const) {
       const seen = await riderView(tripId);
       expect(seen.stops[0].away).toBeUndefined();
       expect(seen.rideCheck?.trigger).not.toBe("long_stop");
+    });
+  });
+}
+
+for (const currency of ["SEK", "TND"] as const) {
+  const { stop } = PLACES[currency];
+  const start = PLACES[currency].inTrip;
+  describe(`C9b S1 (${currency}): an older app's first stop tap is checked against the server's stored fix (300 m, any age)`, () => {
+    const tapOld = async (meters: number | null, ageSeconds: number, headers: Record<string, string>) => {
+      const { tripId, version } = await start([{ ...stop }]);
+      if (meters === null) await database.db.deleteFrom("driver_locations").where("driver_id", "=", driverA.id).execute();
+      else {
+        clock.now = new Date(clock.now.getTime() + 30_000);
+        await fixAt(north(stop, meters));
+        clock.now = new Date(clock.now.getTime() + ageSeconds * 1000);
+      }
+      return { tripId, res: await stopTap(tripId, 0, "arrive", version, {}, headers) };
+    };
+    it("no header, stored fix 400 m → 409 not_at_stop (nothing arrived)", async () => {
+      const { tripId, res } = await tapOld(400, 10, {});
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json()).toMatchObject({ code: "invalid_transition", reason: "not_at_stop" });
+      expect((await driverView(tripId)).stops[0].arrivedAt).toBeUndefined();
+    });
+    it("X-Contract-Version 0.18.97, stored fix 400 m → 409 not_at_stop", async () => {
+      const { res } = await tapOld(400, 10, { "x-contract-version": "0.18.97" });
+      expect(res.json()).toMatchObject({ reason: "not_at_stop" });
+    });
+    it("no header, stored fix 250 m and 10 min old → ok (no age for an older app, as the pickup's old path)", async () => {
+      const { res } = await tapOld(250, 600, {});
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().stops[0]).toMatchObject({ arrivedBy: "tap" });
+    });
+    it("no header and no stored fix at all → ok (an older app is never stuck)", async () => {
+      const { res } = await tapOld(null, 0, {});
+      expect(res.statusCode, res.body).toBe(200);
     });
   });
 }
