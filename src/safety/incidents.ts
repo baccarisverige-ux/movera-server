@@ -11,6 +11,7 @@ import { scheduleTimer, type TimerHandler } from "../jobs/timers.js";
 import { ALERT_SWEEP, alertSweepHandler, pokeAlerts } from "../alerts/detector.js";
 import { tripProjection } from "../trips/projection.js";
 import { lockTrip, type TripRow } from "../db/tripLog.js";
+import { writeSosSms, type SosContactsSms } from "./sosContactsSms.js";
 
 /**
  * SOS and incidents (contract v0.7.0 §15, owner safety part 1 decisions 2026-10-27).
@@ -101,6 +102,8 @@ export function incidentView(row: IncidentRow, driverPosition?: unknown): Record
     resolvedAt: iso(row.resolved_at),
     resolution: row.resolution ?? undefined,
     rideCheck: row.ride_check ?? undefined,
+    // v0.18.101 §92: the SMS to the driver's emergency contacts of this case.
+    contactsSms: row.contacts_sms ?? undefined,
   };
   for (const [k, v] of Object.entries(optional)) if (v !== undefined) out[k] = v;
   return out;
@@ -158,7 +161,14 @@ export async function openOf(ex: Executor, tripId: string, kind: string): Promis
 
 /* ---------------------------------------------------------------- SOS */
 
-export async function raiseSos(trx: Trx, who: { actor: "rider" | "driver"; subjectId: string }, tripId: string, body: { at: string; position?: Position | undefined }, now: Date) {
+export async function raiseSos(
+  trx: Trx,
+  who: { actor: "rider" | "driver"; subjectId: string },
+  tripId: string,
+  body: { at: string; position?: Position | undefined },
+  now: Date,
+  sms: { connected: boolean; queued?: string[]; warn?: (data: Record<string, unknown>, message: string) => void } = { connected: false },
+) {
   const trip = await lockTrip(trx, tripId);
   const own = who.actor === "rider" ? trip.rider_id === who.subjectId : trip.driver_id === who.subjectId;
   if (!own) throw notFound("No such trip.", "trip_not_found");
@@ -167,7 +177,17 @@ export async function raiseSos(trx: Trx, who: { actor: "rider" | "driver"; subje
     throw new ApiError("invalid_transition", "SOS works only during a live trip.", { reason: "trip_not_live", projection: tripProjection(trip, who.actor) });
   }
   const row = (await openOf(trx, tripId, "sos")) ?? (await openIncident(trx, trip, { kind: "sos", raisedBy: who.actor, position: body.position }, now));
-  return { incidentId: row.incident_id, tripId, receivedAt: now.toISOString() };
+  if (who.actor === "rider") return { incidentId: row.incident_id, tripId, receivedAt: now.toISOString() };
+  // v0.18.101 §92: the case's first driver SOS texts his emergency contacts (rows kept as skipped while no SMS company
+  // is connected); later SOS answer the stored result. The SMS step never fails the SOS (own savepoint).
+  let contactsSms = row.contacts_sms as SosContactsSms | null;
+  if (contactsSms === null) {
+    const written = await writeSosSms(trx, row, body.position ?? null, sms.connected, now, sms.warn);
+    contactsSms = written.result;
+    sms.queued?.push(...written.queued);
+    await appendIncidentEvent(trx, { ...row, contacts_sms: contactsSms }, "incident_updated", now);
+  }
+  return { incidentId: row.incident_id, tripId, receivedAt: now.toISOString(), contactsSms };
 }
 
 /* ---------------------------------------------------------------- car lost (driver silent) */

@@ -14,6 +14,7 @@ import type { Db } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
 import { ApiError } from "../http/errors.js";
 import { emergencyNumbersFor } from "./emergencyNumbers.js";
+import { sosSmsDriverConfig } from "../safety/sosContactsSms.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
@@ -24,7 +25,8 @@ import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, ge
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
 /** paymentMethods (v0.18.10): what the server takes today (SERVER_PAYMENT_METHODS less PAYMENT_METHODS_PAUSED, v0.18.13), for the served paymentOptions. */
-export type ConfigDeps = { db: Db; jwtSecret: string; defaultZoneId: string; paymentMethods?: readonly string[]; hub?: NotificationHub; clock?: () => Date };
+/** v0.18.101 §92: smsConnected = an SMS company is connected (DriverAppConfig.sosContactsSms.connected). */
+export type ConfigDeps = { db: Db; jwtSecret: string; defaultZoneId: string; smsConnected?: boolean; paymentMethods?: readonly string[]; hub?: NotificationHub; clock?: () => Date };
 
 const ZONE_ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const DocParam = z.object({ doc: z.enum(CONFIG_DOCS as [ConfigDoc, ...ConfigDoc[]]) });
@@ -124,6 +126,8 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     document = { ...document, dontMatchAgain: await dontMatchSettings(deps.db, zoneId) };
     // v0.18.57 §79 (contract.json#emergencyNumbers.apps): both apps get the zone country's emergency numbers.
     document = { ...document, emergencyNumbers: await emergencyNumbersFor(deps.db, zone.country) };
+    // v0.18.101 §92 (contract.json#sosContactsSms.driverConfig): the switch of the zone's country and whether SMS can go.
+    if (doc === "driver_app_config") document = { ...document, sosContactsSms: await sosSmsDriverConfig(deps.db, zone.country, deps.smsConnected === true) };
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);
   };

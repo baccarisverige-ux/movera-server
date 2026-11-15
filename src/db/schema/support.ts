@@ -136,6 +136,8 @@ export interface IncidentsTable {
   alarm: Generated<boolean>;
   /** v0.12.0 §22: Incident.rideCheck, kind ride_check only. */
   ride_check: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.101 §92 (migration 0111): Incident.contactsSms, set by the case's first driver SOS. */
+  contacts_sms: ColumnType<unknown, string | null | undefined, string | null>;
 }
 
 export interface IncidentEventsTable {
