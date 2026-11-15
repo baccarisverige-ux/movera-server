@@ -6,7 +6,7 @@ import { buildApp } from "../../src/app.js";
 import { CLEANUP_TRIP_SHARES, HOUSEKEEPING_KINDS, housekeepingHandlers } from "../../src/jobs/housekeeping.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
-import { shareKey, shareToken } from "../../src/safety/tripShare.js";
+import { HIDE_NEAR_DROPOFF_METERS, shareKey, shareToken } from "../../src/safety/tripShare.js";
 import { bookAndAccept, drive, newKey, PLACES, Sim, type Admin, type Driver, type Json, type Rider } from "./harness.js";
 
 /**
@@ -64,7 +64,8 @@ async function sharedTrip(): Promise<{ tripId: string; token: string; link: Json
   return { tripId, token: tokenOf(made.body["url"]), link: made.body };
 }
 async function finish(tripId: string): Promise<void> {
-  await drive(a, tripId, "in_trip");
+  // approaching_dropoff is past every step drive() knows.
+  if ((await a.trip(tripId))["status"] !== "approaching_dropoff") await drive(a, tripId, "in_trip");
   await sim.advance(60);
   await a.moveTo(PLACES.medborgar);
   const done = await a.command(tripId, "complete");
@@ -91,6 +92,7 @@ async function forbiddenOf(tripId: string, link: Json): Promise<string[]> {
 describe("S10 privacy: the public answer is a fixed allow-list", () => {
   it("JSON: exactly the allow-listed fields, and no phone number, name, address, destination, fare, rating or id", async () => {
     const { tripId, token, link } = await sharedTrip();
+    await drive(a, tripId, "in_trip");
     await a.moveTo(PLACES.odenplan);
     const res = await json(token);
     expect(res.statusCode).toBe(200);
@@ -101,7 +103,7 @@ describe("S10 privacy: the public answer is a fixed allow-list", () => {
     expect(Object.keys(body["position"]).sort()).toEqual(["at", "lat", "lng"]);
     if (body["eta"] !== null) expect(Object.keys(body["eta"]).sort()).toEqual(["arriveAround", "minutes", "target"]);
     const mine = await rider.trip(tripId);
-    expect(body).toMatchObject({ state: "live", phase: "to_pickup", refreshSeconds: 20, car: { plate: mine["driver"]["vehicle"]["plate"], make: mine["driver"]["vehicle"]["make"] }, position: { lat: PLACES.odenplan.lat, lng: PLACES.odenplan.lng } });
+    expect(body).toMatchObject({ state: "live", phase: "on_trip", refreshSeconds: 20, car: { plate: mine["driver"]["vehicle"]["plate"], make: mine["driver"]["vehicle"]["make"] }, position: { lat: PLACES.odenplan.lat, lng: PLACES.odenplan.lng } });
     const text = res.body;
     for (const word of await forbiddenOf(tripId, link)) expect(text, `the public JSON carries ${word}`).not.toContain(word);
     for (const key of ["phone", "name", "firstName", "address", "pickup", "dropoff", "destination", "stops", "fare", "price", "payment", "rating", "photo", "riderId", "driverId", "tripId", "zoneId", "shareId"]) {
@@ -117,6 +119,7 @@ describe("S10 privacy: the public answer is a fixed allow-list", () => {
 
   it("HTML: the same allow-list; no script, reload every 20 s, noindex / no-store, no preview tags with trip data, a Maps link for the car", async () => {
     const { tripId, token, link } = await sharedTrip();
+    await drive(a, tripId, "in_trip");
     await a.moveTo(PLACES.odenplan);
     const res = await page(token, { headers: { "accept-language": "en-GB,en;q=0.9" } });
     expect(res.statusCode).toBe(200);
@@ -124,7 +127,7 @@ describe("S10 privacy: the public answer is a fixed allow-list", () => {
     const html = res.body;
     const mine = await rider.trip(tripId);
     expect(html).toContain(mine["driver"]["vehicle"]["plate"]);
-    expect(html).toContain("On the way to pick up");
+    expect(html).toContain("On the trip");
     expect(html).toContain(`href="https://maps.google.com/?q=${PLACES.odenplan.lat},${PLACES.odenplan.lng}"`);
     expect(html).toContain('<meta http-equiv="refresh" content="20">');
     expect(html).toContain('<meta name="robots" content="noindex, nofollow">');
@@ -184,8 +187,6 @@ describe("S10 round 2 (supervisor MF-1, SF-3, SF-4)", () => {
   it("MF-1: a trip queued behind the driver's current trip never shows the car's spot (it is another rider's trip) and does not say 'on the way to pick up'", async () => {
     const { tripId, token } = await sharedTrip();
     await a.moveTo(PLACES.odenplan);
-    // Not queued: the car's spot is shown.
-    expect(((await json(token)).json() as Json)["position"]).not.toBeNull();
     // Queued: accepted with next_after_trip_id set (the driver still carries another rider).
     await sim.db.updateTable("trips").set({ next_after_trip_id: tripId }).where("trip_id", "=", tripId).execute();
     const res = await json(token);
@@ -202,9 +203,9 @@ describe("S10 round 2 (supervisor MF-1, SF-3, SF-4)", () => {
       expect(html).not.toMatch(/On the way to pick up|På väg för att hämta|En route vers la prise en charge/);
     }
     expect((await page(token, { headers: { "accept-language": "en" } })).body).toContain("The driver is finishing another trip first");
-    // The first trip ended (the server clears next_after_trip_id): the car's spot is back.
+    // The first trip ended (the server clears next_after_trip_id): on the way to this pickup; still no spot (owner Q-A).
     await sim.db.updateTable("trips").set({ next_after_trip_id: null }).where("trip_id", "=", tripId).execute();
-    expect((await json(token)).json()).toMatchObject({ phase: "to_pickup", position: { lat: PLACES.odenplan.lat } });
+    expect((await json(token)).json()).toMatchObject({ phase: "to_pickup", position: null });
   });
 
   it("SF-3: the link key is derived from the server's secret with its own label, never the secret itself", () => {
@@ -230,6 +231,73 @@ describe("S10 round 2 (supervisor MF-1, SF-3, SF-4)", () => {
       expect(res.headers["referrer-policy"]).toBe("no-referrer");
       expect(res.body).not.toContain(long);
     }
+  });
+});
+
+describe("S10 round 3: owner answers Q-A and Q-B (decisions/driver-g14.md, 19:32 UTC 2026-11-15)", () => {
+  const KEYS = ["car", "eta", "phase", "position", "refreshSeconds", "state", "updatedAt"];
+  const hidden = async (token: string, at: { lat: number; lng: number }, phaseText: string) => {
+    const res = await json(token);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as Json;
+    expect(Object.keys(body).sort()).toEqual(KEYS);
+    expect(body["position"]).toBeNull();
+    expect(res.body).not.toContain(String(at.lat));
+    expect(res.body).not.toContain(String(at.lng));
+    expect(res.body).not.toMatch(/"dropoff":|"pickup":|distance|met(er|re)s/i);
+    const html = (await page(token, { headers: { "accept-language": "en" } })).body;
+    expect(html).toContain(phaseText);
+    expect(html).not.toContain("maps.google.com");
+    expect(html).not.toContain("Maps");
+    expect(html).not.toContain(String(at.lat));
+    expect(html).not.toContain(String(at.lng));
+    expect(html).not.toContain("not available");
+    return { body, html };
+  };
+
+  it("Q-A 'Hide until rider is in': on the way and waiting at the pickup show no car position and no Maps link, only the phase; the position shows once the rider is in the car", async () => {
+    const { tripId, token } = await sharedTrip();
+    await a.moveTo(PLACES.odenplan);
+    expect((await hidden(token, PLACES.odenplan, "On the way to pick up")).body["phase"]).toBe("to_pickup");
+    await drive(a, tripId, "driver_to_pickup");
+    await a.moveTo(PLACES.nearSergels);
+    await hidden(token, PLACES.nearSergels, "On the way to pick up");
+    await drive(a, tripId, "arrived");
+    expect((await hidden(token, PLACES.sergels, "The car is waiting at the pickup")).body["phase"]).toBe("at_pickup");
+    // The rider is in the car: the car's spot is shown.
+    await drive(a, tripId, "rider_onboard");
+    await a.moveTo(PLACES.odenplan);
+    const res = await json(token);
+    expect(res.json()).toMatchObject({ phase: "on_trip", position: { lat: PLACES.odenplan.lat, lng: PLACES.odenplan.lng } });
+    expect((await page(token)).body).toContain(`href="https://maps.google.com/?q=${PLACES.odenplan.lat},${PLACES.odenplan.lng}"`);
+  });
+
+  it("Q-B 'Hide last 500 m': within about 500 m of the drop-off the position and the Maps link are hidden, only 'Arriving in about N min'; the drop-off and the distance are never sent", async () => {
+    expect(HIDE_NEAR_DROPOFF_METERS).toBe(500);
+    const { tripId, token } = await sharedTrip();
+    await drive(a, tripId, "in_trip");
+    // About 720 m north of the drop-off: shown.
+    const far = { lat: 59.3208, lng: 18.0735 };
+    await a.moveTo(far);
+    await sim.advance(35);
+    expect((await json(token)).json()).toMatchObject({ phase: "on_trip", position: { lat: far.lat, lng: far.lng } });
+    // About 400 m from it: hidden.
+    const near = { lat: 59.3179, lng: 18.0735 };
+    await a.moveTo(near);
+    await sim.advance(35);
+    const { body, html } = await hidden(token, near, "On the trip");
+    expect(body["phase"]).toBe("on_trip");
+    expect(body["eta"]).toMatchObject({ target: "dropoff", minutes: expect.any(Number) });
+    expect(html).toMatch(/Arriving in about \d+ min/);
+    expect(html).not.toContain(PLACES.medborgar.address);
+    expect(html).not.toContain(String(PLACES.medborgar.lat));
+    // At the door: hidden too.
+    await a.moveTo(PLACES.medborgar);
+    expect(((await json(token)).json() as Json)["position"]).toBeNull();
+    expect((await page(token)).body).not.toContain("maps.google.com");
+    // Back outside the 500 m: shown again (the rule is the distance, nothing is remembered).
+    await a.moveTo(far);
+    expect(((await json(token)).json() as Json)["position"]).toEqual({ lat: far.lat, lng: far.lng, at: expect.any(String) });
   });
 });
 
