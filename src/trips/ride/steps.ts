@@ -15,7 +15,8 @@ import { applyCommand, expectVersion, lockOwnTrip, touchTrip } from "../commands
 import { RIDER_ONBOARD, type TripStatus } from "../../rules/transitions.js";
 import { tripProjection } from "../projection.js";
 import { effectiveWaiting } from "../waitingRules.js";
-import { type Money, type Place, type Waiting, NEAR_DROPOFF_METERS, NEAR_DROPOFF, ARRIVE_MAX_METERS, positionMaxAge } from "./shared.js";
+import { type Money, type Place, type Waiting, NEAR_DROPOFF_METERS, NEAR_DROPOFF, ARRIVE_MAX_METERS } from "./shared.js";
+import { tapPosition } from "./tapPosition.js";
 import { rulesOf, waitingOf, fareWithWaiting, fareColumns, walletFirstOf, bookedNoShowFee } from "./settings.js";
 import { releaseDriver, feeSplit, walletCovers } from "./money.js";
 import { backToDispatch } from "./cancel.js";
@@ -44,12 +45,12 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
     // Round 2 (supervisor M2, owner "drive away … timing stops", Rules decisions/driver-g7.md:83-84): that tap counts only
     // within the trip's leaveMeters of the pickup (not the first tap's 300 m), else 409 not_at_pickup and the clock stays stopped.
     if (trip.status === "arrived" && waiting?.away) {
-      await tapPosition(trx, trip, driverId, now, location, options, (await tripGeofence(trx, trip)).leaveMeters);
+      await pickupTapPosition(trx, trip, driverId, now, location, options, (await tripGeofence(trx, trip)).leaveMeters);
       const back = backAt(waiting, now, now);
       await rebookWaitingAlerts(trx, tripId, back);
       return touchTrip(trx, trip, { waiting: JSON.stringify(back) }, now);
     }
-    const here = trip.status === "driver_to_pickup" ? await tapPosition(trx, trip, driverId, now, location, options) : null;
+    const here = trip.status === "driver_to_pickup" ? await pickupTapPosition(trx, trip, driverId, now, location, options) : null;
     return arriveNow(trx, trip, now, "tap", here);
   }
   if ((command === "board" || command === "start_trip") && trip.pin_required && trip.pin_verified_at === null && ["arrived", "driver_to_pickup", "accepted"].includes(trip.status)) {
@@ -94,22 +95,10 @@ export async function driverStep(trx: Trx, driverId: string, tripId: string, com
 /**
  * The tap's position check (POST /trips/{tripId}/arrive): the fix sent with the step or the server's latest, fresh, within
  * ARRIVE_MAX_METERS of the pickup (the back tap while away: `maxMeters` = the trip's leaveMeters); else 409
- * position_stale / not_at_pickup.
+ * position_stale / not_at_pickup (tapPosition.ts, shared with the stop tap since v0.18.108).
  */
-async function tapPosition(trx: Trx, trip: TripRow, driverId: string, now: Date, location: Place | undefined, options: { legacyPosition?: boolean }, maxMeters = ARRIVE_MAX_METERS): Promise<Place> {
-  // Deep fix 2026-11-02 (MED stale / fake GPS for arrive): a position counts only while it is at most the zone's
-  // DriverAppConfig.waiting.positionMaxAgeSeconds old (default 60): the one sent with the step when it says when it
-  // was measured, else the server's latest fix. An old one is 409 position_stale (turn on location).
-  const maxAge = options.legacyPosition ? Number.POSITIVE_INFINITY : await positionMaxAge(trx, trip.zone_id);
-  const fresh = (at: unknown) => options.legacyPosition || (typeof at === "string" || at instanceof Date ? Math.abs(now.getTime() - new Date(at).getTime()) <= maxAge * 1000 : false);
-  const sent = location && fresh((location as Place & { measuredAt?: string }).measuredAt) ? location : null;
-  const stored = sent ? undefined : await trx.selectFrom("driver_locations").select(["lat", "lng", "measured_at"]).where("driver_id", "=", driverId).executeTakeFirst();
-  const here = sent ?? (stored && fresh(stored.measured_at) ? stored : null);
-  if (!here && (location || stored)) throw new ApiError("invalid_transition", "Your position is too old. Turn on location and try again.", { reason: "position_stale", projection: tripProjection(trip, "driver") });
-  if (!here || haversineKm(here, trip.pickup as Place) * 1000 > maxMeters) {
-    throw new ApiError("invalid_transition", "You are not at the pickup yet.", { reason: "not_at_pickup", projection: tripProjection(trip, "driver") });
-  }
-  return here;
+function pickupTapPosition(trx: Trx, trip: TripRow, driverId: string, now: Date, location: Place | undefined, options: { legacyPosition?: boolean }, maxMeters = ARRIVE_MAX_METERS): Promise<Place> {
+  return tapPosition(trx, trip, driverId, now, location, options, { place: trip.pickup as Place, maxMeters, reason: "not_at_pickup", message: "You are not at the pickup yet." });
 }
 
 /**

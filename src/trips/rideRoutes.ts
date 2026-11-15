@@ -104,8 +104,11 @@ const tripId = (request: FastifyRequest) => parseBody(z.object({ tripId: ID }), 
     app.post(`${API_PREFIX}/driver/trips/:tripId/stops/:stopIndex/${verb}`, async (request) => {
       const who = await authenticate(request, guard, ["driver"]);
       const params = parseBody(z.object({ tripId: ID, stopIndex: z.coerce.number().int().min(0).max(9) }), request.params);
-      const body = parseBody(z.object({ expectedVersion: z.number().int().min(1) }), request.body);
-      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await stopCommand(trx, who.subjectId, params.tripId, params.stopIndex, verb, body.expectedVersion, now()), "driver") }))).body;
+      // v0.18.108 (job C9b, contract.json#stopWaits.arrive): the body may carry the driver's position (GeoFix); the first
+      // stop tap checks it only for driver apps on contract 0.18.108 or later (renumbered from 0.18.98; older apps: the stored fix).
+      const body = parseBody(Command, request.body);
+      const checkPosition = contractAtLeast(request.headers["x-contract-version"], "0.18.108");
+      return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await stopCommand(trx, who.subjectId, params.tripId, params.stopIndex, verb, body.expectedVersion, now(), { ...(body.location ? { location: body.location } : {}), checkPosition }), "driver") }))).body;
     });
   }
 

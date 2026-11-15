@@ -10,6 +10,8 @@ import { PICKUP_GEOFENCE, positionMaxAge, type Place, type Waiting } from "./sha
 import { WAITING_NO_SHOW, WAITING_PAID } from "./timers.js";
 import { awayFrom, backAt } from "./waitingClock.js";
 import { confirmedBy, type CountingFix } from "./fixConfirm.js";
+import { arriveAtStop, countsForNextStop, nextStopIndex, openVisitOf, stopAwayFrom, stopBackAt, visitsOf, type StopVisit } from "./stopClock.js";
+import { touchTrip } from "../commands.js";
 
 /**
  * v0.18.93 (job C9, contract.json#autoArrive; owner 2026-11-02 review Q3 "Both: auto + button", Rules
@@ -17,7 +19,10 @@ import { confirmedBy, type CountingFix } from "./fixConfirm.js";
  * waiting.autoArriveMeters of the pickup (the Arrived button stays), and the waiting clock stops while he is farther than
  * waiting.leaveMeters before the rider is on board; it goes on at a new arrival (back within autoArriveMeters, or his tap
  * within leaveMeters). Round 2 (supervisor M1): each change needs 2 counting fixes in a row (fixConfirm.ts).
- * Pickup only: middle stops keep their taps (contract.json#autoArrive.notInThisVersion).
+ * v0.18.108 (job C9b, contract.json#autoArrive.stops; owner "At the pickup AND at stops"): the same job, the same kept
+ * distances and the same 2-fix confirm at the middle stops while in_trip / approaching_dropoff: the NEXT stop is arrived
+ * (stops[i].arrivedBy auto), the open stop's wait stands still while the driver is away and goes on when he is back
+ * (ride/stopClock.ts).
  */
 
 type Range = [number, number];
@@ -85,7 +90,9 @@ async function writeWaiting(trx: Trx, trip: TripRow, waiting: Waiting, now: Date
 export { PICKUP_GEOFENCE } from "./shared.js";
 
 /** What POST /driver/location knows about the active trip (one statement, drivers/service.ts locationFacts). */
-export type GeofenceFacts = { trip_id: string; status: string; pickup: unknown; arrive_m?: number | null; leave_m?: number | null; away?: boolean | null };
+export type GeofenceFacts = { trip_id: string; status: string; pickup: unknown; arrive_m?: number | null; leave_m?: number | null; away?: boolean | null; stops?: unknown; stop_visits?: unknown };
+
+const ON_THE_WAY = new Set(["in_trip", "approaching_dropoff"]);
 
 /**
  * After a new current fix (drivers/service.ts storeFixes): book the check as a job when the fix may change something —
@@ -93,13 +100,33 @@ export type GeofenceFacts = { trip_id: string; status: string; pickup: unknown; 
  * row is written here, never the trip (lock order, as maybeNearDropoff).
  */
 export async function maybePickupGeofence(trx: Trx, active: GeofenceFacts, fix: Place & { accuracy?: number }, now: Date): Promise<void> {
-  if (active.status !== "driver_to_pickup" && active.status !== "arrived") return;
+  const atPickup = active.status === "driver_to_pickup" || active.status === "arrived";
+  if (!atPickup && !ON_THE_WAY.has(active.status)) return;
   if (typeof fix.accuracy === "number" && fix.accuracy > AUTO_MAX_ACCURACY_METERS) return;
-  const meters = haversineKm(fix, active.pickup as Place) * 1000;
   const arrive = typeof active.arrive_m === "number" ? active.arrive_m : ARRIVE_RANGE[1];
   const leave = typeof active.leave_m === "number" ? active.leave_m : LEAVE_RANGE[0];
-  const may = active.status === "driver_to_pickup" ? meters <= arrive : active.away ? meters <= arrive : meters > leave;
+  const metersTo = (p: Place) => haversineKm(fix, p) * 1000;
+  let may: boolean;
+  if (atPickup) {
+    const meters = metersTo(active.pickup as Place);
+    may = active.status === "driver_to_pickup" ? meters <= arrive : active.away ? meters <= arrive : meters > leave;
+  } else {
+    // v0.18.108 (contract.json#autoArrive.stops.auto): booked only while the trip has an unvisited or open stop.
+    const stops = Array.isArray(active.stops) ? (active.stops as Place[]) : [];
+    const visits = visitsOf({ stop_visits: active.stop_visits });
+    const next = nextStopIndex(stops.length, visits);
+    const open = openVisitOf(visits);
+    const openStop = open ? stops[open.stopIndex] : undefined;
+    may = (next !== null && metersTo(stops[next]!) <= arrive) || (openStop !== undefined && (open!.away ? metersTo(openStop) <= arrive : metersTo(openStop) > leave));
+  }
   if (may) await scheduleTimer(trx, { kind: PICKUP_GEOFENCE, refId: active.trip_id, dueAt: now, payload: {} });
+}
+
+/** v0.18.108: the open stop's away / back from a fix, with no version change; a trip_projection event goes out (as writeWaiting). */
+async function writeStopVisits(trx: Trx, trip: TripRow, visits: StopVisit[], now: Date): Promise<void> {
+  await trx.updateTable("trips").set({ stop_visits: JSON.stringify(visits) }).where("trip_id", "=", trip.trip_id).execute();
+  const updated = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
+  await appendTripEvent(trx, { tripId: trip.trip_id, kind: "trip_projection", version: updated.version, occurredAt: now, projection: tripProjection(updated, "admin", { sequence: Number(updated.sequence) + 1, now }) });
 }
 
 /** The arrive step the server runs for the driver (steps.ts autoArrive), given here so this module does not import steps.ts. */
@@ -113,14 +140,12 @@ export function pickupGeofenceHandler(autoArrive: AutoArrive): TimerHandler {
   return async (trx, timer) => {
     const now = timer.firedAt;
     const trip = await lockTripNow(trx, timer.refId);
-    if (!trip || !trip.driver_id || (trip.status !== "driver_to_pickup" && trip.status !== "arrived")) return;
+    if (!trip || !trip.driver_id || (trip.status !== "driver_to_pickup" && trip.status !== "arrived" && !ON_THE_WAY.has(trip.status))) return;
     const fix = await trx.selectFrom("driver_locations").select(["lat", "lng", "accuracy", "measured_at", "speed_mps"]).where("driver_id", "=", trip.driver_id).executeTakeFirst();
     if (!fix || fix.accuracy > AUTO_MAX_ACCURACY_METERS) return;
     const maxAge = await positionMaxAge(trx, trip.zone_id);
     if (Math.abs(now.getTime() - fix.measured_at.getTime()) > maxAge * 1000) return;
     const fence = await tripGeofence(trx, trip);
-    const pickup = trip.pickup as Place;
-    const meters = (p: { lat: number; lng: number }) => haversineKm(p, pickup) * 1000;
     // The trip's counting fixes up to the latest one, newest first (trip_locations is written before this job is booked).
     const rows = await trx
       .selectFrom("trip_locations")
@@ -133,12 +158,42 @@ export function pickupGeofenceHandler(autoArrive: AutoArrive): TimerHandler {
       .orderBy("measured_at", "desc")
       .limit(60)
       .execute();
-    const fixes: CountingFix[] = rows.map((r) => ({ lat: r.lat, lng: r.lng, measuredAt: r.measured_at, speedMps: r.speed_mps, meters: meters(r) }));
-    // The stored latest fix leads (a fix the phone sent again keeps its first row; the latest is never missing).
-    if (fixes[0]?.measuredAt.getTime() !== fix.measured_at.getTime()) fixes.unshift({ lat: fix.lat, lng: fix.lng, measuredAt: fix.measured_at, speedMps: fix.speed_mps, meters: meters(fix) });
+    /** The counting fixes, newest first, with their distance to `target`. */
+    const fixesTo = (target: Place): CountingFix[] => {
+      const meters = (p: { lat: number; lng: number }) => haversineKm(p, target) * 1000;
+      const list: CountingFix[] = rows.map((r) => ({ lat: r.lat, lng: r.lng, measuredAt: r.measured_at, speedMps: r.speed_mps, meters: meters(r) }));
+      // The stored latest fix leads (a fix the phone sent again keeps its first row; the latest is never missing).
+      if (list[0]?.measuredAt.getTime() !== fix.measured_at.getTime()) list.unshift({ lat: fix.lat, lng: fix.lng, measuredAt: fix.measured_at, speedMps: fix.speed_mps, meters: meters(fix) });
+      return list;
+    };
     const rule = { ...AUTO_CONFIRM, windowSeconds: maxAge };
     const apart = (a: CountingFix, b: CountingFix) => haversineKm(a, b) * 1000;
     const within = (f: CountingFix) => f.meters <= fence.autoArriveMeters;
+    const beyond = (f: CountingFix) => f.meters > fence.leaveMeters;
+    if (ON_THE_WAY.has(trip.status)) {
+      // v0.18.108 (contract.json#autoArrive.stops): the next stop first (in order), then the open stop's away / back.
+      const stops = (trip.stops as Place[] | null) ?? [];
+      const visits = visitsOf(trip);
+      const next = nextStopIndex(stops.length, visits);
+      const open = openVisitOf(visits);
+      const openStop = open ? stops[open.stopIndex] : undefined;
+      // Supervisor M1 (Rules audits/impact/c9b-middle-stops-supervisor.md): while the driver waits at an open stop (not
+      // away), both fixes of the pair must also be farther than autoArriveMeters from it, so two stops close together
+      // (next door, the same building) never close the first one by themselves; then only his tap arrives the next stop.
+      const toOpen = (f: CountingFix) => (openStop ? { away: Boolean(open!.away), meters: haversineKm(f, openStop) * 1000 } : null);
+      if (next !== null && confirmedBy(fixesTo(stops[next]!), (f) => countsForNextStop(fence.autoArriveMeters, f.meters, toOpen(f)), rule, true, apart)) {
+        // The same step as the driver's tap (version + 1, trip_projection); an earlier open stop gets leftAt = now.
+        await touchTrip(trx, trip, { stop_visits: JSON.stringify(arriveAtStop(visits, next, now, "auto")) }, now);
+        return;
+      }
+      if (!open || !openStop) return;
+      const first = confirmedBy(fixesTo(openStop), open.away ? within : beyond, rule, Boolean(open.away), apart);
+      if (!first) return;
+      const changed = open.away ? stopBackAt(open, first.measuredAt, now) : stopAwayFrom(open, first.measuredAt, now);
+      await writeStopVisits(trx, trip, visits.map((v) => (v.stopIndex === open.stopIndex ? changed : v)), now);
+      return;
+    }
+    const fixes = fixesTo(trip.pickup as Place);
     if (trip.status === "driver_to_pickup") {
       if (confirmedBy(fixes, within, rule, true, apart)) await autoArrive(trx, trip, { lat: fix.lat, lng: fix.lng }, now);
       return;
