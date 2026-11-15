@@ -681,3 +681,36 @@ describe("J8 SF1: the receipt shows debtIncluded on every paid end with the ride
     expect(r.rider).not.toHaveProperty("debtIncluded");
   });
 });
+
+/* ================================================================ J8 + BQ-M25 together: a card trip with a rider debt */
+
+describe("J8 + BQ-M25: a card trip carrying a rider debt (debtModel.readAtPayment + card books 0 cash)", () => {
+  it("SEK: the debt is a line of the fare and paid in full; cash 0 on the trip and the ledger; the wallet is back to 0; paidByRider = the fare", async () => {
+    const feeTrip = await feeOwed(5_000);
+    expect(await balance()).toBe(-5_000);
+    const { tripId, version } = await accepted();
+    // The server still refuses card bookings ("Only cash is available for now"): the booked trip is made a card trip
+    // here, as a card trip will be once card is accepted.
+    await database.db.updateTable("trips").set({ payment_method: "card" }).where("trip_id", "=", tripId).execute();
+    const ride = Number((await database.db.selectFrom("trips").select("fare_minor").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).fare_minor);
+    const done = await driveAndComplete(tripId, version);
+    expect(done.statusCode).toBe(200);
+    expect(done.json().fare).toEqual(SEK(ride + 5_000));
+    expect(done.json().fareLines).toEqual(expect.arrayContaining([{ code: "outstanding_fee", amount: SEK(5_000), sourceTripId: feeTrip }]));
+    const row = await database.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(Number(row.fare_minor)).toBe(ride + 5_000);
+    expect(Number(row.cash_collected_minor)).toBe(0);
+    expect(Number(row.wallet_applied_minor)).toBe(0);
+    const entry = await database.db.selectFrom("earnings_entries").select("cash_minor").where("trip_id", "=", tripId).where("kind", "=", "trip").executeTakeFirstOrThrow();
+    expect(Number(entry.cash_minor)).toBe(0);
+    // A card trip pays the whole debt (nothing is short in the car): the fee is paid, the wallet is back to 0.
+    expect((await database.db.selectFrom("rider_fees").select("status").where("trip_id", "=", feeTrip).executeTakeFirstOrThrow()).status).toBe("paid");
+    expect(await balance()).toBe(0);
+    const paid = await database.db.selectFrom("wallet_entries").select("amount_minor").where("rider_id", "=", riderId).where("kind", "=", "debt_paid").where("trip_id", "=", tripId).execute();
+    expect(paid.map((p) => Number(p.amount_minor))).toEqual([5_000]);
+    expect((await call(app, "GET", "/rider/profile", rider)).json().outstanding).toBeNull();
+    // The refund room: what the rider paid on a card trip is the whole fare (ride + debt), not the 0 cash.
+    const { paidByRider } = await import("../../src/admin/trips.js");
+    expect(paidByRider(row as never)).toBe(ride + 5_000);
+  });
+});
