@@ -28,7 +28,7 @@ type ShareContract = {
   maxHours: number;
   retentionDays: number;
   link: { tokenPattern: string };
-  public: { fields: string[]; car: string[]; phases: Record<string, string[]>; refreshSeconds: number; positionMaxAgeSeconds: number; positionLink: string };
+  public: { fields: string[]; car: string[]; phases: Record<string, string[]>; queuedPhase: string; refreshSeconds: number; positionMaxAgeSeconds: number; positionLink: string };
   limits: { maxActivePerTrip: number; perAddressPerMinute: number; perTokenPerMinute: number };
   texts: Record<"sv" | "fr" | "en", Record<string, string>>;
 };
@@ -39,9 +39,16 @@ const PHASE_OF: Record<string, string> = Object.fromEntries(Object.entries(SHARE
 const TOKEN = new RegExp(SHARE.link.tokenPattern);
 const HOUR_MS = 3_600_000;
 
-/** The link's token: 128 bits from the link's id and the server's secret. Never stored, never logged. */
-export function shareToken(secret: string, shareId: string): string {
-  return createHmac("sha256", secret).update(`movera-trip-share-v1:${shareId}`).digest().subarray(0, 16).toString("base64url");
+/**
+ * Supervisor SF-3: the links have a key of their own, derived from the server's secret with a fixed label (the secret
+ * itself signs nothing here). Made once per app (shareRoutes).
+ */
+export function shareKey(secret: string): Buffer {
+  return createHmac("sha256", secret).update("movera-trip-share-key-v1").digest();
+}
+/** The link's token: 128 bits from the link's id and the link key. Never stored, never logged. */
+export function shareToken(key: Buffer, shareId: string): string {
+  return createHmac("sha256", key).update(`movera-trip-share-v1:${shareId}`).digest().subarray(0, 16).toString("base64url");
 }
 export const tokenHash = (token: string): Buffer => createHash("sha256").update(token).digest();
 /** What a token looks like at all (22 base64url characters); anything else is a miss before any database work. */
@@ -69,7 +76,7 @@ async function ownTrip(trx: Trx, riderId: string, tripId: string) {
 }
 
 /** POST /rider/trips/{tripId}/share. The answer has no url: the route adds it (so the idempotency store never holds it). */
-export async function createShare(trx: Trx, riderId: string, tripId: string, secret: string, now: Date): Promise<ShareItem> {
+export async function createShare(trx: Trx, riderId: string, tripId: string, key: Buffer, now: Date): Promise<ShareItem> {
   const trip = await ownTrip(trx, riderId, tripId);
   if (!shareable(trip)) throw new ApiError("invalid_transition", "A trip can be shared only while a driver is on it.", { reason: "trip_not_live", projection: tripProjection(trip, "rider") });
   if (!(await zoneShareOn(trx, trip.zone_id))) throw new ApiError("forbidden", "Trip sharing is switched off in this zone.", { reason: "share_trip_off" });
@@ -79,7 +86,7 @@ export async function createShare(trx: Trx, riderId: string, tripId: string, sec
   }
   const shareId = newId("shr", now.getTime());
   const row = { share_id: shareId, trip_id: tripId, created_at: now, expires_at: new Date(now.getTime() + SHARE.maxHours * HOUR_MS) };
-  await trx.insertInto("trip_shares").values({ ...row, token_hash: tokenHash(shareToken(secret, shareId)), rider_id: riderId, zone_id: trip.zone_id }).execute();
+  await trx.insertInto("trip_shares").values({ ...row, token_hash: tokenHash(shareToken(key, shareId)), rider_id: riderId, zone_id: trip.zone_id }).execute();
   await audit(trx, { adminId: null, action: "trip.share_started", targetType: "trip", targetId: tripId, zoneId: trip.zone_id, detail: { tripId, count: live.length + 1 }, at: now });
   return itemOf(row);
 }
@@ -88,7 +95,8 @@ export async function createShare(trx: Trx, riderId: string, tripId: string, sec
 export async function listShares(db: Db, riderId: string, tripId: string, now: Date): Promise<{ items: ShareItem[] }> {
   const trip = await db.selectFrom("trips").select(["rider_id", "status", "kind", "zone_id"]).where("trip_id", "=", tripId).executeTakeFirst();
   if (trip === undefined || trip.rider_id !== riderId) throw notFound("No such trip.", "trip_not_found");
-  if (!shareable(trip) || !(await zoneShareOn(db, trip.zone_id))) return { items: [] };
+  // A trip with no driver right now keeps its links (they say "looking for a new car"); an ended trip has none.
+  if (TERMINAL.has(trip.status as TripStatus) || !(await zoneShareOn(db, trip.zone_id))) return { items: [] };
   return { items: (await liveRows(db, tripId, now)).map(itemOf) };
 }
 
@@ -109,7 +117,13 @@ export type PublicShare = {
   updatedAt: string;
   refreshSeconds: number;
 };
-export type ShareRead = { state: "live"; view: PublicShare; country: string; timeZone: string } | { state: "ended"; country: string } | { state: "not_found" };
+/** contract.json#shareTrip.public.searching: no driver on the trip right now. Not ended; no trip data. */
+export type PublicSearching = { state: "searching"; updatedAt: string; refreshSeconds: number };
+export type ShareRead =
+  | { state: "live"; view: PublicShare; country: string; timeZone: string }
+  | { state: "searching"; view: PublicSearching; country: string }
+  | { state: "ended"; country: string }
+  | { state: "not_found" };
 
 const text = (value: unknown): string => (typeof value === "string" ? value.slice(0, 80) : "");
 const round5 = (value: number): number => Math.round(value * 1e5) / 1e5;
@@ -131,7 +145,7 @@ export async function readShare(db: Db, token: string, now: Date): Promise<Share
     .innerJoin("trips as t", "t.trip_id", "s.trip_id")
     .innerJoin("zones as z", "z.zone_id", "t.zone_id")
     .leftJoin("driver_locations as l", "l.driver_id", "t.driver_id")
-    .select(["s.share_id", "s.expires_at", "s.revoked_at", "t.status", "t.kind", "t.driver_id", "t.zone_id", "t.driver_summary", "t.eta", "z.country", "z.time_zone", "l.lat", "l.lng", "l.measured_at"])
+    .select(["s.share_id", "s.expires_at", "s.revoked_at", "t.status", "t.kind", "t.driver_id", "t.zone_id", "t.driver_summary", "t.eta", "t.next_after_trip_id", "z.country", "z.time_zone", "l.lat", "l.lng", "l.measured_at"])
     .where("s.token_hash", "=", tokenHash(token))
     .executeTakeFirst();
   if (row === undefined) return { state: "not_found" };
@@ -142,21 +156,27 @@ export async function readShare(db: Db, token: string, now: Date): Promise<Share
     await db.updateTable("trip_shares").set({ revoked_at: now }).where("share_id", "=", row.share_id).where("revoked_at", "is", null).execute();
     return ended;
   }
-  // No driver on the trip right now (he cancelled and a new search runs): nothing to show, but not ended for good.
-  if (row.driver_id === null || !shareable(row)) return ended;
+  // No driver on the trip right now (he cancelled and a new search runs): nothing of the trip is shown, but the link
+  // is not ended (supervisor SF-1): "looking for a new car", and the page keeps reloading.
+  if (row.driver_id === null || !shareable(row)) {
+    return { state: "searching", view: { state: "searching", updatedAt: now.toISOString(), refreshSeconds: SHARE.public.refreshSeconds }, country: row.country };
+  }
+  // Supervisor MF-1: queued behind the driver's current trip, the car still carries ANOTHER rider. Its spot (and the
+  // time it is free) is that rider's, never shown here; and it is not on the way to this pickup yet.
+  const queued = row.next_after_trip_id !== null;
 
   const vehicle = ((row.driver_summary as { vehicle?: Record<string, unknown> } | null)?.vehicle ?? {}) as Record<string, unknown>;
   const target = statusTarget(row.status);
   const stored = row.eta as { etaSeconds?: unknown; target?: unknown; at?: unknown } | null;
   let eta: PublicShare["eta"] = null;
-  if (target !== null && stored && stored.target === target && typeof stored.etaSeconds === "number" && typeof stored.at === "string" && Number.isFinite(Date.parse(stored.at))) {
+  if (!queued && target !== null && stored && stored.target === target && typeof stored.etaSeconds === "number" && typeof stored.at === "string" && Number.isFinite(Date.parse(stored.at))) {
     const left = Math.max(0, stored.etaSeconds - (now.getTime() - Date.parse(stored.at)) / 1000);
     eta = { minutes: Math.max(1, Math.ceil(left / 60)), target, arriveAround: clockTime(new Date(now.getTime() + left * 1000), row.time_zone) };
   }
-  const fresh = row.measured_at !== null && row.lat !== null && row.lng !== null && now.getTime() - row.measured_at.getTime() <= SHARE.public.positionMaxAgeSeconds * 1000;
+  const fresh = !queued && row.measured_at !== null && row.lat !== null && row.lng !== null && now.getTime() - row.measured_at.getTime() <= SHARE.public.positionMaxAgeSeconds * 1000;
   const view: PublicShare = {
     state: "live",
-    phase: PHASE_OF[row.status]!,
+    phase: queued ? SHARE.public.queuedPhase : PHASE_OF[row.status]!,
     car: { make: text(vehicle["make"]), model: text(vehicle["model"]), color: text(vehicle["color"]), plate: text(vehicle["plate"]) },
     eta,
     position: fresh ? { lat: round5(row.lat!), lng: round5(row.lng!), at: row.measured_at!.toISOString() } : null,
