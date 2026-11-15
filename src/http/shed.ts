@@ -51,6 +51,15 @@ export const POLL_READ_ROUTES: ReadonlySet<string> = new Set(
 );
 
 /**
+ * v0.18.116 §94 (contract.json#shareTrip.limits.note; BQ-S10): the two public reads of a shared trip link are shed
+ * FIRST: already at SHARE_SHED_AT of the limits every other sheddable route is refused at, so a contact's page (or a
+ * messaging app's preview fetch) gives way before any signed-in route does. They are never in SAFETY_READ_ROUTES: a
+ * contact's page may fail under load, SOS must not. Matched on the route pattern only (the path holds the link's token).
+ */
+export const SHARE_READ_ROUTES: ReadonlySet<string> = new Set([`GET ${API_PREFIX}/share/:token`, "GET /s/:token"]);
+export const SHARE_SHED_AT = 0.5;
+
+/**
  * Supervisor P4: ONLY new, low-priority work is ever shed — a price quote, the rider's map of cars, address search and
  * the admin panel's lists, and (G34 S2) the phones' 7 repeat checks in POLL_READ_ROUTES. Everything else (SOS / safety, offer accept / decline, trip state changes, payment and cash,
  * trip GPS, every event stream and its resume, sign-in, health checks) is never refused here. B1.24: nor are the admin
@@ -66,6 +75,7 @@ export function sheddable(method: string, url: string, routePattern?: string): b
   if (route.endsWith("/stream") || route.endsWith("/events")) return false;
   if (route === "/rider/nearby-vehicles" || route.startsWith("/places/")) return true;
   if (routePattern !== undefined && POLL_READ_ROUTES.has(`${method} ${routePattern}`)) return true;
+  if (routePattern !== undefined && SHARE_READ_ROUTES.has(`${method} ${routePattern}`)) return true;
   return route.startsWith("/admin/");
 }
 
@@ -89,8 +99,10 @@ export function registerLoadShedding(app: FastifyInstance, options: ShedOptions)
       return;
     }
     if (!sheddable(request.method, request.url, request.routeOptions.url)) return;
-    const pool = options.maxPoolWaiting > 0 && options.poolWaiting() > options.maxPoolWaiting;
-    const late = options.maxLoopDelayMs > 0 && lateMs > options.maxLoopDelayMs;
+    // v0.18.116 §94: the public share reads give way first (at half the limits).
+    const first = SHARE_READ_ROUTES.has(`${request.method} ${request.routeOptions.url ?? ""}`) ? SHARE_SHED_AT : 1;
+    const pool = options.maxPoolWaiting > 0 && options.poolWaiting() > options.maxPoolWaiting * first;
+    const late = options.maxLoopDelayMs > 0 && lateMs > options.maxLoopDelayMs * first;
     if (pool || late) {
       request.log.warn({ shed: pool ? "pool" : "loop", poolWaiting: options.poolWaiting(), loopLateMs: Math.round(lateMs) }, "load shed");
       reply.header("Retry-After", "2");
