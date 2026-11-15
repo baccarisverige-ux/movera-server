@@ -44,7 +44,7 @@ const NOT_AT_STOP = { reason: "not_at_stop", message: "You are not at the stop y
 
 /**
  * POST /driver/trips/{tripId}/stops/{i}/arrive | leave. v0.18.98 (job C9b, contract.json#stopWaits.arrive,
- * #autoArrive.stops.tap / back): `checkPosition` (driver apps on X-Contract-Version ≥ 0.18.98) — the first tap needs a
+ * #autoArrive.stops.tap / back): `checkPosition` (driver apps on X-Contract-Version ≥ 0.18.108, renumbered from 0.18.98) — the first tap needs a
  * fresh position within 300 m of stops[i], else 409 position_stale / not_at_stop; older apps (supervisor S1): the stored
  * fix, any age, within 300 m when there is one.
  * While stops[i].away is set, arrive is the back tap (any app): fresh position within the trip's leaveMeters, else 409

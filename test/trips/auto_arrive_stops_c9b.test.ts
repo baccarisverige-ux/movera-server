@@ -16,7 +16,7 @@ import { call, fixedRouter, NORRMALM, SODERMALM, signIn, testWorld } from "../su
  * stops", Rules decisions/driver-g7.md:84; plan Rules handover/build-plans-2026-11-13/C9b-plan.md): at a middle stop the
  * server marks the NEXT stop arrived after 2 slow confirming fixes within the trip's autoArriveMeters, the stop wait stands
  * still while the driver is farther than leaveMeters and goes on at a new arrival (fixes, or the back tap within
- * leaveMeters, else 409 not_at_stop); the first stop tap of a driver app on contract ≥ 0.18.98 needs a fresh position
+ * leaveMeters, else 409 not_at_stop); the first stop tap of a driver app on contract ≥ 0.18.108 needs a fresh position
  * within 300 m. Money exact in SEK (5,00 kr/min) and TND (0.250 DT/min, 3 decimals, half-up) = fixtures/auto_arrive.json#stops.
  */
 
@@ -26,7 +26,7 @@ let worker: TimerWorker;
 const clock = { now: new Date("2026-11-20T10:00:00Z") };
 const sample = (name: string) => JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/${name}.json`, "utf8"));
 const inTunis = (doc: unknown) => JSON.parse(JSON.stringify(doc).replace(/"SEK"/g, '"TND"').replace(/"Z001"/g, '"TN-TC"').replace(/"SE"/g, '"TN"').replace(/Europe\/Stockholm/g, "Africa/Tunis"));
-const FIXTURE = JSON.parse(readFileSync(new URL("../fixtures/contract-0.18.98/auto_arrive.json", import.meta.url), "utf8"));
+const FIXTURE = JSON.parse(readFileSync(new URL("../fixtures/contract-0.18.108/auto_arrive.json", import.meta.url), "utf8"));
 const fixtureCase = (id: string) => FIXTURE.stops.find((c: { id: string }) => c.id === id);
 const SPOT_A = { lat: 59.3335, lng: 18.0655 };
 const STOP_A = { address: "Fridhemsplan", lat: 59.3326, lng: 18.03 };
@@ -114,7 +114,7 @@ beforeEach(async () => {
   await fixAt(SPOT_A);
 });
 
-const NEW_APP = { "x-contract-version": "0.18.98" };
+const NEW_APP = { "x-contract-version": "0.18.108" };
 const step = (tripId: string, path: string, version: number, body: Doc = {}) => call(app, "POST", `/trips/${tripId}/${path}`, { ...driverA.headers, ...NEW_APP }, { expectedVersion: version, ...body });
 const stopTap = (tripId: string, i: number, verb: "arrive" | "leave", version: number, body: Doc = {}, headers: Record<string, string> = NEW_APP) =>
   call(app, "POST", `/driver/trips/${tripId}/stops/${i}/${verb}`, { ...driverA.headers, ...headers }, { expectedVersion: version, ...body });

@@ -14,8 +14,8 @@ import { stopsWithVisits } from "../../src/trips/projection.js";
  * (SEK and TND, half-up): away, back (fix or tap), leave / complete while away, the charged seconds after the free
  * minutes and the stop_waiting line priced as the fare prices it.
  *
- * The server's contracts/ copy is synced from a tag (tools/sync_contract.sh); until v0.18.98 is tagged the fixture is read
- * from test/fixtures/contract-0.18.98/auto_arrive.json, a byte copy of movera-contracts 2ddf78d (v0.18.98 round 2: #firstTap sent + stored, #nextStopAuto). Once the copy carries
+ * The server's contracts/ copy is synced from a tag (tools/sync_contract.sh); until v0.18.108 is tagged the fixture is read
+ * from test/fixtures/contract-0.18.108/auto_arrive.json, a byte copy of movera-contracts a031546 (v0.18.108, renumbered from 0.18.98; sha256 1524b8a20e9d14eee0f61032250bd2636d02ff748e0dd41d7a841714a47e2469). Once the copy carries
  * #stops, that one is read and must equal the byte copy.
  */
 type StopCase = {
@@ -24,7 +24,7 @@ type StopCase = {
   expect: { pausedSeconds: number; pauseCount: number; awayAtEnd: boolean; waitedSeconds: number; chargedSeconds: number; taps: string[]; stopLine: { amountMinor: number; currency: string } };
 };
 const COPY = `${CONTRACTS_DIR}/fixtures/auto_arrive.json`;
-const PINNED = new URL("../fixtures/contract-0.18.98/auto_arrive.json", import.meta.url);
+const PINNED = new URL("../fixtures/contract-0.18.108/auto_arrive.json", import.meta.url);
 const copy = existsSync(COPY) ? JSON.parse(readFileSync(COPY, "utf8")) : null;
 const pinned = JSON.parse(readFileSync(PINNED, "utf8"));
 export const STOP_FIXTURE = (copy?.stops ? copy : pinned) as {

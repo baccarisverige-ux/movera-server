@@ -1,6 +1,6 @@
 {
   "note": "v0.18.93 (contract.json#autoArrive): the waiting clock with the driver driving away and back. Times are seconds after Arrived (arrivedAt = 0); waitFromSeconds is when the free wait starts (a booked ride reached early: its pickup time). events: a counting fix at `meters` from the pickup, the driver's tap on Arrived, board (Start), or the driver's no-show. expect: freeUntil / noShowAt (seconds, after the moves), pausedSeconds, pauseCount, awayAtEnd, chargedSeconds at board and the waiting line (chargedSeconds / 60 × perMin, half-up), or the no-show answer of the last no_show event.",
-  "stopsNote": "v0.18.98 (contract.json#autoArrive.stops, job C9b): the wait at ONE middle stop. Times are seconds after the stop arrival (arrivedAt = 0). events: a counting fix at `meters` from the stop (one event stands for a confirmed pair), the driver's back tap at `meters`, leave, or complete. expect: pausedSeconds, pauseCount, awayAtEnd, waitedSeconds = (min(end, away.since) − arrivedAt) − pausedSeconds, chargedSeconds = max(0, waited − stopFreeWaitMin × 60), the answers of the taps (ok, not_at_stop, stop_already_arrived), and the stop line (chargedSeconds / 60 × stopWaitPerMin, half-up). firstTap (v0.18.98 round 2, S1 / S2): the first stop tap's position check, positionMaxAgeSeconds 60, 300 m; sent = the location sent with the tap, stored = the server's latest stored fix (meters to the stop, age in seconds); new apps (X-Contract-Version ≥ 0.18.98): a fresh sent location, else the fresh stored fix, else position_stale (one existed) or not_at_stop (none); older apps / no header: the stored fix at any age within 300 m, none stored = ok. nextStopAuto (round 2, M1): the 2 fixes of the confirming pair, meters to the next stop and to an open earlier stop; auto only when both are within arriveMeters (100) of the next stop and, while the open stop is not away, both farther than arriveMeters from it (slow / gap parts of the confirm are in autoArrive.confirm and not replayed here).",
+  "stopsNote": "v0.18.108 (contract.json#autoArrive.stops, job C9b): the wait at ONE middle stop. Times are seconds after the stop arrival (arrivedAt = 0). events: a counting fix at `meters` from the stop (one event stands for a confirmed pair), the driver's back tap at `meters`, leave, or complete. expect: pausedSeconds, pauseCount, awayAtEnd, waitedSeconds = (min(end, away.since) − arrivedAt) − pausedSeconds, chargedSeconds = max(0, waited − stopFreeWaitMin × 60), the answers of the taps (ok, not_at_stop, stop_already_arrived), and the stop line (chargedSeconds / 60 × stopWaitPerMin, half-up). firstTap (v0.18.108 round 2, S1 / S2): the first stop tap's position check, positionMaxAgeSeconds 60, 300 m; sent = the location sent with the tap, stored = the server's latest stored fix (meters to the stop, age in seconds); new apps (X-Contract-Version ≥ 0.18.108): a fresh sent location, else the fresh stored fix, else position_stale (one existed) or not_at_stop (none); older apps / no header: the stored fix at any age within 300 m, none stored = ok. nextStopAuto (round 2, M1): the 2 fixes of the confirming pair, meters to the next stop and to an open earlier stop; auto only when both are within arriveMeters (100) of the next stop and, while the open stop is not away, both farther than arriveMeters from it (slow / gap parts of the confirm are in autoArrive.confirm and not replayed here).",
   "clock": [
     {
       "id": "se_away_in_free_wait",
@@ -693,7 +693,7 @@
   "firstTap": [
     {
       "id": "new_app_sent_fresh_250m",
-      "contractVersion": "0.18.98",
+      "contractVersion": "0.18.108",
       "sent": {
         "meters": 250,
         "ageSeconds": 10
@@ -703,7 +703,7 @@
     },
     {
       "id": "new_app_sent_fresh_400m",
-      "contractVersion": "0.18.98",
+      "contractVersion": "0.18.108",
       "sent": {
         "meters": 400,
         "ageSeconds": 10
@@ -713,7 +713,7 @@
     },
     {
       "id": "new_app_sent_old_stored_fresh_near",
-      "contractVersion": "0.18.98",
+      "contractVersion": "0.18.108",
       "sent": {
         "meters": 50,
         "ageSeconds": 300
@@ -726,7 +726,7 @@
     },
     {
       "id": "new_app_sent_old_near_stored_fresh_far",
-      "contractVersion": "0.18.98",
+      "contractVersion": "0.18.108",
       "sent": {
         "meters": 20,
         "ageSeconds": 300
@@ -739,7 +739,7 @@
     },
     {
       "id": "new_app_sent_old_stored_old",
-      "contractVersion": "0.18.98",
+      "contractVersion": "0.18.108",
       "sent": {
         "meters": 50,
         "ageSeconds": 300
@@ -752,7 +752,7 @@
     },
     {
       "id": "new_app_stored_only_old",
-      "contractVersion": "0.18.98",
+      "contractVersion": "0.18.108",
       "sent": null,
       "stored": {
         "meters": 100,
@@ -762,7 +762,7 @@
     },
     {
       "id": "new_app_no_position",
-      "contractVersion": "0.18.98",
+      "contractVersion": "0.18.108",
       "sent": null,
       "stored": null,
       "expect": "not_at_stop"
@@ -786,6 +786,32 @@
         "ageSeconds": 5000
       },
       "expect": "ok"
+    },
+    {
+      "id": "old_app_0_18_99_stored_old_250m_edge",
+      "contractVersion": "0.18.99",
+      "sent": {
+        "meters": 20,
+        "ageSeconds": 500
+      },
+      "stored": {
+        "meters": 250,
+        "ageSeconds": 5000
+      },
+      "expect": "ok"
+    },
+    {
+      "id": "new_app_0_18_108_same_positions_edge",
+      "contractVersion": "0.18.108",
+      "sent": {
+        "meters": 20,
+        "ageSeconds": 500
+      },
+      "stored": {
+        "meters": 250,
+        "ageSeconds": 5000
+      },
+      "expect": "position_stale"
     },
     {
       "id": "no_header_stored_400m",
