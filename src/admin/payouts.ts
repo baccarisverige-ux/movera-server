@@ -448,10 +448,27 @@ export async function holdDriverPayouts(trx: Trx, who: Principal, driverId: stri
 /**
  * v0.18.39 A2 (owner build-spec Q4, contract.json#payoutMode): POST /admin/payouts/runs/approve { country, periodEnd }.
  * Every pending_approval payout of that country and period inside the admin's zones becomes pending (to pay).
+ * v0.18.102 BQ-V38 (contract.json#payoutMode.approveGuard; owner item 105 / Q-M8 "Refresh, approve again (Rec.)", Rules
+ * decisions/session-2026-11-06.md:1119 "Movera never pays a total the admin did not see"): the admin sends what he saw
+ * (expectedCount + expectedTotal per currency); under the row lock a run that no longer matches is refused with 409
+ * conflict run_changed and the fresh PayoutRunCard, and nothing is approved.
  */
-export async function approvePayoutRun(trx: Trx, who: Principal, body: { country: string; periodEnd: string; reason: string }, now: Date) {
+export type PayoutRunCard = { country: string; periodEnd: string; count: number; total: { amountMinor: number; currency: string }[] };
+
+/** The same payouts and, per currency, the same total (no currency missing or extra). */
+function sameRun(card: PayoutRunCard, expectedCount: number, expectedTotal: readonly { amountMinor: number; currency: string }[]): boolean {
+  if (card.count !== expectedCount) return false;
+  const seen = new Map<string, number>();
+  for (const m of expectedTotal) seen.set(m.currency, (seen.get(m.currency) ?? 0) + m.amountMinor);
+  if (seen.size !== card.total.length || seen.size !== expectedTotal.length) return false;
+  return card.total.every((m) => seen.get(m.currency) === m.amountMinor);
+}
+
+export async function approvePayoutRun(trx: Trx, who: Principal, body: { country: string; periodEnd: string; reason: string; expectedCount?: number; expectedTotal?: { amountMinor: number; currency: string }[] }, now: Date) {
   // v0.18.39 fix job 0 (owner A2-3 "Yes, reason required"): never approved without a reason; it goes into the audit.
   if (!body.reason || !body.reason.trim()) throw new ApiError("invalid_request", "Write why you approve this run.", { reason: "reason_required" });
+  // BQ-V38: never approved blind (an admin older than v0.18.102 sends no total).
+  if (typeof body.expectedCount !== "number" || !Array.isArray(body.expectedTotal)) throw new ApiError("invalid_request", "Approve the run with the count and total you saw.", { reason: "expected_total_required" });
   const periodEnd = new Date(body.periodEnd);
   const rows = await trx
     .selectFrom("payouts as p")
@@ -466,10 +483,13 @@ export async function approvePayoutRun(trx: Trx, who: Principal, body: { country
   const mine = rows.filter((r) => r.zone_id === null ? who.zones.includes("*") : adminCoversZone(who, r.zone_id));
   if (rows.length === 0) throw new ApiError("invalid_transition", "No payout of this run waits for approval.", { reason: "nothing_to_approve" });
   if (mine.length === 0) throw new ApiError("forbidden", "This run is outside your zones.", { reason: "zone_out_of_scope" });
-  await trx.updateTable("payouts").set({ status: "pending", approved_at: now, approved_by: who.subjectId }).where("payout_id", "in", mine.map((r) => r.payout_id)).execute();
   const totals = new Map<string, number>();
   for (const r of mine) totals.set(r.currency, (totals.get(r.currency) ?? 0) + Number(r.amount_minor));
   const total = [...totals].map(([currency, amountMinor]) => ({ amountMinor, currency }));
-  await audit(trx, { adminId: who.subjectId, action: "payout.run_approve", targetType: "payout_run", targetId: `${body.country}:${periodEnd.toISOString()}`, detail: { approved: mine.length, total, reason: body.reason.trim() }, at: now });
+  // BQ-V38: the run as it is now (under the lock) must be the run the admin saw.
+  const card: PayoutRunCard = { country: body.country, periodEnd: periodEnd.toISOString(), count: mine.length, total };
+  if (!sameRun(card, body.expectedCount, body.expectedTotal)) throw new ApiError("conflict", "The run changed since you looked at it. Check the new numbers and approve again.", { reason: "run_changed", projection: card });
+  await trx.updateTable("payouts").set({ status: "pending", approved_at: now, approved_by: who.subjectId }).where("payout_id", "in", mine.map((r) => r.payout_id)).execute();
+  await audit(trx, { adminId: who.subjectId, action: "payout.run_approve", targetType: "payout_run", targetId: `${body.country}:${periodEnd.toISOString()}`, detail: { approved: mine.length, total, reason: body.reason.trim(), expectedCount: body.expectedCount, expectedTotal: body.expectedTotal }, at: now });
   return { country: body.country, periodEnd: periodEnd.toISOString(), approved: mine.length, total };
 }

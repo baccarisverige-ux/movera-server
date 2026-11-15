@@ -141,16 +141,18 @@ describe("v0.18.39 fix job 0 (A2, owner Q4 + A2-3): payouts Automatic or Manual 
     expect((await driverPayouts(database.db, se, { limit: 10 })).items[0]).toMatchObject({ status: "pending" });
     await expect(database.db.transaction().execute((trx) => markPayoutPaid(trx, finance, sePayout.payout_id, {}, at))).rejects.toMatchObject({ options: { reason: "run_not_approved" } });
     const periodEnd = sePayout.period_end.toISOString();
+    // BQ-V38 (v0.18.102): the approve carries the run the admin saw (1 payout, 100,00 kr).
+    const seSeen = { expectedCount: 1, expectedTotal: [{ amountMinor: 10_000, currency: "SEK" }] };
     // Fix job 0 (owner A2-3 "Yes, reason required"): no reason, no approval.
-    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: " " }, at))).rejects.toMatchObject({ options: { reason: "reason_required" } });
-    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, paris, { country: "SE", periodEnd, reason: "Checked the bank file" }, at))).rejects.toMatchObject({ options: { reason: "zone_out_of_scope" } });
-    const done = await database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: "Checked the bank file" }, at));
+    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: " ", ...seSeen }, at))).rejects.toMatchObject({ options: { reason: "reason_required" } });
+    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, paris, { country: "SE", periodEnd, reason: "Checked the bank file", ...seSeen }, at))).rejects.toMatchObject({ options: { reason: "zone_out_of_scope" } });
+    const done = await database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: "Checked the bank file", ...seSeen }, at));
     expect(done).toEqual({ country: "SE", periodEnd, approved: 1, total: [{ amountMinor: 10_000, currency: "SEK" }] });
-    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: "Checked the bank file" }, at))).rejects.toMatchObject({ options: { reason: "nothing_to_approve" } });
+    await expect(database.db.transaction().execute((trx) => approvePayoutRun(trx, finance, { country: "SE", periodEnd, reason: "Checked the bank file", ...seSeen }, at))).rejects.toMatchObject({ options: { reason: "nothing_to_approve" } });
     expect((await database.db.selectFrom("payouts").select("status").where("payout_id", "=", sePayout.payout_id).executeTakeFirstOrThrow()).status).toBe("pending");
     await database.db.transaction().execute((trx) => markPayoutPaid(trx, finance, sePayout.payout_id, {}, at));
     const audit = await database.db.selectFrom("admin_audit").select(["action", "target_id", "detail"]).where("action", "=", "payout.run_approve").execute();
-    expect(audit).toMatchObject([{ action: "payout.run_approve", target_id: `SE:${periodEnd}`, detail: { reason: "Checked the bank file" } }]);
+    expect(audit).toMatchObject([{ action: "payout.run_approve", target_id: `SE:${periodEnd}`, detail: { reason: "Checked the bank file", ...seSeen } }]);
   });
 
   it("FR manual and a Paris admin: the Paris admin approves the French run (FR)", async () => {
@@ -160,7 +162,7 @@ describe("v0.18.39 fix job 0 (A2, owner Q4 + A2-3): payouts Automatic or Manual 
     expect(await run("2026-11-02T08:00:00Z")).toBe(1);
     const row = await database.db.selectFrom("payouts").select(["status", "period_end"]).where("driver_id", "=", fr).executeTakeFirstOrThrow();
     expect(row.status).toBe("pending_approval");
-    const done = await database.db.transaction().execute((trx) => approvePayoutRun(trx, paris, { country: "FR", periodEnd: row.period_end.toISOString(), reason: "Checked" }, at));
+    const done = await database.db.transaction().execute((trx) => approvePayoutRun(trx, paris, { country: "FR", periodEnd: row.period_end.toISOString(), reason: "Checked", expectedCount: 1, expectedTotal: [{ amountMinor: 3_000, currency: "EUR" }] }, at));
     expect(done.total).toEqual([{ amountMinor: 3_000, currency: "EUR" }]);
   });
 });
