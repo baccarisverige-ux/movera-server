@@ -1,6 +1,6 @@
 {
   "note": "v0.18.93 (contract.json#autoArrive): the waiting clock with the driver driving away and back. Times are seconds after Arrived (arrivedAt = 0); waitFromSeconds is when the free wait starts (a booked ride reached early: its pickup time). events: a counting fix at `meters` from the pickup, the driver's tap on Arrived, board (Start), or the driver's no-show. expect: freeUntil / noShowAt (seconds, after the moves), pausedSeconds, pauseCount, awayAtEnd, chargedSeconds at board and the waiting line (chargedSeconds / 60 × perMin, half-up), or the no-show answer of the last no_show event.",
-  "stopsNote": "v0.18.98 (contract.json#autoArrive.stops, job C9b): the wait at ONE middle stop. Times are seconds after the stop arrival (arrivedAt = 0). events: a counting fix at `meters` from the stop (one event stands for a confirmed pair), the driver's back tap at `meters`, leave, or complete. expect: pausedSeconds, pauseCount, awayAtEnd, waitedSeconds = (min(end, away.since) − arrivedAt) − pausedSeconds, chargedSeconds = max(0, waited − stopFreeWaitMin × 60), the answers of the taps (ok, not_at_stop, stop_already_arrived), and the stop line (chargedSeconds / 60 × stopWaitPerMin, half-up). firstTap: the first stop tap's position check (positionMaxAgeSeconds 60, 300 m, only for X-Contract-Version ≥ 0.18.98).",
+  "stopsNote": "v0.18.98 (contract.json#autoArrive.stops, job C9b): the wait at ONE middle stop. Times are seconds after the stop arrival (arrivedAt = 0). events: a counting fix at `meters` from the stop (one event stands for a confirmed pair), the driver's back tap at `meters`, leave, or complete. expect: pausedSeconds, pauseCount, awayAtEnd, waitedSeconds = (min(end, away.since) − arrivedAt) − pausedSeconds, chargedSeconds = max(0, waited − stopFreeWaitMin × 60), the answers of the taps (ok, not_at_stop, stop_already_arrived), and the stop line (chargedSeconds / 60 × stopWaitPerMin, half-up). firstTap (v0.18.98 round 2, S1 / S2): the first stop tap's position check, positionMaxAgeSeconds 60, 300 m; sent = the location sent with the tap, stored = the server's latest stored fix (meters to the stop, age in seconds); new apps (X-Contract-Version ≥ 0.18.98): a fresh sent location, else the fresh stored fix, else position_stale (one existed) or not_at_stop (none); older apps / no header: the stored fix at any age within 300 m, none stored = ok. nextStopAuto (round 2, M1): the 2 fixes of the confirming pair, meters to the next stop and to an open earlier stop; auto only when both are within arriveMeters (100) of the next stop and, while the open stop is not away, both farther than arriveMeters from it (slow / gap parts of the confirm are in autoArrive.confirm and not replayed here).",
   "clock": [
     {
       "id": "se_away_in_free_wait",
@@ -692,46 +692,200 @@
   ],
   "firstTap": [
     {
-      "id": "tap_250m_new_app",
-      "meters": 250,
-      "ageSeconds": 10,
+      "id": "new_app_sent_fresh_250m",
       "contractVersion": "0.18.98",
+      "sent": {
+        "meters": 250,
+        "ageSeconds": 10
+      },
+      "stored": null,
       "expect": "ok"
     },
     {
-      "id": "tap_400m_new_app",
-      "meters": 400,
-      "ageSeconds": 10,
+      "id": "new_app_sent_fresh_400m",
       "contractVersion": "0.18.98",
+      "sent": {
+        "meters": 400,
+        "ageSeconds": 10
+      },
+      "stored": null,
       "expect": "not_at_stop"
     },
     {
-      "id": "tap_400m_old_app",
-      "meters": 400,
-      "ageSeconds": 10,
-      "contractVersion": "0.18.97",
-      "expect": "ok"
-    },
-    {
-      "id": "tap_400m_no_header",
-      "meters": 400,
-      "ageSeconds": 10,
-      "contractVersion": null,
-      "expect": "ok"
-    },
-    {
-      "id": "tap_stale_fix_new_app",
-      "meters": 100,
-      "ageSeconds": 90,
+      "id": "new_app_sent_old_stored_fresh_near",
       "contractVersion": "0.18.98",
+      "sent": {
+        "meters": 50,
+        "ageSeconds": 300
+      },
+      "stored": {
+        "meters": 120,
+        "ageSeconds": 20
+      },
+      "expect": "ok"
+    },
+    {
+      "id": "new_app_sent_old_near_stored_fresh_far",
+      "contractVersion": "0.18.98",
+      "sent": {
+        "meters": 20,
+        "ageSeconds": 300
+      },
+      "stored": {
+        "meters": 900,
+        "ageSeconds": 20
+      },
+      "expect": "not_at_stop"
+    },
+    {
+      "id": "new_app_sent_old_stored_old",
+      "contractVersion": "0.18.98",
+      "sent": {
+        "meters": 50,
+        "ageSeconds": 300
+      },
+      "stored": {
+        "meters": 50,
+        "ageSeconds": 200
+      },
       "expect": "position_stale"
     },
     {
-      "id": "tap_no_position_new_app",
-      "meters": null,
-      "ageSeconds": null,
+      "id": "new_app_stored_only_old",
       "contractVersion": "0.18.98",
+      "sent": null,
+      "stored": {
+        "meters": 100,
+        "ageSeconds": 90
+      },
+      "expect": "position_stale"
+    },
+    {
+      "id": "new_app_no_position",
+      "contractVersion": "0.18.98",
+      "sent": null,
+      "stored": null,
       "expect": "not_at_stop"
+    },
+    {
+      "id": "old_app_stored_400m",
+      "contractVersion": "0.18.97",
+      "sent": null,
+      "stored": {
+        "meters": 400,
+        "ageSeconds": 10
+      },
+      "expect": "not_at_stop"
+    },
+    {
+      "id": "old_app_stored_250m_any_age",
+      "contractVersion": "0.18.97",
+      "sent": null,
+      "stored": {
+        "meters": 250,
+        "ageSeconds": 5000
+      },
+      "expect": "ok"
+    },
+    {
+      "id": "no_header_stored_400m",
+      "contractVersion": null,
+      "sent": {
+        "meters": 20,
+        "ageSeconds": 5
+      },
+      "stored": {
+        "meters": 400,
+        "ageSeconds": 10
+      },
+      "expect": "not_at_stop"
+    },
+    {
+      "id": "no_header_no_stored_fix",
+      "contractVersion": null,
+      "sent": null,
+      "stored": null,
+      "expect": "ok"
+    }
+  ],
+  "nextStopAuto": [
+    {
+      "id": "stops_60m_apart_still_at_open_stop",
+      "openStop": {
+        "away": false,
+        "pairMeters": [
+          10,
+          15
+        ]
+      },
+      "nextStopPairMeters": [
+        50,
+        55
+      ],
+      "expect": "none"
+    },
+    {
+      "id": "stops_60m_apart_one_fix_still_near_open",
+      "openStop": {
+        "away": false,
+        "pairMeters": [
+          95,
+          130
+        ]
+      },
+      "nextStopPairMeters": [
+        40,
+        30
+      ],
+      "expect": "none"
+    },
+    {
+      "id": "stops_150m_apart_left_open_area",
+      "openStop": {
+        "away": false,
+        "pairMeters": [
+          150,
+          145
+        ]
+      },
+      "nextStopPairMeters": [
+        20,
+        10
+      ],
+      "expect": "auto"
+    },
+    {
+      "id": "open_stop_away_then_next_stop",
+      "openStop": {
+        "away": true,
+        "pairMeters": [
+          300,
+          310
+        ]
+      },
+      "nextStopPairMeters": [
+        30,
+        25
+      ],
+      "expect": "auto"
+    },
+    {
+      "id": "no_open_stop",
+      "openStop": null,
+      "nextStopPairMeters": [
+        40,
+        60
+      ],
+      "expect": "auto"
+    },
+    {
+      "id": "next_stop_one_fix_outside",
+      "openStop": null,
+      "nextStopPairMeters": [
+        40,
+        120
+      ],
+      "expect": "none"
     }
   ]
 }

@@ -63,3 +63,12 @@ export function arriveAtStop(visits: StopVisit[], stopIndex: number, now: Date, 
   const at = now.toISOString();
   return [...visits.map((v) => (v.leftAt ? v : { ...v, leftAt: at })), { stopIndex, arrivedAt: at, arrivedBy: by }];
 }
+
+/**
+ * v0.18.98 round 2 (supervisor M1, contract.json#autoArrive.stops.auto): one fix counts toward the auto arrival at the
+ * next stop when it is within arriveMeters of it and, while an earlier stop is open and not away, farther than
+ * arriveMeters from that open stop (two stops close together: he is still waiting at the open one).
+ */
+export function countsForNextStop(arriveMeters: number, toNext: number, open: { away: boolean; meters: number } | null): boolean {
+  return toNext <= arriveMeters && (open === null || open.away || open.meters > arriveMeters);
+}

@@ -349,24 +349,22 @@ describe("C9b (3): money = fixtures/auto_arrive.json#stops (preview line = final
   });
 });
 
-describe("C9b (4): the first stop tap's position check (fixtures/auto_arrive.json#firstTap)", () => {
-  for (const fixtureTap of FIXTURE.firstTap as Array<{ id: string; meters: number | null; ageSeconds: number | null; contractVersion: string | null; expect: string }>) {
-    // Supervisor S1 (asked by the coordinator 2026-11-14): an older app's first stop tap is refused when the server's stored
-    // fix (any age) is farther than 300 m. CONFLICT: contract e81132a / d02ad08 #firstTap still says "ok" for
-    // tap_400m_old_app and tap_400m_no_header; the contract fixture must follow (or S1 be dropped).
-    const oldApp = fixtureTap.contractVersion === null || fixtureTap.contractVersion < "0.18.98";
-    const c = oldApp && fixtureTap.meters !== null && fixtureTap.meters > 300 ? { ...fixtureTap, expect: "not_at_stop" } : fixtureTap;
+describe("C9b (4): the first stop tap's position check (fixtures/auto_arrive.json#firstTap, round 2: sent + stored)", () => {
+  type Pos = { meters: number; ageSeconds: number } | null;
+  for (const c of FIXTURE.firstTap as Array<{ id: string; contractVersion: string | null; sent: Pos; stored: Pos; expect: string }>) {
     it(`${c.id} → ${c.expect}`, async () => {
       const { tripId, version } = await inTrip();
-      if (c.meters === null) {
-        await database.db.deleteFrom("driver_locations").where("driver_id", "=", driverA.id).execute();
-      } else {
+      // The server's stored fix: posted now, then the clock moves on by its age (none: the stored row is removed).
+      if (c.stored === null) await database.db.deleteFrom("driver_locations").where("driver_id", "=", driverA.id).execute();
+      else {
         clock.now = new Date(clock.now.getTime() + 30_000);
-        await fixAt(north(STOP_A, c.meters));
-        clock.now = new Date(clock.now.getTime() + c.ageSeconds! * 1000);
+        await fixAt(north(STOP_A, c.stored.meters));
+        clock.now = new Date(clock.now.getTime() + c.stored.ageSeconds * 1000);
+        await signInAgain();
       }
+      const body = c.sent === null ? {} : { location: { ...north(STOP_A, c.sent.meters), accuracy: 5, measuredAt: new Date(clock.now.getTime() - c.sent.ageSeconds * 1000).toISOString() } };
       const headers: Record<string, string> = c.contractVersion === null ? {} : { "x-contract-version": c.contractVersion };
-      const r = await stopTap(tripId, 0, "arrive", version, {}, headers);
+      const r = await stopTap(tripId, 0, "arrive", version, body, headers);
       if (c.expect === "ok") {
         expect(r.statusCode, r.body).toBe(200);
         expect(r.json().stops[0]).toMatchObject({ arrivedBy: "tap" });

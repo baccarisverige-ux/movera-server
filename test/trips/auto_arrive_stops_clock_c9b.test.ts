@@ -2,7 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { priceFare, type PricingDocument } from "../../src/rules/fare.js";
-import { stopAwayFrom, stopBackAt, stopWaitedSeconds } from "../../src/trips/ride/stopClock.js";
+import { countsForNextStop, stopAwayFrom, stopBackAt, stopWaitedSeconds } from "../../src/trips/ride/stopClock.js";
+import { confirmedBy, type CountingFix } from "../../src/trips/ride/fixConfirm.js";
+import { AUTO_CONFIRM } from "../../src/trips/ride/geofence.js";
 import { stopWaitSeconds, type StopVisit } from "../../src/trips/stops.js";
 import { stopsWithVisits } from "../../src/trips/projection.js";
 
@@ -13,7 +15,7 @@ import { stopsWithVisits } from "../../src/trips/projection.js";
  * minutes and the stop_waiting line priced as the fare prices it.
  *
  * The server's contracts/ copy is synced from a tag (tools/sync_contract.sh); until v0.18.98 is tagged the fixture is read
- * from test/fixtures/contract-0.18.98/auto_arrive.json, a byte copy of movera-contracts e81132a. Once the copy carries
+ * from test/fixtures/contract-0.18.98/auto_arrive.json, a byte copy of movera-contracts 2ddf78d (v0.18.98 round 2: #firstTap sent + stored, #nextStopAuto). Once the copy carries
  * #stops, that one is read and must equal the byte copy.
  */
 type StopCase = {
@@ -25,7 +27,9 @@ const COPY = `${CONTRACTS_DIR}/fixtures/auto_arrive.json`;
 const PINNED = new URL("../fixtures/contract-0.18.98/auto_arrive.json", import.meta.url);
 const copy = existsSync(COPY) ? JSON.parse(readFileSync(COPY, "utf8")) : null;
 const pinned = JSON.parse(readFileSync(PINNED, "utf8"));
-export const STOP_FIXTURE = (copy?.stops ? copy : pinned) as { stops: StopCase[]; firstTap: Array<{ id: string; meters: number | null; ageSeconds: number | null; contractVersion: string | null; expect: string }> };
+export const STOP_FIXTURE = (copy?.stops ? copy : pinned) as {
+  nextStopAuto: Array<{ id: string; openStop: { away: boolean; pairMeters: [number, number] } | null; nextStopPairMeters: [number, number]; expect: "auto" | "none" }>;
+  stops: StopCase[]; firstTap: unknown[] };
 const pricing = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/pricing_document.json`, "utf8")) as PricingDocument;
 const T0 = Date.parse("2026-11-14T10:00:00Z");
 const at = (s: number) => new Date(T0 + s * 1000);
@@ -111,4 +115,16 @@ describe("C9b projection: stops[i] carries arrivedBy / away / pausedSeconds / pa
     ]);
     expect(stopsWithVisits([a], [{ stopIndex: 0, arrivedAt: at(0).toISOString() }])).toEqual([{ ...a, arrivedAt: at(0).toISOString() }]);
   });
+});
+
+describe("C9b M1: the next stop's auto arrival = fixtures/auto_arrive.json#nextStopAuto (arriveMeters 100)", () => {
+  // The pair as the job reads it (newest first), 5 s apart and standing still, so only the distance rule decides.
+  for (const c of STOP_FIXTURE.nextStopAuto) {
+    it(`${c.id} → ${c.expect}`, () => {
+      const pair = [1, 0].map((k) => ({ fix: { measuredAt: at(5 * k), meters: c.nextStopPairMeters[k]!, speedMps: 0, lat: 0, lng: 0 } as CountingFix, open: c.openStop ? { away: c.openStop.away, meters: c.openStop.pairMeters[k]! } : null }));
+      const openOf = new Map(pair.map((p) => [p.fix, p.open]));
+      const first = confirmedBy(pair.map((p) => p.fix), (f) => countsForNextStop(100, f.meters, openOf.get(f) ?? null), { ...AUTO_CONFIRM, windowSeconds: 60 }, true, () => 0);
+      expect(first ? "auto" : "none").toBe(c.expect);
+    });
+  }
 });
