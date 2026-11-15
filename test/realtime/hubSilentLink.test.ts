@@ -2,6 +2,7 @@ import type net from "node:net";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LISTEN_CONNECT_TIMEOUT_MS, LISTEN_READY_WAIT_MS, NotificationHub, RECONNECT_BACKOFF } from "../../src/realtime/hub.js";
+import { freshDatabase } from "../support/db.js";
 import { adminUrl } from "../support/globalSetup.js";
 import { startSilentProxy } from "../support/silentProxy.js";
 
@@ -445,7 +446,11 @@ describe("PM-1: a silent LISTEN link (real pg through a TCP proxy that goes sile
 
   it("the hub comes back by itself after the link was silent (probe: before the fix it stayed down for ever)", async () => {
     const made = hubClients();
-    const proxy = await startSilentProxy(adminUrl());
+    // Its own (empty) database, so the hub's sessions can be counted on the database by name. (CI fix: they were
+    // counted by client port, but the database only sees the proxy's port when nothing sits in between; in CI
+    // Postgres runs in a container behind a port mapping and sees another port, so the count was 0.)
+    const own = await freshDatabase({ migrated: false });
+    const proxy = await startSilentProxy(own.url);
     const warns: string[] = [];
     const hub = new NotificationHub(proxy.url, ["pm1_probe"], { warn: (_data, message) => void warns.push(message) }, TUNING);
     try {
@@ -482,18 +487,21 @@ describe("PM-1: a silent LISTEN link (real pg through a TCP proxy that goes sile
       // And it really listens again: a NOTIFY sent straight to the database arrives.
       let heard = 0;
       hub.subscribe("pm1_probe", (payload) => void (payload !== null && (heard += 1)));
-      const direct = new pg.Client({ connectionString: adminUrl() });
+      const direct = new pg.Client({ connectionString: own.url });
       await direct.connect();
       try {
         await direct.query(`NOTIFY pm1_probe, '{"n":1}'`);
-        expect(await until(() => heard === 1, 3_000)).toBe(true);
-        // No double client: exactly one LISTEN session of this hub is left on the database.
+        expect(await until(() => heard === 1, 10_000)).toBe(true);
+        // No double client: exactly one LISTEN session of this hub is left on the database. The sessions of the
+        // given-up attempts end on the database a moment after their sockets close, so the count is read until it
+        // is 1 (bounded), and must then still be exactly 1 - and the one NOTIFY was heard exactly once.
+        const listenSessions = async () =>
+          (await direct.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = 'movera-server-listen' AND datname = current_database()")).rows[0]!.n;
+        let sessions = await listenSessions();
+        for (const end = Date.now() + 10_000; sessions !== 1 && Date.now() < end; sessions = await listenSessions()) await sleep(50);
+        expect(sessions).toBe(1);
         await sleep(500);
-        const sessions = await direct.query<{ n: number }>(
-          "SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = 'movera-server-listen' AND client_port = ANY($1::int[])",
-          [proxy.upPorts()],
-        );
-        expect(sessions.rows[0]!.n).toBe(1);
+        expect(await listenSessions()).toBe(1);
         expect(heard).toBe(1);
       } finally {
         await direct.end();
@@ -501,6 +509,7 @@ describe("PM-1: a silent LISTEN link (real pg through a TCP proxy that goes sile
     } finally {
       await hub.stop();
       await proxy.close();
+      await own.drop();
     }
   });
 

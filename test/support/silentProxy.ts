@@ -21,8 +21,6 @@ export type SilentProxy = {
   accepted: () => number;
   /** Connections the silence caught. */
   caught: () => number;
-  /** The proxy's own ports toward the database, to find the client's sessions in pg_stat_activity. */
-  upPorts: () => number[];
   goSilent: (mode?: SilentMode) => void;
   heal: () => void;
   close: () => Promise<void>;
@@ -77,7 +75,6 @@ export async function startSilentProxy(databaseUrl: string, initial?: SilentMode
     url: through.toString(),
     accepted: () => accepted,
     caught: () => all().filter((pair) => pair.held).length,
-    upPorts: () => all().flatMap((pair) => (pair.closed || pair.held || pair.up?.localPort === undefined ? [] : [pair.up.localPort])),
     goSilent: (next = "accept") => {
       mode = next;
       for (const pair of pairs) pair.held = true;
