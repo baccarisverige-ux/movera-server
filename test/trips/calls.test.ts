@@ -292,3 +292,47 @@ describe("in-app calls (v0.18.38 §62)", () => {
     expect(ok.json().document.calls.connectTimeoutSeconds).toBe(40);
   });
 });
+
+describe("call open until (v0.18.113 BQ-S13, owner 2026-11-01 \"Keep call open for 1 hour but not chat\")", () => {
+  const endedAt = async (tripId: string) => (await database.db.selectFrom("trips").select("ended_at").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).ended_at!;
+  const readTrip = async (tripId: string, who: Record<string, string>) => (await call(app, "GET", `/trips/${tripId}`, who)).json() as Record<string, unknown>;
+  const historyItem = async (tripId: string) => ((await call(app, "GET", "/rider/trips?limit=20", rider)).json().items as Array<Record<string, unknown>>).find((t) => t.tripId === tripId)!;
+
+  it("S13-1 a completed trip carries callOpenUntil = drop-off + 60 min on GET /trips/{tripId} (rider, driver) and GET /rider/trips; the server allows a call at that instant, not after", async () => {
+    const { tripId } = await completed();
+    const until = new Date((await endedAt(tripId)).getTime() + 60 * 60_000).toISOString();
+    const asRider = await readTrip(tripId, rider);
+    expect(asRider.callOpenUntil).toBe(until);
+    expect(schemaProblem("TripProjection", asRider)).toBeNull();
+    expect((await readTrip(tripId, driver.headers)).callOpenUntil).toBe(until);
+    expect((await historyItem(tripId)).callOpenUntil).toBe(until);
+    clock.now = new Date(until);
+    await signInAgain();
+    const atEnd = await startCall(tripId, rider);
+    expect(atEnd.statusCode).toBe(200);
+    expect((await call(app, "POST", `/calls/${atEnd.json().callId}/end`, rider, { reason: "hangup" })).statusCode).toBe(200);
+    clock.now = new Date(Date.parse(until) + 1000);
+    expect((await startCall(tripId, driver.headers)).json()).toMatchObject({ reason: "call_window_closed" });
+  });
+
+  it("S13-2 the admin's window is read when the trip is served (10 min → drop-off + 10 min); calls off → no callOpenUntil", async () => {
+    const { tripId } = await completed();
+    const ended = (await endedAt(tripId)).getTime();
+    await setCalls({ on: true, callWindowAfterTripMin: 10 });
+    expect((await readTrip(tripId, driver.headers)).callOpenUntil).toBe(new Date(ended + 10 * 60_000).toISOString());
+    expect((await historyItem(tripId)).callOpenUntil).toBe(new Date(ended + 10 * 60_000).toISOString());
+    await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").execute();
+    await setCalls({ on: false });
+    expect((await readTrip(tripId, rider)).callOpenUntil).toBeUndefined();
+    expect((await historyItem(tripId)).callOpenUntil).toBeUndefined();
+  });
+
+  it("S13-3 no callOpenUntil on a trip still under way or a cancelled trip", async () => {
+    const live = await accepted();
+    expect((await readTrip(live.tripId, rider)).callOpenUntil).toBeUndefined();
+    const cancel = await call(app, "POST", `/trips/${live.tripId}/cancel`, rider, { expectedVersion: live.version, reasonCode: "plans_changed" });
+    expect(cancel.statusCode).toBe(200);
+    expect((await readTrip(live.tripId, rider)).callOpenUntil).toBeUndefined();
+    expect((await historyItem(live.tripId)).callOpenUntil).toBeUndefined();
+  });
+});
