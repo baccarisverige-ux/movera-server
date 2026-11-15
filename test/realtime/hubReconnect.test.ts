@@ -318,7 +318,9 @@ describe("B1.16 proof: LISTEN health check and reconnect", () => {
     expect(db.connects).toHaveLength(1);
     dead.emit("end");
     dead.emit("error", new Error("late error of the old socket"));
-    await vi.advanceTimersByTimeAsync(5_000);
+    // PM-1: 3 s, inside the 5 s connect timeout (an attempt that hangs longer is now given up and retried on purpose;
+    // test/realtime/hubSilentLink.test.ts).
+    await vi.advanceTimersByTimeAsync(3_000);
     release?.();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(db.connects).toHaveLength(1);
