@@ -8,6 +8,7 @@ import { cancelTimer, scheduleTimer, type TimerHandler } from "../jobs/timers.js
 import { DRIVER_ASSIGNED, type TripStatus } from "../rules/transitions.js";
 import { tripProjection } from "../trips/projection.js";
 import { pushIncomingCall } from "./push.js";
+import { callWindowEnd } from "./openUntil.js";
 import { callSettingsFor, iceServers, type CallSettings } from "./settings.js";
 
 /**
@@ -46,8 +47,9 @@ export function callView(row: CallRow, connectTimeoutSeconds: number): CallView 
 export function callWindowOpen(trip: Pick<TripRow, "driver_id" | "status" | "ended_at">, settings: CallSettings, now: Date): boolean {
   if (trip.driver_id === null) return false;
   if (DRIVER_ASSIGNED.has(trip.status as TripStatus)) return true;
-  if (trip.status !== "completed" || trip.ended_at === null) return false;
-  return now.getTime() <= trip.ended_at.getTime() + settings.callWindowAfterTripMin * 60_000;
+  // v0.18.113 BQ-S13: the same instant the apps get as TripProjection.callOpenUntil.
+  const end = callWindowEnd(trip, settings);
+  return end !== null && now.getTime() <= end.getTime();
 }
 
 export function assertCallAllowed(trip: TripRow, who: CallWho, settings: CallSettings, now: Date): void {
