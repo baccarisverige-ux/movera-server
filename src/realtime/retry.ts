@@ -28,16 +28,18 @@ export function readRetrySettings(): Readonly<ReadRetrySettings> {
 
 /**
  * Calls `close` after a random 0 – closeSpreadMs, unless `isClosed()` by then; while `holdClose()` it draws a new
- * delay instead. Returns a cancel function.
+ * delay instead. Returns a cancel function. With `maxHoldMs`, the pool check stops holding the close once that long
+ * has passed since the call (B1.18: a stream is never held open for ever); without it the B1.9 behaviour is unchanged.
  */
-export function spreadClose(close: () => void, isClosed: () => boolean): () => void {
+export function spreadClose(close: () => void, isClosed: () => boolean, options: { maxHoldMs?: number } = {}): () => void {
   let timer: NodeJS.Timeout | undefined;
+  const holdUntil = options.maxHoldMs === undefined ? Infinity : Date.now() + options.maxHoldMs;
   // A re-check while the pool is busy waits at least 1 s, so a spread of 0 cannot spin (supervisor B1.9 L1).
   const arm = (minMs: number) => {
     timer = setTimeout(() => {
       timer = undefined;
       if (isClosed()) return;
-      if (settings.holdClose()) return arm(1000);
+      if (Date.now() < holdUntil && settings.holdClose()) return arm(1000);
       close();
     }, Math.max(minMs, Math.floor(Math.random() * settings.closeSpreadMs)));
     timer.unref();
@@ -94,7 +96,7 @@ export function readRetry(run: () => void, isClosed: () => boolean, giveUp: () =
 }
 
 /** B1.9: what a stream says when it gives up on its reads; the app reconnects with its cursor and re-reads. */
-export function giveUpStream(stream: { comment: (text: string) => void; close: () => void }): void {
-  stream.comment("stream read failed; reconnect to catch up");
+export function giveUpStream(stream: { comment: (text: string) => void; close: () => void }, why = "stream read failed; reconnect to catch up"): void {
+  stream.comment(why);
   stream.close();
 }

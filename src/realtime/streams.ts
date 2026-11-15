@@ -9,7 +9,7 @@ import { eventEnvelope } from "./events.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "./hub.js";
 import { openEventStream } from "./sse.js";
-import { giveUpStream, readRetry } from "./retry.js";
+import { giveUpStream, readRetry, spreadClose } from "./retry.js";
 
 /**
  * Live streams (contract §4). Each stream subscribes before it replays, then reads everything after the last
@@ -19,6 +19,9 @@ import { giveUpStream, readRetry } from "./retry.js";
  */
 
 type Who = Pick<Principal, "actor" | "subjectId">;
+
+/** B1.18: after a LISTEN reconnect, a busy DB pool may hold a settings stream's close at most this long. */
+export const RECONNECT_CLOSE_MAX_HOLD_MS = 120_000;
 
 /** Whether `who` may see the trip, and (v0.18.5 G9) whether its chat text is hidden from him: rider / driver after the trip. */
 async function maySee(db: Db, tripId: string, who: Who): Promise<{ ok: boolean; hideMessage: boolean }> {
@@ -158,14 +161,20 @@ export async function streamConfig(
       const publishedAt = typeof payload["publishedAt"] === "string" ? payload["publishedAt"] : now.toISOString();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "config_published", doc: payload["doc"], zoneId: payload["zoneId"], version: payload["version"], publishedAt, occurredAt: publishedAt, serverTime: now.toISOString() });
     }
-  });
+    // MF-1: the settings stream's catch-up goes after the offer feeds, trip streams and SOS stream (hub batches it).
+  }, { catchUp: "spread" });
   stream.onClose(unsubscribe);
   // S04 A5: the null signal (LISTEN reconnected) means hints may have been missed. A hint needs a tripId and the
   // contract has no catch-up event, so the stream is closed: the app reconnects (same Last-Event-ID) and re-reads.
+  // B1.18 (owner W1 Q80): every stream of this copy gets the signal together, so the close waits a random
+  // 0 – STREAM_CLOSE_SPREAD_MS (as B1.9) and, while the DB pool is over its shed limit, longer, but at most
+  // RECONNECT_CLOSE_MAX_HOLD_MS. One pending close per stream, however many reconnects come in the meantime.
+  let pendingClose: (() => void) | undefined;
   const missedHints = () => {
-    stream.comment("realtime reconnected; reconnect to catch up");
-    stream.close();
+    if (pendingClose !== undefined || stream.closed()) return;
+    pendingClose = spreadClose(() => giveUpStream(stream, "realtime reconnected; reconnect to catch up"), () => stream.closed(), { maxHoldMs: RECONNECT_CLOSE_MAX_HOLD_MS });
   };
+  stream.onClose(() => pendingClose?.());
   // v0.18.32 (contract.json#bookedRideSeen.riderTripEvent, P21): a trip of this rider changed, wherever it was made.
   // The trip event's NOTIFY names its rider, so no read is needed; the id stays the document version already sent.
   if (riderId !== undefined) {
@@ -174,7 +183,7 @@ export async function streamConfig(
       if (payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
-    }));
+    }, { catchUp: "spread" }));
   }
   // v0.18.45 §68 (contract.json#driverReservationsLive): a booked ride of this zone (or one naming this driver)
   // changed. A hint only: the app re-reads GET /driver/reservations. Sent from the post-commit NOTIFY, so a
@@ -187,7 +196,7 @@ export async function streamConfig(
       if (payload["zoneId"] !== zoneId && payload["driverId"] !== driverId) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "driver_reservations_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
-    }));
+    }, { catchUp: "spread" }));
   }
   // A reconnect with Last-Event-ID older than the live version gets the newest at once.
   await safeCheck();
