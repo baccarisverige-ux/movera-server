@@ -742,17 +742,21 @@ describe("migration 0043: the old defaults move to the owner's (2 km, 0 free sto
 });
 
 describe("E4 (audit S03 B2): an older batch that replaces nothing tells nobody", () => {
-  it("no location event, no ride-check scan when the stored fix is newer; the older fixes still go into the trace", async () => {
+  // S7 B3.2 (owner W2 Q113, 2026-11-15; v1 R18): the scan part of E4 is reversed. The long-stop scan is booked on every
+  // send, also for an older batch (it reads the fix times of the trace the batch fills), at the next allowed scan time.
+  it("no location event when the stored fix is newer; the older fixes still go into the trace and the ride-check scan is still booked (R18)", async () => {
     const trip = await accepted();
     await onBoard(trip);
     await moveTo({ lat: 59.326, lng: 18.068 }, 20);
+    const scanned = clock.now.getTime();
     await worker.runDue();
     const events = () => database.db.selectFrom("trip_events").select("sequence").where("trip_id", "=", trip.tripId).where("kind", "=", "location").execute();
     const before = (await events()).length;
     const older = { fixes: [{ lat: 59.33, lng: 18.06, accuracy: 5, measuredAt: new Date(clock.now.getTime() - 10_000).toISOString() }] };
     expect((await call(app, "POST", "/driver/location", driverA.headers, older)).statusCode).toBe(200);
     expect((await events()).length).toBe(before);
-    expect(await database.db.selectFrom("timers").select("kind").where("kind", "=", RIDE_CHECK_SCAN).where("ref_id", "=", trip.tripId).execute()).toEqual([]);
+    const scans = await database.db.selectFrom("timers").select("due_at").where("kind", "=", RIDE_CHECK_SCAN).where("ref_id", "=", trip.tripId).execute();
+    expect(scans.map((t) => Number(t.due_at))).toEqual([scanned + 30_000]);
     const trace = await database.db.selectFrom("trip_locations").select("lat").where("trip_id", "=", trip.tripId).where("measured_at", "=", new Date(older.fixes[0]!.measuredAt)).execute();
     expect(trace.length).toBe(1);
   });
