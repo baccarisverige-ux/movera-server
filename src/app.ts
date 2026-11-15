@@ -48,6 +48,7 @@ import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
 import { reservationRoutes } from "./reservations/routes.js";
 import { dispatchToolRoutes } from "./dispatch/toolRoutes.js";
+import { shareRoutes, SHARE_LIMITS } from "./safety/shareRoutes.js";
 import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
@@ -339,6 +340,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // v0.18.6 §32 (owner G4-F2..F6): the admin's Dispatch tools and the driver's events.
     await dispatchToolRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}), ...(sms ? { sms } : {}), warn: (data, message) => app.log.warn(data, message) });
+    // v0.18.116 §94 (BQ-S10): the rider's live trip link and its two public reads (their own budget, per copy).
+    await shareRoutes(app, { db, jwtSecret, ...(env.SHARE_LINK_BASE ? { linkBase: env.SHARE_LINK_BASE } : {}), perAddressPerMinute: shareOf(SHARE_LIMITS.perAddressPerMinute, env.WEB_COPIES), perTokenPerMinute: shareOf(SHARE_LIMITS.perTokenPerMinute, env.WEB_COPIES), ...(clock ? { clock } : {}) });
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
