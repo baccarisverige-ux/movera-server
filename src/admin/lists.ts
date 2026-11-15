@@ -12,6 +12,7 @@ import { moderationColumns, type ModerationInput } from "../riders/moderation.js
 import { scheduleTimer } from "../jobs/timers.js";
 import { markSetOffline } from "../drivers/offlineReason.js";
 import { riderView } from "../riders/service.js";
+import { COUNTRY_WALLET_CURRENCY, riderPlaces } from "../riders/place.js";
 import "../riders/walletSchema.js";
 import { withEta } from "../trips/eta.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
@@ -125,12 +126,17 @@ export async function listRiders(ex: Executor, who: Principal, input: { cursor?:
 
 type RiderWallets = { balances: Array<{ amountMinor: number; currency: string }>; zoneCurrency: string | null };
 
-/** v0.18.28 (owner Q4): each rider's wallet balances, one per currency, and the currency of his zone. */
+/** v0.18.28 (owner Q4): each rider's wallet balances, one per currency, and the currency of his place (BQ-A30c). */
 export async function riderWallets(ex: Executor, riderIds: string[]): Promise<Map<string, RiderWallets>> {
   const out = new Map<string, RiderWallets>();
   if (!riderIds.length) return out;
-  const zones = await ex.selectFrom("riders").leftJoin("zones", "zones.zone_id", "riders.last_seen_zone_id").select(["riders.rider_id", "zones.currency"]).where("riders.rider_id", "in", riderIds).execute();
-  for (const z of zones) out.set(z.rider_id, { balances: [], zoneCurrency: z.currency });
+  // BQ-A30c: the same place as the wallet credit (riderPlaces: latest trip zone, then last seen zone), so the admin is
+  // shown the currency the credit takes; no place → null (then the first balance he holds, else the server currency).
+  const places = await riderPlaces(ex, riderIds);
+  for (const id of riderIds) {
+    const country = places.get(id)?.country;
+    out.set(id, { balances: [], zoneCurrency: (country && COUNTRY_WALLET_CURRENCY[country]) || null });
+  }
   const rows = await ex.selectFrom("rider_wallets").select(["rider_id", "currency", "balance_minor"]).where("rider_id", "in", riderIds).where("balance_minor", "<>", "0").orderBy("currency").execute();
   for (const r of rows) out.get(r.rider_id)?.balances.push({ amountMinor: Number(r.balance_minor), currency: r.currency });
   return out;
