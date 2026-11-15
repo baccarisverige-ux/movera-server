@@ -53,6 +53,7 @@ const MAX_FIX_AHEAD_MS = 60 * 1000;
  * pooled connection instead of holding it up to DATABASE_STATEMENT_TIMEOUT_MS (30 s). When it runs out Postgres raises
  * 55P03, nothing of the batch is stored, and app.ts answers 503 server_busy with Retry-After: 2 (db.ts isDatabaseBusy),
  * which the driver app's sender pauses on and then sends its fix again.
+ * Only POST /driver/location (postLocations) sets it; going online with a position does not (supervisor SF-1).
  */
 export const GPS_LOCK_TIMEOUT_MS = 2000;
 
@@ -404,7 +405,7 @@ export async function postLocations(trx: Trx, driverId: string, body: unknown, n
   const batch = body as { fixes: Fix[]; tripId?: string };
   // Stress T-A part 3 (owner 2026-11-10, RESULT-3.md): the driver row, his active trip and whether he has an open
   // airport queue entry come in ONE statement (they were read 3 + 1 times); zones and areas come from memory.
-  const facts = await locationFacts(trx, driverId);
+  const facts = await locationFacts(trx, driverId, GPS_LOCK_TIMEOUT_MS);
   // v0.18.52 §74 (owner Q15 'Not stored', 2026-11-09): a batch from an offline or suspended driver with no active trip
   // is not stored — no position on the admin map, no stale-fix work — whatever an old app or a sender not stopped sends.
   // Only here: going online stores its own fix (availability) before the status flips.
@@ -426,7 +427,11 @@ type LocationFacts = {
   active: (NonNullable<Awaited<ReturnType<typeof activeTripOf>>> & { arrive_m: number | null; leave_m: number | null; away: boolean | null; next_scan_at: string | null; stops: unknown; stop_visits: unknown }) | undefined;
 };
 
-async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts | undefined> {
+/**
+ * `lockLimitMs`: only POST /driver/location passes it (supervisor SF-1). Going online (setAvailability) reads the same
+ * facts for its own fix with no limit, so it waits for a row lock as it always did.
+ */
+async function locationFacts(trx: Trx, driverId: string, lockLimitMs?: number): Promise<LocationFacts | undefined> {
   const row = await trx
     .selectFrom("drivers as d")
     .leftJoinLateral(
@@ -454,7 +459,7 @@ async function locationFacts(trx: Trx, driverId: string): Promise<LocationFacts 
     // S7 B3.1 (Q112): SET LOCAL lock_timeout for this transaction (is_local = true), set by this first statement so the
     // GPS path keeps its statement budget (test/drivers/location_statements.test.ts). This read takes no lock; every
     // write of the batch comes after it. No driver row = no value set, and nothing is written then.
-    .select(sql<string>`set_config('lock_timeout', ${`${GPS_LOCK_TIMEOUT_MS}ms`}, true)`.as("lock_limit"))
+    .$if(lockLimitMs !== undefined, (qb) => qb.select(sql<string>`set_config('lock_timeout', ${`${lockLimitMs}ms`}, true)`.as("lock_limit")))
     .where("d.driver_id", "=", driverId)
     .executeTakeFirst();
   if (row === undefined) return undefined;

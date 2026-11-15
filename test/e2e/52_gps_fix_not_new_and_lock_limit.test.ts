@@ -247,4 +247,29 @@ describe("Q112 (B3.1): the GPS write waits at most GPS_LOCK_TIMEOUT_MS for a row
     expect(noticesOf(tripId)).toBe(told + 1);
     expect(sim.timerErrors).toEqual([]);
   }, 30_000);
+
+  // Supervisor SF-1: the owner's answer names the GPS write only. Going online stores its own fix through the same
+  // steps (setAvailability → storeFixes) and keeps waiting as before; it is not answered 503 after the GPS limit.
+  it("SF-1: POST /driver/availability with a position is not under the GPS limit: it waits for the trip row as before", async () => {
+    const tripId = await onTrip();
+    pass(10);
+    const profile = (await driver.get("/driver/profile")).body;
+    const holder = new pg.Client({ connectionString: sim.database.url });
+    await holder.connect();
+    await holder.query("BEGIN");
+    await holder.query("SELECT trip_id FROM trips WHERE trip_id = $1 FOR NO KEY UPDATE", [tripId]);
+    const fix = fixAt(STILL, sim.clock.now);
+    const posting = driver.post("/driver/availability", { expectedVersion: profile["version"], onlineStatus: "online", location: fix });
+    try {
+      const early = await Promise.race([posting, new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), GPS_LOCK_TIMEOUT_MS + 1500))]);
+      expect(early === "waiting" ? "waiting" : `${early.status} ${JSON.stringify(early.body)}`).toBe("waiting");
+    } finally {
+      await holder.query("ROLLBACK");
+      await holder.end();
+    }
+    const answer = await posting;
+    expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+    expect((await stored()).measured_at.toISOString()).toBe(fix.measuredAt);
+    expect(await locationEvents(tripId)).toContain(fix.measuredAt);
+  }, 30_000);
 });
