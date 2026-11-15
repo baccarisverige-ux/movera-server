@@ -28,7 +28,7 @@ async function riderCountry(ex: Executor, riderId: string): Promise<string | nul
   const row = await ex.selectFrom("riders").select("phone").where("rider_id", "=", riderId).executeTakeFirst();
   return row?.phone ? countryOfPhone(row.phone) : null;
 }
-async function driverCountry(ex: Executor, driverId: string): Promise<string | null> {
+export async function driverCountry(ex: Executor, driverId: string): Promise<string | null> {
   const row = await ex.selectFrom("drivers").select(["country", "phone"]).where("driver_id", "=", driverId).executeTakeFirst();
   return row?.country ?? (row?.phone ? countryOfPhone(row.phone) : null);
 }

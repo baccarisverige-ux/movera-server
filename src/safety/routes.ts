@@ -84,7 +84,7 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
       const tripId = tripParam(request);
       const body = parseBody(SosBody, request.body);
       // v0.18.101 §92: the SMS rows written by this command are handed to the SMS company only after it is saved.
-      const sms = { connected: deps.sms !== undefined, queued: [] as string[] };
+      const sms = { connected: deps.sms !== undefined, queued: [] as string[], ...(deps.warn ? { warn: deps.warn } : {}) };
       const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await raiseSos(trx, { actor, subjectId: who.subjectId }, tripId, clean(body), now(), sms) }));
       const incidentId = (result.body as { incidentId?: string }).incidentId;
       if (deps.sms && sms.queued.length > 0 && incidentId) {

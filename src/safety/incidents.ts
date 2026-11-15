@@ -167,7 +167,7 @@ export async function raiseSos(
   tripId: string,
   body: { at: string; position?: Position | undefined },
   now: Date,
-  sms: { connected: boolean; queued?: string[] } = { connected: false },
+  sms: { connected: boolean; queued?: string[]; warn?: (data: Record<string, unknown>, message: string) => void } = { connected: false },
 ) {
   const trip = await lockTrip(trx, tripId);
   const own = who.actor === "rider" ? trip.rider_id === who.subjectId : trip.driver_id === who.subjectId;
@@ -179,10 +179,10 @@ export async function raiseSos(
   const row = (await openOf(trx, tripId, "sos")) ?? (await openIncident(trx, trip, { kind: "sos", raisedBy: who.actor, position: body.position }, now));
   if (who.actor === "rider") return { incidentId: row.incident_id, tripId, receivedAt: now.toISOString() };
   // v0.18.101 §92: the case's first driver SOS texts his emergency contacts (rows kept as skipped while no SMS company
-  // is connected); later SOS answer the stored result. The phone's GPS of THIS press is used when the case has none.
+  // is connected); later SOS answer the stored result. The SMS step never fails the SOS (own savepoint).
   let contactsSms = row.contacts_sms as SosContactsSms | null;
   if (contactsSms === null) {
-    const written = await writeSosSms(trx, { ...row, position: row.position ?? body.position ?? null }, sms.connected, now);
+    const written = await writeSosSms(trx, row, body.position ?? null, sms.connected, now, sms.warn);
     contactsSms = written.result;
     sms.queued?.push(...written.queued);
     await appendIncidentEvent(trx, { ...row, contacts_sms: contactsSms }, "incident_updated", now);

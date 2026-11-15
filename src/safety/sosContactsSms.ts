@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { liveDocument, standardKey } from "../config/service.js";
@@ -7,7 +8,7 @@ import { newId } from "../ids.js";
 import { noticeLanguage, type Lang } from "../notifications/noticeLanguage.js";
 import type { SmsProvider } from "../sms/sms.js";
 import { scrubText } from "../telemetry/scrub.js";
-import { driverContacts } from "../accounts/phoneData.js";
+import { driverContacts, driverCountry } from "../accounts/phoneData.js";
 
 /**
  * v0.18.101 §92 (contract.json#sosContactsSms; BQ-V34 = BQ-S12, owner 2026-11-02 Q2 "Use them in SOS (Recommended)",
@@ -30,14 +31,34 @@ export type SosSmsStatus = "off" | "no_contacts" | "not_connected" | "queued" | 
 export type SosContactsSms = { status: SosSmsStatus; contacts: number; sent?: number; at: string };
 type LatLng = { lat: number; lng: number };
 
-/** contract.json#sosContactsSms.phone: + kept; 00… → +…; a leading 0 or a bare number gets the country's calling code. */
+/** Digits after the calling code of a full national number typed international without + (sosContactsSms.phone). */
+const NATIONAL_DIGITS: Record<string, number> = { SE: 9, FR: 9, TN: 8 };
+/** contract.json#sosContactsSms.phone: the final number an SMS may ever go to (E.164). */
+const E164 = /^\+[1-9]\d{6,14}$/;
+
+/**
+ * contract.json#sosContactsSms.phone: + kept; 00… → +…; a leading 0 is replaced by the country's calling code; a number
+ * already typed international without + (SE 46 + 9 digits, FR 33 + 9, TN 216 + 8) only gets the +; any other bare
+ * number gets the code in front. Not checked here: see {@link sosSmsNumber}.
+ */
 export function internationalPhone(phone: string, country: string | null): string {
   const p = phone.replace(/[\s-]/g, "");
   if (p.startsWith("+")) return p;
   if (p.startsWith("00")) return `+${p.slice(2)}`;
   const code = country ? SCS.callingCodes[country] : undefined;
   if (!code) return p;
-  return p.startsWith("0") ? `${code}${p.slice(1)}` : `${code}${p}`;
+  if (p.startsWith("0")) return `${code}${p.slice(1)}`;
+  const digits = code.slice(1);
+  const national = country ? NATIONAL_DIGITS[country] : undefined;
+  if (national !== undefined && p.startsWith(digits) && p.length === digits.length + national) return `+${p}`;
+  return `${code}${p}`;
+}
+
+/** The number an SOS SMS may go to, or null (bad or missing number: kept with error invalid_number, never sent). */
+export function sosSmsNumber(phone: unknown, country: string | null): string | null {
+  if (typeof phone !== "string") return null;
+  const n = internationalPhone(phone, country);
+  return E164.test(n) ? n : null;
 }
 
 /** contract.json#sosContactsSms.text: the SMS in the driver's notice language. */
@@ -45,8 +66,9 @@ export function sosSmsText(lang: Lang, input: { driver: string; position: LatLng
   const template = SCS.texts.sms[lang] ?? SCS.texts.sms.en;
   const filled = input.position
     ? template.replace("{link}", SCS.positionLink.replace("{lat}", input.position.lat.toFixed(6)).replace("{lng}", input.position.lng.toFixed(6)))
-    : template.replace(/Position ?: \{link\}/, SCS.texts.noPosition[lang] ?? SCS.texts.noPosition.en);
-  return filled.replaceAll("{driver}", input.driver).replaceAll("{emergency}", input.emergency);
+    : template.replace(/Position ?: \{link\}/, () => SCS.texts.noPosition[lang] ?? SCS.texts.noPosition.en);
+  // Function replacers: a "$&" or "$1" in a first name is written as typed (supervisor S3).
+  return filled.replaceAll("{driver}", () => input.driver).replaceAll("{emergency}", () => input.emergency);
 }
 
 /** CountryRules.sosContactsSms of the country standard; never saved → configDefaults.sosContactsSms. */
@@ -69,41 +91,67 @@ const latLng = (raw: unknown): LatLng | null => {
   return r && typeof r.lat === "number" && typeof r.lng === "number" ? { lat: r.lat, lng: r.lng } : null;
 };
 
+type SosIncident = { incident_id: string; zone_id: string | null; driver_id: string | null; position: unknown; driver_fix: unknown };
+
 /**
  * Called by the driver's SOS inside its command, for the case's first driver SOS only (incidents.contacts_sms is NULL).
- * Stores the result on the incident and answers it, plus the queued rows to hand over after the save.
+ * The SMS step never fails the SOS (supervisor M2): it runs in its own savepoint; on any error only the savepoint is
+ * rolled back, the case and the Movera alert stay, and the stored result is failed (sent 0).
+ * `press` = the GPS of this driver press; the SMS position is press, then the car's fix, then the case's position
+ * (never the rider's phone GPS first, supervisor S1).
  */
 export async function writeSosSms(
   trx: Trx,
-  incident: { incident_id: string; zone_id: string | null; driver_id: string | null; position: unknown; driver_fix: unknown },
+  incident: SosIncident,
+  press: unknown,
   connected: boolean,
   now: Date,
+  warn?: (data: Record<string, unknown>, message: string) => void,
 ): Promise<{ result: SosContactsSms; queued: string[] }> {
+  await sql`SAVEPOINT sos_contacts_sms`.execute(trx);
+  let written: { result: SosContactsSms; queued: string[] };
+  try {
+    written = await smsRows(trx, incident, press, connected, now);
+    await sql`RELEASE SAVEPOINT sos_contacts_sms`.execute(trx);
+  } catch (error) {
+    await sql`ROLLBACK TO SAVEPOINT sos_contacts_sms`.execute(trx);
+    warn?.({ incidentId: incident.incident_id, err: scrubText(String(error)).slice(0, 300) }, "SOS SMS step failed; the SOS case stays open");
+    written = { result: { status: "failed", contacts: 0, sent: 0, at: now.toISOString() }, queued: [] };
+  }
+  await trx.updateTable("incidents").set({ contacts_sms: JSON.stringify(written.result) }).where("incident_id", "=", incident.incident_id).execute();
+  return written;
+}
+
+async function smsRows(trx: Trx, incident: SosIncident, press: unknown, connected: boolean, now: Date): Promise<{ result: SosContactsSms; queued: string[] }> {
   const at = now.toISOString();
   const zone = incident.zone_id ? await trx.selectFrom("zones").select("country").where("zone_id", "=", incident.zone_id).executeTakeFirst() : undefined;
   const country = zone?.country ?? null;
+  if (!incident.driver_id) return { result: { status: "no_contacts", contacts: 0, at }, queued: [] };
+  if (country !== null && !(await sosSmsOn(trx, country))) return { result: { status: "off", contacts: 0, at }, queued: [] };
+  const { items } = await driverContacts(trx, incident.driver_id);
+  if (items.length === 0) return { result: { status: "no_contacts", contacts: 0, at }, queued: [] };
+  const driver = await trx.selectFrom("drivers").select(["first_name", "language"]).where("driver_id", "=", incident.driver_id).executeTakeFirstOrThrow();
+  // The contacts were saved under the driver's own country (phoneData); the trip zone's country only when he has none.
+  const phoneCountry = (await driverCountry(trx, incident.driver_id)) ?? country;
+  const lang = await noticeLanguage(trx, { actor: "driver", id: incident.driver_id, language: driver.language }, incident.zone_id);
+  const emergency = country ? ((await emergencyNumbersFor(trx, country))[0]?.number ?? "112") : "112";
+  const text = sosSmsText(lang, { driver: driver.first_name, position: latLng(press) ?? latLng(incident.driver_fix) ?? latLng(incident.position), emergency });
   const queued: string[] = [];
-  let result: SosContactsSms;
-  if (!incident.driver_id) result = { status: "no_contacts", contacts: 0, at };
-  else if (country !== null && !(await sosSmsOn(trx, country))) result = { status: "off", contacts: 0, at };
-  else {
-    const { items } = await driverContacts(trx, incident.driver_id);
-    if (items.length === 0) result = { status: "no_contacts", contacts: 0, at };
-    else {
-      const driver = await trx.selectFrom("drivers").select(["first_name", "language"]).where("driver_id", "=", incident.driver_id).executeTakeFirstOrThrow();
-      const lang = await noticeLanguage(trx, { actor: "driver", id: incident.driver_id, language: driver.language }, incident.zone_id);
-      const emergency = country ? ((await emergencyNumbersFor(trx, country))[0]?.number ?? "112") : "112";
-      const text = sosSmsText(lang, { driver: driver.first_name, position: latLng(incident.position) ?? latLng(incident.driver_fix), emergency });
-      for (const [i, contact] of items.entries()) {
-        const smsId = newId("sms", now.getTime() + i);
-        await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: internationalPhone(contact.phone, country), text, kind: SOS_SMS_KIND, status: connected ? "queued" : "skipped", provider: null, created_at: now }).execute();
-        if (connected) queued.push(smsId);
-      }
-      result = { status: connected ? "queued" : "not_connected", contacts: items.length, at };
+  for (const [i, contact] of items.entries()) {
+    const smsId = newId("sms", now.getTime() + i);
+    const number = sosSmsNumber(contact.phone, phoneCountry);
+    if (number === null) {
+      // Supervisor S2: a wrong number must never get the driver's position.
+      const raw = typeof contact.phone === "string" ? contact.phone : "";
+      await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: raw, text, kind: SOS_SMS_KIND, status: connected ? "failed" : "skipped", provider: null, error: "invalid_number", created_at: now }).execute();
+      continue;
     }
+    await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: number, text, kind: SOS_SMS_KIND, status: connected ? "queued" : "skipped", provider: null, created_at: now }).execute();
+    if (connected) queued.push(smsId);
   }
-  await trx.updateTable("incidents").set({ contacts_sms: JSON.stringify(result) }).where("incident_id", "=", incident.incident_id).execute();
-  return { result, queued };
+  if (!connected) return { result: { status: "not_connected", contacts: items.length, at }, queued };
+  if (queued.length === 0) return { result: { status: "failed", contacts: items.length, sent: 0, at }, queued };
+  return { result: { status: "queued", contacts: items.length, at }, queued };
 }
 
 /**

@@ -113,10 +113,53 @@ describe("scenario 16c: the driver's SOS texts his emergency contacts (no SMS co
     const driverSos = await sos(sim, a, tripId, null);
     expect(driverSos.body["incidentId"]).toBe(riderSos.body["incidentId"]);
     expect(driverSos.body["contactsSms"]).toMatchObject({ status: "not_connected", contacts: 3 });
-    // No GPS in the body: the car's latest position the server has.
+    // Supervisor S1: no GPS in the driver's body → the car's position kept on the case, never the rider's phone GPS.
+    const fix = (await sim.db.selectFrom("incidents").select("driver_fix").where("incident_id", "=", riderSos.body["incidentId"]).executeTakeFirstOrThrow()).driver_fix as { lat: number; lng: number };
     const rows = await outbox(sim);
     expect(rows).toHaveLength(3);
-    expect(rows[0]!.text).toMatch(/https:\/\/maps\.google\.com\/\?q=\d+\.\d{6},\d+\.\d{6}/);
+    expect(rows[0]!.text).toContain(`https://maps.google.com/?q=${fix.lat.toFixed(6)},${fix.lng.toFixed(6)}`);
+    expect(rows[0]!.text).not.toContain("59.333100,18.065100");
+  });
+
+  it("S1: the driver's own press GPS wins over the rider's GPS on a rider-opened case", async () => {
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    expect((await sos(sim, rider, tripId)).status).toBe(200);
+    const mine = { lat: 59.34, lng: 18.07, accuracyM: 5, at: "2026-10-27T10:00:40Z" };
+    expect((await sos(sim, a, tripId, mine)).body["contactsSms"]).toMatchObject({ status: "not_connected", contacts: 3 });
+    for (const row of await outbox(sim)) expect(row.text).toContain("https://maps.google.com/?q=59.340000,18.070000");
+  });
+
+  it("S2: a missing or bad number is kept with invalid_number and never used; the SOS answers 200", async () => {
+    await sim.db.updateTable("driver_phone_data").set({ emergency_contacts: JSON.stringify([{ name: "No phone" }]) }).where("driver_id", "=", a.id).execute();
+    const noPhone = await bookAndAccept(sim, rider, a);
+    const first = await sos(sim, a, noPhone.tripId);
+    expect(first.status).toBe(200);
+    expect(first.body["contactsSms"]).toMatchObject({ status: "not_connected", contacts: 1 });
+    expect((await sim.db.selectFrom("sms_outbox").select(["phone", "status", "error"]).where("kind", "=", "sos_contact").execute())).toEqual([{ phone: "", status: "skipped", error: "invalid_number" }]);
+    await endTrip(sim, rider, a);
+    await sim.db.deleteFrom("sms_outbox").where("kind", "=", "sos_contact").execute();
+    expect((await a.put("/driver/emergency-contacts", { items: [...CONTACTS.slice(0, 1), { name: "Short", phone: "000" }] })).status).toBe(200);
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    expect((await sos(sim, a, tripId)).body["contactsSms"]).toMatchObject({ status: "not_connected", contacts: 2 });
+    const rows = await sim.db.selectFrom("sms_outbox").select(["phone", "status", "error"]).where("kind", "=", "sos_contact").orderBy("sms_id").execute();
+    expect(rows).toEqual([
+      { phone: "+46701234567", status: "skipped", error: null },
+      { phone: "000", status: "skipped", error: "invalid_number" },
+    ]);
+    expect((await a.put("/driver/emergency-contacts", { items: CONTACTS })).status).toBe(200);
+  });
+
+  it("M2: the SMS step never fails the SOS — a broken stored contact row makes it throw; the case still opens, status failed", async () => {
+    // A null item: reading its phone throws inside the SMS step (no API path writes this; it forces the fault).
+    await sim.db.updateTable("driver_phone_data").set({ emergency_contacts: JSON.stringify([{ name: "Mamma", phone: "0701234567" }, null]) }).where("driver_id", "=", a.id).execute();
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    const res = await sos(sim, a, tripId);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ incidentId: expect.stringMatching(/^inc_/), contactsSms: { status: "failed", sent: 0 } });
+    const detail = await safety.get(`/admin/incidents/${res.body["incidentId"]}`);
+    expect(detail.body).toMatchObject({ kind: "sos", status: "open", raisedBy: "driver", contactsSms: { status: "failed" } });
+    expect(await outbox(sim)).toEqual([]);
+    expect((await a.put("/driver/emergency-contacts", { items: CONTACTS })).status).toBe(200);
   });
 
   it("the switch is set on the country standard only; off: no SMS, the SOS still works", async () => {
