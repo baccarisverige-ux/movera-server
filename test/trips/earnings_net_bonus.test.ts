@@ -123,10 +123,12 @@ describe("BQ-NET: EarningsPeriod.net counts every bonus entry, as the payout doe
       expect(payout.lines.find((l) => l.code === "bonus")?.amountMinor).toBe(c.tripBonus + c.afterEnd + c.lost);
       expect(p.net).toEqual(money(c.earnings + c.pickup + c.tripBonus + c.afterEnd + c.lost, cur));
       expect(p.net.amountMinor).toBe(payout.amountMinor);
-      // The other money fields are unchanged by the fix (no new field; adjustments is not where a bonus goes).
+      // The other money fields are unchanged by the fix (adjustments is not where a bonus goes).
       expect(p.adjustments).toEqual(money(0, cur));
       expect(p.pickupPay).toEqual(money(c.pickup, cur));
-      expect(p).not.toHaveProperty("bonus");
+      // v0.18.110 BQ-V44 (NET supervisor V44-N1): EarningsPeriod.bonus now comes, = the period's bonus entries, a part
+      // ALREADY inside net — net above is the same number as before the field (not counted twice).
+      expect(p.bonus).toEqual(money(c.tripBonus + c.afterEnd + c.lost, cur));
       expect(p).not.toHaveProperty("paidToMovera");
     });
   }

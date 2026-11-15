@@ -29,6 +29,8 @@ export interface EarningsEntriesTable {
   at: Timestamp;
   /** contract v0.9.0 §16: the payout that paid this entry (never two). */
   payout_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.110 BQ-V44 (migration 0110): the bonus campaign this entry pays (kind bonus, trip_id NULL); unique per driver. */
+  bonus_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 /** contract v0.9.0 §16 (migration 0022). */
