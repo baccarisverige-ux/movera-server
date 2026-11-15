@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
 import type { Principal } from "../auth/guard.js";
 import type { Executor, Trx } from "../db/db.js";
@@ -143,6 +144,8 @@ export type DeskRow = {
   solved_at?: Date | null;
   incident_id?: string | null;
   first_reply_at?: Date | null;
+  /** v0.18.112 (migration 0112). */
+  waiting_since?: Date | null;
 };
 
 export async function deskExtras(ex: Executor, rows: readonly DeskRow[], now: Date): Promise<Map<string, Record<string, unknown>>> {
@@ -167,6 +170,7 @@ export async function deskExtras(ex: Executor, rows: readonly DeskRow[], now: Da
       ...(r.solved_at ? { solvedAt: r.solved_at.toISOString() } : {}),
       ...(r.incident_id ? { incidentId: r.incident_id } : {}),
       ...(r.first_reply_at ? { firstReplyAt: r.first_reply_at.toISOString() } : {}),
+      ...(r.waiting_since ? { waitingSince: r.waiting_since.toISOString() } : {}),
       firstReplyDueAt: replyDue.toISOString(),
       solveDueAt: solveDue.toISOString(),
       late: {
@@ -229,6 +233,25 @@ export async function assertTopicOn(ex: Executor, zoneId: string | null, categor
   if (s.topics.find((t) => t.code === category)?.on === false) throw badRequest(`Topic ${category} is off.`, "topic_off");
 }
 
+/**
+ * v0.18.112 BQ-A04 (contract.json#supportDesk.inboxOrder.waitingSince, migration 0112): while the ticket is open, the
+ * time of the first rider / driver message with no support answer after it (ticket_messages.n gives the order); else
+ * NULL. Called after every message and status change, so the inbox reads it from one indexed column.
+ */
+export async function refreshWaiting(trx: Executor, ticketId: string): Promise<void> {
+  await trx
+    .updateTable("support_tickets")
+    .set({
+      waiting_since: sql<Date | null>`CASE WHEN support_tickets.status = 'open' THEN (
+        SELECT min(m.at) FROM ticket_messages m
+        WHERE m.ticket_id = support_tickets.ticket_id AND m.sender <> 'support'
+          AND m.n > coalesce((SELECT max(s.n) FROM ticket_messages s WHERE s.ticket_id = support_tickets.ticket_id AND s.sender = 'support'), 0)
+      ) END`,
+    })
+    .where("ticket_id", "=", ticketId)
+    .execute();
+}
+
 /* ---------------------------------------------------------------- admin commands */
 
 type Row = { ticket_id: string; zone_id: string | null; country: string | null; trip_id: string | null; status: "open" | "pending" | "resolved" | "closed"; category: string; assigned_admin_id: string | null; incident_id: string | null };
@@ -275,6 +298,7 @@ export async function setWaiting(trx: Trx, who: Principal, row: Row, waiting: bo
   if (SOLVED.has(row.status)) throw new ApiError("invalid_transition", "This ticket is not open.", { reason: "ticket_not_open" });
   const status = waiting ? "pending" : "open";
   await trx.updateTable("support_tickets").set({ status, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
+  await refreshWaiting(trx, row.ticket_id);
   await audit(trx, { adminId: who.subjectId, action: "ticket.waiting", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: { before: row.status, after: status }, at: now });
 }
 
@@ -282,6 +306,7 @@ export async function setWaiting(trx: Trx, who: Principal, row: Row, waiting: bo
 export async function solve(trx: Trx, who: Principal, row: Row, note: string | undefined, now: Date) {
   if (row.status === "closed") throw new ApiError("invalid_transition", "This ticket is closed.", { reason: "ticket_closed" });
   await trx.updateTable("support_tickets").set({ status: "resolved", solved_by: who.subjectId, solved_at: now, assigned_admin_id: null, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
+  await refreshWaiting(trx, row.ticket_id);
   // The note is private: only in the audit log, never on the ticket the person reads.
   await audit(trx, { adminId: who.subjectId, action: "ticket.solve", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: { before: row.status, ...(note ? { note } : {}) }, at: now });
 }
@@ -289,6 +314,7 @@ export async function solve(trx: Trx, who: Principal, row: Row, note: string | u
 export async function reopen(trx: Trx, who: Principal, row: Row, reason: string, now: Date) {
   if (!SOLVED.has(row.status)) throw new ApiError("invalid_transition", "This ticket is not solved.", { reason: "ticket_not_solved" });
   await trx.updateTable("support_tickets").set({ status: "open", solved_by: null, solved_at: null, updated_at: now }).where("ticket_id", "=", row.ticket_id).execute();
+  await refreshWaiting(trx, row.ticket_id);
   await audit(trx, { adminId: who.subjectId, action: "ticket.reopen", targetType: "ticket", targetId: row.ticket_id, zoneId: row.zone_id, detail: { before: row.status, reason }, at: now });
 }
 
