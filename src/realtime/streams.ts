@@ -161,7 +161,8 @@ export async function streamConfig(
       const publishedAt = typeof payload["publishedAt"] === "string" ? payload["publishedAt"] : now.toISOString();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "config_published", doc: payload["doc"], zoneId: payload["zoneId"], version: payload["version"], publishedAt, occurredAt: publishedAt, serverTime: now.toISOString() });
     }
-  });
+    // MF-1: the settings stream's catch-up goes after the offer feeds, trip streams and SOS stream (hub batches it).
+  }, { catchUp: "spread" });
   stream.onClose(unsubscribe);
   // S04 A5: the null signal (LISTEN reconnected) means hints may have been missed. A hint needs a tripId and the
   // contract has no catch-up event, so the stream is closed: the app reconnects (same Last-Event-ID) and re-reads.
@@ -182,7 +183,7 @@ export async function streamConfig(
       if (payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
-    }));
+    }, { catchUp: "spread" }));
   }
   // v0.18.45 §68 (contract.json#driverReservationsLive): a booked ride of this zone (or one naming this driver)
   // changed. A hint only: the app re-reads GET /driver/reservations. Sent from the post-commit NOTIFY, so a
@@ -195,7 +196,7 @@ export async function streamConfig(
       if (payload["zoneId"] !== zoneId && payload["driverId"] !== driverId) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "driver_reservations_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
-    }));
+    }, { catchUp: "spread" }));
   }
   // A reconnect with Last-Event-ID older than the live version gets the newest at once.
   await safeCheck();

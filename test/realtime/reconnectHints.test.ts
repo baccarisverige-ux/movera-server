@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "../../src/db/db.js";
 import type { Listener, NotificationHub } from "../../src/realtime/hub.js";
 import { READ_RETRY_DEFAULTS, configureReadRetry } from "../../src/realtime/retry.js";
-import { streamConfig } from "../../src/realtime/streams.js";
+import { streamConfig, streamTrip } from "../../src/realtime/streams.js";
 import { TRIP_EVENTS_CHANNEL } from "../../src/db/tripLog.js";
 
 /**
@@ -158,5 +158,24 @@ describe("B1.18 proof: settings streams after a LISTEN reconnect", () => {
     expect(s.out.written.join("")).toContain("rider_trip_changed");
     await vi.advanceTimersByTimeAsync(60_000);
     expect(s.out.endedAt).toBeUndefined();
+  });
+
+  it("MF-1: settings streams ask the hub to spread their catch-up; the trip stream asks for it at once", async () => {
+    vi.useFakeTimers();
+    const asked: Array<{ channel: string; catchUp: unknown }> = [];
+    const hub = {
+      subscribe: (channel: string, _fn: Listener, options?: { catchUp?: string }) => (asked.push({ channel, catchUp: options?.catchUp }), () => undefined),
+    } as unknown as NotificationHub;
+    const rider = fakeSse();
+    await streamConfig(rider.request, rider.reply, { db, hub }, "rider_app_config", "Z001", 0, "rdr_1");
+    const driver = fakeSse();
+    await streamConfig(driver.request, driver.reply, { db, hub }, "driver_app_config", "Z001", 0, undefined, "drv_1");
+    const settings = asked.splice(0);
+    const trip = fakeSse();
+    const tripDb = { selectFrom: () => { throw new Error("no read needed here"); } } as unknown as Db;
+    await streamTrip(trip.request, trip.reply, { db: tripDb, hub }, "trp_1", { actor: "admin", subjectId: "adm_1" }, 0);
+    expect(settings).toHaveLength(4);
+    expect(settings.every((s) => s.catchUp === "spread")).toBe(true);
+    expect(asked).toEqual([{ channel: TRIP_EVENTS_CHANNEL, catchUp: undefined }]);
   });
 });

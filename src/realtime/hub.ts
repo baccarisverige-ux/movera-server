@@ -11,23 +11,38 @@ import { recordNotify } from "../telemetry/load.js";
 export type Listener = (payload: Record<string, unknown> | null) => void;
 
 /**
+ * How a listener gets the catch-up signal after a reconnect (supervisor MF-1). "first" (the default): at once, before
+ * any "spread" listener — offer feeds, trip streams, the SOS / incident stream, admin feeds, caches. "spread": in
+ * batches after them — the rider / driver settings streams (B1.18: their close is spread over 30 s anyway).
+ */
+export type SubscribeOptions = { catchUp?: "first" | "spread" };
+type Sub = { fn: Listener; spread: boolean; live: boolean };
+
+/**
  * S04 A4 / S03 C1: the LISTEN connection is pinged this often; a ping that fails or hangs reconnects it.
- * B1.16 (owner W1 Q77): every 10 s, shorter than the 14 s Exclusive offer window, so a dead socket is found while
- * the offer is still open.
+ * B1.16 (owner W1 Q77): every 10 s (was 30 s). A socket that dies without a close is found at worst after one ping
+ * interval plus the ping timeout (10 + 5 = 15 s), then the reconnect wait and the catch-up come on top; a socket that
+ * closes or errors is noticed at once. (Supervisor N1: this is not "inside the 14 s Exclusive window" in the worst case.)
  */
 export const HEALTH_CHECK_MS = 10_000;
 export const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 
 /**
- * B1.16: a lost LISTEN connection is retried after 1, 2, 4, … s, capped at 30 s, each delay drawn at random between
- * half and all of it (jitter), so the copies of a server that lost the database together (a database restart) do not
- * all come back in the same instant. A connect that works resets the back-off.
+ * B1.16: a lost LISTEN connection is retried after 1, 2, 4, … s, capped, each delay drawn at random between half and
+ * all of it (jitter), so the copies of a server that lost the database together (a database restart) do not all come
+ * back in the same instant. A connect that works resets the back-off.
+ * Supervisor MF-2: the cap is 5 s, not the plan's 30 s, until Q-B13 ships (owner Q78: an Exclusive missed while the
+ * live link was down must not count toward auto-offline; today autoOffline.ts missedInRow counts it). It is one
+ * connect per server copy, so the short cap costs the database almost nothing. Raise to 30 s together with Q-B13.
  */
-export const RECONNECT_BACKOFF = { baseMs: 1_000, maxMs: 30_000 };
+export const RECONNECT_BACKOFF = { baseMs: 1_000, maxMs: 5_000 };
 
 /**
- * B1.16 (staggered catch-up): after a reconnect, the catch-up signal (null) is handed to the streams this many at a
- * time, one batch every `everyMs`, so 10,000 streams start their catch-up read over ~5 s, not in one instant.
+ * B1.16 (staggered catch-up): after a reconnect, the "first" listeners get the catch-up signal (null) at once; the
+ * "spread" listeners (settings streams) get it this many at a time, one batch every `everyMs`, after them: 200 per
+ * 100 ms = 2,000 listeners per second. A rider / driver settings stream has 2 spread listeners (config + hint), so
+ * 10,000 settings streams = 20,000 listeners over ~10 s. Listeners not yet told when the link drops again go first
+ * in the next round.
  */
 export const CATCH_UP_BATCH = { size: 200, everyMs: 100 };
 
@@ -51,7 +66,10 @@ export type HubHealth = { status: "ok" | "down"; reconnects: number; subscribers
 
 export class NotificationHub {
   private client: pg.Client | undefined;
-  private readonly listeners = new Map<string, Set<Listener>>();
+  private readonly listeners = new Map<string, Set<Sub>>();
+  /** Spread listeners of the current catch-up round, in order, and how many of them were told already. */
+  private spreadQueue: Sub[] = [];
+  private spreadNext = 0;
   private closed = false;
   private retry: NodeJS.Timeout | undefined;
   private ready: Promise<void> | undefined;
@@ -88,7 +106,7 @@ export class NotificationHub {
       } catch {
         payload = null;
       }
-      for (const listener of this.listeners.get(message.channel) ?? []) listener(payload);
+      for (const sub of this.listeners.get(message.channel) ?? []) sub.fn(payload);
     });
     client.on("error", (error) => {
       this.log.warn({ err: error }, "realtime listen connection lost");
@@ -132,15 +150,16 @@ export class NotificationHub {
 
   private reconnectSoon(from?: pg.Client): void {
     if (this.closed || this.retry) return;
-    // An old connection's late error/end must not tear down its replacement.
-    if (from !== undefined && this.client !== undefined && this.client !== from) return;
+    // An old connection's late error/end must not tear down its replacement, nor start a second connect while the
+    // replacement is still connecting (supervisor N5: then this.client is undefined).
+    if (from !== undefined && this.client !== from) return;
     clearInterval(this.ping);
     this.ping = undefined;
     const dead = this.client;
     this.client = undefined;
     // Drop the dead socket so its own end/error cannot fire later and it does not leak.
     if (dead !== undefined) void dead.end().catch(() => undefined);
-    // A catch-up still being handed out is for the connection that just died; the next one starts afresh.
+    // The batches stop; the listeners not yet told stay in spreadQueue and go first in the next round (MF-1).
     clearTimeout(this.catchUp);
     this.catchUp = undefined;
     const delay = reconnectDelayMs(this.attempt, this.health);
@@ -162,35 +181,60 @@ export class NotificationHub {
   }
 
   /**
-   * B1.16: the catch-up signal for every listener there is now, `catchUpBatch` at a time, one batch every
-   * `catchUpEveryMs`. A listener that unsubscribed before its batch is skipped; one that subscribed later read on
-   * its own when it opened.
+   * B1.16 + MF-1: the catch-up signal for every listener there is now. "first" listeners at once (each in its own
+   * try, so one bug cannot stop the others); then the "spread" listeners `catchUpBatch` at a time, one batch every
+   * `catchUpEveryMs`: first those a dropped earlier round had not told yet, then the rest. A listener that unsubscribed
+   * before its turn is skipped; one that subscribes later read on its own when it opened.
    */
   private tellCatchUp(): void {
-    const pending: Array<[Set<Listener>, Listener]> = [];
-    for (const set of this.listeners.values()) for (const listener of set) pending.push([set, listener]);
-    let next = 0;
+    const carried = this.spreadQueue.slice(this.spreadNext).filter((sub) => sub.live);
+    const queued = new Set(carried);
+    const rest: Sub[] = [];
+    for (const set of this.listeners.values()) {
+      for (const sub of set) {
+        if (!sub.spread) this.tellOne(sub);
+        else if (!queued.has(sub)) rest.push(sub);
+      }
+    }
+    this.spreadQueue = [...carried, ...rest];
+    this.spreadNext = 0;
     const batch = () => {
       this.catchUp = undefined;
       if (this.closed) return;
-      const end = Math.min(pending.length, next + Math.max(1, this.health.catchUpBatch));
-      for (; next < end; next += 1) {
-        const [set, listener] = pending[next]!;
-        if (set.has(listener)) listener(null);
+      const end = Math.min(this.spreadQueue.length, this.spreadNext + Math.max(1, this.health.catchUpBatch));
+      while (this.spreadNext < end) {
+        const sub = this.spreadQueue[this.spreadNext]!;
+        this.spreadNext += 1;
+        if (sub.live) this.tellOne(sub);
       }
-      if (next < pending.length) {
+      if (this.spreadNext < this.spreadQueue.length) {
         this.catchUp = setTimeout(batch, this.health.catchUpEveryMs);
         this.catchUp.unref();
+      } else {
+        this.spreadQueue = [];
+        this.spreadNext = 0;
       }
     };
     batch();
   }
 
-  subscribe(channel: string, listener: Listener): () => void {
+  private tellOne(sub: Sub): void {
+    try {
+      sub.fn(null);
+    } catch (error) {
+      this.log.warn({ err: error }, "realtime catch-up listener failed");
+    }
+  }
+
+  subscribe(channel: string, listener: Listener, options: SubscribeOptions = {}): () => void {
     let set = this.listeners.get(channel);
     if (!set) this.listeners.set(channel, (set = new Set()));
-    set.add(listener);
-    return () => set!.delete(listener);
+    const sub: Sub = { fn: listener, spread: options.catchUp === "spread", live: true };
+    set.add(sub);
+    return () => {
+      sub.live = false;
+      set!.delete(sub);
+    };
   }
 
   subscriberCount(): number {
