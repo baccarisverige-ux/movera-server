@@ -1,3 +1,4 @@
+import { pickupSpotsProblem } from "./pickupSpots.js";
 import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
@@ -108,6 +109,12 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
       const details = [...(steps.step === null ? [] : [`step:${steps.step}`]), `problem:${steps.problem}`];
       throw new ApiError("invalid_request", `The commission steps of ${steps.categoryId} are not valid: ${steps.step === null ? "" : `step ${steps.step}: `}${steps.problem}.`, { reason: "commission_steps_invalid", details });
     }
+  }
+  // v0.18.115 BQ-V21 (contract.json#pickupSpots.server): booking.pickupSpots.on is true or false (checked here, so the
+  // rule holds whatever contract copy the schema check reads).
+  if (doc === "rider_app_config") {
+    const spots = pickupSpotsProblem(document);
+    if (spots !== null) throw badRequest(`The rider_app_config document is not valid: ${spots}.`, "invalid_document");
   }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
