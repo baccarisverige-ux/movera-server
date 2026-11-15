@@ -42,7 +42,9 @@ export const RECONNECT_BACKOFF = { baseMs: 1_000, maxMs: 5_000 };
  * may take this long at most. A link that accepts the connection but never answers used to hang the attempt for ever:
  * no retry, no ping, the copy stayed "down" and no offer feed, trip stream or SOS stream got a hint or a close until
  * the process restarted. Now the attempt is given up, its half-open client is destroyed and the normal back-off goes
- * on. Same 5 s as the app pool's connect timeout (db/db.ts) and the health-check timeout above.
+ * on. 5 s is the health-check timeout above (HEALTH_CHECK_TIMEOUT_MS). It is NOT the app pool's connect timeout,
+ * which is 10 s by default (DATABASE_POOL_CONNECT_TIMEOUT_MS, env.ts → db/db.ts createPool), nor the health pool's
+ * 1.5 s (db/db.ts createHealthPool). A short limit is safe here because the attempts go on for ever, at boot too.
  */
 export const LISTEN_CONNECT_TIMEOUT_MS = 5_000;
 
@@ -90,6 +92,8 @@ export class NotificationHub {
   private lastNotification: number | undefined;
   /** PM-1: gives up the connect attempt that is running now (stop() uses it), or undefined when none is. */
   private abortConnect: (() => void) | undefined;
+  /** Whether a connect ever worked: the first one (also a late one after a failed start) is not a "reconnect". */
+  private connectedOnce = false;
   private readonly health: HubTuning;
 
   constructor(
@@ -101,8 +105,18 @@ export class NotificationHub {
     this.health = { ...HUB_TUNING, ...tuning };
   }
 
+  /**
+   * Opens the LISTEN connection. The promise settles after the FIRST attempt (at most `connectTimeoutMs`): connected,
+   * or not yet - then the hub keeps trying in the background with the reconnect back-off until it is connected or
+   * stopped, and healthSnapshot() says "down" meanwhile. It never rejects (PM-1 SF-2 + N-1): main.ts awaits it before
+   * app.listen, so a rejection there ended the process on one slow try, or (a connection-class error, which
+   * guardProcess keeps alive) left a process that listened on nothing.
+   */
   start(): Promise<void> {
-    this.ready ??= this.connect();
+    this.ready ??= this.connect().catch((error: unknown) => {
+      this.log.warn({ err: error }, "realtime listen connect failed at start; retrying");
+      this.reconnectSoon();
+    });
     return this.ready;
   }
 
@@ -174,6 +188,7 @@ export class NotificationHub {
       return;
     }
     this.client = client;
+    this.connectedOnce = true;
     this.startPing(client);
   }
 
@@ -215,12 +230,14 @@ export class NotificationHub {
     this.attempt += 1;
     this.retry = setTimeout(async () => {
       this.retry = undefined;
+      const again = this.connectedOnce;
       try {
         await this.connect();
         if (this.closed) return;
         this.attempt = 0;
-        this.reconnects += 1;
-        // Anything may have happened while we were away: every stream reads what it missed.
+        if (again) this.reconnects += 1;
+        // Anything may have happened while we were away: every stream reads what it missed. (Also after a first
+        // connect that came late: streams may have opened while the hub was still down.)
         this.tellCatchUp();
       } catch (error) {
         this.log.warn({ err: error, attempt: this.attempt }, "realtime listen reconnect failed");

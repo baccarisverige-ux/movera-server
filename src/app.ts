@@ -241,12 +241,15 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     ...(hub !== undefined ? { realtime: hub.healthSnapshot() } : {}),
   }));
   // Ready to take traffic: the database answers within 2 s. A load balancer stops sending requests while not.
+  // PM-1: the LISTEN link's state is shown (`realtime`), but it does not make the copy "not ready": a copy whose
+  // LISTEN link is down still serves every request and stream read, and a 503 here would make the host restart
+  // copies for as long as the link is down (the same reason /healthz/jobs is not the hosting health check).
   app.get("/readyz", async () => {
     if (probeDb === undefined) return { status: "ready", database: "not_configured" };
     if (!(await databaseAnswers(probeDb, READY_TIMEOUT_MS))) {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
     }
-    return { status: "ready", database: "ok" };
+    return { status: "ready", database: "ok", ...(hub !== undefined ? { realtime: hub.healthSnapshot().status } : {}) };
   });
   // S4 B1.28 (owner W1 Q88): 503 when a recurring server job is parked, missing or more than 3× its period late
   // (jobs/heartbeat.ts). No token, kind + state only. For the outside monitor (U9); never the hosting health check.

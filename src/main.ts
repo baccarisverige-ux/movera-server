@@ -56,6 +56,9 @@ if (env.DATABASE_URL !== undefined) {
   db = createDb(pool);
   healthDb = createDb(createHealthPool(env.DATABASE_URL));
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  // PM-1 SF-2 + N-1: waits for the first LISTEN attempt only (5 s at most) and never rejects. If the link is not up
+  // yet the server starts anyway (/healthz says realtime "down", /readyz shows it) and the hub keeps trying with its
+  // back-off; streams opened meanwhile read on open and are told to catch up when it connects.
   await hub.start();
   // Job 1 (fix plan R23): settings are kept in memory; any config_published (from any instance) empties the cache.
   // B1.8: subscribed before any stream, so one config_published makes one shared read per (doc, zone).
