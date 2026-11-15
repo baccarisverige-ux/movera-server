@@ -38,6 +38,15 @@ export const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 export const RECONNECT_BACKOFF = { baseMs: 1_000, maxMs: 5_000 };
 
 /**
+ * PM-1 (post-merge supervisor of #249): one connect attempt of the LISTEN connection (TCP + sign-in + every LISTEN)
+ * may take this long at most. A link that accepts the connection but never answers used to hang the attempt for ever:
+ * no retry, no ping, the copy stayed "down" and no offer feed, trip stream or SOS stream got a hint or a close until
+ * the process restarted. Now the attempt is given up, its half-open client is destroyed and the normal back-off goes
+ * on. Same 5 s as the app pool's connect timeout (db/db.ts) and the health-check timeout above.
+ */
+export const LISTEN_CONNECT_TIMEOUT_MS = 5_000;
+
+/**
  * B1.16 (staggered catch-up): after a reconnect, the "first" listeners get the catch-up signal (null) at once; the
  * "spread" listeners (settings streams) get it this many at a time, one batch every `everyMs`, after them: 200 per
  * 100 ms = 2,000 listeners per second. A rider / driver settings stream has 2 spread listeners (config + hint), so
@@ -46,7 +55,7 @@ export const RECONNECT_BACKOFF = { baseMs: 1_000, maxMs: 5_000 };
  */
 export const CATCH_UP_BATCH = { size: 200, everyMs: 100 };
 
-export type HubTuning = { everyMs: number; timeoutMs: number; reconnectBaseMs: number; reconnectMaxMs: number; catchUpBatch: number; catchUpEveryMs: number };
+export type HubTuning = { everyMs: number; timeoutMs: number; reconnectBaseMs: number; reconnectMaxMs: number; catchUpBatch: number; catchUpEveryMs: number; connectTimeoutMs: number };
 const HUB_TUNING: HubTuning = {
   everyMs: HEALTH_CHECK_MS,
   timeoutMs: HEALTH_CHECK_TIMEOUT_MS,
@@ -54,6 +63,7 @@ const HUB_TUNING: HubTuning = {
   reconnectMaxMs: RECONNECT_BACKOFF.maxMs,
   catchUpBatch: CATCH_UP_BATCH.size,
   catchUpEveryMs: CATCH_UP_BATCH.everyMs,
+  connectTimeoutMs: LISTEN_CONNECT_TIMEOUT_MS,
 };
 
 /** The wait before reconnect attempt `attempt` (0 = the first): half to all of min(max, base · 2^attempt). */
@@ -78,6 +88,8 @@ export class NotificationHub {
   private attempt = 0;
   private catchUp: NodeJS.Timeout | undefined;
   private lastNotification: number | undefined;
+  /** PM-1: gives up the connect attempt that is running now (stop() uses it), or undefined when none is. */
+  private abortConnect: (() => void) | undefined;
   private readonly health: HubTuning;
 
   constructor(
@@ -95,9 +107,11 @@ export class NotificationHub {
   }
 
   private async connect(): Promise<void> {
+    const limit = this.health.connectTimeoutMs;
     // keepAlive: a socket that died without a close is noticed by TCP too (pg's default is off).
-    const client = new pg.Client({ connectionString: this.url, application_name: "movera-server-listen", keepAlive: true });
-    client.on("notification", (message) => {
+    // connectionTimeoutMillis (PM-1): pg itself destroys a socket whose connect / sign-in gets no answer in time.
+    const client = new pg.Client({ connectionString: this.url, application_name: "movera-server-listen", keepAlive: true, connectionTimeoutMillis: limit });
+    const onNotification = (message: pg.Notification) => {
       recordNotify();
       this.lastNotification = Date.now();
       let payload: Record<string, unknown> | null = null;
@@ -107,18 +121,53 @@ export class NotificationHub {
         payload = null;
       }
       for (const sub of this.listeners.get(message.channel) ?? []) sub.fn(payload);
-    });
-    client.on("error", (error) => {
+    };
+    const onError = (error: Error) => {
       this.log.warn({ err: error }, "realtime listen connection lost");
       this.reconnectSoon(client);
+    };
+    const onEnd = () => this.reconnectSoon(client);
+    client.on("notification", onNotification);
+    client.on("error", onError);
+    client.on("end", onEnd);
+    // PM-1: the whole attempt (connect + every LISTEN) races one deadline, so a LISTEN that gets no answer is given
+    // up too. Whatever the given-up attempt does later is ignored: its client is destroyed and has no listeners left.
+    let gaveUp = false;
+    let timer: NodeJS.Timeout | undefined;
+    let giveUp: (error: Error) => void = () => undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      giveUp = (error) => {
+        gaveUp = true;
+        clearTimeout(timer);
+        reject(error);
+      };
+      timer = setTimeout(() => giveUp(new Error(`realtime listen connect timed out after ${limit} ms`)), limit);
     });
-    client.on("end", () => this.reconnectSoon(client));
-    try {
+    const abort = () => giveUp(new Error("realtime hub stopped"));
+    this.abortConnect = abort;
+    const attempt = (async () => {
       await client.connect();
-      for (const channel of this.channels) await client.query(`LISTEN ${pg.escapeIdentifier(channel)}`);
+      for (const channel of this.channels) {
+        if (gaveUp) return;
+        await client.query(`LISTEN ${pg.escapeIdentifier(channel)}`);
+      }
+    })();
+    try {
+      await Promise.race([attempt, deadline]);
     } catch (error) {
-      await client.end().catch(() => undefined);
+      gaveUp = true;
+      // The loser of the race may still settle later; that must not become an unhandled rejection.
+      attempt.catch(() => undefined);
+      client.off("notification", onNotification);
+      client.off("error", onError);
+      client.off("end", onEnd);
+      discard(client);
+      // stop() during the attempt: nothing to report, nothing to retry.
+      if (this.closed) return;
       throw error;
+    } finally {
+      clearTimeout(timer);
+      if (this.abortConnect === abort) this.abortConnect = undefined;
     }
     if (this.closed) {
       await client.end().catch(() => undefined);
@@ -258,8 +307,21 @@ export class NotificationHub {
     clearTimeout(this.retry);
     clearTimeout(this.catchUp);
     clearInterval(this.ping);
+    // PM-1: a connect attempt still waiting for an answer is given up now (its deadline timer and client go too).
+    this.abortConnect?.();
     const client = this.client;
     this.client = undefined;
     await client?.end().catch(() => undefined);
   }
+}
+
+/**
+ * PM-1: drops a client whose connect attempt failed or was given up. `end()` alone can wait for ever on a link that
+ * never answers (it sends a goodbye and waits for the close), so it is not awaited and the socket is destroyed too.
+ * A late "error" of this client must not crash the process, hence the empty handler.
+ */
+function discard(client: pg.Client): void {
+  client.on("error", () => undefined);
+  void client.end().catch(() => undefined);
+  (client as unknown as { connection?: { stream?: { destroy?: () => void } } }).connection?.stream?.destroy?.();
 }
