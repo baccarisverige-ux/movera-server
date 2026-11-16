@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { LatLng, RouteLeg, Router } from "../../src/maps/routing.js";
 import { haversineKm } from "../../src/maps/routing.js";
-import { quoteOutsideLock, RouteInputsChanged, type RoutedQuote } from "../../src/trips/routeChange.js";
+import { quoteOutsideLock, quoteRouteChange } from "../../src/trips/routeChange.js";
+import { hasStoredAnswer, runIdempotent } from "../../src/http/idempotency.js";
 import { PLACES, Sim, bookAndAccept, drive, newKey, type Admin, type Driver, type Rider } from "../e2e/harness.js";
 
 /**
@@ -154,16 +155,33 @@ describe("SF-2: route-quote replays and requests without an Idempotency-Key are 
     expect(calls.length).toBe(0);
   });
 
-  it("a stored answer that is gone by the time the transaction runs (swept key): the first try has no road, the next try routes as usual", async () => {
+  it("a stored answer that is gone by the time the transaction runs (swept key; real runIdempotent + quoteRouteChange): the first try has no road, the next try routes, the same price, the key stored again", async () => {
+    // Round 2 (SF-D, supervisor probe P-A): the real transaction, not a stand-in. The key row is deleted between the
+    // stored-answer look (hasStoredAnswer: seen) and the run, as a 24-hour sweep would.
     const version = await onTrip();
-    const seen: (RoutedQuote | null)[] = [];
-    const out = await quoteOutsideLock(sim.db, countingRouter, rider.id, tripId, { expectedVersion: version, dropoff: ODENPLAN, stops: [] }, async (routed) => {
-      seen.push(routed);
-      if (routed === null) throw new RouteInputsChanged("no road on the first try");
-      return "priced";
-    }, { routeFirstTry: false });
-    expect(out).toBe("priced");
-    expect(seen.map((r) => r !== null)).toEqual([false, true]);
+    const key = newKey("sfdSwept");
+    const body = { expectedVersion: version, dropoff: ODENPLAN, stops: [] };
+    const first = await rider.post(`/trips/${tripId}/route-quote`, body, key);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
     expect(calls.length).toBe(1);
+    const asked = { actor: "rider" as const, subjectId: rider.id, key, method: "POST", route: `/api/v1/trips/${tripId}/route-quote`, body };
+    // The HTTP route stored its answer under exactly this (actor, subject, key).
+    expect(await hasStoredAnswer(sim.db, asked)).toBe(true);
+    const gone = await sim.db.deleteFrom("idempotency_keys").where("key", "=", key).executeTakeFirst();
+    expect(Number(gone.numDeletedRows)).toBe(1);
+    const seen: boolean[] = [];
+    const out = await quoteOutsideLock(sim.db, countingRouter, rider.id, tripId, body, async (routed) => {
+      seen.push(routed !== null);
+      return runIdempotent(sim.db, asked, async (trx) => ({ status: 201, body: await quoteRouteChange(trx, routed, rider.id, tripId, body, sim.clock.now) }));
+    }, { routeFirstTry: false });
+    console.log(`SF-D proof (swept key, real code): replayed ${out.replayed}; tries with a road ${JSON.stringify(seen)}; road calls ${calls.length}`);
+    expect([out.replayed, out.status]).toEqual([false, 201]);
+    expect(seen).toEqual([false, true]);
+    expect(calls.length).toBe(2);
+    const strip = (b: unknown) => ({ ...(b as object), routeQuoteId: "x", expiresAt: "x" });
+    expect(strip(out.body)).toEqual(strip(first.body));
+    expect(await hasStoredAnswer(sim.db, asked)).toBe(true);
+    // Nothing half-written by the try without a road: the first answer's row and this one, no more.
+    expect((await sim.db.selectFrom("route_quotes").select("route_quote_id").where("trip_id", "=", tripId).execute()).length).toBe(2);
   });
 });
