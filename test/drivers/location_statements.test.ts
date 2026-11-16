@@ -14,6 +14,10 @@ import { call, signIn, testWorld } from "../support/world.js";
  * counts the statements one location request sends (all of them, and those inside its transaction) and keeps them
  * under a budget. Before the change (wip/pool c15c087): online, no trip, inside his zone = 14 in the transaction
  * (BEGIN … COMMIT included), 15 in all; outside his zone = 15 / 16. After: 6 / 7 both.
+ * S7 W2 Q114 (0.20): the idempotency_keys INSERT and UPDATE are gone, so now 4 / 6 (BEGIN, the facts read that also sets
+ * the Q112 lock limit, the position upsert, COMMIT). The budget stays 6, not 4: it is the stress limit the owner's T-A
+ * fix set, and BQ-V44 (branch …-v44r, not merged) adds its online-hours counting statements inside this transaction.
+ * The tests below also assert that no idempotency_keys statement is sent.
  */
 
 let database: TestDatabase;
@@ -81,26 +85,42 @@ describe("POST /driver/location: statements per request (stress T-A part 3)", ()
     expect(result.json()).toMatchObject({ accepted: 1, outsideArea: false });
     console.info(`location inside: ${inTransaction} in transaction, ${total} in all\n  ${texts.map((t) => t.replace(/\s+/g, " ").slice(0, 110)).join("\n  ")}`);
     expect(inTransaction).toBeLessThanOrEqual(6);
+    expect(texts.some((t) => /"idempotency_keys"/i.test(t))).toBe(false);
     expect(texts.some((t) => /from "zones"/i.test(t))).toBe(false);
     expect(texts.some((t) => /from "airport_queue_areas"/i.test(t))).toBe(false);
   });
 
   it("online, outside his zones: the same budget, areaZones named from memory", async () => {
     await send(STOCKHOLM);
-    const { result, inTransaction, total } = await counted(() => send(OUTSIDE));
+    const { result, inTransaction, total, texts } = await counted(() => send(OUTSIDE));
     expect(result.statusCode).toBe(200);
+    expect(texts.some((t) => /"idempotency_keys"/i.test(t))).toBe(false);
     expect(result.json()).toMatchObject({ accepted: 1, outsideArea: true, areaZones: [{ zoneId: "Z001" }] });
     console.info(`location outside: ${inTransaction} in transaction, ${total} in all`);
     expect(inTransaction).toBeLessThanOrEqual(6);
   });
 
-  it("the same Idempotency-Key replays the first answer (the key row stays, contract §1 Headers)", async () => {
+  // S7 W2 Q114 (0.20, owner "Yes, stop storing (Rec.)"): the key is taken and not looked at. It is still checked like
+  // every mutation's header (missing or malformed = 400, contract §1 Headers), but no idempotency_keys row is written,
+  // nothing is replayed and the same key with another body is not a 409. A resent batch is safe on its own (Q113).
+  it("Q114: the Idempotency-Key is accepted and ignored: no key row, no replay, no 409", async () => {
+    const rows = async () => Number((await database.db.selectFrom("idempotency_keys").select((eb) => eb.fn.countAll<string>().as("n")).where("subject_id", "=", driverId).where("route", "like", "%/driver/location").executeTakeFirstOrThrow()).n);
     clock.now = new Date(clock.now.getTime() + 1000);
     const body = { fixes: [{ ...STOCKHOLM, accuracy: 5, measuredAt: clock.now.toISOString() }] };
     const first = await call(app, "POST", "/driver/location", headers, body, "loc-replay-key-0000001");
+    expect(first.statusCode).toBe(200);
+    clock.now = new Date(clock.now.getTime() + 1000);
     const again = await call(app, "POST", "/driver/location", headers, body, "loc-replay-key-0000001");
-    expect(again.json()).toEqual(first.json());
-    const other = await call(app, "POST", "/driver/location", headers, { fixes: [] }, "loc-replay-key-0000001");
-    expect(other.statusCode).toBe(409);
+    expect(again.statusCode).toBe(200);
+    // Run again, not replayed: the answer carries this request's server time.
+    expect(again.json()["serverTime"]).toBe(clock.now.toISOString());
+    expect(again.json()["serverTime"]).not.toBe(first.json()["serverTime"]);
+    clock.now = new Date(clock.now.getTime() + 1000);
+    const other = await call(app, "POST", "/driver/location", headers, { fixes: [{ ...STOCKHOLM, accuracy: 6, measuredAt: clock.now.toISOString() }] }, "loc-replay-key-0000001");
+    expect(other.statusCode).toBe(200);
+    expect(await rows()).toBe(0);
+    // The header itself is still checked like on every mutation.
+    const bad = await call(app, "POST", "/driver/location", headers, body, "short");
+    expect(bad.statusCode).toBe(400);
   });
 });

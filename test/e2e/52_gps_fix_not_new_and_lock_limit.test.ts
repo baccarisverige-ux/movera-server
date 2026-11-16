@@ -57,6 +57,9 @@ const locationEvents = async (tripId: string) =>
 const noticesOf = (tripId: string) => notices.filter((n) => n["tripId"] === tripId).length;
 const scanTimer = (tripId: string) => sim.db.selectFrom("timers").select(["due_at"]).where("kind", "=", RIDE_CHECK_SCAN).where("ref_id", "=", tripId).executeTakeFirst();
 const stored = () => sim.db.selectFrom("driver_locations").select(["measured_at", "received_at", "lat"]).where("driver_id", "=", driver.id).executeTakeFirstOrThrow();
+/** The driver's idempotency_keys rows for POST /driver/location (Q114: there are none). */
+const keyRows = async () =>
+  Number((await sim.db.selectFrom("idempotency_keys").select(sql<string>`count(*)`.as("n")).where("subject_id", "=", driver.id).where("route", "like", "%/driver/location").executeTakeFirstOrThrow()).n);
 const traceTimes = async (tripId: string) => (await sim.db.selectFrom("trip_locations").select("measured_at").where("trip_id", "=", tripId).orderBy("measured_at").execute()).map((r) => r.measured_at.toISOString());
 
 /** A trip with the rider on board (in_trip), the car under way at MOVING. */
@@ -194,7 +197,7 @@ describe("Q112 (B3.1): the GPS write waits at most GPS_LOCK_TIMEOUT_MS for a row
     const before = await stored();
     const events = await locationEvents(tripId);
     const told = noticesOf(tripId);
-    const keys = Number((await sim.db.selectFrom("idempotency_keys").select(sql<string>`count(*)`.as("n")).where("subject_id", "=", driver.id).executeTakeFirstOrThrow()).n);
+    const keys = await keyRows();
 
     // A trip command that is stuck holds the trip row (the lock every command takes: db/tripLog.ts lockTrip).
     const holder = new pg.Client({ connectionString: sim.database.url });
@@ -221,7 +224,7 @@ describe("Q112 (B3.1): the GPS write waits at most GPS_LOCK_TIMEOUT_MS for a row
       expect((await stored()).measured_at.getTime()).toBe(before.measured_at.getTime());
       expect(await traceTimes(tripId)).not.toContain(fix.measuredAt);
       expect(await locationEvents(tripId)).toEqual(events);
-      expect(Number((await sim.db.selectFrom("idempotency_keys").select(sql<string>`count(*)`.as("n")).where("subject_id", "=", driver.id).executeTakeFirstOrThrow()).n)).toBe(keys);
+      expect(await keyRows()).toBe(keys);
     } finally {
       await holder.query("ROLLBACK");
       await holder.end();
@@ -245,6 +248,8 @@ describe("Q112 (B3.1): the GPS write waits at most GPS_LOCK_TIMEOUT_MS for a row
     await settle();
     expect(await locationEvents(tripId)).toEqual([...events, fix.measuredAt]);
     expect(noticesOf(tripId)).toBe(told + 1);
+    // Q114: neither the refused send nor the two taken ones left an idempotency row.
+    expect(await keyRows()).toBe(keys);
     expect(sim.timerErrors).toEqual([]);
   }, 30_000);
 
@@ -272,4 +277,58 @@ describe("Q112 (B3.1): the GPS write waits at most GPS_LOCK_TIMEOUT_MS for a row
     expect((await stored()).measured_at.toISOString()).toBe(fix.measuredAt);
     expect(await locationEvents(tripId)).toContain(fix.measuredAt);
   }, 30_000);
+});
+
+/**
+ * S7 W2 Q114 (= Q-B11, plan 0.20), owner "Yes, stop storing (Rec.)": POST /driver/location takes the Idempotency-Key and
+ * ignores it. No idempotency_keys row is written per GPS send; a resent batch is safe on its own (Q113: a fix that is not
+ * new writes no event; the trace, timers and counting are upserts).
+ */
+describe("Q114 (0.20): the GPS send stores no Idempotency-Key row; a resent batch is harmless without it", () => {
+  it("a GPS POST with an Idempotency-Key stores no idempotency_keys row", async () => {
+    const tripId = await onTrip();
+    const before = await keyRows();
+    pass(10);
+    const fix = fixAt(STILL, sim.clock.now);
+    const res = await driver.post("/driver/location", { fixes: [fix] }, "q114-gps-one-key-000001");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await traceTimes(tripId)).toContain(fix.measuredAt);
+    expect(before).toBe(0);
+    expect(await keyRows()).toBe(0);
+    const row = await sim.db.selectFrom("idempotency_keys").select("key").where("key", "=", "q114-gps-one-key-000001").executeTakeFirst();
+    expect(row).toBeUndefined();
+  });
+
+  it("two identical POSTs (same key, same body) give the end state of one, and one location event + one NOTIFY", async () => {
+    const tripId = await onTrip();
+    await settle();
+    const events = await locationEvents(tripId);
+    const told = noticesOf(tripId);
+    const trace = await traceTimes(tripId);
+    pass(10);
+    const fix = fixAt(STILL, sim.clock.now);
+    const key = "q114-gps-resend-key-0001";
+    const first = await driver.post("/driver/location", { fixes: [fix] }, key);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    await settle();
+    const afterOne = { stored: await stored(), trace: await traceTimes(tripId), events: await locationEvents(tripId) };
+    // The app resends the same request (a lost answer, or the 401 refresh path that keeps the key).
+    const again = await driver.post("/driver/location", { fixes: [fix] }, key);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body["accepted"]).toBe(first.body["accepted"]);
+    await settle();
+    expect(await locationEvents(tripId)).toEqual([...events, fix.measuredAt]);
+    expect(noticesOf(tripId)).toBe(told + 1);
+    expect(await traceTimes(tripId)).toEqual([...trace, fix.measuredAt]);
+    expect(await traceTimes(tripId)).toEqual(afterOne.trace);
+    const now = await stored();
+    expect(now.measured_at.getTime()).toBe(afterOne.stored.measured_at.getTime());
+    expect(now.lat).toBe(afterOne.stored.lat);
+    // The same key with another body is not a 409 any more: the key is not looked at.
+    pass(10);
+    const other = await driver.post("/driver/location", { fixes: [fixAt(MOVING, sim.clock.now)] }, key);
+    expect(other.status, JSON.stringify(other.body)).toBe(200);
+    expect(await keyRows()).toBe(0);
+    expect(sim.timerErrors).toEqual([]);
+  });
 });
