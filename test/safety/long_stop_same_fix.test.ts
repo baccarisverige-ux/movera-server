@@ -283,6 +283,14 @@ describe("long stop on the same fix sent again and again (owner 2026-11-15 'Yes,
     expect(await rideCheck(tripId)).toMatchObject({ trigger: "long_stop" });
   });
 
+  // Rebase 2011a0a read (supervisor mutant M4): the moving flag alone, with no speed, is enough (contract 0.18.118 "moving true, or speedMps ≥ 1").
+  it("tunnel: a repeated fix with the moving flag and no speed counts as moving → no long_stop", async () => {
+    const tripId = await onTrip();
+    await repeat({ ...fixAt(STILL, sim.clock.now), moving: true }, STOP_SECONDS + SCAN_SECONDS + 10);
+    expect(await rideCheck(tripId)).toBeUndefined();
+    expect(await asked(tripId)).toHaveLength(0);
+  });
+
   it("the last real fix said the car stood still (moving false, speed 0), then it is repeated → long_stop", async () => {
     const tripId = await onTrip();
     await repeat({ ...fixAt(STILL, sim.clock.now), moving: false, speedMps: 0 }, STOP_SECONDS + SCAN_SECONDS + 10);
