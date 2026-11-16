@@ -17,6 +17,7 @@ import { startEta } from "../trips/eta.js";
 import { reservationView } from "./view.js";
 import { EstimateRouter, haversineKm, legKey, type LatLng, type Router } from "../maps/routing.js";
 import { driverPhotoUrl } from "../trips/driverPhoto.js";
+import { ROUTE_QUOTE_TRIES } from "../trips/routeChange.js";
 import { DISPATCH, dispatchKm } from "../dispatch/engine.js";
 import { commissionOf } from "../rules/commission.js";
 import { TERMINAL } from "../rules/transitions.js";
@@ -712,7 +713,7 @@ export async function reservationTimer(trx: Trx, timer: Timer): Promise<void> {
       if (trip.driver_id === payload.driverId && trip.status === "accepted") await push(trx, trip, { audience: "driver", id: trip.driver_id! }, "reservation_go_online", now);
       return;
     case TIMER.leaveCheck:
-      if (trip.status === "accepted" && trip.driver_id === payload.driverId && state.held) await leaveCheck(trx, trip, state, s, now, timer.prepared);
+      if (trip.status === "accepted" && trip.driver_id === payload.driverId && state.held) await leaveCheck(trx, trip, state, s, now, timer.prepared, leaveRouteGivenUp(timer));
       return;
     case TIMER.changeAsk:
       if (trip.status === "accepted" && trip.driver_id === payload.driverId && state.changeAsk) await changeRefused(trx, await lockTrip(trx, tripId), now);
@@ -859,9 +860,19 @@ export type LeaveRoute = { route: { driverId: string; from: LatLng; to: LatLng; 
 /** 0.17: the prepared road still counts when the driver's position moved at most this far since it was asked (~15-30 s of driving, far below the minutes the leave check decides on). */
 export const LEAVE_FIX_MOVED_M = 250;
 
+/**
+ * Q120 follow-up SF-3: a hard count for the "inputs changed" retry below. After ROUTE_QUOTE_TRIES (3, the route-change
+ * price's count of tries for the same race) busy tries in a row, the next run asks no road and uses the straight-line
+ * estimate from the position as it is under the lock (the same number as while OSRM is down). Read at call time,
+ * never at module load: trips/routeChange.ts → dispatch/runtime.ts → this file is an import cycle.
+ */
+const leaveRouteGivenUp = (timer: Pick<Timer, "busyTries">) => (timer.busyTries ?? 0) >= ROUTE_QUOTE_TRIES;
+
 /** 0.17: the leave check's `prepare` (dispatch/runtime.ts): plain reads and the road, with no transaction and no lock. */
-export async function prepareLeaveCheck(ex: Executor, timer: Pick<Timer, "kind" | "refId" | "payload">): Promise<LeaveRoute | null> {
+export async function prepareLeaveCheck(ex: Executor, timer: Pick<Timer, "kind" | "refId" | "payload" | "busyTries">): Promise<LeaveRoute | null> {
   if (timer.kind !== TIMER.leaveCheck) return null;
+  // SF-3: busy too often: no road this time; the handler estimates (prepared null).
+  if (leaveRouteGivenUp(timer)) return null;
   const driverId = ((timer.payload ?? {}) as { driverId?: string }).driverId;
   const trip = await ex.selectFrom("trips").select(["kind", "status", "driver_id", "pickup"]).where("trip_id", "=", timer.refId.split(":")[0]!).executeTakeFirst();
   if (!trip || trip.kind !== "scheduled" || trip.status !== "accepted" || driverId === undefined || trip.driver_id !== driverId) return { route: null };
@@ -891,9 +902,10 @@ export async function prepareLeaveCheck(ex: Executor, timer: Pick<Timer, "kind" 
  *    the straight-line estimate from the position as it is now, worked out here without any network call. It is the
  *    same number the router itself gives while OSRM is down (EstimateRouter).
  */
-async function driveSecondsOf(ex: Executor, driverId: string, trip: TripRow, prepared: unknown): Promise<number | null> {
+async function driveSecondsOf(ex: Executor, driverId: string, trip: TripRow, prepared: unknown, givenUp: boolean): Promise<number | null> {
   const fix = await ex.selectFrom("driver_locations").select(["lat", "lng"]).where("driver_id", "=", driverId).executeTakeFirst();
-  const given = (prepared ?? null) as LeaveRoute | null;
+  // SF-3: after ROUTE_QUOTE_TRIES busy tries a prepared road is not used any more (and never thrown busy for again).
+  const given = givenUp ? null : ((prepared ?? null) as LeaveRoute | null);
   const routed = given?.route ?? null;
   if (!fix) {
     // A road was asked from a position that is gone now: nothing to decide on (as before: no position, no drive time).
@@ -921,9 +933,9 @@ function riderFirstNameOf(trip: TripRow): string {
 }
 
 /** Owner (v0.18.19 leaveOnTime): leaveAt, the "start now" notice, and the late-risk alert. */
-async function leaveCheck(trx: Trx, trip: TripRow, state: ReservationState, s: ReservationSettings, now: Date, prepared: unknown): Promise<void> {
+async function leaveCheck(trx: Trx, trip: TripRow, state: ReservationState, s: ReservationSettings, now: Date, prepared: unknown, givenUp: boolean): Promise<void> {
   const at = trip.scheduled_at!;
-  const drive = await driveSecondsOf(trx, trip.driver_id!, trip, prepared);
+  const drive = await driveSecondsOf(trx, trip.driver_id!, trip, prepared, givenUp);
   let next: ReservationState = { ...state };
   // v0.18.35 job 4 (contract.json#bookedTakeBack): the one case a ride is taken from a driver.
   if (takeBackDecision(now, at, drive, s).take) {

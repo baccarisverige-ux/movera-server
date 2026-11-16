@@ -22,6 +22,11 @@ export type Timer = {
   firedAt: Date;
   /** Job 1 (fast dispatch): what the handler's `prepare` found outside the transaction (slow network calls). */
   prepared?: unknown;
+  /**
+   * Q120 follow-up SF-3: how many times in a row THIS worker found the timer busy (TimerBusy or a lock timeout) and is
+   * running it again; absent on a first run. A handler that throws TimerBusy for its own reasons uses it as a ceiling.
+   */
+  busyTries?: number;
 };
 
 /**
@@ -225,7 +230,8 @@ export class TimerWorker {
         await sql`SET LOCAL lock_timeout = ${sql.lit(`${TIMER_LOCK_TIMEOUT_MS}ms`)}`.execute(trx);
         const row = await take(trx, timerId);
         if (row === undefined) return timerId === undefined ? false : true;
-        const timer: Timer = { timerId: row.timer_id, kind: row.kind, refId: row.ref_id, dueAt: row.due_at, payload: row.payload, attempts: row.attempts, firedAt: now };
+        const busyTries = this.busy.get(row.timer_id)?.tries ?? 0;
+        const timer: Timer = { timerId: row.timer_id, kind: row.kind, refId: row.ref_id, dueAt: row.due_at, payload: row.payload, attempts: row.attempts, firedAt: now, ...(busyTries > 0 ? { busyTries } : {}) };
         const handler = this.options.handlers[row.kind];
         if (handler?.prepare !== undefined && timerId === undefined) {
           // Slow work first, outside this transaction (it ends here having changed nothing).

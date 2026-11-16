@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { EstimateRouter, haversineKm, type LatLng, type RouteLeg, type Router } from "../../src/maps/routing.js";
 import * as reservations from "../../src/reservations/service.js";
 import { setLeaveRouter } from "../../src/reservations/service.js";
+import { ROUTE_QUOTE_TRIES } from "../../src/trips/routeChange.js";
 import { PLACES, Sim, type Admin, type Driver, type Rider } from "../e2e/harness.js";
 
 /**
@@ -176,6 +177,34 @@ describe("S7 0.17: the booked leave check asks its road with no lock held", () =
     const estimate = await new EstimateRouter().route([PLACES.nearSergels, PLACES.sergels]);
     expect((await reservation()).driveSeconds).toBe(Math.max(60, Math.round(estimate.durationSeconds)));
     expect((await leaveTimer())).toMatchObject({ attempts: 0, last_error: null });
+    expect(sim.timerErrors).toEqual([]);
+  });
+});
+
+/**
+ * Q120 follow-up SF-3 (Rules REMINDERS 137, audits/impact/s7-q120-supervisor.md): the "input changed" retry had no hard
+ * count. If the driver's position kept jumping more than 250 m between the road call and the lock, every run was busy
+ * again, for ever (one road call every 2 s, nothing decided). Now: after ROUTE_QUOTE_TRIES busy tries (3, the
+ * route-change price's count of tries for the same race) the next run uses the straight-line estimate from the position
+ * as it is under the lock, with no road call.
+ */
+const LEAVE_ROUTE_TRIES = ROUTE_QUOTE_TRIES;
+describe("Q120 SF-3: the leave check's busy retry has a hard count", () => {
+  it(`a position that changes on every road call: after ${LEAVE_ROUTE_TRIES} busy tries, the straight-line estimate (no endless retry)`, async () => {
+    await held();
+    // Every road call: the car "jumps" 1 km to the other place, so the road asked is never for where he is under the lock.
+    during = async (n) => void (await jumpTo(n % 2 === 1 ? PLACES.odenplan : PLACES.nearSergels));
+    await sim.tick();
+    for (let i = 0; i < 8; i++) await sim.advance(5);
+    const decided = (await reservation()).driveSeconds;
+    console.log(`SF-3 proof: road calls ${calls.length}; drive time ${decided ?? "none"} s; timer errors ${sim.timerErrors.length}`);
+    // LEAVE_ROUTE_TRIES runs with a road (all busy), then one run with the estimate and no road call.
+    expect(calls.length).toBe(LEAVE_ROUTE_TRIES);
+    const at = calls.length % 2 === 1 ? PLACES.odenplan : PLACES.nearSergels;
+    const estimate = await new EstimateRouter().route([at, PLACES.sergels]);
+    expect(decided).toBe(Math.max(60, Math.round(estimate.durationSeconds)));
+    expect(calls.every((c) => !c.tripLocked && !c.timerLocked)).toBe(true);
+    expect(await leaveTimer()).toMatchObject({ attempts: 0, last_error: null });
     expect(sim.timerErrors).toEqual([]);
   });
 });
