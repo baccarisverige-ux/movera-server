@@ -1,11 +1,11 @@
-# Movera API v0.18.111 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.112 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.111
+  version: 0.18.112
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.111 in this folder; this file must agree with them.
+    v0.18.112 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.111
+  version: 0.18.112
   source: contract.json
 paths:
   /auth/otp/request:
@@ -5072,7 +5072,14 @@ paths:
       description: 'Results are limited to the zones in the admin''s token scope. v0.17.2 (contract.json#adminListFilters):
         zoneId, zoneIds and country narrow the list inside those zones; an unknown query key → 400 invalid_request (reason
         unknown_filter). v0.18.78: the page carries total (v0.18.78 (owner 2026-11-12 ~17:30 item 5 "Yes, build"): admin lists
-        show "50 of N". contract.json#adminListFilters.total).'
+        show "50 of N". contract.json#adminListFilters.total). v0.18.112 order (contract.json#supportDesk.inboxOrder): v0.18.112
+        (BQ-A04, owner item 109 "Yes, pages + oldest first (Rec.)", Rules decisions/session-2026-11-06.md:1116): GET /admin/tickets
+        lists the oldest-waiting ticket first. Order: first the waiting tickets (waitingSince set), waitingSince oldest first,
+        ties by ticketId; then every other ticket, updatedAt newest first, ties by ticketId (the order before v0.18.112).
+        The filters (status, priority, assignedTo, q, zones, ...) and total work as before. GET /support/tickets (the rider''s
+        or driver''s own list) keeps newest change first. Cursor paging as before (limit, nextCursor; nextCursor null = the
+        last page). One cursor carries the place in both parts of the order; the panel sends it back unchanged with the same
+        filters. A cursor made before v0.18.112 continues in the second part (updatedAt newest first), never 400.'
       tags:
       - Admin · Lists
       x-actor:
@@ -22342,6 +22349,15 @@ components:
               type: boolean
             solve:
               type: boolean
+        waitingSince:
+          allOf:
+          - $ref: '#/components/schemas/Timestamp'
+          description: 'v0.18.112 (contract.json#supportDesk.inboxOrder.waitingSince): SupportTicket.waitingSince (admin views
+            only: GET /admin/tickets, GET /admin/tickets/{ticketId} and the command answers): while the ticket is open, the
+            time of the first rider or driver message that has no support answer after it; absent when the ticket is not open
+            (pending, resolved, closed) or support answered last (a case an admin opened, a reopened ticket support answered
+            last). It starts again when the person writes or the ticket becomes open (reopen, waiting false) with a message
+            still not answered.'
     TicketMessage:
       type: object
       description: 'v0.9.0: one message on a support ticket.'
