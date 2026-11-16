@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { verifyAccessToken } from "../auth/jwt.js";
+import { PHONE, REFRESH_TTL_MS, refreshSessionOf } from "../auth/service.js";
 import { countryLimitsOf } from "../config/countryLimits.js";
 import type { Executor } from "../db/db.js";
 import type { WriteLimitEnv } from "../env.js";
@@ -12,7 +13,9 @@ import { API_PREFIX } from "./prefix.js";
  * (token `sub`), so many accounts behind one address (the 500+500 load test, a mobile operator's NAT) never share a
  * budget; a caller without a valid token is keyed by its address (Render proxy: TRUST_PROXY_HOPS). Over the budget:
  * 429 rate_limited, reason too_many_requests, Retry-After = seconds until the window ends. The OTP limits in
- * auth/service.ts stay as they are; this one sits in front of them. B1.22: signed-in safety writes (SAFETY_WRITE_ROUTES)
+ * auth/service.ts stay as they are; this one sits in front of them. S7 W2 Q117: an expired token with a right
+ * signature is still keyed by its user (keyOf); Q118: sign-in and refresh are keyed by phone + address / session +
+ * address (BODY_KEYED_ROUTES). B1.22: signed-in safety writes (SAFETY_WRITE_ROUTES)
  * and telemetry (OWN_BUDGET_ROUTES) are not counted here. In memory per copy: with WEB_COPIES > 1 each copy allows its share of the budget (shareOf).
  *
  * Owner 2026-11-04 "Yes, admin setting": the budgets are CountryRules.limits.writesPerUserPerMinute /
@@ -31,6 +34,17 @@ const SWEEP_EVERY = 1000;
 export const LIMITS_REFRESH_MS = 60_000;
 /** Sign-in calls left out of the write limit outside production (registerWriteLimit exemptPaths). */
 export const SIGN_IN_PATHS: readonly string[] = [`${API_PREFIX}/auth/otp/request`, `${API_PREFIX}/auth/otp/verify`];
+
+/**
+ * S7 W2 Q118 (owner 2026-11-15 "Yes, phone + address"): these calls carry no access token, so many phones behind one
+ * mobile address used to share the one address budget. They are keyed by what the body names instead, at the same
+ * budget: the code calls by phone + address, a refresh by its token's session + address (an unknown token, or a body
+ * without a phone: the address, as before). The phone alone and the address alone are only ceilings of
+ * SIGN_IN_CEILING_FACTOR times the budget. The body is read after the address ceiling was counted (preHandler).
+ */
+const OTP_ROUTES: ReadonlySet<string> = new Set(SIGN_IN_PATHS.map((path) => `POST ${path}`));
+const REFRESH_ROUTES: ReadonlySet<string> = new Set([`POST ${API_PREFIX}/auth/refresh`, `POST ${API_PREFIX}/admin/auth/refresh`]);
+export const SIGN_IN_CEILING_FACTOR = 10;
 
 /**
  * B1.22 (owner W1 Q82, 2026-11-11): safety writes are never refused, nor counted, by this limit when the caller has a
@@ -147,13 +161,30 @@ export function limitOf(env: WriteLimitEnv, admin: number | undefined): number {
   return admin !== undefined && admin > 0 ? Math.max(env.floor, admin) : env.fallback;
 }
 
-function keyOf(request: FastifyRequest, jwtSecret: string | undefined, now: Date): { key: string; zone: string | undefined; signedIn: boolean } {
+/**
+ * S7 W2 Q117 (owner 2026-11-15 "Yes, per user"): a token that ran out but carries this server's signature still names
+ * its user, so drivers behind one mobile address whose tokens ran out get 401 (and refresh) from their own budget, not
+ * 429 from the shared address budget. Only the signature is trusted: a forged token, or one whose `sub` was changed,
+ * fails it and is keyed by the address. The key is apart from the live one (`expired:`), so a stolen old token can
+ * never use up its user's live budget, and it is not "signed in" (no safety-write pass). A token that ran out longer
+ * ago than a refresh token lives (no session of it can be alive) is an address again.
+ */
+const EXPIRED_KEY_SECONDS = REFRESH_TTL_MS / 1000;
+
+type Caller = { key: string; zone: string | undefined; signedIn: boolean; byUser: boolean };
+
+function keyOf(request: FastifyRequest, jwtSecret: string | undefined, now: Date): Caller {
   const header = request.headers.authorization;
   if (jwtSecret !== undefined && typeof header === "string" && header.startsWith("Bearer ")) {
-    const verified = verifyAccessToken(header.slice(7).trim(), jwtSecret, now);
-    if (verified.ok) return { key: `${verified.claims.actor}:${verified.claims.sub}`, zone: verified.claims.zones[0], signedIn: true };
+    const token = header.slice(7).trim();
+    const verified = verifyAccessToken(token, jwtSecret, now);
+    if (verified.ok) return { key: `${verified.claims.actor}:${verified.claims.sub}`, zone: verified.claims.zones[0], signedIn: true, byUser: true };
+    if (verified.reason === "expired") {
+      const late = verifyAccessToken(token, jwtSecret, now, EXPIRED_KEY_SECONDS);
+      if (late.ok) return { key: `expired:${late.claims.actor}:${late.claims.sub}`, zone: late.claims.zones[0], signedIn: false, byUser: true };
+    }
   }
-  return { key: `ip:${request.ip}`, zone: undefined, signedIn: false };
+  return { key: `ip:${request.ip}`, zone: undefined, signedIn: false, byUser: false };
 }
 
 export function registerWriteLimit(
@@ -165,6 +196,14 @@ export function registerWriteLimit(
   const limiter = new WriteLimiter(settings.windowMs ?? 60_000);
   const admin = deps.db !== undefined ? new CountryWriteLimits(deps.db, (error) => app.log.warn({ err: error }, "write limits not read; the last ones stay")) : undefined;
   if (admin !== undefined) app.addHook("onReady", async () => admin.refresh((deps.clock?.() ?? new Date()).getTime()));
+  const bodyKeyed = new WeakMap<FastifyRequest, { route: string; limit: number; now: Date }>();
+  const take = (request: FastifyRequest, key: string, limit: number, now: Date, signedIn: boolean): void => {
+    const wait = limiter.take(key, limit, now.getTime());
+    if (wait > 0) {
+      request.log.warn({ signedIn, limit }, "write rate limit reached");
+      throw new ApiError("rate_limited", "Too many requests. Wait a moment and try again.", { reason: "too_many_requests", retryAfterSeconds: wait });
+    }
+  };
   app.addHook("onRequest", async (request) => {
     if (!WRITES.has(request.method) || !request.url.startsWith(API_PREFIX)) return;
     // Staging / development: sign-in (OTP request + verify) is not counted per address, so the 500+500 load test can
@@ -173,16 +212,36 @@ export function registerWriteLimit(
     const route = `${request.method} ${request.routeOptions.url ?? ""}`;
     if (OWN_BUDGET_ROUTES.has(route)) return;
     const now = deps.clock?.() ?? new Date();
-    const { key, zone, signedIn } = keyOf(request, deps.jwtSecret, now);
+    const { key, zone, signedIn, byUser } = keyOf(request, deps.jwtSecret, now);
     if (signedIn && SAFETY_WRITE_ROUTES.has(route)) return;
-    const country = admin?.countryOfZone(signedIn ? zone : deps.defaultZoneId) ?? null;
+    const country = admin?.countryOfZone(byUser ? zone : deps.defaultZoneId) ?? null;
     const set = admin?.get(country, now.getTime()) ?? null;
-    const limit = shareOf(signedIn ? limitOf(settings.user, set?.user) : limitOf(settings.address, set?.address), settings.copies);
+    const limit = shareOf(byUser ? limitOf(settings.user, set?.user) : limitOf(settings.address, set?.address), settings.copies);
     if (limit <= 0) return;
-    const wait = limiter.take(key, limit, now.getTime());
-    if (wait > 0) {
-      request.log.warn({ signedIn, limit }, "write rate limit reached");
-      throw new ApiError("rate_limited", "Too many requests. Wait a moment and try again.", { reason: "too_many_requests", retryAfterSeconds: wait });
+    if (!byUser && (OTP_ROUTES.has(route) || REFRESH_ROUTES.has(route))) {
+      // Q118: the address alone is only a ceiling here; the phone or session key is counted once the body is read.
+      take(request, `ceiling:ip:${request.ip}`, limit * SIGN_IN_CEILING_FACTOR, now, signedIn);
+      bodyKeyed.set(request, { route, limit, now });
+      return;
     }
+    take(request, key, limit, now, signedIn);
+  });
+  app.addHook("preHandler", async (request) => {
+    const pending = bodyKeyed.get(request);
+    if (pending === undefined) return;
+    const { route, limit, now } = pending;
+    const body = (typeof request.body === "object" && request.body !== null ? request.body : {}) as Record<string, unknown>;
+    if (OTP_ROUTES.has(route) && typeof body["phone"] === "string" && PHONE.test(body["phone"])) {
+      // Phone + address first: an address over its budget for a phone adds nothing more to that phone's ceiling.
+      take(request, `otp:${body["phone"]}|${request.ip}`, limit, now, false);
+      take(request, `ceiling:otp:${body["phone"]}`, limit * SIGN_IN_CEILING_FACTOR, now, false);
+      return;
+    }
+    if (REFRESH_ROUTES.has(route) && typeof body["refreshToken"] === "string" && body["refreshToken"].length <= 512 && deps.db !== undefined) {
+      // One indexed read; a failed read counts against the address, like an unknown token.
+      const session = await refreshSessionOf(deps.db, body["refreshToken"]).catch(() => undefined);
+      if (session !== undefined) return take(request, `refresh:${session}|${request.ip}`, limit, now, false);
+    }
+    take(request, `ip:${request.ip}`, limit, now, false);
   });
 }
