@@ -12,7 +12,7 @@ import { extrasOf } from "../rules/priceExtras.js";
 import { contract } from "../contract/contract.js";
 import { lockTripNow } from "../dispatch/runtime.js";
 import { expectVersion, lockOwnTrip, ownsTrip, touchTrip } from "./commands.js";
-import { checkMaxStops, routeChangeSettings, type RouteChangeSettings } from "./onTripSettings.js";
+import { checkMaxStops, maxStopsOf, routeChangeSettings, type RouteChangeSettings } from "./onTripSettings.js";
 import { routeChangeDriverTotal, tripProjection } from "./projection.js";
 import { pricingOf } from "./ride.js";
 import { notify } from "../notifications/service.js";
@@ -138,15 +138,25 @@ export async function routeForQuote(ex: Executor, router: Router, riderId: strin
   if (trip === undefined || !ownsTrip(trip, { actor: "rider", subjectId: riderId })) return null;
   // What step 2 refuses without any settings read is not routed at all.
   if (trip.version !== req.expectedVersion || !STATUSES.has(trip.status) || pendingChange(trip)) return null;
+  // Q120 follow-up SF-1 (Rules REMINDERS 137): nor what step 2 refuses on the zone's settings before it prices (route
+  // change off, more stops than the zone allows). Plain reads; step 2 reads them again under the lock and decides, so
+  // a setting changed in between only costs one more try. Without this a request with 2,000 stops was routed with all
+  // its points before its 400 too_many_stops (the schema has no upper limit on stops).
+  if (!(await routeChangeSettings(ex, trip.zone_id)).on || req.stops.length > (await maxStopsOf(ex, trip.zone_id))) return null;
   const points = newRoutePoints(trip, req);
   // The price needs the distance and the time only, never the road's shape.
   return { key: legKey(points), leg: await router.route(points, { shape: false }) };
 }
 
-/** Runs step 1 and step 2 (see routeForQuote) until step 2 could use step 1's road; `locked` is the whole transaction. */
-export async function quoteOutsideLock<T>(db: Executor, router: Router, riderId: string, tripId: string, body: unknown, locked: (routed: RoutedQuote | null) => Promise<T>): Promise<T> {
+/**
+ * Runs step 1 and step 2 (see routeForQuote) until step 2 could use step 1's road; `locked` is the whole transaction.
+ * Q120 follow-up SF-2: `routeFirstTry: false` (the caller found a stored answer for the Idempotency-Key, so `locked`
+ * will replay it or refuse the key) skips the road of the first try; should `locked` run the work after all (the key
+ * was swept in between), step 2 finds no road, throws RouteInputsChanged and the next try routes as usual.
+ */
+export async function quoteOutsideLock<T>(db: Executor, router: Router, riderId: string, tripId: string, body: unknown, locked: (routed: RoutedQuote | null) => Promise<T>, options: { routeFirstTry?: boolean } = {}): Promise<T> {
   for (let attempt = 1; ; attempt++) {
-    const routed = await routeForQuote(db, router, riderId, tripId, body);
+    const routed = attempt === 1 && options.routeFirstTry === false ? null : await routeForQuote(db, router, riderId, tripId, body);
     try {
       return await locked(routed);
     } catch (error) {

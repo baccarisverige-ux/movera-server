@@ -1,9 +1,9 @@
 import { riderDebt, DEBT_MODEL_SINCE } from "../riders/debt.js";
 import { contractAtLeast } from "../drivers/reminders.js";
 import { checkTripLength, checkWindow } from "../reservations/service.js";
-import { checkMaxStops } from "../trips/onTripSettings.js";
+import { checkMaxStops, maxStopsOf } from "../trips/onTripSettings.js";
 import { contract } from "../contract/contract.js";
-import type { Db, Trx } from "../db/db.js";
+import type { Db, Executor, Trx } from "../db/db.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
@@ -86,9 +86,15 @@ export async function samePointWarning(trx: Trx, zoneId: string, body: Pick<Quot
  * router hands createQuotes that same leg for the same points (or the same error at the same step), so the answer,
  * the stored quote and the idempotency behaviour are unchanged; any other points still go to the real router.
  */
-export async function routeBeforeTransaction(router: Router, request: unknown): Promise<Router> {
+export async function routeBeforeTransaction(router: Router, request: unknown, ex: Executor): Promise<Router> {
   if (schemaProblem("QuoteRequest", request) !== null) return router;
   const body = request as QuoteRequest;
+  // Q120 follow-up SF-1 (Rules REMINDERS 137): what createQuotes refuses on the zone before it routes (no open zone at
+  // the pickup, more stops than the zone allows) is not routed either; createQuotes reads both again and gives the
+  // same answer as before. Without this a request with 2,000 stops was routed with all its points before its
+  // 400 too_many_stops (the schema has no upper limit on stops). Plain reads, no transaction.
+  const zone = await zoneAt(ex, body.pickup);
+  if (zone === null || !zone.open || body.stops.length > (await maxStopsOf(ex, zone.zoneId))) return router;
   const wanted = legKey(quotePoints(body));
   const result: { leg: RouteLeg } | { error: unknown } = await router.route(quotePoints(body)).then(
     (leg) => ({ leg }),
