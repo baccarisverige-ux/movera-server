@@ -432,7 +432,8 @@ type LocationFacts = {
 
 /**
  * `lockLimitMs`: only POST /driver/location passes it (supervisor SF-1). Going online (setAvailability) reads the same
- * facts for its own fix with no limit, so it waits for a row lock as it always did.
+ * facts for its own fix with no limit, so it waits for a row lock as it always did. With it, the statement also takes the
+ * per-driver GPS lock (Q114 SF1, below).
  */
 async function locationFacts(trx: Trx, driverId: string, lockLimitMs?: number): Promise<LocationFacts | undefined> {
   const row = await trx
@@ -462,7 +463,15 @@ async function locationFacts(trx: Trx, driverId: string, lockLimitMs?: number): 
     // S7 B3.1 (Q112): SET LOCAL lock_timeout for this transaction (is_local = true), set by this first statement so the
     // GPS path keeps its statement budget (test/drivers/location_statements.test.ts). This read takes no lock; every
     // write of the batch comes after it. No driver row = no value set, and nothing is written then.
-    .$if(lockLimitMs !== undefined, (qb) => qb.select(sql<string>`set_config('lock_timeout', ${`${lockLimitMs}ms`}, true)`.as("lock_limit")))
+    // S7 W2 Q114 supervisor SF1: with the Idempotency-Key no longer stored, two identical sends at the same moment both
+    // read the old position in the upsert's `prev` (its statement snapshot) and both wrote a location event. So the GPS
+    // write is one at a time per driver: a transaction-scoped advisory lock, taken in this same first statement AFTER the
+    // lock limit (CASE evaluates its condition first), so the wait for it is under the same 2 s limit (503 server_busy).
+    // The upsert of the second send then starts after the first one committed and sees its fix (not new). Only GPS
+    // posts take this lock, and they take it before any row lock, so it adds no lock cycle with trip commands.
+    .$if(lockLimitMs !== undefined, (qb) =>
+      qb.select(sql<null>`CASE WHEN set_config('lock_timeout', ${`${lockLimitMs}ms`}, true) IS NOT NULL THEN pg_advisory_xact_lock(hashtext(${`gps:${driverId}`})) END`.as("lock_limit")),
+    )
     .where("d.driver_id", "=", driverId)
     .executeTakeFirst();
   if (row === undefined) return undefined;
