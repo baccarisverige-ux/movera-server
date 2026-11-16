@@ -61,9 +61,48 @@ export async function scheduleRideCheckScan(trx: Trx, trip: Pick<TripRow, "trip_
   await scheduleTimer(trx, { kind: RIDE_CHECK_SCAN, refId: trip.trip_id, dueAt }, { keepDue: true });
 }
 
-/** v0.18.100 (BQ-V37): the scan keeps when the next one may run (the trip row is already locked by the scan). */
-async function keepNextScan(trx: Trx, trip: TripRow, settings: RideCheckSettings, now: Date): Promise<void> {
-  const log = { ...((trip.ride_check_log as Record<string, string> | null) ?? {}), [NEXT_SCAN_KEY]: new Date(now.getTime() + settings.scanEverySeconds * 1000).toISOString() };
+/**
+ * Long stop on the same fix (owner 2026-11-15 "Yes, detect it (Rec.)", GPS supervisor SF-2): which fix the scan last saw
+ * as the driver's stored position (`sameFix` = its measured time and place) and the server time it was first seen from
+ * (`sameFixSince`). Kept in trips.ride_check_log next to nextScanAt. Not trigger names.
+ */
+export const SAME_FIX_KEY = "sameFix";
+export const SAME_FIX_SINCE_KEY = "sameFixSince";
+
+/**
+ * A phone that keeps sending exactly the SAME fix (a frozen GPS, or a native phone standing still that re-sends the same
+ * OS fix) adds no trace row (trip_locations is one row per measured time), so the trace alone never shows the stop. But
+ * each of those sends refreshes driver_locations.received_at (G5). So the scan reads the stored position (one statement,
+ * in the scan job, nothing added to the GPS write) and keeps since when it is this same fix; the time the phone went on
+ * sending it is received_at - since. Both are the SERVER's clock (never the phone's measured time against the server's:
+ * a phone clock that is minutes off, or a fix delivered late, must not look like a stop). That time is put on the
+ * phone's own time line as two more fixes at the same place: the fix itself, and "still there" that much later.
+ *
+ * - A phone that stopped sending: received_at stands still, so no standing time is added (the silence check, not this).
+ * - A new fix (other time or place): the count starts again from that scan.
+ * - `since` is taken at the first scan that saw the fix, so the stop is found at most scanEverySeconds late, never early.
+ * - No duplicate trace rows (the trace feeds the paid distance and the admin trace).
+ */
+async function sameFixRun(trx: Trx, trip: TripRow): Promise<{ log: Record<string, string>; held: Fix[] }> {
+  const stored = await trx.selectFrom("driver_locations").select(["lat", "lng", "accuracy", "measured_at", "received_at"]).where("driver_id", "=", trip.driver_id!).executeTakeFirst();
+  if (!stored) return { log: {}, held: [] };
+  const kept = (trip.ride_check_log as Record<string, string> | null) ?? {};
+  const key = `${stored.measured_at.toISOString()} ${stored.lat} ${stored.lng}`;
+  const keptSince = kept[SAME_FIX_KEY] === key ? Date.parse(kept[SAME_FIX_SINCE_KEY] ?? "") : Number.NaN;
+  const since = Number.isFinite(keptSince) && keptSince <= stored.received_at.getTime() ? keptSince : stored.received_at.getTime();
+  const log = { [SAME_FIX_KEY]: key, [SAME_FIX_SINCE_KEY]: new Date(since).toISOString() };
+  const sentForMs = stored.received_at.getTime() - since;
+  if (sentForMs <= 0 || stored.accuracy > MAX_ACCURACY_M) return { log, held: [] };
+  const at = { lat: stored.lat, lng: stored.lng };
+  return { log, held: [{ ...at, measured_at: stored.measured_at }, { ...at, measured_at: new Date(stored.measured_at.getTime() + sentForMs) }] };
+}
+
+/**
+ * v0.18.100 (BQ-V37): the scan keeps when the next one may run (the trip row is already locked by the scan).
+ * `more`: the same-fix keys of this scan (sameFixRun), written by the same statement.
+ */
+async function keepNextScan(trx: Trx, trip: TripRow, settings: RideCheckSettings, now: Date, more: Record<string, string> = {}): Promise<void> {
+  const log = { ...((trip.ride_check_log as Record<string, string> | null) ?? {}), ...more, [NEXT_SCAN_KEY]: new Date(now.getTime() + settings.scanEverySeconds * 1000).toISOString() };
   // askRideCheck below spreads trip.ride_check_log, so it keeps this key.
   (trip as { ride_check_log: unknown }).ride_check_log = log;
   await trx.updateTable("trips").set({ ride_check_log: JSON.stringify(log) }).where("trip_id", "=", trip.trip_id).execute();
@@ -182,8 +221,11 @@ const recentlyAsked = (trip: TripRow, trigger: string, settings: RideCheckSettin
   return at !== undefined && now.getTime() - Date.parse(at) < settings.repeatMinutes * 60_000;
 };
 
-/** What the latest fixes say: long_stop, off_route or nothing. Exported for the tests. */
-export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSettings, now: Date, router?: Router): Promise<{ trigger: string; at: LatLng; measured: number } | null> {
+/**
+ * What the latest fixes say: long_stop, off_route or nothing. Exported for the tests.
+ * `held` (sameFixRun): the stored fix and how long the phone went on sending it, as fixes after the trace's.
+ */
+export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSettings, now: Date, router?: Router, held: readonly Fix[] = []): Promise<{ trigger: string; at: LatLng; measured: number } | null> {
   const since = new Date(now.getTime() - (settings.stopMinutes * 60 + 120) * 1000);
   const fixes = (await trx
     .selectFrom("trip_locations")
@@ -193,6 +235,9 @@ export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSetting
     .where("accuracy", "<=", MAX_ACCURACY_M)
     .orderBy("measured_at")
     .execute()) as Fix[];
+  // The same fix sent again and again: it is the newest fix of the trace (or the trace's window no longer reaches it).
+  const last = fixes[fixes.length - 1];
+  if (held.length > 0 && (!last || last.measured_at.getTime() <= held[0]!.measured_at.getTime())) fixes.push(...held);
   const newest = fixes[fixes.length - 1];
   if (!newest) return null;
   const boardedLongEnough = trip.boarded_at !== null && now.getTime() - trip.boarded_at.getTime() >= settings.stopMinutes * 60_000;
@@ -227,10 +272,11 @@ async function scan(trx: Trx, timer: Timer, router: Router | undefined): Promise
   if (!trip || !ONBOARD.has(trip.status) || !trip.driver_id) return;
   const now = timer.firedAt;
   const settings = await rideCheckSettings(trx, trip.zone_id);
-  await keepNextScan(trx, trip, settings, now);
+  const same = await sameFixRun(trx, trip);
+  await keepNextScan(trx, trip, settings, now, same.log);
   if (openServerCheck(trip, now)) return;
   if (!settings.on) return;
-  const found = await detect(trx, trip, settings, now, router);
+  const found = await detect(trx, trip, settings, now, router, same.held);
   if (!found || recentlyAsked(trip, found.trigger, settings, now)) return;
   await askRideCheck(trx, trip, found.trigger, settings, now, found.at, found.measured);
 }
