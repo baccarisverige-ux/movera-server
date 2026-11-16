@@ -8,6 +8,8 @@ import { noAnswerHandler, RIDE_CHECK_NO_ANSWER } from "../../src/safety/rideChec
 import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "../../src/safety/rideCheckServer.js";
 import { DRIVER_SILENCE, NEAR_DROPOFF, PICKUP_GEOFENCE, rideHandlers, WAITING_NO_SHOW, WAITING_PAID } from "../../src/trips/ride.js";
 import { dispatchHandlers, END, ROUND, STEP, WITHDRAW } from "../../src/dispatch/runtime.js";
+import { EstimateRouter } from "../../src/maps/routing.js";
+import { etaHandler, TRIP_ETA } from "../../src/trips/eta.js";
 import { newId } from "../../src/ids.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
@@ -227,6 +229,48 @@ describe("B1.6b gate: every restart-once handler re-checks the trip or case befo
       expect(await offers(moved)).toEqual([]);
       expect(await db().selectFrom("timers").select("kind").where("ref_id", "=", moved).execute()).toEqual([]);
     }
+  });
+
+  it("trip_eta (B1.1 SF-2): a second run sends no second 'almost there' and books no second tick; a trip that moved on is left alone", async () => {
+    const handler = etaHandler(new EstimateRouter());
+    const SPOT = { lat: 59.33, lng: 18.06 };
+    const ticks = async (id: string) => (await db().selectFrom("timers").select(["due_at", "attempts"]).where("kind", "=", TRIP_ETA).where("ref_id", "=", id).execute()).map((r) => [r.due_at.toISOString(), r.attempts]);
+    const arriving = async (id: string) => (await db().selectFrom("notifications").select("data").where("trip_id", "=", id).where("audience", "=", "rider").execute()).filter((n) => (n.data as { moment?: string }).moment === "driver_arriving").length;
+    const fixAt = async (driverId: string, second: number) => {
+      const fix = { lat: SPOT.lat, lng: SPOT.lng + 0.002, accuracy: 5, heading: null, speed_mps: 0, measured_at: at(second), received_at: at(second) };
+      await db().insertInto("driver_locations").values({ driver_id: driverId, ...fix } as never).onConflict((c) => c.column("driver_id").doUpdateSet(fix as never)).execute();
+    };
+    // 110 m from the pickup: the first run sends "almost there" and books the next tick (30 s on).
+    const t = await onTrip("driver_to_pickup", { boarded_at: null, started_at: null });
+    await fixAt(t.driverId, -2);
+    await run(handler, timer(kind(TRIP_ETA), t.id, NOW));
+    expect(await arriving(t.id)).toBe(1);
+    expect(await ticks(t.id)).toEqual([[at(30).toISOString(), 0]]);
+    const first = await snapshot(t.id);
+    // The restart (60 s after a failed run), the driver still there: no second push, still ONE tick, the trip as it was.
+    await fixAt(t.driverId, 58);
+    await run(handler, timer(TRIP_ETA, t.id, at(60)));
+    expect(await arriving(t.id)).toBe(1);
+    expect(await ticks(t.id)).toEqual([[at(90).toISOString(), 0]]);
+    expect(await snapshot(t.id)).toEqual({ ...first, events: first.events + 1 });
+    // Trips that moved on while the tick was parked: taken back / cancelled (no driver), ended: nothing, and no tick booked.
+    for (const [status, set] of [["searching", { driver_id: null }], ["completed", {}], ["cancelled_by_rider", {}]] as const) {
+      const moved = await onTrip(status, set);
+      await fixAt(moved.driverId, 58);
+      const was = await snapshot(moved.id);
+      await run(handler, timer(TRIP_ETA, moved.id, at(60)));
+      expect(await snapshot(moved.id)).toEqual(was);
+      expect(await arriving(moved.id)).toBe(0);
+      expect(await ticks(moved.id)).toEqual([]);
+    }
+    // Arrived while it was parked: no push, no event; only the slow look for the boarding.
+    const arrived = await onTrip("arrived", { boarded_at: null, started_at: null });
+    await fixAt(arrived.driverId, 58);
+    const was = await snapshot(arrived.id);
+    await run(handler, timer(TRIP_ETA, arrived.id, at(60)));
+    expect(await snapshot(arrived.id)).toEqual(was);
+    expect(await arriving(arrived.id)).toBe(0);
+    expect(await ticks(arrived.id)).toEqual([[at(90).toISOString(), 0]]);
   });
 
   it("ride_check_no_answer is NOT restarted (its handler does not look at the trip state: an ended trip would get a new safety case) but stays loud (supervisor B1.6b F1)", () => {

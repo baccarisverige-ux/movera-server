@@ -21,6 +21,16 @@
  * away / back (paid waiting) and the automatic arrival at the middle stops. Its handler locks the trip and re-checks the
  * status, the latest fix and the 2-fix confirm rule first (proof: restart_rechecks.test.ts; the restart itself:
  * pickup_geofence_restart.test.ts).
+ * S4 B1.1 SF-2, round 4 (OQ-B101-2 "Yes, restart once + urgent alert (Rec.)": a SESSION decision under the owner's night
+ * rule, 2026-11-16 17:53 UTC, the owner reviews it; contract 0.18.121, same rule text): trip_eta too. Since B1.1 round 1
+ * nothing wakes a failing or parked tick, so the live road ETA, the rider's "almost there" push and the late check of a
+ * booked ride stopped for the rest of the trip. trip_eta books its own next run and one run may push and take a late
+ * booked ride back, so its restart is safe only because: the handler locks the trip and re-reads its target first; the
+ * push is sent once per driver from the notification row (maybePushArriving); a ride taken back has no driver, so the
+ * next run ends; everything a failed run did (the push, the take-back, the next tick it booked) is undone with it
+ * (TimerWorker's savepoint); and (kind, ref_id) is unique, so there is one row whatever books it (proof:
+ * restart_rechecks.test.ts; the restart itself, with the real handler failing after its work and two copies at the
+ * restart: trip_eta_restart.test.ts).
  */
 export const RESTART_ONCE_KINDS: readonly string[] = [
   "incident_escalate",
@@ -33,6 +43,7 @@ export const RESTART_ONCE_KINDS: readonly string[] = [
   "search_end",
   "dispatch_round",
   "pickup_geofence",
+  "trip_eta",
 ];
 
 /** Parked trip and safety kinds: their system_health alert is critical (the loud alarm). */
