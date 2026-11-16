@@ -10,7 +10,8 @@ import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
  * S4 B1.16 Q-B13 (owner W1 Q78 "Do not count it", 2026-11-11; contract v0.18.120 autoOffline.outage): an Exclusive or
  * hand-sent offer that EXPIRED while a server copy's live link was down (its sent..answered time overlaps an outage
  * window any copy recorded) is skipped by the auto-offline count, and by the admin Dispatch count (missedInRowOf).
- * A declined one still counts; one outside every window still counts; an open window counts until seen_at + 60 s.
+ * One outside every window still counts; an open window counts until seen_at + 60 s. Owner 2026-11-16 ("It count when
+ * driver ignore"): a declined offer never counts, inside a window or not (was: a declined one still counts).
  */
 let database: TestDatabase;
 let rider: string;
@@ -58,10 +59,12 @@ describe("Q-B13: an Exclusive that expired while the live link was down never co
     expect(await counts(driver)).toEqual([2, 2]);
   });
 
-  it("a declined offer inside the window still counts (the driver answered it)", async () => {
+  it("a declined offer never counts, inside the window or outside (owner 2026-11-16; was: it still counts)", async () => {
     const driver = await insertDriver(database.db);
     await offer(driver, "declined", 100);
-    await offer(driver, "expired", 120);
+    await offer(driver, "expired", 120); // inside: skipped
+    await offer(driver, "declined", 300); // outside, declined: skipped too
+    await offer(driver, "expired", 320); // outside, ignored: counts
     await outage(90, 200);
     expect(await counts(driver)).toEqual([1, 1]);
   });
