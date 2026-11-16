@@ -10,8 +10,16 @@ import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, O
 export type LatLng = { lat: number; lng: number };
 export type RouteLeg = { distanceMeters: number; durationSeconds: number; source: "osrm" | "estimate"; points?: LatLng[] };
 
+/**
+ * S7 0.17 (owner W2 Q120 part 3): `shape: false` = the caller needs only the distance and the time (an ETA tick, the
+ * booked "leave now" check, a route-change price), so OSRM is asked without the road's shape (overview=false: a far
+ * smaller answer, the same distance and time) and the leg has no `points`. Default (true): the full shape, as before
+ * (the trip's line on the map, the ride check's planned route).
+ */
+export type RouteOptions = { shape?: boolean };
+
 export interface Router {
-  route(points: LatLng[]): Promise<RouteLeg>;
+  route(points: LatLng[], options?: RouteOptions): Promise<RouteLeg>;
 }
 
 type ScoreConstants = { roadFactor: number; pickupKmh: number };
@@ -93,7 +101,7 @@ export class OsrmRouter implements Router {
     return this.probing ? "half_open" : "open";
   }
 
-  async route(points: LatLng[]): Promise<RouteLeg> {
+  async route(points: LatLng[], options: RouteOptions = {}): Promise<RouteLeg> {
     let probe = false;
     if (this.openedAt !== null) {
       if (this.probing || Date.now() - this.openedAt < this.breaker.coolDownMs) return this.fallback.route(points);
@@ -101,7 +109,7 @@ export class OsrmRouter implements Router {
       this.probing = true;
     }
     try {
-      const leg = await this.ask(points);
+      const leg = await this.ask(points, options.shape !== false);
       this.succeeded();
       return leg;
     } catch (error) {
@@ -119,9 +127,10 @@ export class OsrmRouter implements Router {
     }
   }
 
-  private async ask(points: LatLng[]): Promise<RouteLeg> {
+  private async ask(points: LatLng[], shape = true): Promise<RouteLeg> {
     const coordinates = points.map((p) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join(";");
-    const url = `${this.baseUrl.replace(/\/$/, "")}/route/v1/driving/${coordinates}?overview=full&geometries=geojson&steps=false&alternatives=false`;
+    // 0.17: overview=false when only the numbers are needed (RouteOptions.shape).
+    const url = `${this.baseUrl.replace(/\/$/, "")}/route/v1/driving/${coordinates}?overview=${shape ? "full" : "false"}&geometries=geojson&steps=false&alternatives=false`;
     const response = await fetch(url, { signal: AbortSignal.timeout(this.timeoutMs) });
     const body = (await response.json()) as { code?: string; routes?: Array<{ distance: number; duration: number; geometry?: { coordinates?: number[][] } }> };
     const best = body.routes?.[0];
@@ -130,7 +139,7 @@ export class OsrmRouter implements Router {
       distanceMeters: Math.round(best.distance),
       durationSeconds: Math.round(best.duration),
       source: "osrm",
-      points: (best.geometry?.coordinates ?? []).map(([lng, lat]) => ({ lat: lat!, lng: lng! })),
+      ...(shape ? { points: (best.geometry?.coordinates ?? []).map(([lng, lat]) => ({ lat: lat!, lng: lng! })) } : {}),
     };
   }
 
@@ -171,11 +180,11 @@ export type PreparedLegs = { legs: Array<{ key: string; leg: RouteLeg }> };
 
 export const legKey = (points: LatLng[]): string => points.map((p) => `${Number(p.lat).toFixed(6)},${Number(p.lng).toFixed(6)}`).join(";");
 
-export async function prepareLegs(router: Router, wanted: LatLng[][]): Promise<PreparedLegs> {
+export async function prepareLegs(router: Router, wanted: LatLng[][], options?: RouteOptions): Promise<PreparedLegs> {
   const legs: PreparedLegs["legs"] = [];
   for (const points of wanted) {
     try {
-      legs.push({ key: legKey(points), leg: await router.route(points) });
+      legs.push({ key: legKey(points), leg: await (options === undefined ? router.route(points) : router.route(points, options)) });
     } catch {
       // No road route now: the handler estimates.
     }

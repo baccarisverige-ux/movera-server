@@ -135,7 +135,8 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     };
     const unsubscribe = deps.hub.subscribe(OFFER_EVENTS_CHANNEL, (payload) => {
       if (payload === null || payload["driverId"] === who.subjectId) void pump();
-    });
+      // S7 0.15: the hub finds this feed by its driver id instead of calling every open offer feed.
+    }, { match: [{ driverId: who.subjectId }] });
     stream.onClose(unsubscribe);
     await pump();
     return reply;

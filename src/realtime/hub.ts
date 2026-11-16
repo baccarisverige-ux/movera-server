@@ -16,8 +16,27 @@ export type Listener = (payload: Record<string, unknown> | null) => void;
  * any "spread" listener — offer feeds, trip streams, the SOS / incident stream, admin feeds, caches. "spread": in
  * batches after them — the rider / driver settings streams (B1.18: their close is spread over 30 s anyway).
  */
-export type SubscribeOptions = { catchUp?: "first" | "spread" };
-type Sub = { fn: Listener; spread: boolean; live: boolean };
+export type SubscribeOptions = {
+  catchUp?: "first" | "spread";
+  /**
+   * S7 0.15 (owner W2 Q120 part 1): the payloads this listener is for. Each entry names payload fields with the value
+   * each must have, e.g. { tripId: "trp_…" } or { reservations: true, zoneId: "Z001" }; ALL fields of an entry must
+   * be equal, and ANY ONE entry is enough ([{ reservations: true, zoneId }, { reservations: true, driverId }]). A
+   * NOTIFY then runs this listener only when its payload fits an entry; the hub finds it by the values instead of
+   * calling every listener of the channel. It is a first sieve only: the listener still checks the payload itself.
+   * Without `match` (or with an empty list) the listener gets every NOTIFY of the channel, as before.
+   * The catch-up signal (null: after a reconnect, or a payload that cannot be read) always reaches every listener.
+   */
+  match?: ReadonlyArray<Readonly<Record<string, MatchValue>>>;
+};
+export type MatchValue = string | number | boolean;
+type Sub = { fn: Listener; spread: boolean; live: boolean; seq: number };
+/** 0.15: the listeners that asked for the same fields (in this order), by the values they asked for (valuesKey). */
+type FieldIndex = { fields: string[]; byValues: Map<string, Set<Sub>> };
+
+const isMatchValue = (value: unknown): value is MatchValue => typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+/** One text for a list of values; the type is part of it, so true never equals "true" and 7 never equals "7". */
+const valuesKey = (values: readonly MatchValue[]): string => JSON.stringify(values);
 
 /**
  * S04 A4 / S03 C1: the LISTEN connection is pinged this often; a ping that fails or hangs reconnects it.
@@ -107,7 +126,13 @@ export type HubHealth = { status: "ok" | "down"; reconnects: number; subscribers
 
 export class NotificationHub {
   private client: pg.Client | undefined;
+  /** Every listener of a channel, in subscribe order (the catch-up signal and the count read this). */
   private readonly listeners = new Map<string, Set<Sub>>();
+  /** 0.15: the listeners of a channel that gave no `match`: they get every NOTIFY of it. */
+  private readonly unmatched = new Map<string, Set<Sub>>();
+  /** 0.15: channel → the field sets asked for on it → values → the listeners that asked for them. Empty ones are removed. */
+  private readonly index = new Map<string, Map<string, FieldIndex>>();
+  private nextSeq = 0;
   /** Spread listeners of the current catch-up round, in order, and how many of them were told already. */
   private spreadQueue: Sub[] = [];
   private spreadNext = 0;
@@ -175,7 +200,14 @@ export class NotificationHub {
       } catch {
         payload = null;
       }
-      for (const sub of this.listeners.get(message.channel) ?? []) sub.fn(payload);
+      // A payload that cannot be read (null) is the catch-up signal for every listener of the channel, as before;
+      // so is anything that is not an object (no field to look up: every listener gets it as it is, as before).
+      if (payload === null || typeof payload !== "object") {
+        for (const sub of this.listeners.get(message.channel) ?? []) sub.fn(payload);
+        return;
+      }
+      // `live`: a listener that an earlier one of this same NOTIFY unsubscribed is not run (as when the set was walked).
+      for (const sub of this.listenersFor(message.channel, payload)) if (sub.live) sub.fn(payload);
     };
     const onError = (error: Error) => {
       this.log.warn({ err: error }, "realtime listen connection lost");
@@ -342,14 +374,77 @@ export class NotificationHub {
     }
   }
 
+  /**
+   * 0.15: the listeners a NOTIFY with this payload runs: those without `match`, and those with an entry the payload
+   * fits. Each once, in subscribe order (as when every listener was called). The cost is the number of listeners
+   * found plus the number of different field sets asked for on the channel (a handful), not the number of open streams.
+   */
+  private listenersFor(channel: string, payload: Record<string, unknown>): Iterable<Sub> {
+    const open = this.unmatched.get(channel);
+    const indexes = this.index.get(channel);
+    let found: Set<Sub> | undefined;
+    if (indexes !== undefined) {
+      for (const { fields, byValues } of indexes.values()) {
+        const values: MatchValue[] = [];
+        for (const field of fields) {
+          const value = payload[field];
+          if (!isMatchValue(value)) break;
+          values.push(value);
+        }
+        if (values.length !== fields.length) continue;
+        const subs = byValues.get(valuesKey(values));
+        if (subs === undefined) continue;
+        found ??= new Set();
+        for (const sub of subs) found.add(sub);
+      }
+    }
+    if (found === undefined) return open ?? [];
+    if (open !== undefined) for (const sub of open) found.add(sub);
+    return [...found].sort((a, b) => a.seq - b.seq);
+  }
+
   subscribe(channel: string, listener: Listener, options: SubscribeOptions = {}): () => void {
     let set = this.listeners.get(channel);
     if (!set) this.listeners.set(channel, (set = new Set()));
-    const sub: Sub = { fn: listener, spread: options.catchUp === "spread", live: true };
+    const sub: Sub = { fn: listener, spread: options.catchUp === "spread", live: true, seq: this.nextSeq++ };
     set.add(sub);
+    // Each entry as [the index of its fields, its values' key]; an entry without fields would fit every payload.
+    const entries = (options.match ?? []).map((entry) => {
+      const fields = Object.keys(entry).sort();
+      return { fields, fieldsKey: JSON.stringify(fields), values: valuesKey(fields.map((field) => entry[field]!)) };
+    });
+    if (entries.length === 0 || entries.some((entry) => entry.fields.length === 0)) {
+      let open = this.unmatched.get(channel);
+      if (!open) this.unmatched.set(channel, (open = new Set()));
+      open.add(sub);
+      entries.length = 0;
+    }
+    if (entries.length > 0) {
+      let indexes = this.index.get(channel);
+      if (!indexes) this.index.set(channel, (indexes = new Map()));
+      for (const entry of entries) {
+        let index = indexes.get(entry.fieldsKey);
+        if (!index) indexes.set(entry.fieldsKey, (index = { fields: entry.fields, byValues: new Map() }));
+        let subs = index.byValues.get(entry.values);
+        if (!subs) index.byValues.set(entry.values, (subs = new Set()));
+        subs.add(sub);
+      }
+    }
     return () => {
       sub.live = false;
       set!.delete(sub);
+      this.unmatched.get(channel)?.delete(sub);
+      const indexes = this.index.get(channel);
+      if (indexes === undefined) return;
+      for (const entry of entries) {
+        const index = indexes.get(entry.fieldsKey);
+        const subs = index?.byValues.get(entry.values);
+        if (index === undefined || subs === undefined) continue;
+        subs.delete(sub);
+        // Nothing is kept for values nobody listens for any more (a closed trip stream leaves no entry behind).
+        if (subs.size === 0) index.byValues.delete(entry.values);
+        if (index.byValues.size === 0) indexes.delete(entry.fieldsKey);
+      }
     };
   }
 

@@ -83,7 +83,8 @@ export async function streamTrip(
 
   const unsubscribe = deps.hub.subscribe(TRIP_EVENTS_CHANNEL, (payload) => {
     if (payload === null || payload["tripId"] === tripId) void pump();
-  });
+    // S7 0.15: the hub finds this stream by its trip id instead of calling every open trip stream.
+  }, { match: [{ tripId }] });
   stream.onClose(unsubscribe);
   if (viewer !== "admin") markPresence(request, deps, stream, tripId, who);
   await pump();
@@ -162,7 +163,8 @@ export async function streamConfig(
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "config_published", doc: payload["doc"], zoneId: payload["zoneId"], version: payload["version"], publishedAt, occurredAt: publishedAt, serverTime: now.toISOString() });
     }
     // MF-1: the settings stream's catch-up goes after the offer feeds, trip streams and SOS stream (hub batches it).
-  }, { catchUp: "spread" });
+    // S7 0.15: every branch above needs this zone's id, except doc "zones" (any zone).
+  }, { catchUp: "spread", match: [{ zoneId }, { doc: "zones" }] });
   stream.onClose(unsubscribe);
   // S04 A5: the null signal (LISTEN reconnected) means hints may have been missed. A hint needs a tripId and the
   // contract has no catch-up event, so the stream is closed: the app reconnects (same Last-Event-ID) and re-reads.
@@ -183,7 +185,8 @@ export async function streamConfig(
       if (payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
-    }, { catchUp: "spread" }));
+      // S7 0.15: the hub finds this stream by its rider id.
+    }, { catchUp: "spread", match: [{ riderId }] }));
   }
   // v0.18.45 §68 (contract.json#driverReservationsLive): a booked ride of this zone (or one naming this driver)
   // changed. A hint only: the app re-reads GET /driver/reservations. Sent from the post-commit NOTIFY, so a
@@ -196,7 +199,10 @@ export async function streamConfig(
       if (payload["zoneId"] !== zoneId && payload["driverId"] !== driverId) return;
       const now = deps.clock?.() ?? new Date();
       stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "driver_reservations_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
-    }, { catchUp: "spread" }));
+      // S7 0.15: only a booked ride's list change (reservations: true, which tripNotice sets on a scheduled trip
+      // only) of this zone or naming this driver. NOT the zone alone: every trip event carries its zone, so that would
+      // run every driver stream of the zone for every GPS fix of every trip in it.
+    }, { catchUp: "spread", match: [{ reservations: true, zoneId }, { reservations: true, driverId }] }));
   }
   // A reconnect with Last-Event-ID older than the live version gets the newest at once.
   await safeCheck();

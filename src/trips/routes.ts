@@ -11,7 +11,7 @@ import { parseBody } from "../http/validate.js";
 import { nearbyVehicles } from "../riders/nearby.js";
 import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
 import { tripProjection } from "./projection.js";
-import { answerRouteChange, quoteRouteChange, requestRouteChange } from "./routeChange.js";
+import { answerRouteChange, quoteOutsideLock, quoteRouteChange, requestRouteChange } from "./routeChange.js";
 import { tripPath } from "./path.js";
 import { EstimateRouter, type Router } from "../maps/routing.js";
 import { assertAdminTripScope, listMessages, sendMessage } from "./messages.js";
@@ -126,7 +126,11 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   app.post(`${API_PREFIX}/trips/:tripId/route-quote`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider"]);
     const id = parseBody(z.object({ tripId: ID }), request.params).tripId;
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await quoteRouteChange(trx, roads, who.subjectId, id, request.body ?? {}, now()) }));
+    // S7 0.17: the road is asked first, with no lock and no transaction; the transaction only prices and stores.
+    const body = request.body ?? {};
+    const result = await quoteOutsideLock(deps.db, roads, who.subjectId, id, body, (routed) =>
+      runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await quoteRouteChange(trx, routed, who.subjectId, id, body, now()) })),
+    );
     return reply.status(result.status).send(result.body);
   });
   for (const [verb, actor] of [["accept", "driver"], ["refuse", "driver"], ["withdraw", "rider"]] as const) {
