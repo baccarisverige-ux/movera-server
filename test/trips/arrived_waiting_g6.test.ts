@@ -479,7 +479,11 @@ describe("item 3: admin Reverse no-show (reason required, driver share kept unle
     expect(res.json().cancellation.reversal.driverShareTakenBack).toBe(true);
     expect(res.json().driverEarnings).toEqual({ amountMinor: 0, currency: "SEK" });
     const entries = await database.db.selectFrom("earnings_entries").select(["kind", "amount_minor"]).where("trip_id", "=", tripId).orderBy("at").execute();
-    expect(entries).toEqual([{ kind: "fee_share", amount_minor: "5200" }, { kind: "adjustment", amount_minor: "-5200" }]);
+    // BQ-V44: both entries carry the same `at` (no-show and reversal at one test-clock instant), so ORDER BY at leaves their
+    // order to the plan (a bitmap scan gave insertion order; after migration 0110's index build the planner may pick an
+    // index scan on earnings_trip (trip_id, kind)). Compared as a set: the same two entries, nothing else.
+    expect(entries).toHaveLength(2);
+    expect(entries).toEqual(expect.arrayContaining([{ kind: "fee_share", amount_minor: "5200" }, { kind: "adjustment", amount_minor: "-5200" }]));
   });
 
   it("a reason is required; only a no-show can be reversed", async () => {

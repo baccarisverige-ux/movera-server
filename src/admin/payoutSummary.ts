@@ -17,6 +17,8 @@ import { isPaidEnd, tripProjection } from "../trips/projection.js";
  *   share of each fee he has a fee_share entry of (feeColumns: the fee trip's commission). Admin view only: a bonus entry
  *   on a trip with no paid end (a lost-driver payment of a cancelled / expired trip) is taken off once, in the payout that
  *   pays it (moneyBase.lostDriverPaid.kpi). The app fee is inside the fare: never added again.
+ * v0.18.110 BQ-V44 (payoutSummary.campaignBonus, MF4): a campaign entry (kind bonus with bonus_id) is in driverGets and
+ * taken off moveraGets in both views (moveraGets may go below 0, sent as it is).
  * v0.18.95 BQ-M26 (payoutSummary.frozenWhenPaid; M24 supervisor N1): a PAID payout's numbers never change. Both views are
  * worked out once when the payout is marked paid and kept in payouts.paid_summary (migration 0109); a paid payout is
  * served from there, so a later pay change, refund or bonus on one of its trips never moves it (that change shows in the
@@ -45,7 +47,7 @@ export async function payoutSummaries(ex: Executor, all: readonly PayoutKey[], v
   // One read for the page on earnings_payout (0108).
   const entries = await ex
     .selectFrom("earnings_entries")
-    .select(["payout_id", "kind", "trip_id", "amount_minor"])
+    .select(["payout_id", "kind", "trip_id", "amount_minor", "bonus_id"])
     .where("payout_id", "in", payouts.map((p) => p.payout_id))
     .execute();
   const tripIds = [...new Set(entries.filter((e) => e.kind !== "tip" && e.kind !== "pickup_pay" && e.kind !== "adjustment").map((e) => e.trip_id).filter((id): id is string => id !== null))];
@@ -64,6 +66,13 @@ export async function payoutSummaries(ex: Executor, all: readonly PayoutKey[], v
       if (e.kind === "paid_to_movera") continue;
       const amount = Number(e.amount_minor);
       driverGets += amount;
+      // v0.18.110 BQ-V44 (priceDisplay.payoutSummary.campaignBonus, supervisor MF4): a bonus campaign is Movera's money
+      // outside every trip's commission and the driver's own money, so it is taken off Movera gets in BOTH views — keyed on
+      // kind bonus WITH bonus_id, never on "no trip" (the tripless paid_to_movera entry above stays out of both numbers).
+      if (e.kind === "bonus" && e.bonus_id !== null) {
+        moveraGets -= amount;
+        continue;
+      }
       const trip = e.trip_id ? trips.get(e.trip_id) : undefined;
       if (!trip) continue;
       if (e.kind === "trip" && !counted.has(`trip:${trip.trip_id}`)) {

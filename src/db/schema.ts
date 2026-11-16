@@ -13,5 +13,6 @@ export * from "./schema/admin.js";
 export * from "./schema/pricing.js";
 export * from "./schema/dispatch.js";
 export * from "./schema/payments.js";
+export * from "./schema/bonuses.js";
 export * from "./schema/support.js";
 export * from "./schema/database.js";
