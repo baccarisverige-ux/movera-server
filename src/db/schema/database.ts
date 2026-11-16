@@ -118,4 +118,6 @@ export interface Database {
   terms_acceptances: TermsAcceptancesTable;
   route_quotes: RouteQuotesTable;
   admin_trip_notes: AdminTripNotesTable;
+  /** S4 B1.16 Q-B13 (migration 0116): the LISTEN outage windows of every server copy (src/realtime/outages.ts). */
+  realtime_outages: { outage_id: Generated<string>; copy_id: string; down_at: Date; seen_at: Date; up_at: Date | null };
 }
