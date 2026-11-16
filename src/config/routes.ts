@@ -19,8 +19,9 @@ import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { draftForPreview, previewRoutes } from "./preview.js";
+import { scopeKey } from "./scope.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
-import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, standardKey, useStandard, withLivePricing } from "./service.js";
+import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, useStandard, withLivePricing } from "./service.js";
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
 
@@ -51,20 +52,6 @@ const ApprovalQuery = z.object({
 
 function checkZone(who: Principal, zoneId: string): void {
   if (!adminCoversZone(who, zoneId)) throw new ApiError("forbidden", "This zone is outside your scope.", { reason: "zone_out_of_scope" });
-}
-
-/** The scope key of a request: the zone id, or standard-<CC> for a country; a country needs one zone of it (owner 2026-10-27). */
-async function scopeKey(db: Db, who: Principal, scope: { zoneId?: string | undefined; country?: string | undefined }, doc?: ConfigDoc): Promise<string> {
-  if ((scope.zoneId === undefined) === (scope.country === undefined)) throw new ApiError("invalid_request", "Name exactly one of zoneId or country.", { reason: "scope_required" });
-  // v0.18.0 (contract.json#configDocs.countryOnly): the onboarding settings exist per country only.
-  if (doc !== undefined && COUNTRY_ONLY_DOCS.includes(doc) && scope.zoneId !== undefined) throw new ApiError("invalid_request", "These settings are per country; name the country.", { reason: "scope_country_only" });
-  if (scope.zoneId !== undefined) {
-    checkZone(who, scope.zoneId);
-    return scope.zoneId;
-  }
-  const zones = await db.selectFrom("zones").select("zone_id").where("country", "=", scope.country!).execute();
-  if (zones.length > 0 && !zones.some((zone) => adminCoversZone(who, zone.zone_id))) throw new ApiError("forbidden", "This country is outside your scope.", { reason: "zone_out_of_scope" });
-  return standardKey(scope.country!);
 }
 
 /**

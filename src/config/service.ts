@@ -523,11 +523,11 @@ async function rewriteAppDocs(trx: Trx, keys: string[], change: (doc: ConfigDoc,
 
 /* ---------------------------------------------------------------- v0.7.1: history, restore (contract.json#pricingHistory) */
 
-export type HistoryEntry = { doc: ConfigDoc; zoneId: string; version: number; publishedAt: string; publishedBy?: string; note?: string; action: "publish" | "restore"; restoredFrom?: number; document: unknown };
+export type HistoryEntry = { doc: ConfigDoc; zoneId?: string; country?: string; version: number; publishedAt: string; publishedBy?: string; note?: string; action: "publish" | "restore"; restoredFrom?: number; document: unknown };
 
-/** GET /admin/config/{doc}/history: newest first; cursor = the last row's version. */
+/** GET /admin/config/{doc}/history: newest first; cursor = the last row's version. A zone, or a country's standard-<CC> key. */
 export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string, input: { cursor?: string | undefined; limit: number }): Promise<{ items: HistoryEntry[]; nextCursor: string | null }> {
-  await getZone(ex, zoneId);
+  await getScope(ex, zoneId);
   let q = ex.selectFrom("config_history").selectAll().where("doc", "=", doc).where("zone_id", "=", zoneId);
   if (input.cursor !== undefined) {
     if (!/^\d{1,9}$/.test(input.cursor)) throw badRequest("The cursor is not valid.", "invalid_cursor");
@@ -538,7 +538,7 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
   return {
     items: page.map((row) => ({
       doc,
-      zoneId,
+      ...scopeFields(zoneId),
       version: row.version,
       publishedAt: row.published_at.toISOString(),
       ...(row.published_by ? { publishedBy: row.published_by } : {}),
