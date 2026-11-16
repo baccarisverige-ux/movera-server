@@ -124,7 +124,14 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
     .where("p.amount_minor", "<", "0").where("p.status", "in", ["pending", "pending_approval"]).orderBy("p.period_start").orderBy("p.payout_id").forUpdate("p").execute();
   let left = body.amount.amountMinor;
   let n = 0;
-  const entry = (amount: number, payoutId: string | null) => ({ entry_id: newId("ern", now.getTime() + n++), driver_id: driverId, trip_id: null, kind: "paid_to_movera" as const, currency, amount_minor: amount, gross_minor: null, commission_minor: null, cash_minor: null, payout_id: payoutId, at: now });
+  // J8b round 2 (supervisor SF1): the audit row names the entries this payment wrote, so a later split of one of them
+  // (payouts.ts, audit driver.paid_movera_split with the same entry id) is traceable back to this one payment.
+  const written: { entryId: string; amountMinor: number; payoutId: string | null }[] = [];
+  const entry = (amount: number, payoutId: string | null) => {
+    const entryId = newId("ern", now.getTime() + n++);
+    written.push({ entryId, amountMinor: amount, payoutId });
+    return { entry_id: entryId, driver_id: driverId, trip_id: null, kind: "paid_to_movera" as const, currency, amount_minor: amount, gross_minor: null, commission_minor: null, cash_minor: null, payout_id: payoutId, at: now };
+  };
   for (const p of open) {
     if (left <= 0) break;
     const rest = -Number(p.amount_minor) - Number(p.linked);
@@ -141,6 +148,6 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
   }
   if (left > 0) await trx.insertInto("earnings_entries").values(entry(left, null)).execute();
   const owedAfter = owedBefore - body.amount.amountMinor;
-  await audit(trx, { adminId: who.subjectId, action: "driver.paid_movera", targetType: "driver", targetId: driverId, zoneId: zone, detail: { amount: body.amount, owedBefore: { amountMinor: owedBefore, currency }, owedAfter: { amountMinor: owedAfter, currency }, reason }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "driver.paid_movera", targetType: "driver", targetId: driverId, zoneId: zone, detail: { amount: body.amount, owedBefore: { amountMinor: owedBefore, currency }, owedAfter: { amountMinor: owedAfter, currency }, reason, entries: written }, at: now });
   return owingDriver(trx, driverId, currency);
 }
