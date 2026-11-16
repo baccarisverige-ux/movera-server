@@ -31,7 +31,7 @@ afterAll(async () => {
   await sim?.stop();
 });
 
-type SentFix = { lat: number; lng: number; accuracy: number; measuredAt: string };
+type SentFix = { lat: number; lng: number; accuracy: number; measuredAt: string; moving?: boolean; speedMps?: number };
 const fixAt = (at: { lat: number; lng: number }, measuredAt: Date, accuracy = 5): SentFix => ({ lat: at.lat, lng: at.lng, accuracy, measuredAt: measuredAt.toISOString() });
 const pass = (seconds: number) => {
   sim.clock.now = new Date(sim.clock.now.getTime() + seconds * 1000);
@@ -199,5 +199,93 @@ describe("long stop on the same fix sent again and again (owner 2026-11-15 'Yes,
       pass(10);
     }
     expect(await rideCheck(tripId)).toBeUndefined();
+  });
+
+  it("MF-1: a fix, then silence, then the same fix ONCE more → no long_stop (silent time is not standing time); it goes on repeating → long_stop from the second send", async () => {
+    const tripId = await onTrip();
+    const frozen = fixAt(STILL, sim.clock.now);
+    await send(frozen);
+    pass(180);
+    expect(180).toBeGreaterThan(STOP_SECONDS);
+    await send(frozen);
+    expect(await rideCheck(tripId)).toBeUndefined();
+    expect(await asked(tripId)).toHaveLength(0);
+    // Also after one more scan interval of repeats (far less than the long-stop time since the second send).
+    await repeat(frozen, SCAN_SECONDS + 10);
+    expect(await rideCheck(tripId)).toBeUndefined();
+    // The phone keeps repeating: the count started again at the second send.
+    pass(10);
+    await repeat(frozen, STOP_SECONDS);
+    expect(await rideCheck(tripId)).toMatchObject({ trigger: "long_stop" });
+    const rows = await asked(tripId);
+    const position = (typeof rows[0]!.position === "string" ? JSON.parse(rows[0]!.position) : rows[0]!.position) as { measured: { value: number }; measured_at?: string };
+    // Minutes since the second send, not the silent 3 minutes on top.
+    expect(position.measured.value).toBeLessThanOrEqual(STOP_SECONDS / 60 + 1);
+    // SF-5: the kept position carries the real time of the fix, not a made-up one.
+    expect(position.measured_at).toBe(frozen.measuredAt);
+  });
+
+  it("MF-1: silence in the middle of a run of repeats starts the count again", async () => {
+    const tripId = await onTrip();
+    const frozen = fixAt(STILL, sim.clock.now);
+    await repeat(frozen, STOP_SECONDS - 30);
+    pass(180);
+    await repeat(frozen, STOP_SECONDS - 30);
+    expect(await rideCheck(tripId)).toBeUndefined();
+  });
+
+  it("SF-6: the same fix repeated at a middle stop the driver arrived at → not asked", async () => {
+    const tripId = await onTrip();
+    await sim.db.updateTable("trips").set({ stop_visits: JSON.stringify([{ index: 0, arrivedAt: sim.clock.now.toISOString() }]) }).where("trip_id", "=", tripId).execute();
+    await repeat(fixAt(STILL, sim.clock.now), STOP_SECONDS + SCAN_SECONDS + 10);
+    expect(await rideCheck(tripId)).toBeUndefined();
+    expect(await asked(tripId)).toHaveLength(0);
+  });
+
+  it("SF-6: the same fix repeated within 300 m of the drop-off → not asked", async () => {
+    const tripId = await onTrip();
+    const dropoff = (await sim.db.selectFrom("trips").select("dropoff").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).dropoff as { lat: number; lng: number };
+    // About 110 m north of the drop-off.
+    await repeat(fixAt({ lat: Number(dropoff.lat) + 0.001, lng: Number(dropoff.lng) }, sim.clock.now), STOP_SECONDS + SCAN_SECONDS + 10);
+    expect((await rideCheck(tripId))?.trigger).not.toBe("long_stop");
+    expect((await asked(tripId)).filter((r) => r.trigger === "long_stop")).toHaveLength(0);
+  });
+
+  it("SF-6: the trip ended while the phone keeps repeating the fix → no check", async () => {
+    const tripId = await onTrip();
+    const frozen = fixAt(STILL, sim.clock.now);
+    await repeat(frozen, STOP_SECONDS - 30);
+    await sim.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", tripId).execute();
+    pass(10);
+    await repeat(frozen, 60);
+    // Also a scan that was still booked for the ended trip asks nothing.
+    await sim.db.deleteFrom("timers").where("kind", "=", RIDE_CHECK_SCAN).where("ref_id", "=", tripId).execute();
+    await sim.db.insertInto("timers").values({ kind: RIDE_CHECK_SCAN, ref_id: tripId, due_at: sim.clock.now, payload: JSON.stringify({}) }).execute();
+    await sim.tick();
+    expect(await asked(tripId)).toHaveLength(0);
+    expect(await rideCheck(tripId)).toBeUndefined();
+  });
+
+  // Owner 2026-11-16 "Skip if car was moving" (tunnel: the GPS freezes while the car drives on).
+  it("tunnel: the last real fix said the car was moving, then that fix is repeated longer than the long-stop time → no long_stop", async () => {
+    const tripId = await onTrip();
+    await repeat({ ...fixAt(STILL, sim.clock.now), moving: true, speedMps: 14 }, STOP_SECONDS + SCAN_SECONDS + 10);
+    expect(await rideCheck(tripId)).toBeUndefined();
+    expect(await asked(tripId)).toHaveLength(0);
+  });
+
+  it("tunnel: a repeated fix with a speed of 1 m/s or more counts as moving also without the moving flag; below 1 m/s it is standing", async () => {
+    const tripId = await onTrip();
+    await repeat({ ...fixAt(STILL, sim.clock.now), speedMps: 1 }, STOP_SECONDS + SCAN_SECONDS + 10);
+    expect(await rideCheck(tripId)).toBeUndefined();
+    pass(10);
+    await repeat({ ...fixAt(STILL, sim.clock.now), speedMps: 0.9 }, STOP_SECONDS + SCAN_SECONDS + 10);
+    expect(await rideCheck(tripId)).toMatchObject({ trigger: "long_stop" });
+  });
+
+  it("the last real fix said the car stood still (moving false, speed 0), then it is repeated → long_stop", async () => {
+    const tripId = await onTrip();
+    await repeat({ ...fixAt(STILL, sim.clock.now), moving: false, speedMps: 0 }, STOP_SECONDS + SCAN_SECONDS + 10);
+    expect(await rideCheck(tripId)).toMatchObject({ trigger: "long_stop" });
   });
 });
