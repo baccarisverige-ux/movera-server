@@ -15,6 +15,12 @@
  * Before, nothing ever woke a parked round, so a live ride silently stopped getting offers. Its handler (runRound)
  * locks the trip and returns unless it is still searching or offered with a search, and an offer already out only
  * makes it wait for that offer (proof: restart_rechecks.test.ts; the restart itself: dispatch_round_restart.test.ts).
+ * S4 B1.1 SF-1 (owner 2026-11-16 "Yes, same as drop-off (Rec.)"; contract 0.18.121
+ * contract.json#alertDesk.serverDetection.kindDefaults.system_health.rule): pickup_geofence too. Since B1.1 round 2 a GPS
+ * batch never wakes a failing or parked one, and one row serves the automatic arrival at the pickup, the waiting clock's
+ * away / back (paid waiting) and the automatic arrival at the middle stops. Its handler locks the trip and re-checks the
+ * status, the latest fix and the 2-fix confirm rule first (proof: restart_rechecks.test.ts; the restart itself:
+ * pickup_geofence_restart.test.ts).
  */
 export const RESTART_ONCE_KINDS: readonly string[] = [
   "incident_escalate",
@@ -26,6 +32,7 @@ export const RESTART_ONCE_KINDS: readonly string[] = [
   "search_step",
   "search_end",
   "dispatch_round",
+  "pickup_geofence",
 ];
 
 /** Parked trip and safety kinds: their system_health alert is critical (the loud alarm). */

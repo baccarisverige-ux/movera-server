@@ -1,10 +1,12 @@
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import type { Timer, TimerHandler } from "../../src/jobs/timers.js";
 import { LOUD_PARKED_KINDS, RESTART_ONCE_KINDS } from "../../src/jobs/workerConfig.js";
 import { escalateHandler, INCIDENT_ESCALATE } from "../../src/safety/incidents.js";
 import { noAnswerHandler, RIDE_CHECK_NO_ANSWER } from "../../src/safety/rideCheck.js";
 import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "../../src/safety/rideCheckServer.js";
-import { DRIVER_SILENCE, NEAR_DROPOFF, rideHandlers, WAITING_NO_SHOW, WAITING_PAID } from "../../src/trips/ride.js";
+import { DRIVER_SILENCE, NEAR_DROPOFF, PICKUP_GEOFENCE, rideHandlers, WAITING_NO_SHOW, WAITING_PAID } from "../../src/trips/ride.js";
 import { dispatchHandlers, END, ROUND, STEP, WITHDRAW } from "../../src/dispatch/runtime.js";
 import { newId } from "../../src/ids.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -37,7 +39,7 @@ async function snapshot(tripId: string) {
   const trip = await tripRow(tripId);
   const incidents = await db().selectFrom("incidents").select(["incident_id", "status", "escalated_at"]).where("trip_id", "=", tripId).orderBy("incident_id").execute();
   const checks = await db().selectFrom("ride_checks").select(["check_id", "no_answer_at", "incident_id"]).where("trip_id", "=", tripId).orderBy("check_id").execute();
-  return { status: trip.status, version: trip.version, events: await events(tripId), alert: trip.driver_silent_alert, waiting: trip.waiting, step: trip.search_step, rideCheck: trip.ride_check, incidents, checks };
+  return { status: trip.status, version: trip.version, events: await events(tripId), alert: trip.driver_silent_alert, waiting: trip.waiting, step: trip.search_step, rideCheck: trip.ride_check, visits: trip.stop_visits, incidents, checks };
 }
 async function onTrip(status: string, set: Record<string, unknown> = {}) {
   const riderId = await insertRider(db());
@@ -98,6 +100,57 @@ describe("B1.6b gate: every restart-once handler re-checks the trip or case befo
     expect(before.status).toBe("approaching_dropoff");
     await run(rideHandlers[NEAR_DROPOFF]!, timer(NEAR_DROPOFF, t.id, at(60)));
     expect(await snapshot(t.id)).toEqual(before);
+  });
+
+  // S4 B1.1 SF-1 (owner 2026-11-16 "Yes, same as drop-off (Rec.)"): one pickup_geofence row serves the automatic arrival
+  // at the pickup, the waiting clock's away / back and the automatic arrival at the middle stops. Its handler locks the
+  // trip, re-reads its status, the latest fix (age, accuracy) and the 2-fix confirm rule before it acts.
+  it("pickup_geofence: a second run does not arrive again, does not arrive a stop again; a trip that moved on is left alone", async () => {
+    const SPOT = { lat: 59.33, lng: 18.06 };
+    /** The driver's two counting fixes at the spot (5 s apart, standing) and his stored latest fix, just before `second` (fresh at that run). */
+    async function standingAt(t: { id: string; driverId: string }, second = 0) {
+      for (const s of [second - 8, second - 2]) await db().insertInto("trip_locations").values({ trip_id: t.id, driver_id: t.driverId, measured_at: at(s), lat: SPOT.lat, lng: SPOT.lng, accuracy: 5, heading: null, speed_mps: 0 } as never).execute();
+      const fix = { lat: SPOT.lat, lng: SPOT.lng, accuracy: 5, heading: null, speed_mps: 0, measured_at: at(second - 2), received_at: at(second - 2) };
+      await db().insertInto("driver_locations").values({ driver_id: t.driverId, ...fix } as never).onConflict((c) => c.column("driver_id").doUpdateSet(fix as never)).execute();
+    }
+    // The arrive step reads the zone's prices (the waiting rule); the seed trips are in "stockholm".
+    const pricing = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/pricing_document.json`, "utf8"));
+    await db().insertInto("config_live").values({ doc: "pricing", zone_id: "stockholm", version: 1, document: JSON.stringify(pricing), published_at: at(-3600), published_by: null }).onConflict((c) => c.doNothing()).execute();
+    const handler = rideHandlers[kind(PICKUP_GEOFENCE)]!;
+    // The restart (60 s after the failed run) on a position that is now older than positionMaxAgeSeconds (60 s): no arrival.
+    const stale = await onTrip("driver_to_pickup", { boarded_at: null, started_at: null, category_id: "economy" });
+    await standingAt(stale);
+    const notYet = await snapshot(stale.id);
+    await run(handler, timer(PICKUP_GEOFENCE, stale.id, at(70)));
+    expect(await snapshot(stale.id)).toEqual(notYet);
+    // At the pickup: the first run arrives the driver (automatic arrival); the restart finds him arrived, close, not away.
+    const pickup = await onTrip("driver_to_pickup", { boarded_at: null, started_at: null, category_id: "economy" });
+    await standingAt(pickup);
+    await run(handler, timer(PICKUP_GEOFENCE, pickup.id, NOW));
+    const arrived = await snapshot(pickup.id);
+    expect(arrived.status).toBe("arrived");
+    // The restart 60 s later: the driver is still there, his fixes fresh (the handler gets past the fix checks).
+    await standingAt(pickup, 60);
+    await run(handler, timer(PICKUP_GEOFENCE, pickup.id, at(60)));
+    expect(await snapshot(pickup.id)).toEqual(arrived);
+    // A middle stop: the first run arrives it (arrivedBy auto); the restart finds that stop open, the driver there, not away.
+    const stop = await onTrip("in_trip", { stops: JSON.stringify([{ ...SPOT, address: "Stop 1" }]) });
+    await standingAt(stop);
+    await run(handler, timer(PICKUP_GEOFENCE, stop.id, NOW));
+    const atStop = await snapshot(stop.id);
+    expect(atStop.visits).toEqual([expect.objectContaining({ stopIndex: 0, arrivedBy: "auto" })]);
+    await standingAt(stop, 60);
+    await run(handler, timer(PICKUP_GEOFENCE, stop.id, at(60)));
+    expect(await snapshot(stop.id)).toEqual(atStop);
+    // The rider is on board (no stop) or the trip ended, its old waiting still marked away: nothing at all.
+    const awayWaiting = JSON.stringify({ ...(arrived.waiting as object), away: { since: at(-30).toISOString() } });
+    for (const status of ["rider_onboard", "completed"]) {
+      const moved = await onTrip(status, { waiting: awayWaiting, category_id: "economy", ...(status === "completed" ? { ended_at: at(-30) } : {}) });
+      await standingAt(moved, 60);
+      const was = await snapshot(moved.id);
+      await run(handler, timer(PICKUP_GEOFENCE, moved.id, at(60)));
+      expect(await snapshot(moved.id)).toEqual(was);
+    }
   });
 
   for (const k of [WAITING_PAID, WAITING_NO_SHOW]) {
