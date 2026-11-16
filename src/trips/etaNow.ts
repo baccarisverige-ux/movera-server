@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import type { Trx } from "../db/db.js";
 import { haversineKm } from "../maps/routing.js";
 import { ARRIVE_MAX_METERS, COMPLETE_NEAR_DROPOFF_METERS } from "./ride/shared.js";
@@ -89,6 +90,9 @@ function etaDue(trip: EtaTrip, now: Date): Date {
  * From a driver position (drivers/service.ts storeFixes): moves the trip's ETA tick forward when etaNeededNow. Call it
  * BEFORE the trip row is locked or written: it may wait for a tick that runs at this moment (that tick holds this timer
  * and then locks the trip), and the moved tick then reads the new position.
+ * S4 B1.1 rest (owner W1 Q66): it only pulls a HEALTHY tick earlier: one that is failing (attempts > 0, in its back-off)
+ * or parked ('infinity') is left alone, and its attempts and last error are kept (was: reset to 0, which also woke a
+ * parked tick, since 'infinity' is later than any due time).
  */
 export async function etaOnPosition(trx: Trx, trip: EtaTrip, previous: Place | null, latest: Place, now: Date): Promise<boolean> {
   if (!etaNeededNow(trip, previous, latest) && !(await etaMovedInside(trx, trip, latest))) return false;
@@ -96,7 +100,7 @@ export async function etaOnPosition(trx: Trx, trip: EtaTrip, previous: Place | n
   await trx
     .insertInto("timers")
     .values({ kind: TRIP_ETA, ref_id: trip.trip_id, due_at: due, payload: "{}" })
-    .onConflict((c) => c.columns(["kind", "ref_id"]).doUpdateSet({ due_at: due, attempts: 0, last_error: null }).where("timers.due_at", ">", due))
+    .onConflict((c) => c.columns(["kind", "ref_id"]).doUpdateSet({ due_at: due }).where("timers.due_at", ">", due).where("timers.attempts", "=", 0).where("timers.due_at", "<>", sql<Date>`'infinity'::timestamptz`))
     .execute();
   return true;
 }
@@ -105,12 +109,13 @@ export async function etaOnPosition(trx: Trx, trip: EtaTrip, previous: Place | n
  * At boarding (and at start_trip, for a trip that still has no drop-off ETA): the tick runs now, to the drop-off. For a
  * command that holds the trip lock: a tick running at this moment is not waited for (it waits for this trip lock, then
  * sees the rider on board and routes to the drop-off itself), so the two can never deadlock.
+ * B1.1 rest: like etaOnPosition, a failing or parked tick is not moved and keeps its attempts.
  */
 export async function etaNowLocked(trx: Trx, tripId: string, now: Date): Promise<void> {
   const moved = await trx
     .updateTable("timers")
-    .set({ due_at: now, attempts: 0, last_error: null })
-    .where("timer_id", "in", (eb) => eb.selectFrom("timers").select("timer_id").where("kind", "=", TRIP_ETA).where("ref_id", "=", tripId).where("due_at", ">", now).forUpdate().skipLocked())
+    .set({ due_at: now })
+    .where("timer_id", "in", (eb) => eb.selectFrom("timers").select("timer_id").where("kind", "=", TRIP_ETA).where("ref_id", "=", tripId).where("due_at", ">", now).where("attempts", "=", 0).where("due_at", "<>", sql<Date>`'infinity'::timestamptz`).forUpdate().skipLocked())
     .executeTakeFirst();
   if (moved.numUpdatedRows > 0n) return;
   // None moved: due already, running now (then it is still there for a plain read), or none at all (book one).
