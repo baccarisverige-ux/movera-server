@@ -299,7 +299,7 @@ describe("Q114 (0.20): the GPS send stores no Idempotency-Key row; a resent batc
     expect(row).toBeUndefined();
   });
 
-  it("two identical POSTs (same key, same body) give the end state of one, and one location event + one NOTIFY", async () => {
+  it("two identical POSTs sent one after the other (same key, same body) give the end state of one, and one location event + one NOTIFY", async () => {
     const tripId = await onTrip();
     await settle();
     const events = await locationEvents(tripId);
@@ -331,4 +331,63 @@ describe("Q114 (0.20): the GPS send stores no Idempotency-Key row; a resent batc
     expect(await keyRows()).toBe(0);
     expect(sim.timerErrors).toEqual([]);
   });
+
+  // Supervisor SF1/SF2 (audits/impact/s7-q114-supervisor.md): two identical sends AT THE SAME MOMENT (two phones on one
+  // account, a late network copy). Before, the stored key queued the second one; without it both read the old stored
+  // position and both wrote a location event. Now the GPS write is one at a time per driver (an advisory lock in the
+  // first statement), so the second one sees the first one's fix and is not new. Same key and two keys.
+  it.each([["the same key", true], ["two keys", false]] as const)("two identical POSTs sent together (%s): one location event, one NOTIFY, one trace row", async (_name, sameKey) => {
+    const tripId = await onTrip();
+    await settle();
+    const events = await locationEvents(tripId);
+    let told = noticesOf(tripId);
+    const trace = await traceTimes(tripId);
+    for (let round = 0; round < 5; round++) {
+      pass(10);
+      const fix = fixAt({ lat: STILL.lat - round * 0.0002, lng: STILL.lng }, sim.clock.now);
+      const key = `q114-gps-together-${sameKey ? "same" : "a"}-${tripId}-${round}`;
+      const [a, b] = await Promise.all([
+        driver.post("/driver/location", { fixes: [fix] }, key),
+        driver.post("/driver/location", { fixes: [fix] }, sameKey ? key : `${key}-b`),
+      ]);
+      expect(a.status, JSON.stringify(a.body)).toBe(200);
+      expect(b.status, JSON.stringify(b.body)).toBe(200);
+      await settle();
+      expect(await locationEvents(tripId), `round ${round}`).toEqual([...events, fix.measuredAt]);
+      expect(noticesOf(tripId), `round ${round}`).toBe(told + 1);
+      expect(await traceTimes(tripId)).toEqual([...trace, fix.measuredAt]);
+      events.push(fix.measuredAt);
+      trace.push(fix.measuredAt);
+      told += 1;
+    }
+    expect(sim.timerErrors).toEqual([]);
+  });
+
+  it("SF1: the per-driver GPS lock waits under the same 2 s limit: 503 server_busy, nothing stored, then taken", async () => {
+    const tripId = await onTrip();
+    pass(10);
+    const before = await stored();
+    const holder = new pg.Client({ connectionString: sim.database.url });
+    await holder.connect();
+    await holder.query("BEGIN");
+    await holder.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`gps:${driver.id}`]);
+    const fix = fixAt(STILL, sim.clock.now);
+    const posting = send([fix]);
+    try {
+      const answer = await Promise.race([posting, new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), GPS_LOCK_TIMEOUT_MS + 3000))]);
+      expect(answer).not.toBe("waiting");
+      const refused = answer as Awaited<typeof posting>;
+      expect(refused.status, JSON.stringify(refused.body)).toBe(503);
+      expect(refused.body).toMatchObject({ code: "unavailable", reason: "server_busy", retryable: true });
+      expect((await stored()).measured_at.getTime()).toBe(before.measured_at.getTime());
+    } finally {
+      await holder.query("ROLLBACK");
+      await holder.end();
+      await posting.catch(() => undefined);
+    }
+    pass(10);
+    expect((await send([fix])).status).toBe(200);
+    expect((await stored()).measured_at.toISOString()).toBe(fix.measuredAt);
+    expect(await traceTimes(tripId)).toContain(fix.measuredAt);
+  }, 30_000);
 });

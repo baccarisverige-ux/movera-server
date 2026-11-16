@@ -14,10 +14,11 @@ import { call, signIn, testWorld } from "../support/world.js";
  * counts the statements one location request sends (all of them, and those inside its transaction) and keeps them
  * under a budget. Before the change (wip/pool c15c087): online, no trip, inside his zone = 14 in the transaction
  * (BEGIN … COMMIT included), 15 in all; outside his zone = 15 / 16. After: 6 / 7 both.
- * S7 W2 Q114 (0.20): the idempotency_keys INSERT and UPDATE are gone, so now 4 / 6 (BEGIN, the facts read that also sets
- * the Q112 lock limit, the position upsert, COMMIT). The budget stays 6, not 4: it is the stress limit the owner's T-A
- * fix set, and BQ-V44 (branch …-v44r, not merged) adds its online-hours counting statements inside this transaction.
- * The tests below also assert that no idempotency_keys statement is sent.
+ * S7 W2 Q114 (0.20): the idempotency_keys INSERT and UPDATE are gone. In the transaction now (supervisor SF4, measured):
+ * 4 steady (BEGIN, the facts read that also sets the Q112 lock limit and takes the per-driver GPS lock (SF1), the position
+ * upsert, COMMIT); 5 when the outage mark runs (drivers/presence.ts noteFixAfterOutage, once per 10 s per copy); 6 with
+ * BQ-V44's cold campaign cache (branch …-v44r, not merged). So 6 is the real worst case and stays the cap; the steady
+ * case is pinned at 4 below, so no new statement slips in unseen. No idempotency_keys statement is sent.
  */
 
 let database: TestDatabase;
@@ -78,13 +79,15 @@ const send = async (at: { lat: number; lng: number }) => {
 };
 
 describe("POST /driver/location: statements per request (stress T-A part 3)", () => {
-  it("online, no trip, inside his zone: at most 6 statements in the transaction (was 14)", async () => {
+  it("online, no trip, inside his zone: at most 6 statements in the transaction (was 14); 4 when steady", async () => {
     await send(STOCKHOLM); // warms the geometry cache, as the first request of a server copy does
+    await send(STOCKHOLM); // and the outage-mark check (at most once per 10 s per copy), so this is the steady case
     const { result, total, inTransaction, texts } = await counted(() => send(STOCKHOLM));
     expect(result.statusCode).toBe(200);
     expect(result.json()).toMatchObject({ accepted: 1, outsideArea: false });
     console.info(`location inside: ${inTransaction} in transaction, ${total} in all\n  ${texts.map((t) => t.replace(/\s+/g, " ").slice(0, 110)).join("\n  ")}`);
     expect(inTransaction).toBeLessThanOrEqual(6);
+    expect(inTransaction, texts.join("\n")).toBe(4); // SF4: the steady case, pinned
     expect(texts.some((t) => /"idempotency_keys"/i.test(t))).toBe(false);
     expect(texts.some((t) => /from "zones"/i.test(t))).toBe(false);
     expect(texts.some((t) => /from "airport_queue_areas"/i.test(t))).toBe(false);
@@ -119,8 +122,13 @@ describe("POST /driver/location: statements per request (stress T-A part 3)", ()
     const other = await call(app, "POST", "/driver/location", headers, { fixes: [{ ...STOCKHOLM, accuracy: 6, measuredAt: clock.now.toISOString() }] }, "loc-replay-key-0000001");
     expect(other.statusCode).toBe(200);
     expect(await rows()).toBe(0);
-    // The header itself is still checked like on every mutation.
+    // The header itself is still checked like on every mutation (supervisor SF3: also a missing one).
     const bad = await call(app, "POST", "/driver/location", headers, body, "short");
     expect(bad.statusCode).toBe(400);
+    expect(bad.json()["reason"]).toBe("idempotency_key_invalid");
+    const missing = await app.inject({ method: "POST", url: "/api/v1/driver/location", headers: { ...headers, "content-type": "application/json" }, payload: body });
+    expect(missing.statusCode, missing.body).toBe(400);
+    expect(missing.json()["reason"]).toBe("idempotency_key_missing");
+    expect(await rows()).toBe(0);
   });
 });
