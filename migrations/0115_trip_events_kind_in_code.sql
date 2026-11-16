@@ -11,6 +11,11 @@ ALTER TABLE trip_events DROP CONSTRAINT IF EXISTS trip_events_kind_check;
 -- The undo below puts back the list 0085 set (= TRIP_EVENT_KINDS on the day of this file), NOT VALID first so the
 -- lock is short, then VALIDATE (a light lock). If a kind was added in code since, add it to the list first: otherwise
 -- VALIDATE stops on the rows that carry it and the CHECK (already guarding new rows) refuses that kind.
+-- RUN THE UNDO STATEMENT BY STATEMENT, NEVER INSIDE ONE BEGIN/COMMIT: run ADD ... NOT VALID (it commits on its own),
+-- then VALIDATE in a separate transaction. In one transaction the AccessExclusiveLock of the ADD is still held while
+-- VALIDATE reads the whole table, so every trip write stops for that full read (the problem this file removes).
+-- A normal migration file runs in one transaction (src/db/migrate.ts), so the undo, put into a migration file, must
+-- be a no-transaction file (first line = the marker in migrations/README.md point 3).
 -- undo:
 -- ALTER TABLE trip_events DROP CONSTRAINT IF EXISTS trip_events_kind_check;
 -- ALTER TABLE trip_events ADD CONSTRAINT trip_events_kind_check

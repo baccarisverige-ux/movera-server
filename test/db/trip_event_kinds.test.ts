@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { contract } from "../../src/contract/contract.js";
@@ -47,6 +49,17 @@ const kindChecks = () =>
 const rawInsert = (tripId: string, sequence: number, kind: string) =>
   database.pool.query("INSERT INTO trip_events (trip_id, sequence, event_id, kind, version, occurred_at) VALUES ($1, $2, $3, $4, 1, now())", [tripId, sequence, `evt_q135_${tripId}_${sequence}`, kind]);
 
+/**
+ * The files under `dir` that write rows into trip_events by any path other than the typed guard: a Kysely insertInto,
+ * a raw INSERT INTO or a COPY, in any letter case (supervisor SF-2: lower-case SQL and COPY walked around the grep).
+ */
+const TRIP_EVENTS_WRITE = "insertInto\\(\\s*[\"'`]trip_events|(insert\\s+into|copy)\\s+(\"?public\"?\\.)?\"?trip_events\\b";
+function tripEventWriters(dir: string, cwd: string): string[] {
+  const grep = spawnSync("grep", ["-rliE", TRIP_EVENTS_WRITE, dir], { cwd, encoding: "utf8" });
+  if (grep.status !== 0 && grep.status !== 1) throw new Error(`grep failed: ${grep.stderr}`);
+  return grep.stdout.trim().split("\n").filter(Boolean).sort();
+}
+
 describe("Q135 the one list of trip event kinds (src/db/tripLog.ts TRIP_EVENT_KINDS)", () => {
   it("is the contract's realtime.kinds, in the same order", () => {
     expect([...TRIP_EVENT_KINDS]).toEqual((contract as unknown as { realtime: { kinds: string[] } }).realtime.kinds);
@@ -68,9 +81,24 @@ describe("Q135 the one list of trip event kinds (src/db/tripLog.ts TRIP_EVENT_KI
   });
 
   it("only src/db/tripLog.ts inserts into trip_events (the guard cannot be walked around)", () => {
-    const grep = spawnSync("grep", ["-rlE", "insertInto\\(\\s*[\"'`]trip_events|INSERT INTO trip_events", "src"], { cwd: ROOT, encoding: "utf8" });
-    expect(grep.stdout.trim().split("\n")).toEqual(["src/db/tripLog.ts"]);
+    expect(tripEventWriters("src", ROOT)).toEqual(["src/db/tripLog.ts"]);
     expect(readFileSync(`${ROOT}src/db/tripLog.ts`, "utf8").match(/insertInto\("trip_events"\)/g)).toHaveLength(1);
+  });
+
+  it("the writer grep sees a raw insert in any letter case and a COPY (proof that the guard test above can fail)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "q135-writers-"));
+    try {
+      const plant = (name: string, text: string) => writeFileSync(join(dir, name), text);
+      plant("lower.ts", 'await pool.query("insert into trip_events (trip_id, kind) values ($1, $2)", [id, k]);\n');
+      plant("mixed.ts", 'await pool.query(`Insert  Into\ttrip_events (trip_id, kind) VALUES ($1, $2)`);\n');
+      plant("copy_upper.ts", 'client.query(copyFrom("COPY trip_events (trip_id, kind) FROM STDIN"));\n');
+      plant("copy_lower.sql", "copy public.trip_events from stdin;\n");
+      plant("kysely.ts", 'await trx.insertInto("trip_events").values(row).execute();\n');
+      plant("reader.ts", 'await pool.query("SELECT kind FROM trip_events WHERE trip_id = $1", [id]);\n');
+      expect(tripEventWriters(".", dir)).toEqual(["./copy_lower.sql", "./copy_upper.ts", "./kysely.ts", "./lower.ts", "./mixed.ts"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
