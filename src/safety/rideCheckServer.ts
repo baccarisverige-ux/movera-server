@@ -68,6 +68,13 @@ export async function scheduleRideCheckScan(trx: Trx, trip: Pick<TripRow, "trip_
  */
 export const SAME_FIX_KEY = "sameFix";
 export const SAME_FIX_SINCE_KEY = "sameFixSince";
+/** Round 2 (supervisor MF-1): the stored position's received_at as the last scan saw it. Not a trigger name. */
+export const SAME_FIX_SEEN_KEY = "sameFixSeen";
+/**
+ * Owner 2026-11-16 "Skip if car was moving" (tunnel): a repeated fix that said the car was moving is not standing time.
+ * 1 m/s is the driver app's own line (lib/core/live/live_driver_services.dart:1115 `moving: speed >= 1`).
+ */
+const MOVING_MPS = 1;
 
 /**
  * A phone that keeps sending exactly the SAME fix (a frozen GPS, or a native phone standing still that re-sends the same
@@ -79,20 +86,33 @@ export const SAME_FIX_SINCE_KEY = "sameFixSince";
  * phone's own time line as two more fixes at the same place: the fix itself, and "still there" that much later.
  *
  * - A phone that stopped sending: received_at stands still, so no standing time is added (the silence check, not this).
+ * - Silence BETWEEN two sends of the same fix (round 2, supervisor MF-1) is not standing time either: the second send
+ *   is the same measurement, it proves nothing about where the car was meanwhile (a tunnel, the app held in the
+ *   background). The scan keeps the received_at it saw (`sameFixSeen`); every send books a scan and scans are at most
+ *   scanEverySeconds apart, so a received_at more than 2 x scanEverySeconds after the one the last scan saw means the
+ *   phone did not keep sending: the count starts again from that received_at.
+ * - Owner 2026-11-16 "Skip if car was moving" (tunnel: the GPS freezes while the car drives on): a repeated fix that
+ *   said the car was moving (`moving` true, or speed >= 1 m/s) adds no standing time. A fix with no speed counts as
+ *   standing. The owner accepted the other side: a car that stops right after the GPS froze is not found by this check.
  * - A new fix (other time or place): the count starts again from that scan.
  * - `since` is taken at the first scan that saw the fix, so the stop is found at most scanEverySeconds late, never early.
  * - No duplicate trace rows (the trace feeds the paid distance and the admin trace).
  */
-async function sameFixRun(trx: Trx, trip: TripRow): Promise<{ log: Record<string, string>; held: Fix[] }> {
-  const stored = await trx.selectFrom("driver_locations").select(["lat", "lng", "accuracy", "measured_at", "received_at"]).where("driver_id", "=", trip.driver_id!).executeTakeFirst();
+async function sameFixRun(trx: Trx, trip: TripRow, settings: RideCheckSettings): Promise<{ log: Record<string, string>; held: Fix[] }> {
+  const stored = await trx.selectFrom("driver_locations").select(["lat", "lng", "accuracy", "measured_at", "received_at", "moving", "speed_mps"]).where("driver_id", "=", trip.driver_id!).executeTakeFirst();
   if (!stored) return { log: {}, held: [] };
   const kept = (trip.ride_check_log as Record<string, string> | null) ?? {};
   const key = `${stored.measured_at.toISOString()} ${stored.lat} ${stored.lng}`;
+  const received = stored.received_at.getTime();
   const keptSince = kept[SAME_FIX_KEY] === key ? Date.parse(kept[SAME_FIX_SINCE_KEY] ?? "") : Number.NaN;
-  const since = Number.isFinite(keptSince) && keptSince <= stored.received_at.getTime() ? keptSince : stored.received_at.getTime();
-  const log = { [SAME_FIX_KEY]: key, [SAME_FIX_SINCE_KEY]: new Date(since).toISOString() };
-  const sentForMs = stored.received_at.getTime() - since;
-  if (sentForMs <= 0 || stored.accuracy > MAX_ACCURACY_M) return { log, held: [] };
+  // MF-1: the phone kept sending = the received_at moved on by no more than 2 scan intervals since the last scan.
+  const seen = Date.parse(kept[SAME_FIX_SEEN_KEY] ?? "");
+  const keptSending = Number.isFinite(seen) && received - seen <= 2 * settings.scanEverySeconds * 1000;
+  const since = Number.isFinite(keptSince) && keptSince <= received && keptSending ? keptSince : received;
+  const log = { [SAME_FIX_KEY]: key, [SAME_FIX_SINCE_KEY]: new Date(since).toISOString(), [SAME_FIX_SEEN_KEY]: stored.received_at.toISOString() };
+  const sentForMs = received - since;
+  const saidMoving = stored.moving || (stored.speed_mps ?? 0) >= MOVING_MPS;
+  if (sentForMs <= 0 || stored.accuracy > MAX_ACCURACY_M || saidMoving) return { log, held: [] };
   const at = { lat: stored.lat, lng: stored.lng };
   return { log, held: [{ ...at, measured_at: stored.measured_at }, { ...at, measured_at: new Date(stored.measured_at.getTime() + sentForMs) }] };
 }
@@ -240,15 +260,17 @@ export async function detect(trx: Trx, trip: TripRow, settings: RideCheckSetting
   if (held.length > 0 && (!last || last.measured_at.getTime() <= held[0]!.measured_at.getTime())) fixes.push(...held);
   const newest = fixes[fixes.length - 1];
   if (!newest) return null;
+  // Supervisor SF-5: the position kept with the check carries the real time of the fix, never the "still there" time.
+  const at: Fix = held.length > 0 && newest === held[held.length - 1] ? held[0]! : newest;
   const boardedLongEnough = trip.boarded_at !== null && now.getTime() - trip.boarded_at.getTime() >= settings.stopMinutes * 60_000;
   // v0.18.108 supervisor M2 (job C9b): an open stop counts as "at the stop" only while the driver is not away from it
   // (stops[i].away), so a stop arrived (also automatically) and never left does not switch long_stop off for the trip.
   const atStop = ((trip.stop_visits as StopVisit[] | null) ?? []).some((v) => !v.leftAt && !v.away);
   const nearDropoff = haversineKm(newest, pointOf(trip.dropoff)) <= NEAR_DROPOFF_KM;
-  if (boardedLongEnough && !atStop && !nearDropoff && isLongStop(fixes, settings.stopMinutes)) return { trigger: "long_stop", at: newest, measured: Math.max(settings.stopMinutes, stoppedMinutes(fixes)) };
+  if (boardedLongEnough && !atStop && !nearDropoff && isLongStop(fixes, settings.stopMinutes)) return { trigger: "long_stop", at, measured: Math.max(settings.stopMinutes, stoppedMinutes(fixes)) };
   const route = await routeOf(trx, trip, router);
   const offKm = kmFromRoute(newest, route);
-  if (offKm > settings.offRouteKm) return { trigger: "off_route", at: newest, measured: offKm };
+  if (offKm > settings.offRouteKm) return { trigger: "off_route", at, measured: offKm };
   return null;
 }
 
@@ -272,7 +294,7 @@ async function scan(trx: Trx, timer: Timer, router: Router | undefined): Promise
   if (!trip || !ONBOARD.has(trip.status) || !trip.driver_id) return;
   const now = timer.firedAt;
   const settings = await rideCheckSettings(trx, trip.zone_id);
-  const same = await sameFixRun(trx, trip);
+  const same = await sameFixRun(trx, trip, settings);
   await keepNextScan(trx, trip, settings, now, same.log);
   if (openServerCheck(trip, now)) return;
   if (!settings.on) return;
