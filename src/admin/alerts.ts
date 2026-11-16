@@ -1,5 +1,6 @@
 import { contract } from "../contract/contract.js";
 import { adminCoversZone, type Principal } from "../auth/guard.js";
+import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { audit } from "./audit.js";
@@ -109,24 +110,63 @@ const render = (text: unknown) => {
 };
 
 /**
+ * S7 alert cap: how many SOLVED (green) alerts one alert book carries. Open alerts are never capped.
+ * Solved alerts stay until an admin marks them done (owner A2) and auto_offline makes one per offline event, so their
+ * number has no upper bound; the newest solved ones are kept.
+ */
+export const SOLVED_ALERTS_CAP = 1000;
+const SAFETY_KINDS: readonly string[] = Object.keys(DESK.kindGroups).filter((kind) => DESK.kindGroups[kind] === "safety");
+const LEVEL_RANK: Record<string, number> = { critical: 0, important: 1, info: 2 };
+const safetyRank = (kind: string) => (SAFETY_KINDS.includes(kind) ? 0 : 1);
+
+/**
  * v0.18.23 (contract.json#alertDesk.serverDetection): the alerts the server found in the country, open or solved by
  * itself (owner A2: shown green until an admin marks them done), with the same zone and group filter as the records.
+ *
+ * S7 alert cap (Rules plan/S7-RECHECK-2026-11-15.md row 1; the contract sets no order and no cap). Before: one read,
+ * oldest first, LIMIT 1000 over open + solved, so past 1000 not-done alerts every NEW alert (an SOS, a ride check) was
+ * cut from the list the admin alert bar and its sound read. Now:
+ *   open   → every one, never cut: safety kinds first, then Critical / Important / Info, the newest first;
+ *   solved → after the open ones: safety kinds first, then the newest solved first, at most SOLVED_ALERTS_CAP.
  */
 async function liveAlerts(ex: Executor, who: Principal, country: string) {
   // Checker LOW: the zone and group filter runs in SQL, before the limit.
   const kinds = Object.keys(DESK.kindGroups).filter((kind) => maySee(who, kind));
   if (!kinds.length) return [];
   const all = who.zones.includes("*");
-  const rows = (await ex
-    .selectFrom("admin_alerts_live")
-    .selectAll()
-    .where("country", "=", country)
-    .where("state", "in", ["open", "solved"])
-    .where("kind", "in", kinds)
-    .where((eb) => (all ? eb.or([eb("zone_id", "is", null), eb("zone_id", "is not", null)]) : eb("zone_id", "in", who.zones.length ? [...who.zones] : ["-"])))
-    .orderBy("since", "asc")
-    .limit(1000)
-    .execute()) as LiveRow[];
+  const zones = who.zones.length ? [...who.zones] : ["-"];
+  // N1 (Rules audits/impact/alert-cap-safety-supervisor.md): open and solved are read in ONE statement, so both parts see
+  // the same moment. As two reads, an alert that turned solved between them came twice and one that opened again came
+  // in neither, for one poll.
+  // Open: no LIMIT. An open alert is a cause that is there now; the index (country, state) finds them.
+  // Solved: the newest per kind, read in index order (migration 0113: country, kind, solved_at DESC, only solved rows),
+  // so the read stays small however many solved rows the table holds; then the newest SOLVED_ALERTS_CAP over all kinds.
+  const zoneOf = (alias: "o" | "a") => (all ? sql`true` : sql`${sql.ref(`${alias}.zone_id`)} = ANY(${zones}::text[])`);
+  const read = (
+    await sql<LiveRow>`
+      SELECT o.* FROM admin_alerts_live o
+       WHERE o.country = ${country} AND o.state = 'open' AND o.kind = ANY(${kinds}::text[]) AND ${zoneOf("o")}
+      UNION ALL
+      SELECT c.* FROM (
+        SELECT s.*
+          FROM unnest(${kinds}::text[]) AS k(kind)
+         CROSS JOIN LATERAL (
+                SELECT a.* FROM admin_alerts_live a
+                 WHERE a.country = ${country} AND a.state = 'solved' AND a.kind = k.kind AND ${zoneOf("a")}
+                 ORDER BY a.solved_at DESC NULLS LAST
+                 LIMIT ${SOLVED_ALERTS_CAP}) s
+         ORDER BY (s.kind = ANY(${[...SAFETY_KINDS]}::text[])) DESC, s.solved_at DESC NULLS LAST, s.alert_id
+         LIMIT ${SOLVED_ALERTS_CAP}) c`.execute(ex)
+  ).rows;
+  // UNION ALL keeps no order, so both parts are put in order here.
+  const open = read
+    .filter((r) => r.state === "open")
+    .sort((a, b) => safetyRank(a.kind) - safetyRank(b.kind) || (LEVEL_RANK[a.level] ?? 9) - (LEVEL_RANK[b.level] ?? 9) || b.since.getTime() - a.since.getTime() || a.alert_id.localeCompare(b.alert_id));
+  const solvedTime = (r: LiveRow) => r.solved_at?.getTime() ?? -Infinity;
+  const solved = read
+    .filter((r) => r.state !== "open")
+    .sort((a, b) => safetyRank(a.kind) - safetyRank(b.kind) || solvedTime(b) - solvedTime(a) || a.alert_id.localeCompare(b.alert_id));
+  const rows = [...open, ...solved];
   return rows
     .filter((r) => coversZone(who, r.zone_id) && maySee(who, r.kind))
     .map((r) => ({
