@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.111",
+  "version": "0.18.112",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -4631,7 +4631,15 @@
     "caseIncidentKind": "support_case",
     "next": "Rider and driver apps: reply box on the ticket, '<first name> · Movera Support', topics from GET /support/topics.",
     "claimedOnly": "Owner 2026-11-02 'Never' + 'Leave ticket', 2026-11-03: on a claimed ticket only the claiming admin acts (reply, assign, topic, waiting, solve, reopen, case); others get 409 conflict, reason ticket_not_yours. He gives it back with leave. A Super admin (role super) can take it over with claim (audited ticket.takeover with the previous admin); nobody else. Solving (solve, or an answer with status resolved) ends the claim (owner 'until solved or handed over'), so any support admin of the ticket's country can reopen it.",
-    "countryTeam": "Owner 2026-11-03: a ticket without zone belongs to its country (the person's phone prefix: +46 SE, +33 FR, +216 TN, else the driver's country); the support admins with a zone in that country see and answer it (list and one ticket), get it assigned (assign) and auto-sorted to them (settings.autoSort), Super admins too (v0.18.79, owner Q93 'A) Yes'). Before: Super admins only (contract v0.13.0 §22)."
+    "countryTeam": "Owner 2026-11-03: a ticket without zone belongs to its country (the person's phone prefix: +46 SE, +33 FR, +216 TN, else the driver's country); the support admins with a zone in that country see and answer it (list and one ticket), get it assigned (assign) and auto-sorted to them (settings.autoSort), Super admins too (v0.18.79, owner Q93 'A) Yes'). Before: Super admins only (contract v0.13.0 §22).",
+    "inboxOrder": {
+      "rule": "v0.18.112 (BQ-A04, owner item 109 \"Yes, pages + oldest first (Rec.)\", Rules decisions/session-2026-11-06.md:1116): GET /admin/tickets lists the oldest-waiting ticket first. Order: first the waiting tickets (waitingSince set), waitingSince oldest first, ties by ticketId; then every other ticket, updatedAt newest first, ties by ticketId (the order before v0.18.112). The filters (status, priority, assignedTo, q, zones, ...) and total work as before. GET /support/tickets (the rider's or driver's own list) keeps newest change first.",
+      "waitingSince": "SupportTicket.waitingSince (admin views only: GET /admin/tickets, GET /admin/tickets/{ticketId} and the command answers): while the ticket is open, the time of the first rider or driver message that has no support answer after it; absent when the ticket is not open (pending, resolved, closed) or support answered last (a case an admin opened, a reopened ticket support answered last). It starts again when the person writes or the ticket becomes open (reopen, waiting false) with a message still not answered.",
+      "paging": "Cursor paging as before (limit, nextCursor; nextCursor null = the last page). One cursor carries the place in both parts of the order; the panel sends it back unchanged with the same filters. A cursor made before v0.18.112 continues in the second part (updatedAt newest first), never 400.",
+      "admin": "Admin › Support shows the tickets in the server's order (no sort in the panel) with 'Load more' while nextCursor is set, and 'Waiting since <time>' on a waiting ticket.",
+      "apps": "Rider and driver apps: no change (their own list GET /support/tickets keeps its order; they never read GET /admin/tickets).",
+      "compatibility": "Additive: one new optional field (waitingSince) and a new order of GET /admin/tickets; no new query key; X-Api-Version stays 0.5. Server migration 0112 (support_tickets.waiting_since, a partial index built CONCURRENTLY, Rule 46)."
+    }
   },
   "alertDesk": {
     "note": "v0.18.15 (build-all A1, owner 2026-11-02 Q5 'Alerts = FULL FLOW': take — the others see who has it, pass on, snooze, mute types, quiet hours, done). The admin panel finds the alerts from the live data (its alert engine, admin settings + rules); the SERVER keeps who works on each alert, the history, the mutes, every admin's quiet hours and the shared alert settings and rules, so every admin sees the same state on live.",
