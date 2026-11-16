@@ -66,7 +66,9 @@ export async function startSearch(trx: Trx, trip: TripRow, now: Date): Promise<v
   }
   if (liveRide) await cancelTimer(trx, END, trip.trip_id);
   else await scheduleTimer(trx, { kind: END, refId: trip.trip_id, dueAt: endAt, payload: {} });
-  await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: now, payload: {} });
+  // S7 0.16 (owner W2 Q120 part 2): the first round is due at once, so the timer worker is woken when this
+  // transaction commits (never before, never on a rollback): the first offer does not wait for the worker's poll.
+  await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: now, payload: {} }, { wake: true });
 }
 
 async function freeDriversInZone(ex: Executor, zoneId: string, now: Date): Promise<number> {
