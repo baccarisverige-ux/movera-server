@@ -41,6 +41,9 @@ export const SIGN_IN_PATHS: readonly string[] = [`${API_PREFIX}/auth/otp/request
  * budget: the code calls by phone + address, a refresh by its token's session + address (an unknown token, or a body
  * without a phone: the address, as before). The phone alone and the address alone are only ceilings of
  * SIGN_IN_CEILING_FACTOR times the budget. The body is read after the address ceiling was counted (preHandler).
+ * Follow-up SF-1: a bearer token on these calls (valid or rightly signed but expired) changes nothing: they are always
+ * keyed by the body and the address. SF-2: a call whose body never reached preHandler (bad JSON, over 1 MB, wrong
+ * media type) is counted on the address at 1 x by the error handler (unreadBody), as before Q118.
  */
 const OTP_ROUTES: ReadonlySet<string> = new Set(SIGN_IN_PATHS.map((path) => `POST ${path}`));
 const REFRESH_ROUTES: ReadonlySet<string> = new Set([`POST ${API_PREFIX}/auth/refresh`, `POST ${API_PREFIX}/admin/auth/refresh`]);
@@ -184,15 +187,25 @@ function keyOf(request: FastifyRequest, jwtSecret: string | undefined, now: Date
       if (late.ok) return { key: `expired:${late.claims.actor}:${late.claims.sub}`, zone: late.claims.zones[0], signedIn: false, byUser: true };
     }
   }
+  return addressOf(request);
+}
+
+function addressOf(request: FastifyRequest): Caller {
   return { key: `ip:${request.ip}`, zone: undefined, signedIn: false, byUser: false };
 }
+
+/**
+ * Called by the app's error handler first. For a sign-in / refresh call whose body was never read (SF-2): counts it on
+ * the address at 1 x and returns the 429 to answer instead when the address is over its budget; else undefined.
+ */
+export type UnreadBodyCharge = (request: FastifyRequest) => ApiError | undefined;
 
 export function registerWriteLimit(
   app: FastifyInstance,
   settings: WriteLimitSettings,
   deps: { jwtSecret?: string | undefined; clock?: () => Date; db?: Executor | undefined; defaultZoneId?: string; exemptPaths?: readonly string[] },
-): void {
-  if (settings.user.off && settings.address.off) return;
+): UnreadBodyCharge | undefined {
+  if (settings.user.off && settings.address.off) return undefined;
   const limiter = new WriteLimiter(settings.windowMs ?? 60_000);
   const admin = deps.db !== undefined ? new CountryWriteLimits(deps.db, (error) => app.log.warn({ err: error }, "write limits not read; the last ones stay")) : undefined;
   if (admin !== undefined) app.addHook("onReady", async () => admin.refresh((deps.clock?.() ?? new Date()).getTime()));
@@ -212,13 +225,15 @@ export function registerWriteLimit(
     const route = `${request.method} ${request.routeOptions.url ?? ""}`;
     if (OWN_BUDGET_ROUTES.has(route)) return;
     const now = deps.clock?.() ?? new Date();
-    const { key, zone, signedIn, byUser } = keyOf(request, deps.jwtSecret, now);
+    // SF-1: the four sign-in / refresh calls never read the token; they are keyed by the body and the address.
+    const signIn = OTP_ROUTES.has(route) || REFRESH_ROUTES.has(route);
+    const { key, zone, signedIn, byUser } = signIn ? addressOf(request) : keyOf(request, deps.jwtSecret, now);
     if (signedIn && SAFETY_WRITE_ROUTES.has(route)) return;
     const country = admin?.countryOfZone(byUser ? zone : deps.defaultZoneId) ?? null;
     const set = admin?.get(country, now.getTime()) ?? null;
     const limit = shareOf(byUser ? limitOf(settings.user, set?.user) : limitOf(settings.address, set?.address), settings.copies);
     if (limit <= 0) return;
-    if (!byUser && (OTP_ROUTES.has(route) || REFRESH_ROUTES.has(route))) {
+    if (signIn) {
       // Q118: the address alone is only a ceiling here; the phone or session key is counted once the body is read.
       take(request, `ceiling:ip:${request.ip}`, limit * SIGN_IN_CEILING_FACTOR, now, signedIn);
       bodyKeyed.set(request, { route, limit, now });
@@ -229,6 +244,7 @@ export function registerWriteLimit(
   app.addHook("preHandler", async (request) => {
     const pending = bodyKeyed.get(request);
     if (pending === undefined) return;
+    bodyKeyed.delete(request);
     const { route, limit, now } = pending;
     const body = (typeof request.body === "object" && request.body !== null ? request.body : {}) as Record<string, unknown>;
     if (OTP_ROUTES.has(route) && typeof body["phone"] === "string" && PHONE.test(body["phone"])) {
@@ -244,4 +260,15 @@ export function registerWriteLimit(
     }
     take(request, `ip:${request.ip}`, limit, now, false);
   });
+  return (request) => {
+    const pending = bodyKeyed.get(request);
+    if (pending === undefined) return undefined;
+    bodyKeyed.delete(request);
+    try {
+      take(request, `ip:${request.ip}`, pending.limit, pending.now, false);
+      return undefined;
+    } catch (error) {
+      return error as ApiError;
+    }
+  };
 }
