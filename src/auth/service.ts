@@ -46,8 +46,12 @@ export const OTP = {
 
 /**
  * Wrong codes for this number from this client address in the last 24 h (both apps, codes not lifted by an admin), and
- * when the oldest of them leaves the window. Checker MED 3: the lock is per number AND source, so a stranger guessing
- * from his wifi never locks the owner out on his own phone.
+ * when the oldest of them leaves the window. Checker MED 3: this lock is per number AND source, so a stranger guessing
+ * from one wifi does not lock the owner out on his own network. It is not the only lock: S7 W2 Q118 (owner 2026-11-16
+ * "Lock at 60 for 24 h") adds the number's ceiling below (all addresses, PHONE_WRONG_CODES_CEILING_FACTOR ×
+ * wrongCodesPerDay), so a stranger with several networks CAN lock the number for every address, for up to 24 h; an admin
+ * unlock (unlockSignIn) lifts both at once, and phones already signed in keep working. (codesPerPhonePerHour could
+ * already block new codes for a number for one hour.)
  */
 async function wrongCodesToday(ex: Executor, phone: string, ip: string | undefined, now: Date): Promise<{ wrong: number; oldest: Date | null }> {
   const dayAgo = new Date(now.getTime() - 24 * 3_600_000);
@@ -67,7 +71,8 @@ async function wrongCodesToday(ex: Executor, phone: string, ip: string | undefin
  * number AND address, so guessing one number's code from many addresses was never stopped by it. The number alone has
  * a ceiling of this many times wrongCodesPerDay in 24 h (all addresses, both apps, not lifted by an admin); at it the
  * number is locked for every address (otp_locked_today) until the oldest wrong code leaves the window or an admin
- * unlocks it.
+ * unlocks it. Owner 2026-11-16 (OQ-1 "Lock at 60 for 24 h", OQ-2 "Keep fixed in server"): 4 × the default 15 = 60,
+ * for up to 24 h, a server constant (not an admin setting).
  */
 export const PHONE_WRONG_CODES_CEILING_FACTOR = 4;
 

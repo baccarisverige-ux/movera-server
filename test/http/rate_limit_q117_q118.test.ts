@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { signAccessToken } from "../../src/auth/jwt.js";
+import { ADMIN, createAdmin } from "../../src/admin/auth.js";
 import { startSession } from "../../src/auth/service.js";
 import { readEnv } from "../../src/env.js";
 import { SIGN_IN_CEILING_FACTOR } from "../../src/http/rateLimit.js";
@@ -55,6 +56,33 @@ describe("Q117: an expired, rightly signed token is keyed by its user", () => {
     const old = expired("D2", 31 * 86_400);
     for (let i = 0; i < 2; i++) expect((await write(app, "203.0.113.21", old)).statusCode).not.toBe(429);
     expect((await write(app, "203.0.113.21", expired("D3", 31 * 86_400))).statusCode).toBe(429);
+    await app.close();
+  });
+});
+
+describe("Q117: an expired token never gets the safety-write pass (supervisor MF-1 b, mutant M2b)", () => {
+  let database: TestDatabase;
+  beforeAll(async () => {
+    database = await freshDatabase();
+  });
+  afterAll(async () => {
+    await database.drop();
+  });
+
+  it("an SOS with an expired rider token is counted on its user budget (429 when full), not passed like a valid one", async () => {
+    // The safety routes only exist with a database. User budget 2.
+    const app = await buildApp({
+      env: readEnv({ MOVERA_ENV: "development", DATABASE_URL: database.url, JWT_SECRET: SECRET, TRUST_PROXY_HOPS: "1", RATE_LIMIT_WRITES_PER_USER_PER_MINUTE: "2", RATE_LIMIT_WRITES_PER_ADDRESS_PER_MINUTE: "2" }),
+      logger: false,
+      db: database.db,
+      clock: () => at,
+    });
+    const token = signAccessToken({ sub: "R-q117-sos", actor: "rider", sid: "s-R-q117-sos", zones: ["Z001"] }, SECRET, 900, new Date(at.getTime() - 960_000));
+    const sos = () => app.inject({ method: "POST", url: "/api/v1/rider/trips/T-none/sos", headers: { "content-type": "application/json", "x-forwarded-for": NAT, authorization: `Bearer ${token}` }, payload: {} });
+    const codes: number[] = [];
+    for (let i = 0; i < 3; i++) codes.push((await sos()).statusCode);
+    // Within the budget: the route's own 401 (the app refreshes). Over it: 429, as for any other write.
+    expect(codes).toEqual([401, 401, 429]);
     await app.close();
   });
 });
@@ -140,6 +168,44 @@ describe("Q118: sign-in and refresh keyed by phone + address / session + address
     const guesses: number[] = [];
     for (let i = 0; i < 3; i++) guesses.push((await send(app, "/auth/refresh", "203.0.113.41", { refreshToken: `rt_guess${i}` })).statusCode);
     expect(guesses).toEqual([401, 401, 429]);
+    await app.close();
+  });
+
+  it("one address over its budget for one number never fills that number's ceiling (supervisor MF-1 c, mutant M6)", async () => {
+    const app = await build();
+    const ceiling = 2 * SIGN_IN_CEILING_FACTOR;
+    // One address sends as many calls for one number as its own address ceiling lets through: only the first 2 pass.
+    const codes: number[] = [];
+    for (let i = 0; i < ceiling; i++) codes.push((await send(app, "/auth/otp/verify", "203.0.113.50", { phone: phone(500), sessionId: "none", code: "0000" })).statusCode);
+    expect(codes.slice(0, 2)).not.toContain(429);
+    expect(codes.slice(2).every((code) => code === 429)).toBe(true);
+    // The refused calls added nothing to the number's ceiling: the real owner on another address still gets through.
+    const owner = await send(app, "/auth/otp/verify", "203.0.113.51", { phone: phone(500), sessionId: "none", code: "0000" });
+    expect(owner.statusCode, owner.body).not.toBe(429);
+    await app.close();
+  });
+
+  it("/admin/auth/refresh is keyed by the token's session + address too (supervisor SF-4)", async () => {
+    const app = await build();
+    const tokens = await database.db.transaction().execute(async (trx) => {
+      const out: string[] = [];
+      for (let n = 0; n < 3; n++) {
+        const { adminId } = await createAdmin(trx, { email: `q118-refresh-${n}@movera.test`, name: `q118 ${n}`, role: "super" }, at);
+        out.push((await startSession(trx, { jwtSecret: SECRET }, { actor: "admin", subjectId: adminId, zones: [] }, {}, at, ADMIN.refreshTtlMs)).refreshToken);
+      }
+      return out;
+    });
+    // 3 admins behind one office address, each refreshing twice in one minute: none is refused (address budget 2).
+    for (let n = 0; n < 3; n++) {
+      for (let i = 0; i < 2; i++) {
+        const res = await send(app, "/admin/auth/refresh", NAT, { refreshToken: tokens[n] });
+        expect(res.statusCode, `admin ${n} refresh ${i}: ${res.body}`).toBe(200);
+        tokens[n] = res.json().refreshToken;
+      }
+    }
+    // The same session a third time: refused on this address; from another address it has its own budget.
+    expect((await send(app, "/admin/auth/refresh", NAT, { refreshToken: tokens[0] })).statusCode).toBe(429);
+    expect((await send(app, "/admin/auth/refresh", "203.0.113.60", { refreshToken: tokens[0] })).statusCode).toBe(200);
     await app.close();
   });
 });
