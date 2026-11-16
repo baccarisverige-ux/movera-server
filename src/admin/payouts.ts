@@ -195,6 +195,9 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
       await trx.updateTable("earnings_entries").set({ amount_minor: p.amountMinor - p.take }).where("entry_id", "=", p.entryId).execute();
       const partId = newId("ern", now.getTime() + n++);
       await trx.insertInto("earnings_entries").values({ entry_id: partId, driver_id: input.driverId, trip_id: null, kind: "paid_to_movera", currency, amount_minor: p.take, gross_minor: null, commission_minor: null, cash_minor: null, payout_id: payoutId, at: p.at }).execute();
+      // J8b round 2 (supervisor SF1): one audit row per split. `entryId` is the entry of the admin's payment (named in
+      // the audit row driver.paid_movera, detail.entries), so every part leads back to the one payment and its total.
+      await audit(trx, { adminId: input.by, action: "driver.paid_movera_split", targetType: "driver", targetId: input.driverId, zoneId: driver?.zone_ids[0] ?? null, detail: { entryId: p.entryId, currency, amountBeforeMinor: p.amountMinor, amountLeftMinor: p.amountMinor - p.take, partEntryId: partId, amountTakenMinor: p.take, payoutId, source: input.source }, at: now });
     }
     await trx.updateTable("earnings_entries").set({ payout_id: payoutId }).where("entry_id", "in", linked).execute();
     made.push(row as PayoutRow);
@@ -358,11 +361,13 @@ export async function payoutDue(ex: Executor, row: PayoutDriverRow, now: Date, c
 /**
  * J8b (lock order: driver → his entries → payouts, as createPayout and driverPaidMovera): the driver's row lock for his
  * payout step, so the step and a "Driver paid Movera" click never run at the same moment: the step sees the click's
- * entry, or the click sees the step's payout. FOR NO KEY UPDATE: a trip end that only adds an entry is not held back.
+ * entry, or the click sees the step's payout. FOR KEY SHARE (round 2, supervisor SF4): it is refused only by the FOR
+ * UPDATE of the click, Create payout and hold; a trip end that adds an entry and a plain update of his row never wait.
+ * Two steps for one driver are kept apart by his entries' row locks and payouts_weekly_once, as before.
  * Returns false when his payouts are paused (read under the lock; payoutHold) or he is gone.
  */
 export async function lockPayoutDriver(trx: Trx, driverId: string): Promise<boolean> {
-  const driver = await trx.selectFrom("drivers").select(["payout_hold_at"]).where("driver_id", "=", driverId).forNoKeyUpdate().executeTakeFirst();
+  const driver = await trx.selectFrom("drivers").select(["payout_hold_at"]).where("driver_id", "=", driverId).forKeyShare().executeTakeFirst();
   return driver !== undefined && driver.payout_hold_at === null;
 }
 
@@ -491,6 +496,13 @@ export async function createPayout(trx: Trx, who: Principal, body: { driverId: s
 
 /** POST /admin/payouts/{payoutId}/paid: Mark as paid. */
 export async function markPayoutPaid(trx: Trx, who: Principal, payoutId: string, body: { note?: string }, now: Date) {
+  // J8b round 2 (supervisor SF2; lock order driver → payouts, as "Driver paid Movera", Create payout and the payout
+  // step): his driver row first. The payout row is written twice here (paid, then the frozen summary), and the second
+  // write takes a key share on his driver row by the foreign key: with the payout locked first, this and a "Driver paid
+  // Movera" click on the same payout deadlocked. FOR KEY SHARE is that same lock, taken up front; the click's FOR UPDATE
+  // waits for it (and this waits for the click), nothing else does.
+  const owner = await trx.selectFrom("payouts").select("driver_id").where("payout_id", "=", payoutId).executeTakeFirst();
+  if (owner) await trx.selectFrom("drivers").select("driver_id").where("driver_id", "=", owner.driver_id).forKeyShare().execute();
   const row = await payoutForAdmin(trx, who, payoutId, true);
   if (row.status === "paid") throw new ApiError("invalid_transition", "This payout is already paid.", { reason: "already_paid" });
   if (row.status === "pending_approval") throw new ApiError("conflict", "This payout's run is not approved yet.", { reason: "run_not_approved" });
