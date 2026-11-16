@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { RIDE_CHECK_SCAN, SAME_FIX_KEY, SAME_FIX_SINCE_KEY } from "../../src/safety/rideCheckServer.js";
+import { detect, RIDE_CHECK_SCAN, SAME_FIX_KEY, SAME_FIX_SINCE_KEY } from "../../src/safety/rideCheckServer.js";
 import { rideCheckSettingsOf } from "../../src/trips/onTripSettings.js";
 import { bookAndAccept, drive, Sim, type Driver, type Rider } from "../e2e/harness.js";
 
@@ -295,5 +295,35 @@ describe("long stop on the same fix sent again and again (owner 2026-11-15 'Yes,
     const tripId = await onTrip();
     await repeat({ ...fixAt(STILL, sim.clock.now), moving: false, speedMps: 0 }, STOP_SECONDS + SCAN_SECONDS + 10);
     expect(await rideCheck(tripId)).toMatchObject({ trigger: "long_stop" });
+  });
+});
+
+// Follow-up SF-R3-1 (supervisor mutant M10): the held fix (sameFixRun) is read in its own statement, before the trace.
+// If the trace already has a NEWER fix (the car moved on and a new fix came between the two reads), the held fix is old
+// news and must be dropped; added after the newer trace fix it would look like the car still stands at the old place.
+describe("detect: the held fix is dropped when the trace has a newer fix (SF-R3-1)", () => {
+  const detectNow = async (tripId: string, held: Array<{ lat: number; lng: number; measured_at: Date }>) => {
+    const trip = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    return sim.db.transaction().execute((trx) => detect(trx, trip, rideCheckSettingsOf(undefined), sim.clock.now, undefined, held));
+  };
+  /** The stored fix STILL, first measured `standSeconds` ago, held by the phone until `until`. */
+  const heldAt = (standSeconds: number, until: Date) => [
+    { ...STILL, measured_at: new Date(until.getTime() - standSeconds * 1000) },
+    { ...STILL, measured_at: until },
+  ];
+
+  it("held fix older than the trace's newest fix → ignored, nothing found; the same held fix with no newer trace fix → long_stop", async () => {
+    const tripId = await onTrip();
+    // Control: the trace's newest fix (MOVING, from onTrip) is older than the held fix → the held fix counts → long_stop.
+    pass(10);
+    const standing = await detectNow(tripId, [{ ...STILL, measured_at: new Date(sim.clock.now.getTime() - 1000) }, { ...STILL, measured_at: new Date(sim.clock.now.getTime() + (STOP_SECONDS + 10) * 1000) }]);
+    expect(standing).toMatchObject({ trigger: "long_stop", at: { lat: STILL.lat, lng: STILL.lng } });
+
+    // The car moved on: a new trace fix at MOVING, newer than the held fix's own measured time.
+    const held = heldAt(STOP_SECONDS + 60, sim.clock.now);
+    pass(5);
+    await send(fixAt(MOVING, sim.clock.now));
+    expect(await detectNow(tripId, held)).toBeNull();
+    expect(await asked(tripId)).toHaveLength(0);
   });
 });
