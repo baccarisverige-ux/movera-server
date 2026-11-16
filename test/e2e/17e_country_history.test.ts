@@ -89,6 +89,54 @@ describe("History and Restore of a country's standard documents", () => {
     expect(zone[0]).not.toHaveProperty("country");
   });
 
+  /**
+   * The admin's "Undo last Tips & limits save" (admin webapp/src/live/tipsUndo.ts). One save publishes the country's
+   * country_rules and then its rider_app_config, each with the save's id as the publish note. Undo finds them by that
+   * note in History and restores the rider document first, then country_rules (whose restore writes the tips into the
+   * rider document again), each with `country`.
+   */
+  it("a Tips & limits save is found again by its note, and undone in the admin's order (rider document, then the rules)", async () => {
+    const note = "Tips & limits save 2026-11-16T05:18:42Z/k3x9aa";
+    const publishWith = async (doc: "country_rules" | "rider_app_config", change: (document: Json) => Json) => {
+      const draft = (await owner.get(`/admin/config/${doc}?country=SE`)).body;
+      const put = await owner.put(`/admin/config/${doc}`, { expectedVersion: draft["version"], country: "SE", document: change(structuredClone(draft["document"])) });
+      expect(put.status, JSON.stringify(put.body)).toBe(200);
+      const published = await owner.post(`/admin/config/${doc}/publish`, { expectedVersion: put.body["version"], country: "SE", note });
+      expect(published.status, JSON.stringify(published.body)).toBe(200);
+      return published.body["version"] as number;
+    };
+    const history = async (doc: string) => (await owner.get(`/admin/config/${doc}/history?country=SE&limit=10`)).body["items"] as Json[];
+    const strip = (doc: Json) => ({ ...doc, version: 0, publishedAt: "" });
+    const rulesBefore = (await history("country_rules"))[0]!;
+    const riderBefore = (await history("rider_app_config"))[0]!;
+
+    const tips = [{ amount: sek(1300), enabled: true }];
+    const rulesVersion = await publishWith("country_rules", (doc) => ({ ...doc, tips }));
+    const riderVersion = await publishWith("rider_app_config", (doc) => ({ ...doc, tipRules: { ...doc["tipRules"], customAmount: !doc["tipRules"]?.customAmount } }));
+
+    // History says which documents the save published together, and what was live before each.
+    const rules = await history("country_rules");
+    const riderDoc = await history("rider_app_config");
+    expect(rules[0]).toMatchObject({ version: rulesVersion, note });
+    expect(riderDoc[0]).toMatchObject({ version: riderVersion, note });
+    // The rules publish wrote the new tips into the rider document as a version of its own, below the save's.
+    expect(riderDoc[1]!["note"]).toMatch(/^tips and limits v/);
+    expect(riderDoc[1]!["document"]["tips"]).toEqual(tips);
+
+    const undo = "Undo Tips & limits save 2026-11-16T05:18:42Z/k3x9aa";
+    const rider1 = await owner.post("/admin/config/rider_app_config/restore", { country: "SE", version: riderDoc[1]!["version"], expectedVersion: riderVersion, note: undo });
+    expect(rider1.status, JSON.stringify(rider1.body)).toBe(200);
+    const rules1 = await owner.post("/admin/config/country_rules/restore", { country: "SE", version: rules[1]!["version"], expectedVersion: rulesVersion, note: undo });
+    expect(rules1.status, JSON.stringify(rules1.body)).toBe(200);
+
+    expect(strip((await history("country_rules"))[0]!["document"])).toEqual(strip(rulesBefore["document"]));
+    const riderNow = (await history("rider_app_config"))[0]!;
+    expect(strip(riderNow["document"])).toEqual(strip(riderBefore["document"]));
+    expect((await rider.get("/rider/config?zoneId=Z001")).body.tips).toEqual(rulesBefore["document"]["tips"]);
+    // The restores carry the undo's note, not a save id: the same save is not offered as undoable twice.
+    expect((await history("country_rules"))[0]).toMatchObject({ action: "restore", note: undo });
+  });
+
   it("names exactly one of zoneId or country; an unknown zone or country is 404; another country's admin is refused", async () => {
     expect((await owner.get("/admin/config/country_rules/history")).body).toMatchObject({ code: "invalid_request", reason: "scope_required" });
     expect((await owner.get("/admin/config/country_rules/history?zoneId=Z001&country=SE")).body).toMatchObject({ reason: "scope_required" });
