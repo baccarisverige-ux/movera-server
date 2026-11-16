@@ -107,6 +107,18 @@ export async function runIdempotent<T>(
 }
 
 /**
+ * Q120 follow-up SF-2: whether a committed answer is already stored for this request's key (a plain read, no lock,
+ * no transaction). A command that does slow work BEFORE runIdempotent (a road route) skips that work when this is
+ * true: runIdempotent will replay the stored answer, or refuse a reused key, without running the work. Rows being
+ * written by a request still in flight are not seen (not committed yet); runIdempotent decides those as always.
+ */
+export async function hasStoredAnswer(ex: Executor, request: Pick<IdempotencyRequest, "actor" | "subjectId" | "key">): Promise<boolean> {
+  if (request.key === undefined) return false;
+  const row = await ex.selectFrom("idempotency_keys").select("status_code").where("actor", "=", request.actor).where("subject_id", "=", request.subjectId).where("key", "=", request.key).executeTakeFirst();
+  return row !== undefined;
+}
+
+/**
  * Keys are kept for a day (long enough for any app retry), then swept by a timer. S4 0.14b: `limit` = at most that many
  * keys in one statement (the housekeeping timer comes back soon while more are left).
  */

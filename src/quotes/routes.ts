@@ -18,7 +18,7 @@ export async function quoteRoutes(app: FastifyInstance, deps: QuoteDeps): Promis
     // A missing or bad key is refused before any route call, as before.
     readIdempotencyKey(key);
     // The route first, with no database connection held; then the short transaction.
-    const router = await routeBeforeTransaction(deps.router, request.body ?? {});
+    const router = await routeBeforeTransaction(deps.router, request.body ?? {}, deps.db);
     const result = await runIdempotent(
       deps.db,
       { actor: "rider", subjectId: who.subjectId, key, method: "POST", route: request.url.split("?")[0]!, body: request.body ?? null },
