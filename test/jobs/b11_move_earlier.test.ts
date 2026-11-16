@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { MAX_ATTEMPTS, TimerWorker, scheduleTimer, type TimerHandler } from "../../src/jobs/timers.js";
 import { NEAR_DROPOFF } from "../../src/trips/ride/shared.js";
 import { maybeNearDropoff } from "../../src/trips/ride/steps.js";
+import { PICKUP_GEOFENCE, maybePickupGeofence } from "../../src/trips/ride/geofence.js";
 import { TRIP_ETA, etaNowLocked, etaOnPosition } from "../../src/trips/etaNow.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertRider, insertTrip } from "../support/seed.js";
@@ -144,5 +145,73 @@ describe("B1.1 ETA path: a position only moves trip_eta earlier, and never wakes
     await database.db.insertInto("timers").values({ kind: TRIP_ETA, ref_id: healthy, due_at: at(60) }).execute();
     await database.db.transaction().execute((trx) => etaNowLocked(trx as never, healthy, at(0)));
     expect((await timer(TRIP_ETA))!.due_at.toISOString()).toBe(at(0).toISOString());
+  });
+});
+
+/**
+ * Round 2 (owner OQ-B101-1 "Yes, same rule (Rec.)", Rules decisions/session-2026-11-06.md): the pickup_geofence
+ * (auto-arrive / stop check) timer follows the near_dropoff rule: a GPS batch inside the circle may only move it earlier,
+ * never resets its failure count, and never wakes a failing or parked one.
+ */
+describe("B1.1 round 2 pickup_geofence: GPS only moves it earlier", () => {
+  const near = (tripId: string) => ({ trip_id: tripId, status: "driver_to_pickup", pickup: HERE });
+  const FIX = { ...HERE, accuracy: 5 };
+
+  it("GPS batches every 1 s inside the circle keep a failing timer's due time, attempts and last error", async () => {
+    const tripId = await inTrip("driver_to_pickup");
+    await maybePickupGeofence(database.db as never, near(tripId), FIX, at(0));
+    expect((await timer(PICKUP_GEOFENCE))!.due_at.toISOString()).toBe(at(0).toISOString());
+    await database.db.updateTable("timers").set({ attempts: 2, last_error: "boom", due_at: at(40) }).where("kind", "=", PICKUP_GEOFENCE).execute();
+    for (let s = 1; s <= 10; s++) await maybePickupGeofence(database.db as never, near(tripId), FIX, at(s));
+    const row = await timer(PICKUP_GEOFENCE);
+    expect([row!.due_at.toISOString(), row!.attempts, row!.last_error]).toEqual([at(40).toISOString(), 2, "boom"]);
+  });
+
+  it("a healthy pending timer is pulled earlier (auto-arrive runs at the same moment), never later", async () => {
+    const tripId = await inTrip("driver_to_pickup");
+    await scheduleTimer(database.db, { kind: PICKUP_GEOFENCE, refId: tripId, dueAt: at(30) });
+    await maybePickupGeofence(database.db as never, near(tripId), FIX, at(5));
+    expect((await timer(PICKUP_GEOFENCE))!.due_at.toISOString()).toBe(at(5).toISOString());
+    await maybePickupGeofence(database.db as never, near(tripId), FIX, at(9));
+    expect((await timer(PICKUP_GEOFENCE))!.due_at.toISOString()).toBe(at(5).toISOString());
+  });
+
+  it("a parked pickup_geofence stays parked whatever the GPS sends", async () => {
+    const tripId = await inTrip("driver_to_pickup");
+    await database.db
+      .insertInto("timers")
+      .values({ kind: PICKUP_GEOFENCE, ref_id: tripId, due_at: sql<Date>`'infinity'::timestamptz`, attempts: MAX_ATTEMPTS + 1, last_error: "boom" })
+      .execute();
+    for (let s = 0; s < 5; s++) await maybePickupGeofence(database.db as never, near(tripId), FIX, at(s));
+    const row = await timer(PICKUP_GEOFENCE);
+    expect([Number(row!.due_at), row!.attempts, row!.last_error]).toEqual([Infinity, MAX_ATTEMPTS + 1, "boom"]);
+  });
+
+  it("an always-failing pickup_geofence parks after its tries and the GPS never wakes it; no log line per GPS batch", async () => {
+    const tripId = await inTrip("driver_to_pickup");
+    const logs: string[] = [];
+    const logger = { warn: (_d: object, m: string) => void logs.push(m), error: (_d: object, m: string) => void logs.push(m) };
+    const clock = { now: at(0) };
+    const failing: TimerHandler = async () => {
+      throw new Error("always");
+    };
+    const w = new TimerWorker(database.db, { handlers: { [PICKUP_GEOFENCE]: failing }, logger, clock: () => clock.now, pollMs: 20 });
+    await maybePickupGeofence(database.db as never, near(tripId), FIX, clock.now);
+    let runs = 0;
+    for (let i = 0; i < 40; i++) {
+      const row = await timer(PICKUP_GEOFENCE);
+      if (row === undefined || Number(row.due_at) === Infinity) break;
+      clock.now = new Date(Math.max(clock.now.getTime(), row.due_at.getTime()));
+      runs += await w.runDue();
+      await maybePickupGeofence(database.db as never, near(tripId), FIX, clock.now);
+    }
+    const parked = await timer(PICKUP_GEOFENCE);
+    expect(Number(parked!.due_at)).toBe(Infinity);
+    expect(parked!.attempts).toBeGreaterThanOrEqual(MAX_ATTEMPTS);
+    expect(runs).toBeLessThanOrEqual(MAX_ATTEMPTS + 1);
+    const before = logs.length;
+    for (let s = 0; s < 20; s++) await maybePickupGeofence(database.db as never, near(tripId), FIX, at(10_000 + s));
+    expect(Number((await timer(PICKUP_GEOFENCE))!.due_at)).toBe(Infinity);
+    expect(logs.length).toBe(before);
   });
 });
