@@ -1,5 +1,6 @@
 import { followFloor } from "../riders/debtFloor.js";
 import { checkCountryCashOffers } from "../drivers/owes.js";
+import { pickupSpotsProblem } from "./pickupSpots.js";
 import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
@@ -118,6 +119,12 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
     if (owes?.enabled === true && !(owes.max && typeof owes.max.amountMinor === "number" && owes.max.amountMinor > 0 && owes.max.currency === zone.currency)) {
       throw badRequest(`Set an amount above 0 in ${zone.currency} to switch the owes-limit on.`, "owes_limit_needs_amount");
     }
+  }
+  // v0.18.115 BQ-V21 (contract.json#pickupSpots.server): booking.pickupSpots.on is true or false (checked here, so the
+  // rule holds whatever contract copy the schema check reads).
+  if (doc === "rider_app_config") {
+    const spots = pickupSpotsProblem(document);
+    if (spots !== null) throw badRequest(`The rider_app_config document is not valid: ${spots}.`, "invalid_document");
   }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
