@@ -57,10 +57,10 @@ export const HIDE_NEAR_STOP_METERS = HIDE_NEAR_DROPOFF_METERS;
  */
 export function mayShowPosition(status: string, car: { lat: number; lng: number }, dropoff: unknown, stops: unknown, pickup: unknown): boolean {
   if (!RIDER_IN_CAR.has(status)) return false;
-  // Round 3b (session decision under the owner's overnight rule, following "never the destination"; for the owner to
-  // review): the same distance around EVERY middle stop. Anything that is not a list of places hides the position.
+  // Round 3b (owner 2026-11-16 "Keep 500 m at stops", confirming the session decision of 2026-11-15): the same
+  // distance around EVERY middle stop. Anything that is not a list of places hides the position.
   if (stops !== null && stops !== undefined && !Array.isArray(stops)) return false;
-  // Round 3c Q-D (session decision, for the owner's morning review, Rule 43(2)): the pickup too. rider_onboard is set
+  // Round 3c Q-D (owner 2026-11-16 "Keep 500 m at pickup", confirming the session decision): the pickup too. rider_onboard is set
   // while the car still stands at the pickup (often the rider's home), which owner Q-A means to hide.
   for (const place of [pickup, dropoff, ...((stops as unknown[] | null | undefined) ?? [])]) {
     const to = place as { lat?: unknown; lng?: unknown } | null;
