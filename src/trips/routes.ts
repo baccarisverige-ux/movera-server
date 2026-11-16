@@ -6,7 +6,7 @@ import type { Db } from "../db/db.js";
 import { tripEventsAfter } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
-import { runIdempotent } from "../http/idempotency.js";
+import { hasStoredAnswer, readIdempotencyKey, runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { nearbyVehicles } from "../riders/nearby.js";
 import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
@@ -128,8 +128,19 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const id = parseBody(z.object({ tripId: ID }), request.params).tripId;
     // S7 0.17: the road is asked first, with no lock and no transaction; the transaction only prices and stores.
     const body = request.body ?? {};
-    const result = await quoteOutsideLock(deps.db, roads, who.subjectId, id, body, (routed) =>
-      runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await quoteRouteChange(trx, routed, who.subjectId, id, body, now()) })),
+    const asked = idem(request, who);
+    // Q120 follow-up SF-2: a missing or bad key is refused before any road call (the same 400 runIdempotent gives), and
+    // a key that already has a stored answer (a replay, or a reused key) is answered by runIdempotent with no road call.
+    readIdempotencyKey(asked.key);
+    const routeFirstTry = !(await hasStoredAnswer(deps.db, asked));
+    const result = await quoteOutsideLock(
+      deps.db,
+      roads,
+      who.subjectId,
+      id,
+      body,
+      (routed) => runIdempotent(deps.db, asked, async (trx) => ({ status: 201, body: await quoteRouteChange(trx, routed, who.subjectId, id, body, now()) })),
+      { routeFirstTry },
     );
     return reply.status(result.status).send(result.body);
   });
