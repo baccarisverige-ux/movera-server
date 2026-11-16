@@ -199,10 +199,12 @@ describe("appendTripEvent", () => {
     expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1, riderId: expect.any(String), zoneId: expect.any(String), scheduled: false }]);
   });
 
-  it("an event kind outside the contract is refused by the database", async () => {
+  // S7 W2 Q135 (migration 0115): was "refused by the database" (/check constraint/); the CHECK is gone, the code refuses.
+  it("an event kind outside the contract is refused in code, before anything is written", async () => {
     const tripId = await newTrip();
     await expect(
       database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId, kind: "teleported" as never, version: 1 })),
-    ).rejects.toThrow(/check constraint/);
+    ).rejects.toThrow(/Unknown trip event kind "teleported"/);
+    expect(await tripEventsAfter(database.db, tripId, 0)).toEqual([]);
   });
 });

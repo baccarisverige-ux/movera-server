@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { contract } from "../../src/contract/contract.js";
+import { TRIP_EVENT_KINDS } from "../../src/db/tripLog.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /** The database's allowed values must be the contract's, so a contract bump that adds one fails here first. */
@@ -50,7 +51,11 @@ describe("database values match contract v" + String((contract as { version: str
   it("currencies", async () => expect(await allowed("trips", "currency")).toEqual(Object.keys(c.currencies)));
   it("driver account statuses", async () => expect(await allowed("drivers", "account_status")).toEqual(c.driverAccountStatus));
   it("driver online statuses", async () => expect(await allowed("drivers", "online_status")).toEqual(c.driverOnlineStatus));
-  it("realtime event kinds", async () => expect(await allowed("trip_events", "kind")).toEqual(c.realtime.kinds));
+  // S7 W2 Q135 (migration 0115): the kinds are checked in code now; the database has no list on trip_events.kind.
+  it("realtime event kinds: the code list (TRIP_EVENT_KINDS) is the contract's; the database keeps no list", async () => {
+    expect([...TRIP_EVENT_KINDS]).toEqual(c.realtime.kinds);
+    await expect(allowed("trip_events", "kind")).rejects.toThrow("No value list check on trip_events.kind");
+  });
   it("'not over' for one-live-trip-per-rider is every status but the terminal ones", async () =>
     expect(await indexPredicate("trips_one_live_per_rider")).toEqual(c.tripStatus.terminal));
   it("'active' for one-trip-per-driver is the driver-assigned statuses", async () =>
