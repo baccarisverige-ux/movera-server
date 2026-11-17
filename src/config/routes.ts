@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { tipAmountsFor, tipRulesOf, withPaymentOptions } from "../trips/finish.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { attachConfig, streamConfig } from "../realtime/streams.js";
-import { openEventStream } from "../realtime/sse.js";
+import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { sql } from "kysely";
 import { z } from "zod";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
@@ -168,6 +168,9 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
   // zone's realtime.oneStream says (the switch only tells the app which to open). The two old routes are unchanged.
   app.get(`${API_PREFIX}/driver/stream`, async (request, reply) => {
     const who = await authenticate(request, guard, ["driver"]);
+    // SF-2 (Rules l20-one-stream-supervisor.md): no JSON answer on this route; without Accept: text/event-stream it
+    // answers 400 and opens nothing (the old /driver/offers and /driver/config stay the JSON reads).
+    if (!wantsEventStream(request)) throw badRequest("GET /driver/stream is an event stream only: send Accept: text/event-stream.", "event_stream_required");
     const { zoneId: asked, after } = parseBody(OptionalZoneQuery.extend({ after: z.string().optional() }), request.query);
     const lastEventId = request.headers["last-event-id"];
     const given = after ?? (typeof lastEventId === "string" && lastEventId !== "" ? lastEventId : undefined);

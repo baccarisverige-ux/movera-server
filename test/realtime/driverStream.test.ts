@@ -182,6 +182,17 @@ describe("GET /driver/stream (v0.18.122, one live connection per driver phone)",
     expect(no.status).toBe(403);
   });
 
+  it("SF-2: without Accept: text/event-stream the one stream answers 400 (no JSON answer on /driver/stream) and opens nothing", async () => {
+    const { headers } = await driverWith(TEST_PHONES[5]!);
+    const before = (loadSnapshot() as { streams: { open: number } }).streams.open;
+    for (const accept of [undefined, "application/json"]) {
+      const res = await fetch(`${base}/driver/stream?zoneId=Z001`, { headers: accept ? { ...headers, accept } : headers });
+      expect(res.status).toBe(400);
+      expect(res.headers.get("content-type") ?? "").toContain("application/json");
+      expect(JSON.stringify(await res.json())).toContain("event_stream_required");
+    }
+    expect((loadSnapshot() as { streams: { open: number } }).streams.open).toBe(before);
+  });
   it("DriverAppConfig.realtime.oneStream: served false when missing; PUT refuses a realtime that is not { oneStream: boolean }", async () => {
     const { headers } = await driverWith(TEST_PHONES[5]!);
     const res = await call(app, "GET", "/driver/config?zoneId=Z001", headers);
