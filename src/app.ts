@@ -196,9 +196,11 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   });
 
   // B11: the general write limit (contract.json#rateLimit), before any route reads the body or the database.
-  registerWriteLimit(app, writeLimitsFrom(env), { jwtSecret: db !== undefined ? (env.JWT_SECRET ?? DEV_JWT_SECRET) : env.JWT_SECRET, db, defaultZoneId: env.DEFAULT_ZONE_ID, exemptPaths: env.MOVERA_ENV === "production" ? [] : SIGN_IN_PATHS, ...(clock ? { clock } : {}) });
+  const unreadBody = registerWriteLimit(app, writeLimitsFrom(env), { jwtSecret: db !== undefined ? (env.JWT_SECRET ?? DEV_JWT_SECRET) : env.JWT_SECRET, db, defaultZoneId: env.DEFAULT_ZONE_ID, exemptPaths: env.MOVERA_ENV === "production" ? [] : SIGN_IN_PATHS, ...(clock ? { clock } : {}) });
 
-  app.setErrorHandler(async (error: FastifyError | ApiError, request, reply) => {
+  app.setErrorHandler(async (thrown: FastifyError | ApiError, request, reply) => {
+    // Q117 follow-up SF-2: a sign-in / refresh body that never parsed is counted on the address (429 when full).
+    const error = unreadBody?.(request) ?? thrown;
     if (error instanceof ApiError) {
       if (error.options.retryAfterSeconds !== undefined) reply.header("Retry-After", String(error.options.retryAfterSeconds));
       return reply.status(error.status).send(error.body(request.id));
