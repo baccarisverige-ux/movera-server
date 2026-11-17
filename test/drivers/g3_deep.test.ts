@@ -4,12 +4,12 @@ import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { contract } from "../../src/contract/contract.js";
 import { scoreInputs } from "../../src/drivers/performance.js";
 import { seedDriver } from "../../src/drivers/service.js";
-import { haversineKm } from "../../src/maps/routing.js";
 import { newId } from "../../src/ids.js";
+import { blurred } from "../../src/riders/nearby.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertRider, insertTrip } from "../support/seed.js";
-import { call, signIn, testWorld } from "../support/world.js";
+import { call, signIn, testWorld, WORLD_JWT_SECRET } from "../support/world.js";
 
 /**
  * Contract v0.18.4 §29, deep second audit of driver group 3 (Rules decisions/driver-g3.md): G3-D2 real performance
@@ -123,20 +123,37 @@ async function place(who: Who, at: { lat: number; lng: number }, status: "online
   await database.db.insertInto("driver_locations").values({ driver_id: who.id, ...row }).onConflict((c) => c.column("driver_id").doUpdateSet(row)).execute();
 }
 
+/** How far (metres) and where the server moved the car, measured the way src/riders/nearby.ts moves it. */
+const METERS_PER_DEGREE = 111_320;
+function offset(from: { lat: number; lng: number }, to: { lat: number; lng: number }) {
+  const north = (to.lat - from.lat) * METERS_PER_DEGREE;
+  const east = (to.lng - from.lng) * METERS_PER_DEGREE * Math.cos((from.lat * Math.PI) / 180);
+  return { north, east, meters: Math.hypot(north, east) };
+}
+const ROUND = 10 ** (contract as unknown as { riderNearby: { roundDecimals: number } }).riderNearby.roundDecimals;
+const rounded = (p: { lat: number; lng: number }) => ({ lat: Math.round(p.lat * ROUND) / ROUND, lng: Math.round(p.lng * ROUND) / ROUND });
+/** The most the rounding of the answer can move a spot: half a cell north and half a cell east (under 7.9 m at 4 decimals). */
+const ROUNDING_METERS = Math.hypot(0.5 / ROUND, 0.5 / ROUND) * METERS_PER_DEGREE;
+
 describe("G3-D4: nearby cars are moved 100–200 m, stable, without identity", () => {
   for (const who of [SE, FR]) {
-    it(`${who.country}: never the exact spot; the same spot inside the slot; another after it`, async () => {
+    it(`${who.country}: never the exact spot; the same spot inside the slot; another offset after it`, async () => {
       // Start of a slot, so a few minutes later is still inside it.
       const slot = HOME.nearbyBlur.stableMinutes * 60_000;
       clock.now = new Date(Math.ceil(clock.now.getTime() / slot) * slot);
+      const first = clock.now;
       await place(who, who.home);
       const rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
       const ask = async () => (await call(app, "GET", `/rider/nearby-vehicles?lat=${who.home.lat}&lng=${who.home.lng}`, rider)).json().items;
+      /** Never the exact spot: 100–200 m away, plus or minus the rounding of the answer. */
+      const moved = (shown: { lat: number; lng: number }) => {
+        const { meters } = offset(who.home, shown);
+        expect(meters).toBeGreaterThanOrEqual(HOME.nearbyBlur.minMeters - ROUNDING_METERS);
+        expect(meters).toBeLessThanOrEqual(HOME.nearbyBlur.maxMeters + ROUNDING_METERS);
+        expect([shown.lat, shown.lng]).not.toEqual([who.home.lat, who.home.lng]);
+      };
       const [car] = await ask();
-      const meters = haversineKm(who.home, car) * 1000;
-      // 100–200 m, plus at most ~10 m from rounding to 4 decimals.
-      expect(meters).toBeGreaterThan(HOME.nearbyBlur.minMeters - 12);
-      expect(meters).toBeLessThan(HOME.nearbyBlur.maxMeters + 12);
+      moved(car);
       expect(Object.keys(car).sort()).toEqual(["heading", "key", "lat", "lng"]);
       clock.now = new Date(clock.now.getTime() + 3 * 60_000);
       await place(who, who.home);
@@ -145,9 +162,58 @@ describe("G3-D4: nearby cars are moved 100–200 m, stable, without identity", (
       clock.now = new Date(clock.now.getTime() + slot);
       await place(who, who.home);
       const [next] = await ask();
-      expect([next.lat, next.lng]).not.toEqual([car.lat, car.lng]);
+      moved(next);
+      // The next slot has another offset. The ANSWER may still be the same: both offsets can round into one cell of
+      // ~11 x 6 m (about 1 driver id in 1 400; this test failed on it in CI, see "one cell" below). So the answer is
+      // compared with the offset of its own slot, and the two offsets with each other before rounding.
+      const before = blurred(WORLD_JWT_SECRET, who.id, who.home, first);
+      const after = blurred(WORLD_JWT_SECRET, who.id, who.home, clock.now);
+      expect([car.lat, car.lng]).toEqual([rounded(before).lat, rounded(before).lng]);
+      expect([next.lat, next.lng]).toEqual([rounded(after).lat, rounded(after).lng]);
+      expect([after.lat, after.lng]).not.toEqual([before.lat, before.lng]);
     });
   }
+
+  it("one cell (the CI flake, fixed driver id): two slots can round to the same answer; the offsets differ and neither is the exact spot", () => {
+    // Found by trying random ids against the old "another answer after the slot" check; with this id it failed every run.
+    const id = "drv_01M6G6R500YWYC6PYJ2QCKN26N";
+    const first = new Date("2026-11-09T08:00:00Z");
+    const second = new Date(first.getTime() + HOME.nearbyBlur.stableMinutes * 60_000);
+    const a = blurred(WORLD_JWT_SECRET, id, STOCKHOLM, first);
+    const b = blurred(WORLD_JWT_SECRET, id, STOCKHOLM, second);
+    expect(rounded(a)).toEqual({ lat: 59.3323, lng: 18.0638 });
+    expect(rounded(b)).toEqual(rounded(a));
+    expect([b.lat, b.lng]).not.toEqual([a.lat, a.lng]);
+    for (const shown of [a, b]) {
+      expect(offset(STOCKHOLM, shown).meters).toBeGreaterThanOrEqual(HOME.nearbyBlur.minMeters - 1e-6);
+      expect(offset(STOCKHOLM, shown).meters).toBeLessThanOrEqual(HOME.nearbyBlur.maxMeters + 1e-6);
+      expect(rounded(shown)).not.toEqual(STOCKHOLM);
+    }
+  });
+
+  it("SE and FR, 400 fixed driver ids x 6 slots: always 100–200 m away, one offset per slot, another in the next", () => {
+    const slot = HOME.nearbyBlur.stableMinutes * 60_000;
+    const start = new Date("2026-11-09T08:00:00Z").getTime();
+    for (const home of [STOCKHOLM, PARIS]) {
+      for (let n = 0; n < 400; n++) {
+        const id = `drv_FIXED${String(n).padStart(4, "0")}`;
+        let last: { lat: number; lng: number } | undefined;
+        for (let s = 0; s < 6; s++) {
+          const at = blurred(WORLD_JWT_SECRET, id, home, new Date(start + s * slot));
+          const { meters } = offset(home, at);
+          expect(meters).toBeGreaterThanOrEqual(HOME.nearbyBlur.minMeters - 1e-6);
+          expect(meters).toBeLessThanOrEqual(HOME.nearbyBlur.maxMeters + 1e-6);
+          // What the rider gets is never the driver's own cell.
+          expect(rounded(at)).not.toEqual(rounded(home));
+          expect(offset(home, rounded(at)).meters).toBeGreaterThan(HOME.nearbyBlur.minMeters - ROUNDING_METERS);
+          // The last millisecond of the slot is the same spot; the next slot is another.
+          expect(blurred(WORLD_JWT_SECRET, id, home, new Date(start + (s + 1) * slot - 1))).toEqual(at);
+          if (last) expect([at.lat, at.lng]).not.toEqual([last.lat, last.lng]);
+          last = at;
+        }
+      }
+    }
+  });
 });
 
 describe("G3-D5: one supply/demand rule per zone for the rows and the shortage alert", () => {

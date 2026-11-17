@@ -12,6 +12,12 @@ import { ApiError, badRequest } from "./errors.js";
  * waits on that row until the first one finishes: if the first committed, the second replays its answer; if
  * it failed (any error rolls the whole transaction back, key row included), the second runs as new. Only
  * 2xx answers are kept, so a client can always retry after an error.
+ *
+ * Exception: POST /driver/location (S7 W2 Q114, owner "Yes, stop storing (Rec.)", contract v0.18.117
+ * driverHome.locationSend.idempotencyKey). The key is checked with readIdempotencyKey (missing or not 16–128 characters:
+ * 400) but never stored: a repeat runs again, is never replayed and never 409, also with another body. A resent batch is
+ * safe on its own (drivers/service.ts: a fix that is not new writes no event; one GPS write per driver at a time).
+ * Read-only POSTs take no key at all (contract §1).
  */
 
 export type Actor = "rider" | "driver" | "admin" | "system";
@@ -104,6 +110,18 @@ export async function runIdempotent<T>(
       .execute();
     return { ...result, replayed: false };
   });
+}
+
+/**
+ * Q120 follow-up SF-2: whether a committed answer is already stored for this request's key (a plain read, no lock,
+ * no transaction). A command that does slow work BEFORE runIdempotent (a road route) skips that work when this is
+ * true: runIdempotent will replay the stored answer, or refuse a reused key, without running the work. Rows being
+ * written by a request still in flight are not seen (not committed yet); runIdempotent decides those as always.
+ */
+export async function hasStoredAnswer(ex: Executor, request: Pick<IdempotencyRequest, "actor" | "subjectId" | "key">): Promise<boolean> {
+  if (request.key === undefined) return false;
+  const row = await ex.selectFrom("idempotency_keys").select("status_code").where("actor", "=", request.actor).where("subject_id", "=", request.subjectId).where("key", "=", request.key).executeTakeFirst();
+  return row !== undefined;
 }
 
 /**
