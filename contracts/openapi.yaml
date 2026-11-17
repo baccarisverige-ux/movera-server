@@ -12031,8 +12031,10 @@ paths:
         v0.18.123 (pricingHistory.restoreKeeps): v0.18.123 (SF-F1-3 safe config saves; owner 2026-11-17 Q-SCS-1 "Keep values,
         save rest (Rec.)", 2026-11-16 Q-SCS-2 "No, keep current (Rec.)", Rules audits/impact/safe-config-saves.md §3, decisions/session-2026-11-06.md):
         a Restore or Undo last publish of country_rules does not bring back the old payoutMode, payoutSchedule, maxRiderDebt
-        or driverOwesLimit (MONEY): each takes the value the scope''s live document has now, and one the live document lacks
-        is left out of the restored document. Those four are changed in Finance › Payouts settings only. Every other field,
+        or driverOwesLimit (MONEY), nor the old calls.adminCallRoles or calls.phoneProvider (owner 2026-11-17: Undo/Restore
+        keeps the current call settings, the same rule as payout/debt): each takes the value the scope''s live document has
+        now, and one the live document lacks is left out of the restored document (calls.on and the other calls fields are
+        restored as before). The four payout/debt keys are changed in Finance › Payouts settings only. Every other field,
         and every other document, is restored as before. The restored document is saved through the same draft path, so configDocs.keptKeys
         applies to it too.'
       tags:

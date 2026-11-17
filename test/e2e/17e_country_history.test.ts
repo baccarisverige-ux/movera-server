@@ -191,6 +191,20 @@ describe("History and Restore of a country's standard documents", () => {
     expect((now!["document"] as Json)["tips"]).toEqual([{ amount: sek(1300), enabled: true }]);
   });
 
+  /** Owner 2026-11-17: Undo / Restore keeps the current call settings (calls.adminCallRoles, calls.phoneProvider), like Q-SCS-2. */
+  it("Restore keeps the current call roles and phone provider; the rest of calls is restored", async () => {
+    const old = await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips: [{ amount: sek(1500), enabled: true }], calls: { ...((doc["calls"] as Json) ?? {}), on: false, adminCallRoles: ["super"], phoneProvider: "none" } }));
+    const live = await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips: [{ amount: sek(1600), enabled: true }], calls: { ...((doc["calls"] as Json) ?? {}), on: true, adminCallRoles: ["super", "ops"], phoneProvider: "twilio" } }));
+    const undone = await owner.post("/admin/config/country_rules/restore", { country: "SE", version: old["version"], expectedVersion: live["version"] });
+    expect(undone.status, JSON.stringify(undone.body)).toBe(200);
+    const [now] = await items("country=SE&limit=1");
+    const calls = (now!["document"] as Json)["calls"] as Json;
+    expect(calls["adminCallRoles"]).toEqual(["super", "ops"]);
+    expect(calls["phoneProvider"]).toBe("twilio");
+    expect(calls["on"]).toBe(false);
+    expect((now!["document"] as Json)["tips"]).toEqual([{ amount: sek(1500), enabled: true }]);
+  });
+
   it("names exactly one of zoneId or country; an unknown zone or country is 404; another country's admin is refused", async () => {
     expect((await owner.get("/admin/config/country_rules/history")).body).toMatchObject({ code: "invalid_request", reason: "scope_required" });
     expect((await owner.get("/admin/config/country_rules/history?zoneId=Z001&country=SE")).body).toMatchObject({ reason: "scope_required" });

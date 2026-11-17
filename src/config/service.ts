@@ -573,19 +573,33 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
  * Restore of Tips & limits does not bring back the old payout mode, payout day and time or debt limits (MONEY): they
  * stay as they are live now (set, or absent), and are changed in Finance › Payouts settings only.
  */
-export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = { country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit"] };
+export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
+  // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
+  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider"],
+};
 
 function keepOnRestore(doc: ConfigDoc, old: Record<string, unknown>, live: { document: unknown } | undefined): { document: Record<string, unknown>; removed: string[] } {
   const keys = KEPT_ON_RESTORE[doc];
   if (keys === undefined) return { document: old, removed: [] };
   const now = isObject(live?.document) ? (live.document as Record<string, unknown>) : {};
-  const document = { ...old };
+  const document = structuredClone(old);
   const removed: string[] = [];
-  for (const key of keys) {
-    if (key in now) document[key] = now[key];
+  for (const path of keys) {
+    const parts = path.split(".");
+    const leaf = parts.pop()!;
+    let from: unknown = now;
+    for (const part of parts) from = isObject(from) ? (from as Record<string, unknown>)[part] : undefined;
+    const has = isObject(from) && leaf in (from as Record<string, unknown>);
+    let into: Record<string, unknown> | undefined = document;
+    for (const part of parts) {
+      if (!has && !isObject(into[part])) { into = undefined; break; }
+      if (!isObject(into[part])) into[part] = {};
+      into = into[part] as Record<string, unknown>;
+    }
+    if (has) into![leaf] = structuredClone((from as Record<string, unknown>)[leaf]);
     else {
-      delete document[key];
-      removed.push(key);
+      if (into !== undefined) delete into[leaf];
+      removed.push(path);
     }
   }
   return { document, removed };
