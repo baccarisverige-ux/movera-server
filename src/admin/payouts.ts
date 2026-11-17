@@ -129,6 +129,14 @@ export function payoutView(row: PayoutRow, viewer: "admin" | "driver", summary?:
  * Makes the payouts for a driver from the unpaid entries in [from, to): one per currency (v0.18.13, audit M1: kr and
  * € are never added). Returns the payouts made (none when there is nothing to pay). The entries are locked, so two
  * runs (the job and an admin, or two admins) never take the same entry.
+ *
+ * J8b (J8 supervisor round 3 SF1; owner Q-M3 "Next payout" + Q-S5-7 "Carry over": "Driver paid Movera" settles the
+ * carried rest first, oldest first): a period that comes out below 0 also takes the money he paid Movera AFTER the
+ * period ended and that is in no payout yet (unlinked paid_to_movera entries dated at or after `to`: recorded between
+ * the period's end and this row, or while his payouts were paused), oldest first, up to what brings the payout to 0.
+ * It is the same payout the click would have settled had the row existed. An entry larger than the rest is split in
+ * two with the same time and the same total (whole minor units); only its part goes into this payout. Without this the
+ * old period stayed below 0 and the next payout paid his own money back to him.
  */
 export async function makePayouts(trx: Trx, input: { driverId: string; from: Date; to: Date; source: "weekly" | "manual"; by: string | null; note?: string; entriesFrom?: Date; waitForApproval?: boolean }, now: Date): Promise<PayoutRow[]> {
   const entries = await trx
@@ -149,7 +157,10 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
   const made: PayoutRow[] = [];
   let n = 0;
   for (const [currency, list] of byCurrency) {
-    const calc = payoutLines(list.map((e) => ({ kind: e.kind, amountMinor: Number(e.amount_minor), cashMinor: Number(e.cash_minor ?? 0), waitingMinor: e.kind === "trip" ? waitingOf(e.fare_lines) : 0 })));
+    const own = list.map((e) => ({ kind: e.kind, amountMinor: Number(e.amount_minor), cashMinor: Number(e.cash_minor ?? 0), waitingMinor: e.kind === "trip" ? waitingOf(e.fare_lines) : 0 }));
+    // J8b: the money he paid Movera after this period ended settles this period first (read under the entry locks).
+    const paidLater = await paidAfterPeriod(trx, input.driverId, currency, input.to, -payoutLines(own).amountMinor);
+    const calc = payoutLines([...own, ...paidLater.map((p) => ({ kind: "paid_to_movera", amountMinor: p.take, cashMinor: 0, waitingMinor: 0 }))]);
     const payoutId = newId("pyt", now.getTime() + n++);
     const row = await trx
       .insertInto("payouts")
@@ -174,10 +185,56 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
       .returningAll()
       .executeTakeFirst();
     if (row === undefined) continue;
-    await trx.updateTable("earnings_entries").set({ payout_id: payoutId }).where("entry_id", "in", list.map((e) => e.entry_id)).execute();
+    const linked = list.map((e) => e.entry_id);
+    for (const p of paidLater) {
+      if (p.take === p.amountMinor) {
+        linked.push(p.entryId);
+        continue;
+      }
+      // The split: the entry keeps what is left for a later payout; its part for this payout is a new entry (same time).
+      await trx.updateTable("earnings_entries").set({ amount_minor: p.amountMinor - p.take }).where("entry_id", "=", p.entryId).execute();
+      const partId = newId("ern", now.getTime() + n++);
+      await trx.insertInto("earnings_entries").values({ entry_id: partId, driver_id: input.driverId, trip_id: null, kind: "paid_to_movera", currency, amount_minor: p.take, gross_minor: null, commission_minor: null, cash_minor: null, payout_id: payoutId, at: p.at }).execute();
+      // J8b round 2 (supervisor SF1): one audit row per split. `entryId` is the entry of the admin's payment (named in
+      // the audit row driver.paid_movera, detail.entries), so every part leads back to the one payment and its total.
+      await audit(trx, { adminId: input.by, action: "driver.paid_movera_split", targetType: "driver", targetId: input.driverId, zoneId: driver?.zone_ids[0] ?? null, detail: { entryId: p.entryId, currency, amountBeforeMinor: p.amountMinor, amountLeftMinor: p.amountMinor - p.take, partEntryId: partId, amountTakenMinor: p.take, payoutId, source: input.source }, at: now });
+    }
+    await trx.updateTable("earnings_entries").set({ payout_id: payoutId }).where("entry_id", "in", linked).execute();
     made.push(row as PayoutRow);
   }
   return made;
+}
+
+/**
+ * J8b: of the driver's unlinked "Driver paid Movera" entries dated at or after `periodEnd` (locked, oldest first), what
+ * a payout that is `debtMinor` below 0 takes: whole entries while they fit, then a part of the next one. Nothing when
+ * the payout is not below 0. Integer minor units only.
+ */
+async function paidAfterPeriod(trx: Trx, driverId: string, currency: string, periodEnd: Date, debtMinor: number): Promise<{ entryId: string; amountMinor: number; take: number; at: Date }[]> {
+  if (!(debtMinor > 0)) return [];
+  const later = await trx
+    .selectFrom("earnings_entries")
+    .select(["entry_id", "amount_minor", "at"])
+    .where("driver_id", "=", driverId)
+    .where("payout_id", "is", null)
+    .where("kind", "=", "paid_to_movera")
+    .where("currency", "=", currency)
+    .where("at", ">=", periodEnd)
+    .orderBy("at")
+    .orderBy("entry_id")
+    .forUpdate()
+    .execute();
+  const out: { entryId: string; amountMinor: number; take: number; at: Date }[] = [];
+  let rest = debtMinor;
+  for (const e of later) {
+    const amountMinor = Number(e.amount_minor);
+    if (rest <= 0) break;
+    if (!(amountMinor > 0)) continue;
+    const take = Math.min(rest, amountMinor);
+    out.push({ entryId: e.entry_id, amountMinor, take, at: e.at });
+    rest -= take;
+  }
+  return out;
 }
 
 /** payoutView for a page of payouts, each with its summary (one batched read for the page). */
@@ -301,8 +358,22 @@ export async function payoutDue(ex: Executor, row: PayoutDriverRow, now: Date, c
   return (await firstUnpaidPeriod(ex, row, cache)).period.end.getTime() <= now.getTime();
 }
 
+/**
+ * J8b (lock order: driver → his entries → payouts, as createPayout and driverPaidMovera): the driver's row lock for his
+ * payout step, so the step and a "Driver paid Movera" click never run at the same moment: the step sees the click's
+ * entry, or the click sees the step's payout. FOR KEY SHARE (round 2, supervisor SF4): it is refused only by the FOR
+ * UPDATE of the click, Create payout and hold; a trip end that adds an entry and a plain update of his row never wait.
+ * Two steps for one driver are kept apart by his entries' row locks and payouts_weekly_once, as before.
+ * Returns false when his payouts are paused (read under the lock; payoutHold) or he is gone.
+ */
+export async function lockPayoutDriver(trx: Trx, driverId: string): Promise<boolean> {
+  const driver = await trx.selectFrom("drivers").select(["payout_hold_at"]).where("driver_id", "=", driverId).forKeyShare().executeTakeFirst();
+  return driver !== undefined && driver.payout_hold_at === null;
+}
+
 /** One driver's payouts: every ended period from the oldest unpaid entry on. Returns the payouts made. */
 export async function closeDriverPeriods(trx: Trx, row: PayoutDriverRow, now: Date, cache: PayoutScheduleCache = newPayoutScheduleCache()): Promise<number> {
+  if (!(await lockPayoutDriver(trx, row.driver_id))) return 0;
   const first = await firstUnpaidPeriod(trx, row, cache);
   let { period, entriesFrom } = first;
   let made = 0;
@@ -425,6 +496,13 @@ export async function createPayout(trx: Trx, who: Principal, body: { driverId: s
 
 /** POST /admin/payouts/{payoutId}/paid: Mark as paid. */
 export async function markPayoutPaid(trx: Trx, who: Principal, payoutId: string, body: { note?: string }, now: Date) {
+  // J8b round 2 (supervisor SF2; lock order driver → payouts, as "Driver paid Movera", Create payout and the payout
+  // step): his driver row first. The payout row is written twice here (paid, then the frozen summary), and the second
+  // write takes a key share on his driver row by the foreign key: with the payout locked first, this and a "Driver paid
+  // Movera" click on the same payout deadlocked. FOR KEY SHARE is that same lock, taken up front; the click's FOR UPDATE
+  // waits for it (and this waits for the click), nothing else does.
+  const owner = await trx.selectFrom("payouts").select("driver_id").where("payout_id", "=", payoutId).executeTakeFirst();
+  if (owner) await trx.selectFrom("drivers").select("driver_id").where("driver_id", "=", owner.driver_id).forKeyShare().execute();
   const row = await payoutForAdmin(trx, who, payoutId, true);
   if (row.status === "paid") throw new ApiError("invalid_transition", "This payout is already paid.", { reason: "already_paid" });
   if (row.status === "pending_approval") throw new ApiError("conflict", "This payout's run is not approved yet.", { reason: "run_not_approved" });
