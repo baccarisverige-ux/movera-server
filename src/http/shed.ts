@@ -123,8 +123,11 @@ export function registerLoadShedding(app: FastifyInstance, options: ShedOptions)
     }
   });
   // A route that waits on the database checks again: work for a client that already gave up is not started.
+  // Live outage 2026-11-17 (#268): only the SOCKET says the client has gone. `request.raw.destroyed` is also true as
+  // soon as the body was read to the end (node destroys a finished request one tick later), so behind any earlier
+  // async preHandler hook (the write limit's, Q118) it dropped every call with a body without an answer.
   app.addHook("preHandler", async (request, reply) => {
-    if (request.raw.destroyed || request.raw.socket?.destroyed) reply.hijack();
+    if (request.raw.socket?.destroyed) reply.hijack();
   });
   return () => {
     clearInterval(sample);

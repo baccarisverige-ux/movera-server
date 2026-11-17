@@ -5,7 +5,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "./audit.js";
-import { owedByDriver, owesLimitOf, type OwesLimit } from "../drivers/owes.js";
+import { owedByDriver, owesLimitOf, PAID_AFTER_PAYOUT, type OwesLimit } from "../drivers/owes.js";
 import { freezePayoutSummary } from "./payoutSummary.js";
 
 /**
@@ -23,7 +23,7 @@ const NET_PER_DRIVER = sql`
     SELECT e.driver_id, e.currency, sum(e.amount_minor - CASE WHEN e.kind IN ('trip', 'tip') THEN coalesce(e.cash_minor, 0) ELSE 0 END) AS s
       FROM earnings_entries e WHERE e.payout_id IS NULL GROUP BY e.driver_id, e.currency
     UNION ALL
-    SELECT p.driver_id, p.currency, sum(p.amount_minor + coalesce((SELECT sum(x.amount_minor) FROM earnings_entries x WHERE x.payout_id = p.payout_id AND x.kind = 'paid_to_movera'), 0)) AS s
+    SELECT p.driver_id, p.currency, sum(p.amount_minor + ${PAID_AFTER_PAYOUT}) AS s
       FROM payouts p WHERE p.amount_minor < 0 AND p.status IN ('pending', 'pending_approval') GROUP BY p.driver_id, p.currency
   ) parts GROUP BY driver_id, currency HAVING sum(s) < 0`;
 
@@ -116,15 +116,25 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
   // money settles the carried rest first. Each open payout below 0, oldest first, gets an entry LINKED to it (payout_id
   // set, so no later payout run ever takes it and pays it back to him); one it covers in full is paid. Only the part
   // above the carried rest is an unlinked entry (the next payout's paid_to_movera line, against this week's cash).
-  const open = await trx.selectFrom("payouts").select(["payout_id", "amount_minor", "zone_id"]).where("driver_id", "=", driverId).where("currency", "=", currency)
-    .where("amount_minor", "<", "0").where("status", "in", ["pending", "pending_approval"]).orderBy("period_start").orderBy("payout_id").forUpdate().execute();
+  // J8b (round 3 SF1): when a period of his has ended but its payout row is not made yet (the hourly step, or his
+  // payouts are paused), that unlinked entry is taken by that period's payout when the row is made (payouts.ts
+  // makePayouts), never by a later one. The payout step takes this same driver lock (lockPayoutDriver).
+  // J8b: the rest of each = −amount − the money linked to it after it was made (PAID_AFTER_PAYOUT, the same as owed).
+  const open = await trx.selectFrom("payouts as p").select(["p.payout_id", "p.amount_minor", "p.zone_id", PAID_AFTER_PAYOUT.as("linked")]).where("p.driver_id", "=", driverId).where("p.currency", "=", currency)
+    .where("p.amount_minor", "<", "0").where("p.status", "in", ["pending", "pending_approval"]).orderBy("p.period_start").orderBy("p.payout_id").forUpdate("p").execute();
   let left = body.amount.amountMinor;
   let n = 0;
-  const entry = (amount: number, payoutId: string | null) => ({ entry_id: newId("ern", now.getTime() + n++), driver_id: driverId, trip_id: null, kind: "paid_to_movera" as const, currency, amount_minor: amount, gross_minor: null, commission_minor: null, cash_minor: null, payout_id: payoutId, at: now });
+  // J8b round 2 (supervisor SF1): the audit row names the entries this payment wrote, so a later split of one of them
+  // (payouts.ts, audit driver.paid_movera_split with the same entry id) is traceable back to this one payment.
+  const written: { entryId: string; amountMinor: number; payoutId: string | null }[] = [];
+  const entry = (amount: number, payoutId: string | null) => {
+    const entryId = newId("ern", now.getTime() + n++);
+    written.push({ entryId, amountMinor: amount, payoutId });
+    return { entry_id: entryId, driver_id: driverId, trip_id: null, kind: "paid_to_movera" as const, currency, amount_minor: amount, gross_minor: null, commission_minor: null, cash_minor: null, payout_id: payoutId, at: now };
+  };
   for (const p of open) {
     if (left <= 0) break;
-    const linked = await trx.selectFrom("earnings_entries").select(sql<string>`coalesce(sum(amount_minor), 0)`.as("sum")).where("payout_id", "=", p.payout_id).where("kind", "=", "paid_to_movera").executeTakeFirstOrThrow();
-    const rest = -Number(p.amount_minor) - Number(linked.sum);
+    const rest = -Number(p.amount_minor) - Number(p.linked);
     if (rest <= 0) continue;
     const take = Math.min(left, rest);
     await trx.insertInto("earnings_entries").values(entry(take, p.payout_id)).execute();
@@ -138,6 +148,6 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
   }
   if (left > 0) await trx.insertInto("earnings_entries").values(entry(left, null)).execute();
   const owedAfter = owedBefore - body.amount.amountMinor;
-  await audit(trx, { adminId: who.subjectId, action: "driver.paid_movera", targetType: "driver", targetId: driverId, zoneId: zone, detail: { amount: body.amount, owedBefore: { amountMinor: owedBefore, currency }, owedAfter: { amountMinor: owedAfter, currency }, reason }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "driver.paid_movera", targetType: "driver", targetId: driverId, zoneId: zone, detail: { amount: body.amount, owedBefore: { amountMinor: owedBefore, currency }, owedAfter: { amountMinor: owedAfter, currency }, reason, entries: written }, at: now });
   return owingDriver(trx, driverId, currency);
 }
