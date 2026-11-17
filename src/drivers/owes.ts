@@ -27,6 +27,14 @@ const DEFAULTS = (contract as unknown as { configDefaults: { driverOwesLimit: Re
 const PAYOUT_SUM = sql<string>`coalesce(sum(e.amount_minor - CASE WHEN e.kind IN ('trip', 'tip') THEN coalesce(e.cash_minor, 0) ELSE 0 END), 0)`;
 
 /**
+ * J8b: "Driver paid Movera" money LINKED to payout `p` after it was made (driversOwing.ts), which is not in its amount:
+ * his paid_to_movera entries of the payout less the payout's own paid_to_movera line (money that was already unlinked
+ * when the row was made is inside Payout.amount and must not be counted a second time).
+ */
+export const PAID_AFTER_PAYOUT = sql<string>`(coalesce((SELECT sum(x.amount_minor) FROM earnings_entries x WHERE x.payout_id = p.payout_id AND x.kind = 'paid_to_movera'), 0)
+  - coalesce((SELECT sum((l->>'amountMinor')::bigint) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.lines) = 'array' THEN p.lines ELSE '[]'::jsonb END) l WHERE l->>'code' = 'paid_to_movera'), 0))`;
+
+/**
  * CountryRules.driverOwesLimit of the country standard (a zone's own value is ignored). Missing = the contract default
  * (OFF everywhere; TN 150 DT stored). Usable only when enabled with a max > 0.
  */
@@ -59,10 +67,11 @@ export async function owedByDriver(ex: Executor, driverIds: readonly string[], c
     .groupBy("e.driver_id")
     .execute();
   // Must-fix 2 (owner Q-M3 / Q-S5-7: the negative rest carries over): an open payout below 0 counts as owed, less the
-  // "Driver paid Movera" entries linked to it (driversOwing.ts); a payout they cover in full is paid and drops out.
+  // "Driver paid Movera" entries linked to it after it was made (driversOwing.ts; J8b: not the ones inside its
+  // amount); a payout they cover in full is paid and drops out.
   const carried = await ex
     .selectFrom("payouts as p")
-    .select(["p.driver_id", sql<string>`coalesce(sum(p.amount_minor + coalesce((SELECT sum(x.amount_minor) FROM earnings_entries x WHERE x.payout_id = p.payout_id AND x.kind = 'paid_to_movera'), 0)), 0)`.as("sum")])
+    .select(["p.driver_id", sql<string>`coalesce(sum(p.amount_minor + ${PAID_AFTER_PAYOUT}), 0)`.as("sum")])
     .where("p.driver_id", "in", ids)
     .where("p.currency", "=", currency)
     .where("p.amount_minor", "<", "0")
