@@ -16,6 +16,7 @@ import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
+import { checkRemoveKeys, withKeptKeys } from "./keptKeys.js";
 import { perMinWithAppFee } from "../rules/fare.js";
 import { pricingStepsProblem } from "../rules/commissionSteps.js";
 import { randomBytes } from "node:crypto";
@@ -87,7 +88,7 @@ export async function getScope(ex: Executor, key: string): Promise<Zone> {
   return { zoneId: key, name: `Standard ${country}`, country, currency: row.currency, timeZone: row.time_zone, kind: "standard", open: true, center: { lat: row.center_lat, lng: row.center_lng } };
 }
 
-export type ConfigDraftView = { doc: ConfigDoc; zoneId?: string; country?: string; usesStandard?: boolean; version: number; liveVersion: number; document: unknown; updatedAt: string; updatedBy?: string };
+export type ConfigDraftView = { doc: ConfigDoc; zoneId?: string; country?: string; usesStandard?: boolean; version: number; liveVersion: number; document: unknown; updatedAt: string; updatedBy?: string; keptKeys?: string[] };
 
 /** A document must pass the contract schema and belong to the scope it is saved for. */
 export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): void {
@@ -191,7 +192,8 @@ async function lockDraftVersion(trx: Trx, doc: ConfigDoc, zoneId: string): Promi
 }
 
 /** PUT /admin/config/{doc}: replace the draft, inside the caller's transaction. */
-export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string }, now: Date): Promise<ConfigDraftView> {
+export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string; removeKeys?: readonly string[] }, now: Date): Promise<ConfigDraftView> {
+  checkRemoveKeys(input.doc, input.removeKeys ?? []);
   const zone = await getScope(trx, input.zoneId);
   if (input.doc === "onboarding" && schemaProblem(SCHEMA.onboarding, input.document) === null) {
     // v0.18.0 (owner item 14): new document types get their server id; draft:<key> in the lists becomes it.
@@ -210,6 +212,13 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
     const projection = await getDraft(trx, input.doc, input.zoneId).catch(() => undefined);
     throw new ApiError("version_mismatch", "The settings changed since you last saw them.", projection === undefined ? {} : { projection });
   }
+  // v0.18.123 SF-F1-3 (owner Q-SCS-1 "Keep values, save rest (Rec.)", contract.json#configDocs.keptKeys): a kept key the
+  // stored document has and the sent one leaves out is put back (unless removeKeys names it); the rest is saved as sent.
+  const { document: whole, kept } = withKeptKeys(input.doc, current.document, input.document, input.removeKeys ?? []);
+  if (kept.length > 0) {
+    input = { ...input, document: whole };
+    checkDocument(input.doc, zone, input.document);
+  }
   // v0.8.1 §6.5: tips, raise steps and driver bonus limits come from the scope's rules (its own, else the standard).
   const rules = await liveRules(trx, input.zoneId);
   let document = rules === null ? input.document : withCountryRules(input.doc, input.document as Doc, rules);
@@ -218,8 +227,9 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
   const version = current.version + 1;
   const values = { doc: input.doc, zone_id: input.zoneId, version, document: JSON.stringify(document), updated_at: now, updated_by: input.adminId };
   await trx.insertInto("config_drafts").values(values).onConflict((c) => c.columns(["doc", "zone_id"]).doUpdateSet(values)).execute();
-  await audit(trx, { adminId: input.adminId, action: "config.draft", targetType: "config", targetId: input.doc, zoneId: input.zoneId, detail: { version }, at: now });
-  return getDraft(trx, input.doc, input.zoneId);
+  await audit(trx, { adminId: input.adminId, action: "config.draft", targetType: "config", targetId: input.doc, zoneId: input.zoneId, detail: { version, ...(kept.length > 0 ? { kept } : {}) }, at: now });
+  const view = await getDraft(trx, input.doc, input.zoneId);
+  return kept.length > 0 ? { ...view, keptKeys: kept } : view;
 }
 
 export type Publication = {
