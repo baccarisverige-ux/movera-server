@@ -107,7 +107,7 @@ describe("publish", () => {
     // v0.18.10 (contract.json#finish.paymentMethods.served): the server adds what it takes today (cash).
     // v0.18.19 (liveFixes.horizon): the served bookingHorizonDays is the zone's maxAheadDays (90).
     // v0.18.115 (contract.json#pickupSpots): booking.pickupSpots.on is always served (missing = on).
-    expect(served.json()).toEqual({ ...doc, booking: { ...(doc as unknown as { booking: object }).booking, bookingHorizonDays: 90, reservationsOn: true, pickupSpots: { on: true } }, version: 1, publishedAt: clock.now.toISOString(), dontMatchAgain: { on: true, atStars: 1 }, emergencyNumbers: (contract as unknown as { configDefaults: { emergencyNumbers: Record<string, unknown> } }).configDefaults.emergencyNumbers["SE"], paymentOptions: ((doc as { paymentMethods?: string[] }).paymentMethods ?? []).map((method: string) => ({ method, status: method === "cash" ? "available" : "coming_soon" })) });
+    expect(served.json()).toEqual({ ...doc, booking: { ...(doc as unknown as { booking: object }).booking, bookingHorizonDays: 90, reservationsOn: true, pickupSpots: { on: true } }, version: 1, publishedAt: clock.now.toISOString(), dontMatchAgain: { on: true, atStars: 1 }, shareTrip: { on: true }, emergencyNumbers: (contract as unknown as { configDefaults: { emergencyNumbers: Record<string, unknown> } }).configDefaults.emergencyNumbers["SE"], paymentOptions: ((doc as { paymentMethods?: string[] }).paymentMethods ?? []).map((method: string) => ({ method, status: method === "cash" ? "available" : "coming_soon" })) });
 
     advance(60);
     const draft = (await send("GET", "/admin/config/rider_app_config?zoneId=Z004", owner.headers)).json();
