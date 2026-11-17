@@ -12,6 +12,12 @@ import { ApiError, badRequest } from "./errors.js";
  * waits on that row until the first one finishes: if the first committed, the second replays its answer; if
  * it failed (any error rolls the whole transaction back, key row included), the second runs as new. Only
  * 2xx answers are kept, so a client can always retry after an error.
+ *
+ * Exception: POST /driver/location (S7 W2 Q114, owner "Yes, stop storing (Rec.)", contract v0.18.117
+ * driverHome.locationSend.idempotencyKey). The key is checked with readIdempotencyKey (missing or not 16–128 characters:
+ * 400) but never stored: a repeat runs again, is never replayed and never 409, also with another body. A resent batch is
+ * safe on its own (drivers/service.ts: a fix that is not new writes no event; one GPS write per driver at a time).
+ * Read-only POSTs take no key at all (contract §1).
  */
 
 export type Actor = "rider" | "driver" | "admin" | "system";
