@@ -38792,8 +38792,17 @@ components:
             - $ref: '#/components/schemas/Money'
             description: 'v0.18.124 cashCollected (Money, optional): the cash taken in the car on this trip (cash of the trip
               and tip entries); absent when none.'
+          endedAt:
+            allOf:
+            - $ref: '#/components/schemas/Timestamp'
+            description: v0.18.124 When the trip ended (the History day and time); absent when not recorded.
+          distanceMeters:
+            type: integer
+            minimum: 0
+            description: v0.18.124 The driven distance in metres, when known.
       description: 'v0.18.124 DriverTripHistoryItem = the TripProjection the driver gets from GET /trips/{tripId} (driver
-        view: no rider phone, rider first name only), plus earned and cashCollected.'
+        view: no rider phone, rider first name only), plus earned, cashCollected, endedAt (when the trip ended; the History
+        day and time) and distanceMeters (the driven distance, when known).'
     DriverTripHistoryPage:
       type: object
       description: v0.18.124 Page of GET /driver/trips.

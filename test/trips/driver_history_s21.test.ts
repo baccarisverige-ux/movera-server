@@ -45,6 +45,7 @@ beforeAll(async () => {
   other = await driver(TEST_PHONES[2]!);
   rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
   trips.done = await trip(me.id, "completed", "2026-11-17T08:00:00Z");
+  await database.db.updateTable("trips").set({ distance_meters: 6_800 }).where("trip_id", "=", trips.done).execute();
   await entry(me.id, trips.done, "trip", 15_000, "SEK", 25_000);
   await entry(me.id, trips.done, "pickup_pay", 1_000, "SEK");
   await entry(me.id, trips.done, "tip", 2_000, "SEK", 2_000);
@@ -74,6 +75,8 @@ describe("S21 GET /driver/trips: the driver's ride history from the server", () 
     expect(done.status).toBe("completed");
     expect(done.earned).toEqual({ amountMinor: 21_000, currency: "SEK" });
     expect(done.cashCollected).toEqual({ amountMinor: 27_000, currency: "SEK" });
+    expect(done.endedAt).toBe("2026-11-17T08:00:00.000Z");
+    expect(done.distanceMeters).toBe(6_800);
     expect(cancelled.earned).toEqual({ amountMinor: 4_500, currency: "SEK" });
     expect(cancelled.cashCollected).toBeUndefined();
     expect(noShow.earned).toEqual({ amountMinor: 0, currency: "SEK" });

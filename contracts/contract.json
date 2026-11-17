@@ -10440,7 +10440,7 @@
       "no_show"
     ],
     "statusRule": "Only trips whose driver is the caller and whose status is one of statuses are listed (completed, cancelled, no-show; owner Q10). status (repeatable) narrows to some of them; any other value is 400 invalid_request, reason invalid_status. A trip the driver gave back (another driver took it) is not his trip and is not listed; its fee entries still count in GET /driver/earnings.",
-    "item": "DriverTripHistoryItem = the TripProjection the driver gets from GET /trips/{tripId} (driver view: no rider phone, rider first name only), plus earned and cashCollected.",
+    "item": "DriverTripHistoryItem = the TripProjection the driver gets from GET /trips/{tripId} (driver view: no rider phone, rider first name only), plus earned, cashCollected, endedAt (when the trip ended; the History day and time) and distanceMeters (the driven distance, when known).",
     "earned": "earned (Money): what the trip earned the driver, the sum of the trip's own earnings entries of the kinds trip, pickup_pay, fee_share, tip, adjustment and bonus, in their currency: the same entries and sum GET /driver/earnings puts in net and the admin sees, so the list, the totals and the admin always agree. A cancelled or no-show trip shows the fee he earned (0 when none). Never the rider's fare.",
     "cashCollected": "cashCollected (Money, optional): the cash taken in the car on this trip (cash of the trip and tip entries); absent when none.",
     "scale": "Rule 33: one bounded read per page from the database (the trips_driver_last index on driver_id), nothing kept in a server copy, so it is the same on every copy. Counted in the normal read limit (rateLimit); never shed for repeat timers (it is not one).",

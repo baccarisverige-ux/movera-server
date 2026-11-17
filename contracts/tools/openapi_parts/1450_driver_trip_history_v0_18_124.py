@@ -9,6 +9,8 @@ assert "DriverTripHistoryItem" not in S, "DriverTripHistoryItem exists before v0
 S["DriverTripHistoryItem"] = {"allOf": [ref("TripProjection"), obj({
     "earned": {"allOf": [ref("Money")], "description": _V124 + _DH["earned"]},
     "cashCollected": {"allOf": [ref("Money")], "description": _V124 + _DH["cashCollected"]},
+    "endedAt": {"allOf": [ref("Timestamp")], "description": _V124 + "When the trip ended (the History day and time); absent when not recorded."},
+    "distanceMeters": i(_V124 + "The driven distance in metres, when known.", minimum=0),
 }, ["earned"])], "description": _V124 + _DH["item"]}
 S["DriverTripHistoryPage"] = obj({"items": arr(ref("DriverTripHistoryItem")), "nextCursor": {"type": ["string", "null"], "description": "Opaque; null on the last page."}},
                                  ["items", "nextCursor"], _V124 + "Page of GET /driver/trips.")

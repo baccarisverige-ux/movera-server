@@ -51,6 +51,8 @@ export async function driverTrips(
       ...tripProjection(row, "driver"),
       earned: { amountMinor: Number(sum?.earned ?? 0), currency },
       ...(cash > 0 ? { cashCollected: { amountMinor: cash, currency } } : {}),
+      ...(row.ended_at ? { endedAt: new Date(row.ended_at).toISOString() } : {}),
+      ...(row.distance_meters !== null && row.distance_meters !== undefined ? { distanceMeters: Number(row.distance_meters) } : {}),
     };
   });
   return { items, nextCursor: rows.length > input.limit && last ? Buffer.from(`${last.created_at.toISOString()}|${last.trip_id}`).toString("base64url") : null };
