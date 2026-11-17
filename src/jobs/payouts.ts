@@ -1,6 +1,6 @@
 import { sql } from "kysely";
 import type { Executor } from "../db/db.js";
-import { closeDriverPeriods, newPayoutScheduleCache, payoutDrivers, payoutDue, PAYOUT_BATCH_DRIVERS } from "../admin/payouts.js";
+import { closeDriverPeriods, lockPayoutDriver, newPayoutScheduleCache, payoutDrivers, payoutDue, PAYOUT_BATCH_DRIVERS } from "../admin/payouts.js";
 import type { TimerHandler } from "./timers.js";
 
 /**
@@ -75,6 +75,8 @@ export const payoutCloseHandler: TimerHandler = async (trx, timer) => {
 /** One driver's payouts in this step's own transaction (the driver id is the timer's refId). */
 export const payoutDriverHandler: TimerHandler = async (trx, timer) => {
   const now = timer.firedAt;
+  // J8b: his row lock first (a "Driver paid Movera" click holds it too), so the entries are read after the click.
+  if (!(await lockPayoutDriver(trx, timer.refId))) return;
   // Read again here: since the step was booked he may have been paid by hand, put on hold or have nothing left.
   for (const row of await payoutDrivers(trx, { driverId: timer.refId })) await closeDriverPeriods(trx, row, now);
 };
