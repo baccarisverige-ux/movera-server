@@ -1,7 +1,6 @@
 import { buildWorkerConfig, RESTART_ONCE_KINDS } from "./jobs/workerConfig.js";
 import { cacheGeometry, forgetGeometry, GEOMETRY_TTL_MS } from "./config/geometryCache.js";
 import type pg from "pg";
-import { registerLoadShedding } from "./http/shed.js";
 import { configureReadRetry } from "./realtime/retry.js";
 import { SMART_SURGE_CHECK, ensurePricingTimers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
@@ -76,7 +75,10 @@ if (env.DATABASE_URL !== undefined) {
 
 let log: (message: string) => void = (message) => console.warn(message);
 const push = pushServicesFrom(env, { warn: (message) => log(message) });
-const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}), ...(healthDb ? { healthDb } : {}) });
+// Job 1 (stress H3): load shedding while the pool queue or the event loop is over its limit (SHED_* settings); buildApp
+// registers its hooks last, exactly where this file added them before (#268 post-mortem: so the tests run them too).
+const shed = pool !== undefined ? { maxPoolWaiting: env.SHED_POOL_WAITING, maxLoopDelayMs: env.SHED_LOOP_DELAY_MS, poolWaiting: () => pool!.waitingCount } : undefined;
+const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}), ...(healthDb ? { healthDb } : {}), ...(shed ? { shed } : {}) });
 log = (message) => app.log.warn(message);
 fatalLog = app.log;
 // v0.18.56 §78 (G9-2.4): a missing TURN relay is visible in the start-up log.
@@ -146,8 +148,6 @@ const close = async (signal: string) => {
 process.once("SIGINT", () => void close("SIGINT"));
 process.once("SIGTERM", () => void close("SIGTERM"));
 
-// Job 1 (stress H3): load shedding while the pool queue or the event loop is over its limit (SHED_* settings).
-if (pool !== undefined) registerLoadShedding(app, { maxPoolWaiting: env.SHED_POOL_WAITING, maxLoopDelayMs: env.SHED_LOOP_DELAY_MS, poolWaiting: () => pool!.waitingCount });
 // B1.9 (Q73): a stream that gave up on its reads is not closed while the pool queue is over SHED_POOL_WAITING (its app would
 // reconnect into the busy pool); it draws a new random delay instead.
 if (pool !== undefined && env.SHED_POOL_WAITING > 0) configureReadRetry({ holdClose: () => pool!.waitingCount > env.SHED_POOL_WAITING });
