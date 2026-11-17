@@ -116,7 +116,8 @@ export function etaHandler(router: Router): TimerHandler {
     const fix = await db.selectFrom("driver_locations").selectAll().where("driver_id", "=", trip.driver_id!).executeTakeFirst();
     if (!fix || isStaleFix(fix, timer.firedAt)) return null;
     const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
-    return prepareLegs(router, [[{ lat: fix.lat, lng: fix.lng }, to]]);
+    // S7 0.17: an ETA tick needs the time and the distance only, never the road's shape.
+    return prepareLegs(router, [[{ lat: fix.lat, lng: fix.lng }, to]], { shape: false });
   };
   return handler;
 }

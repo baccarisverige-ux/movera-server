@@ -137,6 +137,37 @@ describe("History and Restore of a country's standard documents", () => {
     expect((await history("country_rules"))[0]).toMatchObject({ action: "restore", note: undo });
   });
 
+  /**
+   * Owner Q-SCS-2 (2026-11-16 20:06 UTC, "No, keep current (Rec.)"; Rules audits/impact/safe-config-saves.md): Undo /
+   * History Restore of a country's Tips & limits brings back the old tips and limits only. The payout mode, the payout
+   * day and time and the debt limits stay as they are now (they are changed in Finance › Payouts settings only).
+   */
+  it("Restore of country_rules keeps the current payout mode, payout schedule and debt limits (MONEY, Q-SCS-2)", async () => {
+    const oldTips = [{ amount: sek(1100), enabled: true }];
+    const old = await sim.publish(owner, "country_rules", "SE", (doc) => {
+      const next: Json = { ...doc, tips: oldTips, payoutMode: "manual", payoutSchedule: { frequency: "weekly", day: "monday", time: "08:00" }, maxRiderDebt: sek(30000), driverOwesLimit: { enabled: false, max: null } };
+      return next;
+    });
+    const nowSchedule = { frequency: "every_2_weeks", day: "friday", time: "16:30" };
+    const live = await sim.publish(owner, "country_rules", "SE", (doc) => {
+      const next: Json = { ...doc, tips: [{ amount: sek(1200), enabled: true }], payoutMode: "automatic", payoutSchedule: nowSchedule, maxRiderDebt: sek(50000) };
+      delete next["driverOwesLimit"];
+      return next;
+    });
+    const undone = await owner.post("/admin/config/country_rules/restore", { country: "SE", version: old["version"], expectedVersion: live["version"] });
+    expect(undone.status, JSON.stringify(undone.body)).toBe(200);
+    const [now] = await items("country=SE&limit=1");
+    const document = now!["document"] as Json;
+    expect(document["tips"]).toEqual(oldTips);
+    expect(document["payoutMode"]).toBe("automatic");
+    expect(document["payoutSchedule"]).toEqual(nowSchedule);
+    expect(document["maxRiderDebt"]).toEqual(sek(50000));
+    expect(document).not.toHaveProperty("driverOwesLimit");
+    const draft = (await owner.get("/admin/config/country_rules?country=SE")).body;
+    expect(draft.document["payoutMode"]).toBe("automatic");
+    expect(draft.document["maxRiderDebt"]).toEqual(sek(50000));
+  });
+
   it("names exactly one of zoneId or country; an unknown zone or country is 404; another country's admin is refused", async () => {
     expect((await owner.get("/admin/config/country_rules/history")).body).toMatchObject({ code: "invalid_request", reason: "scope_required" });
     expect((await owner.get("/admin/config/country_rules/history?zoneId=Z001&country=SE")).body).toMatchObject({ reason: "scope_required" });

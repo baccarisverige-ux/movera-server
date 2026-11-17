@@ -22,6 +22,11 @@ export type Timer = {
   firedAt: Date;
   /** Job 1 (fast dispatch): what the handler's `prepare` found outside the transaction (slow network calls). */
   prepared?: unknown;
+  /**
+   * Q120 follow-up SF-3: how many times in a row THIS worker found the timer busy (TimerBusy or a lock timeout) and is
+   * running it again; absent on a first run. A handler that throws TimerBusy for its own reasons uses it as a ceiling.
+   */
+  busyTries?: number;
 };
 
 /**
@@ -68,7 +73,7 @@ const isLockTimeout = (error: unknown) => ["55P03", "40P01"].includes((error as 
  * pending one keeps its due time (never moved later; nor earlier, which would skip a failing one's back-off or wake a
  * parked one at 'infinity'), its attempts and its last error; only its payload is refreshed.
  */
-export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }, options: { keepDue?: boolean } = {}): Promise<void> {
+export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }, options: { keepDue?: boolean; wake?: boolean } = {}): Promise<void> {
   const payload = JSON.stringify(timer.payload ?? {});
   await ex
     .insertInto("timers")
@@ -79,6 +84,27 @@ export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: 
         .doUpdateSet(options.keepDue ? { payload } : { due_at: timer.dueAt, payload, attempts: 0, last_error: null }),
     )
     .execute();
+  if (options.wake) await sql`SELECT pg_notify(${TIMER_DUE_CHANNEL}, ${JSON.stringify({ kind: timer.kind })})`.execute(ex);
+}
+
+/**
+ * S7 0.16 (owner W2 Q120 part 2): a timer written with `wake: true` (one that is due at once, e.g. a new search's first
+ * dispatch round) also sends this NOTIFY in the SAME transaction. PostgreSQL delivers a NOTIFY only when its transaction
+ * commits and drops it on a rollback, so the worker is woken (wakeTimersOn) after the commit, never inside the
+ * transaction and never for a write that was rolled back; and every server copy hears it (Rule 33), whichever copy
+ * took the booking. Several timers of one kind in one transaction make one NOTIFY (PostgreSQL folds equal ones).
+ * If the LISTEN link is down the NOTIFY is lost and the timer runs at the next poll, as before: the wake only saves
+ * the poll wait, the timer row is the truth.
+ */
+export const TIMER_DUE_CHANNEL = "movera_timer_due";
+
+/** 0.16: wakes `worker` for every committed `wake: true` timer write heard on the hub. Returns the unsubscribe. */
+export function wakeTimersOn(hub: { subscribe: (channel: string, listener: (payload: Record<string, unknown> | null) => void) => () => void }, worker: Pick<TimerWorker, "kick">): () => void {
+  return hub.subscribe(TIMER_DUE_CHANNEL, (payload) => {
+    // null = the catch-up signal after a LISTEN reconnect: wakes may have been lost, so every lane looks once.
+    const kind = payload?.["kind"];
+    worker.kick(typeof kind === "string" ? kind : undefined);
+  });
 }
 
 export async function cancelTimer(ex: Executor, kind: string, refId: string): Promise<boolean> {
@@ -151,7 +177,10 @@ export class TimerWorker {
   private readonly lanes: TimerLane[];
   private loops: Promise<void>[] = [];
   private stopping = false;
-  private readonly wakers = new Set<() => void>();
+  /** The lanes that are waiting for their next round now, each with the call that ends the wait at once. */
+  private readonly wakers = new Map<() => void, TimerLane>();
+  /** 0.16: lanes kicked while their round was running: they look once more right after it instead of waiting. */
+  private readonly kicked = new Set<TimerLane>();
   /**
    * Job 1 (fix plan R1 a): a timer whose handler found its rows busy KEEPS its due_at (so it is not pushed behind a
    * backlog of later timers); this worker only skips it until `until`, with a bounded backoff (busyRetryMs).
@@ -201,7 +230,8 @@ export class TimerWorker {
         await sql`SET LOCAL lock_timeout = ${sql.lit(`${TIMER_LOCK_TIMEOUT_MS}ms`)}`.execute(trx);
         const row = await take(trx, timerId);
         if (row === undefined) return timerId === undefined ? false : true;
-        const timer: Timer = { timerId: row.timer_id, kind: row.kind, refId: row.ref_id, dueAt: row.due_at, payload: row.payload, attempts: row.attempts, firedAt: now };
+        const busyTries = this.busy.get(row.timer_id)?.tries ?? 0;
+        const timer: Timer = { timerId: row.timer_id, kind: row.kind, refId: row.ref_id, dueAt: row.due_at, payload: row.payload, attempts: row.attempts, firedAt: now, ...(busyTries > 0 ? { busyTries } : {}) };
         const handler = this.options.handlers[row.kind];
         if (handler?.prepare !== undefined && timerId === undefined) {
           // Slow work first, outside this transaction (it ends here having changed nothing).
@@ -267,8 +297,12 @@ export class TimerWorker {
       (async () => {
         while (!this.stopping) {
           // Rule 28 (#92): one round that never throws; backs off while the database is down.
+          this.kicked.delete(lane);
           const delay = await this.tick(() => this.runDue(100, lane));
           if (this.stopping) break;
+          // 0.16: kicked during the round (its last look may have been just before the commit): look again at once.
+          // Not while the database is down (dbFailures > 0): then the back-off wait stands.
+          if (this.kicked.has(lane) && this.dbFailures === 0) continue;
           await new Promise<void>((resolve) => {
             const wake = () => {
               clearTimeout(handle);
@@ -276,16 +310,30 @@ export class TimerWorker {
               resolve();
             };
             const handle = setTimeout(wake, delay);
-            this.wakers.add(wake);
+            this.wakers.set(wake, lane);
           });
         }
       })(),
     );
   }
 
-  /** Job 1: a timer due now was just written (e.g. a new search): look at once instead of after the poll. */
-  kick(): void {
-    for (const wake of [...this.wakers]) wake();
+  /**
+   * Job 1: a timer due now was just written (e.g. a new search): look at once instead of after the poll.
+   * S7 0.16: called after the write COMMITTED (wakeTimersOn; never from inside a transaction). With `kind`, only the
+   * lanes that are for that kind look (a new search wakes the dispatch lanes, not the GPS or housekeeping lanes); when
+   * no lane names the kind, the lanes that take any kind do. Without `kind`: every lane. A lane that is in the middle
+   * of a round looks once more right after it, so a kick is never lost between two rounds.
+   */
+  kick(kind?: string): void {
+    const lanes = this.lanesFor(kind);
+    for (const lane of lanes) this.kicked.add(lane);
+    for (const [wake, lane] of [...this.wakers]) if (lanes.has(lane)) wake();
+  }
+
+  private lanesFor(kind: string | undefined): Set<TimerLane> {
+    if (kind === undefined) return new Set(this.lanes);
+    const own = this.lanes.filter((lane) => lane.kinds?.includes(kind));
+    return new Set(own.length > 0 ? own : this.lanes.filter((lane) => lane.kinds === undefined && !lane.exclude?.includes(kind)));
   }
 
   /**

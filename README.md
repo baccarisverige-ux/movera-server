@@ -60,6 +60,7 @@ Settings come from the environment (`src/env.ts`):
 | `DRIVER_APP_LINK` | Install link added to the SMS when a fleet owner invites a number that has no account yet | none |
 | `DOCUMENT_FILES_KEY` | Seals uploaded driver documents at rest (AES-256-GCM): 32 random bytes, base64 (`openssl rand -base64 32`). Required in production; elsewhere a key derived from `JWT_SECRET` stands in | derived outside production |
 | `ADMIN_PANEL_URL` | Where setup links point | `http://localhost:5173` |
+| `SHARE_LINK_BASE` | Share my trip (contract v0.18.116): the origin a rider's live link starts with (`<base>/s/<token>`), e.g. the server's public `https://…` address. Not a secret | the origin the request came to |
 | `DEFAULT_ZONE_ID` | Zone for settings when an app names none | `Z001` |
 | `TRUST_PROXY_HOPS` | Proxies in front of the server (the host's load balancer = 1), so limits see the phone's real address and it cannot be faked | `0` |
 | `CORS_ORIGINS` | Web pages on another site that may call the API from a browser (the apps' web builds), e.g. `https://owner.github.io`. Unset: none | none |

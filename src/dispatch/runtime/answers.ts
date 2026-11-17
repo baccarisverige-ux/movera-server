@@ -150,6 +150,7 @@ export async function declineOffer(trx: Trx, driverId: string, offerId: string, 
   queue.push(driverId, "offer_updated", offerView(declined, trip));
   await queue.flush(trx, now);
   const left = await trx.selectFrom("offers").select((eb) => eb.fn.countAll<string>().as("n")).where("trip_id", "=", trip.trip_id).where("status", "=", "open").executeTakeFirstOrThrow();
-  if (Number(left.n) === 0) await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: now, payload: {} });
+  // S7 0.16: due at once, so the timer worker is woken when this decline commits (the next driver is asked without the poll wait).
+  if (Number(left.n) === 0) await scheduleTimer(trx, { kind: ROUND, refId: trip.trip_id, dueAt: now, payload: {} }, { wake: true });
   return offerView(declined, trip);
 }

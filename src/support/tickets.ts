@@ -47,6 +47,8 @@ type TicketRow = {
   country?: string | null;
   feedback_text?: string | null;
   feedback_at?: Date | null;
+  /** v0.18.112 BQ-A04 (migration 0112, desk.refreshWaiting). */
+  waiting_since?: Date | null;
 };
 type MessageRow = { message_id: string; sender: "rider" | "driver" | "support"; text: string; at: Date; admin_name?: string | null; admin_first?: string | null };
 
@@ -136,6 +138,7 @@ export async function openTicket(trx: Trx, who: Who, body: { tripId?: string; ca
     .returningAll()
     .executeTakeFirstOrThrow();
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text: body.text, at: now }).execute();
+  await desk.refreshWaiting(trx, ticketId);
   // v0.18.23: the "Support ticket waiting" admin alert at once.
   await pokeAlerts(trx, now);
   return ticketView(row as TicketRow, await messagesOf(trx, ticketId), { person: true });
@@ -174,6 +177,7 @@ export async function writeOwnTicket(trx: Trx, who: Who, ticketId: string, text:
   if (row.status === "resolved") throw new ApiError("invalid_transition", "This ticket is solved. Open a new ticket.", { reason: "ticket_solved" });
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: who.actor, admin_id: null, text, at: now }).execute();
   await trx.updateTable("support_tickets").set({ status: "open", updated_at: now, last_message_at: now }).where("ticket_id", "=", ticketId).execute();
+  await desk.refreshWaiting(trx, ticketId);
   return ownTicket(trx, who, ticketId);
 }
 
@@ -215,18 +219,52 @@ export async function adminTickets(ex: Executor, who: Principal, input: { cursor
   }
   // L78-S (v0.18.78 adminListFilters.total).
   const filtered = q;
-  if (input.cursor) {
-    const c = readCursor(input.cursor);
-    q = q.where(sql<boolean>`(updated_at, ticket_id) < (${c.at}, ${c.id})`);
-  }
-  const reading = q.orderBy("updated_at", "desc").orderBy("ticket_id", "desc").limit(input.limit + 1).execute();
+  // v0.18.112 BQ-A04 (contract.json#supportDesk.inboxOrder): part 1 = the waiting tickets, waiting_since oldest first
+  // (partial index support_tickets_waiting, migration 0112); part 2 = every other ticket, updated_at newest first (the
+  // old order, index support_tickets_list). One cursor carries the place: "w|at|id" in part 1, the old form in part 2.
+  const place: InboxPlace = input.cursor ? readInboxCursor(input.cursor) : { part: 1 };
+  const waiting = () => {
+    let w = q.where("waiting_since", "is not", null);
+    if (place.part === 1 && place.after) w = w.where(sql<boolean>`(waiting_since, ticket_id) > (${place.after.at}, ${place.after.id})`);
+    return w.orderBy("waiting_since", "asc").orderBy("ticket_id", "asc");
+  };
+  const others = () => {
+    let o = q.where("waiting_since", "is", null);
+    if (place.part === 2 && place.after) o = o.where(sql<boolean>`(updated_at, ticket_id) < (${place.after.at}, ${place.after.id})`);
+    return o.orderBy("updated_at", "desc").orderBy("ticket_id", "desc");
+  };
+  const reading = (async () => {
+    const first = place.part === 1 ? await waiting().limit(input.limit + 1).execute() : [];
+    if (first.length > input.limit) {
+      const page = first.slice(0, input.limit);
+      const last = page[page.length - 1]!;
+      return { page, nextCursor: inboxCursor(1, last.waiting_since!, last.ticket_id) };
+    }
+    const room = input.limit - first.length;
+    const second = await others().limit(room + 1).execute();
+    const page = [...first, ...second.slice(0, room)];
+    if (second.length <= room) return { page, nextCursor: null };
+    const last = page[page.length - 1];
+    // A full page of waiting tickets that ends exactly at the end of part 1: the next page starts part 2.
+    const nextCursor = !last ? null : last.waiting_since ? inboxCursor(1, last.waiting_since, last.ticket_id) : cursorOf(last.updated_at, last.ticket_id);
+    return { page, nextCursor };
+  })();
   // The page asked first; the count follows it (L78-S, listTotal.ts).
   const counting = firstPageTotal(ex, filtered, input);
-  const rows = await reading;
-  const page = rows.slice(0, input.limit);
-  const last = page[page.length - 1];
+  const { page, nextCursor } = await reading;
   const extras = await desk.deskExtras(ex, page as TicketRow[], now);
-  return withTotal({ items: page.map((r) => ticketView(r as TicketRow, undefined, { extra: extras.get(r.ticket_id) })), nextCursor: rows.length > input.limit && last ? cursorOf(last.updated_at, last.ticket_id) : null }, await totalAfterPage(counting));
+  return withTotal({ items: page.map((r) => ticketView(r as TicketRow, undefined, { extra: extras.get(r.ticket_id) })), nextCursor }, await totalAfterPage(counting));
+}
+
+/** v0.18.112: the inbox cursor; a part-2 cursor is the old admin-list form, so a cursor made before 0.18.112 still reads. */
+function inboxCursor(part: 1, at: Date, id: string): string {
+  return Buffer.from(`w${part}|${at.toISOString()}|${id}`).toString("base64url");
+}
+type InboxPlace = { part: 1 | 2; after?: { at: Date; id: string } };
+function readInboxCursor(cursor: string): InboxPlace {
+  const raw = Buffer.from(cursor, "base64url").toString("utf8");
+  if (raw.startsWith("w1|")) return { part: 1, after: readCursor(Buffer.from(raw.slice(3)).toString("base64url")) };
+  return { part: 2, after: readCursor(cursor) };
 }
 
 async function ticketForAdmin(ex: Executor, who: Principal, ticketId: string, lock = false): Promise<TicketRow> {
@@ -285,6 +323,7 @@ export async function adminReply(trx: Trx, who: Principal, ticketId: string, bod
   const status = body.status ?? "pending";
   await trx.insertInto("ticket_messages").values({ message_id: newId("tmg", now.getTime()), ticket_id: ticketId, sender: "support", admin_id: who.subjectId, text: body.text, at: now }).execute();
   await trx.updateTable("support_tickets").set({ status, updated_at: now, last_message_at: now, ...(row.first_reply_at ? {} : { first_reply_at: now }), ...(status === "resolved" ? { solved_by: who.subjectId, solved_at: now, assigned_admin_id: null } : {}) }).where("ticket_id", "=", ticketId).execute();
+  await desk.refreshWaiting(trx, ticketId);
   await audit(trx, { adminId: who.subjectId, action: "ticket.reply", targetType: "ticket", targetId: ticketId, zoneId: row.zone_id, detail: { status }, at: now });
   // v0.18.53 §75 (owner Q39): the answer pushes the ticket's owner at once (never for a case the person cannot see).
   await pushSupportAnswer(trx, row, now);
