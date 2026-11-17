@@ -18,7 +18,11 @@ import { contractOps as contractOpsOf, serverRoutes, type Op } from "./routeMatr
  * Routes the server serves that the contract does not (yet) list, with who may call them. v0.18.13 (audit M4): the four
  * refund routes are in openapi.yaml now, so nothing is left here.
  */
-const EXTRA: Record<string, Op> = {};
+const EXTRA: Record<string, Op> = {
+  // v0.18.122 L20 stream (contract.json#driverOneStream): in openapi.yaml from 0.18.122; the server's contract copy is
+  // older until the contract chain lands. Remove this line with the 0.18.122 copy (the contract then lists it).
+  "GET /driver/stream": { actors: ["driver"] },
+};
 const contractOps = () => contractOpsOf(EXTRA);
 
 let sim: Sim;
