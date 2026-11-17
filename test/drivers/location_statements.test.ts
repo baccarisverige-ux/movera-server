@@ -88,6 +88,11 @@ describe("POST /driver/location: statements per request (stress T-A part 3)", ()
     console.info(`location inside: ${inTransaction} in transaction, ${total} in all\n  ${texts.map((t) => t.replace(/\s+/g, " ").slice(0, 110)).join("\n  ")}`);
     expect(inTransaction).toBeLessThanOrEqual(6);
     expect(inTransaction, texts.join("\n")).toBe(4); // SF4: the steady case, pinned
+    // L20 GPS guard (Rules audits/load/l20-1-design.md, "Failing-test ideas"): a ping of a free online driver makes
+    // exactly 1 row write (the position upsert); the load run on main measured 3 (2 of them on idempotency_keys).
+    const writes = texts.filter((t) => /\binsert\s+into\b|\bupdate\s+"|\bdelete\s+from\b/i.test(t));
+    expect(writes.length, writes.join("\n")).toBe(1);
+    expect(writes[0]).toMatch(/insert\s+into\s+"driver_locations"/i);
     expect(texts.some((t) => /"idempotency_keys"/i.test(t))).toBe(false);
     expect(texts.some((t) => /from "zones"/i.test(t))).toBe(false);
     expect(texts.some((t) => /from "airport_queue_areas"/i.test(t))).toBe(false);
