@@ -183,3 +183,25 @@ describe("B1.6b: the worker never waits on a running alert sweep (supervisor F2)
   }, 20_000);
 });
 
+
+describe("L20-6: the trip-timer lane running late raises an admin alert", () => {
+  it("a trip timer 61 s past due gives a critical system_health lane_late alert; caught up → solved", async () => {
+    await db().insertInto("timers").values({ kind: "trip_eta", ref_id: "trip_l206", due_at: at(-61), attempts: 0 }).execute();
+    await db().transaction().execute((trx) => sweepAlerts(trx, NOW));
+    const rows = (await live()).filter((a) => a.cause_key.startsWith("system_health:lane_late:trip_timers"));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const alert of rows) {
+      expect(alert.level).toBe("critical");
+      expect(alert.title).toContain("61 s late");
+    }
+    await db().deleteFrom("timers").execute();
+    await db().transaction().execute((trx) => sweepAlerts(trx, NOW));
+    expect((await live()).filter((a) => a.cause_key.startsWith("system_health:lane_late"))).toEqual([]);
+  });
+
+  it("a trip timer only 30 s past due raises nothing", async () => {
+    await db().insertInto("timers").values({ kind: "trip_eta", ref_id: "trip_l206b", due_at: at(-30), attempts: 0 }).execute();
+    await db().transaction().execute((trx) => sweepAlerts(trx, NOW));
+    expect((await live()).filter((a) => a.cause_key.startsWith("system_health:lane_late"))).toEqual([]);
+  });
+});
