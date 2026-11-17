@@ -190,6 +190,12 @@ describe("L20-6: the trip-timer lane running late raises an admin alert", () => 
     await db().transaction().execute((trx) => sweepAlerts(trx, NOW));
     const rows = (await live()).filter((a) => a.cause_key.startsWith("system_health:lane_late:trip_timers"));
     expect(rows.length).toBeGreaterThan(0);
+    // contract v0.18.125: whole-sentence templates (no English word as an argument), so the admin can translate them.
+    const texts = await db().selectFrom("admin_alerts_live").select(["title_t", "detail_t"]).where("cause_key", "like", "system_health:lane_late:trip_timers%").execute();
+    for (const row of texts) {
+      expect(row.title_t).toEqual({ t: "Server trip timers are running {0} s late", a: [61] });
+      expect(row.detail_t).toEqual({ t: "{0} trip timers overdue", a: [1] });
+    }
     for (const alert of rows) {
       expect(alert.level).toBe("critical");
       expect(alert.title).toContain("61 s late");

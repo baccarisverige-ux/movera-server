@@ -379,8 +379,9 @@ async function laneLateCauses(ctx: Ctx): Promise<Cause[]> {
       country,
       zoneId: null,
       level: "critical" as const,
-      title: T("Server {0} are running {1} s late", [l.group === "trip_timers" ? "trip timers" : "dispatch rounds", l.seconds]),
-      detail: T("{0}: {1} overdue", [l.group, l.overdue]),
+      // contract v0.18.125: whole sentences (no English word as an argument) so the admin can translate them.
+      title: l.group === "trip_timers" ? T("Server trip timers are running {0} s late", [l.seconds]) : T("Server dispatch rounds are running {0} s late", [l.seconds]),
+      detail: l.group === "trip_timers" ? T("{0} trip timers overdue", [l.overdue]) : T("{0} dispatch rounds overdue", [l.overdue]),
       ref: {},
     }));
   });
