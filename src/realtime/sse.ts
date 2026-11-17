@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { streamClosed, streamOpened } from "../telemetry/load.js";
+import { recordAppStreamOverPerSession, streamClosed, streamOpened } from "../telemetry/load.js";
 import { SESSION_ENDED_COMMENT, streamOwnerOf, watchOf } from "./sessionWatch.js";
 
 /** Server-sent events (contract §4): `id:` is the sequence, `data:` one JSON event, a comment every 15 s. */
@@ -20,6 +20,17 @@ export type EventStream = {
   closed: () => boolean;
   onClose: (fn: () => void) => void;
 };
+
+/**
+ * S7 W2 Q125 (Q-B3, B3.11; owner 2026-11-15 "A) count and log above N = 3, refuse later"; contract.json#realtime.appStreamsPerSession):
+ * a rider or driver session with more than this many open streams on one server copy is logged (warn, once per stream
+ * opened above it) and counted (GET /internal/load `streams.appOverPerSession`). Nothing is refused in this step; a later
+ * step (B3.11b) may answer 429 too_many_streams and then needs a count shared by all copies (Rule 33). Fixed in code:
+ * the owner chose a fixed number, no admin setting. Admin streams keep their own caps (adminEvents.ts).
+ */
+export const APP_STREAMS_PER_SESSION_LOG = 3;
+/** Open app streams per session id, per server (one Map per Fastify instance, as openByServer). */
+const appBySession = new WeakMap<FastifyInstance, Map<string, number>>();
 
 /** Open streams per server, so a shutting-down server can end them (they would hold it open forever). */
 const openByServer = new WeakMap<FastifyInstance, Set<() => void>>();
@@ -63,6 +74,22 @@ export function openEventStream(request: FastifyRequest, reply: FastifyReply, he
   open.add(finish);
   // B1.15 (Q76): the stream ends within STREAM_SESSION_CHECK_MS when its session ends (sessionWatch.ts).
   const owner = streamOwnerOf(request);
+  if (owner !== undefined && owner.actor !== "admin") {
+    let counts = appBySession.get(request.server);
+    if (!counts) appBySession.set(request.server, (counts = new Map()));
+    const sessionId = owner.sessionId;
+    const n = (counts.get(sessionId) ?? 0) + 1;
+    counts.set(sessionId, n);
+    if (n > APP_STREAMS_PER_SESSION_LOG) {
+      recordAppStreamOverPerSession();
+      request.log.warn({ actor: owner.actor, sessionId, open: n, limit: APP_STREAMS_PER_SESSION_LOG, path: request.routeOptions.url }, "app streams per session over the limit");
+    }
+    closers.push(() => {
+      const left = (counts.get(sessionId) ?? 1) - 1;
+      if (left > 0) counts.set(sessionId, left);
+      else counts.delete(sessionId);
+    });
+  }
   const watch = watchOf(request.server);
   if (owner !== undefined && watch !== undefined) {
     closers.push(
