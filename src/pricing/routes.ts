@@ -11,7 +11,8 @@ import { registerApprovalHandler, runOrRequest, type PendingApproval } from "../
 import { audit } from "../admin/audit.js";
 import { newId } from "../ids.js";
 import { contract } from "../contract/contract.js";
-import { CONFIG_DOCS, PUBLISH_ACTION, PUBLISH_PERMISSION, configHistory, getZone, liveDocument, rewriteLive, type Publication } from "../config/service.js";
+import { CONFIG_DOCS, PUBLISH_ACTION, PUBLISH_PERMISSION, configHistory, getScope, getZone, liveDocument, rewriteLive, type Publication } from "../config/service.js";
+import { scopeKey } from "../config/scope.js";
 import { validateSchedule } from "../rules/surge.js";
 import { SLIDER_TOP, currentSchedule, scheduleView, type DocSurge } from "./surge.js";
 import { driverSurgeMap, surgeHistory, surgeNow } from "./surgeLive.js";
@@ -37,8 +38,10 @@ const ScheduleBody = z.object({
   note: z.string().max(1000).optional(),
 });
 const EndBody = z.object({ expectedVersion: z.number().int().min(1), zoneId: ZONE.optional(), note: z.string().max(1000).optional() });
-const HistoryQuery = z.object({ zoneId: ZONE, cursor: z.string().max(32).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
-const RestoreBody = z.object({ expectedVersion: z.number().int().min(1), zoneId: ZONE, version: z.number().int().min(1), note: z.string().max(1000).optional() });
+/** contract.json#configDocs.scope: exactly one of zoneId (the zone's own) or country (its standard), as GET / PUT / publish. */
+const SCOPE = { zoneId: ZONE.optional(), country: z.string().regex(/^[A-Z]{2}$/).optional() };
+const HistoryQuery = z.object({ ...SCOPE, cursor: z.string().max(32).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
+const RestoreBody = z.object({ expectedVersion: z.number().int().min(1), ...SCOPE, version: z.number().int().min(1), note: z.string().max(1000).optional() });
 const Line = z.object({ sv: z.string().max(80), fr: z.string().max(80), en: z.string().max(80) });
 const CategoryBody = z.object({ id: CATEGORY.optional(), label: z.string().trim().min(1).max(40), line: Line, seats: z.number().int().min(1).max(8), sort: z.number().int().min(0).optional() });
 const ArchiveBody = z.object({ reason: z.string().trim().min(1).max(500) });
@@ -270,8 +273,8 @@ export async function pricingRoutes(app: FastifyInstance, deps: PricingDeps): Pr
     const who = await authenticateAdmin(request, guard, "settings.read");
     const { doc } = parseBody(z.object({ doc: z.enum(CONFIG_DOCS as [ConfigDoc, ...ConfigDoc[]]) }), request.params);
     const query = parseBody(HistoryQuery, request.query);
-    checkZone(who, query.zoneId);
-    return configHistory(deps.db, doc, query.zoneId, { cursor: query.cursor, limit: query.limit });
+    const key = await scopeKey(deps.db, who, query, doc);
+    return configHistory(deps.db, doc, key, { cursor: query.cursor, limit: query.limit });
   });
 
   // Restore / Undo last publish: the old version is published again, with every effect of a publish.
@@ -279,13 +282,14 @@ export async function pricingRoutes(app: FastifyInstance, deps: PricingDeps): Pr
     const { doc } = parseBody(z.object({ doc: z.enum(CONFIG_DOCS as [ConfigDoc, ...ConfigDoc[]]) }), request.params);
     const who = await authenticateAdmin(request, guard, PUBLISH_PERMISSION[doc]);
     const body = parseBody(RestoreBody, request.body);
-    checkZone(who, body.zoneId);
+    // The country's standard (standard-<CC>) is restored like a zone's own document (live 2026-11-16).
+    const key = await scopeKey(deps.db, who, body, doc);
     const outcome = await runIdempotent<Publication | PendingApproval>(deps.db, idem(request, who, body), async (trx) => {
-      await getZone(trx, body.zoneId);
+      await getScope(trx, key);
       const ran = await runOrRequest<Publication>(
         trx,
         who,
-        { action: PUBLISH_ACTION, targetType: "config", targetId: doc, zoneId: body.zoneId, payload: { doc, zoneId: body.zoneId, expectedVersion: body.expectedVersion, restoreVersion: body.version, ...(body.note ? { note: body.note } : {}) }, approvePermission: PUBLISH_PERMISSION[doc] },
+        { action: PUBLISH_ACTION, targetType: "config", targetId: doc, zoneId: key, payload: { doc, zoneId: key, expectedVersion: body.expectedVersion, restoreVersion: body.version, ...(body.note ? { note: body.note } : {}) }, approvePermission: PUBLISH_PERMISSION[doc] },
         now(),
       );
       return ran.ran ? { status: 200, body: ran.result } : { status: 202, body: ran.pending };
