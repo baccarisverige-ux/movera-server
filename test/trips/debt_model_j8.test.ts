@@ -25,7 +25,9 @@ import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.j
 let database: TestDatabase;
 let app: FastifyInstance;
 let worker: TimerWorker;
-const clock = { now: new Date("2026-11-16T10:00:00Z") };
+// Relative to the real time (one day ahead, on the hour), like the fixed date was when the test was written: a fixed
+// date in the past made 7 tests fail once the real day passed it (tests only, no production change).
+const clock = { now: new Date(Math.ceil(Date.now() / 3_600_000) * 3_600_000 + 86_400_000) };
 const sample = (name: string) => JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/${name}.json`, "utf8"));
 const SEK = (amountMinor: number) => ({ amountMinor, currency: "SEK" });
 const NEW_APP = { "x-contract-version": "0.18.85" };

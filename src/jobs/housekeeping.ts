@@ -6,6 +6,7 @@ import { purgeOfferPushes } from "../dispatch/offerPush.js";
 import { pruneAdminLiveEvents } from "../realtime/adminEvents.js";
 import { sweepDocumentExpiry, sweepSignUpReminders } from "../drivers/reminders.js";
 import { liftEndedPauses } from "../riders/moderation.js";
+import { purgeOldShares } from "../safety/shareCleanup.js";
 import type { TimerHandler } from "./timers.js";
 
 /**
@@ -32,6 +33,7 @@ export const CLEANUP_ERROR_GROUPS = "cleanup_error_groups";
 export const CLEANUP_OFFER_PUSHES = "cleanup_offer_pushes";
 export const CLEANUP_ADMIN_EVENTS = "cleanup_admin_events";
 export const CLEANUP_QUOTES = "cleanup_quotes";
+export const CLEANUP_TRIP_SHARES = "cleanup_trip_shares";
 export const BOOK_SILENCE_CHECKS = "book_silence_checks";
 export const DOCUMENT_EXPIRY = "document_expiry";
 export const SIGN_UP_REMINDERS = "sign_up_reminders";
@@ -77,6 +79,8 @@ const CLEANUPS: Record<string, Cleanup> = {
     const gone = await ex.deleteFrom("quotes").where("expires_at", "<", cut).where("used_at", "is", null).where("quote_id", "in", old).executeTakeFirst();
     return Number(gone.numDeletedRows);
   },
+  // v0.18.116 §94 (owner S10 Q7): share-my-trip rows 30 days after they were made (contract.json#shareTrip.retentionDays).
+  [CLEANUP_TRIP_SHARES]: purgeOldShares,
 };
 
 /** The hourly jobs that delete nothing (they book timers, send notices or lift pauses), each on its own timer too. */
