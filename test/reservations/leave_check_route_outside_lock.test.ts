@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { EstimateRouter, haversineKm, type LatLng, type RouteLeg, type Router } from "../../src/maps/routing.js";
 import * as reservations from "../../src/reservations/service.js";
 import { setLeaveRouter } from "../../src/reservations/service.js";
+import { ROUTE_QUOTE_TRIES } from "../../src/trips/routeChange.js";
 import { PLACES, Sim, type Admin, type Driver, type Rider } from "../e2e/harness.js";
 
 /**
@@ -177,5 +178,106 @@ describe("S7 0.17: the booked leave check asks its road with no lock held", () =
     expect((await reservation()).driveSeconds).toBe(Math.max(60, Math.round(estimate.durationSeconds)));
     expect((await leaveTimer())).toMatchObject({ attempts: 0, last_error: null });
     expect(sim.timerErrors).toEqual([]);
+  });
+});
+
+/**
+ * Q120 follow-up SF-3 (Rules REMINDERS 137, audits/impact/s7-q120-supervisor.md): the "input changed" retry had no hard
+ * count. If the driver's position kept jumping more than 250 m between the road call and the lock, every run was busy
+ * again, for ever (one road call every 2 s, nothing decided). Now: after ROUTE_QUOTE_TRIES busy tries (3, the
+ * route-change price's count of tries for the same race) the next run uses the straight-line estimate from the position
+ * as it is under the lock (round 2: the give-up run still asks the road and uses it if it still holds).
+ */
+const LEAVE_ROUTE_TRIES = ROUTE_QUOTE_TRIES;
+describe("Q120 SF-3: the leave check's busy retry has a hard count", () => {
+  it(`a position that changes on every road call: after ${LEAVE_ROUTE_TRIES} busy tries, the straight-line estimate (no endless retry)`, async () => {
+    await held();
+    // Every road call: the car "jumps" 1 km to the other place, so the road asked is never for where he is under the lock.
+    during = async (n) => void (await jumpTo(n % 2 === 1 ? PLACES.odenplan : PLACES.nearSergels));
+    await sim.tick();
+    for (let i = 0; i < 8; i++) await sim.advance(5);
+    const decided = (await reservation()).driveSeconds;
+    console.log(`SF-3 proof: road calls ${calls.length}; drive time ${decided ?? "none"} s; timer errors ${sim.timerErrors.length}`);
+    // LEAVE_ROUTE_TRIES runs with a road (all busy), then the give-up run: it still asks the road (round 2, SF-A), its
+    // inputs changed again, so the estimate from the position under the lock instead of one more retry.
+    expect(calls.length).toBe(LEAVE_ROUTE_TRIES + 1);
+    const at = calls.length % 2 === 1 ? PLACES.odenplan : PLACES.nearSergels;
+    const estimate = await new EstimateRouter().route([at, PLACES.sergels]);
+    expect(decided).toBe(Math.max(60, Math.round(estimate.durationSeconds)));
+    expect(calls.every((c) => !c.tripLocked && !c.timerLocked)).toBe(true);
+    expect(await leaveTimer()).toMatchObject({ attempts: 0, last_error: null });
+    expect(sim.timerErrors).toEqual([]);
+  });
+});
+
+/**
+ * Q120 follow-ups round 2 (Rules audits/impact/s7-q120-followups-supervisor.md SF-A, SF-B).
+ *  - SF-A: the worker's busy count also grows when the trip row is held by another transaction (a lock timeout), not
+ *    only when the road's inputs changed. Giving up must not cost the road then: on the give-up run the road is still
+ *    asked, and the estimate is used only where the handler would otherwise have thrown "inputs changed" again.
+ *  - SF-B: after a run that worked the count starts again at 0 (timers.ts forgets the timer): the next check asks the
+ *    road again and uses it.
+ */
+describe("Q120 SF-3 round 2: a held trip row does not cost the road; the count starts again after a run that worked", () => {
+  it("SF-A: the trip row held by another transaction for more than the count: once released, the road's drive time (not the estimate)", async () => {
+    await held();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let lockedNow: () => void = () => undefined;
+    const isLocked = new Promise<void>((resolve) => (lockedNow = resolve));
+    const holder = sim.db.transaction().execute(async (trx) => {
+      await sql`SELECT 1 FROM trips WHERE trip_id = ${tripId} FOR UPDATE`.execute(trx);
+      lockedNow();
+      await gate;
+    });
+    await isLocked;
+    await sim.tick();
+    // Well past ROUTE_QUOTE_TRIES runs that end on the lock timeout (nothing written meanwhile).
+    for (let i = 0; i < 6; i++) await sim.advance(5);
+    expect((await reservation()).driveSeconds).toBeUndefined();
+    release();
+    await holder;
+    await sim.advance(5);
+    const road = expected(PLACES.nearSergels);
+    const estimate = Math.max(60, Math.round((await new EstimateRouter().route([PLACES.nearSergels, PLACES.sergels])).durationSeconds));
+    console.log(`SF-A proof: drive ${(await reservation()).driveSeconds}; road ${road}; estimate ${estimate}; road calls ${calls.length}`);
+    expect(road).not.toBe(estimate);
+    expect((await reservation()).driveSeconds).toBe(road);
+    expect(calls.every((c) => !c.timerLocked)).toBe(true);
+    expect(await leaveTimer()).toMatchObject({ attempts: 0, last_error: null });
+    expect(sim.timerErrors).toEqual([]);
+  }, 120_000);
+
+  it("SF-B: after the give-up run the count starts again: the next leave check (2 min on) asks the road once and keeps its value", async () => {
+    await held();
+    during = async (n) => void (await jumpTo(n % 2 === 1 ? PLACES.odenplan : PLACES.nearSergels));
+    await sim.tick();
+    for (let i = 0; i < 8; i++) await sim.advance(5);
+    // Given up: the estimate is written.
+    expect((await reservation()).driveSeconds).toBeDefined();
+    during = async () => undefined;
+    const before = calls.length;
+    await sim.advance(125);
+    console.log(`SF-B proof: road calls on the next check ${calls.length - before}; drive ${(await reservation()).driveSeconds}; road ${expected(a.position!)}`);
+    expect(calls.length - before).toBe(1);
+    expect((await reservation()).driveSeconds).toBe(expected(a.position!));
+    expect(sim.timerErrors).toEqual([]);
+  });
+});
+
+describe("Q120 SF-3 round 2: the handler's give-up rule on the 'nothing to route when prepared' branch", () => {
+  it("prepare found nothing to route but under the lock there is: busy before the count, the estimate once given up (never a road call in the handler)", async () => {
+    await held();
+    const row = await sim.db.selectFrom("timers").selectAll().where("kind", "=", LEAVE_CHECK).where("ref_id", "=", tripId).executeTakeFirstOrThrow();
+    const timer = { timerId: row.timer_id, kind: row.kind, refId: row.ref_id, dueAt: row.due_at, payload: row.payload, attempts: row.attempts, firedAt: sim.clock.now, prepared: { route: null } };
+    // Before the count: "the inputs changed" (TimerBusy), the transaction writes nothing.
+    const busy = await sim.db.transaction().execute((trx) => reservations.reservationTimer(trx, { ...timer, busyTries: ROUTE_QUOTE_TRIES - 1 })).then(() => "ran", (error: Error) => error.constructor.name);
+    expect(busy).toBe("TimerBusy");
+    expect((await reservation()).driveSeconds).toBeUndefined();
+    // Given up: the straight-line estimate from the position under the lock, no road call.
+    await sim.db.transaction().execute((trx) => reservations.reservationTimer(trx, { ...timer, busyTries: ROUTE_QUOTE_TRIES }));
+    const estimate = Math.max(60, Math.round((await new EstimateRouter().route([PLACES.nearSergels, PLACES.sergels])).durationSeconds));
+    expect((await reservation()).driveSeconds).toBe(estimate);
+    expect(calls.length).toBe(0);
   });
 });

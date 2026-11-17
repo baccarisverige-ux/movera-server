@@ -28,6 +28,8 @@ import { applyCommand, expectVersion, lockOwnTrip, readOwnTrip } from "./command
 import { startSearch, stopSearch } from "../dispatch/runtime.js";
 import { raiseMaxFactor } from "../config/raiseLimit.js";
 import { tripProjection, type Viewer } from "./projection.js";
+import { withCallOpenUntil } from "../calls/openUntil.js";
+import type { CallSettings } from "../calls/settings.js";
 import { assertAdminTripScope, type MessageWho } from "./messages.js";
 
 /** Trip requests, reads and the rider's cancel (contract §3, §7). */
@@ -206,7 +208,8 @@ export async function getTrip(ex: Executor, tripId: string, who: MessageWho, now
   const trip = await readOwnTrip(ex, tripId, who);
   // Step 25 (Q34): an admin reads a trip (and its live events) only with trips.read and the trip's zone.
   assertAdminTripScope(who, trip, "trips.read");
-  return withDriverPosition(ex, trip, tripProjection(trip, who.actor, { now }), now);
+  // v0.18.113 BQ-S13 (contract.json#inAppCalls.callOpenUntil): the call window after a completed drop-off.
+  return withDriverPosition(ex, trip, await withCallOpenUntil(ex, trip, tripProjection(trip, who.actor, { now })), now);
 }
 
 /**
@@ -437,8 +440,10 @@ export async function riderTrips(
   const rows = await query.orderBy("created_at", "desc").orderBy("trip_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
+  // v0.18.113 BQ-S13: each completed item carries callOpenUntil (call settings read once per zone of the page).
+  const callSettings = new Map<string, Promise<CallSettings>>();
   return {
-    items: page.map((row) => tripProjection(row, "rider")),
+    items: await Promise.all(page.map((row) => withCallOpenUntil(ex, row, tripProjection(row, "rider"), callSettings))),
     nextCursor: rows.length > input.limit && last ? Buffer.from(`${last.created_at.toISOString()}|${last.trip_id}`).toString("base64url") : null,
   };
 }

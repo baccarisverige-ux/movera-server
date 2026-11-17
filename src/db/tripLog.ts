@@ -45,22 +45,43 @@ export function checkVersion(current: number, expectedVersion: number | undefine
   }
 }
 
-export type TripEventKind =
-  | "trip_projection"
-  | "rider_cancelled"
-  | "driver_cancelled"
-  | "location"
-  | "driver_arrived"
-  | "rider_on_the_way"
-  | "payment_updated"
-  | "rating_updated"
-  | "message"
-  | "pickup_moved"
-  | "call_ringing"
-  | "call_answered"
-  | "call_signal"
-  | "call_ended"
-  | "call_missed";
+/**
+ * S7 W2 Q135 (Q-B10, owner 2026-11-15 "A) yes"): THE list of trip event kinds. Since migration 0115 the database has
+ * no CHECK on trip_events.kind (each new kind used to rebuild one on the biggest table), so this list is the only
+ * gate: appendTripEvent refuses any other kind before it writes. It equals contract.json#realtime.kinds, in order
+ * (test/db/trip_event_kinds.test.ts fails on any drift). A new kind: add it here and in the contract; no migration.
+ */
+export const TRIP_EVENT_KINDS = [
+  "trip_projection",
+  "rider_cancelled",
+  "driver_cancelled",
+  "location",
+  "driver_arrived",
+  "rider_on_the_way",
+  "payment_updated",
+  "rating_updated",
+  "message",
+  "pickup_moved",
+  "call_ringing",
+  "call_answered",
+  "call_signal",
+  "call_ended",
+  "call_missed",
+] as const;
+
+export type TripEventKind = (typeof TRIP_EVENT_KINDS)[number];
+
+const TRIP_EVENT_KIND_SET: ReadonlySet<string> = new Set(TRIP_EVENT_KINDS);
+
+/**
+ * Throws on a kind outside TRIP_EVENT_KINDS. A plain Error (a 500, logged): only a server bug can send one, the
+ * type already stops it at compile time; this is the runtime gate the dropped CHECK used to be.
+ */
+export function assertTripEventKind(kind: string): asserts kind is TripEventKind {
+  if (!TRIP_EVENT_KIND_SET.has(kind)) {
+    throw new Error(`Unknown trip event kind ${JSON.stringify(kind)}: not in TRIP_EVENT_KINDS (src/db/tripLog.ts); nothing was written.`);
+  }
+}
 
 export type NewTripEvent = {
   tripId: string;
@@ -93,6 +114,8 @@ export type AppendedEvent = { eventId: string; sequence: number };
  * writes the event and queues a notification that PostgreSQL delivers only if the transaction commits.
  */
 export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<AppendedEvent> {
+  // Q135: before the first statement, so an unknown kind takes no sequence and writes nothing.
+  assertTripEventKind(event.kind);
   const bumped = await trx
     .updateTable("trips")
     .set({ sequence: sql`sequence + 1` })

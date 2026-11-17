@@ -34,7 +34,8 @@ export async function driverCountry(ex: Executor, driverId: string): Promise<str
 }
 
 export type PlaceInput = { label: string; kind: "home" | "work" | "other"; type?: string | undefined; place: { address: string; lat?: number | undefined; lng?: number | undefined } };
-export type ContactInput = { name: string; phone: string; relation?: string | undefined };
+/** v0.18.116 §94: shareTrips = "Share trips with this contact" (rider lists only; contract.json#shareTrip.contacts). */
+export type ContactInput = { name: string; phone: string; relation?: string | undefined; shareTrips?: boolean | undefined };
 
 type PlaceRow = { place_id: string; kind: "home" | "work" | "other"; type: string | null; label: string; address: string; lat: number | null; lng: number | null; created_at: Date; updated_at: Date };
 
@@ -168,10 +169,11 @@ export async function riderContacts(ex: Executor, riderId: string) {
   return { items: contactsOf(row?.emergency_contacts), updatedAt: row?.contacts_at?.toISOString() ?? null };
 }
 
-async function cleanContacts(ex: Executor, country: string | null, items: ContactInput[]) {
+async function cleanContacts(ex: Executor, country: string | null, items: ContactInput[], keepShareTrips = false) {
   const max = (await countryLimitsFor(ex, country)).emergencyContactsPerPerson;
   if (items.length > max) throw badRequest(`At most ${max} emergency contacts per person.`, "too_many_contacts");
-  const clean = items.map((c) => ({ name: c.name.trim(), phone: c.phone, ...(c.relation?.trim() ? { relation: c.relation.trim() } : {}) }));
+  // v0.18.116 §94: the rider's list keeps shareTrips (true / false); a driver's list never holds it.
+  const clean = items.map((c) => ({ name: c.name.trim(), phone: c.phone, ...(c.relation?.trim() ? { relation: c.relation.trim() } : {}), ...(keepShareTrips && typeof c.shareTrips === "boolean" ? { shareTrips: c.shareTrips } : {}) }));
   if (clean.some((c) => c.name === "")) throw badRequest("Every contact needs a name.", "contact_incomplete");
   return clean;
 }
@@ -184,7 +186,7 @@ export async function saveDriverContacts(trx: Trx, driverId: string, items: Cont
 }
 
 export async function saveRiderContacts(trx: Trx, riderId: string, items: ContactInput[], now: Date) {
-  const clean = await cleanContacts(trx, await riderCountry(trx, riderId), items);
+  const clean = await cleanContacts(trx, await riderCountry(trx, riderId), items, true);
   await trx.insertInto("rider_phone_data").values({ rider_id: riderId, emergency_contacts: JSON.stringify(clean), contacts_at: now })
     .onConflict((c) => c.column("rider_id").doUpdateSet({ emergency_contacts: JSON.stringify(clean), contacts_at: now })).execute();
   return riderContacts(trx, riderId);
