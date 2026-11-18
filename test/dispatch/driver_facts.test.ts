@@ -44,8 +44,9 @@ beforeAll(async () => {
   const old = await insertTrip(db, rider, { status: "completed", driverId: ids.free });
   await db.updateTable("trips").set({ ended_at: min(20) }).where("trip_id", "=", recent).execute();
   await db.updateTable("trips").set({ ended_at: min(120) }).where("trip_id", "=", old).execute();
-  // Two Exclusive offers missed in a row after going online.
-  for (const [n, status] of [[50, "declined"], [40, "expired"]] as const) {
+  // Two Exclusive offers he let expire in a row after going online, and a declined one between them that is skipped
+  // (owner 2026-11-16: only ignored offers count).
+  for (const [n, status] of [[50, "expired"], [45, "declined"], [40, "expired"]] as const) {
     const tripId = await insertTrip(db, rider, { status: "cancelled_by_rider" });
     await db.insertInto("offers").values({ offer_id: newId("ofr"), trip_id: tripId, driver_id: ids.free, kind: "exclusive", status, round: 1, currency: "SEK", fare_minor: 25000, driver_earnings_minor: 20000, pickup_meters: 900, pickup_eta_seconds: 120, sent_at: min(n), expires_at: min(n), answered_at: min(n - 1), group_id: null, reason_code: null, decline_reason: null }).execute();
   }
@@ -126,7 +127,7 @@ describe("missed in a row is the true count, whatever the zone limit", () => {
       const rider = await insertRider(db);
       for (let k = 0; k < 5; k += 1) {
         const tripId = await insertTrip(db, rider, { status: "cancelled_by_rider" });
-        await db.insertInto("offers").values({ offer_id: newId("ofr"), trip_id: tripId, driver_id: driverId, kind: "exclusive", status: "declined", round: 1, currency: "SEK", fare_minor: 25000, driver_earnings_minor: 20000, pickup_meters: 900, pickup_eta_seconds: 120, sent_at: at(50 - k), expires_at: at(50 - k), answered_at: at(49 - k), group_id: null, reason_code: null, decline_reason: null }).execute();
+        await db.insertInto("offers").values({ offer_id: newId("ofr"), trip_id: tripId, driver_id: driverId, kind: "exclusive", status: "expired", round: 1, currency: "SEK", fare_minor: 25000, driver_earnings_minor: 20000, pickup_meters: 900, pickup_eta_seconds: 120, sent_at: at(50 - k), expires_at: at(50 - k), answered_at: at(49 - k), group_id: null, reason_code: null, decline_reason: null }).execute();
       }
       const { items } = await zoneDriverFacts(db, zoneId, clock.now);
       expect(items.find((row) => row.driverId === driverId)?.missedInRow).toBe(5);

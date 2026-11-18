@@ -536,11 +536,11 @@ async function rewriteAppDocs(trx: Trx, keys: string[], change: (doc: ConfigDoc,
 
 /* ---------------------------------------------------------------- v0.7.1: history, restore (contract.json#pricingHistory) */
 
-export type HistoryEntry = { doc: ConfigDoc; zoneId: string; version: number; publishedAt: string; publishedBy?: string; note?: string; action: "publish" | "restore"; restoredFrom?: number; document: unknown };
+export type HistoryEntry = { doc: ConfigDoc; zoneId?: string; country?: string; version: number; publishedAt: string; publishedBy?: string; note?: string; action: "publish" | "restore"; restoredFrom?: number; document: unknown };
 
-/** GET /admin/config/{doc}/history: newest first; cursor = the last row's version. */
+/** GET /admin/config/{doc}/history: newest first; cursor = the last row's version. A zone, or a country's standard-<CC> key. */
 export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string, input: { cursor?: string | undefined; limit: number }): Promise<{ items: HistoryEntry[]; nextCursor: string | null }> {
-  await getZone(ex, zoneId);
+  await getScope(ex, zoneId);
   let q = ex.selectFrom("config_history").selectAll().where("doc", "=", doc).where("zone_id", "=", zoneId);
   if (input.cursor !== undefined) {
     if (!/^\d{1,9}$/.test(input.cursor)) throw badRequest("The cursor is not valid.", "invalid_cursor");
@@ -551,7 +551,7 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
   return {
     items: page.map((row) => ({
       doc,
-      zoneId,
+      ...scopeFields(zoneId),
       version: row.version,
       publishedAt: row.published_at.toISOString(),
       ...(row.published_by ? { publishedBy: row.published_by } : {}),
@@ -565,6 +565,25 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
 }
 
 /**
+ * Owner Q-SCS-2 (2026-11-16 20:06 UTC, "No, keep current (Rec.)"; Rules audits/impact/safe-config-saves.md): Undo /
+ * Restore of Tips & limits does not bring back the old payout mode, payout day and time or debt limits (MONEY): they
+ * stay as they are live now (set, or absent), and are changed in Finance › Payouts settings only.
+ */
+export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = { country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit"] };
+
+function keepOnRestore(doc: ConfigDoc, old: Record<string, unknown>, live: { document: unknown } | undefined): Record<string, unknown> {
+  const keys = KEPT_ON_RESTORE[doc];
+  if (keys === undefined) return old;
+  const now = isObject(live?.document) ? (live.document as Record<string, unknown>) : {};
+  const document = { ...old };
+  for (const key of keys) {
+    if (key in now) document[key] = now[key];
+    else delete document[key];
+  }
+  return document;
+}
+
+/**
  * POST /admin/config/{doc}/restore: an earlier published version becomes live again as the next version, with every
  * effect of a publish. expectedVersion is the live version the admin saw. Undo last publish = the version before it.
  */
@@ -575,7 +594,7 @@ export async function restoreVersion(trx: Trx, input: { doc: ConfigDoc; zoneId: 
   if (input.version === live) throw new ApiError("invalid_transition", "That version is already live.", { reason: "already_live" });
   const old = await trx.selectFrom("config_history").select("document").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).where("version", "=", input.version).executeTakeFirst();
   if (old === undefined) throw new ApiError("not_found", "That version is not in the history.", { reason: "version_not_found" });
-  const document = old.document as Record<string, unknown>;
+  const document = keepOnRestore(input.doc, old.document as Record<string, unknown>, await trx.selectFrom("config_live").select("document").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).executeTakeFirst());
   const draft = await trx.selectFrom("config_drafts").select("version").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).executeTakeFirst();
   const saved = await putDraft(trx, { doc: input.doc, zoneId: input.zoneId, expectedVersion: draft?.version ?? 1, document, adminId: input.by }, now);
   return publishDraft(trx, { doc: input.doc, zoneId: input.zoneId, expectedVersion: saved.version, note: input.note ?? `Restore version ${input.version}`, publishedBy: input.by, approvedBy: null, restoredFrom: input.version }, now);

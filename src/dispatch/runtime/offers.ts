@@ -4,7 +4,7 @@ import type { Executor, Trx } from "../../db/db.js";
 import { OFFER_EVENTS_CHANNEL, type TripRow } from "../../db/tripLog.js";
 import { newId } from "../../ids.js";
 import { liveDocument } from "../../config/service.js";
-import { autoOfflineIfDue, COUNTING_KINDS } from "../autoOffline.js";
+import { autoOfflineIfDue, COUNTING_KINDS, countsAsIgnored } from "../autoOffline.js";
 import { queueOfferPush } from "../offerPush.js";
 
 /* ---------------------------------------------------------------- offers */
@@ -88,10 +88,11 @@ export class FeedQueue {
     const ids = [...new Set([...this.drivers(), ...alsoLock])].sort();
     if (ids.length === 0) return;
     await trx.selectFrom("drivers").select("driver_id").where("driver_id", "in", ids).orderBy("driver_id").forUpdate().execute();
-    // v0.8.0 (contract.json#autoOffline): a declined or expired Exclusive offer may end a run that sets the driver offline;
-    // v0.18.6 (owner G4-E3 "Count them"): a hand-sent (assigned) one too.
+    // v0.8.0 (contract.json#autoOffline): an expired Exclusive offer may end a run that sets the driver offline;
+    // v0.18.6 (owner G4-E3 "Count them"): a hand-sent (assigned) one too. v0.18.120 (owner 2026-11-16 "It count when
+    // driver ignore"): a DECLINED offer never counts, so it never runs the check (and never carries driverOffline).
     for (const e of this.events) {
-      const missed = COUNTING_KINDS.includes(e.offer["kind"] as string) && (e.offer["status"] === "declined" || e.offer["status"] === "expired");
+      const missed = COUNTING_KINDS.includes(e.offer["kind"] as string) && countsAsIgnored(e.offer["status"]);
       if (missed && (await autoOfflineIfDue(trx, e.driverId, e.offer["tripId"] as string, now))) e.offer = { ...e.offer, driverOffline: true };
     }
     for (const e of this.events) {

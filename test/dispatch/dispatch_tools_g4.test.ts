@@ -274,11 +274,13 @@ describe("Offline reason (owner 'Send the real reason')", () => {
     const tripId = await book();
     expect((await call(app, "POST", `/admin/trips/${tripId}/assign`, admin, { expectedVersion: await version(tripId), driverId: drivers.A.id })).statusCode).toBe(200);
     const [offer] = await openOffers("A");
-    await call(app, "POST", `/offers/${offer!.offerId}/decline`, drivers.A.headers, { expectedVersion: offer!.version });
+    // Owner 2026-11-16 (contract v0.18.120): he lets it run out (a decline no longer counts).
+    clock.now = new Date(new Date(offer!.expiresAt).getTime() + 1000);
+    await worker.runDue();
     expect(await profile("A")).toMatchObject({ onlineStatus: "offline", offlineReason: "missed_offers", offlineAt: clock.now.toISOString() });
     const notice = await lastNotice(drivers.A.id);
     // v0.18.66 §87 (contract.json#noticeLanguage): a Swedish driver with no language set reads his country's language (was English).
-    expect(notice).toMatchObject({ body: "Du missade eller nekade 1 erbjudanden i rad", data: { reason: "missed_offers", count: 1 } });
+    expect(notice).toMatchObject({ body: "Du lät 1 Exklusiva erbjudanden gå ut i rad", data: { reason: "missed_offers", count: 1 } });
     await database.db.updateTable("config_live").set({ document: JSON.stringify(sample("driver_app_config")) }).where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
     await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", tripId).execute();
     const v = (await profile("A")).version;
