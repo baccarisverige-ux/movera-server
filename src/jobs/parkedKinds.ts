@@ -48,3 +48,10 @@ export const RESTART_ONCE_KINDS: readonly string[] = [
 
 /** Parked trip and safety kinds: their system_health alert is critical (the loud alarm). */
 export const LOUD_PARKED_KINDS: readonly string[] = [...RESTART_ONCE_KINDS, "ride_check_no_answer", "withdraw_driver_offers"];
+
+/** G34 S3 lane-late limits (contract v0.18.83 fastDispatch.lateAlarm); read by jobs/heartbeat.ts and, L20-6, the alert detector. */
+export const LANE_LATE_LIMITS: ReadonlyArray<{ group: string; kinds: string[]; lateMs: number }> = [
+  // The kind names, not the constants (no import of the trip / dispatch runtime here); test/jobs/heartbeat.test.ts checks them.
+  { group: "trip_timers", kinds: ["trip_eta", "ride_check_scan", "near_dropoff", "pickup_geofence"], lateMs: 60_000 },
+  { group: "dispatch", kinds: ["dispatch_round", "withdraw_driver_offers"], lateMs: 30_000 },
+];
