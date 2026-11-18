@@ -49,7 +49,7 @@ import { dispatchRoutes } from "./dispatch/routes.js";
 import { reservationRoutes } from "./reservations/routes.js";
 import { dispatchToolRoutes } from "./dispatch/toolRoutes.js";
 import { shareRoutes, SHARE_LIMITS } from "./safety/shareRoutes.js";
-import { isSharePath, setShareHeaders } from "./http/shed.js";
+import { isSharePath, registerLoadShedding, setShareHeaders, type ShedOptions } from "./http/shed.js";
 import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
@@ -65,24 +65,33 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 /** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
 const NO_ROUTE = "(no route)";
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db; shed?: ShedOptions };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
 
-/** True when the database answers SELECT 1 within `ms`; never throws. */
-async function databaseAnswers(db: Db, ms: number): Promise<boolean> {
+/**
+ * L20-6 (load test 20k): what the health checks say about the database. "ok": SELECT 1 answered in time. "busy": the
+ * database is there but slow or full (our wait ran out, Postgres cancelled the statement 57014, or it has no free
+ * connection 53300/53400). "unavailable": anything else (refused, reset, unknown host, failed to connect). Never throws.
+ */
+export type DatabaseState = "ok" | "busy" | "unavailable";
+const BUSY_CODES = new Set(["57014", "53300", "53400"]);
+export async function databaseState(db: Db, ms: number): Promise<DatabaseState> {
   let timer: NodeJS.Timeout | undefined;
+  const TIMEOUT = Symbol("timeout");
   try {
     await Promise.race([
       sql`SELECT 1`.execute(db),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), ms);
+        timer = setTimeout(() => reject(TIMEOUT), ms);
       }),
     ]);
-    return true;
-  } catch {
-    return false;
+    return "ok";
+  } catch (error) {
+    if (error === TIMEOUT) return "busy";
+    const code = (error as { code?: unknown } | null)?.code;
+    return typeof code === "string" && BUSY_CODES.has(code) ? "busy" : "unavailable";
   } finally {
     clearTimeout(timer);
   }
@@ -98,7 +107,7 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
 }
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb, shed }: BuildOptions): Promise<FastifyInstance> {
   // G34 P2: the health checks ask the database on their own small pool (main.ts, db.ts createHealthPool) when given, so a
   // full app pool is never reported as "database not reachable"; without one (tests, tools) they use the app's.
   const probeDb = healthDb ?? db;
@@ -254,7 +263,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     apiVersion: API_VERSION,
     env: env.MOVERA_ENV,
     ...(db !== undefined ? { dbPool: poolStats() } : {}),
-    database: probeDb === undefined ? "not_configured" : (await databaseAnswers(probeDb, HEALTH_DB_TIMEOUT_MS)) ? "ok" : "unavailable",
+    // L20-6: "busy" (slow / full) is told apart from "unavailable" (down).
+    database: probeDb === undefined ? "not_configured" : await databaseState(probeDb, HEALTH_DB_TIMEOUT_MS),
     // S04 A4: the LISTEN connection every stream depends on (not in the contract: /healthz is an ops endpoint).
     ...(hub !== undefined ? { realtime: hub.healthSnapshot() } : {}),
   }));
@@ -266,19 +276,23 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   // the host take working copies out of service (the same reason /healthz/jobs is not the hosting health check).
   app.get("/readyz", async () => {
     if (probeDb === undefined) return { status: "ready", database: "not_configured" };
-    if (!(await databaseAnswers(probeDb, READY_TIMEOUT_MS))) {
+    // L20-6: only a database that is DOWN makes a copy "not ready". A busy database (slow answer, no free connection)
+    // is shared by every copy, so a 503 would make the host pull all of them at once and turn slowness into an outage;
+    // the copy stays in service and says database "busy".
+    const database = await databaseState(probeDb, READY_TIMEOUT_MS);
+    if (database === "unavailable") {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
     }
     if (hub !== undefined && !hub.readyForTraffic()) {
       throw new ApiError("unavailable", "The live link to the database is still connecting.", { reason: "realtime_starting", retryAfterSeconds: 5 });
     }
-    return { status: "ready", database: "ok", ...(hub !== undefined ? { realtime: hub.healthSnapshot().status } : {}) };
+    return { status: "ready", database, ...(hub !== undefined ? { realtime: hub.healthSnapshot().status } : {}) };
   });
   // S4 B1.28 (owner W1 Q88): 503 when a recurring server job is parked, missing or more than 3× its period late
   // (jobs/heartbeat.ts). No token, kind + state only. For the outside monitor (U9); never the hosting health check.
   app.get("/healthz/jobs", async (_request, reply) => {
     if (probeDb === undefined) return { status: "not_configured" };
-    if (!(await databaseAnswers(probeDb, READY_TIMEOUT_MS))) {
+    if ((await databaseState(probeDb, READY_TIMEOUT_MS)) !== "ok") {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
     }
     const heartbeat = await jobsHeartbeat(probeDb, clock?.() ?? new Date());
@@ -362,6 +376,12 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
+
+  // Live outage 2026-11-17 (#268 post-mortem): the load-shedding hooks are part of EVERY built app, last (as main.ts
+  // added them after buildApp), so the inject()/listen tests run the same hooks as live. main.ts passes the real limits
+  // (SHED_*, its pool); without `shed` (tests, tools) both limits are 0 = never shed, but the gone-client checks still run.
+  const stopShedding = registerLoadShedding(app, shed ?? { maxPoolWaiting: 0, maxLoopDelayMs: 0, poolWaiting: () => 0 });
+  app.addHook("onClose", async () => stopShedding());
 
   return app;
 }

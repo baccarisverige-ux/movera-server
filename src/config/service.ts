@@ -1,6 +1,7 @@
 import { followFloor } from "../riders/debtFloor.js";
 import { checkCountryCashOffers } from "../drivers/owes.js";
 import { pickupSpotsProblem } from "./pickupSpots.js";
+import { oneStreamProblem } from "./oneStream.js";
 import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
@@ -16,6 +17,7 @@ import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
+import { KEPT_KEYS, checkRemoveKeys, withKeptKeys } from "./keptKeys.js";
 import { perMinWithAppFee } from "../rules/fare.js";
 import { pricingStepsProblem } from "../rules/commissionSteps.js";
 import { randomBytes } from "node:crypto";
@@ -87,7 +89,7 @@ export async function getScope(ex: Executor, key: string): Promise<Zone> {
   return { zoneId: key, name: `Standard ${country}`, country, currency: row.currency, timeZone: row.time_zone, kind: "standard", open: true, center: { lat: row.center_lat, lng: row.center_lng } };
 }
 
-export type ConfigDraftView = { doc: ConfigDoc; zoneId?: string; country?: string; usesStandard?: boolean; version: number; liveVersion: number; document: unknown; updatedAt: string; updatedBy?: string };
+export type ConfigDraftView = { doc: ConfigDoc; zoneId?: string; country?: string; usesStandard?: boolean; version: number; liveVersion: number; document: unknown; updatedAt: string; updatedBy?: string; keptKeys?: string[] };
 
 /** A document must pass the contract schema and belong to the scope it is saved for. */
 export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): void {
@@ -125,6 +127,11 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "rider_app_config") {
     const spots = pickupSpotsProblem(document);
     if (spots !== null) throw badRequest(`The rider_app_config document is not valid: ${spots}.`, "invalid_document");
+  }
+  // v0.18.122 L20 stream (contract.json#driverOneStream.server): realtime.oneStream is true or false.
+  if (doc === "driver_app_config") {
+    const realtime = oneStreamProblem(document);
+    if (realtime !== null) throw badRequest(`The driver_app_config document is not valid: ${realtime}.`, "invalid_document");
   }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
@@ -191,7 +198,8 @@ async function lockDraftVersion(trx: Trx, doc: ConfigDoc, zoneId: string): Promi
 }
 
 /** PUT /admin/config/{doc}: replace the draft, inside the caller's transaction. */
-export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string }, now: Date): Promise<ConfigDraftView> {
+export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string; removeKeys?: readonly string[] }, now: Date): Promise<ConfigDraftView> {
+  checkRemoveKeys(input.doc, input.removeKeys ?? []);
   const zone = await getScope(trx, input.zoneId);
   if (input.doc === "onboarding" && schemaProblem(SCHEMA.onboarding, input.document) === null) {
     // v0.18.0 (owner item 14): new document types get their server id; draft:<key> in the lists becomes it.
@@ -210,6 +218,13 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
     const projection = await getDraft(trx, input.doc, input.zoneId).catch(() => undefined);
     throw new ApiError("version_mismatch", "The settings changed since you last saw them.", projection === undefined ? {} : { projection });
   }
+  // v0.18.123 SF-F1-3 (owner Q-SCS-1 "Keep values, save rest (Rec.)", contract.json#configDocs.keptKeys): a kept key the
+  // stored document has and the sent one leaves out is put back (unless removeKeys names it); the rest is saved as sent.
+  const { document: whole, kept } = withKeptKeys(input.doc, current.document, input.document, input.removeKeys ?? []);
+  if (kept.length > 0) {
+    input = { ...input, document: whole };
+    checkDocument(input.doc, zone, input.document);
+  }
   // v0.8.1 §6.5: tips, raise steps and driver bonus limits come from the scope's rules (its own, else the standard).
   const rules = await liveRules(trx, input.zoneId);
   let document = rules === null ? input.document : withCountryRules(input.doc, input.document as Doc, rules);
@@ -218,8 +233,9 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
   const version = current.version + 1;
   const values = { doc: input.doc, zone_id: input.zoneId, version, document: JSON.stringify(document), updated_at: now, updated_by: input.adminId };
   await trx.insertInto("config_drafts").values(values).onConflict((c) => c.columns(["doc", "zone_id"]).doUpdateSet(values)).execute();
-  await audit(trx, { adminId: input.adminId, action: "config.draft", targetType: "config", targetId: input.doc, zoneId: input.zoneId, detail: { version }, at: now });
-  return getDraft(trx, input.doc, input.zoneId);
+  await audit(trx, { adminId: input.adminId, action: "config.draft", targetType: "config", targetId: input.doc, zoneId: input.zoneId, detail: { version, ...(kept.length > 0 ? { kept } : {}) }, at: now });
+  const view = await getDraft(trx, input.doc, input.zoneId);
+  return kept.length > 0 ? { ...view, keptKeys: kept } : view;
 }
 
 export type Publication = {
@@ -563,18 +579,36 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
  * Restore of Tips & limits does not bring back the old payout mode, payout day and time or debt limits (MONEY): they
  * stay as they are live now (set, or absent), and are changed in Finance › Payouts settings only.
  */
-export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = { country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit"] };
+export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
+  // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
+  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider"],
+};
 
-function keepOnRestore(doc: ConfigDoc, old: Record<string, unknown>, live: { document: unknown } | undefined): Record<string, unknown> {
+function keepOnRestore(doc: ConfigDoc, old: Record<string, unknown>, live: { document: unknown } | undefined): { document: Record<string, unknown>; removed: string[] } {
   const keys = KEPT_ON_RESTORE[doc];
-  if (keys === undefined) return old;
+  if (keys === undefined) return { document: old, removed: [] };
   const now = isObject(live?.document) ? (live.document as Record<string, unknown>) : {};
-  const document = { ...old };
-  for (const key of keys) {
-    if (key in now) document[key] = now[key];
-    else delete document[key];
+  const document = structuredClone(old);
+  const removed: string[] = [];
+  for (const path of keys) {
+    const parts = path.split(".");
+    const leaf = parts.pop()!;
+    let from: unknown = now;
+    for (const part of parts) from = isObject(from) ? (from as Record<string, unknown>)[part] : undefined;
+    const has = isObject(from) && leaf in (from as Record<string, unknown>);
+    let into: Record<string, unknown> | undefined = document;
+    for (const part of parts) {
+      if (!has && !isObject(into[part])) { into = undefined; break; }
+      if (!isObject(into[part])) into[part] = {};
+      into = into[part] as Record<string, unknown>;
+    }
+    if (has) into![leaf] = structuredClone((from as Record<string, unknown>)[leaf]);
+    else {
+      if (into !== undefined) delete into[leaf];
+      removed.push(path);
+    }
   }
-  return document;
+  return { document, removed };
 }
 
 /**
@@ -588,9 +622,13 @@ export async function restoreVersion(trx: Trx, input: { doc: ConfigDoc; zoneId: 
   if (input.version === live) throw new ApiError("invalid_transition", "That version is already live.", { reason: "already_live" });
   const old = await trx.selectFrom("config_history").select("document").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).where("version", "=", input.version).executeTakeFirst();
   if (old === undefined) throw new ApiError("not_found", "That version is not in the history.", { reason: "version_not_found" });
-  const document = keepOnRestore(input.doc, old.document as Record<string, unknown>, await trx.selectFrom("config_live").select("document").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).executeTakeFirst());
+  const { document, removed } = keepOnRestore(input.doc, old.document as Record<string, unknown>, await trx.selectFrom("config_live").select("document").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).executeTakeFirst());
+  // v0.18.123 kept keys: a payout / debt key Restore removes (live lacks it) is named in removeKeys, else putDraft would
+  // copy it back from the unpublished draft (Q-SCS-2: Restore keeps the payout / debt settings as they are live now).
+  const kept = KEPT_KEYS[input.doc] ?? [];
+  const removedKept = removed.filter((key) => kept.includes(key));
   const draft = await trx.selectFrom("config_drafts").select("version").where("doc", "=", input.doc).where("zone_id", "=", input.zoneId).executeTakeFirst();
-  const saved = await putDraft(trx, { doc: input.doc, zoneId: input.zoneId, expectedVersion: draft?.version ?? 1, document, adminId: input.by }, now);
+  const saved = await putDraft(trx, { doc: input.doc, zoneId: input.zoneId, expectedVersion: draft?.version ?? 1, document, adminId: input.by, ...(removedKept.length > 0 ? { removeKeys: removedKept } : {}) }, now);
   return publishDraft(trx, { doc: input.doc, zoneId: input.zoneId, expectedVersion: saved.version, note: input.note ?? `Restore version ${input.version}`, publishedBy: input.by, approvedBy: null, restoredFrom: input.version }, now);
 }
 
