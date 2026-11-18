@@ -1,7 +1,6 @@
 import { buildWorkerConfig, RESTART_ONCE_KINDS } from "./jobs/workerConfig.js";
 import { cacheGeometry, forgetGeometry, GEOMETRY_TTL_MS } from "./config/geometryCache.js";
 import type pg from "pg";
-import { registerLoadShedding } from "./http/shed.js";
 import { configureReadRetry } from "./realtime/retry.js";
 import { SMART_SURGE_CHECK, ensurePricingTimers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
@@ -18,6 +17,7 @@ import { NO_FIX_OFFLINE, NO_FIX_SWEEP } from "./drivers/presence.js";
 import { TIMER_DUE_CHANNEL, TimerWorker, rearmParkedRecurringTimers, restartParkedOnce, wakeTimersOn } from "./jobs/timers.js";
 import { ALERT_SWEEP, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
+import { OutageRecorder, outageCopyId } from "./realtime/outages.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
@@ -56,6 +56,9 @@ if (env.DATABASE_URL !== undefined) {
   db = createDb(pool);
   healthDb = createDb(createHealthPool(env.DATABASE_URL));
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL, TIMER_DUE_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  // S4 B1.16 Q-B13 (owner W1 Q78 "Do not count it"): this copy writes its LISTEN outage windows, so an Exclusive that
+  // expired while any copy's live link was down is not counted toward auto-offline (dispatch/autoOffline.ts).
+  hub.watchLink(new OutageRecorder(db, outageCopyId(), { warn: (data, message) => warn(Object.assign(new Error(message), data)) }));
   // PM-1 SF-2 + N-1: waits for the first LISTEN attempt only (5 s at most). MF-1: a wrong LISTEN address (unknown
   // database, wrong password or user) rejects here and stops the start, as before. If only the link is not up
   // yet the server starts anyway (/healthz says realtime "down"; /readyz answers 503 for at most 30 s, round 4) and the hub keeps trying with its
@@ -72,7 +75,10 @@ if (env.DATABASE_URL !== undefined) {
 
 let log: (message: string) => void = (message) => console.warn(message);
 const push = pushServicesFrom(env, { warn: (message) => log(message) });
-const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}), ...(healthDb ? { healthDb } : {}) });
+// Job 1 (stress H3): load shedding while the pool queue or the event loop is over its limit (SHED_* settings); buildApp
+// registers its hooks last, exactly where this file added them before (#268 post-mortem: so the tests run them too).
+const shed = pool !== undefined ? { maxPoolWaiting: env.SHED_POOL_WAITING, maxLoopDelayMs: env.SHED_LOOP_DELAY_MS, poolWaiting: () => pool!.waitingCount } : undefined;
+const app = await buildApp({ env, db, push, ...(hub ? { hub } : {}), ...(healthDb ? { healthDb } : {}), ...(shed ? { shed } : {}) });
 log = (message) => app.log.warn(message);
 fatalLog = app.log;
 // v0.18.56 §78 (G9-2.4): a missing TURN relay is visible in the start-up log.
@@ -142,8 +148,6 @@ const close = async (signal: string) => {
 process.once("SIGINT", () => void close("SIGINT"));
 process.once("SIGTERM", () => void close("SIGTERM"));
 
-// Job 1 (stress H3): load shedding while the pool queue or the event loop is over its limit (SHED_* settings).
-if (pool !== undefined) registerLoadShedding(app, { maxPoolWaiting: env.SHED_POOL_WAITING, maxLoopDelayMs: env.SHED_LOOP_DELAY_MS, poolWaiting: () => pool!.waitingCount });
 // B1.9 (Q73): a stream that gave up on its reads is not closed while the pool queue is over SHED_POOL_WAITING (its app would
 // reconnect into the busy pool); it draws a new random delay instead.
 if (pool !== undefined && env.SHED_POOL_WAITING > 0) configureReadRetry({ holdClose: () => pool!.waitingCount > env.SHED_POOL_WAITING });

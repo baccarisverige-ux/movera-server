@@ -173,14 +173,25 @@ describe("booked trips keep their rules (§6.6)", () => {
 });
 
 describe("auto-offline (§6.7)", () => {
-  const missExclusive = async () => {
+  // Owner 2026-11-16 "It's not when driver decline ! It count when driver ignore" (contract v0.18.120): a miss is an
+  // Exclusive offer the driver lets run out (15 s); a declined one never counts and does not reset the count.
+  const exclusiveOffer = async () => {
+    await a.moveTo(PLACES.nearSergels);
     const { tripId } = await rider.book();
     await sim.tick();
     const offer = await a.offerFor(tripId);
     expect(offer?.["kind"]).toBe("exclusive");
-    const res = await a.decline(offer!);
+    return { tripId, offer: offer! };
+  };
+  const missExclusive = async () => {
+    const { tripId } = await exclusiveOffer();
+    await sim.advance(16);
     await rider.command(tripId, "cancel", { reasonCode: "plans_changed" });
-    return res;
+  };
+  const declineExclusive = async () => {
+    const { tripId, offer } = await exclusiveOffer();
+    expect((await a.decline(offer)).status).toBe(200);
+    await rider.command(tripId, "cancel", { reasonCode: "plans_changed" });
   };
   const force = async (mode: "radar" | "exclusive") => {
     const control = (await owner.get("/admin/zones/Z001/dispatch-control")).body;
@@ -188,12 +199,18 @@ describe("auto-offline (§6.7)", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
   };
 
-  it("10 declined Exclusive offers in a row take the driver offline; a declined Radar offer in between does not count", async () => {
+  it("10 ignored Exclusive offers in a row take the driver offline; declined Exclusive offers and a declined Radar offer in between do not count and do not reset", async () => {
     await a.moveTo(PLACES.nearSergels);
     if ((await a.get("/driver/profile")).body["onlineStatus"] !== "online") await a.goOnline(PLACES.nearSergels);
     const feed = await a.offerFeed();
     await force("exclusive");
-    for (let i = 0; i < 9; i++) await missExclusive();
+    // 10 declines first: never offline (was: the 10th decline set him offline).
+    for (let i = 0; i < 10; i++) await declineExclusive();
+    expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("online");
+    for (let i = 0; i < 9; i++) {
+      await missExclusive();
+      if (i === 4) await declineExclusive(); // in the middle of the run: neither counts nor resets
+    }
     await force("radar");
     const radar = await rider.book();
     await sim.tick();
@@ -206,7 +223,7 @@ describe("auto-offline (§6.7)", () => {
     await missExclusive();
     expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("offline");
     const last = await feed.waitFor((e) => e.data["driverOffline"] === true);
-    expect(last.data).toMatchObject({ kind: "offer_updated", offer: { kind: "exclusive", status: "declined" } });
+    expect(last.data).toMatchObject({ offer: { kind: "exclusive", status: "expired" } });
   });
 
   it("any accepted offer, also Radar, sets the count back to 0", async () => {
