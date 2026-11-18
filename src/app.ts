@@ -7,7 +7,7 @@ import { airportQueueRoutes } from "./airportQueue/routes.js";
 import { blockedPairRoutes } from "./blockedPairs/routes.js";
 import { bonusRoutes } from "./bonuses/routes.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import Fastify, { type FastifyInstance, type FastifyError } from "fastify";
+import Fastify, { type FastifyReply, type FastifyInstance, type FastifyError } from "fastify";
 import { sql } from "kysely";
 import { isDatabaseBusy, type Db } from "./db/db.js";
 import { API_VERSION, CONTRACT_VERSION } from "./contract/contract.js";
@@ -48,6 +48,8 @@ import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
 import { reservationRoutes } from "./reservations/routes.js";
 import { dispatchToolRoutes } from "./dispatch/toolRoutes.js";
+import { shareRoutes, SHARE_LIMITS } from "./safety/shareRoutes.js";
+import { isSharePath, registerLoadShedding, setShareHeaders, type ShedOptions } from "./http/shed.js";
 import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
@@ -63,7 +65,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 /** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
 const NO_ROUTE = "(no route)";
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db; shed?: ShedOptions };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
@@ -96,7 +98,7 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
 }
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb, shed }: BuildOptions): Promise<FastifyInstance> {
   // G34 P2: the health checks ask the database on their own small pool (main.ts, db.ts createHealthPool) when given, so a
   // full app pool is never reported as "database not reachable"; without one (tests, tools) they use the app's.
   const probeDb = healthDb ?? db;
@@ -123,6 +125,17 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     },
     requestIdHeader: false,
     bodyLimit: 1024 * 1024,
+    // v0.18.116 §94 (supervisor SF-4): Fastify answers a path value over its length limit (and a badly encoded path)
+    // itself, before any hook, echoing the path. On the two share paths that answer is the same 404 as every other
+    // miss, never cached or indexed, and without the path; every other path keeps Fastify's own answer.
+    frameworkErrors: (error, request, typedReply) => {
+      const reply = typedReply as unknown as FastifyReply;
+      if (isSharePath(request.raw.url ?? "")) {
+        setShareHeaders(reply);
+        return reply.status(404).send(notFound("Link not found.", "share_not_found").body(request.id));
+      }
+      return reply.status(error.statusCode ?? 400).send({ error: "Bad Request", code: error.code, message: error.message, statusCode: error.statusCode ?? 400 });
+    },
     // Trust exactly TRUST_PROXY_HOPS proxies: the address is the one the nearest trusted proxy saw.
     trustProxy: env.TRUST_PROXY_HOPS > 0 ? (_address: string, hop: number) => hop < env.TRUST_PROXY_HOPS : false,
   });
@@ -183,9 +196,11 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   });
 
   // B11: the general write limit (contract.json#rateLimit), before any route reads the body or the database.
-  registerWriteLimit(app, writeLimitsFrom(env), { jwtSecret: db !== undefined ? (env.JWT_SECRET ?? DEV_JWT_SECRET) : env.JWT_SECRET, db, defaultZoneId: env.DEFAULT_ZONE_ID, exemptPaths: env.MOVERA_ENV === "production" ? [] : SIGN_IN_PATHS, ...(clock ? { clock } : {}) });
+  const unreadBody = registerWriteLimit(app, writeLimitsFrom(env), { jwtSecret: db !== undefined ? (env.JWT_SECRET ?? DEV_JWT_SECRET) : env.JWT_SECRET, db, defaultZoneId: env.DEFAULT_ZONE_ID, exemptPaths: env.MOVERA_ENV === "production" ? [] : SIGN_IN_PATHS, ...(clock ? { clock } : {}) });
 
-  app.setErrorHandler(async (error: FastifyError | ApiError, request, reply) => {
+  app.setErrorHandler(async (thrown: FastifyError | ApiError, request, reply) => {
+    // Q117 follow-up SF-2: a sign-in / refresh body that never parsed is counted on the address (429 when full).
+    const error = unreadBody?.(request) ?? thrown;
     if (error instanceof ApiError) {
       if (error.options.retryAfterSeconds !== undefined) reply.header("Retry-After", String(error.options.retryAfterSeconds));
       return reply.status(error.status).send(error.body(request.id));
@@ -224,6 +239,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const error = request.url.startsWith(API_PREFIX)
       ? notFound("This operation is not enabled on this server.", "operation_not_enabled")
       : notFound();
+    // v0.18.116 §94 (supervisor SF-4): a share path that matches no route (an over-long token) is not cached or indexed either.
+    if (isSharePath(request.url)) setShareHeaders(reply);
     return reply.status(404).send(error.body(request.id));
   });
 
@@ -339,10 +356,18 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // v0.18.6 §32 (owner G4-F2..F6): the admin's Dispatch tools and the driver's events.
     await dispatchToolRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}), ...(sms ? { sms } : {}), warn: (data, message) => app.log.warn(data, message) });
+    // v0.18.116 §94 (BQ-S10): the rider's live trip link and its two public reads (their own budget, per copy).
+    await shareRoutes(app, { db, jwtSecret, ...(env.SHARE_LINK_BASE ? { linkBase: env.SHARE_LINK_BASE } : {}), perAddressPerMinute: shareOf(SHARE_LIMITS.perAddressPerMinute, env.WEB_COPIES), perTokenPerMinute: shareOf(SHARE_LIMITS.perTokenPerMinute, env.WEB_COPIES), ...(clock ? { clock } : {}) });
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
+
+  // Live outage 2026-11-17 (#268 post-mortem): the load-shedding hooks are part of EVERY built app, last (as main.ts
+  // added them after buildApp), so the inject()/listen tests run the same hooks as live. main.ts passes the real limits
+  // (SHED_*, its pool); without `shed` (tests, tools) both limits are 0 = never shed, but the gone-client checks still run.
+  const stopShedding = registerLoadShedding(app, shed ?? { maxPoolWaiting: 0, maxLoopDelayMs: 0, poolWaiting: () => 0 });
+  app.addHook("onClose", async () => stopShedding());
 
   return app;
 }

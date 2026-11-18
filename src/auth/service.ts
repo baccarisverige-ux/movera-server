@@ -46,8 +46,12 @@ export const OTP = {
 
 /**
  * Wrong codes for this number from this client address in the last 24 h (both apps, codes not lifted by an admin), and
- * when the oldest of them leaves the window. Checker MED 3: the lock is per number AND source, so a stranger guessing
- * from his wifi never locks the owner out on his own phone.
+ * when the oldest of them leaves the window. Checker MED 3: this lock is per number AND source, so a stranger guessing
+ * from one wifi does not lock the owner out on his own network. It is not the only lock: S7 W2 Q118 (owner 2026-11-16
+ * "Lock at 60 for 24 h") adds the number's ceiling below (all addresses, PHONE_WRONG_CODES_CEILING_FACTOR ×
+ * wrongCodesPerDay), so a stranger with several networks CAN lock the number for every address, for up to 24 h; an admin
+ * unlock (unlockSignIn) lifts both at once, and phones already signed in keep working. (codesPerPhonePerHour could
+ * already block new codes for a number for one hour.)
  */
 async function wrongCodesToday(ex: Executor, phone: string, ip: string | undefined, now: Date): Promise<{ wrong: number; oldest: Date | null }> {
   const dayAgo = new Date(now.getTime() - 24 * 3_600_000);
@@ -56,6 +60,28 @@ async function wrongCodesToday(ex: Executor, phone: string, ip: string | undefin
     .select([sql<string>`coalesce(sum(attempts - (CASE WHEN verified THEN 1 ELSE 0 END)), 0)`.as("wrong"), sql<Date | null>`min(created_at) FILTER (WHERE attempts > (CASE WHEN verified THEN 1 ELSE 0 END))`.as("oldest")])
     .where("phone", "=", phone)
     .where((eb) => (ip === undefined ? eb("ip", "is", null) : eb("ip", "=", ip)))
+    .where("unlocked_at", "is", null)
+    .where("created_at", ">", dayAgo)
+    .executeTakeFirstOrThrow();
+  return { wrong: Number(row.wrong), oldest: row.oldest ? new Date(row.oldest) : null };
+}
+
+/**
+ * S7 W2 Q118 (owner 2026-11-15 "Yes, phone + address ... phone alone only as a high ceiling"): the lock above is per
+ * number AND address, so guessing one number's code from many addresses was never stopped by it. The number alone has
+ * a ceiling of this many times wrongCodesPerDay in 24 h (all addresses, both apps, not lifted by an admin); at it the
+ * number is locked for every address (otp_locked_today) until the oldest wrong code leaves the window or an admin
+ * unlocks it. Owner 2026-11-16 (OQ-1 "Lock at 60 for 24 h", OQ-2 "Keep fixed in server"): 4 × the default 15 = 60,
+ * for up to 24 h, a server constant (not an admin setting).
+ */
+export const PHONE_WRONG_CODES_CEILING_FACTOR = 4;
+
+async function wrongCodesTodayAllAddresses(ex: Executor, phone: string, now: Date): Promise<{ wrong: number; oldest: Date | null }> {
+  const dayAgo = new Date(now.getTime() - 24 * 3_600_000);
+  const row = await ex
+    .selectFrom("otp_sessions")
+    .select([sql<string>`coalesce(sum(attempts - (CASE WHEN verified THEN 1 ELSE 0 END)), 0)`.as("wrong"), sql<Date | null>`min(created_at) FILTER (WHERE attempts > (CASE WHEN verified THEN 1 ELSE 0 END))`.as("oldest")])
+    .where("phone", "=", phone)
     .where("unlocked_at", "is", null)
     .where("created_at", ">", dayAgo)
     .executeTakeFirstOrThrow();
@@ -175,6 +201,8 @@ export async function requestOtp(
     }
     const today = await wrongCodesToday(trx, input.phone, client.ip, now);
     if (today.wrong >= limits.wrongCodesPerDay) throw lockedToday(today.oldest, now);
+    const everywhere = await wrongCodesTodayAllAddresses(trx, input.phone, now);
+    if (everywhere.wrong >= limits.wrongCodesPerDay * PHONE_WRONG_CODES_CEILING_FACTOR) throw lockedToday(everywhere.oldest, now);
     if (client.ip !== undefined && !fast) {
       const fromIp = await trx
         .selectFrom("otp_sessions")
@@ -266,10 +294,14 @@ export async function verifyOtp(
     const limits = await countryLimitsFor(trx, countryOfPhone(session.phone));
     const today = await wrongCodesToday(trx, session.phone, client.ip, now);
     if (today.wrong >= limits.wrongCodesPerDay) return { ok: false, error: lockedToday(today.oldest, now) };
+    const ceiling = limits.wrongCodesPerDay * PHONE_WRONG_CODES_CEILING_FACTOR;
+    const everywhere = await wrongCodesTodayAllAddresses(trx, session.phone, now);
+    if (everywhere.wrong >= ceiling) return { ok: false, error: lockedToday(everywhere.oldest, now) };
     if (!sameHash(session.code_sha256, codeHash(session.session_id, input.code))) {
       const attempts = session.attempts + 1;
       await trx.updateTable("otp_sessions").set({ attempts }).where("session_id", "=", session.session_id).execute();
       if (today.wrong + 1 >= limits.wrongCodesPerDay) return { ok: false, error: lockedToday(today.oldest ?? session.created_at, now) };
+      if (everywhere.wrong + 1 >= ceiling) return { ok: false, error: lockedToday(everywhere.oldest ?? session.created_at, now) };
       // v0.18.5 (G1-B3, owner "Fix it (Recommended)"): counted before the answer, so the wrong code that reaches
       // maxAttempts (the 5th) already says "Too many wrong tries".
       if (attempts >= session.max_attempts) return { ok: false, error: rateLimited("Too many wrong codes. Ask for a new code.", OTP.retryAfterSeconds, "otp_too_many_attempts") };
@@ -540,6 +572,12 @@ export async function rotateRefresh(trx: Trx, refreshToken: string, now: Date, o
   await trx.updateTable("refresh_tokens").set({ used_at: token.used_at ?? now, replaced_by: nextHash }).where("token_sha256", "=", hash).execute();
   await trx.updateTable("auth_sessions").set({ expires_at: expiresAt, last_refresh_at: now }).where("session_id", "=", session.session_id).execute();
   return { ok: true, sessionId: session.session_id, actor: session.actor, subjectId: session.subject_id, refreshToken: next };
+}
+
+/** The session a refresh token belongs to (used or not), for the write limit's key (S7 W2 Q118); none: unknown token. */
+export async function refreshSessionOf(ex: Executor, refreshToken: string): Promise<string | undefined> {
+  const row = await ex.selectFrom("refresh_tokens").select("session_id").where("token_sha256", "=", sha256(refreshToken)).executeTakeFirst();
+  return row?.session_id;
 }
 
 type RefreshOutcome = { ok: true; tokens: AuthTokens } | { ok: false; error: ApiError };
