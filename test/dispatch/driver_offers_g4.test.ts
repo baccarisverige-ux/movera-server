@@ -237,7 +237,9 @@ describe("G4 decision 4: the driver asks whether his accept went through", () =>
 });
 
 describe("G4-E3: hand-sent offers count toward the in-a-row limit", () => {
-  it("two declined hand-sent offers with a limit of 2 set the driver offline", async () => {
+  // Owner 2026-11-16 "It's not when driver decline ! It count when driver ignore" (contract v0.18.120): only hand-sent
+  // offers the driver let expire count; declined ones never do (was: "two declined hand-sent offers ... set the driver offline").
+  for (const answer of ["declined", "expired"] as const) it(`two ${answer} hand-sent offers with a limit of 2: ${answer === "expired" ? "the driver is set offline" : "he stays online"}`, async () => {
     await setDriverDoc((doc) => ((doc["offers"] as { autoOffline: Record<string, number> }).autoOffline.missedExclusive = 2));
     // No automatic offers: only the admin's.
     await database.db.insertInto("dispatch_controls").values({ zone_id: "Z001", paused: true, mode: null, by: null, at: clock.now, version: 1 }).execute();
@@ -249,14 +251,23 @@ describe("G4-E3: hand-sent offers count toward the in-a-row limit", () => {
       const [offer] = await openOffers("A");
       expect(offer).toMatchObject({ kind: "assigned", source: "admin" });
       clock.now = new Date(clock.now.getTime() + 1000);
-      expect((await call(app, "POST", `/offers/${offer!.offerId}/decline`, drivers.A.headers, { expectedVersion: offer!.version })).statusCode).toBe(200);
+      if (answer === "declined") expect((await call(app, "POST", `/offers/${offer!.offerId}/decline`, drivers.A.headers, { expectedVersion: offer!.version })).statusCode).toBe(200);
+      else {
+        // He ignores it: the offer runs out.
+        clock.now = new Date(new Date(offer!["expiresAt"] as string).getTime() + 1000);
+        await worker.runDue();
+      }
       // The rider gives up on that trip before the next one (one live trip per rider).
       await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", tripId).execute();
       await database.db.deleteFrom("timers").execute();
     }
-    expect((await call(app, "GET", "/driver/profile", drivers.A.headers)).json()).toMatchObject({ onlineStatus: "offline" });
-    const last = await database.db.selectFrom("offer_events").select("offer").where("driver_id", "=", drivers.A.id).orderBy("sequence", "desc").executeTakeFirstOrThrow();
-    expect(last.offer).toMatchObject({ kind: "assigned", status: "declined", driverOffline: true });
+    expect((await call(app, "GET", "/driver/profile", drivers.A.headers)).json()).toMatchObject({ onlineStatus: answer === "expired" ? "offline" : "online" });
+    const events = await database.db.selectFrom("offer_events").select("offer").where("driver_id", "=", drivers.A.id).orderBy("sequence", "desc").execute();
+    const closed = events.map((e) => e.offer as Record<string, unknown>).filter((o) => o["status"] === answer);
+    expect(closed.length).toBeGreaterThanOrEqual(2);
+    expect(closed[0]).toMatchObject({ kind: "assigned", status: answer });
+    if (answer === "expired") expect(closed[0]).toMatchObject({ driverOffline: true });
+    else expect(events.some((e) => (e.offer as Record<string, unknown>)["driverOffline"] === true)).toBe(false);
   });
 });
 
