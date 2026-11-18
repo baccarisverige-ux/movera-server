@@ -247,6 +247,10 @@ for (let i = 1; i <= 10; i++) {
 }
 await setGeo(driver, { ...DROPOFF, speed: 0 });
 await driver.waitForTimeout(12000);
+// G18 (owner 2026-11-16): a cash trip's button reads "Finish trip" first;
+// tapped, the same button becomes "Collect cash".
+await driver.mouse.click(195, 790); // "Finish trip"
+await driver.waitForTimeout(1500);
 await driver.mouse.click(195, 790); // "Collect cash"
 await driver.waitForTimeout(2500);
 await driver.screenshot({ path: join(OUT, "6a-collect-cash-driver.png") });
