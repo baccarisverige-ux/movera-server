@@ -153,7 +153,7 @@ describe("History and Restore of a country's standard documents", () => {
       const next: Json = { ...doc, tips: [{ amount: sek(1200), enabled: true }], payoutMode: "automatic", payoutSchedule: nowSchedule, maxRiderDebt: sek(50000) };
       delete next["driverOwesLimit"];
       return next;
-    });
+    }, undefined, ["driverOwesLimit"]);
     const undone = await owner.post("/admin/config/country_rules/restore", { country: "SE", version: old["version"], expectedVersion: live["version"] });
     expect(undone.status, JSON.stringify(undone.body)).toBe(200);
     const [now] = await items("country=SE&limit=1");
@@ -166,6 +166,43 @@ describe("History and Restore of a country's standard documents", () => {
     const draft = (await owner.get("/admin/config/country_rules?country=SE")).body;
     expect(draft.document["payoutMode"]).toBe("automatic");
     expect(draft.document["maxRiderDebt"]).toEqual(sek(50000));
+  });
+
+  /**
+   * v0.18.123 guard x Q-SCS-2: a payout / debt key the live document lacks but the unpublished draft still has must not
+   * come back through Restore (the guard would copy it from the draft unless Restore names it in removeKeys).
+   */
+  it("Restore does not bring back a payout / debt key that only the unpublished draft has (MONEY, Q-SCS-2 x kept keys)", async () => {
+    const old = await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips: [{ amount: sek(1300), enabled: true }], driverOwesLimit: { enabled: true, max: sek(90000) } }));
+    const live = await sim.publish(owner, "country_rules", "SE", (doc) => {
+      const next: Json = { ...doc, tips: [{ amount: sek(1400), enabled: true }] };
+      delete next["driverOwesLimit"];
+      return next;
+    }, undefined, ["driverOwesLimit"]);
+    expect(live["document"] ?? (await items("country=SE&limit=1"))[0]!["document"]).not.toHaveProperty("driverOwesLimit");
+    // An unpublished draft that sets a debt limit again (not published).
+    const draft = (await owner.get("/admin/config/country_rules?country=SE")).body;
+    const saved = await owner.put("/admin/config/country_rules", { expectedVersion: draft["version"], country: "SE", document: { ...draft["document"], driverOwesLimit: { enabled: true, max: sek(70000) } } });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    const undone = await owner.post("/admin/config/country_rules/restore", { country: "SE", version: old["version"], expectedVersion: live["version"] });
+    expect(undone.status, JSON.stringify(undone.body)).toBe(200);
+    const [now] = await items("country=SE&limit=1");
+    expect(now!["document"]).not.toHaveProperty("driverOwesLimit");
+    expect((now!["document"] as Json)["tips"]).toEqual([{ amount: sek(1300), enabled: true }]);
+  });
+
+  /** Owner 2026-11-17: Undo / Restore keeps the current call settings (calls.adminCallRoles, calls.phoneProvider), like Q-SCS-2. */
+  it("Restore keeps the current call roles and phone provider; the rest of calls is restored", async () => {
+    const old = await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips: [{ amount: sek(1500), enabled: true }], calls: { ...((doc["calls"] as Json) ?? {}), on: false, adminCallRoles: ["super"], phoneProvider: "none" } }));
+    const live = await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips: [{ amount: sek(1600), enabled: true }], calls: { ...((doc["calls"] as Json) ?? {}), on: true, adminCallRoles: ["super", "ops"], phoneProvider: "twilio" } }));
+    const undone = await owner.post("/admin/config/country_rules/restore", { country: "SE", version: old["version"], expectedVersion: live["version"] });
+    expect(undone.status, JSON.stringify(undone.body)).toBe(200);
+    const [now] = await items("country=SE&limit=1");
+    const calls = (now!["document"] as Json)["calls"] as Json;
+    expect(calls["adminCallRoles"]).toEqual(["super", "ops"]);
+    expect(calls["phoneProvider"]).toBe("twilio");
+    expect(calls["on"]).toBe(false);
+    expect((now!["document"] as Json)["tips"]).toEqual([{ amount: sek(1500), enabled: true }]);
   });
 
   it("names exactly one of zoneId or country; an unknown zone or country is 404; another country's admin is refused", async () => {

@@ -3,7 +3,7 @@ import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
 import "./schema.js";
-import { LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
+import { LANE_LATE_LIMITS, LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
 /**
@@ -335,10 +335,11 @@ async function systemCauses(ctx: Ctx): Promise<Cause[]> {
   const parked = await sql<{ kind: string; n: string; refs: string[] }>`
     SELECT kind, count(*) AS n, (array_agg(ref_id ORDER BY ref_id))[1:${sql.lit(PARKED_REFS_SHOWN)}] AS refs
       FROM timers WHERE attempts >= ${MAX_ATTEMPTS} GROUP BY kind ORDER BY kind`.execute(ctx.ex);
-  if (parked.rows.length === 0) return [];
+  const late = await laneLateCauses(ctx);
+  if (parked.rows.length === 0) return late;
   // No zone: one per country book (Super admins see alerts without a zone).
   const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
-  return countries.flatMap((country) => {
+  return countries.flatMap((country): Cause[] => {
     const k = settingsOf(ctx, country).kind("system_health");
     if (!k.on) return [];
     return parked.rows.map((p) => {
@@ -347,6 +348,42 @@ async function systemCauses(ctx: Ctx): Promise<Cause[]> {
       const named = `${p.kind}: ${p.refs.join(", ")}${n > p.refs.length ? ", …" : ""}`;
       return { key: `system_health:timers:${p.kind}:${country}`, kind: "system_health", country, zoneId: null, level, title: T("{0} background jobs failed on the server", [n]), detail: T("{0}", [named]), ref: {} };
     });
+  }).concat(late);
+}
+
+/**
+ * L20-6 (load test 20k): the trip-timer lane running late is an admin alert, not only a /healthz/jobs line. Same
+ * groups and limits as the heartbeat (LANE_LATE_LIMITS: trip_timers 60 s, dispatch 30 s): when a group's oldest due
+ * timer is at least lateMs past due, one critical system_health alert per country book; it turns solved by itself when
+ * the lane catches up. Parked timers (due 'infinity') never count here (they have their own alert above).
+ */
+async function laneLateCauses(ctx: Ctx): Promise<Cause[]> {
+  const kinds = LANE_LATE_LIMITS.flatMap((group) => group.kinds);
+  const due = await sql<{ kind: string; n: number; oldest_ms: number }>`
+    SELECT kind, count(*)::int AS n, (extract(epoch FROM min(due_at)) * 1000)::float8 AS oldest_ms
+      FROM timers WHERE due_at <= ${ctx.now} AND kind IN (${sql.join(kinds)}) GROUP BY kind`.execute(ctx.ex);
+  if (due.rows.length === 0) return [];
+  const late = LANE_LATE_LIMITS.flatMap((group) => {
+    const rows = due.rows.filter((row) => group.kinds.includes(row.kind));
+    if (rows.length === 0) return [];
+    const lateMs = ctx.now.getTime() - Math.min(...rows.map((row) => Number(row.oldest_ms)));
+    return lateMs >= group.lateMs ? [{ group: group.group, seconds: Math.floor(lateMs / 1000), overdue: rows.reduce((sum, row) => sum + row.n, 0) }] : [];
+  });
+  if (late.length === 0) return [];
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  return countries.flatMap((country) => {
+    if (!settingsOf(ctx, country).kind("system_health").on) return [];
+    return late.map((l) => ({
+      key: `system_health:lane_late:${l.group}:${country}`,
+      kind: "system_health",
+      country,
+      zoneId: null,
+      level: "critical" as const,
+      // contract v0.18.125: whole sentences (no English word as an argument) so the admin can translate them.
+      title: l.group === "trip_timers" ? T("Server trip timers are running {0} s late", [l.seconds]) : T("Server dispatch rounds are running {0} s late", [l.seconds]),
+      detail: l.group === "trip_timers" ? T("{0} trip timers overdue", [l.overdue]) : T("{0} dispatch rounds overdue", [l.overdue]),
+      ref: {},
+    }));
   });
 }
 

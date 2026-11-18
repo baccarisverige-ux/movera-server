@@ -335,6 +335,29 @@ export async function incidentEventsAfter(ex: Executor, after: number, limit: nu
   return ex.selectFrom("incident_events").selectAll().where("sequence", ">", String(after)).orderBy("sequence", "asc").limit(limit).execute();
 }
 
+/**
+ * S7 W2 Q126 = Q-B4 (contract v0.18.126, owner 2026-11-15 "Yes, open ones only (Rec.)"): where a feed with no cursor
+ * starts. The newest sequence first, then the newest event (at or before it) of each open (open | investigating)
+ * incident, oldest first. Never cut: every open case is an alarm the panel must know. Sequences are given under one
+ * advisory lock (appendIncidentEvent), so nothing at or below `newest` can still appear; later events come live.
+ * Rule 33: read from the one table, no memory per server copy.
+ */
+export async function openIncidentStart(ex: Executor) {
+  const top = await ex.selectFrom("incident_events").select(sql<string | null>`max(sequence)`.as("n")).executeTakeFirst();
+  const newest = Number(top?.n ?? 0);
+  if (newest === 0) return { newest, rows: [] };
+  const found = await sql<{ sequence: string; event_id: string; incident_id: string; kind: string; incident: unknown; occurred_at: Date }>`
+    SELECT e.sequence, e.event_id, e.incident_id, e.kind, e.incident, e.occurred_at
+    FROM incidents i
+    CROSS JOIN LATERAL (
+      SELECT * FROM incident_events ev WHERE ev.incident_id = i.incident_id AND ev.sequence <= ${newest}
+      ORDER BY ev.sequence DESC LIMIT 1
+    ) e
+    WHERE i.status IN ('open', 'investigating')
+    ORDER BY e.sequence ASC`.execute(ex);
+  return { newest, rows: found.rows };
+}
+
 export function eventOf(row: { sequence: string; event_id: string; kind: string; incident: unknown; occurred_at: Date }, now: Date) {
   return { eventId: row.event_id, sequence: Number(row.sequence), kind: row.kind, incident: row.incident, occurredAt: row.occurred_at.toISOString(), serverTime: now.toISOString() };
 }

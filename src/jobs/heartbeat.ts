@@ -7,6 +7,7 @@ import { SMART_SURGE_CHECK } from "../pricing/surge.js";
 import { HOUSEKEEPING_KINDS } from "./housekeeping.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "./maintenance.js";
 import { PAYOUT_CLOSE } from "./payouts.js";
+import { LANE_LATE_LIMITS } from "./parkedKinds.js";
 
 /**
  * S4 B1.28 (owner W1 Q88 "An outside check that wakes you when background jobs stop? — A) Yes"): the recurring server
@@ -46,11 +47,8 @@ export const LATE_FACTOR = 3;
  * watched as groups. A group is late when its oldest due timer is at least lateMs past due; it is then named with
  * lateSeconds and overdue (how many of its timers are past due). A parked timer (due 'infinity') is never past due here.
  */
-export const LANE_LATE_LIMITS: ReadonlyArray<{ group: string; kinds: string[]; lateMs: number }> = [
-  // The kind names, not the constants (no import of the trip / dispatch runtime here); test/jobs/heartbeat.test.ts checks them.
-  { group: "trip_timers", kinds: ["trip_eta", "ride_check_scan", "near_dropoff", "pickup_geofence"], lateMs: 60_000 },
-  { group: "dispatch", kinds: ["dispatch_round", "withdraw_driver_offers"], lateMs: 30_000 },
-];
+// L20-6: kept in the leaf module parkedKinds.ts so the alert detector reads the same limits without an import cycle.
+export { LANE_LATE_LIMITS };
 
 export type JobState = { kind: string; state: "parked" | "missing" | "late"; lateSeconds?: number; overdue?: number };
 export type JobsHeartbeat = { status: "ok" | "late"; checkedAt: string; jobs: JobState[] };

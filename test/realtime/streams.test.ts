@@ -1,6 +1,7 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { FastifyInstance } from "fastify";
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { TEST_PHONES, seedTestPhones } from "../../src/auth/testPhones.js";
@@ -393,6 +394,29 @@ describe("driver_reservations_changed (v0.18.45 §68)", () => {
       expect(await until(() => kinds(drv, "driver_reservations_changed").length === 1)).toBe(true);
     } finally {
       drv.close();
+      await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
+    }
+  });
+
+  it("v0.18.127 S7 W2 Q119 (owner \"All except GPS (Rec.)\"): a GPS update (kind location) sends no rider_trip_changed; any other event still does", async () => {
+    const trip = await bookTrip(rider);
+    const rid = await listen("/rider/config/stream?zoneId=Z001", rider);
+    try {
+      await quiet();
+      const before = kinds(rid, "rider_trip_changed").length;
+      await database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId: trip.tripId, kind: "location", version: 1, location: { lat: 59.33, lng: 18.06 } }));
+      await database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId: trip.tripId, kind: "location", version: 1, location: { lat: 59.331, lng: 18.061 }, etaSeconds: 120 }));
+      await quiet();
+      expect(kinds(rid, "rider_trip_changed")).toHaveLength(before);
+      await database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId: trip.tripId, kind: "message", version: 1, message: { text: "hi" } }));
+      expect(await until(() => kinds(rid, "rider_trip_changed").length === before + 1)).toBe(true);
+      expect(kinds(rid, "rider_trip_changed").at(-1)!.data["tripId"]).toBe(trip.tripId);
+      // Rule 33 (rolling deploy): a notice from an older copy carries no kind and still sends the hint.
+      const old = { tripId: trip.tripId, sequence: 99, riderId: subjectOf(rider), zoneId: "Z001", scheduled: false };
+      await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify(old)})`.execute(database.db);
+      expect(await until(() => kinds(rid, "rider_trip_changed").length === before + 2)).toBe(true);
+    } finally {
+      rid.close();
       await call(app, "POST", `/trips/${trip.tripId}/cancel`, rider, { expectedVersion: 3, reasonCode: "plans_changed" });
     }
   });

@@ -70,19 +70,28 @@ export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.Writa
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
 
-/** True when the database answers SELECT 1 within `ms`; never throws. */
-async function databaseAnswers(db: Db, ms: number): Promise<boolean> {
+/**
+ * L20-6 (load test 20k): what the health checks say about the database. "ok": SELECT 1 answered in time. "busy": the
+ * database is there but slow or full (our wait ran out, Postgres cancelled the statement 57014, or it has no free
+ * connection 53300/53400). "unavailable": anything else (refused, reset, unknown host, failed to connect). Never throws.
+ */
+export type DatabaseState = "ok" | "busy" | "unavailable";
+const BUSY_CODES = new Set(["57014", "53300", "53400"]);
+export async function databaseState(db: Db, ms: number): Promise<DatabaseState> {
   let timer: NodeJS.Timeout | undefined;
+  const TIMEOUT = Symbol("timeout");
   try {
     await Promise.race([
       sql`SELECT 1`.execute(db),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), ms);
+        timer = setTimeout(() => reject(TIMEOUT), ms);
       }),
     ]);
-    return true;
-  } catch {
-    return false;
+    return "ok";
+  } catch (error) {
+    if (error === TIMEOUT) return "busy";
+    const code = (error as { code?: unknown } | null)?.code;
+    return typeof code === "string" && BUSY_CODES.has(code) ? "busy" : "unavailable";
   } finally {
     clearTimeout(timer);
   }
@@ -254,7 +263,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     apiVersion: API_VERSION,
     env: env.MOVERA_ENV,
     ...(db !== undefined ? { dbPool: poolStats() } : {}),
-    database: probeDb === undefined ? "not_configured" : (await databaseAnswers(probeDb, HEALTH_DB_TIMEOUT_MS)) ? "ok" : "unavailable",
+    // L20-6: "busy" (slow / full) is told apart from "unavailable" (down).
+    database: probeDb === undefined ? "not_configured" : await databaseState(probeDb, HEALTH_DB_TIMEOUT_MS),
     // S04 A4: the LISTEN connection every stream depends on (not in the contract: /healthz is an ops endpoint).
     ...(hub !== undefined ? { realtime: hub.healthSnapshot() } : {}),
   }));
@@ -266,19 +276,23 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   // the host take working copies out of service (the same reason /healthz/jobs is not the hosting health check).
   app.get("/readyz", async () => {
     if (probeDb === undefined) return { status: "ready", database: "not_configured" };
-    if (!(await databaseAnswers(probeDb, READY_TIMEOUT_MS))) {
+    // L20-6: only a database that is DOWN makes a copy "not ready". A busy database (slow answer, no free connection)
+    // is shared by every copy, so a 503 would make the host pull all of them at once and turn slowness into an outage;
+    // the copy stays in service and says database "busy".
+    const database = await databaseState(probeDb, READY_TIMEOUT_MS);
+    if (database === "unavailable") {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
     }
     if (hub !== undefined && !hub.readyForTraffic()) {
       throw new ApiError("unavailable", "The live link to the database is still connecting.", { reason: "realtime_starting", retryAfterSeconds: 5 });
     }
-    return { status: "ready", database: "ok", ...(hub !== undefined ? { realtime: hub.healthSnapshot().status } : {}) };
+    return { status: "ready", database, ...(hub !== undefined ? { realtime: hub.healthSnapshot().status } : {}) };
   });
   // S4 B1.28 (owner W1 Q88): 503 when a recurring server job is parked, missing or more than 3× its period late
   // (jobs/heartbeat.ts). No token, kind + state only. For the outside monitor (U9); never the hosting health check.
   app.get("/healthz/jobs", async (_request, reply) => {
     if (probeDb === undefined) return { status: "not_configured" };
-    if (!(await databaseAnswers(probeDb, READY_TIMEOUT_MS))) {
+    if ((await databaseState(probeDb, READY_TIMEOUT_MS)) !== "ok") {
       throw new ApiError("unavailable", "The database is not reachable.", { reason: "database_unavailable", retryAfterSeconds: 5 });
     }
     const heartbeat = await jobsHeartbeat(probeDb, clock?.() ?? new Date());
