@@ -29,6 +29,8 @@ let notifyTotal = 0;
 const telemetryDropped = { rows: 0, bytes: 0, byKind: new Map<string, number>() };
 let openStreams = 0;
 let streamsOpened = 0;
+/** S7 Q125: app streams opened while their session already had APP_STREAMS_PER_SESSION_LOG open on this copy. */
+let appOverPerSession = 0;
 /** NOTIFY messages received in each of the last 60 one-second buckets (per-second rate without a timer). */
 const notifyBuckets = new Array<number>(60).fill(0);
 let notifyBucketSecond = 0;
@@ -83,6 +85,9 @@ export function streamOpened(): void {
   openStreams += 1;
   streamsOpened += 1;
 }
+export function recordAppStreamOverPerSession(): void {
+  appOverPerSession += 1;
+}
 export function streamClosed(): void {
   openStreams = Math.max(0, openStreams - 1);
 }
@@ -102,7 +107,7 @@ export function loadSnapshot(now = Date.now()): Record<string, unknown> {
     timerLanes: Object.fromEntries([...lanes].map(([name, l]) => [name, { runs: l.runs, lagLastMs: round(l.lastMs), lagMaxMs: round(l.maxMs), lagAvgMs: round(l.runs > 0 ? l.sumMs / l.runs : 0) }])),
     timersParkedByThisCopy: { total: parkedByThisCopy, byKind: Object.fromEntries(parkedKinds) },
     notify: { total: notifyTotal, perSecondLast10s: last10 / 10 },
-    streams: { open: openStreams, openedTotal: streamsOpened },
+    streams: { open: openStreams, openedTotal: streamsOpened, appOverPerSession },
     telemetryNotStored: { rows: telemetryDropped.rows, bytes: telemetryDropped.bytes, byKind: Object.fromEntries(telemetryDropped.byKind) },
     eventLoop: { p99Ms: round(loopDelay.percentile(99) / 1e6), maxMs: round(loopDelay.max / 1e6) },
     memoryMb: { rss: Math.round(memory.rss / 1048576), heapUsed: Math.round(memory.heapUsed / 1048576) },

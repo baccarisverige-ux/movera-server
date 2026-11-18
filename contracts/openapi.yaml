@@ -1,11 +1,11 @@
-# Movera API v0.18.127 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.128 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.127
+  version: 0.18.128
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.127 in this folder; this file must agree with them.
+    v0.18.128 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.127
+  version: 0.18.128
   source: contract.json
 paths:
   /auth/otp/request:
@@ -1546,6 +1546,8 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+      description: 'v0.18.128 (contract.json#realtime.appStreamsPerSession): more than 3 open app streams of one session on
+        a server copy are logged and counted, never refused in this version.'
   /rider/profile:
     get:
       operationId: getRiderProfile
@@ -2805,6 +2807,8 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+      description: 'v0.18.128 (contract.json#realtime.appStreamsPerSession): more than 3 open app streams of one session on
+        a server copy are logged and counted, never refused in this version.'
   /driver/offers/{offerId}:
     get:
       operationId: getDriverOffer
@@ -3512,7 +3516,8 @@ paths:
         stream to another zone, so the app reopens it (app rule above). ?zoneId= always wins (unchanged). A zone that does
         not exist is 404 zone_not_found (config and stream); on GET /driver/config a zone with nothing published (own or country
         standard) is 404 config_not_published and the app keeps its document. There is no rule limiting which zone a driver
-        may read (unchanged).'
+        may read (unchanged). v0.18.128 (contract.json#realtime.appStreamsPerSession): more than 3 open app streams of one
+        session on a server copy are logged and counted, never refused in this version.'
   /driver/earnings:
     get:
       operationId: getDriverEarnings
