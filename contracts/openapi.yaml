@@ -1,11 +1,11 @@
-# Movera API v0.18.129 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.130 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.129
+  version: 0.18.130
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.129 in this folder; this file must agree with them.
+    v0.18.130 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.129
+  version: 0.18.130
   source: contract.json
 paths:
   /auth/otp/request:
@@ -9390,7 +9390,13 @@ paths:
         unchanged (the draft is already whole). Rule for later: a field that no whole-document admin screen owns goes on this
         list in the same contract version that adds it. ConfigDraftUpdate.removeKeys (optional, array of dotted paths): each
         must be a kept key of that document, else 400 invalid_request, reason unknown_kept_key, details ["key:<path>"], nothing
-        saved. A named key that the sent document carries is saved as sent (removeKeys only stops the keep).'
+        saved. A named key that the sent document carries is saved as sent (removeKeys only stops the keep). v0.18.130 (configDocs.keptKeys;
+        driver_app_config: realtime.oneStream): v0.18.130 (SCS guard re-check follow-up, owner Q-SCS-1 "Keep values, save
+        rest (Rec.)"): the driver document keeps realtime.oneStream (driverOneStream, v0.18.122) when a save leaves out realtime,
+        so the one-live-connection switch never falls back to off by a save from another screen. offers.autoOffline is not
+        listed: every admin save of the driver document starts from the server document and writes offers whole from the Dispatch
+        page that owns it. Publish and Restore are unchanged (Restore names a removed kept key in removeKeys, as for the other
+        documents).'
       tags:
       - Admin · Config
       x-actor:
@@ -31316,7 +31322,8 @@ components:
             - payoutMode
             - payoutSchedule
             - radar.reaskAfterSeconds
-          maxItems: 8
+            - realtime.oneStream
+          maxItems: 9
           description: 'v0.18.123 (configDocs.keptKeys.removeKeys): ConfigDraftUpdate.removeKeys (optional, array of dotted
             paths): each must be a kept key of that document, else 400 invalid_request, reason unknown_kept_key, details ["key:<path>"],
             nothing saved. A named key that the sent document carries is saved as sent (removeKeys only stops the keep).'

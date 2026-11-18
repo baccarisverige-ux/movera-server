@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.129",
+  "version": "0.18.130",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -1345,6 +1345,10 @@
         "radar.reaskAfterSeconds",
         "exclusive.reaskAfterSeconds"
       ],
+      "driver_app_config": [
+        "realtime.oneStream"
+      ],
+      "driverAppConfigNote": "v0.18.130 (SCS guard re-check follow-up, owner Q-SCS-1 \"Keep values, save rest (Rec.)\"): the driver document keeps realtime.oneStream (driverOneStream, v0.18.122) when a save leaves out realtime, so the one-live-connection switch never falls back to off by a save from another screen. offers.autoOffline is not listed: every admin save of the driver document starts from the server document and writes offers whole from the Dispatch page that owns it. Publish and Restore are unchanged (Restore names a removed kept key in removeKeys, as for the other documents).",
       "removeKeys": "ConfigDraftUpdate.removeKeys (optional, array of dotted paths): each must be a kept key of that document, else 400 invalid_request, reason unknown_kept_key, details [\"key:<path>\"], nothing saved. A named key that the sent document carries is saved as sent (removeKeys only stops the keep)."
     },
     "standard": "v0.8.0 (owner 2026-10-27): every country has one standard rider_app_config, driver_app_config, pricing and dispatch, set in the admin, in the country's currency. A zone with no own published document of a kind uses its country's standard of that kind: the server serves it (GET /rider/config, /driver/config) and prices and dispatches with it, with zoneId set to the zone's id and usesStandard: true; its version is the standard's version. A zone with its own published document never uses the standard. Publishing a standard sends config_published (app documents) for every zone of the country that uses it. A zone's first own publish gets version max(own live, standard live) + 1. A standard document carries zoneId \"standard-<CC>\" (e.g. standard-SE) and its country's currency, country and timeZone. GET /admin/config/{doc}?zoneId returns usesStandard: true and the standard as the draft's starting point while the zone has nothing of its own.",
