@@ -43,7 +43,8 @@ const ScopeQuery = z.object(Scope);
 const OptionalZoneQuery = z.object({ zoneId: ZONE_ID.optional() });
 /** v0.18.25: ?draft=1 — honoured only for a preview token (contract.json#previewSession). */
 const AppDocQuery = z.object({ zoneId: ZONE_ID.optional(), draft: z.enum(["0", "1"]).optional() });
-const PutBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, document: z.unknown() });
+// v0.18.123 (configDocs.keptKeys.removeKeys): optional dotted paths of kept keys to really remove.
+const PutBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, document: z.unknown(), removeKeys: z.array(z.string().max(100)).max(20).optional() });
 const PublishBody = z.object({ expectedVersion: z.number().int().min(1), ...Scope, note: z.string().max(1000).optional() });
 const UseStandardBody = z.object({ expectedVersion: z.number().int().min(1), zoneId: ZONE_ID });
 const ApprovalParam = z.object({ approvalId: ZONE_ID });
@@ -201,7 +202,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const result = await runIdempotent(
       deps.db,
       { actor: "admin", subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "PUT", route: request.url.split("?")[0]!, body },
-      async (trx) => ({ status: 200, body: await putDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, document: body.document, adminId: who.subjectId }, now()) }),
+      async (trx) => ({ status: 200, body: await putDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, document: body.document, adminId: who.subjectId, ...(body.removeKeys ? { removeKeys: body.removeKeys } : {}) }, now()) }),
     );
     return result.body;
   });

@@ -237,13 +237,13 @@ export class Sim {
    * Publishes a changed copy of a zone's live settings document as a Super admin would (Admin › Config). v0.8.0:
    * `scope` "SE" style (two capitals) is a country's standard or country_rules (?country=).
    */
-  async publish(admin: Admin, doc: "pricing" | "dispatch" | "rider_app_config" | "driver_app_config" | "country_rules", scope: string, change: (document: Json) => Json, first?: Json): Promise<Json> {
+  async publish(admin: Admin, doc: "pricing" | "dispatch" | "rider_app_config" | "driver_app_config" | "country_rules", scope: string, change: (document: Json) => Json, first?: Json, removeKeys?: string[]): Promise<Json> {
     const at = /^[A-Z]{2}$/.test(scope) ? { country: scope } : { zoneId: scope };
     const query = "country" in at ? `country=${at.country}` : `zoneId=${at.zoneId}`;
     const draft = await admin.get(`/admin/config/${doc}?${query}`);
     if (draft.status !== 200 && !(draft.status === 404 && first)) throw new Error(`read ${doc}: ${draft.status} ${JSON.stringify(draft.body)}`);
     const start = draft.status === 200 ? { version: draft.body["version"], document: draft.body["document"] } : { version: 1, document: first };
-    const put = await admin.put(`/admin/config/${doc}`, { expectedVersion: start.version, ...at, document: change(structuredClone(start.document)) });
+    const put = await admin.put(`/admin/config/${doc}`, { expectedVersion: start.version, ...at, document: change(structuredClone(start.document)), ...(removeKeys ? { removeKeys } : {}) });
     if (put.status !== 200) throw new Error(`put ${doc}: ${put.status} ${JSON.stringify(put.body)}`);
     const published = await admin.post(`/admin/config/${doc}/publish`, { expectedVersion: put.body["version"], ...at });
     if (published.status !== 200) throw new Error(`publish ${doc}: ${published.status} ${JSON.stringify(published.body)}`);
