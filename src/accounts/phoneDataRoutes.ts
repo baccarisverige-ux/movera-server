@@ -16,6 +16,8 @@ const PlaceBody = z.object({
   label: z.string().min(1).max(80),
   kind: z.enum(["home", "work", "other"]),
   type: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).optional(),
+  // v0.18.129: the fixed ride category (CategoryId pattern); null clears, absent keeps.
+  preferredCategoryId: z.string().regex(/^[a-z][a-z0-9_]{1,31}$/).nullable().optional(),
   place: z.object({ address: z.string().min(1).max(512), lat: z.number().min(-90).max(90).optional(), lng: z.number().min(-180).max(180).optional() }).strict(),
 }).strict();
 const ImportBody = z.object({ items: z.array(PlaceBody).max(MAX_PLACES_CAP) }).strict();
