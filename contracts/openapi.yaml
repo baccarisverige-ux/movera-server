@@ -1,11 +1,11 @@
-# Movera API v0.18.125 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.126 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.125
+  version: 0.18.126
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.125 in this folder; this file must agree with them.
+    v0.18.126 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.125
+  version: 0.18.126
   source: contract.json
 paths:
   /auth/otp/request:
@@ -8469,7 +8469,17 @@ paths:
       summary: Admin incident feed (opened, updated, escalated, closed)
       description: 'v0.7.0. Any signed-in admin may listen. Events of an incident go to admins with incidents.read whose zones
         cover its zone; once it is escalated (not taken in contract.json#safety.escalateAfterSeconds) to every signed-in admin.
-        Without Accept: text/event-stream: a JSON page of the same events (polling fallback).'
+        Without Accept: text/event-stream: a JSON page of the same events (polling fallback). v0.18.126 (contract.json#safety.feedStart):
+        v0.18.126 (S7 W2 Q126 = Q-B4; owner 2026-11-15 "Yes, open ones only (Rec.)", Rules decisions/session-2026-11-06.md;
+        Rule 33): GET /admin/incidents/stream with no cursor (no `after`, `after=0`, no Last-Event-ID) starts from the OPEN
+        incidents: first the newest event of each open or investigating incident (at or before the newest sequence when the
+        stream opened), oldest first, then live after that newest sequence. Closed incidents'' history is not replayed. The
+        open start is never cut by `limit`: every open case is an alarm. The JSON page (polling) without a cursor answers
+        the same open start, with `nextCursor` = the newest sequence when it is newer than the last item, else null. With
+        a cursor (`after` > 0 or Last-Event-ID) nothing changes: every event after it, in order. Zone rules unchanged (mayHear).
+        Rule 33: the start and the newest sequence are read from the one incident_events table; a Last-Event-ID from one server
+        copy is valid on every copy; no shared memory. Admin: no change needed (the panel already reads the open incident
+        list on load and keeps the highest sequence it saw); rider and driver apps: none (they do not use this stream).'
       tags:
       - Admin · Safety
       x-actor:

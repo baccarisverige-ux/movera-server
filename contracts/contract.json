@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.125",
+  "version": "0.18.126",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -4429,7 +4429,8 @@
         }
       },
       "v0_18_57": "v0.18.57 §79: \"112\" in these texts and in safety.note / sos.note now means the country's emergency number(s) (emergencyNumbers); texts.call112 stays for older apps; new apps use emergencyNumbers.texts.callNumber."
-    }
+    },
+    "feedStart": "v0.18.126 (S7 W2 Q126 = Q-B4; owner 2026-11-15 \"Yes, open ones only (Rec.)\", Rules decisions/session-2026-11-06.md; Rule 33): GET /admin/incidents/stream with no cursor (no `after`, `after=0`, no Last-Event-ID) starts from the OPEN incidents: first the newest event of each open or investigating incident (at or before the newest sequence when the stream opened), oldest first, then live after that newest sequence. Closed incidents' history is not replayed. The open start is never cut by `limit`: every open case is an alarm. The JSON page (polling) without a cursor answers the same open start, with `nextCursor` = the newest sequence when it is newer than the last item, else null. With a cursor (`after` > 0 or Last-Event-ID) nothing changes: every event after it, in order. Zone rules unchanged (mayHear). Rule 33: the start and the newest sequence are read from the one incident_events table; a Last-Event-ID from one server copy is valid on every copy; no shared memory. Admin: no change needed (the panel already reads the open incident list on load and keeps the highest sequence it saw); rider and driver apps: none (they do not use this stream)."
   },
   "stopWaits": {
     "note": "v0.7.1 (owner 2026-10-27, CONTRACT.md §3.8): waiting at a middle stop has no free minutes; the driver app reports each stop.",

@@ -358,7 +358,8 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
   });
 
   // B3 / P8: no cursor = after 0 = the whole incident history (closed incidents included) on every admin load.
-  it.fails("B3/P8: the admin incident stream opened without a cursor does not replay closed old incidents (src/safety/routes.ts:94)", async () => {
+  // Fixed by S7 W2 Q126 (v0.18.126): no cursor starts from the open incidents.
+  it("B3/P8: the admin incident stream opened without a cursor does not replay closed old incidents (src/safety/routes.ts:94)", async () => {
     const old = new Date(Date.now() - 60 * 86_400_000);
     const n = 300;
     const top = await database.pool.query<{ top: string | null }>("SELECT max(sequence) AS top FROM incident_events");
