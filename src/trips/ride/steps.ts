@@ -6,7 +6,7 @@ import type { TripsTable } from "../../db/schema.js";
 import type { Executor, Trx } from "../../db/db.js";
 import { appendTripEvent, type TripRow } from "../../db/tripLog.js";
 import { ApiError } from "../../http/errors.js";
-import { scheduleTimer, type TimerHandler } from "../../jobs/timers.js";
+import { scheduleTimer, scheduleTimerEarlier, type TimerHandler } from "../../jobs/timers.js";
 import { haversineKm } from "../../maps/routing.js";
 import type { FareLine } from "../../rules/fare.js";
 import { extrasOf } from "../../rules/priceExtras.js";
@@ -172,7 +172,8 @@ export async function maybeNearDropoff(trx: Trx, trip: { trip_id: string; status
   if (trip.status !== "in_trip") return;
   const row = await trx.selectFrom("trips").select("dropoff").where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   if (haversineKm(fix, row.dropoff as Place) * 1000 > NEAR_DROPOFF_METERS) return;
-  await scheduleTimer(trx, { kind: NEAR_DROPOFF, refId: trip.trip_id, dueAt: now, payload: {} });
+  // B1.1 rest (owner W1 Q66): one call per GPS batch; it only pulls the timer earlier and never wakes a failing or parked one.
+  await scheduleTimerEarlier(trx, { kind: NEAR_DROPOFF, refId: trip.trip_id, dueAt: now, payload: {} });
 }
 
 export const nearDropoffHandler: TimerHandler = async (trx, timer) => {
