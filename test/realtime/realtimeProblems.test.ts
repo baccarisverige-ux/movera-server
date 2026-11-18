@@ -8,7 +8,7 @@ import { buildApp } from "../../src/app.js";
 import { TEST_PHONES, seedTestPhones } from "../../src/auth/testPhones.js";
 import type { Principal } from "../../src/auth/guard.js";
 import { CONFIG_CHANNEL, cacheLiveDocumentsOn, liveDocument } from "../../src/config/service.js";
-import { TRIP_EVENTS_CHANNEL, tripNotice } from "../../src/db/tripLog.js";
+import { TRIP_EVENT_KINDS, TRIP_EVENTS_CHANNEL, tripNotice } from "../../src/db/tripLog.js";
 import type { Db } from "../../src/db/db.js";
 import { readEnv } from "../../src/env.js";
 import { ADMIN_EVENTS_CHANNEL, AdminLiveFeed, LIVE } from "../../src/realtime/adminEvents.js";
@@ -435,7 +435,7 @@ describe("T5 realtime problems (AUDIT-S04, fail today)", () => {
   // Not a problem today (passes): every NOTIFY payload is a small doorbell, far under PostgreSQL's 8000-byte limit.
   it("NOTIFY payloads stay far under the 8000-byte limit (src/db/tripLog.ts:128-145, src/config/service.ts:204)", () => {
     const longId = "x".repeat(64);
-    const trip = JSON.stringify(tripNotice(`trp_${longId}`, Number.MAX_SAFE_INTEGER, { rider_id: `rdr_${longId}`, zone_id: `Z_${longId}`, scheduled_at: new Date(), driver_id: `drv_${longId}` }, true));
+    const trip = JSON.stringify(tripNotice(`trp_${longId}`, Number.MAX_SAFE_INTEGER, { rider_id: `rdr_${longId}`, zone_id: `Z_${longId}`, scheduled_at: new Date(), driver_id: `drv_${longId}` }, true, [...TRIP_EVENT_KINDS].sort((a, b) => b.length - a.length)[0]));
     const config = JSON.stringify({ doc: "driver_app_config", zoneId: `Z_${longId}`, version: Number.MAX_SAFE_INTEGER, publishedAt: new Date().toISOString() });
     expect(Buffer.byteLength(trip)).toBeLessThan(1000);
     expect(Buffer.byteLength(config)).toBeLessThan(1000);

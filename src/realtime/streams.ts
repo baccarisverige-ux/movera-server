@@ -202,6 +202,10 @@ export async function attachConfig(
     stream.onClose(deps.hub.subscribe(TRIP_EVENTS_CHANNEL, (payload) => {
       if (payload === null) return missedHints();
       if (payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
+      // v0.18.127 S7 W2 Q119 (owner 2026-11-15 "All except GPS (Rec.)", contract.json#bookedRideSeen.riderTripEvent): a
+      // GPS update (position fix or ETA tick, kind location) never changes the active trip or the Upcoming list, so it
+      // sends no hint. A notice without a kind (an older copy during a deploy) still sends one, as before.
+      if (payload["kind"] === "location") return;
       const now = deps.clock?.() ?? new Date();
       send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
       // S7 0.15: the hub finds this stream by its rider id.

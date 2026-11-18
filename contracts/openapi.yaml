@@ -1,11 +1,11 @@
-# Movera API v0.18.126 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.127 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.126
+  version: 0.18.127
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.126 in this folder; this file must agree with them.
+    v0.18.127 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.126
+  version: 0.18.127
   source: contract.json
 paths:
   /auth/otp/request:
@@ -29313,7 +29313,9 @@ components:
     RiderTripEvent:
       type: object
       description: 'v0.18.32 (contract.json#bookedRideSeen.riderTripEvent, P21): a trip of this rider changed (made, accepted,
-        any status), also when made elsewhere. The rider app reads GET /rider/trips/active again.'
+        any status), also when made elsewhere. The rider app reads GET /rider/trips/active again. v0.18.127 (contract.json#bookedRideSeen.riderTripEvent):
+        not sent for a GPS update (trip event kind location: a position fix or an ETA tick); every other event of the rider''s
+        trips still sends it.'
       required:
       - eventId
       - kind
