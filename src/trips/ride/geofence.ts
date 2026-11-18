@@ -2,7 +2,7 @@ import { contract } from "../../contract/contract.js";
 import { liveDocument } from "../../config/service.js";
 import type { Executor, Trx } from "../../db/db.js";
 import { appendTripEvent, type TripRow } from "../../db/tripLog.js";
-import { scheduleTimer, type TimerHandler } from "../../jobs/timers.js";
+import { scheduleTimer, scheduleTimerEarlier, type TimerHandler } from "../../jobs/timers.js";
 import { haversineKm } from "../../maps/routing.js";
 import { lockTripNow } from "../../dispatch/runtime.js";
 import { tripProjection } from "../projection.js";
@@ -119,7 +119,9 @@ export async function maybePickupGeofence(trx: Trx, active: GeofenceFacts, fix: 
     const openStop = open ? stops[open.stopIndex] : undefined;
     may = (next !== null && metersTo(stops[next]!) <= arrive) || (openStop !== undefined && (open!.away ? metersTo(openStop) <= arrive : metersTo(openStop) > leave));
   }
-  if (may) await scheduleTimer(trx, { kind: PICKUP_GEOFENCE, refId: active.trip_id, dueAt: now, payload: {} });
+  // S4 B1.1 round 2 (owner OQ-B101-1 "Yes, same rule (Rec.)", as maybeNearDropoff): a GPS batch only moves the check
+  // EARLIER; it never resets the failure count nor wakes a failing (attempts > 0) or parked ('infinity') check.
+  if (may) await scheduleTimerEarlier(trx, { kind: PICKUP_GEOFENCE, refId: active.trip_id, dueAt: now, payload: {} });
 }
 
 /** v0.18.108: the open stop's away / back from a fix, with no version change; a trip_projection event goes out (as writeWaiting). */

@@ -88,6 +88,31 @@ export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: 
 }
 
 /**
+ * S4 B1.1 rest (owner W1 Q66 "Yes": ride-check and "almost there" timers only move earlier, never later; plan
+ * GLOBAL-SAFE-PLAN.md A7.3 B1.1, S4-W1-RECHECK-2026-11-11.md:32 (b)). For a timer asked again and again from the GPS
+ * (near_dropoff, once per position batch): a new one is booked at `dueAt`; a pending one is pulled EARLIER to `dueAt`
+ * only while it is healthy (attempts 0, not parked). It is never moved later, its attempts and last error are kept,
+ * and a failing one (in its back-off) or a parked one ('infinity') is left alone, so a GPS stream can neither starve it
+ * nor wake it. Only for the GPS-driven trip timers: every other kind keeps scheduleTimer (booked reminders and dispatch
+ * rounds must still move later).
+ */
+export async function scheduleTimerEarlier(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }): Promise<void> {
+  const payload = JSON.stringify(timer.payload ?? {});
+  await ex
+    .insertInto("timers")
+    .values({ kind: timer.kind, ref_id: timer.refId, due_at: timer.dueAt, payload })
+    .onConflict((conflict) =>
+      conflict
+        .columns(["kind", "ref_id"])
+        .doUpdateSet({ due_at: timer.dueAt, payload })
+        .where("timers.due_at", ">", timer.dueAt)
+        .where("timers.attempts", "=", 0)
+        .where("timers.due_at", "<>", sql<Date>`'infinity'::timestamptz`),
+    )
+    .execute();
+}
+
+/**
  * S7 0.16 (owner W2 Q120 part 2): a timer written with `wake: true` (one that is due at once, e.g. a new search's first
  * dispatch round) also sends this NOTIFY in the SAME transaction. PostgreSQL delivers a NOTIFY only when its transaction
  * commits and drops it on a rollback, so the worker is woken (wakeTimersOn) after the commit, never inside the

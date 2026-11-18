@@ -12,6 +12,7 @@ import { tripProjection } from "./projection.js";
 import { stopCommand } from "./stops.js";
 import { checkPin, riderPin, verifyPin } from "./pin.js";
 import { driverReceipt, giveTip, riderReceipt } from "./finish.js";
+import { driverTrips } from "./ride/history.js";
 import { completePreview, completeTrip, PriceChanged, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
 
 /** contract §3: the driver's trip commands, the rider's early end, ratings and the driver's earnings. */
@@ -29,6 +30,9 @@ const CompleteBody = Command.extend({ cashCollected: Money.optional(), previewId
 const NoShowBody = Command.extend({ reasonCode: z.string().optional() });
 const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional(), location: Fix.optional() });
 const EarningsQuery = z.object({ period: z.enum(["day", "week", "month"]).default("week"), from: z.string().datetime().optional(), to: z.string().datetime().optional(), currency: z.string().regex(/^[A-Z]{3}$/).optional() });
+
+/** v0.18.124 C10 (contract.json#driverTripHistory): GET /driver/trips paging, limit 1-50 default 20. */
+const DriverTripsQuery = z.object({ cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(50).default(20), status: z.union([z.string(), z.array(z.string())]).optional(), from: z.string().datetime().optional(), to: z.string().datetime().optional() });
 
 const STEPS = { "head-to-pickup": "head_to_pickup", arrive: "arrive", board: "board", start: "start_trip" } as const;
 
@@ -185,6 +189,14 @@ const tripId = (request: FastifyRequest) => parseBody(z.object({ tripId: ID }), 
   app.get(`${API_PREFIX}/driver/trips/:tripId/receipt`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     return driverReceipt(deps.db, who.subjectId, tripId(request));
+  });
+
+  // v0.18.124 C10 (contract.json#driverTripHistory; owner G11 Q10 "Load from server"): the driver's own ended trips, paged.
+  app.get(`${API_PREFIX}/driver/trips`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const query = parseBody(DriverTripsQuery, request.query);
+    const statuses = query.status === undefined ? undefined : Array.isArray(query.status) ? query.status : [query.status];
+    return driverTrips(deps.db, who.subjectId, { limit: query.limit, ...(query.cursor ? { cursor: query.cursor } : {}), ...(statuses ? { statuses } : {}), ...(query.from ? { from: query.from } : {}), ...(query.to ? { to: query.to } : {}) });
   });
 
   app.get(`${API_PREFIX}/driver/earnings`, async (request) => {
