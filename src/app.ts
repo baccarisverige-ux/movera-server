@@ -49,7 +49,7 @@ import { dispatchRoutes } from "./dispatch/routes.js";
 import { reservationRoutes } from "./reservations/routes.js";
 import { dispatchToolRoutes } from "./dispatch/toolRoutes.js";
 import { shareRoutes, SHARE_LIMITS } from "./safety/shareRoutes.js";
-import { isSharePath, setShareHeaders } from "./http/shed.js";
+import { isSharePath, registerLoadShedding, setShareHeaders, type ShedOptions } from "./http/shed.js";
 import { safetyRoutes } from "./safety/routes.js";
 import type { NotificationHub } from "./realtime/hub.js";
 import { closeAllStreams } from "./realtime/sse.js";
@@ -65,7 +65,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 /** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
 const NO_ROUTE = "(no route)";
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db; shed?: ShedOptions };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
@@ -107,7 +107,7 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
 }
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb, shed }: BuildOptions): Promise<FastifyInstance> {
   // G34 P2: the health checks ask the database on their own small pool (main.ts, db.ts createHealthPool) when given, so a
   // full app pool is never reported as "database not reachable"; without one (tests, tools) they use the app's.
   const probeDb = healthDb ?? db;
@@ -376,6 +376,12 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
+
+  // Live outage 2026-11-17 (#268 post-mortem): the load-shedding hooks are part of EVERY built app, last (as main.ts
+  // added them after buildApp), so the inject()/listen tests run the same hooks as live. main.ts passes the real limits
+  // (SHED_*, its pool); without `shed` (tests, tools) both limits are 0 = never shed, but the gone-client checks still run.
+  const stopShedding = registerLoadShedding(app, shed ?? { maxPoolWaiting: 0, maxLoopDelayMs: 0, poolWaiting: () => 0 });
+  app.addHook("onClose", async () => stopShedding());
 
   return app;
 }

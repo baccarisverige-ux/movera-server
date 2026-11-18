@@ -1,6 +1,7 @@
 import pg from "pg";
 import { isDatabaseConnectionError } from "../db/ready.js";
 import { recordNotify } from "../telemetry/load.js";
+import type { LinkWatcher } from "./outages.js";
 
 /**
  * One LISTEN connection per server instance for every stream (contract §4 transport). PostgreSQL delivers a
@@ -54,6 +55,8 @@ export const HEALTH_CHECK_TIMEOUT_MS = 5_000;
  * Supervisor MF-2: the cap is 5 s, not the plan's 30 s, until Q-B13 ships (owner Q78: an Exclusive missed while the
  * live link was down must not count toward auto-offline; today autoOffline.ts missedInRow counts it). It is one
  * connect per server copy, so the short cap costs the database almost nothing. Raise to 30 s together with Q-B13.
+ * Q-B13 is built (v0.18.120, realtime/outages.ts); the raise to 30 s is left for the owner (Rules audits/impact/s4-b116.md
+ * owner question OQ-B116-1): until then the cap stays 5 s, the safe choice (a copy is blind at most ~5 s after the database is back).
  */
 export const RECONNECT_BACKOFF = { baseMs: 1_000, maxMs: 5_000 };
 
@@ -154,6 +157,13 @@ export class NotificationHub {
   /** SF-4: when "reconnect failed" was last logged in this outage, and the failed attempts since. */
   private lastFailWarning: number | undefined;
   private failedSinceWarning = 0;
+  /**
+   * Q-B13 (owner W1 Q78 "Do not count it"; realtime/outages.ts): the last proof that the link worked (connect, a ping
+   * that answered, a notification), whether the current outage was reported, and who is told.
+   */
+  private lastProvenAt: number | undefined;
+  private downReported = false;
+  private watcher: LinkWatcher | undefined;
   private readonly health: HubTuning;
 
   constructor(
@@ -194,6 +204,7 @@ export class NotificationHub {
     const onNotification = (message: pg.Notification) => {
       recordNotify();
       this.lastNotification = Date.now();
+      this.lastProvenAt = this.lastNotification;
       let payload: Record<string, unknown> | null = null;
       try {
         payload = JSON.parse(message.payload ?? "null") as Record<string, unknown>;
@@ -262,6 +273,7 @@ export class NotificationHub {
     }
     this.client = client;
     this.connectedOnce = true;
+    this.lastProvenAt = Date.now();
     this.startPing(client);
   }
 
@@ -275,6 +287,9 @@ export class NotificationHub {
         timer = setTimeout(() => reject(new Error("realtime listen health check timed out")), this.health.timeoutMs);
       });
       Promise.race([client.query("SELECT 1"), timeout])
+        .then(() => {
+          if (this.client === client) this.lastProvenAt = Date.now();
+        })
         .catch((error: unknown) => {
           if (this.client !== client) return;
           this.log.warn({ err: error }, "realtime listen health check failed");
@@ -292,6 +307,14 @@ export class NotificationHub {
     if (from !== undefined && this.client !== from) return;
     clearInterval(this.ping);
     this.ping = undefined;
+    // Q-B13: the first call of an outage opens its window (from the last proof the link worked, or from start() when
+    // the first connect failed); each later one (a failed reconnect attempt) says it is still down.
+    if (!this.downReported) {
+      this.downReported = true;
+      this.tellWatcher((w) => w.down(new Date(this.lastProvenAt ?? this.startedAt ?? Date.now())));
+    } else {
+      this.tellWatcher((w) => w.stillDown());
+    }
     const dead = this.client;
     this.client = undefined;
     // Drop the dead socket so its own end/error cannot fire later and it does not leak.
@@ -311,6 +334,10 @@ export class NotificationHub {
         this.lastFailWarning = undefined;
         this.failedSinceWarning = 0;
         if (again) this.reconnects += 1;
+        if (this.downReported) {
+          this.downReported = false;
+          this.tellWatcher((w) => w.up(new Date()));
+        }
         // Anything may have happened while we were away: every stream reads what it missed. (Also after a first
         // connect that came late: streams may have opened while the hub was still down.)
         this.tellCatchUp();
@@ -364,6 +391,24 @@ export class NotificationHub {
       }
     };
     batch();
+  }
+
+  /**
+   * Q-B13: `watcher` is told when the link goes down (with the last proof it worked), at each failed reconnect
+   * attempt, and when it is back (main.ts: the outage recorder). One watcher; a watcher that throws is logged and never
+   * stops the hub.
+   */
+  watchLink(watcher: LinkWatcher): void {
+    this.watcher = watcher;
+  }
+
+  private tellWatcher(call: (watcher: LinkWatcher) => void): void {
+    if (this.watcher === undefined) return;
+    try {
+      call(this.watcher);
+    } catch (error) {
+      this.log.warn({ err: error }, "realtime link watcher failed");
+    }
   }
 
   private tellOne(sub: Sub): void {
