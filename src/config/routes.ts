@@ -2,7 +2,8 @@ import { dontMatchSettings } from "../blockedPairs/service.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { tipAmountsFor, tipRulesOf, withPaymentOptions } from "../trips/finish.js";
 import type { NotificationHub } from "../realtime/hub.js";
-import { streamConfig } from "../realtime/streams.js";
+import { attachConfig, streamConfig } from "../realtime/streams.js";
+import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { sql } from "kysely";
 import { z } from "zod";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
@@ -12,7 +13,7 @@ import { raiseMaxFactor, withRaiseLimit } from "./raiseLimit.js";
 import { adminCoversZone, authenticate, authenticateAdmin, type Principal } from "../auth/guard.js";
 import type { Db } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
-import { ApiError } from "../http/errors.js";
+import { ApiError, badRequest } from "../http/errors.js";
 import { emergencyNumbersFor } from "./emergencyNumbers.js";
 import { withPickupSpots } from "./pickupSpots.js";
 import { sosSmsDriverConfig } from "../safety/sosContactsSms.js";
@@ -23,6 +24,8 @@ import { draftForPreview, previewRoutes } from "./preview.js";
 import { scopeKey } from "./scope.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
 import { withShareTrip } from "./shareTrip.js";
+import { withOneStream } from "./oneStream.js";
+import { attachOfferFeed, offerHead } from "../dispatch/offerFeed.js";
 import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, useStandard, withLivePricing } from "./service.js";
 
 /** contract §6: rider/driver config reads, admin drafts and publish, approvals (§3.1). */
@@ -121,6 +124,8 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     // v0.18.116 §94 (contract.json#shareTrip.setting): the zone's Share trip switch, also as features.shareTrip.
     if (doc === "rider_app_config") document = withShareTrip(document);
     // v0.18.101 §92 (contract.json#sosContactsSms.driverConfig): the switch of the zone's country and whether SMS can go.
+    // v0.18.122 L20 stream (contract.json#driverOneStream.server): the driver app always gets realtime.oneStream (missing = false).
+    if (doc === "driver_app_config") document = withOneStream(document);
     if (doc === "driver_app_config") document = { ...document, sosContactsSms: await sosSmsDriverConfig(deps.db, zone.country, deps.smsConnected === true) };
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);
@@ -143,6 +148,44 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
   };
   app.get(`${API_PREFIX}/rider/config/stream`, streamAppDoc("rider_app_config", "rider"));
   app.get(`${API_PREFIX}/driver/config/stream`, streamAppDoc("driver_app_config", "driver"));
+
+  // v0.18.122 L20 stream (owner 2026-11-17 "Yes, with switch (Rec.)", contract.json#driverOneStream, Rules
+  // audits/load/l20-1-design.md §3): the offer feed and the driver config stream on ONE connection. One openEventStream
+  // (one open file, one live-streams count), the two existing pumps attached, each with its own hub options. id is
+  // '<offer sequence>.<config version>'; Last-Event-ID / ?after= in that form resumes both halves. Served whatever the
+  // zone's realtime.oneStream says (the switch only tells the app which to open). The two old routes are unchanged.
+  app.get(`${API_PREFIX}/driver/stream`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    // SF-2 (Rules l20-one-stream-supervisor.md): no JSON answer on this route; without Accept: text/event-stream it
+    // answers 400 and opens nothing (the old /driver/offers and /driver/config stay the JSON reads).
+    if (!wantsEventStream(request)) throw badRequest("GET /driver/stream is an event stream only: send Accept: text/event-stream.", "event_stream_required");
+    const { zoneId: asked, after } = parseBody(OptionalZoneQuery.extend({ after: z.string().optional() }), request.query);
+    const lastEventId = request.headers["last-event-id"];
+    const given = after ?? (typeof lastEventId === "string" && lastEventId !== "" ? lastEventId : undefined);
+    const parts = given === undefined ? undefined : /^(\d+)(?:\.(\d+))?$/.exec(given);
+    if (given !== undefined && parts == null) throw badRequest("The stream id must be '<offer sequence>.<config version>'.");
+    const zoneId = await appZone(deps.db, who, "driver", asked, deps.defaultZoneId, false);
+    await getZone(deps.db, zoneId);
+    if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available.", { reason: "realtime_unavailable", retryAfterSeconds: 5 });
+    // Without an id: each half as on its old stream (offers from offerHead, config from the live version: nothing sent).
+    const head = parts ? undefined : await offerHead(deps.db, who.subjectId);
+    let offerSeq = parts ? Number(parts[1]) : head!;
+    let configVersion = parts ? Number(parts[2] ?? 0) : ((await liveDocument(deps.db, "driver_app_config", zoneId))?.version ?? 0);
+    const hub = deps.hub;
+    const feedDeps = { db: deps.db, hub, ...(deps.clock ? { clock: deps.clock } : {}) };
+    const stream = openEventStream(request, reply);
+    if (head !== undefined) stream.cursor(`${offerSeq}.${configVersion}`);
+    // Offers first: an offer never waits behind the config catch-up.
+    await attachOfferFeed(request, feedDeps, stream, who.subjectId, offerSeq, (sequence, data) => {
+      offerSeq = sequence;
+      stream.send(`${offerSeq}.${configVersion}`, data);
+    });
+    await attachConfig(request, stream, feedDeps, "driver_app_config", zoneId, configVersion, (version, data) => {
+      configVersion = Math.max(configVersion, version);
+      stream.send(`${offerSeq}.${configVersion}`, data);
+    }, undefined, who.subjectId);
+    return reply;
+  });
 
   app.get(`${API_PREFIX}/admin/config/:doc`, async (request) => {
     const who = await authenticateAdmin(request, guard, "settings.read");
