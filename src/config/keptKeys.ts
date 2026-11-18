@@ -7,7 +7,12 @@ import { ApiError } from "../http/errors.js";
  * kept keys per document (dotted paths), read from the contract copy. A save that leaves one out does not wipe it.
  */
 const listed = (contract as unknown as { configDocs: { keptKeys: Record<string, unknown> } }).configDocs.keptKeys;
-export const KEPT_KEYS: Partial<Record<ConfigDoc, readonly string[]>> = { country_rules: listed["country_rules"] as string[], dispatch: listed["dispatch"] as string[] };
+// v0.18.130 (configDocs.keptKeys.driver_app_config): the driver document keeps realtime.oneStream (v0.18.122 switch).
+export const KEPT_KEYS: Partial<Record<ConfigDoc, readonly string[]>> = {
+  country_rules: listed["country_rules"] as string[],
+  dispatch: listed["dispatch"] as string[],
+  driver_app_config: listed["driver_app_config"] as string[],
+};
 
 type Doc = Record<string, unknown>;
 const isObject = (value: unknown): value is Doc => value !== null && typeof value === "object" && !Array.isArray(value);

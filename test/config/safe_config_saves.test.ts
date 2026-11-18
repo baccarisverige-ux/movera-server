@@ -46,7 +46,7 @@ afterAll(async () => {
 describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
   it("the server's list is the contract's list", () => {
     const kk = (contract as unknown as { configDocs: { keptKeys: Record<string, unknown> } }).configDocs.keptKeys;
-    expect(KEPT_KEYS).toEqual({ country_rules: kk["country_rules"], dispatch: kk["dispatch"] });
+    expect(KEPT_KEYS).toEqual({ country_rules: kk["country_rules"], dispatch: kk["dispatch"], driver_app_config: kk["driver_app_config"] });
   });
 
   it("an old tab's country_rules save keeps payout mode, schedule, debt limits and call settings; the answer and the audit say so", async () => {
@@ -99,6 +99,24 @@ describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
     expect(stale.json().document.radar).toMatchObject({ seconds: 20, reaskAfterSeconds: 90 });
     expect(stale.json().document.exclusive.reaskAfterSeconds).toBe(120);
     expect([...stale.json().keptKeys].sort()).toEqual(["exclusive.reaskAfterSeconds", "radar.reaskAfterSeconds"]);
+  });
+
+  it("driver_app_config (v0.18.130): a save that leaves out realtime keeps realtime.oneStream; removeKeys turns the keep off", async () => {
+    const d = sample("driver_app_config");
+    const { realtime: _drop, ...noRealtime } = d;
+    const first = await put("driver_app_config", { expectedVersion: 1, zoneId: "Z001", document: { ...d, realtime: { oneStream: true } } });
+    expect(first.statusCode).toBe(200);
+    const stale = await put("driver_app_config", { expectedVersion: first.json().version, zoneId: "Z001", document: noRealtime });
+    expect(stale.statusCode).toBe(200);
+    expect(stale.json().document.realtime).toEqual({ oneStream: true });
+    expect(stale.json().keptKeys).toEqual(["realtime.oneStream"]);
+    expect((await get("driver_app_config", "zoneId=Z001")).document.realtime).toEqual({ oneStream: true });
+    const sent = await put("driver_app_config", { expectedVersion: stale.json().version, zoneId: "Z001", document: { ...noRealtime, realtime: { oneStream: false } } });
+    expect(sent.json().document.realtime).toEqual({ oneStream: false });
+    expect(sent.json().keptKeys).toBeUndefined();
+    const removed = await put("driver_app_config", { expectedVersion: sent.json().version, zoneId: "Z001", document: noRealtime, removeKeys: ["realtime.oneStream"] });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json().document.realtime?.oneStream).toBeUndefined();
   });
 });
 
