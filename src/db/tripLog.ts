@@ -144,7 +144,7 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
       ...(event.call !== undefined ? { call: json(event.call) } : {}),
     })
     .execute();
-  await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify(tripNotice(event.tripId, sequence, bumped, event.reservations === true))})`.execute(trx);
+  await sql`SELECT pg_notify(${TRIP_EVENTS_CHANNEL}, ${JSON.stringify(tripNotice(event.tripId, sequence, bumped, event.reservations === true, event.kind))})`.execute(trx);
   return { eventId, sequence };
 }
 
@@ -152,12 +152,15 @@ export async function appendTripEvent(trx: Trx, event: NewTripEvent): Promise<Ap
  * The movera_trip_events NOTIFY payload. v0.18.45 §68 (contract.json#driverReservationsLive) only ADDS zoneId,
  * scheduled and (when set) driverId; tripId, sequence and riderId are unchanged (rider_trip_changed reads them).
  * v0.18.51 §73 adds reservations: true on a booked ride's list change (NewTripEvent.reservations).
+ * v0.18.127 S7 W2 Q119 (owner 2026-11-15 "All except GPS (Rec.)"): adds the event kind, so the rider config stream can
+ * skip rider_trip_changed for a GPS update (kind location) without a read. Every other field is unchanged.
  */
 export function tripNotice(
   tripId: string,
   sequence: number,
   row: { rider_id: string; zone_id: string; scheduled_at: unknown; driver_id: string | null },
   reservations = false,
+  kind?: TripEventKind,
 ): Record<string, unknown> {
   const scheduled = row.scheduled_at !== null && row.scheduled_at !== undefined;
   return {
@@ -168,6 +171,7 @@ export function tripNotice(
     scheduled,
     ...(row.driver_id !== null ? { driverId: row.driver_id } : {}),
     ...(scheduled && reservations ? { reservations: true } : {}),
+    ...(kind !== undefined ? { kind } : {}),
   };
 }
 

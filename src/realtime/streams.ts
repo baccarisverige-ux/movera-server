@@ -8,7 +8,7 @@ import { newId } from "../ids.js";
 import { eventEnvelope } from "./events.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "./hub.js";
-import { openEventStream } from "./sse.js";
+import { openEventStream, type EventStream } from "./sse.js";
 import { giveUpStream, readRetry, spreadClose } from "./retry.js";
 
 /**
@@ -125,6 +125,25 @@ export async function streamConfig(
   driverId?: string,
 ): Promise<void> {
   const stream = openEventStream(request, reply);
+  await attachConfig(request, stream, deps, doc, zoneId, lastSeenVersion, (version, data) => void stream.send(version, data), riderId, driverId);
+}
+
+/**
+ * The settings stream's subscriptions on any open stream. v0.18.122 (L20 stream, contract.json#driverOneStream):
+ * GET /driver/stream attaches these next to the offer pump; `send` gets the config version and the caller writes the
+ * SSE id. Each half keeps its own hub options (the config catch-up stays "spread", so an offer never waits behind it).
+ */
+export async function attachConfig(
+  request: FastifyRequest,
+  stream: EventStream,
+  deps: { db: Db; hub: NotificationHub; clock?: () => Date },
+  doc: ConfigDoc,
+  zoneId: string,
+  lastSeenVersion: number,
+  send: (version: number, data: unknown) => void,
+  riderId?: string,
+  driverId?: string,
+): Promise<void> {
   let sent = lastSeenVersion;
   const check = async () => {
     // v0.8.0 §6.4: the zone's own document, else its country standard (liveDocument).
@@ -133,7 +152,7 @@ export async function streamConfig(
     sent = live.version;
     const now = deps.clock?.() ?? new Date();
     const publishedAt = live.document.publishedAt ?? now.toISOString();
-    stream.send(live.version, {
+    send(live.version, {
       eventId: newId("evt", now.getTime()),
       kind: "config_published",
       doc,
@@ -160,7 +179,7 @@ export async function streamConfig(
       if (stream.closed()) return;
       const now = deps.clock?.() ?? new Date();
       const publishedAt = typeof payload["publishedAt"] === "string" ? payload["publishedAt"] : now.toISOString();
-      stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "config_published", doc: payload["doc"], zoneId: payload["zoneId"], version: payload["version"], publishedAt, occurredAt: publishedAt, serverTime: now.toISOString() });
+      send(sent, { eventId: newId("evt", now.getTime()), kind: "config_published", doc: payload["doc"], zoneId: payload["zoneId"], version: payload["version"], publishedAt, occurredAt: publishedAt, serverTime: now.toISOString() });
     }
     // MF-1: the settings stream's catch-up goes after the offer feeds, trip streams and SOS stream (hub batches it).
     // S7 0.15: every branch above needs this zone's id, except doc "zones" (any zone).
@@ -183,8 +202,12 @@ export async function streamConfig(
     stream.onClose(deps.hub.subscribe(TRIP_EVENTS_CHANNEL, (payload) => {
       if (payload === null) return missedHints();
       if (payload["riderId"] !== riderId || typeof payload["tripId"] !== "string" || stream.closed()) return;
+      // v0.18.127 S7 W2 Q119 (owner 2026-11-15 "All except GPS (Rec.)", contract.json#bookedRideSeen.riderTripEvent): a
+      // GPS update (position fix or ETA tick, kind location) never changes the active trip or the Upcoming list, so it
+      // sends no hint. A notice without a kind (an older copy during a deploy) still sends one, as before.
+      if (payload["kind"] === "location") return;
       const now = deps.clock?.() ?? new Date();
-      stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
+      send(sent, { eventId: newId("evt", now.getTime()), kind: "rider_trip_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
       // S7 0.15: the hub finds this stream by its rider id.
     }, { catchUp: "spread", match: [{ riderId }] }));
   }
@@ -198,7 +221,7 @@ export async function streamConfig(
       if (payload["scheduled"] !== true || payload["reservations"] !== true || typeof payload["tripId"] !== "string" || stream.closed()) return;
       if (payload["zoneId"] !== zoneId && payload["driverId"] !== driverId) return;
       const now = deps.clock?.() ?? new Date();
-      stream.send(sent, { eventId: newId("evt", now.getTime()), kind: "driver_reservations_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
+      send(sent, { eventId: newId("evt", now.getTime()), kind: "driver_reservations_changed", tripId: payload["tripId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
       // S7 0.15: only a booked ride's list change (reservations: true, which tripNotice sets on a scheduled trip
       // only) of this zone or naming this driver. NOT the zone alone: every trip event carries its zone, so that would
       // run every driver stream of the zone for every GPS fix of every trip in it.

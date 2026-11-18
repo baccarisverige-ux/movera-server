@@ -11,7 +11,7 @@ import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from ".
 import type { NotificationHub } from "../realtime/hub.js";
 import { openEventStream, wantsEventStream } from "../realtime/sse.js";
 import { listRideChecks } from "../admin/tripTools.js";
-import { appendIncidentEvent, adminIncident, adminIncidentCommand, adminIncidentLevel, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
+import { appendIncidentEvent, adminIncident, adminIncidentCommand, adminIncidentLevel, eventOf, INCIDENT_EVENTS_CHANNEL, incidentEventsAfter, openIncidentStart, listIncidents, mayHear, raiseSos, SAFETY, type IncidentCommand } from "./incidents.js";
 import { reportRideCheck } from "./rideCheck.js";
 import { deliverSosSms } from "./sosContactsSms.js";
 import type { SmsProvider } from "../sms/sms.js";
@@ -113,7 +113,16 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
     const query = parseBody(StreamQuery, request.query);
     const lastEventId = request.headers["last-event-id"];
     const after = query.after ?? (typeof lastEventId === "string" && /^\d+$/.test(lastEventId) ? Number(lastEventId) : 0);
+    // S7 W2 Q126 (v0.18.126): no cursor (or after=0) starts from the open incidents, not the whole history.
+    const fromOpen = after === 0;
     if (!wantsEventStream(request)) {
+      if (fromOpen) {
+        const start = await openIncidentStart(deps.db);
+        const serverTime = now();
+        const items = start.rows.filter((row) => mayHear(who, row.incident as Record<string, unknown>)).map((row) => eventOf(row, serverTime));
+        const lastSent = start.rows[start.rows.length - 1];
+        return { items, nextCursor: start.newest > Number(lastSent?.sequence ?? 0) ? String(start.newest) : null };
+      }
       // The polling fallback: the same events as a JSON page.
       const rows = await incidentEventsAfter(deps.db, after, query.limit + 1);
       const page = rows.slice(0, query.limit);
@@ -156,6 +165,25 @@ export async function safetyRoutes(app: FastifyInstance, deps: SafetyDeps): Prom
       }
     };
     stream.onClose(deps.hub.subscribe(INCIDENT_EVENTS_CHANNEL, () => void pump()));
+    if (fromOpen) {
+      // A change that arrives while the start is read waits (pump sees `running`) and is read after it, from `newest`.
+      running = true;
+      try {
+        const start = await openIncidentStart(deps.db);
+        const serverTime = now();
+        for (const row of start.rows) {
+          if (stream.closed()) return reply;
+          if (mayHear(who, row.incident as Record<string, unknown>)) stream.send(Number(row.sequence), eventOf(row, serverTime));
+        }
+        last = start.newest;
+      } catch (error) {
+        request.log.warn({ err: error }, "incident stream start failed");
+        giveUpStream(stream);
+        return reply;
+      } finally {
+        running = false;
+      }
+    }
     await pump();
     return reply;
   });

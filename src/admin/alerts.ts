@@ -306,13 +306,32 @@ export async function setQuiet(trx: Trx, who: Principal, country: string, body: 
   return alertBook(trx, who, country, now);
 }
 
+const plainObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * v0.18.123 job 6 (owner Q-SCS-1 "Keep values, save rest (Rec.)", contract.json#alertDesk.commands.settingsKeepKinds): a
+ * settings.kinds entry the stored settings have and the sent ones lack is kept (a stale tab that does not know the kind);
+ * sent entries are saved as sent; sent settings without a kinds object keep the stored kinds. Never refuses.
+ */
+export function withStoredKinds(stored: unknown, sent: unknown): { settings: unknown; keptKinds: string[] } {
+  const storedKinds = plainObject(stored) && plainObject(stored["kinds"]) ? stored["kinds"] : undefined;
+  if (storedKinds === undefined || !plainObject(sent) || (sent["kinds"] !== undefined && !plainObject(sent["kinds"]))) return { settings: sent, keptKinds: [] };
+  const sentKinds = (sent["kinds"] ?? {}) as Record<string, unknown>;
+  const keptKinds = Object.keys(storedKinds).filter((kind) => !(kind in sentKinds));
+  if (keptKinds.length === 0) return { settings: sent, keptKinds };
+  const kinds: Record<string, unknown> = { ...sentKinds };
+  for (const kind of keptKinds) kinds[kind] = storedKinds[kind];
+  return { settings: { ...sent, kinds }, keptKinds };
+}
+
 export async function saveDoc(trx: Trx, who: Principal, country: string, which: "settings" | "rules", expectedRev: number, doc: unknown, now: Date) {
   if (JSON.stringify(doc).length > MAX_DOC_BYTES) throw badRequest("Too large.", "invalid_body");
   await assertCountry(trx, who, country);
   const book = await bookRow(trx, country, true);
   if (book.rev !== expectedRev) throw new ApiError("version_mismatch", "Someone saved the alert settings first. Load them again.");
-  const set = which === "settings" ? { settings: JSON.stringify(doc), rev: book.rev + 1, updated_at: now } : { rules: JSON.stringify(doc), rev: book.rev + 1, updated_at: now };
+  const { settings: saved, keptKinds } = which === "settings" ? withStoredKinds(book.settings, doc) : { settings: doc, keptKinds: [] };
+  const set = which === "settings" ? { settings: JSON.stringify(saved), rev: book.rev + 1, updated_at: now } : { rules: JSON.stringify(doc), rev: book.rev + 1, updated_at: now };
   await trx.updateTable("admin_alert_book").set(set).where("country", "=", country).execute();
-  await audit(trx, { adminId: who.subjectId, action: `alert.${which}`, targetType: "alert_book", targetId: `${country}:${which}`, detail: { rev: book.rev + 1 }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: `alert.${which}`, targetType: "alert_book", targetId: `${country}:${which}`, detail: { rev: book.rev + 1, ...(keptKinds.length > 0 ? { keptKinds } : {}) }, at: now });
   return alertBook(trx, who, country, now);
 }
