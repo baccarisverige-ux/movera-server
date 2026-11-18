@@ -17,6 +17,7 @@ import { NO_FIX_OFFLINE, NO_FIX_SWEEP } from "./drivers/presence.js";
 import { TIMER_DUE_CHANNEL, TimerWorker, rearmParkedRecurringTimers, restartParkedOnce, wakeTimersOn } from "./jobs/timers.js";
 import { ALERT_SWEEP, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
+import { OutageRecorder, outageCopyId } from "./realtime/outages.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
 import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
@@ -55,6 +56,9 @@ if (env.DATABASE_URL !== undefined) {
   db = createDb(pool);
   healthDb = createDb(createHealthPool(env.DATABASE_URL));
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL, TIMER_DUE_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  // S4 B1.16 Q-B13 (owner W1 Q78 "Do not count it"): this copy writes its LISTEN outage windows, so an Exclusive that
+  // expired while any copy's live link was down is not counted toward auto-offline (dispatch/autoOffline.ts).
+  hub.watchLink(new OutageRecorder(db, outageCopyId(), { warn: (data, message) => warn(Object.assign(new Error(message), data)) }));
   // PM-1 SF-2 + N-1: waits for the first LISTEN attempt only (5 s at most). MF-1: a wrong LISTEN address (unknown
   // database, wrong password or user) rejects here and stops the start, as before. If only the link is not up
   // yet the server starts anyway (/healthz says realtime "down"; /readyz answers 503 for at most 30 s, round 4) and the hub keeps trying with its
