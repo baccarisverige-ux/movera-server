@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { readEnv } from "../../src/env.js";
-import { registerLoadShedding } from "../../src/http/shed.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /**
@@ -18,7 +17,7 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
  * (no answer) when `request.raw.destroyed` was true, and node marks a request destroyed one tick after its body was
  * read to the end. While it was the only preHandler hook it ran in the same tick as the end of the body and saw
  * false; #268 put the write limit's async preHandler hook in front of it, so it ran a tick later and saw true.
- * So the app is started here the way main.ts starts it (hooks added after buildApp), and once as the real main.ts.
+ * So the app is started here as main.ts starts it (buildApp registers the hooks with the live limits), and once as the real main.ts.
  */
 const ANSWER_MS = 3000;
 const SECRET = "p".repeat(40);
@@ -71,10 +70,8 @@ describe.each(["staging", "production"] as const)("real HTTP POSTs are answered 
   beforeAll(async () => {
     database = await freshDatabase();
     const env = readEnv({ MOVERA_ENV: mode, DATABASE_URL: database.url, JWT_SECRET: SECRET, DOCUMENT_FILES_KEY: Buffer.alloc(32, 7).toString("base64"), MIGRATE_ON_START: "false", TRUST_PROXY_HOPS: "1" });
-    app = await buildApp({ env, logger: false, db: database.db });
-    // As main.ts: the load-shedding hooks are added after the app was built.
-    const stop = registerLoadShedding(app, { maxPoolWaiting: env.SHED_POOL_WAITING, maxLoopDelayMs: env.SHED_LOOP_DELAY_MS, poolWaiting: () => database.pool.waitingCount });
-    app.addHook("onClose", async () => stop());
+    // As main.ts: the live load-shedding limits, registered by buildApp itself.
+    app = await buildApp({ env, logger: false, db: database.db, shed: { maxPoolWaiting: env.SHED_POOL_WAITING, maxLoopDelayMs: env.SHED_LOOP_DELAY_MS, poolWaiting: () => database.pool.waitingCount } });
     await app.listen({ host: "127.0.0.1", port: 0 });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   });
