@@ -15,6 +15,8 @@ export interface RiderPlacesTable {
   address: string;
   lat: number | null;
   lng: number | null;
+  /** v0.18.129 migration 0118: the place's fixed ride category (null = none). Optional on insert (column default NULL). */
+  preferred_category_id: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: Timestamp;
   updated_at: Timestamp;
 }

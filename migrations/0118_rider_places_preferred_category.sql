@@ -1,0 +1,11 @@
+-- v0.18.129 (contract.json#phoneDataToServer.riderPlaces.preferredCategory; owner 2026-11-18 "Build", Rules
+-- decisions/session-2026-11-18-saved-places-design.md steps 4-7): a saved place may carry one fixed ride category,
+-- used by the rider app for now and Later rides. NULL = none (every place saved before). No foreign key on purpose:
+-- a category the admin removes later is kept on the place and the app treats it as not available (the server checks
+-- the id against the catalog only when it is saved: 400 unknown_category). Not money. 0117 = S7 Q126 (server#275).
+-- Rule 46: a nullable column with no default rewrites no row; the ALTER's lock is held only for the catalog change.
+-- Safe to run again (IF NOT EXISTS).
+ALTER TABLE rider_places ADD COLUMN IF NOT EXISTS preferred_category_id text
+  CHECK (preferred_category_id IS NULL OR preferred_category_id ~ '^[a-z][a-z0-9_]{1,31}$');
+-- undo:
+-- ALTER TABLE rider_places DROP COLUMN IF EXISTS preferred_category_id;
