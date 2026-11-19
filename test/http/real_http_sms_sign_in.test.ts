@@ -75,8 +75,14 @@ describe.each(["staging", "production"] as const)("real HTTP sign-in with SMS co
     expect(asked.status, asked.body).toBe(200);
     expect(asked.ms).toBeLessThan(ANSWER_MS);
     expect(sms.sent.at(-1)?.to).toBe(phone);
-    const wrong = await call(base, "POST", "/api/v1/auth/otp/verify", { phone, sessionId: json(asked).sessionId, code: sms.lastCode() === "0000" ? "0001" : "0000" });
+    // Owner 2026-11-19 "6 digits (Rec.)": the answer tells the app the length, and the SMS code has it.
+    expect(json(asked).codeLength).toBe(6);
+    expect(sms.lastCode()).toMatch(/^[0-9]{6}$/);
+    const wrong = await call(base, "POST", "/api/v1/auth/otp/verify", { phone, sessionId: json(asked).sessionId, code: sms.lastCode() === "000000" ? "000001" : "000000" });
     expect(wrong.status).toBe(400);
+    const short = await call(base, "POST", "/api/v1/auth/otp/verify", { phone, sessionId: json(asked).sessionId, code: sms.lastCode().slice(0, 4) });
+    expect(short.status).toBe(400);
+    expect(json(short).reason).toBe("invalid_otp_code");
     const checked = await call(base, "POST", "/api/v1/auth/otp/verify", { phone, sessionId: json(asked).sessionId, code: sms.lastCode() });
     expect(checked.status, checked.body).toBe(200);
     expect(json(checked).accessToken).toBeTypeOf("string");
@@ -121,10 +127,13 @@ describe.each(["staging", "production"] as const)("real HTTP sign-in with SMS co
     const asked = await call(base, "POST", "/api/v1/auth/otp/request", { phone, app: "rider" });
     expect(asked.status, asked.body).toBe(200);
     if (mode === "staging") {
+      // The test server as it is today: 4 digits, said in the answer; no SMS.
+      expect(json(asked).codeLength).toBe(4);
       expect(sms.sent.length).toBe(before);
       const checked = await call(base, "POST", "/api/v1/auth/otp/verify", { phone, sessionId: json(asked).sessionId, code: TEST_CODE });
       expect(checked.status, checked.body).toBe(200);
     } else {
+      expect(json(asked).codeLength).toBe(6);
       expect(sms.sent.length).toBe(before + 1);
       const checked = await call(base, "POST", "/api/v1/auth/otp/verify", { phone, sessionId: json(asked).sessionId, code: TEST_CODE });
       expect(checked.status).toBe(400);
@@ -197,6 +206,9 @@ describe.each([
     const phone = TEST_PHONES[0]!;
     const asked = await call(base, "POST", "/api/v1/auth/otp/request", { phone, app: "rider" });
     expect(asked.status, asked.body).toBe(200);
+    // With or without the keys the test numbers keep the 4-digit test code.
+    expect(json(asked).codeLength).toBe(4);
+    expect(TEST_CODE).toHaveLength(4);
     const checked = await call(base, "POST", "/api/v1/auth/otp/verify", { phone, sessionId: json(asked).sessionId, code: TEST_CODE });
     expect(checked.status, checked.body).toBe(200);
     const refused = await call(base, "POST", "/api/v1/auth/otp/request", { phone: "+46701748999", app: "rider" });

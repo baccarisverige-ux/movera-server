@@ -18,12 +18,20 @@ type SmsSignInContract = {
   mobileNumbers: Record<string, string>;
   dailyCapRange: [number, number];
   sender: string;
+  codeLength: number;
   texts: { sms: Record<Lang, string> };
   alert: { nearPercent: number };
 };
 export const SMS_SIGN_IN = (contract as unknown as { smsSignIn: SmsSignInContract }).smsSignIn;
 /** configDefaults.smsSignIn: off (the contract verify script holds it at false) and the default daily limit. */
 const DEFAULTS = (contract as unknown as { configDefaults: { smsSignIn: { enabled: boolean; dailyCap: number } } }).configDefaults.smsSignIn;
+
+/**
+ * How many digits a code sent by SMS has (contract.json#smsSignIn.codeLength: 6; owner 2026-11-19 "6 digits (Rec.)",
+ * which replaces "Keep 4 digits" for REAL SMS codes only). The fixed test code of a test number keeps
+ * auth.otp.codeLength (4).
+ */
+export const SMS_CODE_LENGTH = SMS_SIGN_IN.codeLength;
 
 export const SIGN_IN_SMS_KIND = "sign_in_code";
 export const DAY_MS = 24 * 3_600_000;
@@ -110,7 +118,7 @@ export function signInSmsText(lang: Lang, code: string): string {
 }
 
 /** What sms_outbox keeps: the same text with the code as dots (the code is never stored readable). */
-export const storedSmsText = (lang: Lang, codeLength: number): string => signInSmsText(lang, "•".repeat(codeLength));
+export const storedSmsText = (lang: Lang): string => signInSmsText(lang, "•".repeat(SMS_CODE_LENGTH));
 
 /** For the log: the calling code and the last two digits at most ("+46…08"); never the full number. */
 export function maskPhone(phone: string): string {

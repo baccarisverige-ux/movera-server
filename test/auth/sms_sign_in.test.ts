@@ -62,7 +62,10 @@ const post = (url: string, payload: unknown, remoteAddress = address(), on: Fast
 const request = (phone: string, extra: Record<string, unknown> = {}, remoteAddress = address(), on: FastifyInstance = app) => post("/auth/otp/request", { phone, app: "rider", ...extra }, remoteAddress, on);
 const verify = (phone: string, sessionId: string, code: string, remoteAddress = address()) => post("/auth/otp/verify", { phone, sessionId, code }, remoteAddress);
 const outbox = (phone: string) => database.db.selectFrom("sms_outbox").selectAll().where("phone", "=", phone).orderBy("created_at").execute();
-const wrongCodeFor = (code: string) => (code === "0000" ? "0001" : "0000");
+/** A wrong code of the same length as `code`. */
+const wrongCodeFor = (code: string) => (/^0+$/.test(code) ? code.slice(0, -1) + "1" : "0".repeat(code.length));
+const attemptsOf = async (sessionId: string) => (await database.db.selectFrom("otp_sessions").select("attempts").where("session_id", "=", sessionId).executeTakeFirstOrThrow()).attempts;
+const SMS_LENGTH = (contract as unknown as { smsSignIn: { codeLength: number } }).smsSignIn.codeLength;
 
 describe("nothing changes until BOTH the keys and the country switch are there", () => {
   it("no SMS keys on the server: a real number is sign_in_restricted even with the switch on", async () => {
@@ -114,6 +117,9 @@ describe("nothing changes until BOTH the keys and the country switch are there",
     const phone = TEST_PHONES[2]!;
     const challenge = await request(phone);
     expect(challenge.statusCode).toBe(200);
+    // Owner 2026-11-19 "6 digits (Rec.)" is for REAL SMS codes only: the test code stays 4 digits and the answer says so.
+    expect(TEST_CODE).toMatch(/^[0-9]{4}$/);
+    expect(challenge.json().codeLength).toBe(4);
     expect(sms.sent).toHaveLength(0);
     expect(await outbox(phone)).toHaveLength(0);
     const tokens = await verify(phone, challenge.json().sessionId, TEST_CODE);
@@ -127,12 +133,13 @@ describe("a real number with the keys and the switch on", () => {
     const phone = realSE();
     const res = await request(phone);
     expect(res.statusCode).toBe(200);
-    expect(Object.keys(res.json()).sort()).toEqual(["expiresAt", "requestId", "retryAfterSeconds", "sessionId"]);
+    expect(Object.keys(res.json()).sort()).toEqual(["codeLength", "expiresAt", "requestId", "retryAfterSeconds", "sessionId"]);
+    expect(res.json().codeLength).toBe(6);
     expect(res.json().retryAfterSeconds).toBe(OTP.retryAfterSeconds);
     expect(sms.sent).toHaveLength(1);
     expect(sms.sent[0]!.to).toBe(phone);
     const code = sms.lastCode();
-    expect(code).toMatch(new RegExp(`^[0-9]{${OTP.codeLength}}$`));
+    expect(code).toMatch(/^[0-9]{6}$/);
     expect(code).not.toBe(TEST_CODE);
     expect(sms.sent[0]!.text).toBe(signInSmsText("sv", code));
 
@@ -155,6 +162,52 @@ describe("a real number with the keys and the switch on", () => {
       expect((await request(phone)).statusCode, phone).toBe(200);
       expect(sms.sent.at(-1)!.to).toBe(phone);
     }
+  });
+
+  it("a real SMS code is 6 digits (owner 2026-11-19): a 4-digit code is a wrong code and counts; another shape is refused without counting", async () => {
+    expect(SMS_LENGTH).toBe(6);
+    expect(OTP.codeLength).toBe(4);
+    const phone = realSE();
+    const from = address();
+    const res = await request(phone, {}, from);
+    const sessionId = res.json().sessionId as string;
+    const code = sms.lastCode();
+    expect(code).toHaveLength(6);
+    for (const shape of ["12345", "1234567", "12345a", "", " 123456", "123456\n"]) {
+      const answer = await verify(phone, sessionId, shape, from);
+      expect(answer.statusCode, JSON.stringify(shape)).toBe(400);
+      expect(answer.json().reason, JSON.stringify(shape)).toBe("invalid_otp_code");
+    }
+    expect(await attemptsOf(sessionId)).toBe(0);
+    // The first 4 and the last 4 digits of the right code do not sign in, and each is a counted try.
+    for (const short of [code.slice(0, 4), code.slice(2)]) {
+      const answer = await verify(phone, sessionId, short, from);
+      expect(answer.statusCode).toBe(400);
+      expect(answer.json().reason).toBe("invalid_otp_code");
+    }
+    expect(await attemptsOf(sessionId)).toBe(2);
+    expect((await verify(phone, sessionId, code, from)).statusCode).toBe(200);
+  });
+
+  it("a test number's session never takes a 6-digit code (a counted wrong code), and the test code still works after it", async () => {
+    const phone = TEST_PHONES[3]!;
+    const from = address();
+    const challenge = await request(phone, {}, from);
+    const wrong = await verify(phone, challenge.json().sessionId, `${TEST_CODE}00`, from);
+    expect(wrong.statusCode).toBe(400);
+    expect(wrong.json().reason).toBe("invalid_otp_code");
+    expect(await attemptsOf(challenge.json().sessionId)).toBe(1);
+    expect((await verify(phone, challenge.json().sessionId, TEST_CODE, from)).statusCode).toBe(200);
+  });
+
+  it("6-digit codes use the whole range (not a 4-digit code with zeros in front)", async () => {
+    let big = 0;
+    for (let i = 0; i < 12; i++) {
+      expect((await request(realSE())).statusCode).toBe(200);
+      if (Number(sms.lastCode()) >= 10_000) big++;
+    }
+    // A code under 010000 has a chance of 1 in 100; 12 in a row cannot happen with a 6-digit draw.
+    expect(big).toBeGreaterThan(0);
   });
 
   it("the test code never signs a real number in", async () => {
@@ -180,7 +233,8 @@ describe("a real number with the keys and the switch on", () => {
     const code = sms.lastCode();
     const row = (await outbox(phone))[0]!;
     expect(row.text).not.toContain(code);
-    expect(row.text).toContain("•".repeat(OTP.codeLength));
+    expect(row.text).toContain("•".repeat(6));
+    expect(row.text).not.toContain("•".repeat(7));
     const session = await database.db.selectFrom("otp_sessions").selectAll().where("session_id", "=", res.json().sessionId).executeTakeFirstOrThrow();
     expect(session.is_test).toBe(false);
     // Not the plain hash a table copy could be tried against: it is keyed with the server's secret.
@@ -457,9 +511,11 @@ describe("changing the phone number of a signed-in account", () => {
     const fresh = realSE();
     const start = await post("/account/phone/change", { phone: fresh }, from, app, { authorization: `Bearer ${tokens.accessToken}` });
     expect(start.statusCode).toBe(200);
+    expect(start.json().codeLength).toBe(6);
     expect(sms.sent).toHaveLength(1);
     expect(sms.sent[0]!.to).toBe(fresh);
     const code = sms.lastCode();
+    expect(code).toMatch(/^[0-9]{6}$/);
     const wrong = await post("/account/phone/verify", { phone: fresh, sessionId: start.json().sessionId, code: wrongCodeFor(code) }, from, app, { authorization: `Bearer ${tokens.accessToken}` });
     expect(wrong.json().reason).toBe("invalid_otp_code");
     const done = await post("/account/phone/verify", { phone: fresh, sessionId: start.json().sessionId, code }, from, app, { authorization: `Bearer ${tokens.accessToken}` });
@@ -491,6 +547,13 @@ describe("changing the phone number of a signed-in account", () => {
       const takenMs = Date.now() - takenBegan;
       expect(silent.statusCode).toBe(200);
       expect(Object.keys(silent.json()).sort()).toEqual(Object.keys(free.json()).sort());
+      // The silent answer says the same code length as a real send to that number (6), so it does not tell either.
+      expect(free.json().codeLength).toBe(6);
+      expect(silent.json().codeLength).toBe(6);
+      // A change to a test number (no SMS) keeps 4, with or without an account on it.
+      const toTest = await post("/account/phone/change", { phone: TEST_PHONES[0]! }, from, app, auth);
+      expect(toTest.statusCode).toBe(200);
+      expect(toTest.json().codeLength).toBe(4);
       expect(sms.sent.length).toBe(sentBefore);
       expect(freeMs).toBeGreaterThanOrEqual(240);
       expect(takenMs).toBeGreaterThanOrEqual(240);

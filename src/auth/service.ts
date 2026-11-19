@@ -18,7 +18,7 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 import type { CodeSmsSender } from "../sms/elks.js";
 import { pokeAlerts } from "../alerts/detector.js";
-import { DAY_MS, SIGN_IN_SMS_KIND, SMS_NO_ANSWER, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
+import { DAY_MS, SIGN_IN_SMS_KIND, SMS_CODE_LENGTH, SMS_NO_ANSWER, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -146,7 +146,7 @@ export type ClientInfo = { ip?: string | undefined; userAgent?: string | undefin
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const codeHash = (sessionId: string, code: string) => sha256(`${sessionId}:${code}`);
 /**
- * v0.18.135: a real (SMS) code is kept as a keyed hash (HMAC with the server's secret), so the 10 000 possible codes
+ * v0.18.135: a real (SMS) code is kept as a keyed hash (HMAC with the server's secret), so the 1 000 000 possible codes
  * cannot be tried against a copy of the table alone. A test number's code keeps the plain hash (the code is public).
  */
 const smsCodeHash = (secret: string, sessionId: string, code: string) => createHmac("sha256", secret).update(`otp-sms:${sessionId}:${code}`).digest("hex");
@@ -156,12 +156,27 @@ export function otpCodeMatches(deps: Pick<AuthDeps, "jwtSecret">, session: { ses
   return sameHash(session.code_sha256, session.is_test ? codeHash(session.session_id, code) : smsCodeHash(deps.jwtSecret, session.session_id, code));
 }
 
-/** A random code for a real number: from the cryptographic source, and never the public test code. */
+/**
+ * A random code for a real number: SMS_CODE_LENGTH digits (6; contract.json#smsSignIn.codeLength, owner 2026-11-19
+ * "6 digits (Rec.)") from the cryptographic source, every value equally likely, and never the public test code.
+ */
 function randomCode(): string {
   for (;;) {
-    const code = String(randomInt(0, 10 ** OTP.codeLength)).padStart(OTP.codeLength, "0");
+    const code = String(randomInt(0, 10 ** SMS_CODE_LENGTH)).padStart(SMS_CODE_LENGTH, "0");
     if (code !== TEST_CODE) return code;
   }
+}
+
+/**
+ * The shapes a code can have: the test code's length (auth.otp.codeLength, 4) or an SMS code's (6). Anything else is
+ * refused before the session is read (400 invalid_otp_code, not counted, as before). A code of the other length than
+ * the session's goes on to the compare: it never matches (the hash holds the whole code), so it is a counted wrong code.
+ */
+const CODE_LENGTHS = [...new Set([OTP.codeLength, SMS_CODE_LENGTH])].sort((a, b) => a - b);
+const CODE_SHAPE = new RegExp(`^(?:${CODE_LENGTHS.map((n) => `[0-9]{${n}}`).join("|")})$`);
+/** Throws 400 invalid_otp_code unless `code` is 4 or 6 digits (contract.json#smsSignIn.codeLengthNote). */
+export function checkCodeShape(code: string): void {
+  if (!CODE_SHAPE.test(code)) throw badRequest(`The code is ${CODE_LENGTHS.join(" or ")} digits.`, "invalid_otp_code");
 }
 
 function sameHash(a: string, b: string): boolean {
@@ -181,7 +196,8 @@ export const PHONE = /^\+[1-9][0-9]{6,14}$/;
 
 /* ---------------------------------------------------------------- request a code */
 
-export type OtpChallenge = { requestId: string; sessionId: string; expiresAt: string; retryAfterSeconds: number };
+/** codeLength (v0.18.135): how many digits THIS code has, so the apps show that many boxes: 4 test code, 6 SMS code. */
+export type OtpChallenge = { requestId: string; sessionId: string; expiresAt: string; retryAfterSeconds: number; codeLength: number };
 
 export async function requestOtp(
   deps: AuthDeps,
@@ -295,13 +311,13 @@ export async function requestOtp(
         created_at: now,
       })
       .execute();
-    const challenge = { requestId: input.requestId, sessionId, expiresAt: expiresAt.toISOString(), retryAfterSeconds: fast ? 0 : OTP.retryAfterSeconds };
+    const challenge = { requestId: input.requestId, sessionId, expiresAt: expiresAt.toISOString(), retryAfterSeconds: fast ? 0 : OTP.retryAfterSeconds, codeLength: code.length };
     if (isTest || country === null || setting === undefined) return { challenge };
     // The SMS is booked with the code (same transaction) and handed to the SMS company after the commit, so no
     // database connection or lock waits on the company. The stored text has dots in place of the code.
     const lang = smsLanguage(input.locale, country);
     const smsId = newId("sms", now.getTime());
-    await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: input.phone, text: storedSmsText(lang, OTP.codeLength), kind: SIGN_IN_SMS_KIND, status: "queued", provider: deps.signInSms!.name, created_at: now }).execute();
+    await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: input.phone, text: storedSmsText(lang), kind: SIGN_IN_SMS_KIND, status: "queued", provider: deps.signInSms!.name, created_at: now }).execute();
     return { challenge, sms: { smsId, sessionId, to: input.phone, text: signInSmsText(lang, code), atAlertLine: smsCount === nearCap(setting.dailyCap) || smsCount === setting.dailyCap } };
   }).catch(async (error: unknown) => {
     // The refusal rolled its transaction back; the admin alert is asked for on its own (smsSignIn.alert).
@@ -322,14 +338,18 @@ export const SILENT_SMS_WAIT_MAX_MS = 8000;
  * accountChange.ts): when a real SMS would have gone to this number, wait about as long as a real send takes, so the
  * answer time does not tell that the number has an account. No sender, not a served mobile number, or the country's
  * switch off: no wait (the real path would not have sent either).
+ *
+ * Answers how many digits the code of a real answer for this number would have (OtpChallenge.codeLength), so the
+ * silent answer does not differ there either: 6 when an SMS would have gone out, else the test code's 4.
  */
-export async function silentSmsWait(deps: AuthDeps, phone: string, app: App): Promise<void> {
+export async function silentSmsWait(deps: AuthDeps, phone: string, app: App): Promise<number> {
   const country = deps.signInSms === undefined ? null : smsCountryOf(phone);
-  if (deps.signInSms === undefined || country === null) return;
-  if (deps.testSignInEnabled && (await isTestPhone(deps.db, phone, app))) return;
-  if (!(await smsSignInFor(deps.db, country)).enabled) return;
+  if (deps.signInSms === undefined || country === null) return OTP.codeLength;
+  if (deps.testSignInEnabled && (await isTestPhone(deps.db, phone, app))) return OTP.codeLength;
+  if (!(await smsSignInFor(deps.db, country)).enabled) return OTP.codeLength;
   const ms = Math.min(SILENT_SMS_WAIT_MAX_MS, lastSmsSendMs.get(deps.signInSms) ?? SILENT_SMS_WAIT_DEFAULT_MS);
   await new Promise((resolve) => setTimeout(resolve, ms));
+  return SMS_CODE_LENGTH;
 }
 
 type PendingSms = { smsId: string; sessionId: string; to: string; text: string; atAlertLine: boolean };
@@ -381,7 +401,7 @@ export async function verifyOtp(
 ): Promise<AuthTokens> {
   const now = deps.clock?.() ?? new Date();
   if (!PHONE.test(input.phone)) throw badRequest("Send the phone number in international form, e.g. +46701234567.", "invalid_phone");
-  if (!new RegExp(`^[0-9]{${OTP.codeLength}}$`).test(input.code)) throw badRequest(`The code is ${OTP.codeLength} digits.`, "invalid_otp_code");
+  checkCodeShape(input.code);
 
   // A wrong code must still count as an attempt, so the transaction commits and the error is thrown after.
   const outcome: VerifyOutcome = await deps.db.transaction().execute(async (trx): Promise<VerifyOutcome> => {
