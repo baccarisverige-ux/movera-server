@@ -385,13 +385,14 @@ export async function payoutDue(ex: Executor, row: PayoutDriverRow, now: Date, c
 /**
  * J8b (lock order: driver → his entries → payouts, as createPayout and driverPaidMovera): the driver's row lock for his
  * payout step, so the step and a "Driver paid Movera" click never run at the same moment: the step sees the click's
- * entry, or the click sees the step's payout. FOR KEY SHARE (round 2, supervisor SF4): it is refused only by the FOR
- * UPDATE of the click, Create payout and hold; a trip end that adds an entry and a plain update of his row never wait.
- * Two steps for one driver are kept apart by his entries' row locks and payouts_weekly_once, as before.
+ * entry, or the click sees the step's payout. v0.18.133 review S4 (MONEY, a carry is taken once): FOR NO KEY UPDATE,
+ * exclusive between two payout steps of one driver and with the FOR UPDATE of the click, Create payout and hold, so two
+ * steps never both read and take the same carry. Not FOR UPDATE: a trip end that adds an entry takes only a key share by
+ * the foreign key and never waits (round 2, supervisor SF4); a plain update of his row waits for the step's commit.
  * Returns false when his payouts are paused (read under the lock; payoutHold) or he is gone.
  */
 export async function lockPayoutDriver(trx: Trx, driverId: string): Promise<boolean> {
-  const driver = await trx.selectFrom("drivers").select(["payout_hold_at"]).where("driver_id", "=", driverId).forKeyShare().executeTakeFirst();
+  const driver = await trx.selectFrom("drivers").select(["payout_hold_at"]).where("driver_id", "=", driverId).forNoKeyUpdate().executeTakeFirst();
   return driver !== undefined && driver.payout_hold_at === null;
 }
 

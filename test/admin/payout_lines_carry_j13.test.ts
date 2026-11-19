@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { closePeriods, createPayout, payoutView } from "../../src/admin/payouts.js";
+import { closeDriverPeriods, closePeriods, createPayout, lockPayoutDriver, payoutDrivers, payoutView } from "../../src/admin/payouts.js";
+import { payoutDriverHandler } from "../../src/jobs/payouts.js";
+import type { Timer } from "../../src/jobs/timers.js";
 import { payoutRuns, splitPayout } from "../../src/admin/payoutCarry.js";
 import { driverPaidMovera } from "../../src/admin/driversOwing.js";
 import { owedByDriver, overOwesLimit } from "../../src/drivers/owes.js";
@@ -178,6 +180,38 @@ describe("J13 review M2: a carry is taken once, also by a hand payout for an old
 
   it("the same when the hand payout's clock is behind the newer payout (it is stamped after it)", async () => {
     await lateOlderRange("2026-11-09T07:00:00Z");
+  });
+});
+
+describe("J13 review S4: two payout steps for one driver never both take the carry", () => {
+  it("a second step (own connection) waits for the first one's driver lock; the carry is taken once and the lines add up", async () => {
+    await rules("SE", { payoutLinesOn: true });
+    const d = await driverIn(["Z001"], "SE");
+    await cashTrip(d, W1, "SEK", 7027, 9500);
+    await run(RUN1);
+    await card(d, W2, "SEK", 10_000);
+    const at = new Date(RUN2);
+    let releaseA!: () => void;
+    const holdA = new Promise<void>((r) => (releaseA = r));
+    let lockedA!: () => void;
+    const aHasLock = new Promise<void>((r) => (lockedA = r));
+    const stepA = database.db.transaction().execute(async (trx) => {
+      expect(await lockPayoutDriver(trx, d)).toBe(true);
+      lockedA();
+      await holdA;
+      for (const row of await payoutDrivers(trx, { driverId: d })) await closeDriverPeriods(trx, row, at);
+    });
+    await aHasLock;
+    let bDone = false;
+    const stepB = database.db.transaction().execute((trx) => payoutDriverHandler(trx, { kind: "payout_driver", refId: d, payload: {}, attempts: 0, firedAt: at } as unknown as Timer)).then(() => { bDone = true; });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(bDone).toBe(false);
+    releaseA();
+    await Promise.all([stepA, stepB]);
+    const rows = await database.db.selectFrom("payouts").select(["amount_minor", "carried_in_minor", "carried_out_minor", "lines"]).where("driver_id", "=", d).orderBy("created_at").execute();
+    expect(rows.map((r) => [Number(r.amount_minor), Number(r.carried_in_minor), Number(r.carried_out_minor)])).toEqual([[0, 0, 2473], [7527, 2473, 0]]);
+    for (const r of rows) expect((r.lines as { amountMinor: number }[]).reduce((sum, l) => sum + l.amountMinor, 0)).toBe(Number(r.amount_minor));
+    expect(await owed(d, "SEK")).toBe(0);
   });
 });
 

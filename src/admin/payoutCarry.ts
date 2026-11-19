@@ -30,7 +30,7 @@ export async function payoutLinesOn(ex: Executor, driverId: string): Promise<boo
 
 /**
  * What the driver's next payout of `currency` takes first (payoutLines.carry): `total` = the rest carried (>= 0), and
- * `fromLines` = the part left by a switched-on payout. Read under his driver lock (the caller's).
+ * `fromLines` = the part left by a switched-on payout. Read under his driver lock (the caller's; exclusive between payout steps, review S4).
  */
 export async function carryOf(ex: Executor, driverId: string, currency: string): Promise<{ total: number; fromLines: number; newestMadeAt: Date | null }> {
   const row = await ex
