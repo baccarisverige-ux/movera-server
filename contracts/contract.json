@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.132",
+  "version": "0.18.135",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -4047,7 +4047,12 @@
     },
     "pickupSpotsOn": true,
     "shareTripOn": true,
-    "driverOneStream": false
+    "driverOneStream": false,
+    "smsSignIn": {
+      "enabled": false,
+      "dailyCap": 200,
+      "note": "v0.18.135: CountryRules.smsSignIn never saved (every country)."
+    }
   },
   "realtime": {
     "envelope": [
@@ -10561,5 +10566,65 @@
     "driver": "realtime.oneStream true: open GET /driver/stream (off-trip and on a trip; the trip stream as before) and give its events to the two existing readers (offers by sequence, settings by kind); do not open the two old streams. false or missing, or GET /driver/stream answers 404 (an older server): the two streams as before, and after a 404 the app does not try the one stream again until it restarts. When the switch changes, the app closes what it holds and opens the other within one settings update.",
     "rider": "Not affected: the rider app has no offer feed; GET /rider/config/stream and the trip stream are unchanged.",
     "admin": "Admin › Dispatch, per zone: the switch 'One live connection per driver phone' (default off), with an 'i' text (what it does, what it saves, who it affects, when to turn it on, the way back, older apps). It is the way back without an app release."
+  },
+  "smsSignIn": {
+    "note": "v0.18.135 (owner 2026-11-19 button \"Yes, build it now (Rec.)\", Rules decisions/session-2026-11-06.md; SMS company 46elks: owner 2026-11-02 \"46elks + Twilio backup\", Rules decisions/servers-test-live.md; impact list Rules audits/impact/sms-sign-in.md; Rule 0; launch Sweden first, RULE D): real sign-in codes by SMS for real phone numbers. Additive; X-Api-Version stays 0.5; no new route, the two OTP calls keep their request and answer shapes; no migration. Nothing changes until BOTH conditions of active hold: test numbers and the test code (auth.testSignIn) work exactly as before and every other number is still 403 sign_in_restricted.",
+    "active": "A number that is not a test number gets a real code only when ALL hold: (1) the server has the SMS company's two keys (serverKeys; set by the owner on the server, never in a repository, never sent to an app or the admin panel); (2) the number starts with the calling code of a country Movera serves (countries); (3) CountryRules.smsSignIn.enabled of that country's standard is true. Otherwise the answer is 403 forbidden, reason sign_in_restricted, exactly as before (the apps offer the waiting list). A test number (outside production) never gets an SMS and keeps the fixed test code, whatever the switch says.",
+    "setting": "CountryRules.smsSignIn { enabled (boolean), dailyCap (integer, dailyCapRange) } of the COUNTRY STANDARD only (standard-<CC>), like sosContactsSms: Admin › Pricing › Tips & limits per country, card \"Real SMS sign-in codes\" (settings.edit, published with the country_rules document by settings.publish). A zone's own country_rules carrying it is 400 invalid_request, reason sms_sign_in_country_only; enabled not true / false, dailyCap not a whole number inside dailyCapRange, or another key inside it, is 400 invalid_request, reason invalid_document. Never saved, or a part missing = configDefaults.smsSignIn (off, 200).",
+    "dailyCapRange": [
+      10,
+      100000
+    ],
+    "serverKeys": [
+      "ELKS_API_USERNAME",
+      "ELKS_API_PASSWORD"
+    ],
+    "serverKeysNote": "The names of the server's environment variables for the 46elks API (HTTPS, basic auth). Only one of the two set, or an empty value: the feature stays off and the server writes one warning at start. SMS_SENDER_NAME (optional) replaces sender; a value 46elks would refuse (not 3-11 letters and digits starting with a letter) is ignored with a warning.",
+    "sender": "Movera",
+    "countries": {
+      "+46": "SE",
+      "+33": "FR",
+      "+216": "TN"
+    },
+    "code": "A new random code per request from a cryptographic random source (auth.otp.codeLength digits; never the test code on purpose), kept only as a keyed hash, valid auth.otp.expiresSeconds, at most auth.otp.maxAttempts tries, one active code per phone and app (a new code replaces the earlier one), used once (a verified or replaced code is 400 invalid_otp_session). The compare takes the same time for a right and a wrong code. The answers never say whether the number already has an account.",
+    "limits": "Every limit of the test sign-in applies unchanged and counts each SMS asked for, sent or not: auth.otp.retryAfterSeconds between codes, countryLimits.codesPerPhonePerHour, countryLimits.codesPerAddressPerHour, the wrong-code locks (countryLimits.wrongCodesPerDay per number and address, 4 × that per number) and the write limit in front (rateLimit.key, phone + address). The staging fast path of test numbers never applies to a real number.",
+    "dailyCap": "Cost guard (SMS pumping): per country, the sign-in SMS handed to the SMS company in the last 24 hours (accepted or still being sent) are counted before each new one. At dailyCap the request is refused: 503 unavailable, reason sms_daily_limit, Retry-After = until the oldest leaves the 24 h window (at most 24 h); no code is made and nothing is sent (fail closed). Test numbers are not counted and not stopped.",
+    "delivery": "The code is stored first, then the SMS is handed to the SMS company (one try, short time limit) before the answer. Accepted: 200 as before (requestId, sessionId, expiresAt, retryAfterSeconds). Refused, failed or timed out: the code is void at once and the answer is 503 unavailable, reason sms_not_sent, Retry-After = auth.otp.retryAfterSeconds; the app may ask again after that wait. The try still counts on the hourly limits.",
+    "errors": {
+      "sign_in_restricted": "403 forbidden: not active for this number (see active); the apps offer the waiting list as before.",
+      "sms_daily_limit": "503 unavailable (retryable): the country's daily SMS limit is reached (dailyCap).",
+      "sms_not_sent": "503 unavailable (retryable): the SMS company did not take the SMS (delivery)."
+    },
+    "language": "The SMS is written in the request's locale when it is sv, fr or en; else the country's language (noticeLanguage.countryDefault: SE sv, FR fr, TN fr); else en.",
+    "texts": {
+      "sms": {
+        "sv": "Movera: din inloggningskod är {code}. Dela den inte med någon.",
+        "fr": "Movera : votre code de connexion est {code}. Ne le partagez avec personne.",
+        "en": "Movera: your sign-in code is {code}. Do not share it with anyone."
+      },
+      "smsNote": "{code} = the code. The app name and the code, no link, one SMS part (GSM-7 letters only, under 160 characters).",
+      "smsNotSent": {
+        "sv": "Vi kunde inte skicka sms:et. Kontrollera numret och försök igen.",
+        "fr": "Nous n’avons pas pu envoyer le SMS. Vérifiez le numéro et réessayez.",
+        "en": "We could not send the SMS. Check the number and try again."
+      },
+      "smsDailyLimit": {
+        "sv": "Vi kan inte skicka fler sms-koder just nu. Försök igen senare.",
+        "fr": "Nous ne pouvons plus envoyer de codes par SMS pour le moment. Réessayez plus tard.",
+        "en": "We cannot send more SMS codes right now. Try again later."
+      }
+    },
+    "alert": {
+      "rule": "Admin alert kind system_health (no new kind or setting), one per country book, checked on each alert sweep and right after a refusal: from nearPercent % of dailyCap an important alert (cause system_health:sms_cap_near:<country>), at dailyCap a critical one (cause system_health:sms_cap:<country>); each turns solved by itself when the count falls below its limit. Only for a country whose smsSignIn.enabled is true and where the book's system_health is on.",
+      "nearPercent": 80,
+      "titles": {
+        "near": "Sign-in SMS: {0} of {1} sent in the last 24 hours",
+        "reached": "Sign-in SMS limit reached: {0} of {1} in the last 24 hours. New sign-in codes are stopped"
+      },
+      "detail": "Raise the daily limit in Tips & limits per country if these are real people"
+    },
+    "logs": "The server log and the stored SMS row never hold the code; the log never holds the full phone number (calling code and the last two digits at most). The stored SMS row keeps the text with the code replaced by dots.",
+    "otherSms": "Only sign-in codes use the keys in this version. The fleet invitation SMS and the SOS contacts SMS (sosContactsSms) stay not connected until a later version says so.",
+    "apps": "Contract: this block (errors: the reasons beside auth.signInErrors, which is kept as released), configDefaults.smsSignIn, CountryRules.smsSignIn. Server: the sender, the rules above. Admin: the card with the switch and the daily limit per country, the alert texts. Driver and rider apps: texts.smsNotSent and texts.smsDailyLimit for the two new reasons on the phone-number and code screens (resend with the countdown, wrong code, expired code, too many tries and the waiting list are unchanged)."
   }
 }

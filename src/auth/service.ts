@@ -1,6 +1,6 @@
 import type { EmailSender } from "../email/resend.js";
 import { emailTakenByOther } from "./emailTaken.js";
-import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { sql } from "kysely";
 import { contract } from "../contract/contract.js";
 import type { Db, Executor, Trx } from "../db/db.js";
@@ -16,6 +16,9 @@ import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 import { NOT_HELD } from "../reservations/view.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
+import type { CodeSmsSender } from "../sms/elks.js";
+import { pokeAlerts } from "../alerts/detector.js";
+import { DAY_MS, SIGN_IN_SMS_KIND, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -23,6 +26,10 @@ import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLangu
  * Test week: only test numbers can sign in (owner decision 2); they get no SMS and the fixed code works, and
  * only outside production. Any other number is 403 forbidden, reason sign_in_restricted, until an SMS
  * provider is connected.
+ *
+ * Contract v0.18.135 (contract.json#smsSignIn, owner 2026-11-19 "Yes, build it now (Rec.)"): with an SMS sender
+ * (AuthDeps.signInSms: the 46elks keys are set) AND the country's admin switch on (CountryRules.smsSignIn.enabled,
+ * default off), any other number of a served country gets a random code by SMS. Without either, nothing changes.
  *
  * Apple / Google (contract §8, v0.5.3): POST /auth/provider signs in an identity already linked to an account, or
  * answers PHONE_REQUIRED with a link token; the app then verifies a phone with that token (the first time only) and
@@ -122,6 +129,13 @@ export type AuthDeps = {
   email?: EmailSender | undefined;
   /** B1.27 rule: the e-mail change code is written to the log only on a developer's laptop (MOVERA_ENV development). */
   logCodes?: boolean;
+  /**
+   * v0.18.135 (contract.json#smsSignIn): the sender of the sign-in code SMS (46elks when both keys are set; tests
+   * inject a fake). None: every number that is not a test number is sign_in_restricted, as before.
+   */
+  signInSms?: CodeSmsSender | undefined;
+  /** For the SMS flow's warnings; never given the code or a full phone number. */
+  warn?: ((data: Record<string, unknown>, message: string) => void) | undefined;
   clock?: () => Date;
 };
 
@@ -131,6 +145,24 @@ export type ClientInfo = { ip?: string | undefined; userAgent?: string | undefin
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const codeHash = (sessionId: string, code: string) => sha256(`${sessionId}:${code}`);
+/**
+ * v0.18.135: a real (SMS) code is kept as a keyed hash (HMAC with the server's secret), so the 10 000 possible codes
+ * cannot be tried against a copy of the table alone. A test number's code keeps the plain hash (the code is public).
+ */
+const smsCodeHash = (secret: string, sessionId: string, code: string) => createHmac("sha256", secret).update(`otp-sms:${sessionId}:${code}`).digest("hex");
+
+/** Whether `code` is this session's code; the compare takes the same time for a right and a wrong code. */
+export function otpCodeMatches(deps: Pick<AuthDeps, "jwtSecret">, session: { session_id: string; code_sha256: string; is_test: boolean }, code: string): boolean {
+  return sameHash(session.code_sha256, session.is_test ? codeHash(session.session_id, code) : smsCodeHash(deps.jwtSecret, session.session_id, code));
+}
+
+/** A random code for a real number: from the cryptographic source, and never the public test code. */
+function randomCode(): string {
+  for (;;) {
+    const code = String(randomInt(0, 10 ** OTP.codeLength)).padStart(OTP.codeLength, "0");
+    if (code !== TEST_CODE) return code;
+  }
+}
 
 function sameHash(a: string, b: string): boolean {
   const left = Buffer.from(a, "hex");
@@ -160,12 +192,17 @@ export async function requestOtp(
   if (!PHONE.test(input.phone)) throw badRequest("Send the phone number in international form, e.g. +46701234567.", "invalid_phone");
   if (input.linkToken !== undefined) await loadLinkToken(deps.db, input.linkToken, input.app, now);
 
-  return deps.db.transaction().execute(async (trx) => {
+  let capHit = false;
+  const started = await deps.db.transaction().execute(async (trx): Promise<{ challenge: OtpChallenge; sms?: PendingSms }> => {
     // One sign-in start at a time per phone and app, so the resend and hourly limits cannot be raced.
     await sql`SELECT pg_advisory_xact_lock(hashtext(${`otp:${input.app}:${input.phone}`}))`.execute(trx);
 
     const isTest = deps.testSignInEnabled && (await isTestPhone(trx, input.phone, input.app));
-    if (!isTest) {
+    // v0.18.135 (contract.json#smsSignIn.active): a real number only with an SMS sender, a served country's calling
+    // code and that country's switch on; otherwise the same answer as ever.
+    const country = isTest ? null : countryOfPhone(input.phone);
+    const setting = !isTest && deps.signInSms !== undefined && country !== null ? await smsSignInFor(trx, country) : undefined;
+    if (!isTest && (country === null || setting === undefined || !setting.enabled)) {
       throw new ApiError("forbidden", "Sign-in is not open for this number yet.", { reason: "sign_in_restricted" });
     }
 
@@ -217,9 +254,23 @@ export async function requestOtp(
       }
     }
 
+    // v0.18.135 (contract.json#smsSignIn.dailyCap): the cost guard, after every other limit and right before the
+    // SMS is booked. One at a time per country, so parallel requests cannot pass the limit together. Fail closed.
+    let smsCount = 0;
+    if (!isTest && country !== null && setting !== undefined) {
+      await sql`SELECT pg_advisory_xact_lock(hashtext(${`sms-cap:${country}`}))`.execute(trx);
+      const day = await signInSmsLastDay(trx, country, now);
+      if (day.count >= setting.dailyCap) {
+        capHit = true;
+        const wait = day.oldest ? (day.oldest.getTime() + DAY_MS - now.getTime()) / 1000 : DAY_MS / 1000;
+        throw new ApiError("unavailable", "We cannot send more SMS codes right now. Try again later.", { reason: "sms_daily_limit", retryAfterSeconds: Math.min(DAY_MS / 1000, Math.max(1, Math.ceil(wait))) });
+      }
+      smsCount = day.count + 1;
+    }
+
     const sessionId = newId("otp", now.getTime());
-    // A test number's code is the fixed one; any other number would get a random code by SMS.
-    const code = isTest ? TEST_CODE : String(randomInt(0, 10 ** OTP.codeLength)).padStart(OTP.codeLength, "0");
+    // A test number's code is the fixed one; any other number gets a random code by SMS.
+    const code = isTest ? TEST_CODE : randomCode();
     const expiresAt = new Date(now.getTime() + OTP.expiresSeconds * 1000);
     // A new code replaces any earlier one for this number and app.
     await trx
@@ -235,7 +286,7 @@ export async function requestOtp(
         session_id: sessionId,
         phone: input.phone,
         app: input.app,
-        code_sha256: codeHash(sessionId, code),
+        code_sha256: isTest ? codeHash(sessionId, code) : smsCodeHash(deps.jwtSecret, sessionId, code),
         is_test: isTest,
         locale: input.locale ?? null,
         ip: client.ip ?? null,
@@ -244,8 +295,43 @@ export async function requestOtp(
         created_at: now,
       })
       .execute();
-    return { requestId: input.requestId, sessionId, expiresAt: expiresAt.toISOString(), retryAfterSeconds: fast ? 0 : OTP.retryAfterSeconds };
+    const challenge = { requestId: input.requestId, sessionId, expiresAt: expiresAt.toISOString(), retryAfterSeconds: fast ? 0 : OTP.retryAfterSeconds };
+    if (isTest || country === null || setting === undefined) return { challenge };
+    // The SMS is booked with the code (same transaction) and handed to the SMS company after the commit, so no
+    // database connection or lock waits on the company. The stored text has dots in place of the code.
+    const lang = smsLanguage(input.locale, country);
+    const smsId = newId("sms", now.getTime());
+    await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: input.phone, text: storedSmsText(lang, OTP.codeLength), kind: SIGN_IN_SMS_KIND, status: "queued", provider: deps.signInSms!.name, created_at: now }).execute();
+    return { challenge, sms: { smsId, sessionId, to: input.phone, text: signInSmsText(lang, code), atAlertLine: smsCount === nearCap(setting.dailyCap) || smsCount === setting.dailyCap } };
+  }).catch(async (error: unknown) => {
+    // The refusal rolled its transaction back; the admin alert is asked for on its own (smsSignIn.alert).
+    if (capHit) await pokeAlerts(deps.db, now).catch(() => undefined);
+    throw error;
   });
+  if (started.sms !== undefined) await deliverSignInSms(deps, started.sms, now);
+  return started.challenge;
+}
+
+type PendingSms = { smsId: string; sessionId: string; to: string; text: string; atAlertLine: boolean };
+
+/**
+ * contract.json#smsSignIn.delivery: one try. Accepted: the row is `sent`. Anything else: the row is `failed`, the code
+ * is void at once, and the person is told to ask again (503 sms_not_sent, after the usual resend wait). The try still
+ * counts on the hourly limits. Neither the code nor the full number reaches the log.
+ */
+async function deliverSignInSms(deps: AuthDeps, sms: PendingSms, now: Date): Promise<void> {
+  const outcome = await deps.signInSms!.send({ to: sms.to, text: sms.text }).catch(() => ({ accepted: false }) as { accepted: boolean; status?: number; ref?: string });
+  if (outcome.accepted) {
+    await deps.db.updateTable("sms_outbox").set({ status: "sent", provider_ref: outcome.ref ?? null, sent_at: now }).where("sms_id", "=", sms.smsId).execute();
+    if (sms.atAlertLine) await pokeAlerts(deps.db, now).catch(() => undefined);
+    return;
+  }
+  await deps.db.transaction().execute(async (trx) => {
+    await trx.updateTable("sms_outbox").set({ status: "failed", error: outcome.status !== undefined ? `http_${outcome.status}` : "no_answer" }).where("sms_id", "=", sms.smsId).execute();
+    await trx.updateTable("otp_sessions").set({ consumed_at: now }).where("session_id", "=", sms.sessionId).where("consumed_at", "is", null).execute();
+  });
+  deps.warn?.({ smsId: sms.smsId, to: maskPhone(sms.to), provider: deps.signInSms!.name, ...(outcome.status !== undefined ? { status: outcome.status } : {}) }, "sign-in SMS not sent");
+  throw new ApiError("unavailable", "We could not send the SMS. Check the number and try again.", { reason: "sms_not_sent", retryAfterSeconds: OTP.retryAfterSeconds });
 }
 
 async function isTestPhone(ex: Executor, phone: string, app: App): Promise<boolean> {
@@ -297,7 +383,7 @@ export async function verifyOtp(
     const ceiling = limits.wrongCodesPerDay * PHONE_WRONG_CODES_CEILING_FACTOR;
     const everywhere = await wrongCodesTodayAllAddresses(trx, session.phone, now);
     if (everywhere.wrong >= ceiling) return { ok: false, error: lockedToday(everywhere.oldest, now) };
-    if (!sameHash(session.code_sha256, codeHash(session.session_id, input.code))) {
+    if (!otpCodeMatches(deps, session, input.code)) {
       const attempts = session.attempts + 1;
       await trx.updateTable("otp_sessions").set({ attempts }).where("session_id", "=", session.session_id).execute();
       if (today.wrong + 1 >= limits.wrongCodesPerDay) return { ok: false, error: lockedToday(today.oldest ?? session.created_at, now) };

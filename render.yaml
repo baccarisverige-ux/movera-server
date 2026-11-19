@@ -50,6 +50,12 @@ services:
       # G30b (owner Q1): Resend's API key for the e-mail change codes; filled in Render's dashboard (never committed).
       - key: RESEND_API_KEY
         sync: false
+      # Contract v0.18.135 (smsSignIn): the 46elks API username and password for the sign-in code SMS; filled in
+      # Render's dashboard by the owner (never committed). Without BOTH, real SMS codes stay off (as before).
+      - key: ELKS_API_USERNAME
+        sync: false
+      - key: ELKS_API_PASSWORD
+        sync: false
       # Road routes and distances for the test week (the rider's map draws the road, not a straight line). The public
       # OSRM demo server is for trying things out only; Movera's own OSRM replaces it (docs/DECISIONS.md, decision 4).
       - key: OSRM_URL
