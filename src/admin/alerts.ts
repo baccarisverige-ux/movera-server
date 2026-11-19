@@ -115,6 +115,12 @@ const render = (text: unknown) => {
  * number has no upper bound; the newest solved ones are kept.
  */
 export const SOLVED_ALERTS_CAP = 1000;
+/**
+ * v0.18.131 (MF3, contract.json#alertDesk.serverDetection.liveList.openOtherCap): at most this many OPEN alerts of the
+ * non-safety kinds (Critical first, then the newest). Open safety alerts (sos, car_lost, ride_check, sos_slow) are never
+ * cut. When either part is cut the book carries `alertsMore`.
+ */
+export const OPEN_OTHER_ALERTS_CAP = 1000;
 const SAFETY_KINDS: readonly string[] = Object.keys(DESK.kindGroups).filter((kind) => DESK.kindGroups[kind] === "safety");
 const LEVEL_RANK: Record<string, number> = { critical: 0, important: 1, info: 2 };
 const safetyRank = (kind: string) => (SAFETY_KINDS.includes(kind) ? 0 : 1);
@@ -129,10 +135,11 @@ const safetyRank = (kind: string) => (SAFETY_KINDS.includes(kind) ? 0 : 1);
  *   open   → every one, never cut: safety kinds first, then Critical / Important / Info, the newest first;
  *   solved → after the open ones: safety kinds first, then the newest solved first, at most SOLVED_ALERTS_CAP.
  */
-async function liveAlerts(ex: Executor, who: Principal, country: string) {
+async function liveAlerts(ex: Executor, who: Principal, country: string): Promise<{ alerts: Record<string, unknown>[]; more?: { open: boolean; solved: boolean } }> {
   // Checker LOW: the zone and group filter runs in SQL, before the limit.
   const kinds = Object.keys(DESK.kindGroups).filter((kind) => maySee(who, kind));
-  if (!kinds.length) return [];
+  if (!kinds.length) return { alerts: [] };
+  const safety = [...SAFETY_KINDS];
   const all = who.zones.includes("*");
   const zones = who.zones.length ? [...who.zones] : ["-"];
   // N1 (Rules audits/impact/alert-cap-safety-supervisor.md): open and solved are read in ONE statement, so both parts see
@@ -141,11 +148,20 @@ async function liveAlerts(ex: Executor, who: Principal, country: string) {
   // Open: no LIMIT. An open alert is a cause that is there now; the index (country, state) finds them.
   // Solved: the newest per kind, read in index order (migration 0113: country, kind, solved_at DESC, only solved rows),
   // so the read stays small however many solved rows the table holds; then the newest SOLVED_ALERTS_CAP over all kinds.
+  // MF3 (v0.18.131): both solved limits read one row more, only to know that the part was cut (alertsMore.solved).
   const zoneOf = (alias: "o" | "a") => (all ? sql`true` : sql`${sql.ref(`${alias}.zone_id`)} = ANY(${zones}::text[])`);
+  // MF3 (v0.18.131): open safety alerts have no LIMIT; open other alerts at most OPEN_OTHER_ALERTS_CAP (one more is read
+  // to know that the part was cut), Critical first, then the newest since.
   const read = (
     await sql<LiveRow>`
       SELECT o.* FROM admin_alerts_live o
-       WHERE o.country = ${country} AND o.state = 'open' AND o.kind = ANY(${kinds}::text[]) AND ${zoneOf("o")}
+       WHERE o.country = ${country} AND o.state = 'open' AND o.kind = ANY(${kinds}::text[]) AND o.kind = ANY(${safety}::text[]) AND ${zoneOf("o")}
+      UNION ALL
+      SELECT p.* FROM (
+        SELECT o.* FROM admin_alerts_live o
+         WHERE o.country = ${country} AND o.state = 'open' AND o.kind = ANY(${kinds}::text[]) AND NOT (o.kind = ANY(${safety}::text[])) AND ${zoneOf("o")}
+         ORDER BY CASE o.level WHEN 'critical' THEN 0 WHEN 'important' THEN 1 WHEN 'info' THEN 2 ELSE 9 END, o.since DESC, o.alert_id
+         LIMIT ${OPEN_OTHER_ALERTS_CAP + 1}) p
       UNION ALL
       SELECT c.* FROM (
         SELECT s.*
@@ -154,20 +170,26 @@ async function liveAlerts(ex: Executor, who: Principal, country: string) {
                 SELECT a.* FROM admin_alerts_live a
                  WHERE a.country = ${country} AND a.state = 'solved' AND a.kind = k.kind AND ${zoneOf("a")}
                  ORDER BY a.solved_at DESC NULLS LAST
-                 LIMIT ${SOLVED_ALERTS_CAP}) s
+                 LIMIT ${SOLVED_ALERTS_CAP + 1}) s
          ORDER BY (s.kind = ANY(${[...SAFETY_KINDS]}::text[])) DESC, s.solved_at DESC NULLS LAST, s.alert_id
-         LIMIT ${SOLVED_ALERTS_CAP}) c`.execute(ex)
+         LIMIT ${SOLVED_ALERTS_CAP + 1}) c`.execute(ex)
   ).rows;
   // UNION ALL keeps no order, so both parts are put in order here.
+  const byOpen = (a: LiveRow, b: LiveRow) => safetyRank(a.kind) - safetyRank(b.kind) || (LEVEL_RANK[a.level] ?? 9) - (LEVEL_RANK[b.level] ?? 9) || b.since.getTime() - a.since.getTime() || a.alert_id.localeCompare(b.alert_id);
+  const openOther = read.filter((r) => r.state === "open" && !SAFETY_KINDS.includes(r.kind));
+  const cutOpen = openOther.length > OPEN_OTHER_ALERTS_CAP;
+  const dropOpen = cutOpen ? new Set([openOther.sort(byOpen)[OPEN_OTHER_ALERTS_CAP]!.alert_id]) : new Set<string>();
   const open = read
-    .filter((r) => r.state === "open")
-    .sort((a, b) => safetyRank(a.kind) - safetyRank(b.kind) || (LEVEL_RANK[a.level] ?? 9) - (LEVEL_RANK[b.level] ?? 9) || b.since.getTime() - a.since.getTime() || a.alert_id.localeCompare(b.alert_id));
+    .filter((r) => r.state === "open" && !dropOpen.has(r.alert_id))
+    .sort(byOpen);
   const solvedTime = (r: LiveRow) => r.solved_at?.getTime() ?? -Infinity;
-  const solved = read
+  const solvedAll = read
     .filter((r) => r.state !== "open")
     .sort((a, b) => safetyRank(a.kind) - safetyRank(b.kind) || solvedTime(b) - solvedTime(a) || a.alert_id.localeCompare(b.alert_id));
+  const cutSolved = solvedAll.length > SOLVED_ALERTS_CAP;
+  const solved = solvedAll.slice(0, SOLVED_ALERTS_CAP);
   const rows = [...open, ...solved];
-  return rows
+  const alerts = rows
     .filter((r) => coversZone(who, r.zone_id) && maySee(who, r.kind))
     .map((r) => ({
       alertId: r.alert_id,
@@ -188,6 +210,13 @@ async function liveAlerts(ex: Executor, who: Principal, country: string) {
       ...(r.old_since ? { old: true, oldSince: r.old_since.toISOString() } : {}),
       ref: r.ref ?? {},
     }));
+  return cutOpen || cutSolved ? { alerts, more: { open: cutOpen, solved: cutSolved } } : { alerts };
+}
+
+async function liveBook(ex: Executor, who: Principal, country: string) {
+  const live = await liveAlerts(ex, who, country);
+  // v0.18.131 contract.json#alertDesk.serverDetection.liveList.more: present only when a part was cut.
+  return { alerts: live.alerts, ...(live.more ? { alertsMore: live.more } : {}) };
 }
 
 export async function alertBook(ex: Executor, who: Principal, country: string, now: Date) {
@@ -206,7 +235,7 @@ export async function alertBook(ex: Executor, who: Principal, country: string, n
     mutes,
     quiet: quiet ? { on: quiet.quiet_on, from: quiet.from_hm, to: quiet.to_hm } : { on: false, from: "22:00", to: "07:00" },
     people: (await colleagues(ex, countryZones)).map((p) => ({ adminId: p.adminId, ...(p.name ? { name: p.name } : {}) })),
-    alerts: await liveAlerts(ex, who, country),
+    ...(await liveBook(ex, who, country)),
   };
 }
 
