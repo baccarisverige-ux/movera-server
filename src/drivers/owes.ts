@@ -39,10 +39,14 @@ export const PAID_AFTER_PAYOUT = sql<string>`(coalesce((SELECT sum(x.amount_mino
  * whose rest is still carried, for alias `p`. A payout made with the switch on (carried_out_minor set) is the driver's
  * newest carry point for that currency: its carriedOut is the rest, and every payout older than it is taken (read, never
  * rewritten). An older-style payout below 0 (carried_out_minor NULL, open) counts only while no newer carry point exists.
- * Order: period_end, created_at, payout_id (a catch-up run makes several payouts at the same moment).
+ * Order: the order they were made, created_at, then period_end, then payout_id (a catch-up run makes several payouts
+ * at the same moment, oldest period first). Not period_end first: a carry point took every carry row that existed when
+ * it was made, so it supersedes exactly the rows made before it. A Create payout by hand for an older range made after
+ * a newer switched-on payout takes that payout's rest and becomes the newest point, so the rest is taken once
+ * (review M2; makePayouts stamps a lined payout after every payout it read, payoutCarry.ts carryOf).
  */
 export const NOT_SUPERSEDED = sql<boolean>`NOT EXISTS (SELECT 1 FROM payouts b WHERE b.driver_id = p.driver_id AND b.currency = p.currency AND b.carried_out_minor IS NOT NULL
-  AND (b.period_end, b.created_at, b.payout_id) > (p.period_end, p.created_at, p.payout_id))`;
+  AND (b.created_at, b.period_end, b.payout_id) > (p.created_at, p.period_end, p.payout_id))`;
 /** The carried rows of `p` (see NOT_SUPERSEDED): a carry point with a rest, or an open older-style payout below 0. */
 export const CARRY_ROW = sql<boolean>`((p.carried_out_minor > 0) OR (p.carried_out_minor IS NULL AND p.amount_minor < 0 AND p.status IN ('pending', 'pending_approval'))) AND ${NOT_SUPERSEDED}`;
 /** A carried row's signed part of the payout sum (below 0 = owed): −carriedOut, or amount + money linked after (J8b). */

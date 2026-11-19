@@ -10,7 +10,7 @@ import { cursorOf, readCursor, zonesOf } from "./lists.js";
 import { firstPageTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { standardKey } from "../config/service.js";
 import { freezePayoutSummary, payoutSummaries, type PayoutSummary } from "./payoutSummary.js";
-import { carryOf, payoutLinesOn, splitPayout } from "./payoutCarry.js";
+import { carryOf, lineMadeAt, payoutLinesOn, splitPayout } from "./payoutCarry.js";
 
 /**
  * Payouts (contract v0.9.0 §16, contract.json#payouts, fixtures/payouts.json; owner decisions of 2026-10-27).
@@ -18,7 +18,7 @@ import { carryOf, payoutLinesOn, splitPayout } from "./payoutCarry.js";
  * paid once. amount = trips + waiting + pickup pay + bonus + tips + fees − cash collected, and may be negative.
  */
 
-export type PayoutLineCode = "trips" | "waiting" | "pickup_pay" | "bonus" | "tips" | "cash_collected" | "fees" | "paid_to_movera";
+export type PayoutLineCode = "trips" | "waiting" | "pickup_pay" | "bonus" | "tips" | "cash_collected" | "fees" | "paid_to_movera" | "carried_in" | "carried_out";
 export const PAYOUT_LINES = (contract as unknown as { payouts: { lines: PayoutLineCode[] } }).payouts.lines;
 
 export type PayoutEntry = { kind: string; amountMinor: number; cashMinor: number; waitingMinor: number };
@@ -191,14 +191,17 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
         // v0.18.133 (payoutLines.lines): with the lines a payout is never below 0 (amount = paidOut).
         amount_minor: parts ? parts.paidOut : calc.amountMinor,
         ...(parts ? { earned_minor: parts.earned, owed_minor: parts.owed, carried_in_minor: carriedIn, carried_out_minor: parts.carriedOut } : {}),
-        lines: JSON.stringify(calc.lines),
+        // v0.18.133 review S2 (payoutLines.lines): a lined payout's stored lines add up to its amount (carried_in is
+        // minus carriedIn, carried_out plus carriedOut; each only when not 0).
+        lines: JSON.stringify(parts ? [...calc.lines, ...(carriedIn > 0 ? [{ code: "carried_in", amountMinor: -carriedIn }] : []), ...(parts.carriedOut > 0 ? [{ code: "carried_out", amountMinor: parts.carriedOut }] : [])] : calc.lines),
         trip_count: calc.tripCount,
         source: input.source,
         period_start: input.from,
         period_end: input.to,
         note: input.note ?? null,
         created_by: input.by,
-        created_at: now,
+        // Review M2: a lined payout is made after every payout whose carry it took (payoutCarry.ts lineMadeAt).
+        created_at: parts ? lineMadeAt(now, carry.newestMadeAt) : now,
         // v0.18.39 A2 (owner Q4, contract.json#payoutMode): a manual country's scheduled run waits for an admin.
         ...(input.waitForApproval ? { status: "pending_approval" as const } : {}),
       })

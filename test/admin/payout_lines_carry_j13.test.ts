@@ -149,6 +149,38 @@ describe("J13: switch on, carry chain over 3 weeks (SE)", () => {
   });
 });
 
+describe("J13 review M2: a carry is taken once, also by a hand payout for an older range", () => {
+  // A newer switched-on payout N carries 24,73 kr; then a late entry dated in an older week is paid by Create payout.
+  const lateOlderRange = async (handNow: string) => {
+    await rules("SE", { payoutLinesOn: true });
+    const d = await driverIn(["Z001"], "SE");
+    await cashTrip(d, W2, "SEK", 7027, 9500);
+    expect(await run(RUN2)).toBe(1);
+    expect(await owed(d, "SEK")).toBe(2473);
+    await card(d, W1, "SEK", 1000);
+    const made = await database.db.transaction().execute((trx) => createPayout(trx, admin, { driverId: d, from: "2026-10-26T07:00:00Z", to: "2026-11-02T07:00:00Z" }, new Date(handNow)));
+    expect(made).toMatchObject({ amount: { amountMinor: 0 }, earned: { amountMinor: 1000 }, owedToMovera: { amountMinor: 2473 }, carriedIn: { amountMinor: 2473 }, carriedOut: { amountMinor: 1473 } });
+    // The 24,73 kr is taken once: he owes 14,73 kr, not 24,73 kr + 14,73 kr.
+    expect(await owed(d, "SEK")).toBe(1473);
+    await card(d, W3, "SEK", 10_000);
+    expect(await run(RUN3)).toBe(1);
+    const rows = await database.db.selectFrom("payouts").select(["amount_minor", "carried_in_minor", "carried_out_minor", "lines", "period_end"]).where("driver_id", "=", d).orderBy("created_at").execute();
+    expect(rows.map((r) => [Number(r.amount_minor), Number(r.carried_in_minor), Number(r.carried_out_minor)])).toEqual([[0, 0, 2473], [0, 2473, 1473], [8527, 1473, 0]]);
+    expect(await owed(d, "SEK")).toBe(0);
+    // Review S2: the stored lines of every lined payout add up to its amount (carried_in / carried_out lines).
+    for (const r of rows) expect((r.lines as { amountMinor: number }[]).reduce((sum, l) => sum + l.amountMinor, 0)).toBe(Number(r.amount_minor));
+    expect(rows[1]!.lines).toEqual(expect.arrayContaining([{ code: "carried_in", amountMinor: -2473 }, { code: "carried_out", amountMinor: 1473 }]));
+  };
+
+  it("newer switched-on payout exists, admin pays an older range by hand: the rest is charged once", async () => {
+    await lateOlderRange("2026-11-10T09:00:00Z");
+  });
+
+  it("the same when the hand payout's clock is behind the newer payout (it is stamped after it)", async () => {
+    await lateOlderRange("2026-11-09T07:00:00Z");
+  });
+});
+
 describe("J13: old payouts below 0 are only read", () => {
   it("made with the switch off, then switched on: the next payout takes the old rest once (less 'Driver paid Movera' linked to it); the old row is never rewritten and no longer counts", async () => {
     const d = await driverIn(["Z001"], "SE");

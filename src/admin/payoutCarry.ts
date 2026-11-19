@@ -32,18 +32,29 @@ export async function payoutLinesOn(ex: Executor, driverId: string): Promise<boo
  * What the driver's next payout of `currency` takes first (payoutLines.carry): `total` = the rest carried (>= 0), and
  * `fromLines` = the part left by a switched-on payout. Read under his driver lock (the caller's).
  */
-export async function carryOf(ex: Executor, driverId: string, currency: string): Promise<{ total: number; fromLines: number }> {
+export async function carryOf(ex: Executor, driverId: string, currency: string): Promise<{ total: number; fromLines: number; newestMadeAt: Date | null }> {
   const row = await ex
     .selectFrom("payouts as p")
     .select([
-      sql<string>`coalesce(sum(${CARRY_VALUE}), 0)`.as("net"),
-      sql<string>`coalesce(sum(CASE WHEN p.carried_out_minor IS NOT NULL THEN p.carried_out_minor ELSE 0 END), 0)`.as("lines"),
+      sql<string>`coalesce(sum(${CARRY_VALUE}) FILTER (WHERE ${CARRY_ROW}), 0)`.as("net"),
+      sql<string>`coalesce(sum(CASE WHEN p.carried_out_minor IS NOT NULL THEN p.carried_out_minor ELSE 0 END) FILTER (WHERE ${CARRY_ROW}), 0)`.as("lines"),
+      sql<Date | null>`max(p.created_at)`.as("newest"),
     ])
     .where("p.driver_id", "=", driverId)
     .where("p.currency", "=", currency)
-    .where(CARRY_ROW)
     .executeTakeFirst();
-  return { total: Math.max(0, -Number(row?.net ?? 0)), fromLines: Number(row?.lines ?? 0) };
+  const newest = row?.newest ?? null;
+  return { total: Math.max(0, -Number(row?.net ?? 0)), fromLines: Number(row?.lines ?? 0), newestMadeAt: newest === null ? null : new Date(newest) };
+}
+
+/**
+ * Review M2 (payoutLines.carry, "taken once"): the made-at of a lined payout. The carry points are ordered by the order
+ * they were made (drivers/owes.ts NOT_SUPERSEDED: created_at, period_end, payout_id), and a lined payout takes every
+ * carry row it read, so it must come after each of them: `now`, or 1 ms after his newest payout of that currency when
+ * a clock behind it (a timer's firedAt) would put it before one.
+ */
+export function lineMadeAt(now: Date, newestMadeAt: Date | null): Date {
+  return newestMadeAt !== null && newestMadeAt.getTime() >= now.getTime() ? new Date(newestMadeAt.getTime() + 1) : now;
 }
 
 type Entry = { kind: string; amountMinor: number; cashMinor: number };

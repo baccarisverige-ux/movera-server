@@ -586,7 +586,8 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
  */
 export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
   // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
-  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider"],
+  // v0.18.133 review M1 (pricingHistory.restoreKeeps): the payout lines switch keeps today's live value too.
+  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "payoutLinesOn"],
 };
 
 function keepOnRestore(doc: ConfigDoc, old: Record<string, unknown>, live: { document: unknown } | undefined): { document: Record<string, unknown>; removed: string[] } {

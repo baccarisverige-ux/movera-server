@@ -26,6 +26,8 @@ const money = {
   payoutSchedule: { frequency: "every_2_weeks", day: "friday", time: "09:30" },
   maxRiderDebt: { amountMinor: 45000, currency: "SEK" },
   driverOwesLimit: { enabled: true, max: { amountMinor: 200000, currency: "SEK" } },
+  // v0.18.133 review M1 (configDocs.keptKeys.country_rules): the payout lines switch is a kept key too.
+  payoutLinesOn: true,
 };
 const calls = { on: true, adminCallRoles: ["super", "ops"], phoneProvider: "twilio" };
 const put = (doc: string, body: Record<string, unknown>) => call(app, "PUT", `/admin/config/${doc}`, admin, body);
@@ -61,6 +63,22 @@ describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
     expect((await lastAudit("config.draft"))["kept"]).toEqual(stale.json().keptKeys);
   });
 
+  it("v0.18.133 review M1: a whole-document country_rules save without payoutLinesOn keeps it (switch stays on); removeKeys removes it", async () => {
+    const now = await get("country_rules", "country=SE");
+    const on = await put("country_rules", { expectedVersion: now.version, country: "SE", document: { ...base(), ...money, calls, payoutLinesOn: true } });
+    expect(on.statusCode).toBe(200);
+    const { payoutLinesOn: _off, ...rest } = money;
+    const stale = await put("country_rules", { expectedVersion: on.json().version, country: "SE", document: { ...base(), ...rest, calls } });
+    expect(stale.statusCode).toBe(200);
+    expect(stale.json().document.payoutLinesOn).toBe(true);
+    expect(stale.json().keptKeys).toEqual(["payoutLinesOn"]);
+    const removed = await put("country_rules", { expectedVersion: stale.json().version, country: "SE", document: { ...base(), ...rest, calls }, removeKeys: ["payoutLinesOn"] });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json().document.payoutLinesOn).toBeUndefined();
+    const back = await put("country_rules", { expectedVersion: removed.json().version, country: "SE", document: { ...base(), ...money, calls } });
+    expect(back.json().document.payoutLinesOn).toBe(true);
+  });
+
   it("a save that sends the keys saves them as sent and keeps nothing", async () => {
     const now = await get("country_rules", "country=SE");
     const res = await put("country_rules", { expectedVersion: now.version, country: "SE", document: { ...base(), ...money, payoutMode: "automatic", calls } });
@@ -80,7 +98,7 @@ describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
     expect(res.json().document.maxRiderDebt).toBeUndefined();
     expect(res.json().document.payoutSchedule).toBeUndefined();
     expect(res.json().document).toMatchObject({ payoutMode: "automatic", driverOwesLimit: money.driverOwesLimit });
-    expect([...res.json().keptKeys].sort()).toEqual(["driverOwesLimit", "payoutMode"]);
+    expect([...res.json().keptKeys].sort()).toEqual(["driverOwesLimit", "payoutLinesOn", "payoutMode"]);
   });
 
   it("a zone with no own document keeps nothing (no Standard-only key gets into a zone document)", async () => {
