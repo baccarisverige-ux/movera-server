@@ -1,11 +1,11 @@
-# Movera API v0.18.132 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.133 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.132
+  version: 0.18.133
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.132 in this folder; this file must agree with them.
+    v0.18.133 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.132
+  version: 0.18.133
   source: contract.json
 paths:
   /auth/otp/request:
@@ -17168,7 +17168,8 @@ paths:
         (an admin older than v0.18.102) = 400 invalid_request, reason expected_total_required: a run is never approved blind.
         A match approves as before (answer PayoutRunApproved, total = what he saw; audit payout.run_approve also keeps expectedCount
         and expectedTotal). A second click after a success still gets 409 nothing_to_approve. The other checks keep their
-        order: reason_required, nothing_to_approve, zone_out_of_scope, then this guard.'
+        order: reason_required, nothing_to_approve, zone_out_of_scope, then this guard. v0.18.133 (payoutLines): approve with
+        the count and total of GET /admin/payouts/runs.'
       tags:
       - Admin · Finance
       x-actor:
@@ -19577,6 +19578,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DriverTripHistoryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/payouts/runs:
+    get:
+      operationId: adminListPayoutRuns
+      summary: Payout runs waiting for approval (server count and total)
+      description: 'v0.18.133 (payoutLines): GET /admin/payouts/runs?country (finance.read; the admin''s zones): the runs
+        that wait for approval in that country, each { country, periodStart, periodEnd, count, total[], earned[], owedToMovera[],
+        paidOut[], carriedOut[] } (one Money per currency; kr, EUR and DT are never added), counted by the server over every
+        payout of the run (not the first page). Approve run sends that count and total (payoutMode.approveGuard, unchanged).
+        One weekly payout per driver, period and currency (payouts_weekly_once, unchanged); a re-run never pays twice and
+        never carries twice.'
+      tags:
+      - Admin · Finance
+      x-actor:
+      - admin
+      x-permission: finance.read
+      x-read-only: true
+      parameters:
+      - name: country
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[A-Z]{2}$
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutRunList'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -24310,6 +24360,59 @@ components:
           allOf:
           - $ref: '#/components/schemas/PayoutSummary'
           description: 'v0.18.89: driver and admin views: the 2 lines Driver gets / Movera gets (contract.json#priceDisplay.payoutSummary).'
+        earned:
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): Earned: what Movera holds for him in this payout. Present only on a payout
+            made while CountryRules.payoutLinesOn was on; driver and admin. earned = the parts of the period Movera holds
+            for him (each earnings entry''s amount less the cash he kept for it, counted when that is above 0: card / wallet
+            trips, waiting, pickup pay, bonus, tips, fee shares); owedToMovera = carriedIn + what each entry left him owing
+            (the cash he kept above his share, e.g. the commission of a pay-in-car trip) less ''Driver paid Movera'' money
+            in the payout (never below 0; any rest counts as earned); paidOut = max(0, earned - owedToMovera); carriedOut
+            = max(0, owedToMovera - earned). Always earned - owedToMovera = paidOut - carriedOut, and Payout.amount = paidOut
+            (never below 0). Integers only.'
+        owedToMovera:
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): Owed to Movera, incl. carriedIn. Present only on a payout made while CountryRules.payoutLinesOn
+            was on; driver and admin. earned = the parts of the period Movera holds for him (each earnings entry''s amount
+            less the cash he kept for it, counted when that is above 0: card / wallet trips, waiting, pickup pay, bonus, tips,
+            fee shares); owedToMovera = carriedIn + what each entry left him owing (the cash he kept above his share, e.g.
+            the commission of a pay-in-car trip) less ''Driver paid Movera'' money in the payout (never below 0; any rest
+            counts as earned); paidOut = max(0, earned - owedToMovera); carriedOut = max(0, owedToMovera - earned). Always
+            earned - owedToMovera = paidOut - carriedOut, and Payout.amount = paidOut (never below 0). Integers only.'
+        paidOut:
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): Paid out (= amount, never below 0). Present only on a payout made while CountryRules.payoutLinesOn
+            was on; driver and admin. earned = the parts of the period Movera holds for him (each earnings entry''s amount
+            less the cash he kept for it, counted when that is above 0: card / wallet trips, waiting, pickup pay, bonus, tips,
+            fee shares); owedToMovera = carriedIn + what each entry left him owing (the cash he kept above his share, e.g.
+            the commission of a pay-in-car trip) less ''Driver paid Movera'' money in the payout (never below 0; any rest
+            counts as earned); paidOut = max(0, earned - owedToMovera); carriedOut = max(0, owedToMovera - earned). Always
+            earned - owedToMovera = paidOut - carriedOut, and Payout.amount = paidOut (never below 0). Integers only.'
+        carriedIn:
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): Taken from an earlier payout (moved to this one). Present only on a payout
+            made while CountryRules.payoutLinesOn was on; driver and admin. earned = the parts of the period Movera holds
+            for him (each earnings entry''s amount less the cash he kept for it, counted when that is above 0: card / wallet
+            trips, waiting, pickup pay, bonus, tips, fee shares); owedToMovera = carriedIn + what each entry left him owing
+            (the cash he kept above his share, e.g. the commission of a pay-in-car trip) less ''Driver paid Movera'' money
+            in the payout (never below 0; any rest counts as earned); paidOut = max(0, earned - owedToMovera); carriedOut
+            = max(0, owedToMovera - earned). Always earned - owedToMovera = paidOut - carriedOut, and Payout.amount = paidOut
+            (never below 0). Integers only.'
+        carriedOut:
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): Moves to next week (shown only when > 0). Present only on a payout made while
+            CountryRules.payoutLinesOn was on; driver and admin. earned = the parts of the period Movera holds for him (each
+            earnings entry''s amount less the cash he kept for it, counted when that is above 0: card / wallet trips, waiting,
+            pickup pay, bonus, tips, fee shares); owedToMovera = carriedIn + what each entry left him owing (the cash he kept
+            above his share, e.g. the commission of a pay-in-car trip) less ''Driver paid Movera'' money in the payout (never
+            below 0; any rest counts as earned); paidOut = max(0, earned - owedToMovera); carriedOut = max(0, owedToMovera
+            - earned). Always earned - owedToMovera = paidOut - carriedOut, and Payout.amount = paidOut (never below 0). Integers
+            only.'
       description: 'v0.18.13: v0.18.13 (audit M1): one payout is in ONE currency: the unpaid entries of a driver''s period
         are paid per currency (a driver with kr and € entries gets two payouts); amounts of different currencies are never
         added.'
@@ -25123,6 +25226,13 @@ components:
             amount of one bonus campaign (CountryRules.bonusCampaignMax, per country standard or zone, Admin › Pricing › Tips
             & limits, settings.publish). Builder default values (plan §12 D13), admin-changeable. Defaults SE 2 000,00 kr
             (200000 SEK), FR 200,00 € (20000 EUR), TN 200.000 DT (200000 TND). Optional: absent → configDefaults.bonusCampaignMax.'
+        payoutLinesOn:
+          type: boolean
+          description: 'v0.18.133 (payoutLines): CountryRules.payoutLinesOn (boolean, default false = configDefaults.payoutLinesOn)
+            on the country standard (a zone''s own value is ignored), saved and published with PUT /admin/config/country_rules?country
+            + publish (finance.edit), Admin > Finance > Payouts settings. It is read when a payout is made; the way back without
+            a release is to switch it off (later payouts are made as before; payouts already made keep their parts).'
+          default: false
       x-server-only: true
     FeeRule:
       type: object
@@ -38775,6 +38885,28 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Money'
+        periodStart:
+          $ref: '#/components/schemas/Timestamp'
+        earned:
+          type: array
+          items:
+            $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): summed per currency over every payout of the run.'
+        owedToMovera:
+          type: array
+          items:
+            $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): summed per currency over every payout of the run.'
+        paidOut:
+          type: array
+          items:
+            $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): summed per currency over every payout of the run.'
+        carriedOut:
+          type: array
+          items:
+            $ref: '#/components/schemas/Money'
+          description: 'v0.18.133 (payoutLines): summed per currency over every payout of the run.'
     TripShareItem:
       type: object
       description: 'v0.18.116 (contract.json#shareTrip): GET /rider/trips/{tripId}/share → TripShareList { items: [TripShareItem
@@ -39087,3 +39219,16 @@ components:
           - string
           - 'null'
           description: Opaque; null on the last page.
+    PayoutRunList:
+      type: object
+      description: 'v0.18.133 (payoutLines): GET /admin/payouts/runs?country (finance.read; the admin''s zones): the runs
+        that wait for approval in that country, each { country, periodStart, periodEnd, count, total[], earned[], owedToMovera[],
+        paidOut[], carriedOut[] } (one Money per currency; kr, EUR and DT are never added), counted by the server over every
+        payout of the run (not the first page). Approve run sends that count and total (payoutMode.approveGuard, unchanged).'
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PayoutRunCard'

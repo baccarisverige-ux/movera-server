@@ -22,6 +22,7 @@ import { kpis } from "./kpis.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
 import { firstPageTotal, TotalQuery, totalAfterPage, withTotal } from "./listTotal.js";
 import { approvePayoutRun, createPayout, driverPayouts, holdDriverPayouts, listPayouts, markPayoutPaid } from "./payouts.js";
+import { payoutRuns } from "./payoutCarry.js";
 import { driverView, loadDriver } from "../drivers/service.js";
 import { listRatings, moderateRating } from "./ratings.js";
 import { riskSignals } from "./risk.js";
@@ -162,6 +163,12 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const body = parseBody(CreatePayoutBody, request.body);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 201, body: await createPayout(trx, who, clean(body), now()) }));
     return reply.status(result.status).send(result.body);
+  });
+  // v0.18.133 (contract.json#payoutLines.runs): the waiting runs of a country with the server's count and totals.
+  app.get(`${API_PREFIX}/admin/payouts/runs`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.read");
+    const query = parseQuery({ country: z.string().regex(/^[A-Z]{2}$/) }, request.query);
+    return payoutRuns(deps.db, query.country, zonesOf(who));
   });
   // v0.18.39 A2 (owner Q4): approve a manual country's payout run.
   app.post(`${API_PREFIX}/admin/payouts/runs/approve`, async (request) => {

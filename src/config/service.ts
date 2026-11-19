@@ -122,6 +122,11 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
       throw badRequest(`Set an amount above 0 in ${zone.currency} to switch the owes-limit on.`, "owes_limit_needs_amount");
     }
   }
+  // v0.18.133 (contract.json#payoutLines.switch): CountryRules.payoutLinesOn is true or false.
+  if (doc === "country_rules") {
+    const on = (document as { payoutLinesOn?: unknown } | null)?.payoutLinesOn;
+    if (on !== undefined && typeof on !== "boolean") throw badRequest("The country_rules document is not valid: payoutLinesOn must be true or false.", "invalid_document");
+  }
   // v0.18.115 BQ-V21 (contract.json#pickupSpots.server): booking.pickupSpots.on is true or false (checked here, so the
   // rule holds whatever contract copy the schema check reads).
   if (doc === "rider_app_config") {

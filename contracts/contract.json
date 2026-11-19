@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.132",
+  "version": "0.18.133",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -4047,7 +4047,8 @@
     },
     "pickupSpotsOn": true,
     "shareTripOn": true,
-    "driverOneStream": false
+    "driverOneStream": false,
+    "payoutLinesOn": false
   },
   "realtime": {
     "envelope": [
@@ -10561,5 +10562,17 @@
     "driver": "realtime.oneStream true: open GET /driver/stream (off-trip and on a trip; the trip stream as before) and give its events to the two existing readers (offers by sequence, settings by kind); do not open the two old streams. false or missing, or GET /driver/stream answers 404 (an older server): the two streams as before, and after a 404 the app does not try the one stream again until it restarts. When the switch changes, the app closes what it holds and opens the other within one settings update.",
     "rider": "Not affected: the rider app has no offer feed; GET /rider/config/stream and the trip stream are unchanged.",
     "admin": "Admin › Dispatch, per zone: the switch 'One live connection per driver phone' (default off), with an 'i' text (what it does, what it saves, who it affects, when to turn it on, the way back, older apps). It is the way back without an app release."
+  },
+  "payoutLines": {
+    "note": "v0.18.133 (S5 J12-J15, BQ-M05; owner 2026-11-19 'driver payout 3 lines', 'carry line only when needed', 'carry counts toward owed limit', 'build + review now, switch on after the Monday payout check', Rules decisions/session-2026-11-06.md, handover/build-plans-2026-11-12/S5-money.md J12-J15): a payout is never paid below zero. A period whose sum is below 0 pays 0 and the rest moves to the driver's next payout of the same currency, where it is taken first. Every payout made while the switch is on carries its parts: earned, owedToMovera, paidOut, carriedIn, carriedOut (Money, minor units, the payout's currency; TND 3 decimals). Off (default): payouts are made and shown exactly as before v0.18.133.",
+    "switch": "CountryRules.payoutLinesOn (boolean, default false = configDefaults.payoutLinesOn) on the country standard (a zone's own value is ignored), saved and published with PUT /admin/config/country_rules?country + publish (finance.edit), Admin > Finance > Payouts settings. It is read when a payout is made; the way back without a release is to switch it off (later payouts are made as before; payouts already made keep their parts).",
+    "lines": "earned = the parts of the period Movera holds for him (each earnings entry's amount less the cash he kept for it, counted when that is above 0: card / wallet trips, waiting, pickup pay, bonus, tips, fee shares); owedToMovera = carriedIn + what each entry left him owing (the cash he kept above his share, e.g. the commission of a pay-in-car trip) less 'Driver paid Movera' money in the payout (never below 0; any rest counts as earned); paidOut = max(0, earned - owedToMovera); carriedOut = max(0, owedToMovera - earned). Always earned - owedToMovera = paidOut - carriedOut, and Payout.amount = paidOut (never below 0). Integers only.",
+    "carry": "carriedIn = the carriedOut of the driver's newest payout of that currency made with the switch on, plus every older payout below 0 made before v0.18.133 that is not paid and is newer than that payout (read as it is: amount + 'Driver paid Movera' money linked to it after it was made; never rewritten, no UPDATE). Read under the driver's row lock (lock order driver -> entries -> payouts). A carry is taken once: by the next payout of that driver and currency only. A week with no entries makes no payout, so the carry waits for the next payout.",
+    "owed": "debtModel.driverOwes.owed includes the carry: the carriedOut of the newest switched-on payout of the currency plus the open pre-v0.18.133 payouts below 0 newer than it, plus his unpaid entries. Above CountryRules.driverOwesLimit: no new pay-in-car offers; card / Apple Pay / wallet trips still come; going online is never refused (as v0.18.84).",
+    "once": "One weekly payout per driver, period and currency (payouts_weekly_once, unchanged); a re-run never pays twice and never carries twice.",
+    "runs": "GET /admin/payouts/runs?country (finance.read; the admin's zones): the runs that wait for approval in that country, each { country, periodStart, periodEnd, count, total[], earned[], owedToMovera[], paidOut[], carriedOut[] } (one Money per currency; kr, EUR and DT are never added), counted by the server over every payout of the run (not the first page). Approve run sends that count and total (payoutMode.approveGuard, unchanged).",
+    "driver": "Driver app, a payout card that has paidOut: three lines 'Earned', 'Owed to Movera', 'Paid out' (server amounts, nothing worked out on the phone) and a fourth 'Moves to next week: X' only when carriedOut > 0. A payout without these fields keeps the v0.18.89 two lines (Payout.summary). sv / fr / en.",
+    "admin": "Admin > Finance > Payouts: the payout detail and each driver row of a run show the same lines (+ 'Moves to next week' when not 0); the run card shows the server's count and total from GET /admin/payouts/runs. The switch with an 'i' text. sv / fr / en.",
+    "rider": "Not affected: payouts are for drivers only; no rider screen or API changes."
   }
 }

@@ -10,6 +10,7 @@ import { cursorOf, readCursor, zonesOf } from "./lists.js";
 import { firstPageTotal, totalAfterPage, withTotal } from "./listTotal.js";
 import { standardKey } from "../config/service.js";
 import { freezePayoutSummary, payoutSummaries, type PayoutSummary } from "./payoutSummary.js";
+import { carryOf, payoutLinesOn, splitPayout } from "./payoutCarry.js";
 
 /**
  * Payouts (contract v0.9.0 §16, contract.json#payouts, fixtures/payouts.json; owner decisions of 2026-10-27).
@@ -91,6 +92,11 @@ type PayoutRow = {
   paid_by: string | null;
   /** v0.18.95 BQ-M26 (0109): both views of Payout.summary, frozen when marked paid; null while unpaid. */
   paid_summary?: unknown;
+  /** v0.18.133 (0119, payoutLines): set only on a payout made with the switch on. */
+  earned_minor?: string | number | null;
+  owed_minor?: string | number | null;
+  carried_in_minor?: string | number | null;
+  carried_out_minor?: string | number | null;
   first_name?: string | null;
   last_name?: string | null;
 };
@@ -113,6 +119,10 @@ export function payoutView(row: PayoutRow, viewer: "admin" | "driver", summary?:
     tripCount: row.trip_count,
     // v0.18.89 §90 BQ-M22 (contract.json#priceDisplay.payoutSummary): Driver gets / Movera gets, amounts only.
     ...(summary ? { summary } : {}),
+    // v0.18.133 (contract.json#payoutLines): the parts, driver and admin, only on a payout made with the switch on.
+    ...(row.carried_out_minor !== null && row.carried_out_minor !== undefined
+      ? { earned: money(row.earned_minor ?? 0), owedToMovera: money(row.owed_minor ?? 0), paidOut: money(row.amount_minor), carriedIn: money(row.carried_in_minor ?? 0), carriedOut: money(row.carried_out_minor) }
+      : {}),
     ...(viewer === "admin"
       ? {
           lines,
@@ -156,11 +166,20 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
   for (const e of entries) byCurrency.set(e.currency, [...(byCurrency.get(e.currency) ?? []), e]);
   const made: PayoutRow[] = [];
   let n = 0;
+  // v0.18.133 (contract.json#payoutLines.switch): his country's CountryRules.payoutLinesOn, read once for this call.
+  const linesOn = await payoutLinesOn(trx, input.driverId);
   for (const [currency, list] of byCurrency) {
     const own = list.map((e) => ({ kind: e.kind, amountMinor: Number(e.amount_minor), cashMinor: Number(e.cash_minor ?? 0), waitingMinor: e.kind === "trip" ? waitingOf(e.fare_lines) : 0 }));
+    // v0.18.133 (payoutLines.carry): the rest carried from his earlier payouts of this currency, read under his driver
+    // lock (every caller holds it). Taken when the switch is on, or when a switched-on payout left a rest (never lost
+    // when the switch goes off again).
+    const carry = await carryOf(trx, input.driverId, currency);
+    const lined = linesOn || carry.fromLines > 0;
+    const carriedIn = lined ? carry.total : 0;
     // J8b: the money he paid Movera after this period ended settles this period first (read under the entry locks).
-    const paidLater = await paidAfterPeriod(trx, input.driverId, currency, input.to, -payoutLines(own).amountMinor);
+    const paidLater = await paidAfterPeriod(trx, input.driverId, currency, input.to, carriedIn - payoutLines(own).amountMinor);
     const calc = payoutLines([...own, ...paidLater.map((p) => ({ kind: "paid_to_movera", amountMinor: p.take, cashMinor: 0, waitingMinor: 0 }))]);
+    const parts = lined ? splitPayout([...own, ...paidLater.map((p) => ({ kind: "paid_to_movera", amountMinor: p.take, cashMinor: 0, waitingMinor: 0 }))], carriedIn) : null;
     const payoutId = newId("pyt", now.getTime() + n++);
     const row = await trx
       .insertInto("payouts")
@@ -169,7 +188,9 @@ export async function makePayouts(trx: Trx, input: { driverId: string; from: Dat
         driver_id: input.driverId,
         zone_id: driver?.zone_ids[0] ?? null,
         currency,
-        amount_minor: calc.amountMinor,
+        // v0.18.133 (payoutLines.lines): with the lines a payout is never below 0 (amount = paidOut).
+        amount_minor: parts ? parts.paidOut : calc.amountMinor,
+        ...(parts ? { earned_minor: parts.earned, owed_minor: parts.owed, carried_in_minor: carriedIn, carried_out_minor: parts.carriedOut } : {}),
         lines: JSON.stringify(calc.lines),
         trip_count: calc.tripCount,
         source: input.source,
@@ -403,7 +424,7 @@ export async function closePeriodsBatch(trx: Trx, now: Date, options: { after?: 
 /** Kept name for the jobs (v0.9.0): the schedule now comes from the country (closePeriods). */
 export const closeWeeks = closePeriods;
 
-const SELECT_PAYOUT = ["payouts.payout_id", "payouts.driver_id", "payouts.zone_id", "payouts.currency", "payouts.amount_minor", "payouts.lines", "payouts.trip_count", "payouts.source", "payouts.status", "payouts.period_start", "payouts.period_end", "payouts.note", "payouts.created_at", "payouts.paid_at", "payouts.paid_by", "payouts.paid_summary", "drivers.first_name", "drivers.last_name"] as const;
+const SELECT_PAYOUT = ["payouts.payout_id", "payouts.driver_id", "payouts.zone_id", "payouts.currency", "payouts.amount_minor", "payouts.lines", "payouts.trip_count", "payouts.source", "payouts.status", "payouts.period_start", "payouts.period_end", "payouts.note", "payouts.created_at", "payouts.paid_at", "payouts.paid_by", "payouts.paid_summary", "payouts.earned_minor", "payouts.owed_minor", "payouts.carried_in_minor", "payouts.carried_out_minor", "drivers.first_name", "drivers.last_name"] as const;
 
 export async function listPayouts(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string[]; driverId?: string; from?: string; to?: string; total?: boolean }) {
   let q = ex.selectFrom("payouts").innerJoin("drivers", "drivers.driver_id", "payouts.driver_id").select(SELECT_PAYOUT);
