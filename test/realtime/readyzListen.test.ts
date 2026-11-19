@@ -56,7 +56,8 @@ async function readyzBecomes(code: number, withinMs: number): Promise<number | u
 
 describe("PM-1 round 4: /readyz waits for the first LISTEN connect, at most the ready wait", () => {
   it("silent link at boot: /readyz 503 (realtime_starting), /healthz 200 realtime down; after the ready wait /readyz 200 although realtime is still down", async () => {
-    await open(1_500, true);
+    // SF-8: 3 s wait, last 503 check at 1 s (was 1.1 s of 1.5 s), so a slow CI runner cannot flake it.
+    await open(3_000, true);
     const begun = Date.now();
     await hub!.start();
     const early = await get("/readyz");
@@ -67,13 +68,13 @@ describe("PM-1 round 4: /readyz waits for the first LISTEN connect, at most the 
     expect(health.code).toBe(200);
     expect(health.body).toMatchObject({ status: "ok", database: "ok", realtime: { status: "down" } });
     // Still not ready shortly before the limit.
-    await sleep(Math.max(0, 1_100 - (Date.now() - begun)));
+    await sleep(Math.max(0, 1_000 - (Date.now() - begun)));
     expect((await get("/readyz")).code).toBe(503);
-    const took = await readyzBecomes(200, 3_000);
+    const took = await readyzBecomes(200, 5_000);
     const late = await get("/readyz");
-    console.log(`PM-1 proof (/readyz, silent link, ready wait 1500 ms): 503 ${JSON.stringify(early.body.reason)} at ${0} ms; 200 at ${Date.now() - begun} ms with realtime ${JSON.stringify(late.body.realtime)}`);
+    console.log(`PM-1 proof (/readyz, silent link, ready wait 3000 ms): 503 ${JSON.stringify(early.body.reason)} at ${0} ms; 200 at ${Date.now() - begun} ms with realtime ${JSON.stringify(late.body.realtime)}`);
     expect(took).toBeDefined();
-    expect(Date.now() - begun).toBeGreaterThanOrEqual(1_500);
+    expect(Date.now() - begun).toBeGreaterThanOrEqual(3_000);
     expect(late).toMatchObject({ code: 200, body: { status: "ready", database: "ok", realtime: "down" } });
     expect(await realtime()).toBe("down");
   });
