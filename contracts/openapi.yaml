@@ -1,11 +1,11 @@
-# Movera API v0.18.132 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.134 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.132
+  version: 0.18.134
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.132 in this folder; this file must agree with them.
+    v0.18.134 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.132
+  version: 0.18.134
   source: contract.json
 paths:
   /auth/otp/request:
@@ -4459,7 +4459,7 @@ paths:
         driverLocation (GeoFix) and eta (TripEta), so the live trips table shows driver_to_pickup with the live ETA and a
         map link (the driver''s position and the pickup coordinates; the admin opens its own map). GET /admin/trips/{tripId}
         carries the same. v0.18.78: the page carries total (v0.18.78 (owner 2026-11-12 ~17:30 item 5 "Yes, build"): admin
-        lists show "50 of N". contract.json#adminListFilters.total).'
+        lists show "50 of N". contract.json#adminListFilters.total). v0.18.134: ids narrows the page to those rows (contract.json#adminListFilters.ids).'
       tags:
       - Admin · Lists
       x-actor:
@@ -4546,6 +4546,27 @@ paths:
           pickup time) stays on the Dashboard. Reservations keeps its own reads (kind=scheduled), unchanged. A malformed value
           → 400 invalid_request; a server before v0.18.83 answers it with 400 invalid_request (reason unknown_filter), so
           the panel sends it only to a server of v0.18.83 or later.'
+      - name: ids
+        in: query
+        required: false
+        style: form
+        explode: false
+        description: 'v0.18.134 (contract.json#adminListFilters.ids): v0.18.134 (S5 J16/J17, owner item 109 "Yes, pages +
+          oldest first (Rec.)", Rules handover/build-plans-2026-11-12/S5-money.md J16): GET /admin/riders, /admin/drivers
+          and /admin/trips take ids: one or more ids of that list (riderId, driverId, tripId), comma separated or repeated,
+          at least 1 and at most 200 after joining (more, an empty value or a malformed id is 400 invalid_request). The page
+          then holds only those rows; every other filter, q, the zone filters and the admin''s own zones still apply, so an
+          id outside the admin''s zones (or not matching a filter, or unknown) is simply left out: never 403, never 404, and
+          the answer never says whether it exists. Order, cursor, limit and total work as without ids (total counts the rows
+          of the ids that match). The admin panel uses it to read the rows it needs for a side column (rider names on Trips,
+          drivers on Vehicles) in pages of 200 instead of reading every page of the list. Additive: an older server answers
+          400 unknown_filter; nothing about money.'
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/Id'
+          minItems: 1
+          maxItems: 200
       responses:
         '200':
           description: OK
@@ -4580,7 +4601,8 @@ paths:
         /moderation, /wallet-credit, /fees/{tripId}/mark-paid): phone, email (riders.viewSensitive). GET /admin/riders?q=
         keeps searching the full phone number on the server for every role: a masked role can confirm a number by searching
         for it (the row still comes back masked). v0.18.78: the page carries total (v0.18.78 (owner 2026-11-12 ~17:30 item
-        5 "Yes, build"): admin lists show "50 of N". contract.json#adminListFilters.total).'
+        5 "Yes, build"): admin lists show "50 of N". contract.json#adminListFilters.total). v0.18.134: ids narrows the page
+        to those rows (contract.json#adminListFilters.ids).'
       tags:
       - Admin · Lists
       x-actor:
@@ -4618,6 +4640,27 @@ paths:
           total=false, and the list keeps the number it already shows. absent or total=true: counted as before (the rule above),
           so an older panel is unchanged. A server before v0.18.83 answers total with 400 invalid_request (reason unknown_filter),
           so the panel sends it only to a server of v0.18.83 or later. Other routes never take it.'
+      - name: ids
+        in: query
+        required: false
+        style: form
+        explode: false
+        description: 'v0.18.134 (contract.json#adminListFilters.ids): v0.18.134 (S5 J16/J17, owner item 109 "Yes, pages +
+          oldest first (Rec.)", Rules handover/build-plans-2026-11-12/S5-money.md J16): GET /admin/riders, /admin/drivers
+          and /admin/trips take ids: one or more ids of that list (riderId, driverId, tripId), comma separated or repeated,
+          at least 1 and at most 200 after joining (more, an empty value or a malformed id is 400 invalid_request). The page
+          then holds only those rows; every other filter, q, the zone filters and the admin''s own zones still apply, so an
+          id outside the admin''s zones (or not matching a filter, or unknown) is simply left out: never 403, never 404, and
+          the answer never says whether it exists. Order, cursor, limit and total work as without ids (total counts the rows
+          of the ids that match). The admin panel uses it to read the rows it needs for a side column (rider names on Trips,
+          drivers on Vehicles) in pages of 200 instead of reading every page of the list. Additive: an older server answers
+          400 unknown_filter; nothing about money.'
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/Id'
+          minItems: 1
+          maxItems: 200
       responses:
         '200':
           description: OK
@@ -4651,7 +4694,8 @@ paths:
         unknown_filter). v0.18.54 §76: GET /admin/drivers rows, GET /admin/drivers/{driverId} and the driver commands that
         answer the driver view (POST /admin/drivers/{driverId}/status, /payout-hold, the vehicle driver-link actions): phone
         (when the record has one), email, dateOfBirth (drivers.viewSensitive). v0.18.78: the page carries total (v0.18.78
-        (owner 2026-11-12 ~17:30 item 5 "Yes, build"): admin lists show "50 of N". contract.json#adminListFilters.total).'
+        (owner 2026-11-12 ~17:30 item 5 "Yes, build"): admin lists show "50 of N". contract.json#adminListFilters.total).
+        v0.18.134: ids narrows the page to those rows (contract.json#adminListFilters.ids).'
       tags:
       - Admin · Lists
       x-actor:
@@ -4704,6 +4748,27 @@ paths:
           total=false, and the list keeps the number it already shows. absent or total=true: counted as before (the rule above),
           so an older panel is unchanged. A server before v0.18.83 answers total with 400 invalid_request (reason unknown_filter),
           so the panel sends it only to a server of v0.18.83 or later. Other routes never take it.'
+      - name: ids
+        in: query
+        required: false
+        style: form
+        explode: false
+        description: 'v0.18.134 (contract.json#adminListFilters.ids): v0.18.134 (S5 J16/J17, owner item 109 "Yes, pages +
+          oldest first (Rec.)", Rules handover/build-plans-2026-11-12/S5-money.md J16): GET /admin/riders, /admin/drivers
+          and /admin/trips take ids: one or more ids of that list (riderId, driverId, tripId), comma separated or repeated,
+          at least 1 and at most 200 after joining (more, an empty value or a malformed id is 400 invalid_request). The page
+          then holds only those rows; every other filter, q, the zone filters and the admin''s own zones still apply, so an
+          id outside the admin''s zones (or not matching a filter, or unknown) is simply left out: never 403, never 404, and
+          the answer never says whether it exists. Order, cursor, limit and total work as without ids (total counts the rows
+          of the ids that match). The admin panel uses it to read the rows it needs for a side column (rider names on Trips,
+          drivers on Vehicles) in pages of 200 instead of reading every page of the list. Additive: an older server answers
+          400 unknown_filter; nothing about money.'
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/Id'
+          minItems: 1
+          maxItems: 200
       responses:
         '200':
           description: OK
