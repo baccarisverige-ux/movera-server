@@ -6,7 +6,7 @@ import { authenticate, authenticateAdmin, adminCoversZone } from "../auth/guard.
 import type { Db } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
-import { runIdempotent } from "../http/idempotency.js";
+import { readIdempotencyKey, runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, ZoneFilterQuery } from "../admin/zoneFilter.js";
 import { addVehicle, driverView, getDriverProfile, liveDrivers, type MapBox, listVehicles, loadDriver, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
@@ -104,7 +104,14 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const who = await authenticate(request, guard, ["driver"]);
     // Stress T-A part 3: the zone / area geometry is loaded (when the cache is on and cold) before the transaction opens.
     await geometry(deps.db);
-    const body = (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await postLocations(trx, who.subjectId, request.body ?? {}, now()) }))).body;
+    // S7 W2 Q114 (= Q-B11, plan 0.20; owner "Yes, stop storing (Rec.)", decisions/session-2026-11-06.md "Sitting W2"):
+    // the Idempotency-Key is checked like every mutation's header (contract §1 Headers) and then ignored. No
+    // idempotency_keys row per GPS send (two writes in the transaction, and a row per driver every 10 s for a day). A
+    // resent batch is safe without it: a fix that is not new writes no event (Q113), the trace insert is ON CONFLICT DO
+    // NOTHING, and the timers, airport queue and position are upserts. Still ONE transaction, so the Q112 lock limit
+    // (set by its first statement, locationFacts) and the 503 server_busy rollback are as before.
+    readIdempotencyKey(keyOf(request));
+    const body = await deps.db.transaction().execute((trx) => postLocations(trx, who.subjectId, request.body ?? {}, now()));
     // Owner decision 2026-11-10: road snapping of GPS gaps, after the transaction (no row locked).
     if (deps.router) await snapDriverGaps(deps.db, deps.router, who.subjectId);
     return body;

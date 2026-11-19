@@ -16,12 +16,14 @@ const PlaceBody = z.object({
   label: z.string().min(1).max(80),
   kind: z.enum(["home", "work", "other"]),
   type: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).optional(),
+  // v0.18.129: the fixed ride category (CategoryId pattern); null clears, absent keeps.
+  preferredCategoryId: z.string().regex(/^[a-z][a-z0-9_]{1,31}$/).nullable().optional(),
   place: z.object({ address: z.string().min(1).max(512), lat: z.number().min(-90).max(90).optional(), lng: z.number().min(-180).max(180).optional() }).strict(),
 }).strict();
 const ImportBody = z.object({ items: z.array(PlaceBody).max(MAX_PLACES_CAP) }).strict();
 const CATEGORY = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const PreferencesBody = z.object({ categoriesOff: z.array(CATEGORY).max(50) }).strict();
-const Contact = z.object({ name: z.string().min(1).max(80), phone: z.string().regex(/^\+?[0-9]{3,15}$/), relation: z.string().max(40).optional() }).strict();
+const Contact = z.object({ name: z.string().min(1).max(80), phone: z.string().regex(/^\+?[0-9]{3,15}$/), relation: z.string().max(40).optional(), shareTrips: z.boolean().optional() }).strict();
 // The count is checked by the service (400 too_many_contacts), so a long list gets that reason, not a schema error.
 const ContactsBody = z.object({ items: z.array(Contact).max(MAX_CONTACTS_CAP * 2) }).strict();
 

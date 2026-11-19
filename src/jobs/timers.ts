@@ -22,6 +22,11 @@ export type Timer = {
   firedAt: Date;
   /** Job 1 (fast dispatch): what the handler's `prepare` found outside the transaction (slow network calls). */
   prepared?: unknown;
+  /**
+   * Q120 follow-up SF-3: how many times in a row THIS worker found the timer busy (TimerBusy or a lock timeout) and is
+   * running it again; absent on a first run. A handler that throws TimerBusy for its own reasons uses it as a ceiling.
+   */
+  busyTries?: number;
 };
 
 /**
@@ -80,6 +85,31 @@ export async function scheduleTimer(ex: Executor, timer: { kind: string; refId: 
     )
     .execute();
   if (options.wake) await sql`SELECT pg_notify(${TIMER_DUE_CHANNEL}, ${JSON.stringify({ kind: timer.kind })})`.execute(ex);
+}
+
+/**
+ * S4 B1.1 rest (owner W1 Q66 "Yes": ride-check and "almost there" timers only move earlier, never later; plan
+ * GLOBAL-SAFE-PLAN.md A7.3 B1.1, S4-W1-RECHECK-2026-11-11.md:32 (b)). For a timer asked again and again from the GPS
+ * (near_dropoff, once per position batch): a new one is booked at `dueAt`; a pending one is pulled EARLIER to `dueAt`
+ * only while it is healthy (attempts 0, not parked). It is never moved later, its attempts and last error are kept,
+ * and a failing one (in its back-off) or a parked one ('infinity') is left alone, so a GPS stream can neither starve it
+ * nor wake it. Only for the GPS-driven trip timers: every other kind keeps scheduleTimer (booked reminders and dispatch
+ * rounds must still move later).
+ */
+export async function scheduleTimerEarlier(ex: Executor, timer: { kind: string; refId: string; dueAt: Date; payload?: unknown }): Promise<void> {
+  const payload = JSON.stringify(timer.payload ?? {});
+  await ex
+    .insertInto("timers")
+    .values({ kind: timer.kind, ref_id: timer.refId, due_at: timer.dueAt, payload })
+    .onConflict((conflict) =>
+      conflict
+        .columns(["kind", "ref_id"])
+        .doUpdateSet({ due_at: timer.dueAt, payload })
+        .where("timers.due_at", ">", timer.dueAt)
+        .where("timers.attempts", "=", 0)
+        .where("timers.due_at", "<>", sql<Date>`'infinity'::timestamptz`),
+    )
+    .execute();
 }
 
 /**
@@ -225,7 +255,8 @@ export class TimerWorker {
         await sql`SET LOCAL lock_timeout = ${sql.lit(`${TIMER_LOCK_TIMEOUT_MS}ms`)}`.execute(trx);
         const row = await take(trx, timerId);
         if (row === undefined) return timerId === undefined ? false : true;
-        const timer: Timer = { timerId: row.timer_id, kind: row.kind, refId: row.ref_id, dueAt: row.due_at, payload: row.payload, attempts: row.attempts, firedAt: now };
+        const busyTries = this.busy.get(row.timer_id)?.tries ?? 0;
+        const timer: Timer = { timerId: row.timer_id, kind: row.kind, refId: row.ref_id, dueAt: row.due_at, payload: row.payload, attempts: row.attempts, firedAt: now, ...(busyTries > 0 ? { busyTries } : {}) };
         const handler = this.options.handlers[row.kind];
         if (handler?.prepare !== undefined && timerId === undefined) {
           // Slow work first, outside this transaction (it ends here having changed nothing).

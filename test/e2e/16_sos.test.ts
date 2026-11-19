@@ -126,8 +126,13 @@ describe("scenario 16: SOS and incidents", () => {
     expect(dismissed.body).toMatchObject({ status: "dismissed", raisedBy: "driver", resolution: "Pressed by mistake" });
     expect(dismissed.body["position"]).toBeUndefined();
     // The polling fallback reads the same feed as JSON.
-    const page = await safety.get(`/admin/incidents/stream?after=0`);
-    expect(page.body.items.map((e: { kind: string }) => e.kind)).toEqual(expect.arrayContaining(["incident_opened", "incident_escalated", "incident_updated", "incident_closed"]));
+    // S7 W2 Q126 (v0.18.126): with a cursor it replays every event after it; with no cursor (after=0) it starts from
+    // the open incidents, and both cases here are closed, so the start is empty with the newest sequence as cursor.
+    const page = await safety.get(`/admin/incidents/stream?after=1`);
+    expect(page.body.items.map((e: { kind: string }) => e.kind)).toEqual(expect.arrayContaining(["incident_escalated", "incident_updated", "incident_closed"]));
+    const start = await safety.get(`/admin/incidents/stream?after=0`);
+    expect(start.body.items.map((e: { incident: { incidentId: string } }) => e.incident.incidentId)).not.toContain(id);
+    expect(Number(start.body.nextCursor)).toBeGreaterThan(1);
   });
 
   it("SOS only from the trip's own rider or driver, only while the trip is live", async () => {

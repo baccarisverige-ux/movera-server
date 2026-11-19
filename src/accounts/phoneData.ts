@@ -33,10 +33,12 @@ export async function driverCountry(ex: Executor, driverId: string): Promise<str
   return row?.country ?? (row?.phone ? countryOfPhone(row.phone) : null);
 }
 
-export type PlaceInput = { label: string; kind: "home" | "work" | "other"; type?: string | undefined; place: { address: string; lat?: number | undefined; lng?: number | undefined } };
-export type ContactInput = { name: string; phone: string; relation?: string | undefined };
+/** v0.18.129: preferredCategoryId undefined = keep the stored value (null on a new place), null = clear, id = set. */
+export type PlaceInput = { label: string; kind: "home" | "work" | "other"; type?: string | undefined; preferredCategoryId?: string | null | undefined; place: { address: string; lat?: number | undefined; lng?: number | undefined } };
+/** v0.18.116 §94: shareTrips = "Share trips with this contact" (rider lists only; contract.json#shareTrip.contacts). */
+export type ContactInput = { name: string; phone: string; relation?: string | undefined; shareTrips?: boolean | undefined };
 
-type PlaceRow = { place_id: string; kind: "home" | "work" | "other"; type: string | null; label: string; address: string; lat: number | null; lng: number | null; created_at: Date; updated_at: Date };
+type PlaceRow = { place_id: string; kind: "home" | "work" | "other"; type: string | null; label: string; address: string; lat: number | null; lng: number | null; preferred_category_id: string | null; created_at: Date; updated_at: Date };
 
 const placeView = (r: PlaceRow) => ({
   placeId: r.place_id,
@@ -44,11 +46,13 @@ const placeView = (r: PlaceRow) => ({
   kind: r.kind,
   ...(r.type !== null ? { type: r.type } : {}),
   place: { address: r.address, ...(r.lat !== null && r.lng !== null ? { lat: r.lat, lng: r.lng } : {}) },
+  // v0.18.129 (contract.json#phoneDataToServer.riderPlaces.preferredCategory): always sent, null = none.
+  preferredCategoryId: r.preferred_category_id,
   createdAt: r.created_at.toISOString(),
   updatedAt: r.updated_at.toISOString(),
 });
 
-const PLACE_COLUMNS = ["place_id", "kind", "type", "label", "address", "lat", "lng", "created_at", "updated_at"] as const;
+const PLACE_COLUMNS = ["place_id", "kind", "type", "label", "address", "lat", "lng", "preferred_category_id", "created_at", "updated_at"] as const;
 
 export async function listPlaces(ex: Executor, riderId: string) {
   const rows = await ex.selectFrom("rider_places").select(PLACE_COLUMNS).where("rider_id", "=", riderId)
@@ -67,7 +71,17 @@ const values = (p: PlaceInput) => ({
   address: p.place.address.trim(),
   lat: p.place.lat !== undefined && p.place.lng !== undefined ? p.place.lat : null,
   lng: p.place.lat !== undefined && p.place.lng !== undefined ? p.place.lng : null,
+  // Absent = keep the stored value (left out of the SET); a new place without it gets the column's NULL.
+  ...(p.preferredCategoryId !== undefined ? { preferred_category_id: p.preferredCategoryId } : {}),
 });
+
+/** v0.18.129: a fixed category must be in the admin Pricing catalog (400 unknown_category, as driver preferences). */
+async function checkPreferredCategory(ex: Executor, input: PlaceInput) {
+  const id = input.preferredCategoryId;
+  if (id === undefined || id === null) return;
+  const known = await ex.selectFrom("categories").select("category_id").where("category_id", "=", id).executeTakeFirst();
+  if (!known) throw new ApiError("invalid_request", "Unknown ride category.", { reason: "unknown_category", details: [id] });
+}
 
 /** POST: home / work replace the one there (same placeId); other is added while under MAX_PLACES. */
 export async function savePlace(trx: Trx, riderId: string, input: PlaceInput, now: Date) {
@@ -75,6 +89,7 @@ export async function savePlace(trx: Trx, riderId: string, input: PlaceInput, no
   await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).forUpdate().executeTakeFirstOrThrow();
   const v = values(input);
   if (v.label === "" || v.address === "") throw badRequest("A place needs a name and an address.", "place_incomplete");
+  await checkPreferredCategory(trx, input);
   if (v.kind !== "other") {
     const old = await trx.selectFrom("rider_places").select("place_id").where("rider_id", "=", riderId).where("kind", "=", v.kind).executeTakeFirst();
     if (old) {
@@ -101,6 +116,7 @@ export async function updatePlace(trx: Trx, riderId: string, placeId: string, in
   await ownPlace(trx, riderId, placeId);
   const v = values(input);
   if (v.label === "" || v.address === "") throw badRequest("A place needs a name and an address.", "place_incomplete");
+  await checkPreferredCategory(trx, input);
   if (v.kind !== "other") {
     // Becoming the home (or work): the old one of that kind goes, so there is still one each.
     await trx.deleteFrom("rider_places").where("rider_id", "=", riderId).where("kind", "=", v.kind).where("place_id", "!=", placeId).execute();
@@ -168,10 +184,11 @@ export async function riderContacts(ex: Executor, riderId: string) {
   return { items: contactsOf(row?.emergency_contacts), updatedAt: row?.contacts_at?.toISOString() ?? null };
 }
 
-async function cleanContacts(ex: Executor, country: string | null, items: ContactInput[]) {
+async function cleanContacts(ex: Executor, country: string | null, items: ContactInput[], keepShareTrips = false) {
   const max = (await countryLimitsFor(ex, country)).emergencyContactsPerPerson;
   if (items.length > max) throw badRequest(`At most ${max} emergency contacts per person.`, "too_many_contacts");
-  const clean = items.map((c) => ({ name: c.name.trim(), phone: c.phone, ...(c.relation?.trim() ? { relation: c.relation.trim() } : {}) }));
+  // v0.18.116 §94: the rider's list keeps shareTrips (true / false); a driver's list never holds it.
+  const clean = items.map((c) => ({ name: c.name.trim(), phone: c.phone, ...(c.relation?.trim() ? { relation: c.relation.trim() } : {}), ...(keepShareTrips && typeof c.shareTrips === "boolean" ? { shareTrips: c.shareTrips } : {}) }));
   if (clean.some((c) => c.name === "")) throw badRequest("Every contact needs a name.", "contact_incomplete");
   return clean;
 }
@@ -184,7 +201,7 @@ export async function saveDriverContacts(trx: Trx, driverId: string, items: Cont
 }
 
 export async function saveRiderContacts(trx: Trx, riderId: string, items: ContactInput[], now: Date) {
-  const clean = await cleanContacts(trx, await riderCountry(trx, riderId), items);
+  const clean = await cleanContacts(trx, await riderCountry(trx, riderId), items, true);
   await trx.insertInto("rider_phone_data").values({ rider_id: riderId, emergency_contacts: JSON.stringify(clean), contacts_at: now })
     .onConflict((c) => c.column("rider_id").doUpdateSet({ emergency_contacts: JSON.stringify(clean), contacts_at: now })).execute();
   return riderContacts(trx, riderId);

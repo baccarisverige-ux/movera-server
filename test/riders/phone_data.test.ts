@@ -103,6 +103,53 @@ describe("rider saved places on the server", () => {
   });
 });
 
+describe("v0.18.129 a saved place's fixed ride category (contract.json#phoneDataToServer.riderPlaces.preferredCategory)", () => {
+  // Before 0.18.129 the body field was refused (400, strict schema) and reads had no preferredCategoryId.
+  beforeEach(async () => {
+    await database.db.deleteFrom("rider_places").execute();
+    await database.db.deleteFrom("rider_places_imported").execute();
+  });
+
+  it("is null on a place saved without it, set by POST, kept when absent, cleared by null", async () => {
+    const plain = (await call(app, "POST", "/rider/places", riderA, home)).json();
+    expect(plain.preferredCategoryId).toBeNull();
+    const gym = await call(app, "POST", "/rider/places", riderA, { label: "Gym", kind: "other", type: "gym", preferredCategoryId: "comfort", place: { address: "Odengatan 3" } });
+    expect(gym.statusCode).toBe(201);
+    expect(gym.json().preferredCategoryId).toBe("comfort");
+    const id = gym.json().placeId;
+    // PUT without the field keeps it (an older app never clears it by accident).
+    const kept = await call(app, "PUT", `/rider/places/${id}`, riderA, { label: "My gym", kind: "other", type: "gym", place: { address: "Odengatan 4" } });
+    expect(kept.json()).toMatchObject({ label: "My gym", preferredCategoryId: "comfort" });
+    // Home replaced by POST without the field keeps it too.
+    await call(app, "PUT", `/rider/places/${plain.placeId}`, riderA, { ...home, preferredCategoryId: "premium" });
+    expect((await call(app, "POST", "/rider/places", riderA, { ...home, place: { address: "Ny gata 1" } })).json()).toMatchObject({ placeId: plain.placeId, preferredCategoryId: "premium" });
+    const cleared = await call(app, "PUT", `/rider/places/${id}`, riderA, { label: "My gym", kind: "other", type: "gym", preferredCategoryId: null, place: { address: "Odengatan 4" } });
+    expect(cleared.json().preferredCategoryId).toBeNull();
+    const list = (await call(app, "GET", "/rider/places", riderA)).json().items;
+    expect(list.map((p: { preferredCategoryId: string | null }) => p.preferredCategoryId)).toEqual(["premium", null]);
+    // The admin's read-only view carries it.
+    const ops = await adminSession(app, database.db, "super", { now: clock.now });
+    expect((await call(app, "GET", `/admin/riders/${await riderId(riderA)}/saved-places`, ops.headers)).json().items[0].preferredCategoryId).toBe("premium");
+  });
+
+  it("refuses a category that is not in the admin catalog with 400 unknown_category, and changes nothing", async () => {
+    const res = await call(app, "POST", "/rider/places", riderA, { ...home, preferredCategoryId: "rocket" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().reason).toBe("unknown_category");
+    const ok = (await call(app, "POST", "/rider/places", riderA, home)).json();
+    const put = await call(app, "PUT", `/rider/places/${ok.placeId}`, riderA, { ...home, preferredCategoryId: "rocket" });
+    expect(put.json().reason).toBe("unknown_category");
+    expect((await call(app, "GET", "/rider/places", riderA)).json().items[0].preferredCategoryId).toBeNull();
+    // Not a category id at all: the schema refuses it.
+    expect((await call(app, "POST", "/rider/places", riderA, { ...home, preferredCategoryId: "Not An Id" })).statusCode).toBe(400);
+  });
+
+  it("is accepted on the one-time upload of the phone's places", async () => {
+    const res = await call(app, "POST", "/rider/places/import", riderA, { items: [{ ...home, preferredCategoryId: "xl" }] });
+    expect(res.json().items[0].preferredCategoryId).toBe("xl");
+  });
+});
+
 async function riderId(headers: Record<string, string>): Promise<string> {
   return (await call(app, "GET", "/rider/profile", headers)).json().riderId;
 }

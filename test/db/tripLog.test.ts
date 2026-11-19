@@ -184,7 +184,7 @@ describe("appendTripEvent", () => {
     await database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId, kind: "trip_projection", version: 1 }));
     await waitUntil(() => notes.some((note) => note.tripId === tripId));
     // The committed event's notification has arrived; a rolled-back one would have been delivered before it.
-    expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1, riderId: expect.any(String), zoneId: expect.any(String), scheduled: false }]);
+    expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1, riderId: expect.any(String), zoneId: expect.any(String), scheduled: false, kind: "trip_projection" }]); // v0.18.127 Q119: the notice names its kind
   });
 
   it("the notification arrives only after commit", async () => {
@@ -196,13 +196,15 @@ describe("appendTripEvent", () => {
       expect(notes.filter((note) => note.tripId === tripId)).toEqual([]);
     });
     await waitUntil(() => notes.some((note) => note.tripId === tripId));
-    expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1, riderId: expect.any(String), zoneId: expect.any(String), scheduled: false }]);
+    expect(notes.filter((note) => note.tripId === tripId)).toEqual([{ tripId, sequence: 1, riderId: expect.any(String), zoneId: expect.any(String), scheduled: false, kind: "driver_arrived" }]); // v0.18.127 Q119: the notice names its kind
   });
 
-  it("an event kind outside the contract is refused by the database", async () => {
+  // S7 W2 Q135 (migration 0115): was "refused by the database" (/check constraint/); the CHECK is gone, the code refuses.
+  it("an event kind outside the contract is refused in code, before anything is written", async () => {
     const tripId = await newTrip();
     await expect(
       database.db.transaction().execute((trx) => appendTripEvent(trx, { tripId, kind: "teleported" as never, version: 1 })),
-    ).rejects.toThrow(/check constraint/);
+    ).rejects.toThrow(/Unknown trip event kind "teleported"/);
+    expect(await tripEventsAfter(database.db, tripId, 0)).toEqual([]);
   });
 });

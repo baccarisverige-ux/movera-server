@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { TRIP_EVENT_KINDS } from "../../src/db/tripLog.js";
 import { TEMPLATE_DB, adminUrl, urlFor } from "../support/globalSetup.js";
 import { DISTRIBUTION, MAX_SCALE, planCounts, type PlanCounts } from "../../tools/datagen/plan.mjs";
 
@@ -96,6 +97,12 @@ describe("data generator: row counts match the requested scale", () => {
     expect(result.orphans).toEqual({});
     const [row] = await q<{ n: string }>("SELECT count(*) AS n FROM trip_events e LEFT JOIN trips t USING (trip_id) WHERE t.trip_id IS NULL");
     expect(Number(row!.n)).toBe(0);
+  });
+
+  it("Q135: the tool writes trip_events itself (a bulk load, not appendTripEvent), so its kinds are checked here against the code list", async () => {
+    const kinds = (await q<{ kind: string }>("SELECT DISTINCT kind FROM trip_events ORDER BY kind")).map((r) => r.kind);
+    expect(kinds.length).toBeGreaterThan(3);
+    expect(kinds.filter((kind) => !(TRIP_EVENT_KINDS as readonly string[]).includes(kind))).toEqual([]);
   });
 });
 
