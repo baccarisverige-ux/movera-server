@@ -1,0 +1,22 @@
+[
+  {"name":"STHLM Central Station -> Arlanda T5","from":[59.3303,18.0586],"to":[59.6498,17.9300]},
+  {"name":"STHLM Central Station -> Bromma Airport","from":[59.3303,18.0586],"to":[59.3544,17.9416]},
+  {"name":"STHLM Stureplan -> Slussen","from":[59.3360,18.0735],"to":[59.3195,18.0722]},
+  {"name":"STHLM Kista -> Central Station","from":[59.4027,17.9443],"to":[59.3303,18.0586]},
+  {"name":"STHLM Nacka Forum -> Stureplan","from":[59.3098,18.1640],"to":[59.3360,18.0735]},
+  {"name":"STHLM Huddinge Hospital -> Sodersjukhuset","from":[59.2215,17.9390],"to":[59.3097,18.0558]},
+  {"name":"STHLM Taby Centrum -> Globen","from":[59.4441,18.0710],"to":[59.2935,18.0830]},
+  {"name":"STHLM Liljeholmen -> Sundbyberg","from":[59.3105,18.0227],"to":[59.3611,17.9716]},
+  {"name":"GBG Centralstationen -> Landvetter Airport","from":[57.7089,11.9733],"to":[57.6688,12.2920]},
+  {"name":"GBG Avenyn -> Sahlgrenska","from":[57.6990,11.9790],"to":[57.6830,11.9600]},
+  {"name":"GBG Nordstan -> Frolunda Torg","from":[57.7090,11.9680],"to":[57.6510,11.9110]},
+  {"name":"GBG Hisingen Backaplan -> Liseberg","from":[57.7210,11.9520],"to":[57.6950,11.9920]},
+  {"name":"GBG Molndal Centrum -> Angered Centrum","from":[57.6560,12.0150],"to":[57.7960,12.0490]},
+  {"name":"GBG Linnegatan -> Kungsbacka","from":[57.6960,11.9520],"to":[57.4870,12.0760]},
+  {"name":"MMO Centralstation -> Malmo Airport","from":[55.6090,13.0000],"to":[55.5360,13.3670]},
+  {"name":"MMO Stortorget -> Vastra Hamnen Turning Torso","from":[55.6050,13.0020],"to":[55.6130,12.9760]},
+  {"name":"MMO Triangeln -> Hyllie Emporia","from":[55.5940,13.0000],"to":[55.5640,12.9760]},
+  {"name":"MMO Mollevangstorget -> Skane Univ. Hospital","from":[55.5910,13.0110],"to":[55.5900,12.9900]},
+  {"name":"MMO Centralstation -> Lund Centralstation","from":[55.6090,13.0000],"to":[55.7050,13.1870]},
+  {"name":"Long trip: Stockholm Central -> Goteborg Central","from":[59.3303,18.0586],"to":[57.7089,11.9733]}
+]

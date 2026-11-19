@@ -1,0 +1,110 @@
+# Builds Movera's own Sweden route server (OSRM, car profile, MLD) and publishes it as a container image to
+# GitHub Container Registry: ghcr.io/<repo owner>/movera-osrm:sweden-<date> and :sweden-latest.
+# Runs ONLY when the owner presses "Run workflow" (Actions tab). It never runs on push or pull request, and it does not
+# touch Render or the movera-server image. See osrm/README.md.
+name: OSRM Sweden image
+
+on:
+  workflow_dispatch:
+    inputs:
+      bbox:
+        description: "Optional box west,south,east,north (empty = whole Sweden)"
+        required: false
+        default: ""
+      osrm_image:
+        description: "OSRM base image"
+        required: false
+        default: "osrm/osrm-backend:v5.25.0"
+      push:
+        description: "Publish the image to ghcr.io (false = build and test only)"
+        type: boolean
+        default: true
+  # Monthly fresh map: switch on only after the owner says yes (uses Actions minutes and publishes an image).
+  # schedule:
+  #   - cron: "23 2 3 * *"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: osrm-sweden
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PBF_URL: https://download.geofabrik.de/europe/sweden-latest.osm.pbf
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner has 14 GB disk; the build needs ~10 GB. Remove large preinstalled tools we do not use.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          docker system prune -af >/dev/null
+          df -h /
+          free -h
+
+      - name: Download Sweden map (Geofabrik) and check it
+        working-directory: osrm/data
+        run: |
+          curl -fL --retry 5 --retry-delay 15 -o region.osm.pbf "$PBF_URL"
+          curl -fsSL --retry 5 -o region.osm.pbf.md5 "$PBF_URL.md5"
+          echo "$(cut -d' ' -f1 region.osm.pbf.md5)  region.osm.pbf" | md5sum -c -
+          rm region.osm.pbf.md5
+          ls -l region.osm.pbf
+
+      - name: Build image (extract, partition, customize)
+        working-directory: osrm
+        env:
+          BBOX: ${{ inputs.bbox }}
+          OSRM_IMAGE: ${{ inputs.osrm_image }}
+        run: |
+          rm -f /tmp/build-mem.log
+          ( while sleep 20; do free -m | awk 'NR==2{print $3}' >> /tmp/build-mem.log; done ) &
+          TAG=movera-osrm:ci ./build.sh
+          kill %1 || true
+          echo "Peak used memory (MB): $(sort -n /tmp/build-mem.log | tail -1)"
+          rm -f data/region.osm.pbf
+          docker image ls movera-osrm:ci
+          df -h /
+
+      - name: Start it and ask 20 Swedish routes
+        env:
+          BBOX: ${{ inputs.bbox }}
+        run: |
+          set -o pipefail
+          docker run -d --name osrm -p 127.0.0.1:5000:5000 movera-osrm:ci
+          for i in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' osrm)" = healthy ] && break
+            sleep 5
+          done
+          docker stats --no-stream osrm
+          if [ -z "$BBOX" ]; then
+            node osrm/test/compare-routes.mjs --own http://127.0.0.1:5000 --no-demo --pairs osrm/test/sweden-pairs.json | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Box build: smoke ask only"
+            curl -fsS 'http://127.0.0.1:5000/nearest/v1/driving/18.0686,59.3293' | head -c 300
+          fi
+          docker rm -f osrm
+
+      - name: Publish to ghcr.io
+        if: ${{ inputs.push }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BBOX: ${{ inputs.bbox }}
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMG=ghcr.io/$OWNER/movera-osrm
+          SUFFIX=$([ -n "$BBOX" ] && echo box || echo sweden)
+          DATE=$(date -u +%F)
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for t in "$SUFFIX-$DATE" "$SUFFIX-latest"; do
+            docker tag movera-osrm:ci "$IMG:$t"
+            docker push "$IMG:$t"
+          done
+          echo "Published $IMG:$SUFFIX-$DATE and :$SUFFIX-latest" | tee -a "$GITHUB_STEP_SUMMARY"
