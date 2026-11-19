@@ -153,6 +153,8 @@ export class NotificationHub {
   private connectedOnce = false;
   /** Round 4: when start() was first called, and whether this copy was ever ready for traffic (then it stays so). */
   private startedAt: number | undefined;
+  /** SF-7: monotonic start time for the ready wait, so a wall-clock jump cannot end (or stretch) the 30 s wait. */
+  private startedMono: number | undefined;
   private wasReady = false;
   /** SF-4: when "reconnect failed" was last logged in this outage, and the failed attempts since. */
   private lastFailWarning: number | undefined;
@@ -188,6 +190,7 @@ export class NotificationHub {
    */
   start(): Promise<void> {
     this.startedAt ??= Date.now();
+    this.startedMono ??= performance.now();
     this.ready ??= this.connect().catch((error: unknown) => {
       if (!healsByItself(error)) throw error;
       this.log.warn({ err: error }, "realtime listen connect failed at start; retrying");
@@ -504,9 +507,9 @@ export class NotificationHub {
    * LISTEN connect and less than `readyWaitMs` (30 s) have passed since start(). True once it connected, or once the
    * wait is over - and from then on for ever, whatever the link does (healthSnapshot() keeps telling the truth).
    */
-  readyForTraffic(now: number = Date.now()): boolean {
+  readyForTraffic(now: number = performance.now()): boolean {
     if (this.wasReady) return true;
-    if (this.connectedOnce || this.startedAt === undefined || now - this.startedAt >= this.health.readyWaitMs) this.wasReady = true;
+    if (this.connectedOnce || this.startedMono === undefined || now - this.startedMono >= this.health.readyWaitMs) this.wasReady = true;
     return this.wasReady;
   }
 

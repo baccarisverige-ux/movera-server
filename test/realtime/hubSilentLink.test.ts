@@ -389,6 +389,20 @@ describe("PM-1: a silent LISTEN link (fake pg client, fake clock)", () => {
     await hub.stop();
   });
 
+  it("SF-7: a wall-clock jump inside the ready wait does not make a silent copy ready (monotonic clock)", async () => {
+    db.connect = "silent";
+    const hub = new NotificationHub(URL, ["ch"]);
+    void hub.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(hub.readyForTraffic()).toBe(false);
+    // The wall clock jumps one hour ahead (NTP step); only 1 s of real time has passed.
+    vi.setSystemTime(Date.now() + 3_600_000);
+    expect(hub.readyForTraffic()).toBe(false);
+    await vi.advanceTimersByTimeAsync(LISTEN_READY_WAIT_MS);
+    expect(hub.readyForTraffic()).toBe(true);
+    await hub.stop();
+  });
+
   it("N-2: a hub that connected at once is ready at once", async () => {
     const hub = new NotificationHub(URL, ["ch"]);
     await hub.start();
@@ -449,11 +463,13 @@ describe("PM-1: a silent LISTEN link (real pg through a TCP proxy that goes sile
     // Its own (empty) database, so the hub's sessions can be counted on the database by name. (CI fix: they were
     // counted by client port, but the database only sees the proxy's port when nothing sits in between; in CI
     // Postgres runs in a container behind a port mapping and sees another port, so the count was 0.)
-    const own = await freshDatabase({ migrated: false });
-    const proxy = await startSilentProxy(own.url);
     const warns: string[] = [];
-    const hub = new NotificationHub(proxy.url, ["pm1_probe"], { warn: (_data, message) => void warns.push(message) }, TUNING);
+    const parts: { own?: Awaited<ReturnType<typeof freshDatabase>>; proxy?: Awaited<ReturnType<typeof startSilentProxy>>; hub?: NotificationHub } = {};
     try {
+      // SF-10: everything is made inside the try, so a failure while setting up still drops the database.
+      const own = (parts.own = await freshDatabase({ migrated: false }));
+      const proxy = (parts.proxy = await startSilentProxy(own.url));
+      const hub = (parts.hub = new NotificationHub(proxy.url, ["pm1_probe"], { warn: (_data, message) => void warns.push(message) }, TUNING));
       await hub.start();
       let catchUps = 0;
       hub.subscribe("pm1_probe", (payload) => void (payload === null && (catchUps += 1)));
@@ -507,9 +523,16 @@ describe("PM-1: a silent LISTEN link (real pg through a TCP proxy that goes sile
         await direct.end();
       }
     } finally {
-      await hub.stop();
-      await proxy.close();
-      await own.drop();
+      // SF-10: each step runs even when an earlier one throws; the database is always dropped last.
+      try {
+        await parts.hub?.stop();
+      } finally {
+        try {
+          await parts.proxy?.close();
+        } finally {
+          await parts.own?.drop();
+        }
+      }
     }
   });
 
