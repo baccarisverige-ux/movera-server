@@ -121,8 +121,8 @@ paths:
         code, for up to 24 h or until an admin unlocks it (auth.otp.note). The app text and handling are unchanged. v0.18.135
         (contract.json#smsSignIn): A number that is not a test number gets a real code only when ALL hold: (1) the server
         has the SMS company''s two keys (serverKeys; set by the owner on the server, never in a repository, never sent to
-        an app or the admin panel); (2) the number starts with the calling code of a country Movera serves (countries); (3)
-        CountryRules.smsSignIn.enabled of that country''s standard is true. Otherwise the answer is 403 forbidden, reason
+        an app or the admin panel); (2) the number is a mobile number of a country Movera serves (countries, mobileNumbers);
+        (3) CountryRules.smsSignIn.enabled of that country''s standard is true. Otherwise the answer is 403 forbidden, reason
         sign_in_restricted, exactly as before (the apps offer the waiting list). A test number (outside production) never
         gets an SMS and keeps the fixed test code, whatever the switch says. Cost guard (SMS pumping): per country, the sign-in
         SMS handed to the SMS company in the last 24 hours (accepted or still being sent) are counted before each new one.

@@ -18,7 +18,7 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 import type { CodeSmsSender } from "../sms/elks.js";
 import { pokeAlerts } from "../alerts/detector.js";
-import { DAY_MS, SIGN_IN_SMS_KIND, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
+import { DAY_MS, SIGN_IN_SMS_KIND, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -198,9 +198,9 @@ export async function requestOtp(
     await sql`SELECT pg_advisory_xact_lock(hashtext(${`otp:${input.app}:${input.phone}`}))`.execute(trx);
 
     const isTest = deps.testSignInEnabled && (await isTestPhone(trx, input.phone, input.app));
-    // v0.18.135 (contract.json#smsSignIn.active): a real number only with an SMS sender, a served country's calling
-    // code and that country's switch on; otherwise the same answer as ever.
-    const country = isTest ? null : countryOfPhone(input.phone);
+    // v0.18.135 (contract.json#smsSignIn.active): a real number only with an SMS sender, a served country's MOBILE
+    // number and that country's switch on; otherwise the same answer as ever.
+    const country = isTest ? null : smsCountryOf(input.phone);
     const setting = !isTest && deps.signInSms !== undefined && country !== null ? await smsSignInFor(trx, country) : undefined;
     if (!isTest && (country === null || setting === undefined || !setting.enabled)) {
       throw new ApiError("forbidden", "Sign-in is not open for this number yet.", { reason: "sign_in_restricted" });
@@ -312,6 +312,26 @@ export async function requestOtp(
   return started.challenge;
 }
 
+/** How long the last real hand-over to the SMS company took, per sender (for {@link silentSmsWait}). */
+const lastSmsSendMs = new WeakMap<CodeSmsSender, number>();
+export const SILENT_SMS_WAIT_DEFAULT_MS = 300;
+export const SILENT_SMS_WAIT_MAX_MS = 8000;
+
+/**
+ * For a caller that answers "code sent" WITHOUT sending one (the phone change to a number that already has an account,
+ * accountChange.ts): when a real SMS would have gone to this number, wait about as long as a real send takes, so the
+ * answer time does not tell that the number has an account. No sender, not a served mobile number, or the country's
+ * switch off: no wait (the real path would not have sent either).
+ */
+export async function silentSmsWait(deps: AuthDeps, phone: string): Promise<void> {
+  const country = deps.signInSms === undefined ? null : smsCountryOf(phone);
+  if (deps.signInSms === undefined || country === null) return;
+  if (deps.testSignInEnabled && (await deps.db.selectFrom("test_phones").select("phone").where("phone", "=", phone).executeTakeFirst()) !== undefined) return;
+  if (!(await smsSignInFor(deps.db, country)).enabled) return;
+  const ms = Math.min(SILENT_SMS_WAIT_MAX_MS, lastSmsSendMs.get(deps.signInSms) ?? SILENT_SMS_WAIT_DEFAULT_MS);
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 type PendingSms = { smsId: string; sessionId: string; to: string; text: string; atAlertLine: boolean };
 
 /**
@@ -320,7 +340,9 @@ type PendingSms = { smsId: string; sessionId: string; to: string; text: string; 
  * counts on the hourly limits. Neither the code nor the full number reaches the log.
  */
 async function deliverSignInSms(deps: AuthDeps, sms: PendingSms, now: Date): Promise<void> {
+  const began = Date.now();
   const outcome = await deps.signInSms!.send({ to: sms.to, text: sms.text }).catch(() => ({ accepted: false }) as { accepted: boolean; status?: number; ref?: string });
+  lastSmsSendMs.set(deps.signInSms!, Date.now() - began);
   if (outcome.accepted) {
     await deps.db.updateTable("sms_outbox").set({ status: "sent", provider_ref: outcome.ref ?? null, sent_at: now }).where("sms_id", "=", sms.smsId).execute();
     if (sms.atAlertLine) await pokeAlerts(deps.db, now).catch(() => undefined);

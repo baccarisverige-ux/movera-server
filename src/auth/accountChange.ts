@@ -7,7 +7,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { notify } from "../notifications/service.js";
 import { noticeLanguage } from "../notifications/noticeLanguage.js";
-import { OTP, PHONE, otpCodeMatches, requestOtp, type AuthDeps, type ClientInfo } from "./service.js";
+import { OTP, PHONE, otpCodeMatches, requestOtp, silentSmsWait, type AuthDeps, type ClientInfo } from "./service.js";
 
 /**
  * v0.18.14 (owner 2026-11-02, decisions/driver-g1.md "Phone number change" / "E-mail change"): a driver or rider changes
@@ -88,6 +88,8 @@ export async function startPhoneChange(deps: AuthDeps, who: Who, phone: string, 
   await checkStart(deps.db, who, "phone", now);
   if (await phoneHasAccount(deps.db, phone)) {
     // The same answer as a sent code (no code is sent): nobody learns that this number has an account.
+    // v0.18.135: nor from the answer time, now that a real code is an SMS handed to the SMS company first.
+    await silentSmsWait(deps, phone);
     return { requestId: newId("otp"), sessionId: newId("otp", now.getTime()), expiresAt: new Date(now.getTime() + OTP.expiresSeconds * 1000).toISOString(), retryAfterSeconds: OTP.retryAfterSeconds };
   }
   return requestOtp(deps, { phone, app: who.actor, requestId: newId("otp") }, client);

@@ -26,9 +26,11 @@ const advance = (seconds: number) => (clock.now = new Date(clock.now.getTime() +
 const logLines: string[] = [];
 const SECRET = "sms-sign-in".padEnd(48, "s");
 let n = 0;
-/** A new real (not test) Swedish number each call, and a new client address. */
-const realSE = () => `+4670174${String(600000 + ++n).slice(1)}`.replace("+467017406", "+467017407");
-const realFR = () => `+336399800${String(100 + ++n).slice(1)}`;
+let se = 0;
+let fr = 0;
+/** A new real (not test) Swedish / French mobile number each call (fiction ranges), and a new client address. */
+const realSE = () => `+467017${41000 + ++se}`;
+const realFR = () => `+3363998${String(1000 + ++fr)}`;
 const address = () => `198.51.${Math.floor(++n / 250)}.${n % 250}`;
 
 beforeAll(async () => {
@@ -94,6 +96,18 @@ describe("nothing changes until BOTH the keys and the country switch are there",
     expect((await request(realFR())).json().reason).toBe("sign_in_restricted");
     expect(sms.sent).toHaveLength(0);
     expect((await request(realSE())).statusCode).toBe(200);
+  });
+
+  it("only a MOBILE number of the country can get an SMS (the apps' own rule): a landline, premium or wrong-length number is sign_in_restricted", async () => {
+    for (const phone of ["+4681234567", "+46900123456", "+467012345", "+4670123456789", "+33123456789", "+33899123456"]) {
+      const res = await request(phone);
+      expect(res.statusCode, phone).toBe(403);
+      expect(res.json().reason, phone).toBe("sign_in_restricted");
+    }
+    await setSmsSignIn(database.db, "TN", { enabled: true }, clock.now);
+    expect((await request("+21671123456")).json().reason).toBe("sign_in_restricted");
+    expect(sms.sent).toHaveLength(0);
+    expect(await database.db.selectFrom("sms_outbox").select("sms_id").where("created_at", ">=", clock.now).execute()).toHaveLength(0);
   });
 
   it("a test number never gets an SMS and keeps the test code, with the keys and the switch on", async () => {
@@ -396,6 +410,36 @@ describe("changing the phone number of a signed-in account", () => {
     expect(done.json()).toEqual({ phone: fresh });
     // Put the test number back for the other tests.
     await database.db.updateTable("riders").set({ phone: old }).where("phone", "=", fresh).execute();
+  });
+
+  it("a number that already has an account: the same answer, no SMS, and about the time of a real send (no telling by the clock)", async () => {
+    const from = address();
+    // An account with a real number, and a signed-in test rider who asks to change to that number.
+    const taken = realSE();
+    const first = await request(taken);
+    expect((await verify(taken, first.json().sessionId, sms.lastCode())).statusCode).toBe(200);
+    const own = TEST_PHONES[1]!;
+    const challenge = await post("/auth/otp/request", { phone: own, app: "rider" }, from);
+    const tokens = (await verify(own, challenge.json().sessionId, TEST_CODE, from)).json();
+    const auth = { authorization: `Bearer ${tokens.accessToken}` };
+    sms.delayMs = 250;
+    try {
+      const freeBegan = Date.now();
+      const free = await post("/account/phone/change", { phone: realSE() }, from, app, auth);
+      const freeMs = Date.now() - freeBegan;
+      expect(free.statusCode).toBe(200);
+      const sentBefore = sms.sent.length;
+      const takenBegan = Date.now();
+      const silent = await post("/account/phone/change", { phone: taken }, from, app, auth);
+      const takenMs = Date.now() - takenBegan;
+      expect(silent.statusCode).toBe(200);
+      expect(Object.keys(silent.json()).sort()).toEqual(Object.keys(free.json()).sort());
+      expect(sms.sent.length).toBe(sentBefore);
+      expect(freeMs).toBeGreaterThanOrEqual(240);
+      expect(takenMs).toBeGreaterThanOrEqual(240);
+    } finally {
+      sms.delayMs = 0;
+    }
   });
 });
 

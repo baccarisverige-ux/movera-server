@@ -14,6 +14,8 @@ import { pickNoticeLanguage, type Lang } from "../notifications/noticeLanguage.j
  */
 
 type SmsSignInContract = {
+  countries: Record<string, string>;
+  mobileNumbers: Record<string, string>;
   dailyCapRange: [number, number];
   sender: string;
   texts: { sms: Record<Lang, string> };
@@ -60,7 +62,18 @@ export function checkSmsSignIn(zoneKind: string, document: unknown): void {
 }
 
 /** The calling code of a served country ("+46"), for the per-country count. */
-export const callingCodeOf = (country: string): string | undefined => Object.entries((contract as unknown as { smsSignIn: { countries: Record<string, string> } }).smsSignIn.countries).find(([, cc]) => cc === country)?.[0];
+export const callingCodeOf = (country: string): string | undefined => Object.entries(SMS_SIGN_IN.countries).find(([, cc]) => cc === country)?.[0];
+
+const MOBILE = new Map(Object.entries(SMS_SIGN_IN.mobileNumbers).map(([country, pattern]) => [country, new RegExp(pattern)]));
+/**
+ * contract.json#smsSignIn.mobileNumbers: the served country whose MOBILE number this is, or null. Only such a number
+ * can ever get an SMS (the same rule as the apps' phone field), so a landline, a premium or service number, a wrong
+ * length or another country never costs an SMS.
+ */
+export function smsCountryOf(phone: string): string | null {
+  const country = Object.entries(SMS_SIGN_IN.countries).find(([prefix]) => phone.startsWith(prefix))?.[1];
+  return country !== undefined && MOBILE.get(country)?.test(phone) === true ? country : null;
+}
 
 /**
  * The cost guard's count: sign-in SMS to this country's numbers handed to the SMS company in the last 24 h (accepted,
@@ -96,6 +109,6 @@ export const storedSmsText = (lang: Lang, codeLength: number): string => signInS
 
 /** For the log: the calling code and the last two digits at most ("+46…08"); never the full number. */
 export function maskPhone(phone: string): string {
-  const prefix = Object.keys((contract as unknown as { smsSignIn: { countries: Record<string, string> } }).smsSignIn.countries).find((p) => phone.startsWith(p));
+  const prefix = Object.keys(SMS_SIGN_IN.countries).find((p) => phone.startsWith(p));
   return `${prefix ?? "+"}…${phone.slice(-2)}`;
 }
