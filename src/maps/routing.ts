@@ -1,5 +1,5 @@
 import { contract } from "../contract/contract.js";
-import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./osrmSettings.js";
+import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_MAX_SNAP_METERS_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./osrmSettings.js";
 
 /**
  * Road distance and time between points (contract §10; owner decision 4: Movera's own OSRM). Until OSRM runs
@@ -62,7 +62,10 @@ export type OsrmBreakerOptions = {
   log?: { warn(data: Record<string, unknown>, message: string): void; info(data: Record<string, unknown>, message: string): void };
 };
 
-/** OSRM v5 /route/v1/driving. Falls back to the estimate when OSRM does not answer in time, or while the breaker is open. */
+/**
+ * OSRM v5 /route/v1/driving. Falls back to the estimate when OSRM does not answer in time, while the breaker is open,
+ * or when its answer moved an asked point too far (route guard, OsrmSnappedFarError).
+ */
 /** OSRM answered with an error (4xx = bad or unroutable points, not an outage; 5xx = server trouble). */
 export class OsrmAnsweredError extends Error {
   constructor(
@@ -72,6 +75,48 @@ export class OsrmAnsweredError extends Error {
     super(`OSRM answered ${status} ${code ?? ""}`);
     this.name = "OsrmAnsweredError";
   }
+}
+
+/**
+ * Route guard: OSRM answered "Ok" but moved an asked point further than the limit to reach a road it knows (the point
+ * is outside its map, or nowhere near a road), so the route it answered is not the asked ride (far too short at a map
+ * edge). Not an outage. The text and the fields hold metres and the point's place in the list only, never a coordinate.
+ */
+export class OsrmSnappedFarError extends Error {
+  constructor(
+    readonly movedMeters: number,
+    readonly limitMeters: number,
+    /** 0 = the first asked point. */
+    readonly point: number,
+    readonly points: number,
+  ) {
+    super(`OSRM moved point ${point + 1} of ${points} by ${movedMeters} m to reach a road (limit ${limitMeters} m)`);
+    this.name = "OsrmSnappedFarError";
+  }
+}
+
+type OsrmWaypoint = { distance?: unknown; location?: unknown };
+
+/**
+ * How far OSRM moved the asked point that it moved the most (metres), and which one. `waypoints[i].distance` is OSRM's
+ * own number; an answer without it but with the snapped place (`location`: [lng, lat]) is measured from the asked
+ * point. A waypoint with neither says nothing and is skipped, so an answer without usable waypoints is never refused.
+ */
+export function farthestSnap(points: LatLng[], waypoints: unknown): { meters: number; point: number } | null {
+  if (!Array.isArray(waypoints)) return null;
+  let worst: { meters: number; point: number } | null = null;
+  for (let i = 0; i < points.length && i < waypoints.length; i++) {
+    const waypoint = waypoints[i] as OsrmWaypoint | null;
+    if (waypoint === null || typeof waypoint !== "object") continue;
+    let meters: number | null = null;
+    if (typeof waypoint.distance === "number" && Number.isFinite(waypoint.distance) && waypoint.distance >= 0) meters = waypoint.distance;
+    else if (Array.isArray(waypoint.location) && waypoint.location.length >= 2) {
+      const [lng, lat] = waypoint.location as unknown[];
+      if (typeof lng === "number" && typeof lat === "number" && Number.isFinite(lng) && Number.isFinite(lat)) meters = haversineKm(points[i]!, { lat, lng }) * 1000;
+    }
+    if (meters !== null && (worst === null || meters > worst.meters)) worst = { meters, point: i };
+  }
+  return worst;
 }
 
 export class OsrmRouter implements Router {
@@ -87,6 +132,8 @@ export class OsrmRouter implements Router {
     private readonly timeoutMs = OSRM_TIMEOUT_MS_DEFAULT,
     private readonly onFallback: (error: unknown) => void = () => undefined,
     breaker?: Partial<OsrmBreakerOptions>,
+    /** Route guard: an answer that moved an asked point further than this (metres) is not used. */
+    private readonly maxSnapMeters = OSRM_MAX_SNAP_METERS_DEFAULT,
   ) {
     this.breaker = {
       failuresToOpen: breaker?.failuresToOpen ?? OSRM_BREAKER_FAILURES_DEFAULT,
@@ -120,6 +167,19 @@ export class OsrmRouter implements Router {
         this.succeeded();
         return this.fallback.route(points);
       }
+      if (error instanceof OsrmSnappedFarError) {
+        // Route guard: the server answered, so it counts as "up" for the breaker exactly like the unroutable points
+        // above (a ride to a place outside the map must never stop road routes for everyone else). This ask gets the
+        // estimate. One line, without coordinates (B1.27).
+        if (this.breaker.log) {
+          this.breaker.log.warn(
+            { osrmSnap: "too_far", movedMeters: error.movedMeters, limitMeters: error.limitMeters, point: error.point, points: error.points },
+            "OSRM moved a point too far to reach a road (outside its map?); distance estimated",
+          );
+        } else this.onFallback(error);
+        this.succeeded();
+        return this.fallback.route(points);
+      }
       this.failed(error, probe);
       return this.fallback.route(points);
     } finally {
@@ -132,9 +192,12 @@ export class OsrmRouter implements Router {
     // 0.17: overview=false when only the numbers are needed (RouteOptions.shape).
     const url = `${this.baseUrl.replace(/\/$/, "")}/route/v1/driving/${coordinates}?overview=${shape ? "full" : "false"}&geometries=geojson&steps=false&alternatives=false`;
     const response = await fetch(url, { signal: AbortSignal.timeout(this.timeoutMs) });
-    const body = (await response.json()) as { code?: string; routes?: Array<{ distance: number; duration: number; geometry?: { coordinates?: number[][] } }> };
+    const body = (await response.json()) as { code?: string; routes?: Array<{ distance: number; duration: number; geometry?: { coordinates?: number[][] } }>; waypoints?: unknown };
     const best = body.routes?.[0];
     if (!response.ok || body.code !== "Ok" || best === undefined) throw new OsrmAnsweredError(response.status, body.code);
+    // Route guard: "Ok" is not enough. A point outside the map was moved to the nearest known road: not this ride.
+    const snap = farthestSnap(points, body.waypoints);
+    if (snap !== null && snap.meters > this.maxSnapMeters) throw new OsrmSnappedFarError(Math.round(snap.meters), this.maxSnapMeters, snap.point, points.length);
     return {
       distanceMeters: Math.round(best.distance),
       durationSeconds: Math.round(best.duration),
