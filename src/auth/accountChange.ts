@@ -89,7 +89,7 @@ export async function startPhoneChange(deps: AuthDeps, who: Who, phone: string, 
   if (await phoneHasAccount(deps.db, phone)) {
     // The same answer as a sent code (no code is sent): nobody learns that this number has an account.
     // v0.18.135: nor from the answer time, now that a real code is an SMS handed to the SMS company first.
-    await silentSmsWait(deps, phone);
+    await silentSmsWait(deps, phone, who.actor);
     return { requestId: newId("otp"), sessionId: newId("otp", now.getTime()), expiresAt: new Date(now.getTime() + OTP.expiresSeconds * 1000).toISOString(), retryAfterSeconds: OTP.retryAfterSeconds };
   }
   return requestOtp(deps, { phone, app: who.actor, requestId: newId("otp") }, client);

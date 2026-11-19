@@ -272,6 +272,31 @@ describe("the limits of the test sign-in hold for real numbers (each SMS asked f
     expect(late.json().code).toBe("otp_expired");
   });
 
+  it("the wrong-code lock of the day holds for a real number: no new SMS, and not even the right code", async () => {
+    const limits = (contract as unknown as { countryLimits: { defaults: { wrongCodesPerDay: number } } }).countryLimits.defaults;
+    const phone = realSE();
+    const from = address();
+    let wrong = 0;
+    let last;
+    let challenge = { sessionId: "" };
+    while (wrong < limits.wrongCodesPerDay) {
+      advance(400);
+      challenge = (await request(phone, {}, from)).json();
+      expect(challenge.sessionId, `after ${wrong} wrong`).toBeTypeOf("string");
+      for (let i = 0; i < 4 && wrong < limits.wrongCodesPerDay; i++, wrong++) last = await verify(phone, challenge.sessionId, wrongCodeFor(sms.lastCode()), from);
+    }
+    expect(last!.statusCode).toBe(429);
+    expect(last!.json().reason).toBe("otp_locked_today");
+    const right = await verify(phone, challenge.sessionId, sms.lastCode(), from);
+    expect(right.json().reason).toBe("otp_locked_today");
+    advance(400);
+    const sentBefore = sms.sent.length;
+    const again = await request(phone, {}, from);
+    expect(again.statusCode).toBe(429);
+    expect(again.json().reason).toBe("otp_locked_today");
+    expect(sms.sent.length).toBe(sentBefore);
+  });
+
   it("codes per number per hour and per address per hour stop the SMS", async () => {
     const limits = (contract as unknown as { countryLimits: { defaults: { codesPerPhonePerHour: number; codesPerAddressPerHour: number } } }).countryLimits.defaults;
     const phone = realSE();
@@ -376,6 +401,28 @@ describe("the daily SMS limit per country (cost guard)", () => {
     advance(24 * 3600 + 120);
     expect((await request(realSE())).statusCode).toBe(200);
     expect((await systemAlerts()).filter((a) => a.state === "open")).toEqual([]);
+  });
+
+  it("an SMS the company did not answer in time counts (it may have gone out and been billed), and so does a row left 'queued' by a crash; only a refusal is free", async () => {
+    await setSmsSignIn(database.db, "SE", { enabled: true, dailyCap: 10 }, clock.now);
+    sms.next = { accepted: false };
+    for (let i = 0; i < 6; i++) expect((await request(realSE())).json().reason).toBe("sms_not_sent");
+    sms.next = "throw";
+    for (let i = 0; i < 2; i++) expect((await request(realSE())).json().reason).toBe("sms_not_sent");
+    // A send the server never finished (it stopped between saving the code and handing the SMS over).
+    for (let i = 0; i < 2; i++) await database.db.insertInto("sms_outbox").values({ sms_id: `sms_crash_${i}_${clock.now.getTime()}`, phone: realSE(), text: "x", kind: "sign_in_code", status: "queued", provider: "fake", created_at: clock.now }).execute();
+    sms.next = { accepted: true };
+    sms.sent.length = 0;
+    const over = await request(realSE());
+    expect(over.statusCode).toBe(503);
+    expect(over.json().reason).toBe("sms_daily_limit");
+    expect(sms.sent).toHaveLength(0);
+    // Refusals (an HTTP answer that is not 2xx) do not fill it.
+    advance(25 * 3600);
+    sms.next = { accepted: false, status: 402 };
+    for (let i = 0; i < 12; i++) expect((await request(realSE())).json().reason).toBe("sms_not_sent");
+    sms.next = { accepted: true };
+    expect((await request(realSE())).statusCode).toBe(200);
   });
 
   it("a failed SMS is not counted; parallel requests cannot pass the limit together", async () => {

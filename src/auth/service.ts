@@ -18,7 +18,7 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 import type { CodeSmsSender } from "../sms/elks.js";
 import { pokeAlerts } from "../alerts/detector.js";
-import { DAY_MS, SIGN_IN_SMS_KIND, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
+import { DAY_MS, SIGN_IN_SMS_KIND, SMS_NO_ANSWER, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -323,10 +323,10 @@ export const SILENT_SMS_WAIT_MAX_MS = 8000;
  * answer time does not tell that the number has an account. No sender, not a served mobile number, or the country's
  * switch off: no wait (the real path would not have sent either).
  */
-export async function silentSmsWait(deps: AuthDeps, phone: string): Promise<void> {
+export async function silentSmsWait(deps: AuthDeps, phone: string, app: App): Promise<void> {
   const country = deps.signInSms === undefined ? null : smsCountryOf(phone);
   if (deps.signInSms === undefined || country === null) return;
-  if (deps.testSignInEnabled && (await deps.db.selectFrom("test_phones").select("phone").where("phone", "=", phone).executeTakeFirst()) !== undefined) return;
+  if (deps.testSignInEnabled && (await isTestPhone(deps.db, phone, app))) return;
   if (!(await smsSignInFor(deps.db, country)).enabled) return;
   const ms = Math.min(SILENT_SMS_WAIT_MAX_MS, lastSmsSendMs.get(deps.signInSms) ?? SILENT_SMS_WAIT_DEFAULT_MS);
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -349,7 +349,7 @@ async function deliverSignInSms(deps: AuthDeps, sms: PendingSms, now: Date): Pro
     return;
   }
   await deps.db.transaction().execute(async (trx) => {
-    await trx.updateTable("sms_outbox").set({ status: "failed", error: outcome.status !== undefined ? `http_${outcome.status}` : "no_answer" }).where("sms_id", "=", sms.smsId).execute();
+    await trx.updateTable("sms_outbox").set({ status: "failed", error: outcome.status !== undefined ? `http_${outcome.status}` : SMS_NO_ANSWER }).where("sms_id", "=", sms.smsId).execute();
     await trx.updateTable("otp_sessions").set({ consumed_at: now }).where("session_id", "=", sms.sessionId).where("consumed_at", "is", null).execute();
   });
   deps.warn?.({ smsId: sms.smsId, to: maskPhone(sms.to), provider: deps.signInSms!.name, ...(outcome.status !== undefined ? { status: outcome.status } : {}) }, "sign-in SMS not sent");
