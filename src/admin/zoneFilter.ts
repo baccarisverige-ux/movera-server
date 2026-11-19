@@ -17,6 +17,19 @@ const zoneList = z
   .transform((v) => (v === undefined ? undefined : (Array.isArray(v) ? v : [v]).flatMap((part) => part.split(",")).map((part) => part.trim()).filter(Boolean)))
   .pipe(z.array(ID).max(200).optional());
 
+/**
+ * v0.18.134 (S5 J16/J17, contract.json#adminListFilters.ids): `ids` on riders / drivers / trips, comma separated or
+ * repeated, 1-200 after joining. It only narrows (the admin's zones and every other filter still apply), so an id the
+ * admin may not see is left out, never 403.
+ */
+export const IdsQuery = {
+  ids: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : [...new Set((Array.isArray(v) ? v : [v]).flatMap((part) => part.split(",")).map((part) => part.trim()).filter(Boolean))]))
+    .pipe(z.array(ID).min(1).max(200).optional()),
+};
+
 export const ZoneFilterQuery = { zoneId: ID.optional(), zoneIds: zoneList, country: z.string().regex(/^[A-Z]{2}$/).optional() };
 
 export type ZoneFilter = { zoneId?: string | undefined; zoneIds?: string[] | undefined; country?: string | undefined };

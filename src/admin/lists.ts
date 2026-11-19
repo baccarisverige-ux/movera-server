@@ -31,13 +31,15 @@ export function readCursor(cursor: string): { at: Date; id: string } {
 }
 export const zonesOf = (who: Principal) => (who.zones.includes("*") ? null : who.zones);
 
-export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string; flagged?: boolean; total?: boolean; scheduledBefore?: string };
+export type TripQuery = { cursor?: string; limit: number; status?: string[]; kind?: string; zoneId?: string; categoryId?: string; riderId?: string; driverId?: string; paymentStatus?: string; from?: string; to?: string; q?: string; flagged?: boolean; total?: boolean; scheduledBefore?: string; ids?: string[] };
 
 export async function listTrips(ex: Executor, who: Principal, input: TripQuery, now: Date = new Date()) {
   let q = ex.selectFrom("trips").selectAll();
   const zones = zonesOf(who);
   if (zones) q = q.where("zone_id", "in", zones.length ? zones : ["-"]);
   if (input.zoneId) q = q.where("zone_id", "=", input.zoneId);
+  // v0.18.134 (adminListFilters.ids): only these trips, still inside every other filter.
+  if (input.ids?.length) q = q.where("trip_id", "in", input.ids);
   if (input.status?.length) q = q.where("status", "in", input.status);
   if (input.kind) q = q.where("kind", "=", input.kind as "live" | "scheduled");
   if (input.categoryId) q = q.where("category_id", "=", input.categoryId);
@@ -91,10 +93,11 @@ export function riderInZones(zones: string[]) {
   return sql<boolean>`exists (select 1 from trips t where t.rider_id = riders.rider_id and t.zone_id = any(${sql.val(zones.length ? zones : ["-"])}::text[]))`;
 }
 
-export async function listRiders(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string; q?: string; total?: boolean }, currency: string) {
+export async function listRiders(ex: Executor, who: Principal, input: { cursor?: string; limit: number; status?: string; q?: string; total?: boolean; ids?: string[] }, currency: string) {
   let q = ex.selectFrom("riders").selectAll();
   const zones = zonesOf(who);
   if (zones) q = q.where(riderInZones(zones));
+  if (input.ids?.length) q = q.where("rider_id", "in", input.ids);
   if (input.status) q = q.where("status", "=", input.status as "active" | "suspended");
   if (input.q) {
     const text = `%${input.q.trim().replace(/[%_\\]/g, "")}%`;
@@ -149,10 +152,11 @@ export function adminRiderView(row: Record<string, unknown>, currency: string, b
   return maskRiderView({ ...riderView(row as never, currency, byCurrency), wallet: { amountMinor: wallet, currency: shown }, wallets: balances, ...(row["deletion_requested_at"] ? { deletionRequestedAt: (row["deletion_requested_at"] as Date).toISOString() } : {}) }, who);
 }
 
-export async function listDrivers(ex: Executor, who: Principal, input: { cursor?: string; limit: number; accountStatus?: string[]; onlineStatus?: string[]; zoneId?: string; categoryId?: string; q?: string; total?: boolean }) {
+export async function listDrivers(ex: Executor, who: Principal, input: { cursor?: string; limit: number; accountStatus?: string[]; onlineStatus?: string[]; zoneId?: string; categoryId?: string; q?: string; total?: boolean; ids?: string[] }) {
   let q = ex.selectFrom("drivers").selectAll();
   const zones = zonesOf(who);
   if (zones) q = q.where(sql<boolean>`zone_ids && ${sql.val(zones.length ? zones : ["-"])}::text[]`);
+  if (input.ids?.length) q = q.where("driver_id", "in", input.ids);
   if (input.accountStatus?.length) q = q.where("account_status", "in", input.accountStatus as never);
   if (input.onlineStatus?.length) q = q.where("online_status", "in", input.onlineStatus as never);
   if (input.zoneId) q = q.where(sql<boolean>`${input.zoneId} = ANY(zone_ids)`);
