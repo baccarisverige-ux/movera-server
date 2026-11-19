@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql, type KyselyPlugin } from "kysely";
-import { alertBook, SOLVED_ALERTS_CAP } from "../../src/admin/alerts.js";
+import { alertBook, OPEN_OTHER_ALERTS_CAP, SOLVED_ALERTS_CAP } from "../../src/admin/alerts.js";
 import { permissionsOf } from "../../src/admin/permissions.js";
 import type { Principal } from "../../src/auth/guard.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -90,20 +90,61 @@ describe("S7: the alert book never cuts an open alert", () => {
     expect(list).toContain("sos_slow:inc_slow");
   });
 
-  it("more than 1000 OPEN alerts: every open one is returned, none is cut", async () => {
+  it("MF3 (v0.18.131): 1200 open non-safety + 3 SOS: every SOS is in, the others are cut at 1000, alertsMore is set", async () => {
     await sql`
       INSERT INTO admin_alerts_live (alert_id, cause_key, kind, country, zone_id, level, title, title_t, since, state, cause_live, seen_at, updated_at)
       SELECT 'long_wait:t' || i, 'long_wait:t' || i, 'long_wait', 'SE', 'Z001', 'important', 'Waited', '{"t":"Waited","a":[]}'::jsonb,
              ${NOW}::timestamptz - (i + 10) * interval '1 minute', 'open', true, ${NOW}, ${NOW}
         FROM generate_series(1, 1200) AS i`.execute(db());
     await solvedOffline(1001);
-    await alert({ id: "sos:inc_new", kind: "sos", since: ago(0) });
+    // Old SOS alerts: older than every long_wait, so a plain "newest 1000 open" limit would cut them.
+    await alert({ id: "sos:inc_a", kind: "sos", since: ago(5000) });
+    await alert({ id: "sos:inc_b", kind: "sos", since: ago(6000) });
+    await alert({ id: "sos:inc_c", kind: "sos", since: ago(7000) });
 
-    const list = await read();
+    const book = await alertBook(db(), superAdmin, "SE", NOW);
+    const list = book.alerts as Live[];
     const open = list.filter((a) => a.state === "open");
-    expect(open).toHaveLength(1201);
-    expect(open[0]!.alertId).toBe("sos:inc_new");
+    expect(open).toHaveLength(OPEN_OTHER_ALERTS_CAP + 3);
+    expect(ids(open).slice(0, 3)).toEqual(["sos:inc_a", "sos:inc_b", "sos:inc_c"]);
+    const others = ids(open).filter((id) => id.startsWith("long_wait:"));
+    expect(others).toHaveLength(OPEN_OTHER_ALERTS_CAP);
+    // The newest kept: t1 newest, t1000 the last kept, t1001+ left out.
+    expect(others[0]).toBe("long_wait:t1");
+    expect(others).toContain("long_wait:t1000");
+    expect(others).not.toContain("long_wait:t1001");
     expect(list.filter((a) => a.state === "solved")).toHaveLength(SOLVED_ALERTS_CAP);
+    expect((book as { alertsMore?: unknown }).alertsMore).toEqual({ open: true, solved: true });
+  });
+
+  it("MF3: 1500 open SOS are never cut, and do not count toward the other cap", async () => {
+    await sql`
+      INSERT INTO admin_alerts_live (alert_id, cause_key, kind, country, zone_id, level, title, title_t, since, state, cause_live, seen_at, updated_at)
+      SELECT 'sos:i' || i, 'sos:i' || i, 'sos', 'SE', 'Z001', 'critical', 'SOS', '{"t":"SOS","a":[]}'::jsonb,
+             ${NOW}::timestamptz - i * interval '1 minute', 'open', true, ${NOW}, ${NOW}
+        FROM generate_series(1, 1500) AS i`.execute(db());
+    await alert({ id: "long_wait:one", kind: "long_wait", level: "important", since: ago(1) });
+    const book = await alertBook(db(), superAdmin, "SE", NOW);
+    expect(book.alerts).toHaveLength(1501);
+    expect((book as { alertsMore?: unknown }).alertsMore).toBeUndefined();
+  });
+
+  it("MF3: exactly 1000 open others and 1000 solved: nothing cut, no alertsMore; only open cut → solved false", async () => {
+    await sql`
+      INSERT INTO admin_alerts_live (alert_id, cause_key, kind, country, zone_id, level, title, title_t, since, state, cause_live, seen_at, updated_at)
+      SELECT 'long_wait:t' || i, 'long_wait:t' || i, 'long_wait', 'SE', 'Z001', 'important', 'Waited', '{"t":"Waited","a":[]}'::jsonb,
+             ${NOW}::timestamptz - (i + 10) * interval '1 minute', 'open', true, ${NOW}, ${NOW}
+        FROM generate_series(1, 1000) AS i`.execute(db());
+    await solvedOffline(1000);
+    let book = await alertBook(db(), superAdmin, "SE", NOW);
+    expect(book.alerts).toHaveLength(2000);
+    expect((book as { alertsMore?: unknown }).alertsMore).toBeUndefined();
+    // One more open other, a Critical one: it is kept (Critical first), the oldest Important is left out.
+    await alert({ id: "car_issue:crit", kind: "long_wait", level: "critical", since: ago(9000) });
+    book = await alertBook(db(), superAdmin, "SE", NOW);
+    expect(ids(book.alerts as Live[])).toContain("car_issue:crit");
+    expect(ids(book.alerts as Live[])).not.toContain("long_wait:t1000");
+    expect((book as { alertsMore?: unknown }).alertsMore).toEqual({ open: true, solved: false });
   });
 });
 
@@ -152,6 +193,7 @@ describe("S7: only solved alerts are capped, the newest kept", () => {
     expect(offline).toContain("auto_offline:SE:999");
     expect(offline).not.toContain("auto_offline:SE:1000");
     expect(offline).not.toContain("auto_offline:SE:1100");
+    expect((await alertBook(db(), superAdmin, "SE", NOW) as { alertsMore?: unknown }).alertsMore).toEqual({ open: false, solved: true });
   });
 
   it("under the cap nothing changes: every open and solved alert is returned with the same fields", async () => {
@@ -242,5 +284,14 @@ describe("S7 N1: an alert that changes state while the book is read appears exac
     expect(list).toHaveLength(5);
     const next = await read();
     expect(next[0]).toMatchObject({ alertId: "sos:inc_reopen", state: "open" });
+  });
+});
+
+describe("MF3 (v0.18.131): the server caps equal the contract", () => {
+  it("openOtherCap and solvedCap", async () => {
+    const { contract } = await import("../../src/contract/contract.js");
+    const ll = (contract as unknown as { alertDesk: { serverDetection: { liveList: { openOtherCap: number; solvedCap: number } } } }).alertDesk.serverDetection.liveList;
+    expect(OPEN_OTHER_ALERTS_CAP).toBe(ll.openOtherCap);
+    expect(SOLVED_ALERTS_CAP).toBe(ll.solvedCap);
   });
 });
