@@ -51,7 +51,7 @@ describe("requesting a code", () => {
     const res = await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider", locale: "sv" }, { "x-request-id": "req-otp-1" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body).toEqual({ requestId: "req-otp-1", sessionId: expect.stringMatching(/^otp_[0-9A-Z]{26}$/), expiresAt: new Date(clock.now.getTime() + 300_000).toISOString(), retryAfterSeconds: 30 });
+    expect(body).toEqual({ requestId: "req-otp-1", sessionId: expect.stringMatching(/^otp_[0-9A-Z]{26}$/), expiresAt: new Date(clock.now.getTime() + 300_000).toISOString(), retryAfterSeconds: 30, codeLength: 4 });
   });
 
   it("any other number is 403 forbidden, sign_in_restricted (no SMS in the test week)", async () => {

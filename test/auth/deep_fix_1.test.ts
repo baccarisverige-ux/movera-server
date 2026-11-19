@@ -174,7 +174,9 @@ describe("phone and e-mail change by code (owner 2026-11-02, checker round)", ()
     await signed(TEST_PHONES[2]!, "driver"); // a driver account on that number
     const start = await change(me.accessToken, "phone/change", { phone: TEST_PHONES[2]! });
     expect(start.statusCode).toBe(200);
-    expect(Object.keys(start.json()).sort()).toEqual(["expiresAt", "requestId", "retryAfterSeconds", "sessionId"]);
+    // v0.18.135: the answer also says how many digits the code has (4 for a test number), as a real start does.
+    expect(Object.keys(start.json()).sort()).toEqual(["codeLength", "expiresAt", "requestId", "retryAfterSeconds", "sessionId"]);
+    expect(start.json().codeLength).toBe(4);
     expect((await change(me.accessToken, "phone/verify", { phone: TEST_PHONES[2]!, sessionId: start.json().sessionId, code: TEST_CODE })).json()).toMatchObject({ reason: "invalid_otp_session" });
   });
 
