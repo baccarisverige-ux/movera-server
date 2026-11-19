@@ -207,4 +207,26 @@ describe("GET /driver/stream (v0.18.122, one live connection per driver phone)",
     await database.db.updateTable("config_live").set({ document: JSON.stringify({ ...driverDoc, realtime: { oneStream: true } }) }).where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
     expect((await call(app, "GET", "/driver/config?zoneId=Z001", headers)).json().realtime).toEqual({ oneStream: true });
   });
+
+  it("L20 fix (Test Lab 44513034674): the app's exact reconnect, ?after=<seq>.<live - 1>&zoneId=Z001 plus the same Last-Event-ID, gets config_published at once", async () => {
+    const { headers, offer } = await driverWith(TEST_PHONES[0]!);
+    await publishDriverDoc(66);
+    const live = (await call(app, "GET", "/driver/config?zoneId=Z001", headers)).json();
+    expect(live.version).toBe(66);
+    // First connection without an id (going online), as the app opens it.
+    const first = await listen("/driver/stream?zoneId=Z001", headers);
+    expect(await until(() => first.cursors.length === 1)).toBe(true);
+    const [seq, version] = first.cursors[0]!.split(".");
+    expect(version).toBe("66");
+    await offer(Number(seq) + 1);
+    expect(await until(() => first.events.length === 1)).toBe(true);
+    first.close();
+    // Reconnect exactly as the Test Lab run did: offer half kept, config half one lower, in both ?after and the header.
+    const cursor = `${Number(seq) + 1}.65`;
+    const again = await listen(`/driver/stream?after=${cursor}&zoneId=Z001`, { ...headers, "last-event-id": cursor });
+    expect(again.status).toBe(200);
+    expect(await until(() => again.events.length >= 1, 2000)).toBe(true);
+    expect(again.events[0]).toMatchObject({ id: `${Number(seq) + 1}.66`, data: { kind: "config_published", doc: "driver_app_config", zoneId: "Z001", version: 66 } });
+    again.close();
+  });
 });
