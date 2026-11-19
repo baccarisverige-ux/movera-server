@@ -99,7 +99,7 @@ describe("nothing changes until BOTH the keys and the country switch are there",
   });
 
   it("only a MOBILE number of the country can get an SMS (the apps' own rule): a landline, premium or wrong-length number is sign_in_restricted", async () => {
-    for (const phone of ["+4681234567", "+46900123456", "+467012345", "+4670123456789", "+33123456789", "+33899123456"]) {
+    for (const phone of ["+4681234567", "+46900123456", "+467012345", "+4670123456789", "+46771234567", "+46751234567", "+46741234567", "+46711234567", "+46781234567", "+33123456789", "+33899123456"]) {
       const res = await request(phone);
       expect(res.statusCode, phone).toBe(403);
       expect(res.json().reason, phone).toBe("sign_in_restricted");
@@ -148,6 +148,13 @@ describe("a real number with the keys and the switch on", () => {
     expect(replay.json().reason).toBe("invalid_otp_session");
     const row = (await outbox(phone))[0]!;
     expect(row).toMatchObject({ kind: "sign_in_code", status: "sent", provider: "fake", provider_ref: "fake-ref" });
+  });
+
+  it("every Swedish mobile range (70, 72, 73, 76, 79) can sign in", async () => {
+    for (const phone of ["+46700000017", "+46720000017", "+46730000017", "+46760000017", "+46790000017"]) {
+      expect((await request(phone)).statusCode, phone).toBe(200);
+      expect(sms.sent.at(-1)!.to).toBe(phone);
+    }
   });
 
   it("the test code never signs a real number in", async () => {
@@ -403,12 +410,15 @@ describe("the daily SMS limit per country (cost guard)", () => {
     expect((await systemAlerts()).filter((a) => a.state === "open")).toEqual([]);
   });
 
-  it("an SMS the company did not answer in time counts (it may have gone out and been billed), and so does a row left 'queued' by a crash; only a refusal is free", async () => {
+  it("an SMS the company did not answer, or answered with a server error, counts (it may have gone out and been billed), and so does a row left 'queued' by a crash; only a refusal is free", async () => {
     await setSmsSignIn(database.db, "SE", { enabled: true, dailyCap: 10 }, clock.now);
     sms.next = { accepted: false };
     for (let i = 0; i < 6; i++) expect((await request(realSE())).json().reason).toBe("sms_not_sent");
     sms.next = "throw";
-    for (let i = 0; i < 2; i++) expect((await request(realSE())).json().reason).toBe("sms_not_sent");
+    expect((await request(realSE())).json().reason).toBe("sms_not_sent");
+    // A server error of the company (it may have taken the SMS before it failed) counts too.
+    sms.next = { accepted: false, status: 502 };
+    expect((await request(realSE())).json().reason).toBe("sms_not_sent");
     // A send the server never finished (it stopped between saving the code and handing the SMS over).
     for (let i = 0; i < 2; i++) await database.db.insertInto("sms_outbox").values({ sms_id: `sms_crash_${i}_${clock.now.getTime()}`, phone: realSE(), text: "x", kind: "sign_in_code", status: "queued", provider: "fake", created_at: clock.now }).execute();
     sms.next = { accepted: true };
@@ -425,9 +435,9 @@ describe("the daily SMS limit per country (cost guard)", () => {
     expect((await request(realSE())).statusCode).toBe(200);
   });
 
-  it("a failed SMS is not counted; parallel requests cannot pass the limit together", async () => {
+  it("a refused SMS is not counted; parallel requests cannot pass the limit together", async () => {
     await setSmsSignIn(database.db, "SE", { enabled: true, dailyCap: 10 }, clock.now);
-    sms.next = { accepted: false, status: 500 };
+    sms.next = { accepted: false, status: 403 };
     for (let i = 0; i < 12; i++) expect((await request(realSE())).statusCode).toBe(503);
     sms.next = { accepted: true };
     sms.sent.length = 0;

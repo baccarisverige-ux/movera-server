@@ -81,8 +81,8 @@ export const SMS_NO_ANSWER = "no_answer";
 /**
  * The cost guard's count: sign-in SMS to this country's numbers handed to the SMS company in the last 24 h, and when
  * the oldest of them was made. Counted: accepted (`sent`), still being sent (`queued`, also a row left by a crash),
- * and a send the company did not answer in time (`failed` / no_answer: it may still have sent and billed it). Only a
- * send the company refused (an HTTP answer that is not 2xx) is free and not counted. Fail closed.
+ * and a send the company did not answer or answered with a server error (`failed` with no_answer or http_5xx: it may
+ * still have sent and billed it). Only a send the company refused (a 4xx answer) is free and not counted. Fail closed.
  */
 export async function signInSmsLastDay(ex: Executor, country: string, now: Date): Promise<{ count: number; oldest: Date | null }> {
   const prefix = callingCodeOf(country);
@@ -91,7 +91,7 @@ export async function signInSmsLastDay(ex: Executor, country: string, now: Date)
     .selectFrom("sms_outbox")
     .select((eb) => [eb.fn.countAll<string>().as("n"), eb.fn.min("created_at").as("oldest")])
     .where("kind", "=", SIGN_IN_SMS_KIND)
-    .where((eb) => eb.or([eb("status", "in", ["queued", "sent"]), eb.and([eb("status", "=", "failed"), eb("error", "=", SMS_NO_ANSWER)])]))
+    .where((eb) => eb.or([eb("status", "in", ["queued", "sent"]), eb.and([eb("status", "=", "failed"), eb.or([eb("error", "=", SMS_NO_ANSWER), eb("error", "like", "http\\_5__")])])]))
     .where("created_at", ">", new Date(now.getTime() - DAY_MS))
     .where("phone", "like", `${prefix.replace(/[%_\\]/g, "")}%`)
     .executeTakeFirstOrThrow();
