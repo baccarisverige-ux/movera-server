@@ -408,7 +408,9 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
   } else if (fee && fee.status === "paid") {
     // v0.18.136 (money review 4): the part paid by card goes back by card, never also into the wallet: those payments
     // are flagged paidTwice (overpaid = what they took off) for the admin's Refund; the wallet gets the rest only.
-    const byCard = (await cardPaidOfFees(trx, [fee.trip_id])).get(fee.trip_id) ?? 0;
+    // Review of 2c918ac6 (1): only the succeeded payments go back by card (flagged); what a refunded or refund-pending
+    // payment settled was not given back, so it goes to the wallet with the rest.
+    const byCard = (await cardPaidOfFees(trx, [fee.trip_id], undefined, ["succeeded"])).get(fee.trip_id) ?? 0;
     await flagCardPaymentsForRefund(trx, fee.trip_id);
     const toWallet = Math.max(0, Number(fee.amount_minor) - byCard);
     if (toWallet > 0) await creditWallet(trx, trip.rider_id, { amountMinor: toWallet, currency: fee.currency }, trip.trip_id, now);

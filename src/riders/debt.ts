@@ -251,10 +251,10 @@ export async function lockRiderRow(trx: Trx, riderId: string): Promise<void> {
 }
 
 /** v0.18.136: per fee, what succeeded card payments took off the debt (amount − overpaid; a refund does not undo it). */
-export async function cardPaidOfFees(ex: Executor, tripIds: readonly string[], except?: string): Promise<Map<string, number>> {
+export async function cardPaidOfFees(ex: Executor, tripIds: readonly string[], except?: string, statuses: ReadonlyArray<"succeeded" | "refund_pending" | "refunded"> = ["succeeded", "refund_pending", "refunded"]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (tripIds.length === 0) return out;
-  let q = ex.selectFrom("stripe_payments").select(["ref_id", "amount_minor", "overpaid_minor"]).where("purpose", "=", "rider_fee").where("ref_id", "in", [...new Set(tripIds)]).where("status", "in", ["succeeded", "refund_pending", "refunded"]);
+  let q = ex.selectFrom("stripe_payments").select(["ref_id", "amount_minor", "overpaid_minor"]).where("purpose", "=", "rider_fee").where("ref_id", "in", [...new Set(tripIds)]).where("status", "in", [...statuses]);
   if (except) q = q.where("payment_intent_id", "<>", except);
   for (const r of await q.execute()) out.set(r.ref_id, (out.get(r.ref_id) ?? 0) + Number(r.amount_minor) - Number(r.overpaid_minor));
   return out;

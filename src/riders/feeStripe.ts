@@ -136,7 +136,7 @@ export async function refundFeePayment(trx: Trx, stripe: StripeApi, who: Princip
   // Money review of 0203ebb8 (MUST 1): a payment that took part of a debt off gives back only its overpaid part; the part
   // that settled the fee stays paid. A full payment (or a fully paid-twice one) is refunded whole.
   const back = refundMinorOf(paid as Row);
-  const refund = await stripe.refund({ paymentIntentId: paid.payment_intent_id, idempotencyKey: `refund:${paid.payment_intent_id}`, ...(back < Number(paid.amount_minor) ? { amountMinor: back } : {}) });
+  const refund = await stripe.refund({ paymentIntentId: paid.payment_intent_id, idempotencyKey: `refund:${paid.payment_intent_id}:${back}`, ...(back < Number(paid.amount_minor) ? { amountMinor: back } : {}) });
   const row = await trx.updateTable("stripe_payments").set({ status: "refund_pending", refund_id: refund.id }).where("payment_intent_id", "=", paid.payment_intent_id).returningAll().executeTakeFirstOrThrow();
   await audit(trx, { adminId: who.subjectId, action: "rider.fee_stripe_refund", targetType: "rider", targetId: riderId, zoneId: trip!.zone_id, detail: { tripId, paymentIntentId: paid.payment_intent_id, amountMinor: back, currency: paid.currency, reason }, at: now });
   return feePaymentView(row as Row, null);
