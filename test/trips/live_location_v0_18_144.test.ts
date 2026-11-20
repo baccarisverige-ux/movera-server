@@ -144,6 +144,8 @@ describe("v0.18.144 live location", () => {
     expect(soon.statusCode).toBe(429);
     expect(soon.json().reason).toBe("live_location_too_often");
     expect((await share(tripId, rider, { sharing: false })).statusCode).toBe(200);
+    // Alternation: off does not reset the spacing, so on right after off is still refused.
+    expect((await share(tripId, rider, { sharing: true, lat: 59.3341, lng: 18.0632 })).statusCode).toBe(429);
     clock.now = new Date(clock.now.getTime() + 7000);
     expect((await share(tripId, rider, { sharing: true, lat: 59.3341, lng: 18.0632 })).statusCode).toBe(200);
   });
@@ -157,6 +159,9 @@ describe("v0.18.144 live location", () => {
     expect((await share(active, rider, { sharing: true })).statusCode).toBe(400);
     const stranger = (await signIn(app, TEST_PHONES[3]!, "rider")).headers;
     expect((await share(active, stranger, { sharing: false })).statusCode).toBe(404);
+    // The window ends at pickup: nothing is relayed once the rider is on board.
+    await database.db.updateTable("trips").set({ status: "rider_onboard" }).where("trip_id", "=", active).execute();
+    expect((await share(active, rider, { sharing: true, lat: 1, lng: 1 })).json().reason).toBe("live_location_not_active");
     await database.db.updateTable("trips").set({ status: "cancelled_by_rider" }).where("trip_id", "=", active).execute();
     expect((await share(active, rider, { sharing: true, lat: 1, lng: 1 })).json().reason).toBe("live_location_not_active");
   });
@@ -172,9 +177,13 @@ describe("v0.18.144 live location", () => {
     const bad = await call(app, "PUT", "/admin/config/rider_app_config", admin.headers, { expectedVersion: draft.version, zoneId: "Z001", document: { ...draft.document, liveLocation: { share: "yes" } } });
     expect(bad.statusCode).toBe(400);
     expect(bad.json().reason).toBe("invalid_document");
-    const doc = { ...sample("rider_app_config"), liveLocation: { share: false, adjustPickupMeters: 40, sendEverySeconds: 6 } };
+    const zero = await call(app, "PUT", "/admin/config/rider_app_config", admin.headers, { expectedVersion: draft.version, zoneId: "Z001", document: { ...draft.document, liveLocation: { share: false, adjustPickupMeters: 5 } } });
+    expect(zero.json().reason, "5 m is neither 0 (off) nor 10-500").toBe("invalid_document");
+    const doc = { ...sample("rider_app_config"), liveLocation: { share: false, adjustPickupMeters: 0, sendEverySeconds: 6 } };
     await database.db.updateTable("config_live").set({ document: JSON.stringify(doc), version: 2 }).where("doc", "=", "rider_app_config").where("zone_id", "=", "Z001").execute();
     const { tripId } = await accepted();
+    const served = (await call(app, "GET", "/rider/config?zoneId=Z001", rider)).json();
+    expect(served.document?.liveLocation ?? served.liveLocation, "0 = the banner is off").toMatchObject({ adjustPickupMeters: 0 });
     const off = await share(tripId, rider, { sharing: true, lat: 59.3341, lng: 18.0632 });
     expect(off.statusCode).toBe(409);
     expect(off.json().reason).toBe("live_location_off");

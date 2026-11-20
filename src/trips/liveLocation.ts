@@ -2,7 +2,7 @@ import { sql } from "kysely";
 import type { Db } from "../db/db.js";
 import { liveDocument } from "../config/service.js";
 import { ApiError } from "../http/errors.js";
-import { DRIVER_ASSIGNED, TERMINAL, type TripStatus } from "../rules/transitions.js";
+import { DRIVER_ASSIGNED, RIDER_ONBOARD, TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { readOwnTrip } from "./commands.js";
 
 /**
@@ -28,7 +28,7 @@ export function liveLocationSetting(document: Doc | null | undefined): LiveLocat
   const own = isObject(document?.["liveLocation"]) ? (document["liveLocation"] as Doc) : {};
   return {
     share: typeof own["share"] === "boolean" ? own["share"] : LIVE_LOCATION_DEFAULTS.share,
-    adjustPickupMeters: intIn(own["adjustPickupMeters"], 10, 500) ? own["adjustPickupMeters"] : LIVE_LOCATION_DEFAULTS.adjustPickupMeters,
+    adjustPickupMeters: own["adjustPickupMeters"] === 0 || intIn(own["adjustPickupMeters"], 10, 500) ? (own["adjustPickupMeters"] as number) : LIVE_LOCATION_DEFAULTS.adjustPickupMeters,
     sendEverySeconds: intIn(own["sendEverySeconds"], 5, 10) ? own["sendEverySeconds"] : LIVE_LOCATION_DEFAULTS.sendEverySeconds,
   };
 }
@@ -40,7 +40,7 @@ export function liveLocationProblem(document: unknown): string | null {
   if (!isObject(own)) return "liveLocation must be an object { share, adjustPickupMeters, sendEverySeconds }";
   for (const key of Object.keys(own)) if (!["share", "adjustPickupMeters", "sendEverySeconds"].includes(key)) return `liveLocation.${key} is not a field`;
   if ("share" in own && typeof own["share"] !== "boolean") return "liveLocation.share must be true or false";
-  if ("adjustPickupMeters" in own && !intIn(own["adjustPickupMeters"], 10, 500)) return "liveLocation.adjustPickupMeters must be a whole number 10-500";
+  if ("adjustPickupMeters" in own && own["adjustPickupMeters"] !== 0 && !intIn(own["adjustPickupMeters"], 10, 500)) return "liveLocation.adjustPickupMeters must be 0 (banner off) or a whole number 10-500";
   if ("sendEverySeconds" in own && !intIn(own["sendEverySeconds"], 5, 10)) return "liveLocation.sendEverySeconds must be a whole number 5-10";
   return null;
 }
@@ -84,14 +84,15 @@ export async function shareLiveLocation(
   }
   const trip = await readOwnTrip(db, tripId, who);
   const status = trip.status as TripStatus;
-  if (!DRIVER_ASSIGNED.has(status) || TERMINAL.has(status)) {
-    throw new ApiError("conflict", "Location sharing is only during an active ride.", { reason: "live_location_not_active" });
+  // contract.json#liveLocation.window: accept until the rider is on board (pickup); nothing is relayed after pickup.
+  if (!DRIVER_ASSIGNED.has(status) || RIDER_ONBOARD.has(status) || TERMINAL.has(status)) {
+    throw new ApiError("conflict", "Location sharing is only from accept until pickup.", { reason: "live_location_not_active" });
   }
   const setting = liveLocationSetting((await liveDocument<Doc>(db, "rider_app_config", trip.zone_id))?.document);
   if (!setting.share) throw new ApiError("conflict", "Location sharing is off in this area.", { reason: "live_location_off" });
-  // Turning off always passes (so a stop is never refused); a point is spaced.
+  // Turning off always passes (so a stop is never refused); a point is spaced. A stop does not reset the spacing, so
+  // on / off / on cannot send points faster than sendEverySeconds.
   if (body.sharing) spacingCheck(`${tripId}\u0000${who.actor}`, now.getTime(), setting.sendEverySeconds);
-  else lastSend.delete(`${tripId}\u0000${who.actor}`);
   const frame: LiveLocationFrame = {
     tripId,
     side: who.actor,
