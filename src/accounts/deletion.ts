@@ -174,6 +174,17 @@ async function eraseOne(trx: Trx, a: Due, now: Date): Promise<Record<string, num
   await run("auth_provider_links", sql`DELETE FROM auth_provider_links WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
   await run("email_changes", sql`DELETE FROM email_changes WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
   await run("account_change_starts", sql`DELETE FROM account_change_starts WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
+  // Critical review gap 1: rows found by the number or the e-mail, not the id (sign-in codes, sent SMS, fleet
+  // invitations, the sign-in waiting list, outbound notices) go too.
+  const me = a.kind === "rider"
+    ? await trx.selectFrom("riders").select(["phone", "email"]).where("rider_id", "=", a.id).executeTakeFirstOrThrow()
+    : await trx.selectFrom("drivers").select(["phone", "email"]).where("driver_id", "=", a.id).executeTakeFirstOrThrow();
+  const addresses = [me.phone, ...(me.email ? [me.email] : [])];
+  await run("otp_sessions", sql`DELETE FROM otp_sessions WHERE phone = ${me.phone}`);
+  await run("sms_outbox", sql`DELETE FROM sms_outbox WHERE phone = ${me.phone}`);
+  await run("fleet_invitations", sql`DELETE FROM fleet_invitations WHERE phone = ${me.phone}`);
+  await run("sign_in_waitlist", sql`DELETE FROM sign_in_waitlist WHERE phone = ${me.phone}`);
+  await run("outbound_notices", sql`DELETE FROM outbound_notices WHERE to_address IN (${sql.join(addresses)})`);
   const placeholder = `erased-${a.id}`;
   if (a.kind === "rider") {
     await run("rider_places", sql`DELETE FROM rider_places WHERE rider_id = ${a.id}`);

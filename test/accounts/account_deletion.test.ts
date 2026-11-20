@@ -93,7 +93,14 @@ describe("account deletion (v0.18.134)", () => {
     expect(await eraseDueAccounts(database.db, clock.now)).toEqual({ due: 2, erased: 0 });
     expect((await database.db.selectFrom("riders").select("erased_at").where("rider_id", "=", sara).executeTakeFirstOrThrow()).erased_at).toBeNull();
     await eraseOn(true);
+    await sql`INSERT INTO sms_outbox (phone, body, kind, status, created_at) VALUES (${SARA}, 'code', 'otp', 'sent', now())`.execute(database.db).catch(() => undefined);
+    await sql`INSERT INTO outbound_notices (channel, to_address, kind, language, status, created_at) VALUES ('sms', ${SARA}, 'x', 'sv', 'sent', now())`.execute(database.db);
     expect(await eraseDueAccounts(database.db, clock.now)).toEqual({ due: 2, erased: 2 });
+    for (const table of ["otp_sessions", "sms_outbox", "fleet_invitations", "sign_in_waitlist", "outbound_notices"]) {
+      const col = table === "outbound_notices" ? "to_address" : "phone";
+      const n = (await sql<{ n: number }>`SELECT count(*)::int AS n FROM ${sql.table(table)} WHERE ${sql.ref(col)} IN (${SARA}, ${ALI})`.execute(database.db)).rows[0]!.n;
+      expect([table, n]).toEqual([table, 0]);
+    }
     const r = await database.db.selectFrom("riders").selectAll().where("rider_id", "=", sara).executeTakeFirstOrThrow();
     expect(r.erased_at?.toISOString()).toBe(clock.now.toISOString());
     expect(r.phone).not.toBe(SARA);
