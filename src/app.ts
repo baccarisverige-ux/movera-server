@@ -1,3 +1,4 @@
+import { configureSessionCache } from "./auth/sessionCache.js";
 import { pricingRoutes } from "./pricing/routes.js";
 import { jobsHeartbeat } from "./jobs/heartbeat.js";
 import { contentRoutes } from "./content/routes.js";
@@ -382,6 +383,9 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   // (SHED_*, its pool); without `shed` (tests, tools) both limits are 0 = never shed, but the gone-client checks still run.
   const stopShedding = registerLoadShedding(app, shed ?? { maxPoolWaiting: 0, maxLoopDelayMs: 0, poolWaiting: () => 0 });
   app.addHook("onClose", async () => stopShedding());
+  // S4c fix 3: the session check cache, only with a LISTEN hub (auth/sessionCache.ts).
+  const stopSessionCache = configureSessionCache(env.SESSION_CACHE_MS, hub);
+  app.addHook("onClose", async () => stopSessionCache());
 
   return app;
 }

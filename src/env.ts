@@ -215,6 +215,11 @@ const schema = z.object({
   /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
+  /**
+   * S4c fix 3 (src/auth/sessionCache.ts): a rider / driver session read active is not read again on this copy for this
+   * many ms (0: off). Used only with a LISTEN hub; every revoke reaches every copy at once by NOTIFY.
+   */
+  SESSION_CACHE_MS: z.coerce.number().int().min(0).max(30_000).default(5000),
   SHED_LOOP_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1000),
   /**
    * B1.9 (owner W1 Q73, 2026-11-11): a failed stream read (trip, offer, settings, admin live, dispatch, incident
