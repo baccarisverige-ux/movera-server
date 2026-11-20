@@ -7,6 +7,7 @@ import { KEPT_KEYS } from "../../src/config/keptKeys.js";
 import { KEPT_ON_RESTORE } from "../../src/config/service.js";
 import { askCountry, localMonthDay, PAY_REQUEST_BATCH, PAY_REQUEST_SCAN, payReference } from "../../src/drivers/payRequest.js";
 import { owedByDriver } from "../../src/drivers/owes.js";
+import { isPayLink } from "../../src/drivers/payRequestSetting.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { RECURRING_JOBS } from "../../src/jobs/heartbeat.js";
 import { ensureMaintenanceTimers, maintenanceHandlers } from "../../src/jobs/maintenance.js";
@@ -186,6 +187,15 @@ describe("driverPayRequest: the setting (country standard, off by default)", () 
       [{ enabled: true, dayOfMonth: 1, payLink: "https://sumup.com@evil.example/pay", minAmount: SEK(0) }, "pay_request_invalid"],
       [{ enabled: false, dayOfMonth: 1, payLink: "https://user:pw@pay.sumup.com/x", minAmount: null }, "pay_request_invalid"],
       [{ enabled: false, dayOfMonth: 1, payLink: "HTTPS://pay.sumup.com/x", minAmount: null }, "pay_request_invalid"],
+      // Re-review should-fix: printable ASCII only, no backslash (no hidden host, no look-alike letters).
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://evil.example\\@pay.sumup.com/", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u00adx", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u1680x", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u2003x", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u180ex", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u3000x", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\ud800x", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://p\u0430y.sumup.com/x", minAmount: null }, "pay_request_invalid"],
       [{ enabled: true, dayOfMonth: 29, payLink: LINK, minAmount: SEK(0) }, "pay_request_invalid"],
       [{ enabled: true, dayOfMonth: 0, payLink: LINK, minAmount: SEK(0) }, "pay_request_invalid"],
       [{ enabled: true, dayOfMonth: 1.5, payLink: LINK, minAmount: SEK(0) }, "pay_request_invalid"],
@@ -196,6 +206,11 @@ describe("driverPayRequest: the setting (country standard, off by default)", () 
       const res = await put(setting);
       expect([res.statusCode, res.json().reason], JSON.stringify(setting)).toEqual([400, reason]);
     }
+  });
+
+  it("ordinary payment links are accepted as they are", () => {
+    for (const link of [LINK, "https://pay.sumup.com/b2c/Q1W2E3R4", "https://sumup.se/pay/movera?ref=1&x=%20y#top", "https://xn--mvera-jua.example/pay", "https://pay.example:8443/a/b", `https://pay.sumup.com/${"x".repeat(478)}`]) expect(isPayLink(link), link).toBe(true);
+    expect(isPayLink(`https://pay.sumup.com/${"x".repeat(479)}`)).toBe(false);
   });
 
   it("a valid setting saves (on, and off with nothing set); the contract default is off with no link", async () => {

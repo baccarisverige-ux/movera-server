@@ -12,22 +12,17 @@ export type PayRequestSetting = { enabled: boolean; dayOfMonth: number; payLink:
 export const DEFAULT_PAY_REQUEST: PayRequestSetting = (contract as unknown as { configDefaults: { driverPayRequest?: PayRequestSetting } }).configDefaults.driverPayRequest ?? { enabled: false, dayOfMonth: 1, payLink: "", minAmount: null };
 
 export const PAY_LINK_MAX = 500;
-/** Control characters, white space and invisible / direction-changing characters: never part of a payment link. */
-const badLinkChar = (c: number): boolean =>
-  c <= 0x20 || (c >= 0x7f && c <= 0xa0) || (c >= 0x200b && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c === 0xfeff;
-const hasBadLinkChar = (value: string): boolean => {
-  for (let i = 0; i < value.length; i++) if (badLinkChar(value.charCodeAt(i))) return true;
-  return false;
-};
-
 /**
- * A payment link the app may open as it is: https only, at most PAY_LINK_MAX characters, no white space, control or
- * invisible characters, a host, and no "user:password@" part (so what the admin reads is where the link goes).
+ * A payment link the app may open as it is: "https://" then printable ASCII only (no white space, control, invisible
+ * or non-ASCII character, so no look-alike letters) and no backslash (browsers read "\\" as "/": "https://evil.example\\@pay…"
+ * would go to evil.example); at most PAY_LINK_MAX characters; it parses; and it has no "user:password@" part, so the
+ * host the admin reads is where the link goes.
  */
+const PAY_LINK_SHAPE = /^https:\/\/[\x21-\x5B\x5D-\x7E]+$/;
 export const isPayLink = (value: unknown): value is string => {
-  if (typeof value !== "string" || value.length > PAY_LINK_MAX || !value.startsWith("https://") || hasBadLinkChar(value) || !URL.canParse(value)) return false;
+  if (typeof value !== "string" || value.length > PAY_LINK_MAX || !PAY_LINK_SHAPE.test(value) || !URL.canParse(value)) return false;
   const url = new URL(value);
-  return url.protocol === "https:" && url.hostname !== "" && url.username === "" && url.password === "";
+  return url.protocol === "https:" && url.username === "" && url.password === "";
 };
 export const isDay = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 28;
 export const isAmount = (value: unknown, currency: string): value is Money =>
