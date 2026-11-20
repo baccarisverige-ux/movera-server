@@ -162,6 +162,11 @@ export async function routeForQuote(ex: Executor, router: Router, riderId: strin
   // a setting changed in between only costs one more try. Without this a request with 2,000 stops was routed with all
   // its points before its 400 too_many_stops (the schema has no upper limit on stops).
   if ((!searching && !(await routeChangeSettings(ex, trip.zone_id)).on) || req.stops.length > (await maxStopsOf(ex, trip.zone_id))) return null;
+  // v0.18.143 (reviewer S1): a pickup in no open zone is not routed; step 2 answers 403 service_not_available.
+  if (req.pickup !== undefined) {
+    const zone = await zoneAt(ex, req.pickup);
+    if (zone === null || !zone.open) return null;
+  }
   const points = newRoutePoints(trip, req);
   // The price needs the distance and the time only, never the road's shape.
   return { key: legKey(points), leg: await router.route(points, { shape: false }) };

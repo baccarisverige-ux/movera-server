@@ -182,4 +182,24 @@ describe("change route while searching (v0.18.143)", () => {
     expect((await sim.db.selectFrom("offers").select("status").where("offer_id", "=", offer!["offerId"]).executeTakeFirstOrThrow()).status).toBe("open");
     expect((await sim.db.selectFrom("route_quotes").select("used_at").where("route_quote_id", "=", q.body["routeQuoteId"]).executeTakeFirstOrThrow()).used_at).toBeNull();
   });
+  it("PATCH side: a price with a new pickup is refused for a booked (scheduled) ride; nothing changes (S3)", async () => {
+    const at = new Date(sim.clock.now.getTime() + 2 * 3600_000).toISOString();
+    const quotes = await rider.quote({ categoryIds: ["economy"], kind: "scheduled", scheduledAt: at });
+    const made = await rider.post("/trips", { quoteId: quotes.body["quotes"][0].quoteId, categoryId: "economy", pickup: PLACES.sergels, dropoff: PLACES.medborgar, stops: [], kind: "scheduled", scheduledAt: at, paymentMethod: "cash" });
+    expect(made.status, JSON.stringify(made.body)).toBe(201);
+    const tripId = made.body["tripId"] as string;
+    const trip = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    await sim.db.insertInto("route_quotes").values({
+      route_quote_id: "rtq_s3_scheduled", trip_id: tripId, trip_version: trip.version, base_change_id: null,
+      dropoff: JSON.stringify(trip.dropoff), stops: JSON.stringify([]), pickup: JSON.stringify(FAR),
+      distance_meters: 1000, duration_seconds: 120, currency: trip.currency, total_minor: Number(trip.fare_minor), difference_minor: 0,
+      fare_lines: JSON.stringify(trip.fare_lines), driver_earnings_minor: Number(trip.driver_earnings_minor ?? 0), leaves_fixed_price: false,
+      expires_at: new Date(sim.clock.now.getTime() + 300_000), created_at: sim.clock.now,
+    }).execute();
+    const res = await rider.send("PATCH", `/trips/${tripId}`, { expectedVersion: trip.version, routeQuoteId: "rtq_s3_scheduled" });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    const after = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect([after.status, after.version]).toEqual(["requested", trip.version]);
+    expect(after.pickup).toMatchObject({ lat: PLACES.sergels.lat });
+  });
 });
