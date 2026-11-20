@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { checkSmsSignIn } from "../../src/auth/smsSignIn.js";
-import { deviceBinding, type DeviceVerifier } from "../../src/auth/deviceCheck.js";
+import { BREAKER_ERRORS, FAILED_CHECKS_PER_ADDRESS_PER_HOUR, canonicalToken, deviceBinding, deviceTokenHash, resetDeviceCheckState, resetFailedChecks, type DeviceVerifier } from "../../src/auth/deviceCheck.js";
 import { TEST_PHONES, seedTestPhones } from "../../src/auth/testPhones.js";
 import { contract } from "../../src/contract/contract.js";
 import { readEnv } from "../../src/env.js";
@@ -67,6 +67,8 @@ beforeEach(async () => {
   sms.sent.length = 0;
   android.calls.length = 0;
   android.answer = "ok";
+  resetDeviceCheckState();
+  resetFailedChecks();
   await setSE({ enabled: true });
 });
 
@@ -183,5 +185,50 @@ describe("real-phone check (CountryRules.smsSignIn.requireDeviceCheck)", () => {
     expect(() => checkSmsSignIn("standard", { smsSignIn: { enabled: true, requireDeviceCheck: true } })).not.toThrow();
     expect(() => checkSmsSignIn("standard", { smsSignIn: { requireDeviceCheck: "yes" } })).toThrow(/requireDeviceCheck/);
     expect(() => checkSmsSignIn("zone", { smsSignIn: { requireDeviceCheck: true } })).toThrow();
+  });
+
+  it("review MUST 1: one attestation has one spelling; a non-canonical token is refused before any call", () => {
+    expect(canonicalToken({ platform: "ios", token: "QUJD" })?.toString()).toBe("ABC");
+    expect(canonicalToken({ platform: "ios", token: "QUJD\n" })).toBeNull();
+    expect(canonicalToken({ platform: "ios", token: "QUJ" })).toBeNull();
+    expect(canonicalToken({ platform: "ios", token: "QU-D" })).toBeNull();
+    expect(canonicalToken({ platform: "android", token: "eyJh.b-c_d.e" })).not.toBeNull();
+    expect(canonicalToken({ platform: "android", token: "eyJh b" })).toBeNull();
+    expect(deviceTokenHash({ platform: "ios", token: "QUJD" })).not.toBe(deviceTokenHash({ platform: "android", token: "QUJD" }));
+  });
+
+  it("review MUST 2: no Google call when the cheap guards already refuse (switch off, install limit full, token used, bad shape)", async () => {
+    await setSE({ enabled: false, requireDeviceCheck: true });
+    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "x1" } })).statusCode).toBe(403);
+    await setSE({ enabled: true, requireDeviceCheck: true }, { codesPerDevicePerHour: 1 });
+    const id = install();
+    expect((await request({ phone: realSE(), installId: id, deviceCheck: { platform: "android", token: "x2" } })).statusCode).toBe(200);
+    expect(android.calls).toHaveLength(1);
+    expect((await request({ phone: realSE(), installId: id, deviceCheck: { platform: "android", token: "x3" } })).statusCode).toBe(429);
+    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "x2" } })).json()).toMatchObject({ reason: "device_check_failed" });
+    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "bad token" } })).json()).toMatchObject({ reason: "device_check_failed" });
+    expect(android.calls).toHaveLength(1);
+  });
+
+  it("review MUST 2: the circuit breaker opens after errors in a row and then fails without calling", async () => {
+    await setSE({ enabled: true, requireDeviceCheck: true });
+    android.answer = "throw";
+    for (let k = 0; k < BREAKER_ERRORS; k++) await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: `e${k}` } });
+    expect(android.calls).toHaveLength(BREAKER_ERRORS);
+    android.answer = "ok";
+    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "after" } })).statusCode).toBe(403);
+    expect(android.calls).toHaveLength(BREAKER_ERRORS);
+  });
+
+  it("review SHOULD 5: failed checks from one address hit a ceiling; then no more calls from it", async () => {
+    await setSE({ enabled: true, requireDeviceCheck: true });
+    android.answer = "bad";
+    const ip = "203.0.113.77";
+    for (let k = 0; k < FAILED_CHECKS_PER_ADDRESS_PER_HOUR; k++) await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: `f${k}` } }, ip);
+    const before = android.calls.length;
+    android.answer = "ok";
+    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "late" } }, ip)).statusCode).toBe(403);
+    expect(android.calls.length).toBe(before);
+    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "other" } })).statusCode).toBe(200);
   });
 });

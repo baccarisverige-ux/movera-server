@@ -18,7 +18,7 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 import type { CodeSmsSender } from "../sms/elks.js";
 import { pokeAlerts } from "../alerts/detector.js";
-import { deviceBinding, deviceTokenHash, runDeviceCheck, type DeviceCheckInput, type DeviceCheckOutcome, type DeviceVerifiers } from "./deviceCheck.js";
+import { deviceBinding, deviceTokenHash, failedChecksFrom, FAILED_CHECKS_PER_ADDRESS_PER_HOUR, noteFailedCheck, runDeviceCheck, type DeviceCheckInput, type DeviceCheckOutcome, type DeviceVerifiers } from "./deviceCheck.js";
 import { DAY_MS, SIGN_IN_SMS_KIND, SMS_CODE_LENGTH, SMS_NO_ANSWER, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
 
 /**
@@ -206,13 +206,27 @@ function deviceCheckFailed(deps: AuthDeps, why: string, platform: string | undef
  * v0.18.138: runs the device check only when it can matter: a real number of a served country with an SMS sender, whose
  * country has requireDeviceCheck on. undefined = not run (not needed, or nothing to check).
  */
-async function preDeviceCheck(deps: AuthDeps, input: { phone: string; app: App; installId?: string | undefined; deviceCheck?: DeviceCheckInput | undefined }): Promise<DeviceCheckOutcome | undefined> {
+async function preDeviceCheck(deps: AuthDeps, input: { phone: string; app: App; installId?: string | undefined; deviceCheck?: DeviceCheckInput | undefined }, client: ClientInfo, now: Date): Promise<DeviceCheckOutcome | undefined> {
   if (input.deviceCheck === undefined || deps.signInSms === undefined) return undefined;
   const country = smsCountryOf(input.phone);
-  if (country === null || !(await smsSignInFor(deps.db, country)).requireDeviceCheck) return undefined;
+  if (country === null) return undefined;
+  const setting = await smsSignInFor(deps.db, country);
+  // Review MUST 2: the cheap guards first, so a refused request never costs a Google call. All of them are checked
+  // again inside the transaction (this read takes no lock).
+  if (!setting.enabled || !setting.requireDeviceCheck) return undefined;
   if (deps.testSignInEnabled && (await isTestPhone(deps.db, input.phone, input.app))) return undefined;
   if (input.installId === undefined) return { ok: false, why: "no_install_id" };
-  return runDeviceCheck(deps.deviceVerifiers ?? {}, input.deviceCheck, deviceBinding(input.app, input.phone, input.installId));
+  const hash = deviceTokenHash(input.deviceCheck);
+  if (hash === null) return { ok: false, why: "shape" };
+  const limits = await countryLimitsFor(deps.db, country);
+  const fromInstall = await deps.db.selectFrom("otp_sessions").select((eb) => eb.fn.countAll<string>().as("n")).where("install_id", "=", input.installId).where("created_at", ">", new Date(now.getTime() - 3_600_000)).executeTakeFirstOrThrow();
+  if (Number(fromInstall.n) >= limits.codesPerDevicePerHour) return undefined; // the transaction answers 429
+  const used = await deps.db.selectFrom("otp_sessions").select("session_id").where("device_check_sha256", "=", hash).executeTakeFirst();
+  if (used !== undefined) return { ok: false, why: "used" };
+  if (failedChecksFrom(client.ip, now.getTime()) >= FAILED_CHECKS_PER_ADDRESS_PER_HOUR) return { ok: false, why: "address_ceiling" };
+  const outcome = await runDeviceCheck(deps.deviceVerifiers ?? {}, input.deviceCheck, deviceBinding(input.app, input.phone, input.installId));
+  if (!outcome.ok) noteFailedCheck(client.ip, now.getTime());
+  return outcome;
 }
 
 /** Safety cap for fastTestSignIn: codes per test number per minute. */
@@ -236,7 +250,7 @@ export async function requestOtp(
   // v0.18.138 (contract.json#deviceCheck.check): the real-phone check talks to Google, so it runs BEFORE the
   // transaction (no lock or connection waits on it), and only where the country asks for it. Its result is applied
   // inside, after the limits (deviceCheck.order); a switch turned on meanwhile finds no result and refuses (fail closed).
-  const deviceOutcome = await preDeviceCheck(deps, input);
+  const deviceOutcome = await preDeviceCheck(deps, input, client, now);
 
   let capHit = false;
   const started = await deps.db.transaction().execute(async (trx): Promise<{ challenge: OtpChallenge; sms?: PendingSms }> => {
@@ -322,6 +336,7 @@ export async function requestOtp(
     if (!isTest && setting !== undefined && setting.requireDeviceCheck) {
       if (deviceOutcome === undefined || !deviceOutcome.ok || input.deviceCheck === undefined) throw deviceCheckFailed(deps, deviceOutcome === undefined ? "missing" : deviceOutcome.ok ? "missing" : deviceOutcome.why, input.deviceCheck?.platform);
       deviceTokenSha = deviceTokenHash(input.deviceCheck);
+      if (deviceTokenSha === null) throw deviceCheckFailed(deps, "shape", input.deviceCheck.platform);
       await sql`SELECT pg_advisory_xact_lock(hashtext(${`otp-check:${deviceTokenSha}`}))`.execute(trx);
       const used = await trx.selectFrom("otp_sessions").select("session_id").where("device_check_sha256", "=", deviceTokenSha).executeTakeFirst();
       if (used !== undefined) throw deviceCheckFailed(deps, "used", input.deviceCheck.platform);

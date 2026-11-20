@@ -83,7 +83,9 @@ async function phoneHasAccount(ex: Executor, phone: string): Promise<boolean> {
   const d = await ex.selectFrom("drivers").select("driver_id").where("phone", "=", phone).executeTakeFirst();
   return r !== undefined || d !== undefined;
 }
-export async function startPhoneChange(deps: AuthDeps, who: Who, phone: string, client: ClientInfo, now: Date) {
+/** v0.18.138 (review SHOULD 4, contract.json#deviceCheck.phoneChange): the same installId / deviceCheck as a sign-in. */
+export type PhoneChangeDevice = { installId?: string | undefined; deviceCheck?: { platform: "android" | "ios"; token: string; keyId?: string | undefined } | undefined };
+export async function startPhoneChange(deps: AuthDeps, who: Who, phone: string, client: ClientInfo, now: Date, device: PhoneChangeDevice = {}) {
   if (!PHONE.test(phone)) throw badRequest("Send the phone number in international form, e.g. +46701234567.", "invalid_phone");
   await checkStart(deps.db, who, "phone", now);
   if (await phoneHasAccount(deps.db, phone)) {
@@ -93,7 +95,7 @@ export async function startPhoneChange(deps: AuthDeps, who: Who, phone: string, 
     const codeLength = await silentSmsWait(deps, phone, who.actor);
     return { requestId: newId("otp"), sessionId: newId("otp", now.getTime()), expiresAt: new Date(now.getTime() + OTP.expiresSeconds * 1000).toISOString(), retryAfterSeconds: OTP.retryAfterSeconds, codeLength };
   }
-  return requestOtp(deps, { phone, app: who.actor, requestId: newId("otp") }, client);
+  return requestOtp(deps, { phone, app: who.actor, requestId: newId("otp"), installId: device.installId, deviceCheck: device.deviceCheck }, client);
 }
 
 export async function verifyPhoneChange(deps: AuthDeps, who: Who, input: { phone: string; sessionId: string; code: string }, now: Date) {

@@ -48,7 +48,19 @@ describe("Play Integrity verdict (Android)", () => {
     expect(calls[0]).toEqual({ url: "https://playintegrity.googleapis.com/v1/se.movera.rider:decodeIntegrityToken", body: JSON.stringify({ integrity_token: "tok" }), auth: "Bearer access-1" });
     const refused = playIntegrityVerifier({ tokens: { get: async () => "a" }, packages: ["se.movera.rider"], clock: () => now, fetchFn: async () => ({ status: 400, text: async () => "{}" }) });
     expect(await refused.verify({ token: "tok", binding })).toMatchObject({ ok: false, why: "decode" });
+    // Review SHOULD 6: Google's own trouble is told apart.
+    const busy = playIntegrityVerifier({ tokens: { get: async () => "a" }, packages: ["se.movera.rider"], clock: () => now, fetchFn: async () => ({ status: 429, text: async () => "{}" }) });
+    expect(await busy.verify({ token: "tok", binding })).toMatchObject({ why: "google_429" });
+    const down = playIntegrityVerifier({ tokens: { get: async () => "a" }, packages: ["se.movera.rider"], clock: () => now, fetchFn: async () => ({ status: 503, text: async () => "{}" }) });
+    expect(await down.verify({ token: "tok", binding })).toMatchObject({ why: "google_5xx" });
   });
+
+  it("the time-out aborts the verifier's call (AbortSignal)", async () => {
+    let aborted = false;
+    const slow = { verify: ({ signal }: { signal?: AbortSignal | undefined }) => new Promise<never>(() => signal?.addEventListener("abort", () => (aborted = true))) };
+    expect(await runDeviceCheck({ android: slow }, { platform: "android", token: "t" }, binding)).toEqual({ ok: false, why: "timeout" });
+    expect(aborted).toBe(true);
+  }, 10_000);
 
   it("no verifier for a platform (keys not set) is a failed check", async () => {
     expect(await runDeviceCheck({}, { platform: "android", token: "t" }, binding)).toEqual({ ok: false, why: "not_configured" });

@@ -90,8 +90,8 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
   // v0.18.14 (owner 2026-11-02): phone and e-mail change by code, for riders and drivers.
   app.post(`${API_PREFIX}/account/phone/change`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);
-    const body = parseBody(z.object({ phone: z.string() }), request.body);
-    return startPhoneChange(deps, who as never, body.phone, client(request), deps.clock?.() ?? new Date());
+    const body = parseBody(z.object({ phone: z.string(), installId: OtpRequestBody.shape.installId, deviceCheck: OtpRequestBody.shape.deviceCheck }), request.body);
+    return startPhoneChange(deps, who as never, body.phone, client(request), deps.clock?.() ?? new Date(), { installId: body.installId, deviceCheck: body.deviceCheck });
   });
   app.post(`${API_PREFIX}/account/phone/verify`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);

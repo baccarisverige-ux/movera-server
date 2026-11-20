@@ -21,7 +21,7 @@ export type DevicePlatform = "android" | "ios";
 export type DeviceCheckInput = { platform: DevicePlatform; token: string; keyId?: string | undefined };
 export type DeviceCheckOutcome = { ok: true } | { ok: false; why: string };
 export interface DeviceVerifier {
-  verify(input: { token: string; keyId?: string | undefined; binding: Buffer }): Promise<DeviceCheckOutcome>;
+  verify(input: { token: string; keyId?: string | undefined; binding: Buffer; signal?: AbortSignal | undefined }): Promise<DeviceCheckOutcome>;
 }
 export type DeviceVerifiers = Partial<Record<DevicePlatform, DeviceVerifier>>;
 
@@ -30,20 +30,82 @@ export function deviceBinding(app: string, phone: string, installId: string): Bu
   return createHash("sha256").update(`movera-sms-code|${app}|${phone}|${installId}`, "utf8").digest();
 }
 
-/** What otp_sessions keeps of a used token, so the same token is never good twice. */
-export const deviceTokenHash = (input: DeviceCheckInput): string => createHash("sha256").update(`${input.platform}|${input.token}`, "utf8").digest("hex");
+/** Play Integrity tokens are JWE compact text (base64url parts and dots); anything else is not a token. */
+const ANDROID_TOKEN = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]*)*$/;
+const STRICT_B64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-/** Runs one check with the contract's time-out; a missing verifier, a throw or a time-out is a failed check. */
-export async function runDeviceCheck(verifiers: DeviceVerifiers, input: DeviceCheckInput, binding: Buffer): Promise<DeviceCheckOutcome> {
+/**
+ * The canonical bytes of a token (review MUST 1): iPhone = the decoded attestation (strict base64 only, so one
+ * attestation has one spelling); Android = the JWE text (its charset only). null = not a well-formed token.
+ */
+export function canonicalToken(input: DeviceCheckInput): Buffer | null {
+  if (input.platform === "ios") {
+    if (!STRICT_B64.test(input.token)) return null;
+    const bytes = Buffer.from(input.token, "base64");
+    return bytes.length > 0 && bytes.toString("base64") === input.token ? bytes : null;
+  }
+  return ANDROID_TOKEN.test(input.token) ? Buffer.from(input.token, "ascii") : null;
+}
+
+/** What otp_sessions keeps of a used token (SHA-256 of its canonical bytes), so the same token is never good twice. */
+export function deviceTokenHash(input: DeviceCheckInput): string | null {
+  const bytes = canonicalToken(input);
+  return bytes === null ? null : createHash("sha256").update(input.platform).update("|").update(bytes).digest("hex");
+}
+
+/** Review MUST 2: at most this many checks at once per server copy; more fail at once (fail closed). */
+export const MAX_CHECKS_IN_FLIGHT = 20;
+/** Circuit breaker: after this many errors / time-outs in a row the checks fail at once for BREAKER_OPEN_MS. */
+export const BREAKER_ERRORS = 5;
+export const BREAKER_OPEN_MS = 30_000;
+const state = { inFlight: 0, errorsInRow: 0, openUntil: 0 };
+/** Tests only. */
+export const resetDeviceCheckState = () => Object.assign(state, { inFlight: 0, errorsInRow: 0, openUntil: 0 });
+
+/**
+ * Runs one check with the contract's time-out (an AbortSignal the verifier passes to its HTTP calls, so a slow Google
+ * call is really cut), a cap on checks in flight and a circuit breaker. A missing verifier, a throw, a time-out, a full
+ * cap or an open breaker is a failed check.
+ */
+export async function runDeviceCheck(verifiers: DeviceVerifiers, input: DeviceCheckInput, binding: Buffer, now: () => number = Date.now): Promise<DeviceCheckOutcome> {
   const verifier = verifiers[input.platform];
   if (verifier === undefined) return { ok: false, why: "not_configured" };
+  if (now() < state.openUntil) return { ok: false, why: "breaker_open" };
+  if (state.inFlight >= MAX_CHECKS_IN_FLIGHT) return { ok: false, why: "busy" };
+  state.inFlight++;
+  const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<DeviceCheckOutcome>((resolve) => (timer = setTimeout(() => resolve({ ok: false, why: "timeout" }), DEVICE_CHECK.timeoutSeconds * 1000)));
+  const timeout = new Promise<DeviceCheckOutcome>((resolve) => (timer = setTimeout(() => (controller.abort(), resolve({ ok: false, why: "timeout" })), DEVICE_CHECK.timeoutSeconds * 1000)));
   try {
-    return await Promise.race([verifier.verify({ token: input.token, keyId: input.keyId, binding }).catch(() => ({ ok: false, why: "error" }) as DeviceCheckOutcome), timeout]);
+    const outcome = await Promise.race([verifier.verify({ token: input.token, keyId: input.keyId, binding, signal: controller.signal }).catch(() => ({ ok: false, why: "error" }) as DeviceCheckOutcome), timeout]);
+    const failedService = !outcome.ok && ["timeout", "error", "google_429", "google_5xx"].includes(outcome.why);
+    state.errorsInRow = failedService ? state.errorsInRow + 1 : 0;
+    if (state.errorsInRow >= BREAKER_ERRORS) {
+      state.openUntil = now() + BREAKER_OPEN_MS;
+      state.errorsInRow = 0;
+    }
+    return outcome;
   } finally {
     clearTimeout(timer);
+    state.inFlight--;
   }
+}
+
+/** Review SHOULD 5: failed checks per client address; at the ceiling an address gets no more Google calls for an hour. */
+export const FAILED_CHECKS_PER_ADDRESS_PER_HOUR = 20;
+const failures = new Map<string, number[]>();
+export const resetFailedChecks = () => failures.clear();
+export function failedChecksFrom(ip: string | undefined, now: number): number {
+  if (ip === undefined) return 0;
+  const list = (failures.get(ip) ?? []).filter((at) => at > now - 3_600_000);
+  if (list.length === 0) failures.delete(ip);
+  else failures.set(ip, list);
+  return list.length;
+}
+export function noteFailedCheck(ip: string | undefined, now: number): void {
+  if (ip === undefined) return;
+  if (failures.size > 50_000) failures.clear();
+  failures.set(ip, [...(failures.get(ip) ?? []), now]);
 }
 
 /* ------------------------------------------------------------------ Android: Play Integrity */
@@ -73,7 +135,7 @@ export const PLAY_INTEGRITY_SCOPE = "https://www.googleapis.com/auth/playintegri
 
 export function playIntegrityVerifier(options: { tokens: { get(): Promise<string> }; packages: readonly string[]; fetchFn: FetchLike; clock?: () => Date }): DeviceVerifier {
   return {
-    async verify({ token, binding }) {
+    async verify({ token, binding, signal }) {
       if (token.length > 16384) return { ok: false, why: "shape" };
       // The token says which package asked; Google decodes it under that package name. Ask under each allowed one only
       // if needed: the first allowed package whose decode works and passes decides.
@@ -83,8 +145,12 @@ export function playIntegrityVerifier(options: { tokens: { get(): Promise<string
           method: "POST",
           headers: { authorization: `Bearer ${access}`, "content-type": "application/json" },
           body: JSON.stringify({ integrity_token: token }),
+          ...(signal ? { signal } : {}),
         });
         const text = await res.text();
+        // Review SHOULD 6: Google's own trouble is told apart from a token it refuses (log + breaker).
+        if (res.status === 429) return { ok: false, why: "google_429" };
+        if (res.status >= 500) return { ok: false, why: "google_5xx" };
         if (res.status !== 200) continue;
         const payload = (JSON.parse(text) as { tokenPayloadExternal?: IntegrityPayload }).tokenPayloadExternal ?? {};
         return judgeIntegrity(payload, options.packages, binding, options.clock?.() ?? new Date());

@@ -9,7 +9,7 @@ import { createSign } from "node:crypto";
 
 export type ServiceAccount = { projectId: string; clientEmail: string; privateKey: string; tokenUri: string };
 
-export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; text: () => Promise<string> }>;
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<{ status: number; text: () => Promise<string> }>;
 
 export const SCOPES = ["https://www.googleapis.com/auth/firebase.messaging", "https://www.googleapis.com/auth/firebase.readonly"];
 
