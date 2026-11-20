@@ -45,7 +45,8 @@ export async function pushDriverTripMoment(ex: Executor, driverId: string, after
   const lang: Lang = await noticeLanguage(ex, { actor: "driver", id: driverId }, after.zone_id);
   const share = (after.cancellation as { driverShare?: { amountMinor?: number; currency?: string } } | null)?.driverShare;
   const fee = share && typeof share.amountMinor === "number" && share.amountMinor > 0 && typeof share.currency === "string" ? { amountMinor: share.amountMinor, currency: share.currency } : null;
-  const body = DRIVER_TRIP_PUSH.texts[moment][lang] + (fee ? " " + DRIVER_TRIP_PUSH.texts.fee[lang].replace("{amount}", amountText(fee.amountMinor, fee.currency, lang)) : "");
+  const bodyIn = (l: Lang) => DRIVER_TRIP_PUSH.texts[moment][l] + (fee ? " " + DRIVER_TRIP_PUSH.texts.fee[l].replace("{amount}", amountText(fee.amountMinor, fee.currency, l)) : "");
+  const body = bodyIn(lang);
   await notify(ex, {
     audience: "driver",
     subjectId: driverId,
@@ -54,6 +55,7 @@ export async function pushDriverTripMoment(ex: Executor, driverId: string, after
     body,
     deepLink: DRIVER_TRIP_PUSH.deepLink.replace("{tripId}", after.trip_id),
     tripId: after.trip_id,
-    data: { tripId: after.trip_id, moment, ...(fee ? { fee } : {}) },
+    // Audit 2026-11-20 N4: every language kept, so the bell reads in the driver's language now (not the one at send time).
+    data: { tripId: after.trip_id, moment, ...(fee ? { fee } : {}), texts: { title: DRIVER_TRIP_PUSH.title, body: { sv: bodyIn("sv"), fr: bodyIn("fr"), en: bodyIn("en") } } },
   }, now);
 }
