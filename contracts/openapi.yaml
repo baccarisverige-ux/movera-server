@@ -1,11 +1,11 @@
-# Movera API v0.18.132 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.146 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.132
+  version: 0.18.146
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.132 in this folder; this file must agree with them.
+    v0.18.146 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.132
+  version: 0.18.146
   source: contract.json
 paths:
   /auth/otp/request:
@@ -3595,6 +3595,8 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+      description: 'v0.18.146 (driverRideCounts): EarningsPeriod.rideCounts { completed, cancelled, noShow } (integers >=
+        0). Optional: a server before v0.18.146 does not send it; the app then shows tripCount.'
   /driver/payouts:
     get:
       operationId: listDriverPayouts
@@ -24567,6 +24569,28 @@ components:
           description: 'v0.18.110: GET /driver/earnings: EarningsPeriod.bonus (new, optional Money) = every bonus entry of
             the driver in the period (trip bonuses and campaigns), and net includes it. Before v0.18.110 net left every bonus
             entry out (server src/trips/ride/earnings.ts:39; noted in Rules decisions/driver-g10.md:13).'
+        rideCounts:
+          type: object
+          description: 'v0.18.146 (driverRideCounts): Counted from trips, not earnings entries: the trips whose driver is
+            the caller (driverTripHistory.statusRule) and whose status is completed (completed), cancelled_by_rider / cancelled_by_driver
+            / cancelled_by_admin / cancelled_by_system (cancelled) or no_show (noShow), by the time the trip ended (endedAt,
+            else its last update) in the period, in the report''s currency (the trip''s currency). A period with such rides
+            but no earnings entry is sent too, with zero money. tripCount is unchanged (completed trips with an earnings entry).'
+          required:
+          - completed
+          - cancelled
+          - noShow
+          additionalProperties: false
+          properties:
+            completed:
+              type: integer
+              minimum: 0
+            cancelled:
+              type: integer
+              minimum: 0
+            noShow:
+              type: integer
+              minimum: 0
     EarningsReport:
       type: object
       required:

@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.132",
+  "version": "0.18.146",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -10561,5 +10561,11 @@
     "driver": "realtime.oneStream true: open GET /driver/stream (off-trip and on a trip; the trip stream as before) and give its events to the two existing readers (offers by sequence, settings by kind); do not open the two old streams. false or missing, or GET /driver/stream answers 404 (an older server): the two streams as before, and after a 404 the app does not try the one stream again until it restarts. When the switch changes, the app closes what it holds and opens the other within one settings update.",
     "rider": "Not affected: the rider app has no offer feed; GET /rider/config/stream and the trip stream are unchanged.",
     "admin": "Admin › Dispatch, per zone: the switch 'One live connection per driver phone' (default off), with an 'i' text (what it does, what it saves, who it affects, when to turn it on, the way back, older apps). It is the way back without an app release."
+  },
+  "driverRideCounts": {
+    "note": "v0.18.146 (audit apps-every-control 2026-11-20 N5, \"Resor 6\" next to \"Visa alla 7 resor\"; owner 2026-11-20 \"Must see all kind\", Rules plan/RULE0-LEDGER.md, plan/NUMBERS.md; Rule 0; X-Api-Version stays 0.5; additive, one optional field; no migration; no admin setting; rider app unchanged): GET /driver/earnings counts every ride of each period by kind, so the driver app's Rides and View all N rides show the same real total, cancelled and no-show rides included, also those that earned nothing.",
+    "field": "EarningsPeriod.rideCounts { completed, cancelled, noShow } (integers >= 0). Optional: a server before v0.18.146 does not send it; the app then shows tripCount.",
+    "rule": "Counted from trips, not earnings entries: the trips whose driver is the caller (driverTripHistory.statusRule) and whose status is completed (completed), cancelled_by_rider / cancelled_by_driver / cancelled_by_admin / cancelled_by_system (cancelled) or no_show (noShow), by the time the trip ended (endedAt, else its last update) in the period, in the report's currency (the trip's currency). A period with such rides but no earnings entry is sent too, with zero money. tripCount is unchanged (completed trips with an earnings entry).",
+    "app": "Driver app: Rides = completed + cancelled + noShow over the shown range, and View all N rides uses the same number (one source)."
   }
 }
