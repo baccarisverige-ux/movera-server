@@ -266,6 +266,8 @@ export interface RouteQuotesTable {
   base_change_id: string | null;
   dropoff: ColumnType<unknown, string, string>;
   stops: ColumnType<unknown, string, string>;
+  /** v0.18.143 (whileSearching): the new pickup of a price made while the trip was searched; null = the trip's own. */
+  pickup: ColumnType<unknown, string | null | undefined, string | null>;
   distance_meters: number;
   duration_seconds: number;
   currency: string;

@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.132",
+  "version": "0.18.143",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -324,6 +324,18 @@
         "offered"
       ],
       "to": "searching"
+    },
+    {
+      "command": "change_route",
+      "actor": "rider",
+      "from": [
+        "requested",
+        "searching",
+        "offered"
+      ],
+      "to": "searching",
+      "when": "live",
+      "note": "v0.18.143 (owner 2026-11-20 \"must rider can change !!!!\"): onTrip.routeChange.whileSearching. No driver has accepted: the rider's confirmed new route (pickup to any place, destination, stops) and its new price apply at once; open offers are withdrawn and a new search starts in the same transaction. Free: nothing is charged."
     },
     {
       "command": "send_offer",
@@ -6978,7 +6990,7 @@
         "3. Driver: POST /trips/{tripId}/route-change/accept or /route-change/refuse { expectedVersion, changeId } → 200 TripProjection. Accept: dropoff, stops, fare, fareLines, driverEarnings and the route change at once. Refuse (or no answer in answerSeconds → expired): nothing changes, the trip goes on to the old destination.",
         "4. Rider may withdraw a pending change: POST /trips/{tripId}/route-change/withdraw { expectedVersion, changeId }."
       ],
-      "projection": "TripProjection.routeChange { changeId, routeQuoteId, status: pending | accepted | refused | expired | withdrawn, dropoff, stops, total, difference, askedAt, answerBy, answeredAt?, answeredBy?: driver | rider | system, driverEarnings?, earningsDifference? } — the latest change of the trip; driverEarnings and earningsDifference only in the driver and admin views.",
+      "projection": "TripProjection.routeChange { changeId, routeQuoteId, status: pending | accepted | refused | expired | withdrawn, dropoff, stops, total, difference, askedAt, answerBy, answeredAt?, answeredBy?: driver | rider | system, driverEarnings?, earningsDifference? } — the latest change of the trip; driverEarnings and earningsDifference only in the driver and admin views. v0.18.143: + pickup and reason (rider_changed_route) when the change was made while searching (whileSearching).",
       "price": "Owner decision 5 of v0.4.3 (§3 'Route-change pricing'), in practice: total = current fare + (price of the new route − price of the current route), both priced with the trip's own pricing document, surge and car type (distance, time, stop fee, app fee, minimum); never below half of (booked fare + raises); difference = total − current fare (may be negative). The driver's new earnings = current earnings + (his share of the new route − his share of the current route); raises stay. Cash: the difference is only shown.",
       "rules": {
         "maxStops": "The new stops may not pass the zone's maxStops (400 too_many_stops, details maxStops=N).",
@@ -7076,6 +7088,35 @@
           "fr": "Répondez dans les {seconds} s : {earnings}",
           "en": "Answer within {seconds} s: {earnings}"
         }
+      },
+      "whileSearching": {
+        "note": "v0.18.143 (owner 2026-11-20 \"must rider can change !!!!\", Rules decisions/session-2026-11-06.md): while a LIVE trip is still being searched (requested, searching, offered; no driver accepted) the rider may change the pickup to ANY place, the destination and the stops. One server transaction: the old search ends for free (open offers withdrawn; the drivers see the offer go) and a new search starts with the new route and price. Never two app calls (cancel, then book). After a driver accepted, the rules above stay (pickup only by pickupWaiting.pickupMove, at most maxPickupMoveMeters; destination and stops with the driver's Accept / Refuse).",
+        "statuses": [
+          "requested",
+          "searching",
+          "offered"
+        ],
+        "kind": "live",
+        "smallMove": "Only the pickup moved and at most the trip's booking.maxPickupMoveMeters from the booked pickup: the app keeps PATCH /trips/{tripId} { expectedVersion, pickup } (pickupWaiting.pickupMove, same price, event pickup_moved).",
+        "flow": [
+          "1. Rider: POST /trips/{tripId}/route-quote { expectedVersion, pickup?, dropoff?, stops } → 201 RouteQuote (+ pickup). pickup is accepted only while searching (any distance); after accept it stays 400 invalid_body. Priced as onTrip.routeChange.price from the new pickup. The zone switches on / beforePickup do not apply while searching (no driver to ask); fixedPriceTrips does.",
+          "2. Rider confirms the new price: PATCH /trips/{tripId} { expectedVersion, routeQuoteId } → 200 TripProjection, status searching, the new pickup (also the new booked pickup), drop-off, stops, fare, fareLines; routeChange { status: accepted, answeredBy: system, pickup, reason: rider_changed_route }. Command change_route (transitions), version + 1, one trip_projection event. A quote made while searching is refused once a driver accepted (409 version_mismatch: ask again)."
+        ],
+        "offers": "Every open offer of the trip is withdrawn (the driver app removes it, as for raise_price); drivers who declined are asked again; the new offers carry the new pickup and price.",
+        "admin": "Admin Live view: the trip_projection event of change_route shows texts.adminEvent with the old and the new pickup.",
+        "texts": {
+          "riderConfirmNewPrice": {
+            "en": "Confirm new price",
+            "sv": "Bekräfta nytt pris",
+            "fr": "Confirmer le nouveau prix"
+          },
+          "adminEvent": {
+            "en": "Rider changed the route while searching",
+            "sv": "Resenären ändrade resan under sökningen",
+            "fr": "Le passager a modifié l’itinéraire pendant la recherche"
+          }
+        },
+        "cases": "fixtures/scenarios.json#change_route_while_searching"
       }
     },
     "stopWaiting": {
