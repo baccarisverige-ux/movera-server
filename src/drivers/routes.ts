@@ -78,8 +78,12 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   app.get(`${API_PREFIX}/driver/pay-movera`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     const view = await driverPayMovera(deps.db, who.subjectId, now());
-    // DRAFT (contract.json#driverPayRequest.stripe): the Stripe Pay button instead of the link.
-    return { ...view, stripe: driverStripeOn(deps.stripe, view.enabled, view.owedToMovera.currency) };
+    // DRAFT (contract.json#driverPayRequest.stripe): the Stripe Pay button instead of the link. The legacy link is
+    // sent only while Stripe is not available; with neither, the request reads as off (nothing to pay with).
+    const stripe = driverStripeOn(deps.stripe, view.enabled, view.owedToMovera.currency);
+    const { payLink, minAmount, ...rest } = view as typeof view & { payLink?: string; minAmount?: unknown };
+    const usable = view.enabled && (stripe || Boolean(payLink));
+    return { ...rest, enabled: usable, ...(usable ? { ...(!stripe && payLink ? { payLink } : {}), minAmount } : {}), stripe };
   });
   app.post(`${API_PREFIX}/driver/pay-movera/pay`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);

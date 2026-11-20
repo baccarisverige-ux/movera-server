@@ -144,6 +144,9 @@ describe("driver monthly payment by Stripe", () => {
     expect(view).toMatchObject({ enabled: true, stripe: true });
     expect(view.payLink).toBeUndefined();
     expect((await pay()).json()).toMatchObject({ amount: SEK(2384), status: "requires_payment" });
+    // A link stored as legacy is not sent while Stripe is on.
+    await database.db.updateTable("config_live").set({ document: JSON.stringify({ country: "SE", currency: "SEK", driverPayRequest: { enabled: true, dayOfMonth: 1, payLink: "https://pay.sumup.com/b2c/MOVERA1", minAmount: SEK(1000) } }) }).where("doc", "=", "country_rules").execute();
+    expect((await call(app, "GET", "/driver/pay-movera", ali.headers)).json().payLink).toBeUndefined();
   });
 
 });

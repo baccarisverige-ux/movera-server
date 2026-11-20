@@ -258,7 +258,8 @@ describe("driverPayRequest: GET /driver/pay-movera", () => {
     for (const badLink of [{ payLink: "http://x.example" }, { payLink: "" }, { payLink: "https://sumup.com@evil.example/pay" }, { payLink: "https://pay.sumup.com/\u200bx" }]) {
       await live("SE", "SEK", ON(badLink));
       const view = await payMovera();
-      expect([view.enabled, view.payLink], JSON.stringify(badLink)).toEqual([true, undefined]);
+      // No Stripe keys in this world and no usable link: nothing to pay with, so the request reads as off.
+      expect([view.enabled, view.payLink], JSON.stringify(badLink)).toEqual([false, undefined]);
     }
   });
 

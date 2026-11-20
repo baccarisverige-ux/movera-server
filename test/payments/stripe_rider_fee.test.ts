@@ -426,4 +426,13 @@ describe("money review of 05bb3ac (NO-GO fixes)", () => {
     expect((await walletSum()) - before).toBe(10000);
   });
 
+  it("review b118efdd: a processing intent is kept when the amount changes (409 payment_processing)", async () => {
+    const tripId = await owedFee(6500);
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    await hook("payment_intent.processing", { id: pi, object: "payment_intent", amount: 6500, currency: "sek" });
+    await database.db.updateTable("rider_wallets").set({ balance_minor: -4000 }).where("rider_id", "=", sara.id).execute();
+    expect((await pay(tripId)).json()).toMatchObject({ reason: "payment_processing" });
+    expect(canceled).toEqual([]);
+  });
+
 });

@@ -70,6 +70,8 @@ export async function startFeePayment(trx: Trx, stripeOrNull: StripeApi | null |
   const stripe = needStripe(stripeOrNull);
   const open = mine.find((p) => OPEN_STATUSES.includes(p.status));
   if (open && Number(open.amount_minor) === amountMinor && open.currency === fee.currency) return feePaymentView(open as Row, stripe);
+  // Review of b118efdd: a payment Stripe is still processing is never canceled and replaced.
+  if (open?.status === "processing") throw new ApiError("conflict", "Your last payment is still being processed.", { reason: "payment_processing" });
   if (open) {
     // Money review (3): Stripe is told after the commit (toCancel); here the row stops being open.
     toCancel.push(open.payment_intent_id);
