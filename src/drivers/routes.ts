@@ -61,7 +61,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     return { ...(await getDriverProfile(deps.db, who.subjectId, now())), performance: await driverPerformance(deps.db, who.subjectId, now()) };
   });
 
-  // v0.18.140 (contract.json#accountDeletion): Profile > Delete my account. WAITS FOR THE NEW SERVER.
+  // v0.18.134 (contract.json#accountDeletion): Profile > Delete my account. WAITS FOR THE NEW SERVER.
   app.post(`${API_PREFIX}/driver/account/deletion`, async (request, reply) => {
     const who = await authenticate(request, guard, ["driver"]);
     const result = await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 202, body: await requestAccountDeletion(trx, "driver", who.subjectId, now()) }));

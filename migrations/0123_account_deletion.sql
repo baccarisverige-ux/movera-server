@@ -1,4 +1,4 @@
--- v0.18.140 (contract.json#accountDeletion; owner button 2026-11-20 "Accept, keep debt (Rec.)", Rules
+-- v0.18.134 (contract.json#accountDeletion; owner button 2026-11-20 "Accept, keep debt (Rec.)", Rules
 -- decisions/session-2026-11-06.md). WAITS FOR THE NEW SERVER (owner 2026-11-19: nothing on the current server).
 -- drivers.deletion_requested_at: the driver's request (riders has it since 0006). erased_at: set last by account_erase in
 -- the same transaction as the erase (a second run finds nothing). kept_debts: the only personal data kept after the erase

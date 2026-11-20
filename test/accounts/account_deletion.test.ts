@@ -12,7 +12,7 @@ import { insertRider, insertTrip } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
- * contract v0.18.140 (account deletion E1; owner button 2026-11-20 "Accept, keep debt (Rec.)"): the request closes the
+ * contract v0.18.134 (account deletion E1; owner button 2026-11-20 "Accept, keep debt (Rec.)"): the request closes the
  * account at once, a debt never blocks it and is kept as a record (name, number, amount), everything else is erased
  * 30 days after the request by account_erase (count only while CountryRules.accountDeletion.eraseEnabled is off).
  */
@@ -42,7 +42,7 @@ afterAll(async () => {
   await database.drop();
 });
 
-describe("account deletion (v0.18.140)", () => {
+describe("account deletion (v0.18.134)", () => {
   let sara: string;
   let saraHeaders: Record<string, string>;
 
@@ -139,7 +139,7 @@ describe("account deletion (v0.18.140)", () => {
       await database.db.updateTable("riders").set({ deletion_requested_at: old }).where("rider_id", "=", id).execute();
       await insertTrip(database.db, id, { status: "searching" });
     }
-    // A request from before v0.18.140 (column since 0006) with a debt and no kept_debts row.
+    // A request from before v0.18.134 (column since 0006) with a debt and no kept_debts row.
     const legacy = await insertRider(database.db);
     await database.db.updateTable("riders").set({ first_name: "Lea", deletion_requested_at: new Date(old.getTime() + 1000), outstanding_minor: 3000, outstanding_currency: "SEK" }).where("rider_id", "=", legacy).execute();
     expect(await eraseDueAccounts(database.db, clock.now)).toEqual({ due: 1, erased: 1 });

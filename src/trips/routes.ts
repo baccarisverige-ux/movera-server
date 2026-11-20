@@ -302,7 +302,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
 
   app.post(`${API_PREFIX}/account/deletion`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider"]);
-    // v0.18.140 (contract.json#accountDeletion): closes the account at once, keeps a debt as a record; 409 deletion_open_trip.
+    // v0.18.134 (contract.json#accountDeletion): closes the account at once, keeps a debt as a record; 409 deletion_open_trip.
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 202, body: await requestAccountDeletion(trx, "rider", who.subjectId, now()) }));
     return reply.status(result.status).send(result.body);
   });

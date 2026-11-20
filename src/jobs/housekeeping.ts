@@ -95,7 +95,7 @@ const JOBS: Record<string, (ex: Executor, now: Date) => Promise<unknown>> = {
   [SIGN_UP_REMINDERS]: sweepSignUpReminders,
   // v0.18.39 A2 (G16 Q16-2): a rider pause that ended lifts by itself.
   [LIFT_ENDED_PAUSES]: liftEndedPauses,
-  // v0.18.140 (contract.json#accountDeletion.job): erase accounts 30 days after the request (dry-run while the switch is off).
+  // v0.18.134 (contract.json#accountDeletion.job): erase accounts 30 days after the request (dry-run while the switch is off).
   [ACCOUNT_ERASE]: eraseDueAccounts,
 };
 

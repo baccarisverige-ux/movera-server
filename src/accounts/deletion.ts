@@ -8,7 +8,7 @@ import { outstandingByCurrency } from "../riders/service.js";
 import { audit } from "../admin/audit.js";
 
 /**
- * contract v0.18.140 (contract.json#accountDeletion; owner button 2026-11-20 "Accept, keep debt (Rec.)", Rules
+ * contract v0.18.134 (contract.json#accountDeletion; owner button 2026-11-20 "Accept, keep debt (Rec.)", Rules
  * decisions/session-2026-11-06.md). WAITS FOR THE NEW SERVER (owner 2026-11-19: nothing on the current server).
  *
  * - The request (rider or driver) closes the account at once: sessions end, push addresses go, a driver goes offline;
@@ -215,7 +215,7 @@ export async function eraseDueAccounts(ex: Executor, now: Date): Promise<{ due: 
     due += 1;
     if (why === "erase_off") continue;
     const one = async (trx: Trx) => {
-      // Review MUST-FIX 2: a request from before v0.18.140 (riders.deletion_requested_at since 0006) has no debt row yet:
+      // Review MUST-FIX 2: a request from before v0.18.134 (riders.deletion_requested_at since 0006) has no debt row yet:
       // it is written now, from the live debt, before anything is emptied; then the amount is brought up to date.
       const who = a.kind === "rider"
         ? await trx.selectFrom("riders").select(["phone", "first_name", sql<string>`''`.as("last_name"), "outstanding_minor", "outstanding_currency"]).where("rider_id", "=", a.id).executeTakeFirstOrThrow()

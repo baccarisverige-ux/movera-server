@@ -338,7 +338,7 @@ async function findOrCreateAccount(trx: Trx, app: App, phone: string, now: Date)
       .executeTakeFirst();
     if (inserted !== undefined) return { id: inserted.rider_id, created: true, zones: [] };
     const rider = await trx.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at", "deletion_requested_at", "erased_at"]).where("phone", "=", phone).executeTakeFirstOrThrow();
-    // v0.18.140 (contract.json#accountDeletion.closeAtOnce): a closed account cannot sign in until it is erased.
+    // v0.18.134 (contract.json#accountDeletion.closeAtOnce): a closed account cannot sign in until it is erased.
     if (isClosed(rider)) throw closedError();
     if (riderBlocked(rider, now)) throw suspendedError(rider);
     return { id: rider.rider_id, created: false, zones: [] };

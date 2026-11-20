@@ -378,7 +378,7 @@ export async function realDataRoutes(app: FastifyInstance, deps: RealDataDeps): 
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await saveReviewRules(trx, who, { country: body.country, warn: body.warn, review: body.review, minReviews: body.minReviews, badWords: body.badWords, ...(body.warningText ? { warningText: body.warningText } : {}) }, now()) }));
     return result.body;
   });
-  // v0.18.140 (contract.json#accountDeletion.admin): the deletion requests and their status (read only, no phone).
+  // v0.18.134 (contract.json#accountDeletion.admin): the deletion requests and their status (read only, no phone).
   app.get(`${API_PREFIX}/admin/deletion-requests`, async (request) => {
     await authenticateAdmin(request, guard, "riders.read");
     return deletionRequests(deps.db, now());

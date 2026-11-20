@@ -150,7 +150,7 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
   if (left > 0) await trx.insertInto("earnings_entries").values(entry(left, null)).execute();
   const owedAfter = owedBefore - body.amount.amountMinor;
   await audit(trx, { adminId: who.subjectId, action: "driver.paid_movera", targetType: "driver", targetId: driverId, zoneId: zone, detail: { amount: body.amount, owedBefore: { amountMinor: owedBefore, currency }, owedAfter: { amountMinor: owedAfter, currency }, reason, entries: written }, at: now });
-  // v0.18.140 (contract.json#accountDeletion.debt): a kept debt record follows the live amount (0 = settled).
+  // v0.18.134 (contract.json#accountDeletion.debt): a kept debt record follows the live amount (0 = settled).
   await refreshKeptDebts(trx, "driver", driverId, now);
   return owingDriver(trx, driverId, currency);
 }

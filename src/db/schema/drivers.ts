@@ -31,7 +31,7 @@ export interface DriversTable {
   // v0.5.3 (§14): the sign-up details; NULL account_type = a driver from before v0.5.3 (old rules).
   account_type: ColumnType<"driver" | "fleet" | null, "driver" | "fleet" | null | undefined, "driver" | "fleet" | null>;
   last_name: Generated<string>;
-  /** v0.18.140 (migration 0123, contract.json#accountDeletion): the request; set last by account_erase. */
+  /** v0.18.134 (migration 0123, contract.json#accountDeletion): the request; set last by account_erase. */
   deletion_requested_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   erased_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   date_of_birth: ColumnType<Date | null, string | null | undefined, string | null>;

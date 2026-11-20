@@ -238,7 +238,7 @@ describe("rider account", () => {
   it("account deletion is recorded (202)", async () => {
     const res = await call(app, "POST", "/account/deletion", other);
     expect(res.statusCode).toBe(202);
-    // v0.18.140: also requestedAt + eraseDueAt (contract.json#accountDeletion.request).
+    // v0.18.134: also requestedAt + eraseDueAt (contract.json#accountDeletion.request).
     expect(res.json()).toMatchObject({ status: "requested" });
   });
 });
