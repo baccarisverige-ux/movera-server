@@ -120,6 +120,17 @@ export const PREVIEW_FREEZE_SECONDS = (contract as unknown as { completePreview:
 
 export type FrozenMoney = { fare_minor?: number; fare_lines?: string; driver_earnings_minor?: number; commission_minor?: number; end_info?: string };
 
+/**
+ * v0.18.140 M3 (contract.json#completePreview.cashDueSplit): the earlier unpaid fee inside the cash to collect, and the
+ * ride's part (fee = min(outstanding_fee lines, cashDue), ride = cashDue − fee; their sum is cashDue). Null when that
+ * fee part is 0 (no debt, or no cash: card / Apple Pay / wallet).
+ */
+export function cashDueSplit(cashDueMinor: number, lines: ReadonlyArray<{ code: string; amount: { amountMinor: number | string } }>): { rideMinor: number; feeMinor: number } | null {
+  const owed = lines.filter((l) => l.code === "outstanding_fee").reduce((total, l) => total + Number(l.amount.amountMinor), 0);
+  const feeMinor = Math.max(0, Math.min(owed, cashDueMinor));
+  return feeMinor > 0 ? { rideMinor: cashDueMinor - feeMinor, feeMinor } : null;
+}
+
 /** The CompletePreview body of a frozen price. */
 function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; early: boolean; fare: number; wallet: number; money: FrozenMoney; near: { arrivedLimitMeters: number; distanceToDropoffMeters?: number } | null }) {
   const lines = row.money.fare_lines !== undefined ? (JSON.parse(row.money.fare_lines) as FareLine[]) : ((trip.fare_lines as FareLine[]) ?? []);
@@ -127,8 +138,7 @@ function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; e
   const earnings = row.money.driver_earnings_minor ?? Number(trip.driver_earnings_minor ?? 0);
   const info = row.money.end_info !== undefined ? (JSON.parse(row.money.end_info) as EndInfo) : null;
   const cashDue = cashPart(trip, row.fare - row.wallet);
-  const owedFee = lines.filter((l) => l.code === "outstanding_fee").reduce((total, l) => total + Number(l.amount.amountMinor), 0);
-  const feeInCash = Math.max(0, Math.min(owedFee, cashDue));
+  const split = cashDueSplit(cashDue, lines);
   // v0.18.10 (owner G8 Q3): the same one number the finished screen shows (incl. pickup pay, bonus, Movera's changes).
   const asEnded = { ...trip, driver_earnings_minor: String(earnings) };
   return {
@@ -139,7 +149,7 @@ function previewBody(trip: TripRow, row: { previewId: string; expiresAt: Date; e
     // v0.18.99 BQ-M25b (contract.json#priceDisplay.nonCashZero): 0 on a trip not paid in the car (the cash it books, cashPart).
     cashDue: sum(cashDue),
     // v0.18.140 M3 (contract.json#completePreview.cashDueSplit): the ride and the earlier fee in cashDue, only with a fee.
-    ...(feeInCash > 0 ? { cashDueRide: sum(cashDue - feeInCash), cashDueOutstandingFee: sum(feeInCash) } : {}),
+    ...(split ? { cashDueRide: sum(split.rideMinor), cashDueOutstandingFee: sum(split.feeMinor) } : {}),
     driverEarnings: sum(earnings),
     driverTotal: sum(driverTotalOf(asEnded)),
     earningsBreakdown: earningsLinesOf(asEnded).map((l) => ({ code: l.code, amount: sum(l.amountMinor) })),
