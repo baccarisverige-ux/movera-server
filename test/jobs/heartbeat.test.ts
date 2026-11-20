@@ -13,6 +13,7 @@ import { contract } from "../../src/contract/contract.js";
 import { TRIP_LANE_KINDS } from "../../src/jobs/workerConfig.js";
 import { ROUND, WITHDRAW } from "../../src/dispatch/runtime.js";
 import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "../../src/jobs/payouts.js";
+import { PAY_REQUEST_SCAN } from "../../src/drivers/payRequest.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /**
@@ -131,7 +132,7 @@ describe("GET /healthz/jobs", () => {
 describe("RECURRING_JOBS", () => {
   it("B1.28: names every kind main.ts re-arms at start, except no_fix_sweep (booked per run) and payout_driver (one row per driver)", () => {
     // The same constants main.ts passes to rearmParkedRecurringTimers.
-    const rearmed = [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS, PAYOUT_CLOSE, PAYOUT_DRIVER];
+    const rearmed = [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS, PAYOUT_CLOSE, PAYOUT_DRIVER, PAY_REQUEST_SCAN];
     expect(RECURRING_JOBS.map((job) => job.kind).sort()).toEqual(rearmed.filter((kind) => kind !== NO_FIX_SWEEP && kind !== PAYOUT_DRIVER).sort());
     expect(new Set(RECURRING_JOBS.map((job) => job.kind)).size).toBe(RECURRING_JOBS.length);
     for (const job of RECURRING_JOBS) expect(job.everyMs).toBeGreaterThan(0);

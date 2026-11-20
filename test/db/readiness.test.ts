@@ -72,7 +72,8 @@ describe("maintenance", () => {
     const worker = new TimerWorker(database.db, { handlers: maintenanceHandlers, logger: { warn: () => undefined, error: () => undefined } });
     // S4 0.14b: the sweep and each housekeeping job (its own timer) are due at start; the nightly one is not.
     // S4 0.14a: the payout timer (its own job since owner W1 Q69) too.
-    expect(await worker.runDue()).toBe(2 + HOUSEKEEPING_KINDS.length);
+    // v0.18.139: and the monthly pay request scan (asks nobody while every country is off).
+    expect(await worker.runDue()).toBe(3 + HOUSEKEEPING_KINDS.length);
     const keys = await database.db.selectFrom("idempotency_keys").select("key").execute();
     expect(keys.map((k) => k.key)).toEqual(["new-key-0123456789"]);
     const next = await database.db.selectFrom("timers").selectAll().where("kind", "in", [SWEEP_IDEMPOTENCY_KEYS, CLEANUP_IDEMPOTENCY_KEYS]).execute();

@@ -135,7 +135,7 @@ describe("0.14a one payout job (Q69: hourly kept)", () => {
     expect(await payoutsOf(se)).toEqual([["SEK", 0, "2026-10-19T06:00:00.000Z", "2026-10-26T07:00:00.000Z"]]);
     expect(await payoutsOf(fr)).toEqual([["EUR", 1_000, "2026-10-19T06:00:00.000Z", "2026-10-26T07:00:00.000Z"]]);
     const kinds = (await database.db.selectFrom("timers").select("kind").execute()).map((t) => t.kind).sort();
-    expect(kinds).toEqual([NIGHTLY, "no_fix_offline", "payout_close", SWEEP_IDEMPOTENCY_KEYS, ...HOUSEKEEPING_KINDS].sort());
+    expect(kinds).toEqual([NIGHTLY, "no_fix_offline", "pay_request_scan", "payout_close", SWEEP_IDEMPOTENCY_KEYS, ...HOUSEKEEPING_KINDS].sort());
   });
 });
 

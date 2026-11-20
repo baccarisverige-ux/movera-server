@@ -3,6 +3,8 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
+import { KEPT_KEYS } from "../../src/config/keptKeys.js";
+import { KEPT_ON_RESTORE } from "../../src/config/service.js";
 import { localMonthDay, PAY_REQUEST_BATCH, PAY_REQUEST_SCAN, payReference } from "../../src/drivers/payRequest.js";
 import { owedByDriver } from "../../src/drivers/owes.js";
 import { seedDriver } from "../../src/drivers/service.js";
@@ -195,6 +197,11 @@ describe("driverPayRequest: the setting (country standard, off by default)", () 
     expect(off.statusCode, off.body).toBe(200);
     const defaults = JSON.parse(readFileSync(`${CONTRACTS_DIR}/contract.json`, "utf8")).configDefaults.driverPayRequest;
     expect(defaults).toEqual({ enabled: false, dayOfMonth: 1, payLink: "", minAmount: null });
+  });
+
+  it("Restore / Undo keeps it too (the live link and switch stay): it is in the kept-on-restore list", () => {
+    expect(KEPT_ON_RESTORE.country_rules).toContain("driverPayRequest");
+    expect(KEPT_KEYS.country_rules).toContain("driverPayRequest");
   });
 
   it("a kept key: a whole-document save that leaves it out keeps the stored link and switch", async () => {
