@@ -7,7 +7,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { notify } from "../notifications/service.js";
 import { noticeLanguage } from "../notifications/noticeLanguage.js";
-import { OTP, PHONE, requestOtp, type AuthDeps, type ClientInfo } from "./service.js";
+import { OTP, PHONE, checkCodeShape, otpCodeMatches, requestOtp, silentSmsWait, type AuthDeps, type ClientInfo } from "./service.js";
 
 /**
  * v0.18.14 (owner 2026-11-02, decisions/driver-g1.md "Phone number change" / "E-mail change"): a driver or rider changes
@@ -88,19 +88,22 @@ export async function startPhoneChange(deps: AuthDeps, who: Who, phone: string, 
   await checkStart(deps.db, who, "phone", now);
   if (await phoneHasAccount(deps.db, phone)) {
     // The same answer as a sent code (no code is sent): nobody learns that this number has an account.
-    return { requestId: newId("otp"), sessionId: newId("otp", now.getTime()), expiresAt: new Date(now.getTime() + OTP.expiresSeconds * 1000).toISOString(), retryAfterSeconds: OTP.retryAfterSeconds };
+    // v0.18.133: nor from the answer time, now that a real code is an SMS handed to the SMS company first.
+    // codeLength: what a real answer for this number would say (6 when an SMS would have gone out), so it does not tell either.
+    const codeLength = await silentSmsWait(deps, phone, who.actor);
+    return { requestId: newId("otp"), sessionId: newId("otp", now.getTime()), expiresAt: new Date(now.getTime() + OTP.expiresSeconds * 1000).toISOString(), retryAfterSeconds: OTP.retryAfterSeconds, codeLength };
   }
   return requestOtp(deps, { phone, app: who.actor, requestId: newId("otp") }, client);
 }
 
 export async function verifyPhoneChange(deps: AuthDeps, who: Who, input: { phone: string; sessionId: string; code: string }, now: Date) {
-  if (!new RegExp(`^[0-9]{${OTP.codeLength}}$`).test(input.code)) throw badRequest(`The code is ${OTP.codeLength} digits.`, "invalid_otp_code");
+  checkCodeShape(input.code);
   const outcome = await deps.db.transaction().execute(async (trx) => {
     const s = await trx.selectFrom("otp_sessions").selectAll().where("session_id", "=", input.sessionId).forUpdate().executeTakeFirst();
     if (!s || s.phone !== input.phone || s.app !== who.actor || s.consumed_at !== null) return badRequest("This code is not active. Ask for a new one.", "invalid_otp_session");
     if (s.expires_at.getTime() <= now.getTime()) return new ApiError("otp_expired", "The code expired. Ask for a new one.");
     if (s.attempts >= s.max_attempts) return new ApiError("rate_limited", "Too many wrong codes. Ask for a new code.", { reason: "otp_too_many_attempts", retryAfterSeconds: OTP.retryAfterSeconds });
-    if (!same(s.code_sha256, sha(`${s.session_id}:${input.code}`))) {
+    if (!otpCodeMatches(deps, s, input.code)) {
       await trx.updateTable("otp_sessions").set({ attempts: s.attempts + 1 }).where("session_id", "=", s.session_id).execute();
       return badRequest("That code is not right.", "invalid_otp_code");
     }

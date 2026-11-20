@@ -17,6 +17,11 @@ week change the plans to `starter` (server) and `basic-256mb` (database). The lo
      say "codes cannot be sent yet"). Optional `EMAIL_FROM` (default `Movera <onboarding@resend.dev>`, which reaches
      only the Resend account owner's own address until an own domain is added in Resend) and `EMAIL_SEND_TIMEOUT_MS`
      (default 5000).
+   - `ELKS_API_USERNAME` and `ELKS_API_PASSWORD` (contract v0.18.133 `smsSignIn`): the 46elks API username and
+     password for the sign-in code SMS. Without BOTH no SMS is ever sent and every number that is not a test number is
+     `sign_in_restricted`, as before. With both, a country still needs its admin switch (Pricing › Tips & limits ›
+     "Real SMS sign-in codes", default off). Optional `SMS_SENDER_NAME` (3-11 letters and digits; default `Movera`).
+     Only sign-in codes use these keys (invitation and SOS-contact SMS stay off). Owner steps: Rules `plan/SMS-SETUP-STEPS.md`.
 4. Wait until `movera-server` says **Live**. Its address is on the service page, e.g.
    `https://movera-server-xxxx.onrender.com`. Check `…/healthz` shows `"env":"staging"`.
 
