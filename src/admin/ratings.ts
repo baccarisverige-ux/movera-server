@@ -122,6 +122,8 @@ export async function moderateRating(trx: Trx, who: Principal, tripId: string, r
   if (rater === "rider" && row.driver_id) {
     await trx.updateTable("drivers").set({ rating_sum: sql`rating_sum + ${sign * row.stars}`, rating_count: sql`rating_count + ${sign}` }).where("driver_id", "=", row.driver_id).execute();
     await moveCompliments(trx, row.driver_id, row.stars, row.tags, sign); // v0.18.147
+    // v0.18.147: a hidden rating also hides its public review (restore leaves the review to Reviews › Driver reviews).
+    if (hide) await trx.updateTable("driver_reviews").set({ status: "hidden", moderated_at: now, moderated_by: who.subjectId }).where("trip_id", "=", tripId).where("status", "<>", "hidden").execute();
   } else if (rater === "driver") {
     await trx.updateTable("riders").set({ rating_sum: sql`rating_sum + ${sign * row.stars}`, rating_count: sql`rating_count + ${sign}` }).where("rider_id", "=", row.rider_id).execute();
   }

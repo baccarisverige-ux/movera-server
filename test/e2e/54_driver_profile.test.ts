@@ -118,3 +118,15 @@ describe("driver profile (v0.18.147)", () => {
     expect((await profileOf(rider, first)).body["languages"]).toEqual(["sv", "ar", "en"]);
   });
 });
+
+describe("driver profile safety (v0.18.147 review round 1)", () => {
+  it("hiding the rating hides its public review", async () => {
+    const t = await doneTrip(other);
+    expect((await rate(other, t, { stars: 5, review: "Hide me later." })).status).toBe(201);
+    const item = ((await owner.get("/admin/driver-reviews?status=pending")).body["items"] as Json[]).find((r) => r["text"] === "Hide me later.")!;
+    await owner.post(`/admin/driver-reviews/${item["reviewId"]}/approve`, {});
+    expect((await owner.post(`/admin/ratings/${t}/rider/hide`, { reason: "test" })).status).toBe(200);
+    const hidden = (await owner.get("/admin/driver-reviews?status=hidden")).body["items"] as Json[];
+    expect(hidden.some((r) => r["reviewId"] === item["reviewId"])).toBe(true);
+  });
+});

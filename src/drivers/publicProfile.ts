@@ -68,6 +68,8 @@ export async function recordRiderRating(
   rating: { stars: number; tags: readonly string[]; review?: string | undefined; reviewName?: "first_name" | "anonymous" | undefined },
   hidden: boolean,
   now: Date,
+  /** The review holds a word from the zone's review rules: never stored (contract reviewRules). */
+  badReview = false,
 ): Promise<void> {
   if (!trip.driver_id || hidden || rating.stars < DP_RULES.compliments.minStars) return;
   const codes = rating.tags.filter((t) => COMPLIMENT_CODES.includes(t));
@@ -79,7 +81,7 @@ export async function recordRiderRating(
       .execute();
   }
   const text = rating.review?.trim();
-  if (!text || rating.stars < DP_RULES.review.minStarsShown) return;
+  if (!text || badReview || rating.stars < DP_RULES.review.minStarsShown) return;
   const zone = await trx.selectFrom("zones").select(["time_zone"]).where("zone_id", "=", trip.zone_id).executeTakeFirst();
   if (!(await zoneDriverProfile(trx, trip.zone_id)).reviews) return;
   let name: string | null = null;

@@ -273,7 +273,7 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
       if (!badWord) await trx.updateTable("drivers").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("driver_id", "=", trip.driver_id).execute();
       await applyPersonRules(trx, "driver", trip.driver_id, country, rules, now);
       // v0.18.147 (contract.json#driverProfile): compliment counts on write; a short review waits for an admin.
-      await recordRiderRating(trx, trip, { stars, tags, review: rating.review, reviewName: rating.reviewName }, badWord, now);
+      await recordRiderRating(trx, trip, { stars, tags, review: rating.review, reviewName: rating.reviewName }, badWord, now, hasBadWord(rating.review, rules));
     } else if (who.actor === "driver") {
       if (!badWord) await trx.updateTable("riders").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("rider_id", "=", trip.rider_id).execute();
       await applyPersonRules(trx, "rider", trip.rider_id, country, rules, now);
