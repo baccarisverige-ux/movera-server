@@ -3,7 +3,7 @@
 // refreshes its access token like the app (a 401 → one POST /auth/refresh → the request again; apps: rider
 // lib/core/api/api_client.dart:235, driver lib/core/api/api_client.dart:87-99). Clock and transport are injected, so the
 // same code runs live (phone-load.mjs) and in simulated time (simulate.mjs, the request-budget test).
-import { CADENCES, ON_ENTER, REACTIONS } from "./cadences.mjs";
+import { CADENCES, LIVE_SHARE, ON_ENTER, REACTIONS } from "./cadences.mjs";
 import { expWait } from "./clock.mjs";
 import { near } from "./zones.mjs";
 
@@ -116,6 +116,7 @@ class Phone {
   }
   bodyFor(e) {
     if (e.body === "location") return { fixes: [{ lat: this.pos.lat, lng: this.pos.lng, accuracy: 5, measuredAt: new Date(this.clock.now()).toISOString() }] };
+    if (e.body === "liveShare") return { sharing: true, lat: this.pos.lat, lng: this.pos.lng, accuracyM: 5 };
     return undefined;
   }
   openStream(name, path, onEvent) {
@@ -198,7 +199,7 @@ export class RiderPhone extends Phone {
     this.searchStart = this.clock.now();
     this.lateTimer = this.clock.at(this.searchStart + 180_000, () => this.state === "finding" && this.enter("finding_late"));
     this.abandonTimer = this.clock.at(this.searchStart + this.dwell.abandonMs, () => (this.state === "finding" || this.state === "finding_late") && this.cancel());
-    this.openStream("trip", `/trips/${this.tripId}/events`, (e) => this.onTripEvent(e));
+    this.openStream("trip", `/trips/${this.tripId}/events${LIVE_SHARE ? "?live=true" : ""}`, (e) => this.onTripEvent(e));
   }
   onTripEvent(e) {
     if (typeof e.version === "number") this.version = e.version;
@@ -266,7 +267,7 @@ export class DriverPhone extends Phone {
       this.target = offer.pickup ?? this.pos;
       this.dropoff = offer.dropoff;
       this.enter("to_pickup");
-      this.openStream("trip", `/trips/${this.tripId}/events`, (e) => typeof e.version === "number" && (this.version = Math.max(this.version ?? 0, e.version)));
+      this.openStream("trip", `/trips/${this.tripId}/events${LIVE_SHARE ? "?live=true" : ""}`, (e) => typeof e.version === "number" && (this.version = Math.max(this.version ?? 0, e.version)));
       // the trip screen moves an accepted trip to "driver to pickup" (live_trip_commands.dart:251-261)
       if (!(await this.command("head-to-pickup"))) this.counter.bump("driver.stepFailed.head-to-pickup");
       this.later(this.dwell.toPickup, () => this.step("arrive", "at_pickup", this.dwell.atPickup));

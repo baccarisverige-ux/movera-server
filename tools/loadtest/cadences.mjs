@@ -56,23 +56,31 @@ const routeTo = (to) => ({
 const DRIVER_ROUTE = routeTo("to pickup");
 const DRIVER_ROUTE_DROPOFF = routeTo("to drop-off");
 
+// v0.18.144 (contract.json#liveLocation.load; supervisor 2026-11-20: the zone switch stays OFF until this passes the bar):
+// LOADTEST_LIVE_SHARE=1 (set in the environment of phone-load.mjs) = every rider and driver on a ride shares: one PUT live-location
+// per side every sendEverySeconds (8, the default) and the trip stream opened with ?live=true.
+export const LIVE_SHARE = globalThis.process?.env?.LOADTEST_LIVE_SHARE === "1";
+const RIDER_LIVE_SHARE = { id: "PUT /trips/{id}/live-location (rider)", method: "PUT", path: (c) => `/trips/${c.tripId}/live-location`, every: 8, body: "liveShare", source: "rider lib/features/active_ride/application/live_location_share.dart:1 (sendEverySeconds 8, only while the ride screen is open)" };
+const DRIVER_LIVE_SHARE = { id: "PUT /trips/{id}/live-location (driver)", method: "PUT", path: (c) => `/trips/${c.tripId}/live-location`, every: 8, body: "liveShare", source: "driver lib/core/live/live_location_share.dart:1 (sendEverySeconds 8, only while the trip screen is open)" };
+const share = (list, extra) => (LIVE_SHARE ? [...list, extra] : list);
+
 export const CADENCES = Object.freeze({
   rider: {
     home: [RIDER_WATCH_HOME, RIDER_PRESENCE],
     choose: [RIDER_WATCH_HOME, RIDER_NEARBY],
     finding: [RIDER_WATCH_RIDE],
     finding_late: [RIDER_WATCH_RIDE, RIDER_SEARCH_CHECK],
-    waiting: [RIDER_WATCH_RIDE, RIDER_BADGE],
-    arrived: [RIDER_WATCH_RIDE, RIDER_BADGE],
+    waiting: share([RIDER_WATCH_RIDE, RIDER_BADGE], RIDER_LIVE_SHARE),
+    arrived: share([RIDER_WATCH_RIDE, RIDER_BADGE], RIDER_LIVE_SHARE),
     in_trip: [RIDER_WATCH_RIDE, RIDER_BADGE],
     receipt: [RIDER_WATCH_RIDE],
   },
   driver: {
     offline_home: [DRIVER_AIRPORT, DRIVER_BADGES],
     online_idle: [DRIVER_GPS, DRIVER_AIRPORT, DRIVER_BADGES, DRIVER_SURGE],
-    to_pickup: [DRIVER_GPS, DRIVER_AIRPORT, DRIVER_ROUTE],
+    to_pickup: share([DRIVER_GPS, DRIVER_AIRPORT, DRIVER_ROUTE], DRIVER_LIVE_SHARE),
     // GM3 §3.2 has no own "arrived" column: the trip screen stays open, so the to-pickup timers keep running.
-    at_pickup: [DRIVER_GPS, DRIVER_AIRPORT, DRIVER_ROUTE],
+    at_pickup: share([DRIVER_GPS, DRIVER_AIRPORT, DRIVER_ROUTE], DRIVER_LIVE_SHARE),
     on_trip: [DRIVER_GPS, DRIVER_AIRPORT, DRIVER_ROUTE_DROPOFF],
   },
 });
