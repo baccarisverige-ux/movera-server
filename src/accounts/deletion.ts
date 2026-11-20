@@ -47,7 +47,7 @@ async function hasOpenTrip(ex: Executor, kind: Kind, id: string): Promise<boolea
   return rows.some((r) => OPEN(r.status));
 }
 
-async function debtsOf(trx: Trx, kind: Kind, id: string, row: { country?: string | null; outstanding_minor?: string; outstanding_currency?: string | null }) {
+async function debtsOf(trx: Trx, kind: Kind, id: string, row: { country?: string | null; outstanding_minor?: string; outstanding_currency?: string | null }): Promise<Array<{ amountMinor: number; currency: string }>> {
   if (kind === "rider") {
     const list = await outstandingByCurrency(trx, id);
     if (list.length > 0) return list.filter((d) => d.amountMinor > 0);
@@ -57,6 +57,42 @@ async function debtsOf(trx: Trx, kind: Kind, id: string, row: { country?: string
   const currency = COUNTRY_CURRENCY[row.country ?? "SE"] ?? "SEK";
   const owed = (await owedByDriver(trx, [id], currency)).get(id) ?? 0;
   return owed > 0 ? [{ amountMinor: owed, currency }] : [];
+}
+
+type DebtRow = { phone: string; first_name: string; last_name: string; country?: string | null; outstanding_minor?: string; outstanding_currency?: string | null };
+
+/** Writes one kept_debts row per currency the account owes now (never overwrites one that exists). */
+async function recordDebts(trx: Trx, kind: Kind, id: string, row: DebtRow, now: Date): Promise<void> {
+  for (const d of await debtsOf(trx, kind, id, row)) {
+    await trx
+      .insertInto("kept_debts")
+      .values({ account_kind: kind, account_id: id, first_name: row.first_name, last_name: row.last_name, phone: row.phone, amount_minor: d.amountMinor, currency: d.currency, created_at: now })
+      .onConflict((c) => c.columns(["account_kind", "account_id", "currency"]).doNothing())
+      .execute();
+  }
+}
+
+/**
+ * Review MUST-FIX 1: a kept debt record follows the live debt (wallet / earnings, which stay after the erase): the amount
+ * is updated, and 0 = settled (paid in the car, Mark as paid, Driver paid Movera, written off). Called by those admin
+ * actions and by every account_erase run.
+ */
+export async function refreshKeptDebts(trx: Executor, kind: Kind, id: string, now: Date): Promise<void> {
+  const rows = await trx.selectFrom("kept_debts").select(["currency"]).where("account_kind", "=", kind).where("account_id", "=", id).where("settled_at", "is", null).execute();
+  if (rows.length === 0) return;
+  const row =
+    kind === "driver"
+      ? { country: (await trx.selectFrom("drivers").select("country").where("driver_id", "=", id).executeTakeFirst())?.country ?? null }
+      : ((await trx.selectFrom("riders").select(["outstanding_minor", "outstanding_currency"]).where("rider_id", "=", id).executeTakeFirst()) ?? {});
+  const live = await debtsOf(trx as Trx, kind, id, row);
+  for (const r of rows) {
+    const now_ = live.find((d) => d.currency === r.currency)?.amountMinor ?? 0;
+    await trx
+      .updateTable("kept_debts")
+      .set(now_ > 0 ? { amount_minor: now_ } : { settled_at: now })
+      .where("account_kind", "=", kind).where("account_id", "=", id).where("currency", "=", r.currency).where("settled_at", "is", null)
+      .execute();
+  }
 }
 
 /** POST /account/deletion and POST /driver/account/deletion: 202 AccountDeletion. */
@@ -70,13 +106,7 @@ export async function requestAccountDeletion(trx: Trx, kind: Kind, id: string, n
   if (await hasOpenTrip(trx, kind, id)) {
     throw new ApiError("conflict", "Finish or cancel your ride first, then delete your account.", { reason: "deletion_open_trip" });
   }
-  for (const d of await debtsOf(trx, kind, id, row)) {
-    await trx
-      .insertInto("kept_debts")
-      .values({ account_kind: kind, account_id: id, first_name: row.first_name, last_name: row.last_name, phone: row.phone, amount_minor: d.amountMinor, currency: d.currency, created_at: now })
-      .onConflict((c) => c.columns(["account_kind", "account_id", "currency"]).doNothing())
-      .execute();
-  }
+  await recordDebts(trx, kind, id, row, now);
   if (kind === "rider") await trx.updateTable("riders").set({ deletion_requested_at: now, updated_at: now }).where("rider_id", "=", id).execute();
   else {
     await trx.updateTable("drivers").set({ deletion_requested_at: now, online_status: "offline", online_since: null, updated_at: now }).where("driver_id", "=", id).execute();
@@ -98,14 +128,27 @@ export function isClosed(row: { deletion_requested_at?: Date | null; erased_at?:
 
 type Due = { kind: Kind; id: string; requestedAt: Date; country: string | null };
 
+const TERMINAL_LIST = [...TERMINAL] as string[];
+
 async function dueAccounts(ex: Executor, now: Date, limit: number): Promise<Due[]> {
-  // Due at the shortest period (30 days); a longer per-country period is checked per account below.
+  // Due at the shortest period (30 days); a longer per-country period is checked per account below. Review MUST-FIX 3:
+  // accounts blocked by an open trip or an open safety case are left out in SQL, so they never fill the batch.
   const cut = new Date(now.getTime() - 30 * DAY_MS);
-  const riders = await ex.selectFrom("riders").select(["rider_id as id", "deletion_requested_at"]).where("deletion_requested_at", "<=", cut).where("erased_at", "is", null).orderBy("deletion_requested_at").limit(limit).execute();
-  const drivers = await ex.selectFrom("drivers").select(["driver_id as id", "deletion_requested_at", "country"]).where("deletion_requested_at", "<=", cut).where("erased_at", "is", null).orderBy("deletion_requested_at").limit(limit).execute();
+  const riders = await sql<{ id: string; deletion_requested_at: Date }>`
+    SELECT r.rider_id AS id, r.deletion_requested_at FROM riders r
+    WHERE r.deletion_requested_at <= ${cut} AND r.erased_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.rider_id = r.rider_id AND NOT (t.status = ANY(${TERMINAL_LIST})))
+      AND NOT EXISTS (SELECT 1 FROM incidents i WHERE i.rider_id = r.rider_id AND i.status IN ('open', 'investigating'))
+    ORDER BY r.deletion_requested_at LIMIT ${limit}`.execute(ex);
+  const drivers = await sql<{ id: string; deletion_requested_at: Date; country: string | null }>`
+    SELECT d.driver_id AS id, d.deletion_requested_at, d.country FROM drivers d
+    WHERE d.deletion_requested_at <= ${cut} AND d.erased_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_id = d.driver_id AND NOT (t.status = ANY(${TERMINAL_LIST})))
+      AND NOT EXISTS (SELECT 1 FROM incidents i WHERE i.driver_id = d.driver_id AND i.status IN ('open', 'investigating'))
+    ORDER BY d.deletion_requested_at LIMIT ${limit}`.execute(ex);
   return [
-    ...riders.map((r) => ({ kind: "rider" as const, id: r.id, requestedAt: r.deletion_requested_at!, country: null })),
-    ...drivers.map((d) => ({ kind: "driver" as const, id: d.id, requestedAt: d.deletion_requested_at!, country: d.country })),
+    ...riders.rows.map((r) => ({ kind: "rider" as const, id: r.id, requestedAt: r.deletion_requested_at, country: null })),
+    ...drivers.rows.map((d) => ({ kind: "driver" as const, id: d.id, requestedAt: d.deletion_requested_at, country: d.country })),
   ];
 }
 
@@ -172,6 +215,13 @@ export async function eraseDueAccounts(ex: Executor, now: Date): Promise<{ due: 
     due += 1;
     if (why === "erase_off") continue;
     const one = async (trx: Trx) => {
+      // Review MUST-FIX 2: a request from before v0.18.140 (riders.deletion_requested_at since 0006) has no debt row yet:
+      // it is written now, from the live debt, before anything is emptied; then the amount is brought up to date.
+      const who = a.kind === "rider"
+        ? await trx.selectFrom("riders").select(["phone", "first_name", sql<string>`''`.as("last_name"), "outstanding_minor", "outstanding_currency"]).where("rider_id", "=", a.id).executeTakeFirstOrThrow()
+        : await trx.selectFrom("drivers").select(["phone", "first_name", "last_name", "country"]).where("driver_id", "=", a.id).executeTakeFirstOrThrow();
+      await recordDebts(trx, a.kind, a.id, who, now);
+      await refreshKeptDebts(trx, a.kind, a.id, now);
       const counts = await eraseOne(trx, a, now);
       await audit(trx, { adminId: null, action: "account.erase", targetType: a.kind, targetId: a.id, detail: { counts }, at: now });
     };
@@ -194,7 +244,13 @@ export async function eraseDueAccounts(ex: Executor, now: Date): Promise<{ due: 
       }
     }
   }
-  await ex.deleteFrom("kept_debts").where("settled_at", "is not", null).execute();
+  // Erased accounts: their kept debt follows the live debt; a settled one goes (only for erased accounts, so a debt is
+  // never dropped while the switch is off or before the erase).
+  const open = await ex.selectFrom("kept_debts").select(["account_kind", "account_id"]).distinct().where("settled_at", "is", null).limit(100).execute();
+  for (const d of open) await refreshKeptDebts(ex, d.account_kind, d.account_id, now);
+  await sql`DELETE FROM kept_debts k WHERE k.settled_at IS NOT NULL AND EXISTS (
+    SELECT 1 FROM riders r WHERE k.account_kind = 'rider' AND r.rider_id = k.account_id AND r.erased_at IS NOT NULL
+    UNION ALL SELECT 1 FROM drivers d WHERE k.account_kind = 'driver' AND d.driver_id = k.account_id AND d.erased_at IS NOT NULL)`.execute(ex);
   return { due, erased };
 }
 

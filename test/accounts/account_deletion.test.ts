@@ -3,12 +3,12 @@ import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { TEST_CODE } from "../../src/auth/service.js";
-import { ACCOUNT_ERASE, eraseDueAccounts } from "../../src/accounts/deletion.js";
+import { ACCOUNT_ERASE, ERASE_BATCH, eraseDueAccounts, refreshKeptDebts } from "../../src/accounts/deletion.js";
 import { HOUSEKEEPING_KINDS } from "../../src/jobs/housekeeping.js";
 import { RECURRING_JOBS } from "../../src/jobs/heartbeat.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { adminSession } from "../support/admin.js";
-import { insertTrip } from "../support/seed.js";
+import { insertRider, insertTrip } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
@@ -120,6 +120,31 @@ describe("account deletion (v0.18.140)", () => {
     expect(body.items.map((x: { accountKind: string; status: string }) => [x.accountKind, x.status]).sort()).toEqual([["driver", "erased"], ["rider", "erased"]]);
     expect(JSON.stringify(body)).not.toContain(SARA.slice(1));
     expect(body.items.find((x: { accountKind: string }) => x.accountKind === "rider").debt).toEqual({ amount: { amountMinor: 6500, currency: "SEK" }, settled: false });
+  });
+
+  it("review fixes: a kept debt follows the live amount and settles at 0; an old request gets its debt row; blocked accounts never fill the batch", async () => {
+    // Settles: the rider's debt goes to 0 (paid / marked paid) -> settled_at; an erased account's settled row goes.
+    await database.db.updateTable("riders").set({ outstanding_minor: 4000 }).where("rider_id", "=", sara).execute();
+    await refreshKeptDebts(database.db, "rider", sara, clock.now);
+    expect(Number((await database.db.selectFrom("kept_debts").select("amount_minor").where("account_id", "=", sara).executeTakeFirstOrThrow()).amount_minor)).toBe(4000);
+    await database.db.updateTable("riders").set({ outstanding_minor: 0, outstanding_currency: null }).where("rider_id", "=", sara).execute();
+    await refreshKeptDebts(database.db, "rider", sara, clock.now);
+    expect((await database.db.selectFrom("kept_debts").select("settled_at").where("account_id", "=", sara).executeTakeFirstOrThrow()).settled_at).not.toBeNull();
+    await eraseDueAccounts(database.db, clock.now);
+    expect((await database.db.selectFrom("kept_debts").select("account_id").where("account_id", "=", sara).execute()).length).toBe(0);
+    // Blocked accounts (open trip) ahead of a due one: the due one is still erased in the same run.
+    const old = new Date(clock.now.getTime() - 60 * DAY);
+    for (let i = 0; i < ERASE_BATCH + 2; i++) {
+      const id = await insertRider(database.db);
+      await database.db.updateTable("riders").set({ deletion_requested_at: old }).where("rider_id", "=", id).execute();
+      await insertTrip(database.db, id, { status: "searching" });
+    }
+    // A request from before v0.18.140 (column since 0006) with a debt and no kept_debts row.
+    const legacy = await insertRider(database.db);
+    await database.db.updateTable("riders").set({ first_name: "Lea", deletion_requested_at: new Date(old.getTime() + 1000), outstanding_minor: 3000, outstanding_currency: "SEK" }).where("rider_id", "=", legacy).execute();
+    expect(await eraseDueAccounts(database.db, clock.now)).toEqual({ due: 1, erased: 1 });
+    const kept = await database.db.selectFrom("kept_debts").selectAll().where("account_id", "=", legacy).executeTakeFirstOrThrow();
+    expect([kept.first_name, Number(kept.amount_minor), kept.settled_at]).toEqual(["Lea", 3000, null]);
   });
 
   it("account_erase is an hourly housekeeping kind with a heartbeat", () => {

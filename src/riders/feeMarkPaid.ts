@@ -1,3 +1,4 @@
+import { refreshKeptDebts } from "../accounts/deletion.js";
 import { z } from "zod";
 import type { Principal } from "../auth/guard.js";
 import { adminCoversZone } from "../auth/guard.js";
@@ -33,6 +34,8 @@ export async function markRiderFeePaid(trx: Trx, who: Principal, riderId: string
   // The original trip says paid too (no version change: nothing the driver or rider acts on changed).
   await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...((trip.cancellation ?? {}) as object), feeStatus: "paid" }) }).where("trip_id", "=", tripId).execute();
   await refreshOutstanding(trx, riderId, now);
+  // v0.18.140 (contract.json#accountDeletion.debt): a kept debt record follows the live amount (0 = settled).
+  await refreshKeptDebts(trx, "rider", riderId, now);
   await trx.updateTable("riders").set({ version: rider.version + 1, updated_at: now }).where("rider_id", "=", riderId).execute();
   await audit(trx, { adminId: who.subjectId, action: "rider.fee_mark_paid", targetType: "rider", targetId: riderId, zoneId: trip.zone_id, detail: { tripId, kind: fee.kind, amountMinor: Number(fee.amount_minor), currency: fee.currency, reason }, at: now });
   return adminRiderView(await trx.selectFrom("riders").selectAll().where("rider_id", "=", riderId).executeTakeFirstOrThrow(), currency, undefined, (await riderWallets(trx, [riderId])).get(riderId), who);
