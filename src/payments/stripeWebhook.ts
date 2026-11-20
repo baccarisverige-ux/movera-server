@@ -61,7 +61,9 @@ export async function handleStripeEvent(trx: Trx, uses: Partial<Record<StripePur
       return;
     case "charge.refunded": {
       if (payment.status !== "succeeded" && payment.status !== "refund_pending") return;
-      if (!sameMoney(object["amount_refunded"])) return; // only a full refund counts
+      // Only the refund the admin asked counts: the whole payment, or the overpaid part of a paid-twice one.
+      const asked = payment.paid_twice && Number(payment.overpaid_minor) > 0 ? Number(payment.overpaid_minor) : Number(payment.amount_minor);
+      if (!(Number(object["amount_refunded"]) === asked && String(object["currency"] ?? "").toUpperCase() === payment.currency)) return;
       await trx.updateTable("stripe_payments").set({ status: "refunded", refunded_at: now }).where("payment_intent_id", "=", intentId).execute();
       if (use) await use.refunded(trx, payment, now);
       return;

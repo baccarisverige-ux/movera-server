@@ -59,7 +59,8 @@ export interface StripeApi {
   readonly webhookSecret: string;
   createPaymentIntent(input: { amountMinor: number; currency: string; metadata: Record<string, string>; idempotencyKey: string }): Promise<PaymentIntent>;
   cancelPaymentIntent(id: string): Promise<void>;
-  refund(input: { paymentIntentId: string; idempotencyKey: string }): Promise<{ id: string }>;
+  /** amountMinor: a part refund (the overpaid part); missing = the whole payment. */
+  refund(input: { paymentIntentId: string; idempotencyKey: string; amountMinor?: number }): Promise<{ id: string }>;
 }
 
 /** The Stripe client from the server env, or null (off) unless all three keys are set and are TEST keys. */
@@ -97,9 +98,9 @@ function stripeHttp(secret: string, publishableKey: string, webhookSecret: strin
     async cancelPaymentIntent(id) {
       await post(`payment_intents/${encodeURIComponent(id)}/cancel`, {});
     },
-    async refund({ paymentIntentId, idempotencyKey }) {
+    async refund({ paymentIntentId, idempotencyKey, amountMinor }) {
       try {
-        const r = await post("refunds", { payment_intent: paymentIntentId }, idempotencyKey);
+        const r = await post("refunds", { payment_intent: paymentIntentId, ...(amountMinor !== undefined ? { amount: String(amountMinor) } : {}) }, idempotencyKey);
         return { id: String(r["id"]) };
       } catch (e) {
         // Money review (5): a refund already done (e.g. a first try whose database step rolled back) counts as done.

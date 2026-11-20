@@ -19750,7 +19750,10 @@ paths:
         missing = 400 reason_required; no succeeded payment = 409 invalid_transition, reason no_stripe_payment. A paidTwice
         payment is refunded first. Stripe''s charge_already_refunded counts as done (refund_pending, the webhook makes it
         refunded). A Reverse no-show of a fee paid by card flags those card payments paidTwice (overpaid = their amount) for
-        a card refund; only the rest goes to the wallet.'
+        a card refund; only the rest goes to the wallet. A paidTwice payment with an overpaid part gives back only that part
+        (a Stripe part refund; the fee stays paid); charge.refunded counts when amount_refunded equals what was asked. A Waive
+        of a fee that a card paid in part flags those card payments paidTwice (overpaid = their amount). Lock order also in
+        waive and reverse no-show: the rider row before the trip row.'
       tags:
       - Admin · People
       x-actor:
