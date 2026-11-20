@@ -35,7 +35,8 @@ export const SMS_CODE_LENGTH = SMS_SIGN_IN.codeLength;
 
 export const SIGN_IN_SMS_KIND = "sign_in_code";
 export const DAY_MS = 24 * 3_600_000;
-export type SmsSignInSetting = { enabled: boolean; dailyCap: number };
+/** v0.18.138 (contract.json#deviceCheck.setting): requireDeviceCheck, default off. */
+export type SmsSignInSetting = { enabled: boolean; dailyCap: number; requireDeviceCheck: boolean };
 
 const capOk = (value: unknown): value is number => {
   const [lo, hi] = SMS_SIGN_IN.dailyCapRange;
@@ -45,9 +46,9 @@ const capOk = (value: unknown): value is number => {
 /** CountryRules.smsSignIn as stored; anything missing or wrong reads as the default (off, the default cap). */
 export function smsSignInOf(rules: unknown): SmsSignInSetting {
   const raw = (rules as { smsSignIn?: unknown } | null | undefined)?.smsSignIn;
-  const value = (raw && typeof raw === "object" ? raw : {}) as { enabled?: unknown; dailyCap?: unknown };
-  // Only the exact boolean true switches it on (fail closed).
-  return { enabled: value.enabled === true, dailyCap: capOk(value.dailyCap) ? value.dailyCap : DEFAULTS.dailyCap };
+  const value = (raw && typeof raw === "object" ? raw : {}) as { enabled?: unknown; dailyCap?: unknown; requireDeviceCheck?: unknown };
+  // Only the exact boolean true switches it on (fail closed). requireDeviceCheck: only true asks for the check.
+  return { enabled: value.enabled === true, dailyCap: capOk(value.dailyCap) ? value.dailyCap : DEFAULTS.dailyCap, requireDeviceCheck: value.requireDeviceCheck === true };
 }
 
 /** The live setting of a country (its standard country_rules). Read from the table, never from a cache: a switch-off holds at once. */
@@ -64,8 +65,9 @@ export function checkSmsSignIn(zoneKind: string, document: unknown): void {
   const bad = (message: string) => new ApiError("invalid_request", message, { reason: "invalid_document" });
   if (!value || typeof value !== "object" || Array.isArray(value)) throw bad("smsSignIn must be an object.");
   const v = value as Record<string, unknown>;
-  for (const key of Object.keys(v)) if (key !== "enabled" && key !== "dailyCap") throw bad(`smsSignIn has no ${key.slice(0, 40)}.`);
+  for (const key of Object.keys(v)) if (key !== "enabled" && key !== "dailyCap" && key !== "requireDeviceCheck") throw bad(`smsSignIn has no ${key.slice(0, 40)}.`);
   if ("enabled" in v && typeof v["enabled"] !== "boolean") throw bad("smsSignIn.enabled must be true or false.");
+  if ("requireDeviceCheck" in v && typeof v["requireDeviceCheck"] !== "boolean") throw bad("smsSignIn.requireDeviceCheck must be true or false.");
   if ("dailyCap" in v && !capOk(v["dailyCap"])) throw bad(`smsSignIn.dailyCap must be a whole number from ${SMS_SIGN_IN.dailyCapRange[0]} to ${SMS_SIGN_IN.dailyCapRange[1]}.`);
 }
 

@@ -56,6 +56,17 @@ services:
         sync: false
       - key: ELKS_API_PASSWORD
         sync: false
+      # Contract v0.18.138 (deviceCheck): the real-phone check before a sign-in SMS, filled in Render's dashboard by the
+      # owner (never committed). Read only where a country's "Require device check" is on; a platform without its keys
+      # cannot pass. The two APPLE_ keys stay empty until the owner's Apple account exists (iPhone check inactive).
+      - key: PLAY_INTEGRITY_SERVICE_ACCOUNT
+        sync: false
+      - key: PLAY_INTEGRITY_PACKAGES
+        sync: false
+      - key: APPLE_APP_ATTEST_APP_IDS
+        sync: false
+      - key: APPLE_APP_ATTEST_ROOT_CA
+        sync: false
       # Road routes and distances for the test week (the rider's map draws the road, not a straight line). The public
       # OSRM demo server is for trying things out only; Movera's own OSRM replaces it (docs/DECISIONS.md, decision 4).
       - key: OSRM_URL

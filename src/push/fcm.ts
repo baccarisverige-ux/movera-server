@@ -9,7 +9,7 @@ import { createSign } from "node:crypto";
 
 export type ServiceAccount = { projectId: string; clientEmail: string; privateKey: string; tokenUri: string };
 
-export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; text: () => Promise<string> }>;
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<{ status: number; text: () => Promise<string> }>;
 
 export const SCOPES = ["https://www.googleapis.com/auth/firebase.messaging", "https://www.googleapis.com/auth/firebase.readonly"];
 
@@ -52,6 +52,8 @@ export class GoogleAccessTokens {
     private readonly account: ServiceAccount,
     private readonly fetchFn: FetchLike,
     private readonly clock: () => Date = () => new Date(),
+    /** v0.18.138: Play Integrity uses the same sign-in with its own scope (auth/deviceCheck.ts). */
+    private readonly scopes: string[] = SCOPES,
   ) {}
 
   async get(): Promise<string> {
@@ -67,7 +69,7 @@ export class GoogleAccessTokens {
 
   private async fetchToken(): Promise<string> {
     const now = this.clock();
-    const body = new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: signAssertion(this.account, SCOPES, now) }).toString();
+    const body = new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: signAssertion(this.account, this.scopes, now) }).toString();
     const res = await this.fetchFn(this.account.tokenUri, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
     const text = await res.text();
     if (res.status !== 200) throw new Error(`Google token endpoint answered ${res.status}`);

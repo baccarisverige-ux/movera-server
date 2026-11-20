@@ -17,6 +17,8 @@ export type CountryLimits = {
   writesPerAddressPerMinute: number;
   savedPlacesPerPerson: number;
   emergencyContactsPerPerson: number;
+  /** v0.18.138 (owner 2026-11-20 "Ok", contract.json#deviceCheck.deviceLimit): sign-in codes per app install per hour. */
+  codesPerDevicePerHour: number;
 };
 type Spec = { defaults: CountryLimits; ranges: Record<keyof CountryLimits, [number, number]> };
 export const COUNTRY_LIMITS = (contract as unknown as { countryLimits: Spec }).countryLimits;

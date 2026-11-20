@@ -48,20 +48,20 @@ describe("PUT / publish country_rules with smsSignIn", () => {
 
   it("off until published; the published switch and limit are what the sign-in reads; switching off holds at once", async () => {
     const admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
-    expect(await smsSignInFor(database.db, "SE")).toEqual({ enabled: false, dailyCap: 200 });
+    expect(await smsSignInFor(database.db, "SE")).toEqual({ enabled: false, dailyCap: 200, requireDeviceCheck: false });
     const saved = await call(app, "PUT", "/admin/config/country_rules", admin, { expectedVersion: 1, country: "SE", document: rules({ enabled: true, dailyCap: 350 }) });
     expect(saved.statusCode, saved.body).toBe(200);
     // A draft changes nothing.
-    expect(await smsSignInFor(database.db, "SE")).toEqual({ enabled: false, dailyCap: 200 });
+    expect(await smsSignInFor(database.db, "SE")).toEqual({ enabled: false, dailyCap: 200, requireDeviceCheck: false });
     const published = await call(app, "POST", "/admin/config/country_rules/publish", admin, { country: "SE", expectedVersion: saved.json().version });
     expect(published.statusCode, published.body).toBeLessThan(300);
-    expect(await smsSignInFor(database.db, "SE")).toEqual({ enabled: true, dailyCap: 350 });
-    expect(await smsSignInFor(database.db, "FR")).toEqual({ enabled: false, dailyCap: 200 });
+    expect(await smsSignInFor(database.db, "SE")).toEqual({ enabled: true, dailyCap: 350, requireDeviceCheck: false });
+    expect(await smsSignInFor(database.db, "FR")).toEqual({ enabled: false, dailyCap: 200, requireDeviceCheck: false });
     const draft = await call(app, "GET", "/admin/config/country_rules?country=SE", admin);
     const off = await call(app, "PUT", "/admin/config/country_rules", admin, { expectedVersion: draft.json().version, country: "SE", document: rules({ enabled: false, dailyCap: 350 }) });
     expect(off.statusCode, off.body).toBe(200);
     const offLive = await call(app, "POST", "/admin/config/country_rules/publish", admin, { country: "SE", expectedVersion: off.json().version });
     expect(offLive.statusCode, offLive.body).toBeLessThan(300);
-    expect(await smsSignInFor(database.db, "SE")).toEqual({ enabled: false, dailyCap: 350 });
+    expect(await smsSignInFor(database.db, "SE")).toEqual({ enabled: false, dailyCap: 350, requireDeviceCheck: false });
   });
 });
