@@ -4,6 +4,7 @@ import { liveDocument } from "../config/service.js";
 import { ApiError } from "../http/errors.js";
 import { DRIVER_ASSIGNED, RIDER_ONBOARD, TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { readOwnTrip } from "./commands.js";
+import type { TripRow } from "../db/tripLog.js";
 
 /**
  * Contract v0.18.144 (contract.json#liveLocation; owner 2026-11-20 "add share location on both app for rider and driver so
@@ -78,11 +79,12 @@ export async function shareLiveLocation(
   tripId: string,
   body: LiveLocationBody,
   now: Date,
+  ownTrip?: TripRow,
 ): Promise<{ sharing: boolean; sendEverySeconds: number }> {
   if (body.sharing && (body.lat === undefined || body.lng === undefined)) {
     throw new ApiError("invalid_request", "Send lat and lng with sharing true.", { reason: "invalid_body" });
   }
-  const trip = await readOwnTrip(db, tripId, who);
+  const trip = ownTrip ?? (await readOwnTrip(db, tripId, who));
   const status = trip.status as TripStatus;
   // contract.json#liveLocation.window: accept until the rider is on board (pickup); nothing is relayed after pickup.
   if (!DRIVER_ASSIGNED.has(status) || RIDER_ONBOARD.has(status) || TERMINAL.has(status)) {

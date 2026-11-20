@@ -23,6 +23,7 @@ import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
 import { streamTrip } from "../realtime/streams.js";
 import { shareLiveLocation } from "./liveLocation.js";
+import { readOwnTrip } from "./commands.js";
 import { DriverCancelBody, driverCancel } from "./rideRoutes.js";
 import { activeTrip, createTrip, getTrip, movePickup, raisePrice, riderCancel, riderTrips, setCancelReason, riderOnTheWay, withDriverPosition } from "./service.js";
 
@@ -205,8 +206,11 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   app.put(`${API_PREFIX}/trips/:tripId/live-location`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    const side = { actor: who.actor as "rider" | "driver", subjectId: who.subjectId };
+    // Someone else's trip is 404 before the body is read (owner-scoped route, e2e route matrix).
+    const trip = await readOwnTrip(deps.db, tripId, side);
     const body = parseBody(LiveLocationBody, request.body);
-    return shareLiveLocation(deps.db, { actor: who.actor as "rider" | "driver", subjectId: who.subjectId }, tripId, body, now());
+    return shareLiveLocation(deps.db, side, tripId, body, now(), trip);
   });
 
   app.get(`${API_PREFIX}/trips/:tripId/messages`, async (request) => {
