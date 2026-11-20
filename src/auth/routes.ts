@@ -16,6 +16,9 @@ const OtpRequestBody = z.object({
   app: z.enum(["rider", "driver"]),
   linkToken: z.string().min(1).optional(),
   locale: Language.optional(),
+  /** v0.18.138 (contract.json#deviceCheck): the app install id and the real-phone check (both optional). */
+  installId: z.string().regex(/^[A-Za-z0-9_-]{16,64}$/).optional(),
+  deviceCheck: z.strictObject({ platform: z.enum(["android", "ios"]), token: z.string().min(1).max(16384), keyId: z.string().min(1).max(128).optional() }).optional(),
 });
 const OtpVerifyBody = z.object({
   phone: z.string(),
@@ -45,7 +48,7 @@ export async function authRoutes(app: FastifyInstance, deps: AuthDeps): Promise<
 
   app.post(`${API_PREFIX}/auth/otp/request`, async (request) => {
     const body = parseBody(OtpRequestBody, request.body);
-    return requestOtp(deps, { phone: body.phone, app: body.app, locale: body.locale, linkToken: body.linkToken, requestId: request.id }, client(request));
+    return requestOtp(deps, { phone: body.phone, app: body.app, locale: body.locale, linkToken: body.linkToken, requestId: request.id, installId: body.installId, deviceCheck: body.deviceCheck }, client(request));
   });
 
   app.post(`${API_PREFIX}/auth/otp/verify`, async (request) => {

@@ -22,6 +22,11 @@ week change the plans to `starter` (server) and `basic-256mb` (database). The lo
      `sign_in_restricted`, as before. With both, a country still needs its admin switch (Pricing › Tips & limits ›
      "Real SMS sign-in codes", default off). Optional `SMS_SENDER_NAME` (3-11 letters and digits; default `Movera`).
      Only sign-in codes use these keys (invitation and SOS-contact SMS stay off). Owner steps: Rules `plan/SMS-SETUP-STEPS.md`.
+   - `PLAY_INTEGRITY_SERVICE_ACCOUNT` and `PLAY_INTEGRITY_PACKAGES` (contract v0.18.138 `deviceCheck`, Android): the
+     JSON of a Google service account allowed to decode Play Integrity tokens, and the app package names (comma list).
+     `APPLE_APP_ATTEST_APP_IDS` (`<Team ID>.<bundle id>`, comma list) and `APPLE_APP_ATTEST_ROOT_CA` (Apple's public App
+     Attestation Root CA, PEM): iPhone, INACTIVE until the owner's Apple account exists. Read only where a country's
+     "Require device check" switch is on (default off); a platform without its keys cannot pass (no SMS).
 4. Wait until `movera-server` says **Live**. Its address is on the service page, e.g.
    `https://movera-server-xxxx.onrender.com`. Check `…/healthz` shows `"env":"staging"`.
 

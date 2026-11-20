@@ -100,6 +100,17 @@ const schema = z.object({
   ELKS_API_PASSWORD: z.string().optional(),
   /** The SMS sender name (3-11 letters and digits). Unset or not usable: contract.json#smsSignIn.sender ("Movera"). */
   SMS_SENDER_NAME: z.string().optional(),
+  /**
+   * Contract v0.18.138 (contract.json#deviceCheck.serverKeys): the real-phone check before a sign-in SMS. Set by the
+   * owner on Render (never committed, never logged); read leniently: a missing or wrong value never stops the server,
+   * that platform's check then cannot pass (fail closed; it matters only where CountryRules.smsSignIn.requireDeviceCheck
+   * is on). Android: the Google service account JSON allowed to decode Play Integrity tokens + the package names.
+   * iPhone (INACTIVE until the owner's Apple account): <Team ID>.<bundle id> list + the Apple App Attestation Root CA PEM.
+   */
+  PLAY_INTEGRITY_SERVICE_ACCOUNT: z.string().optional(),
+  PLAY_INTEGRITY_PACKAGES: z.string().optional(),
+  APPLE_APP_ATTEST_APP_IDS: z.string().optional(),
+  APPLE_APP_ATTEST_ROOT_CA: z.string().optional(),
   /** The sender of those e-mails. Unset: Resend's own test sender "Movera <onboarding@resend.dev>" (no own domain yet). */
   EMAIL_FROM: z.string().min(3).max(200).optional(),
   /** One send waits at most this long for Resend, then counts as not sent (pending_provider). */

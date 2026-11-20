@@ -65,6 +65,10 @@ export interface OtpSessionsTable {
   verified: Generated<boolean>;
   /** Checker MED 3: an admin lifted the wrong-code lock (the row no longer counts). */
   unlocked_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /** v0.18.138 (contract.json#deviceCheck.installId, migration 0125): the app install that asked (per-install limit). */
+  install_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.138: SHA-256 of the device check token used for this code (a token is good once). */
+  device_check_sha256: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 /** v0.18.14: a pending e-mail change (code sent to the new address). */

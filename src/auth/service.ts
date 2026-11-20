@@ -18,6 +18,7 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 import type { CodeSmsSender } from "../sms/elks.js";
 import { pokeAlerts } from "../alerts/detector.js";
+import { deviceBinding, deviceTokenHash, runDeviceCheck, type DeviceCheckInput, type DeviceCheckOutcome, type DeviceVerifiers } from "./deviceCheck.js";
 import { DAY_MS, SIGN_IN_SMS_KIND, SMS_CODE_LENGTH, SMS_NO_ANSWER, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
 
 /**
@@ -134,6 +135,12 @@ export type AuthDeps = {
    * inject a fake). None: every number that is not a test number is sign_in_restricted, as before.
    */
   signInSms?: CodeSmsSender | undefined;
+  /**
+   * v0.18.138 (contract.json#deviceCheck): the real-phone check per platform (Play Integrity, App Attest), only those
+   * whose server keys are set. Read only where CountryRules.smsSignIn.requireDeviceCheck is on; a platform without a
+   * verifier cannot pass (fail closed).
+   */
+  deviceVerifiers?: DeviceVerifiers | undefined;
   /** For the SMS flow's warnings; never given the code or a full phone number. */
   warn?: ((data: Record<string, unknown>, message: string) => void) | undefined;
   clock?: () => Date;
@@ -189,6 +196,25 @@ function rateLimited(message: string, retryAfterSeconds: number, reason: string)
   return new ApiError("rate_limited", message, { reason, retryAfterSeconds: Math.max(1, Math.ceil(retryAfterSeconds)) });
 }
 
+/** v0.18.138 (contract.json#deviceCheck.errors): 403 device_check_failed; the log names only the platform and why. */
+function deviceCheckFailed(deps: AuthDeps, why: string, platform: string | undefined): ApiError {
+  deps.warn?.({ platform: platform ?? "none", why }, "sign-in device check failed");
+  return new ApiError("forbidden", "This phone could not be checked.", { reason: "device_check_failed" });
+}
+
+/**
+ * v0.18.138: runs the device check only when it can matter: a real number of a served country with an SMS sender, whose
+ * country has requireDeviceCheck on. undefined = not run (not needed, or nothing to check).
+ */
+async function preDeviceCheck(deps: AuthDeps, input: { phone: string; app: App; installId?: string | undefined; deviceCheck?: DeviceCheckInput | undefined }): Promise<DeviceCheckOutcome | undefined> {
+  if (input.deviceCheck === undefined || deps.signInSms === undefined) return undefined;
+  const country = smsCountryOf(input.phone);
+  if (country === null || !(await smsSignInFor(deps.db, country)).requireDeviceCheck) return undefined;
+  if (deps.testSignInEnabled && (await isTestPhone(deps.db, input.phone, input.app))) return undefined;
+  if (input.installId === undefined) return { ok: false, why: "no_install_id" };
+  return runDeviceCheck(deps.deviceVerifiers ?? {}, input.deviceCheck, deviceBinding(input.app, input.phone, input.installId));
+}
+
 /** Safety cap for fastTestSignIn: codes per test number per minute. */
 export const TEST_CODES_PER_MINUTE = 30;
 
@@ -201,12 +227,16 @@ export type OtpChallenge = { requestId: string; sessionId: string; expiresAt: st
 
 export async function requestOtp(
   deps: AuthDeps,
-  input: { phone: string; app: App; locale?: string | undefined; linkToken?: string | undefined; requestId: string },
+  input: { phone: string; app: App; locale?: string | undefined; linkToken?: string | undefined; requestId: string; installId?: string | undefined; deviceCheck?: DeviceCheckInput | undefined },
   client: ClientInfo,
 ): Promise<OtpChallenge> {
   const now = deps.clock?.() ?? new Date();
   if (!PHONE.test(input.phone)) throw badRequest("Send the phone number in international form, e.g. +46701234567.", "invalid_phone");
   if (input.linkToken !== undefined) await loadLinkToken(deps.db, input.linkToken, input.app, now);
+  // v0.18.138 (contract.json#deviceCheck.check): the real-phone check talks to Google, so it runs BEFORE the
+  // transaction (no lock or connection waits on it), and only where the country asks for it. Its result is applied
+  // inside, after the limits (deviceCheck.order); a switch turned on meanwhile finds no result and refuses (fail closed).
+  const deviceOutcome = await preDeviceCheck(deps, input);
 
   let capHit = false;
   const started = await deps.db.transaction().execute(async (trx): Promise<{ challenge: OtpChallenge; sms?: PendingSms }> => {
@@ -223,6 +253,23 @@ export async function requestOtp(
     }
 
     const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    const fastPath = isTest && deps.testSignInEnabled && deps.fastTestSignIn === true;
+    const limits = await countryLimitsFor(trx, countryOfPhone(input.phone));
+    // v0.18.138 (contract.json#deviceCheck.deviceLimit): codes per app install per hour, over every number and both
+    // apps; one start at a time per install so the count cannot be raced. No installId: not counted here.
+    if (input.installId !== undefined && !fastPath) {
+      await sql`SELECT pg_advisory_xact_lock(hashtext(${`otp-install:${input.installId}`}))`.execute(trx);
+      const fromInstall = await trx
+        .selectFrom("otp_sessions")
+        .select((eb) => [eb.fn.countAll<string>().as("n"), eb.fn.min("created_at").as("oldest")])
+        .where("install_id", "=", input.installId)
+        .where("created_at", ">", hourAgo)
+        .executeTakeFirstOrThrow();
+      if (Number(fromInstall.n) >= limits.codesPerDevicePerHour) {
+        const oldest = new Date(fromInstall.oldest as Date | string).getTime();
+        throw rateLimited("Too many codes for this number. Try again later.", (oldest + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
+      }
+    }
     const recent = await trx
       .selectFrom("otp_sessions")
       .select(["created_at"])
@@ -231,7 +278,7 @@ export async function requestOtp(
       .where("created_at", ">", hourAgo)
       .orderBy("created_at", "desc")
       .execute();
-    const fast = isTest && deps.testSignInEnabled && deps.fastTestSignIn === true;
+    const fast = fastPath;
     if (fast) {
       const minuteAgo = now.getTime() - 60_000;
       const lastMinute = recent.filter((row) => row.created_at.getTime() > minuteAgo);
@@ -247,7 +294,6 @@ export async function requestOtp(
         throw rateLimited("Wait a moment before asking for a new code.", OTP.retryAfterSeconds - waited, "otp_resend_too_soon");
       }
     }
-    const limits = await countryLimitsFor(trx, countryOfPhone(input.phone));
     if (!fast && recent.length >= limits.codesPerPhonePerHour) {
       const oldest = recent[recent.length - 1]!;
       throw rateLimited("Too many codes for this number. Try again later.", (oldest.created_at.getTime() + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
@@ -268,6 +314,17 @@ export async function requestOtp(
         const oldest = new Date(fromIp.oldest as Date | string).getTime();
         throw rateLimited("Too many sign-in attempts. Try again later.", (oldest + 3_600_000 - now.getTime()) / 1000, "otp_too_many");
       }
+    }
+
+    // v0.18.138 (contract.json#deviceCheck.setting): with the country's switch on, a real number needs a valid check
+    // that was never used before; else 403 device_check_failed, nothing sent, nothing counted on the daily cap.
+    let deviceTokenSha: string | null = null;
+    if (!isTest && setting !== undefined && setting.requireDeviceCheck) {
+      if (deviceOutcome === undefined || !deviceOutcome.ok || input.deviceCheck === undefined) throw deviceCheckFailed(deps, deviceOutcome === undefined ? "missing" : deviceOutcome.ok ? "missing" : deviceOutcome.why, input.deviceCheck?.platform);
+      deviceTokenSha = deviceTokenHash(input.deviceCheck);
+      await sql`SELECT pg_advisory_xact_lock(hashtext(${`otp-check:${deviceTokenSha}`}))`.execute(trx);
+      const used = await trx.selectFrom("otp_sessions").select("session_id").where("device_check_sha256", "=", deviceTokenSha).executeTakeFirst();
+      if (used !== undefined) throw deviceCheckFailed(deps, "used", input.deviceCheck.platform);
     }
 
     // v0.18.133 (contract.json#smsSignIn.dailyCap): the cost guard, after every other limit and right before the
@@ -306,6 +363,8 @@ export async function requestOtp(
         is_test: isTest,
         locale: input.locale ?? null,
         ip: client.ip ?? null,
+        install_id: input.installId ?? null,
+        device_check_sha256: deviceTokenSha,
         max_attempts: OTP.maxAttempts,
         expires_at: expiresAt,
         created_at: now,
