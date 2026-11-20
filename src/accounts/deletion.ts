@@ -232,22 +232,34 @@ export async function eraseDueAccounts(ex: Executor, now: Date): Promise<{ due: 
         await one(ex as Trx);
         await sql`RELEASE SAVEPOINT account_erase_one`.execute(ex);
         erased += 1;
-      } catch {
+      } catch (error) {
         await sql`ROLLBACK TO SAVEPOINT account_erase_one`.execute(ex);
+        console.warn(JSON.stringify({ msg: "account_erase failed, tried again next run", kind: a.kind, accountId: a.id, error: String(error) }));
       }
     } else {
       try {
         await (ex as unknown as { transaction: () => { execute: (f: (trx: Trx) => Promise<void>) => Promise<void> } }).transaction().execute(one);
         erased += 1;
-      } catch {
+      } catch (error) {
         // Tried again next run.
+        console.warn(JSON.stringify({ msg: "account_erase failed, tried again next run", kind: a.kind, accountId: a.id, error: String(error) }));
       }
     }
   }
   // Erased accounts: their kept debt follows the live debt; a settled one goes (only for erased accounts, so a debt is
   // never dropped while the switch is off or before the erase).
-  const open = await ex.selectFrom("kept_debts").select(["account_kind", "account_id"]).distinct().where("settled_at", "is", null).limit(100).execute();
-  for (const d of open) await refreshKeptDebts(ex, d.account_kind, d.account_id, now);
+  // Every open record, in pages of 100 in a fixed order. Other money paths (admin trip refunds / fee waivers, a payment
+  // in the car) are not hooked: this hourly run brings their records up to date (review nit, noted).
+  let after: [string, string] | null = null;
+  for (;;) {
+    let q = ex.selectFrom("kept_debts").select(["account_kind", "account_id"]).distinct().where("settled_at", "is", null);
+    if (after) { const [k, id] = after; q = q.where((eb) => eb.or([eb("account_kind", ">", k as Kind), eb.and([eb("account_kind", "=", k as Kind), eb("account_id", ">", id)])])); }
+    const open = await q.orderBy("account_kind").orderBy("account_id").limit(100).execute();
+    for (const d of open) await refreshKeptDebts(ex, d.account_kind, d.account_id, now);
+    if (open.length < 100) break;
+    const last = open[open.length - 1]!;
+    after = [last.account_kind, last.account_id];
+  }
   await sql`DELETE FROM kept_debts k WHERE k.settled_at IS NOT NULL AND EXISTS (
     SELECT 1 FROM riders r WHERE k.account_kind = 'rider' AND r.rider_id = k.account_id AND r.erased_at IS NOT NULL
     UNION ALL SELECT 1 FROM drivers d WHERE k.account_kind = 'driver' AND d.driver_id = k.account_id AND d.erased_at IS NOT NULL)`.execute(ex);
