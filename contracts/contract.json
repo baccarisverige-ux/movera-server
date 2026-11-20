@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.132",
+  "version": "0.18.148",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -10561,5 +10561,119 @@
     "driver": "realtime.oneStream true: open GET /driver/stream (off-trip and on a trip; the trip stream as before) and give its events to the two existing readers (offers by sequence, settings by kind); do not open the two old streams. false or missing, or GET /driver/stream answers 404 (an older server): the two streams as before, and after a 404 the app does not try the one stream again until it restarts. When the switch changes, the app closes what it holds and opens the other within one settings update.",
     "rider": "Not affected: the rider app has no offer feed; GET /rider/config/stream and the trip stream are unchanged.",
     "admin": "Admin › Dispatch, per zone: the switch 'One live connection per driver phone' (default off), with an 'i' text (what it does, what it saves, who it affects, when to turn it on, the way back, older apps). It is the way back without an app release."
+  },
+  "sosPressTime": {
+    "note": "v0.18.148 (CONTRACT.md §15 SOS by press time; Rules LAUNCH-RULE.md 'Queued (after freeze)' item 1, owner 2026-11-20 'SOS kept and retried; after 30 min or any refusal the driver sees SOS not sent, call 112', plan/NUMBERS.md; Rule 0; X-Api-Version stays 0.5; additive: one optional Incident field, three refusal reasons; server migration 0129 (incidents.pressed_at); no admin setting). Before: an SOS that reached the server after the trip ended was 409 trip_not_live, so a kept or queued SOS (no network at the press) could only expire. Now the server judges an SOS of a trip that has ended by its press time `at`.",
+    "at": "SosRequest.at (required, as before) = the moment the rider or driver pressed SOS, by the phone's clock (ISO 8601). The app sets it once at the press and sends the SAME body and the SAME Idempotency-Key on every retry of that press (also after an app restart).",
+    "liveTrip": "While the trip is live (safety.sos.riderStatuses / driverStatuses) the SOS is always taken, whatever `at` says: a wrong phone clock never blocks a live SOS (unchanged).",
+    "endedTrip": "When the trip has ended (tripStatus.terminal; its end = trips.ended_at, else the trip's last change) the SOS is taken when ALL hold: (1) `at` is not more than futureSkewSeconds after the server's clock; (2) the SOS arrives not more than maxAgeSeconds after `at`; (3) `at` is from the driver assignment (trips.accepted_at) until afterEndSeconds after the end. It then opens or joins the trip's sos incident exactly like a live SOS (alarm, escalation, admin feed, the driver's emergency-contacts SMS of §92) and answers the same SosReceipt.",
+    "afterEndSeconds": 1800,
+    "maxAgeSeconds": 1800,
+    "futureSkewSeconds": 120,
+    "refusals": {
+      "sos_at_in_future": "409 invalid_transition, reason sos_at_in_future: the trip has ended and `at` is more than futureSkewSeconds after the server's clock.",
+      "sos_too_old": "409 invalid_transition, reason sos_too_old: the trip has ended and the SOS arrives more than maxAgeSeconds after `at`.",
+      "sos_not_during_trip": "409 invalid_transition, reason sos_not_during_trip: the trip has ended and `at` is before the driver assignment (or the trip never had one) or more than afterEndSeconds after the end.",
+      "unchanged": "A trip that is neither live nor ended (the rider still searching or offered, a booked ride not started) stays 409 invalid_transition, reason trip_not_live; another person's trip stays 404 trip_not_found. Each 409 carries the trip (projection)."
+    },
+    "idempotency": "One press = one Idempotency-Key = one case: the same key with the same body replays the first SosReceipt (no second incident, no second SMS), also after the trip ended; the same key with another body is 409 conflict, reason idempotency_key_reused. A new press, or the other side, while the trip's sos incident is open joins it (one open SOS per trip, as before).",
+    "incident": "Incident.pressedAt (optional, sos only): the `at` of the SOS that opened the case; Incident.openedAt is when the server received it. A later SOS that joins the case leaves pressedAt unchanged. Cases opened before v0.18.148 and other kinds have no pressedAt.",
+    "admin": "The SOS case shows the press time and the received time side by side (\"Pressed\" / \"Received\", admin area c53), and the delay between them when it is more than 60 seconds. No admin setting: the windows are one fixed safety rule, the same in every zone, equal to the apps' 30-minute retry limit (owner 2026-11-20 'after 30 min').",
+    "apps": "Driver and rider apps: the SOS press is kept on the phone before the first try. Network trouble, 5xx, 408, 429 and 401 (after a sign-in renewal) keep it and retry with the same key and body. Any refusal (409 any reason, 404, 403, 400) is final: the kept SOS is dropped and the persistent 'SOS not sent, call 112' notice is shown (the 112 call was already opened at the press). Still not answered maxAgeSeconds after `at`: dropped, the same notice. A 200 is 'SOS sent' as before.",
+    "scenarios": [
+      {
+        "id": "live_trip_wrong_clock",
+        "actor": "driver",
+        "trip": "in_trip",
+        "atFromEndSeconds": null,
+        "atFromNowSeconds": -3600,
+        "expect": "taken",
+        "note": "Ali's phone clock is an hour behind; the trip is live: taken."
+      },
+      {
+        "id": "pressed_in_trip_arrives_after_end",
+        "actor": "driver",
+        "trip": "completed",
+        "atFromEndSeconds": -300,
+        "arrivesAfterAtSeconds": 900,
+        "expect": "taken",
+        "note": "Ali pressed 5 min before drop-off with no network; it reaches Movera 10 min after the trip ended: one case, pressedAt = at, openedAt = arrival."
+      },
+      {
+        "id": "rider_pressed_after_end",
+        "actor": "rider",
+        "trip": "completed",
+        "atFromEndSeconds": 600,
+        "arrivesAfterAtSeconds": 5,
+        "expect": "taken",
+        "note": "Sara presses SOS on the finish screen 10 min after drop-off: taken."
+      },
+      {
+        "id": "pressed_after_window",
+        "actor": "rider",
+        "trip": "completed",
+        "atFromEndSeconds": 1801,
+        "arrivesAfterAtSeconds": 5,
+        "expect": "409 sos_not_during_trip"
+      },
+      {
+        "id": "pressed_before_driver",
+        "actor": "rider",
+        "trip": "cancelled_by_rider",
+        "atBeforeAcceptSeconds": 60,
+        "arrivesAfterAtSeconds": 5,
+        "expect": "409 sos_not_during_trip"
+      },
+      {
+        "id": "arrives_too_late",
+        "actor": "driver",
+        "trip": "completed",
+        "atFromEndSeconds": -60,
+        "arrivesAfterAtSeconds": 1801,
+        "expect": "409 sos_too_old",
+        "note": "The app shows 'SOS not sent, call 112' (it had already dropped it at 30 min)."
+      },
+      {
+        "id": "at_in_future",
+        "actor": "driver",
+        "trip": "completed",
+        "atFromNowSeconds": 300,
+        "expect": "409 sos_at_in_future"
+      },
+      {
+        "id": "small_clock_skew",
+        "actor": "driver",
+        "trip": "completed",
+        "atFromNowSeconds": 60,
+        "expect": "taken",
+        "note": "60 s ahead is within futureSkewSeconds (the end was a moment ago)."
+      },
+      {
+        "id": "same_key_twice_after_end",
+        "actor": "driver",
+        "trip": "completed",
+        "atFromEndSeconds": -120,
+        "sentTwiceWithSameKey": true,
+        "expect": "taken once",
+        "note": "Both answers are the same SosReceipt; one incident, one SMS."
+      },
+      {
+        "id": "searching_trip",
+        "actor": "rider",
+        "trip": "searching",
+        "atFromNowSeconds": 0,
+        "expect": "409 trip_not_live",
+        "note": "Unchanged (G14)."
+      },
+      {
+        "id": "other_persons_trip",
+        "actor": "driver",
+        "trip": "completed (another driver)",
+        "atFromEndSeconds": -60,
+        "arrivesAfterAtSeconds": 5,
+        "expect": "404 trip_not_found",
+        "note": "Unchanged."
+      }
+    ]
   }
 }

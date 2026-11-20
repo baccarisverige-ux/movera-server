@@ -104,6 +104,8 @@ export function incidentView(row: IncidentRow, driverPosition?: unknown): Record
     rideCheck: row.ride_check ?? undefined,
     // v0.18.101 §92: the SMS to the driver's emergency contacts of this case.
     contactsSms: row.contacts_sms ?? undefined,
+    // v0.18.148 (contract.json#sosPressTime.incident): when the SOS that opened the case was pressed.
+    pressedAt: iso(row.pressed_at),
   };
   for (const [k, v] of Object.entries(optional)) if (v !== undefined) out[k] = v;
   return out;
@@ -123,7 +125,7 @@ export async function appendIncidentEvent(trx: Trx, row: IncidentRow, kind: Even
 export async function openIncident(
   trx: Trx,
   trip: TripRow,
-  input: { kind: string; raisedBy: "rider" | "driver" | "system"; position?: Position | undefined; alarm?: boolean; rideCheck?: Record<string, unknown> },
+  input: { kind: string; raisedBy: "rider" | "driver" | "system"; position?: Position | undefined; alarm?: boolean; rideCheck?: Record<string, unknown>; pressedAt?: Date },
   now: Date,
 ): Promise<IncidentRow> {
   const driverFix = await latestFix(trx, trip.driver_id);
@@ -142,6 +144,7 @@ export async function openIncident(
       driver_fix: driverFix ? JSON.stringify(driverFix) : null,
       alarm: input.alarm ?? true,
       ride_check: input.rideCheck ? JSON.stringify(input.rideCheck) : null,
+      pressed_at: input.pressedAt ?? null,
       opened_at: now,
       updated_at: now,
     })
@@ -161,6 +164,25 @@ export async function openOf(ex: Executor, tripId: string, kind: string): Promis
 
 /* ---------------------------------------------------------------- SOS */
 
+type PressTime = { afterEndSeconds: number; maxAgeSeconds: number; futureSkewSeconds: number };
+/** v0.18.148: the press-time windows of an SOS on a trip that has ended (fixed, the same in every zone). */
+export const SOS_PRESS_TIME = (contract as unknown as { sosPressTime: PressTime }).sosPressTime;
+const TERMINAL = (contract as unknown as { tripStatus: { terminal: string[] } }).tripStatus.terminal;
+
+/**
+ * v0.18.148 (contract.json#sosPressTime.endedTrip): the refusal reason for an SOS pressed at `at` on a trip that has
+ * ended, or null when it is taken. The end is trips.ended_at, else the trip's last change; the trip starts at the
+ * driver assignment (accepted_at). Checked in this order: ahead of the clock, too old, outside the trip.
+ */
+export function sosPressRefusal(trip: Pick<TripRow, "accepted_at" | "ended_at" | "updated_at">, at: Date, now: Date): "sos_at_in_future" | "sos_too_old" | "sos_not_during_trip" | null {
+  const t = at.getTime();
+  if (t - now.getTime() > SOS_PRESS_TIME.futureSkewSeconds * 1000) return "sos_at_in_future";
+  if (now.getTime() - t > SOS_PRESS_TIME.maxAgeSeconds * 1000) return "sos_too_old";
+  const end = new Date(trip.ended_at ?? trip.updated_at).getTime();
+  if (!trip.accepted_at || t < new Date(trip.accepted_at).getTime() || t > end + SOS_PRESS_TIME.afterEndSeconds * 1000) return "sos_not_during_trip";
+  return null;
+}
+
 export async function raiseSos(
   trx: Trx,
   who: { actor: "rider" | "driver"; subjectId: string },
@@ -173,10 +195,17 @@ export async function raiseSos(
   const own = who.actor === "rider" ? trip.rider_id === who.subjectId : trip.driver_id === who.subjectId;
   if (!own) throw notFound("No such trip.", "trip_not_found");
   const live = who.actor === "rider" ? SAFETY.sos.riderStatuses : SAFETY.sos.driverStatuses;
+  const pressedAt = new Date(body.at);
+  // v0.18.148 (sosPressTime): a live trip always takes it (a wrong phone clock never blocks a live SOS); a trip that
+  // has ended takes it by its press time; a trip that is neither (still searching, a booked ride) never.
   if (!live.includes(trip.status)) {
-    throw new ApiError("invalid_transition", "SOS works only during a live trip.", { reason: "trip_not_live", projection: tripProjection(trip, who.actor) });
+    if (!TERMINAL.includes(trip.status)) {
+      throw new ApiError("invalid_transition", "SOS works only during a live trip.", { reason: "trip_not_live", projection: tripProjection(trip, who.actor) });
+    }
+    const refusal = sosPressRefusal(trip, pressedAt, now);
+    if (refusal) throw new ApiError("invalid_transition", "This SOS was not pressed during this trip or came too late.", { reason: refusal, projection: tripProjection(trip, who.actor) });
   }
-  const row = (await openOf(trx, tripId, "sos")) ?? (await openIncident(trx, trip, { kind: "sos", raisedBy: who.actor, position: body.position }, now));
+  const row = (await openOf(trx, tripId, "sos")) ?? (await openIncident(trx, trip, { kind: "sos", raisedBy: who.actor, position: body.position, pressedAt }, now));
   if (who.actor === "rider") return { incidentId: row.incident_id, tripId, receivedAt: now.toISOString() };
   // v0.18.101 §92: the case's first driver SOS texts his emergency contacts (rows kept as skipped while no SMS company
   // is connected); later SOS answer the stored result. The SMS step never fails the SOS (own savepoint).
