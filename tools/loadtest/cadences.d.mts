@@ -1,6 +1,8 @@
 // Types for cadences.mjs (tsconfig has no allowJs).
 export type CadenceEntry = { id: string; method: string; every: number; source: string; timer?: string; immediate?: boolean; batch?: string[]; dynamic?: { field: string; min: number; max: number } };
 export const CADENCES: Readonly<Record<"rider" | "driver", Record<string, CadenceEntry[]>>>;
+/** v0.18.144: true when LOADTEST_LIVE_SHARE=1 (rider-sharing mode). */
+export const LIVE_SHARE: boolean;
 export const REACTIONS: Readonly<Record<"rider" | "driver", Record<string, { perEvent: number; minGapSeconds: number; source: string }>>>;
 export const ON_ENTER: Readonly<Record<"rider" | "driver", Record<string, { id: string; method: string; source: string }[]>>>;
 export const STREAMS: Readonly<Record<"rider" | "driver", Record<string, string>>>;

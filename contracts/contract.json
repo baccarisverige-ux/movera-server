@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.132",
+  "version": "0.18.144",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -4047,7 +4047,10 @@
     },
     "pickupSpotsOn": true,
     "shareTripOn": true,
-    "driverOneStream": false
+    "driverOneStream": false,
+    "liveLocationShare": false,
+    "adjustPickupMeters": 30,
+    "liveLocationSendEverySeconds": 8
   },
   "realtime": {
     "envelope": [
@@ -10561,5 +10564,92 @@
     "driver": "realtime.oneStream true: open GET /driver/stream (off-trip and on a trip; the trip stream as before) and give its events to the two existing readers (offers by sequence, settings by kind); do not open the two old streams. false or missing, or GET /driver/stream answers 404 (an older server): the two streams as before, and after a 404 the app does not try the one stream again until it restarts. When the switch changes, the app closes what it holds and opens the other within one settings update.",
     "rider": "Not affected: the rider app has no offer feed; GET /rider/config/stream and the trip stream are unchanged.",
     "admin": "Admin › Dispatch, per zone: the switch 'One live connection per driver phone' (default off), with an 'i' text (what it does, what it saves, who it affects, when to turn it on, the way back, older apps). It is the way back without an app release."
+  },
+  "liveLocation": {
+    "note": "v0.18.144 (owner 2026-11-20, Rules decisions/session-2026-11-06.md; approved mockup screens 6-8, Rules plan/inspiration-ride-change-2026-11-20/APPROVED-mockup-ride-change.html; Rule 0): (1) the rider app's adjust-pickup banner on the searching screen and while the driver comes; (2) two-way live location sharing during an active ride, each side opts in with a 'Share my location' switch. Additive; X-Api-Version stays 0.5; no migration (positions are never stored).",
+    "owner": "Also add bande on searching screen and while waiting for driver to adjust pickup depend of current rider location ! Also add on driver app on map he can see the rider prescise location when rider share his location and add share location on both app for rider and driver so they see each others",
+    "setting": "Per zone in the zone's rider document (rider_app_config; its own, else its country standard): liveLocation { share (boolean, default configDefaults.liveLocationShare FALSE (supervisor 2026-11-20: off until the load test passes the bar; rider GPS adds server load)), adjustPickupMeters (integer 0 or 10-500, default configDefaults.adjustPickupMeters 30; 0 = the adjust-pickup banner is off), sendEverySeconds (integer 5-10, default configDefaults.liveLocationSendEverySeconds 8) }, saved and published like every rider document field (settings.edit / settings.publish). Admin: Dispatch > Safety, card 'Live location', switch 'Riders and drivers can share their live location', number 'Adjust-pickup banner from (m)'. GET /rider/config always serves liveLocation with the three keys (stored value, else the default). The driver document gets nothing: the driver app learns the switch from the route's answer (409 live_location_off).",
+    "adjustPickup": {
+      "when": "Rider app only, on the searching screen (requested / searching / offered) and while the driver comes (accepted / driver_to_pickup; NOT arrived: the pickup is fixed once the driver is there), when the phone's own GPS fix (accuracy 50 m or better) is more than liveLocation.adjustPickupMeters from the trip's pickup. adjustPickupMeters 0 = the banner is off in the zone.",
+      "whileSearching": "One tap: POST /trips/{tripId}/route-quote { pickup: the GPS point, dropoff and stops as booked } then PATCH /trips/{tripId} { routeQuoteId } (v0.18.143 onTrip.routeChange.whileSearching, transition change_route); the new price is confirmed first when it changes (v0.18.143 riderConfirmNewPrice). Any distance. Nothing new on the server.",
+      "afterAccept": "Only when the GPS point is within the trip's booking.maxPickupMoveMeters of the booked pickup: one tap is the existing PATCH /trips/{tripId} { pickup, expectedVersion } (pickupWaiting.pickupMove). Farther: no banner. Nothing new on the server.",
+      "hide": "The banner hides for that pickup after a tap or a close (x), and comes back only when the pickup changes."
+    },
+    "route": "PUT /trips/{tripId}/live-location { sharing, lat?, lng?, accuracyM? } (rider or driver of the trip). sharing true needs lat and lng. 200 { sharing, sendEverySeconds }. Outside the ride window (before accept, after the rider is on board, or terminal) -> 409 conflict, reason live_location_not_active; zone switch off -> 409 conflict, reason live_location_off; sooner than sendEverySeconds - 1 after the same side's previous send -> 429 rate_limited, retryAfterSeconds. No Idempotency-Key row, no version bump, no trip event.",
+    "window": "From accept until the rider is on board (pickup): statuses accepted, driver_to_pickup, arrived (contract.json#tripStatus.driverAssigned minus riderOnboard and terminal). The apps stop sending at pickup, ride end or cancel; the server refuses after (409 live_location_not_active) and relays nothing after pickup.",
+    "relay": "The server relays each accepted send to the other side's open GET /trips/{tripId}/events stream (only one opened with ?live=true) as an SSE frame 'event: live_location' with no id: LiveLocationEvent { tripId, side, sharing, lat?, lng?, accuracyM?, at }. The relay uses its own NOTIFY channel (not the trip event channel), so no stream re-reads the trip log. A stream without ?live=true never gets the frame (apps built before v0.18.144).",
+    "privacy": "Positions are never stored: no table, no trip event, no log line with a position; only passed on to the open streams of the other side of that trip. Nothing to delete at ride end (GDPR: no history). At pickup, ride end or cancel the server keeps nothing to delete; each app drops the other side's last point from memory. The share switch's consent text (texts.privacyNote) needs the owner's OK and the legal check (Rules plan/legal-drafts-SE).",
+    "send": "The apps send at most every sendEverySeconds, and only while the ride screen is open and the switch is on; a switch turned off sends sharing false once. The other side treats a dot older than 3 x sendEverySeconds as gone. At pickup (rider on board) the server answers 409 live_location_not_active, so no final sharing:false frame follows: each app drops the other side's dot on that status change itself (the driver app when the trip leaves the to-pickup / arrived steps; the rider app shows no driver dot from these frames).",
+    "driverSide": "The rider already sees the driver from the trip's location events; this does not change. The driver's 'Share my location' switch is OPT-IN like the rider's (starts off; the driver taps it): it sends his own phone's live point the same way. The app learns whether the zone allows sharing from one PUT { sharing: false } when the trip screen opens (200 = allowed, 409 live_location_off = hidden; 429 / 5xx / no answer = asked again later).",
+    "texts": {
+      "adjustPickupTitle": {
+        "en": "You're {meters} m from your pickup",
+        "sv": "Du är {meters} m från din upphämtning",
+        "fr": "Vous êtes à {meters} m de votre point de prise en charge",
+        "ar": "أنت على بعد {meters} م من نقطة الالتقاء"
+      },
+      "adjustPickupBody": {
+        "en": "Move the pickup to where you are now?",
+        "sv": "Flytta upphämtningen till där du är nu?",
+        "fr": "Déplacer la prise en charge là où vous êtes ?",
+        "ar": "هل تريد نقل نقطة الالتقاء إلى مكانك الحالي؟"
+      },
+      "adjustPickupButton": {
+        "en": "Adjust pickup",
+        "sv": "Justera upphämtning",
+        "fr": "Ajuster la prise en charge",
+        "ar": "تعديل نقطة الالتقاء"
+      },
+      "adjustPickupDone": {
+        "en": "Pickup moved to your location",
+        "sv": "Upphämtningen flyttad till din plats",
+        "fr": "Prise en charge déplacée à votre position",
+        "ar": "تم نقل نقطة الالتقاء إلى موقعك"
+      },
+      "shareSwitch": {
+        "en": "Share my location",
+        "sv": "Dela min plats",
+        "fr": "Partager ma position",
+        "ar": "مشاركة موقعي"
+      },
+      "riderShareBody": {
+        "en": "{driver} sees exactly where you are. Stops at pickup.",
+        "sv": "{driver} ser exakt var du är. Slutar vid upphämtningen.",
+        "fr": "{driver} voit exactement où vous êtes. S'arrête à la prise en charge.",
+        "ar": "يرى {driver} مكانك بالضبط. تتوقف المشاركة عند الالتقاء."
+      },
+      "driverShareBody": {
+        "en": "{rider} sees you on the map.",
+        "sv": "{rider} ser dig på kartan.",
+        "fr": "{rider} vous voit sur la carte.",
+        "ar": "يراك {rider} على الخريطة."
+      },
+      "driverRiderSharing": {
+        "en": "{rider} is sharing their location ({meters} m from pickup)",
+        "sv": "{rider} delar sin plats ({meters} m från upphämtningen)",
+        "fr": "{rider} partage sa position (à {meters} m de la prise en charge)",
+        "ar": "{rider} يشارك موقعه (على بعد {meters} م من نقطة الالتقاء)"
+      },
+      "driverRiderLive": {
+        "en": "{rider} · live",
+        "sv": "{rider} · live",
+        "fr": "{rider} · en direct",
+        "ar": "{rider} · مباشر"
+      },
+      "privacyNote": {
+        "en": "Your live location is sent only to your driver until pickup and is not saved.",
+        "sv": "Din plats skickas bara till din förare fram till upphämtningen och sparas inte.",
+        "fr": "Votre position est envoyée uniquement à votre chauffeur jusqu'à la prise en charge et n'est pas enregistrée.",
+        "ar": "يُرسل موقعك المباشر إلى سائقك فقط حتى الالتقاء ولا يتم حفظه."
+      },
+      "driverPrivacyNote": {
+        "en": "Your live location is sent only to your rider until pickup and is not saved.",
+        "sv": "Din plats skickas bara till din kund fram till upphämtningen och sparas inte.",
+        "fr": "Votre position est envoyée uniquement à votre passager jusqu'à la prise en charge et n'est pas enregistrée.",
+        "ar": "يُرسل موقعك المباشر إلى راكبك فقط حتى الالتقاء ولا يتم حفظه."
+      }
+    },
+    "textsStatus": "All texts wait for the owner's OK (sv / en / fr / ar).",
+    "load": "Measured before a zone turns the switch on: the server load generator's rider-sharing mode (movera-server tools/loadtest, LOADTEST_LIVE_SHARE=1) adds one PUT per sharing phone every sendEverySeconds and one ?live=true stream per side."
   }
 }
