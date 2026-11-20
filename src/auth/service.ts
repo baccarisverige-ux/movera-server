@@ -18,7 +18,7 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 import type { CodeSmsSender } from "../sms/elks.js";
 import { pokeAlerts } from "../alerts/detector.js";
-import { deviceBinding, deviceTokenHash, failedChecksFrom, FAILED_CHECKS_PER_ADDRESS_PER_HOUR, noteFailedCheck, runDeviceCheck, type DeviceCheckInput, type DeviceCheckOutcome, type DeviceVerifiers } from "./deviceCheck.js";
+import { deviceBinding, deviceTokenHash, failedChecksFrom, FAILED_CHECKS_PER_ADDRESS_PER_HOUR, noteFailedCheck, runDeviceCheck, SERVICE_FAILURES, BREAKER_OPEN_MS, type DeviceCheckInput, type DeviceCheckOutcome, type DeviceVerifiers } from "./deviceCheck.js";
 import { DAY_MS, SIGN_IN_SMS_KIND, SMS_CODE_LENGTH, SMS_NO_ANSWER, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
 
 /**
@@ -224,8 +224,11 @@ async function preDeviceCheck(deps: AuthDeps, input: { phone: string; app: App; 
   const used = await deps.db.selectFrom("otp_sessions").select("session_id").where("device_check_sha256", "=", hash).executeTakeFirst();
   if (used !== undefined) return { ok: false, why: "used" };
   if (failedChecksFrom(client.ip, now.getTime()) >= FAILED_CHECKS_PER_ADDRESS_PER_HOUR) return { ok: false, why: "address_ceiling" };
-  const outcome = await runDeviceCheck(deps.deviceVerifiers ?? {}, input.deviceCheck, deviceBinding(input.app, input.phone, input.installId));
-  if (!outcome.ok) noteFailedCheck(client.ip, now.getTime());
+  const outcome = await runDeviceCheck(deps.deviceVerifiers ?? {}, input.deviceCheck, deviceBinding(input.app, input.phone, input.installId), Date.now, () =>
+    deps.warn?.({ platform: input.deviceCheck?.platform ?? "none", openSeconds: BREAKER_OPEN_MS / 1000 }, "sign-in device check breaker open"),
+  );
+  // Follow-up 4: only a token the check refused counts on the address; Google or Movera trouble never does (NAT users).
+  if (!outcome.ok && !SERVICE_FAILURES.has(outcome.why)) noteFailedCheck(client.ip, now.getTime());
   return outcome;
 }
 

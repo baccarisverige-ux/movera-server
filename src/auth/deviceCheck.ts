@@ -30,8 +30,8 @@ export function deviceBinding(app: string, phone: string, installId: string): Bu
   return createHash("sha256").update(`movera-sms-code|${app}|${phone}|${installId}`, "utf8").digest();
 }
 
-/** Play Integrity tokens are JWE compact text (base64url parts and dots); anything else is not a token. */
-const ANDROID_TOKEN = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]*)*$/;
+/** Play Integrity tokens are JWE compact text: base64url segments joined by dots. */
+const B64URL_SEGMENT = /^[A-Za-z0-9_-]+$/;
 const STRICT_B64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /**
@@ -44,7 +44,18 @@ export function canonicalToken(input: DeviceCheckInput): Buffer | null {
     const bytes = Buffer.from(input.token, "base64");
     return bytes.length > 0 && bytes.toString("base64") === input.token ? bytes : null;
   }
-  return ANDROID_TOKEN.test(input.token) ? Buffer.from(input.token, "ascii") : null;
+  // Follow-up 3: every segment must be canonical base64url (no padding, zero padding bits), so one token has one
+  // spelling; the one-use hash covers the decoded segments.
+  const parts: Buffer[] = [];
+  for (const segment of input.token.split(".")) {
+    if (!B64URL_SEGMENT.test(segment)) return null;
+    const bytes = Buffer.from(segment, "base64url");
+    if (bytes.toString("base64url") !== segment) return null;
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(bytes.length);
+    parts.push(length, bytes);
+  }
+  return Buffer.concat(parts);
 }
 
 /** What otp_sessions keeps of a used token (SHA-256 of its canonical bytes), so the same token is never good twice. */
@@ -67,7 +78,10 @@ export const resetDeviceCheckState = () => Object.assign(state, { inFlight: 0, e
  * call is really cut), a cap on checks in flight and a circuit breaker. A missing verifier, a throw, a time-out, a full
  * cap or an open breaker is a failed check.
  */
-export async function runDeviceCheck(verifiers: DeviceVerifiers, input: DeviceCheckInput, binding: Buffer, now: () => number = Date.now): Promise<DeviceCheckOutcome> {
+/** Follow-up 4: these failures are Movera's or Google's, not the caller's (never counted on the address ceiling). */
+export const SERVICE_FAILURES: ReadonlySet<string> = new Set(["timeout", "error", "google_429", "google_5xx", "busy", "breaker_open", "not_configured"]);
+
+export async function runDeviceCheck(verifiers: DeviceVerifiers, input: DeviceCheckInput, binding: Buffer, now: () => number = Date.now, onBreakerOpen?: () => void): Promise<DeviceCheckOutcome> {
   const verifier = verifiers[input.platform];
   if (verifier === undefined) return { ok: false, why: "not_configured" };
   if (now() < state.openUntil) return { ok: false, why: "breaker_open" };
@@ -83,6 +97,7 @@ export async function runDeviceCheck(verifiers: DeviceVerifiers, input: DeviceCh
     if (state.errorsInRow >= BREAKER_ERRORS) {
       state.openUntil = now() + BREAKER_OPEN_MS;
       state.errorsInRow = 0;
+      onBreakerOpen?.();
     }
     return outcome;
   } finally {
