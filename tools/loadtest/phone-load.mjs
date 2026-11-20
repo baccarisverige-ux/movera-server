@@ -4,7 +4,7 @@
 //
 //   LOADTEST_ADMIN_URL="postgres://movera:[REDACTED]@127.0.0.1:5432/movera" npm run build && \
 //   node tools/loadtest/phone-load.mjs --dist dist --db movera_loadtest_phones --drivers 100 --riders 400 \
-//        --rider-arrivals 20 --seconds 600 --access-ttl 120 --zone-share Z001=0.5,FR-PC=0.3,TN-TC=0.2 \
+//        --rider-arrivals 20 --seconds 600 --access-ttl 120 --driver-start-spread 60 --zone-share Z001=0.5,FR-PC=0.3,TN-TC=0.2 \
 //        --out /tmp/phones.json --i-know-this-drops movera_loadtest_phones
 //
 // What it does: a NEW database, migrated with the server build; the zones of --zone-share opened IN THAT COPY ONLY
@@ -29,7 +29,7 @@ import pg from "pg";
 import { realClock, poissonArrivals, seededRandom } from "./clock.mjs";
 import { cadenceRows } from "./cadences.mjs";
 import { Counter, summaryLines } from "./counts.mjs";
-import { checkPhoneLimits, checkTarget, dropAllowed, LoadtestGuardError, redact, serverEnv } from "./guards.mjs";
+import { checkPhoneLimits, checkTarget, driverStartSpreadMs, dropAllowed, LoadtestGuardError, redact, serverEnv } from "./guards.mjs";
 import { Auth, DriverPhone, RiderPhone } from "./phones.mjs";
 import { httpTransport } from "./transport.mjs";
 import { DEFAULT_SHARE, near, parseZoneShare, phoneNumber, zoneForIndex } from "./zones.mjs";
@@ -59,6 +59,8 @@ const LIMITS = checkPhoneLimits({ drivers: arg("drivers"), riders: arg("riders")
 const SHARES = parseZoneShare(arg("zone-share", DEFAULT_SHARE));
 const OFFLINE_SHARE = Math.min(1, Math.max(0, Number(arg("driver-offline-share", "0.2"))));
 const MIN_PHONE_MINUTES = Number(arg("min-phone-minutes", "5"));
+// S4c fix 1: the drivers start within this window (default 60 s, guards.mjs driverStartSpreadMs).
+const DRIVER_START_SPREAD_MS = driverStartSpreadMs(arg("driver-start-spread"));
 const rng = seededRandom(Number(arg("seed", "60")));
 // Dwell times (ms, exponential means) of the states the phones leave on their own; JSON to override, e.g. {"home":60000}.
 const RIDER_DWELL = { home: 120_000, choose: 60_000, receipt: 60_000, abandonMs: 600_000, ...JSON.parse(arg("rider-dwell", "{}")) };
@@ -158,7 +160,7 @@ try {
   for (const d of drivers) {
     const p = phone(DriverPhone, "driver", d, DRIVER_DWELL);
     p.pos = near(d.zone, rng, 0.01);
-    realClock.at(Date.now() + rng() * 10_000, () => p.start(d.online));
+    realClock.at(Date.now() + rng() * DRIVER_START_SPREAD_MS, () => p.start(d.online));
   }
   const started = Date.now();
   const end = started + LIMITS.seconds * 1000;
