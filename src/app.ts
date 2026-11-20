@@ -36,6 +36,7 @@ import { adminEventRoutes } from "./realtime/adminEvents.js";
 import { driverRoutes } from "./drivers/routes.js";
 import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
 import { revealRoutes } from "./admin/revealRoutes.js";
+import { adminSessionRoutes } from "./admin/sessionRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
 import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
 import { recordServerError } from "./telemetry/errors.js";
@@ -366,6 +367,8 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     // v0.18.54 §76: Reveal with a reason (riders, drivers, fleets) and the one-click SOS reveal.
     await revealRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    // v0.18.149 (owner G12 Q6): a rider's / driver's signed-in sessions, signed out one or all by an admin.
+    await adminSessionRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await dispatchRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await reservationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.6 §32 (owner G4-F2..F6): the admin's Dispatch tools and the driver's events.

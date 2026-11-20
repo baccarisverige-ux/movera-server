@@ -72,7 +72,7 @@ describe("G1-B3: the 5th wrong code itself answers 'too many wrong tries'", () =
 
 describe("G1-D3 / G1-B6: why the app was signed out, and the retry window", () => {
   it("every reason a refused refresh answers is named in auth.signedOut (expired vs revoked), with sv/fr/en texts", async () => {
-    expect(AUTH.signedOut.reasons).toEqual({ session_expired: "expired", session_ended: "revoked", refresh_token_reused: "revoked", refresh_token_unknown: "revoked", signed_in_elsewhere: "revoked" });
+    expect(AUTH.signedOut.reasons).toEqual({ session_expired: "expired", session_ended: "revoked", refresh_token_reused: "revoked", refresh_token_unknown: "revoked", signed_in_elsewhere: "revoked", signed_out_by_movera: "revoked" });
     for (const kind of ["expired", "revoked"]) expect(Object.keys(AUTH.signedOut.texts[kind]!).sort()).toEqual(["en", "fr", "sv"]);
     const seen = new Set<string>();
     seen.add((await post("/auth/refresh", { refreshToken: "rt_unknown" })).json().reason);
