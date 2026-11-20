@@ -168,8 +168,6 @@ describe("driverPayRequest: the setting (country standard, off by default)", () 
 
   it("switched on it needs an https link and a minimum amount in the country's currency", async () => {
     const cases: Array<[unknown, string]> = [
-      [{ enabled: true, dayOfMonth: 1, payLink: "", minAmount: SEK(0) }, "pay_request_needs_link"],
-      [{ enabled: true, dayOfMonth: 1, minAmount: SEK(0) }, "pay_request_needs_link"],
       [{ enabled: true, dayOfMonth: 1, payLink: LINK, minAmount: null }, "pay_request_needs_amount"],
       [{ enabled: true, dayOfMonth: 1, payLink: LINK }, "pay_request_needs_amount"],
       [{ enabled: true, dayOfMonth: 1, payLink: LINK, minAmount: { amountMinor: 100, currency: "EUR" } }, "pay_request_needs_amount"],
@@ -251,11 +249,16 @@ describe("driverPayRequest: GET /driver/pay-movera", () => {
     expect(view.owedToMovera).toEqual((await earnings()).moveraBalance.owedToMovera);
   });
 
-  it("a live document that says on but has no usable link or amount is read as off (nobody is sent a bad link)", async () => {
-    for (const broken of [{ payLink: "http://x.example" }, { payLink: "" }, { payLink: "https://sumup.com@evil.example/pay" }, { payLink: "https://pay.sumup.com/\u200bx" }, { minAmount: null }, { minAmount: { amountMinor: 5, currency: "EUR" } }]) {
+  it("a live document that says on but has no usable amount is read as off; a bad or missing link is never sent (Stripe replaces the link)", async () => {
+    for (const broken of [{ minAmount: null }, { minAmount: { amountMinor: 5, currency: "EUR" } }]) {
       await live("SE", "SEK", ON(broken));
       const view = await payMovera();
       expect([view.enabled, view.payLink], JSON.stringify(broken)).toEqual([false, undefined]);
+    }
+    for (const badLink of [{ payLink: "http://x.example" }, { payLink: "" }, { payLink: "https://sumup.com@evil.example/pay" }, { payLink: "https://pay.sumup.com/\u200bx" }]) {
+      await live("SE", "SEK", ON(badLink));
+      const view = await payMovera();
+      expect([view.enabled, view.payLink], JSON.stringify(badLink)).toEqual([true, undefined]);
     }
   });
 

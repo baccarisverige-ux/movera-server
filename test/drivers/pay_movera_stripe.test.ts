@@ -132,4 +132,18 @@ describe("driver monthly payment by Stripe", () => {
     expect(Number(row.overpaid_minor)).toBe(3384 - 1500);
   });
 
+  it("owner 2026-11-20: Stripe replaces the SumUp link: switched on with no link, the request is on and the app pays by Stripe; a link stays hidden", async () => {
+    const admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    const draft = (await call(app, "GET", "/admin/config/country_rules?country=SE", admin)).json();
+    const doc = { version: 1, publishedAt: clock.now.toISOString(), country: "SE", currency: "SEK", tips: [], raiseSteps: [], driverBonus: {}, driverPayRequest: { enabled: true, dayOfMonth: 1, payLink: "", minAmount: SEK(1000) } };
+    const saved = await call(app, "PUT", "/admin/config/country_rules", admin, { expectedVersion: draft.version ?? 1, country: "SE", document: doc });
+    expect(saved.json().reason).not.toBe("pay_request_needs_link");
+    await database.db.updateTable("config_live").set({ document: JSON.stringify({ country: "SE", currency: "SEK", driverPayRequest: { enabled: true, dayOfMonth: 1, payLink: "", minAmount: SEK(1000) } }) }).where("doc", "=", "country_rules").execute();
+    await owes(2384);
+    const view = (await call(app, "GET", "/driver/pay-movera", ali.headers)).json();
+    expect(view).toMatchObject({ enabled: true, stripe: true });
+    expect(view.payLink).toBeUndefined();
+    expect((await pay()).json()).toMatchObject({ amount: SEK(2384), status: "requires_payment" });
+  });
+
 });

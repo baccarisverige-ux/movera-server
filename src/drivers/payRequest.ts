@@ -34,7 +34,8 @@ export async function payRequestSettingOf(ex: Executor, country: string | null, 
   const dayOfMonth = isDay(set?.dayOfMonth) ? set.dayOfMonth : DEFAULT.dayOfMonth;
   const payLink = isPayLink(set?.payLink) ? set.payLink : "";
   const minAmount = isAmount(set?.minAmount, currency) ? { amountMinor: set.minAmount.amountMinor, currency } : null;
-  return { enabled: set?.enabled === true && payLink !== "" && minAmount !== null, dayOfMonth, payLink, minAmount };
+  // DRAFT: Stripe replaces the link: on needs only the switch and a minimum (the link is hidden legacy).
+  return { enabled: set?.enabled === true && minAmount !== null, dayOfMonth, payLink, minAmount };
 }
 
 /** The country's currency and clock: its first zone's (as the country standard, config/service.ts). */
@@ -83,7 +84,7 @@ export async function driverPayMovera(ex: Executor, driverId: string, now: Date)
     enabled: setting.enabled,
     owedToMovera: { amountMinor: owed, currency: home.currency },
     reference: payReference(driverId, last?.month ?? localMonthDay(now, home.timeZone).month),
-    ...(setting.enabled ? { payLink: setting.payLink, minAmount: setting.minAmount! } : {}),
+    ...(setting.enabled ? { ...(setting.payLink ? { payLink: setting.payLink } : {}), minAmount: setting.minAmount! } : {}),
     ...(last ? { request: { month: last.month, askedAt: new Date(last.asked_at).toISOString(), askedAmount: { amountMinor: Number(last.asked_minor), currency: last.currency } } } : {}),
   };
 }

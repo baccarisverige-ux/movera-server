@@ -9429,16 +9429,18 @@ paths:
         enabled (default false), dayOfMonth (1-28, default 1), payLink (an https:// link, at most 500 characters, '''' = none),
         minAmount (Money in the country''s currency, 0 or above, or null) } on the country standard only (Admin > Pricing
         > Tips & limits; a zone''s own value is ignored). configDefaults.driverPayRequest: off, day 1, no link, no amount,
-        in every country. Saving enabled true needs payLink (else 400 invalid_request, reason pay_request_needs_link) and
-        minAmount in the country''s currency (else 400 invalid_request, reason pay_request_needs_amount); a dayOfMonth outside
-        1-28 or a payLink that is not https or is too long is 400 invalid_request, reason pay_request_invalid. A kept key
-        of country_rules (configDocs.keptKeys.country_rules): a whole-document save that leaves it out keeps the stored value,
-        and a Restore or Undo last publish keeps today''s live value, so no other screen switches it off or changes the link
-        by a save. A change applies at once (the next run of the job and the next read of the screen). v0.18.136 (stripeFees):
-        CountryRules.riderFeeStripe { enabled (default false) } on the country standard only (Admin > Pricing > Tips & limits;
-        a zone''s own value is ignored). configDefaults.riderFeeStripe: off in every country. enabled not a boolean is 400
-        invalid_request, reason rider_fee_stripe_invalid. A kept key of country_rules (configDocs.keptKeys.country_rules)
-        and kept by Restore / Undo last publish (pricingHistory.restoreKeeps).'
+        in every country. Saving enabled true needs minAmount in the country''s currency (else 400 invalid_request, reason
+        pay_request_needs_amount); DRAFT (owner 2026-11-20 "So we use stripe ... And for the driver to pay his monthly invoice"):
+        Stripe replaces the payment link, so payLink is no longer needed to switch it on (the reason pay_request_needs_link
+        is no longer sent); payLink stays as hidden legacy (Rule D: hidden, not removed): kept, checked when set, shown to
+        the app only while Stripe is not available (DriverPayMovera.stripe false); a dayOfMonth outside 1-28 or a payLink
+        that is not https or is too long is 400 invalid_request, reason pay_request_invalid. A kept key of country_rules (configDocs.keptKeys.country_rules):
+        a whole-document save that leaves it out keeps the stored value, and a Restore or Undo last publish keeps today''s
+        live value, so no other screen switches it off or changes the link by a save. A change applies at once (the next run
+        of the job and the next read of the screen). v0.18.136 (stripeFees): CountryRules.riderFeeStripe { enabled (default
+        false) } on the country standard only (Admin > Pricing > Tips & limits; a zone''s own value is ignored). configDefaults.riderFeeStripe:
+        off in every country. enabled not a boolean is 400 invalid_request, reason rider_fee_stripe_invalid. A kept key of
+        country_rules (configDocs.keptKeys.country_rules) and kept by Restore / Undo last publish (pricingHistory.restoreKeeps).'
       tags:
       - Admin · Config
       x-actor:
@@ -19888,7 +19890,8 @@ paths:
         "Driver paid Movera" (paid_to_movera entries, the carried rest of open payouts first; audit driver.paid_movera_stripe),
         at most what he owes at that moment; the rest is paidTwice with overpaid for the admin to refund in Stripe. The admin
         can still mark paid by hand. DriverPayMovera.stripe = true when the app shows the Stripe Pay button (request on, Stripe
-        keys set, currency SEK/EUR); otherwise the old link button.'
+        keys set, currency SEK/EUR); otherwise the old link button. The request is on with enabled true and a minimum amount;
+        no payment link is needed.'
       tags:
       - Driver · Account
       x-actor:
@@ -39477,13 +39480,15 @@ components:
       description: 'v0.18.139 (driverPayRequest): CountryRules.driverPayRequest { enabled (default false), dayOfMonth (1-28,
         default 1), payLink (an https:// link, at most 500 characters, '''' = none), minAmount (Money in the country''s currency,
         0 or above, or null) } on the country standard only (Admin > Pricing > Tips & limits; a zone''s own value is ignored).
-        configDefaults.driverPayRequest: off, day 1, no link, no amount, in every country. Saving enabled true needs payLink
-        (else 400 invalid_request, reason pay_request_needs_link) and minAmount in the country''s currency (else 400 invalid_request,
-        reason pay_request_needs_amount); a dayOfMonth outside 1-28 or a payLink that is not https or is too long is 400 invalid_request,
-        reason pay_request_invalid. A kept key of country_rules (configDocs.keptKeys.country_rules): a whole-document save
-        that leaves it out keeps the stored value, and a Restore or Undo last publish keeps today''s live value, so no other
-        screen switches it off or changes the link by a save. A change applies at once (the next run of the job and the next
-        read of the screen).'
+        configDefaults.driverPayRequest: off, day 1, no link, no amount, in every country. Saving enabled true needs minAmount
+        in the country''s currency (else 400 invalid_request, reason pay_request_needs_amount); DRAFT (owner 2026-11-20 "So
+        we use stripe ... And for the driver to pay his monthly invoice"): Stripe replaces the payment link, so payLink is
+        no longer needed to switch it on (the reason pay_request_needs_link is no longer sent); payLink stays as hidden legacy
+        (Rule D: hidden, not removed): kept, checked when set, shown to the app only while Stripe is not available (DriverPayMovera.stripe
+        false); a dayOfMonth outside 1-28 or a payLink that is not https or is too long is 400 invalid_request, reason pay_request_invalid.
+        A kept key of country_rules (configDocs.keptKeys.country_rules): a whole-document save that leaves it out keeps the
+        stored value, and a Restore or Undo last publish keeps today''s live value, so no other screen switches it off or
+        changes the link by a save. A change applies at once (the next run of the job and the next read of the screen).'
       required:
       - enabled
       properties:
@@ -39501,7 +39506,8 @@ components:
           type: string
           maxLength: 500
           pattern: ^(https://[^\s]+)?$
-          description: The payment link the Pay Movera button opens (https only; '' = none). Required when enabled.
+          description: 'Legacy, hidden while Stripe pays (DRAFT): the payment link the Pay Movera button opens (https only;
+            '''' = none); not needed to switch on.'
           default: ''
         minAmount:
           oneOf:
@@ -39653,7 +39659,8 @@ components:
         "Driver paid Movera" (paid_to_movera entries, the carried rest of open payouts first; audit driver.paid_movera_stripe),
         at most what he owes at that moment; the rest is paidTwice with overpaid for the admin to refund in Stripe. The admin
         can still mark paid by hand. DriverPayMovera.stripe = true when the app shows the Stripe Pay button (request on, Stripe
-        keys set, currency SEK/EUR); otherwise the old link button.'
+        keys set, currency SEK/EUR); otherwise the old link button. The request is on with enabled true and a minimum amount;
+        no payment link is needed.'
       required:
       - paymentIntentId
       - amount

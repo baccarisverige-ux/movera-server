@@ -28,7 +28,7 @@ assert "driverPayRequest" not in _cr139, "CountryRules.driverPayRequest exists b
 S["DriverPayRequestSetting"] = obj({
     "enabled": dflt(b("Off by default in every country: nothing is asked until the admin switches it on."), False),
     "dayOfMonth": dflt(i("The day of the month the drivers are asked (from 09:00 in the country's time zone).", minimum=1, maximum=28), 1),
-    "payLink": dflt(s("The payment link the Pay Movera button opens (https only; '' = none). Required when enabled.", maxLength=500, pattern="^(https://[^\\s]+)?$"), ""),
+    "payLink": dflt(s("Legacy, hidden while Stripe pays (DRAFT): the payment link the Pay Movera button opens (https only; '' = none); not needed to switch on.", maxLength=500, pattern="^(https://[^\\s]+)?$"), ""),
     "minAmount": {"oneOf": [ref("Money"), {"type": "null"}], "description": "Only a driver who owes MORE than this is asked. The country's currency, 0 or above; required when enabled."}},
     ["enabled"], _V139P + _DPR["setting"], addl=False)
 _cr139["driverPayRequest"] = ref("DriverPayRequestSetting")
