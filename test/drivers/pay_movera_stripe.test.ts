@@ -113,4 +113,23 @@ describe("driver monthly payment by Stripe", () => {
     expect((await call(app, "GET", "/driver/pay-movera", ali.headers)).json()).toMatchObject({ stripe: false });
     expect(made).toHaveLength(0);
   });
+  it("review 0e00ad48: owed changes between taps: the old intent is canceled after commit; a processing one is kept (409); a late success on the canceled one takes at most what is owed", async () => {
+    await owes(2384);
+    const first = (await pay()).json().paymentIntentId;
+    await owes(1000);
+    const second = (await pay()).json();
+    expect(second.amount).toEqual(SEK(3384));
+    expect(canceled).toEqual([first]);
+    await hook("payment_intent.processing", { id: second.paymentIntentId, object: "payment_intent", amount: 3384, currency: "sek" });
+    await owes(500);
+    expect((await pay()).json()).toMatchObject({ reason: "payment_processing" });
+    // The canceled first intent still succeeds at Stripe: recorded, at most what he owes, never twice.
+    await hook("payment_intent.succeeded", succeeded(first, 2384));
+    expect(await owed()).toBe(3884 - 2384);
+    await hook("payment_intent.succeeded", succeeded(second.paymentIntentId, 3384));
+    expect(await owed()).toBe(0);
+    const row = await database.db.selectFrom("stripe_payments").selectAll().where("payment_intent_id", "=", second.paymentIntentId).executeTakeFirstOrThrow();
+    expect(Number(row.overpaid_minor)).toBe(3384 - 1500);
+  });
+
 });

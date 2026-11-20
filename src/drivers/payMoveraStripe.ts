@@ -58,6 +58,8 @@ export async function startDriverPayment(trx: Trx, stripe: StripeApi, driverId: 
     throw new ApiError("conflict", "You owe Movera nothing now.", { reason: "nothing_owed" });
   }
   if (open && Number(open.amount_minor) === amountMinor && open.currency === home.currency) return driverPaymentView(open as Row, stripe);
+  // Review of 0e00ad48 (1): a payment Stripe is still processing is never canceled and replaced.
+  if (open?.status === "processing") throw new ApiError("conflict", "Your last payment is still being processed.", { reason: "payment_processing" });
   if (open) {
     toCancel.push(open.payment_intent_id);
     await trx.updateTable("stripe_payments").set({ status: "canceled", client_secret: null }).where("payment_intent_id", "=", open.payment_intent_id).execute();
@@ -78,7 +80,11 @@ export const driverInvoiceUse: StripeUse = {
   async succeeded(trx, payment, now) {
     const amount = Number(payment.amount_minor);
     const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids"]).where("driver_id", "=", payment.subject_id).executeTakeFirst();
-    if (!driver) return { overpaidMinor: amount };
+    if (!driver) {
+      // Review (3): money for a driver row that is gone: all of it flagged for the admin.
+      console.warn(JSON.stringify({ msg: "stripe: succeeded for a missing driver; flagged paidTwice", paymentIntentId: payment.payment_intent_id }));
+      return { overpaidMinor: amount };
+    }
     const owedBefore = (await owedByDriver(trx, [driver.driver_id], payment.currency)).get(driver.driver_id) ?? 0;
     const take = Math.max(0, Math.min(amount, owedBefore));
     if (take > 0) {
