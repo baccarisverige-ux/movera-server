@@ -119,6 +119,9 @@ export const riderFeeUse: StripeUse = {
   },
 };
 
+/** What the admin's Refund gives back: the overpaid part of a paid-twice payment, else the whole payment. */
+export const refundMinorOf = (row: { paid_twice: boolean; overpaid_minor: string | number; amount_minor: string | number }) => (row.paid_twice && Number(row.overpaid_minor) > 0 ? Number(row.overpaid_minor) : Number(row.amount_minor));
+
 export const StripeRefundBody = z.object({ reason: z.string().max(300).optional().default("") });
 
 /** POST /admin/riders/{riderId}/fees/{tripId}/stripe-refund: the full amount of the fee's succeeded payment. */
@@ -130,9 +133,12 @@ export async function refundFeePayment(trx: Trx, stripe: StripeApi, who: Princip
   if (trip && !adminCoversZone(who, trip.zone_id)) throw new ApiError("forbidden", "This trip is outside your zones.", { reason: "zone_out_of_scope" });
   const paid = trip ? await trx.selectFrom("stripe_payments").selectAll().where("purpose", "=", "rider_fee").where("ref_id", "=", tripId).where("subject_id", "=", riderId).where("status", "=", "succeeded").orderBy("paid_twice", "desc").orderBy("created_at").forUpdate().executeTakeFirst() : undefined;
   if (!paid) throw new ApiError("invalid_transition", "No card payment of this fee to refund.", { reason: "no_stripe_payment" });
-  const refund = await stripe.refund({ paymentIntentId: paid.payment_intent_id, idempotencyKey: `refund:${paid.payment_intent_id}` });
+  // Money review of 0203ebb8 (MUST 1): a payment that took part of a debt off gives back only its overpaid part; the part
+  // that settled the fee stays paid. A full payment (or a fully paid-twice one) is refunded whole.
+  const back = refundMinorOf(paid as Row);
+  const refund = await stripe.refund({ paymentIntentId: paid.payment_intent_id, idempotencyKey: `refund:${paid.payment_intent_id}:${back}`, ...(back < Number(paid.amount_minor) ? { amountMinor: back } : {}) });
   const row = await trx.updateTable("stripe_payments").set({ status: "refund_pending", refund_id: refund.id }).where("payment_intent_id", "=", paid.payment_intent_id).returningAll().executeTakeFirstOrThrow();
-  await audit(trx, { adminId: who.subjectId, action: "rider.fee_stripe_refund", targetType: "rider", targetId: riderId, zoneId: trip!.zone_id, detail: { tripId, paymentIntentId: paid.payment_intent_id, amountMinor: Number(paid.amount_minor), currency: paid.currency, reason }, at: now });
+  await audit(trx, { adminId: who.subjectId, action: "rider.fee_stripe_refund", targetType: "rider", targetId: riderId, zoneId: trip!.zone_id, detail: { tripId, paymentIntentId: paid.payment_intent_id, amountMinor: back, currency: paid.currency, reason }, at: now });
   return feePaymentView(row as Row, null);
 }
 

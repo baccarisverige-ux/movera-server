@@ -31,6 +31,7 @@ let sara: { id: string; headers: Record<string, string> };
 let made: Array<{ amountMinor: number; currency: string; idempotencyKey: string; metadata: Record<string, string> }> = [];
 let canceled: string[] = [];
 let refunds: string[] = [];
+let refundAmounts: Array<number | undefined> = [];
 let n = 0;
 const fake: StripeApi = {
   publishableKey: "pk_test_fake",
@@ -41,7 +42,7 @@ const fake: StripeApi = {
     return { id, clientSecret: `${id}_secret_x`, amountMinor: input.amountMinor, currency: input.currency, status: "requires_payment_method" };
   },
   async cancelPaymentIntent(id) { canceled.push(id); },
-  async refund({ paymentIntentId }) { refunds.push(paymentIntentId); return { id: `re_${paymentIntentId}` }; },
+  async refund({ paymentIntentId, amountMinor }) { refunds.push(paymentIntentId); refundAmounts.push(amountMinor); return { id: `re_${paymentIntentId}` }; },
 };
 
 beforeAll(async () => {
@@ -60,7 +61,7 @@ afterAll(async () => {
   await database.drop();
 });
 beforeEach(async () => {
-  made = []; canceled = []; refunds = [];
+  made = []; canceled = []; refunds = []; refundAmounts = [];
   for (const t of ["stripe_events", "stripe_payments", "wallet_entries", "rider_wallets", "rider_fees"] as const) await database.db.deleteFrom(t).execute();
   await database.db.deleteFrom("config_live").where("doc", "=", "country_rules").execute();
   await on(true);
@@ -353,6 +354,76 @@ describe("money review of 05bb3ac (NO-GO fixes)", () => {
     for (const p of await payments()) if (p["paymentIntentId"] !== pi) await hook("payment_intent.succeeded", succeeded(String(p["paymentIntentId"])));
     expect(await feeStatus(tripId)).toBe("paid");
     expect(await walletSum()).toBe(0);
+  });
+
+  it("review 0203ebb8 MUST 1: a partly overpaid payment is refunded only by its overpaid part; the fee stays paid", async () => {
+    const tripId = await owedFee(10000);
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    await database.db.insertInto("wallet_entries").values({ entry_id: "wlt_credit_p1", rider_id: sara.id, kind: "adjustment", currency: "SEK", amount_minor: 5000, trip_id: null, at: clock.now }).execute();
+    await database.db.updateTable("rider_wallets").set({ balance_minor: -5000 }).where("rider_id", "=", sara.id).execute();
+    await hook("payment_intent.succeeded", succeeded(pi, 10000));
+    const r = await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/stripe-refund`, await finance(), { reason: "Overpaid" });
+    expect(r.json()).toMatchObject({ status: "refund_pending" });
+    expect(refundAmounts).toEqual([5000]);
+    await hook("charge.refunded", { id: "ch_p", object: "charge", payment_intent: pi, amount_refunded: 5000, currency: "sek" });
+    expect((await payments())[0]).toMatchObject({ status: "refunded" });
+    expect(await feeStatus(tripId)).toBe("paid");
+    expect(await walletSum()).toBe(0);
+  });
+
+  it("review 0203ebb8 SHOULD: waiving a fee a card part-paid flags that card money for a card refund", async () => {
+    const tripId = await owedFee(10000);
+    // A card payment of 60 kr already took 60 kr off this fee (part paid; the fee stays owed for 40 kr).
+    await database.db.insertInto("stripe_payments").values({ payment_intent_id: "pi_part", purpose: "rider_fee", subject_id: sara.id, ref_id: tripId, currency: "SEK", amount_minor: 6000, status: "succeeded", client_secret: null, refund_id: null, created_at: clock.now, paid_at: clock.now, refunded_at: null }).execute();
+    await database.db.insertInto("wallet_entries").values({ entry_id: "wlt_card_w1", rider_id: sara.id, kind: "adjustment", currency: "SEK", amount_minor: 6000, trip_id: tripId, at: clock.now }).execute();
+    await database.db.updateTable("rider_wallets").set({ balance_minor: -4000 }).where("rider_id", "=", sara.id).execute();
+    const admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    const version = (await database.db.selectFrom("trips").select("version").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).version;
+    expect((await call(app, "POST", `/admin/trips/${tripId}/adjust`, admin, { expectedVersion: version, waiveCancelFee: true, reason: "emergency" })).statusCode).toBe(200);
+    expect(await feeStatus(tripId)).toBe("waived");
+    expect(await walletSum()).toBe(0);
+    expect((await payments())[0]).toMatchObject({ paymentIntentId: "pi_part", paidTwice: true, overpaid: SEK(6000) });
+  });
+
+  it("review 0203ebb8 MUST 2: a waive and the webhook at the same time both finish (one lock order, no deadlock)", async () => {
+    const tripId = await owedFee(6500);
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    const admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    const version = (await database.db.selectFrom("trips").select("version").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).version;
+    const [w, h] = await Promise.all([call(app, "POST", `/admin/trips/${tripId}/adjust`, admin, { expectedVersion: version, waiveCancelFee: true, reason: "emergency" }), hook("payment_intent.succeeded", succeeded(pi))]);
+    expect(h.statusCode).toBe(200);
+    expect([200, 409]).toContain(w.statusCode);
+    if (w.statusCode === 409) expect(w.json().reason).toBe("no_fee_to_waive");
+    expect(await walletSum()).toBe(0);
+    const row = (await payments())[0]!;
+    // Either the card paid it (waive refused) or it was waived and the card money is flagged for refund.
+    if (w.statusCode === 200) expect(row).toMatchObject({ paidTwice: true });
+  });
+
+  it("review 2c918ac6: reverse no-show after a part refund: the settled card part goes to the wallet; the refund key carries the amount", async () => {
+    const tripId = await owedFee(10000);
+    await database.db.updateTable("trips").set({ status: "no_show" }).where("trip_id", "=", tripId).execute();
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    await database.db.insertInto("wallet_entries").values({ entry_id: "wlt_credit_r2", rider_id: sara.id, kind: "adjustment", currency: "SEK", amount_minor: 5000, trip_id: null, at: clock.now }).execute();
+    await database.db.updateTable("rider_wallets").set({ balance_minor: -5000 }).where("rider_id", "=", sara.id).execute();
+    await hook("payment_intent.succeeded", succeeded(pi, 10000));
+    expect(await feeStatus(tripId)).toBe("paid");
+    const keys: string[] = [];
+    const orig = fake.refund;
+    fake.refund = async (input) => { keys.push(input.idempotencyKey); return orig(input); };
+    try {
+      await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/stripe-refund`, await finance(), { reason: "Overpaid" });
+    } finally {
+      fake.refund = orig;
+    }
+    expect(keys).toEqual([`refund:${pi}:5000`]);
+    await hook("charge.refunded", { id: "ch_r2", object: "charge", payment_intent: pi, amount_refunded: 5000, currency: "sek" });
+    const before = await walletSum();
+    const admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    const version = (await database.db.selectFrom("trips").select("version").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).version;
+    expect((await call(app, "POST", `/admin/trips/${tripId}/reverse-no-show`, admin, { expectedVersion: version, reason: "Wrong no-show" })).statusCode).toBe(200);
+    // The whole fee goes back to the wallet (the card part that settled it was never refunded).
+    expect((await walletSum()) - before).toBe(10000);
   });
 
 });
