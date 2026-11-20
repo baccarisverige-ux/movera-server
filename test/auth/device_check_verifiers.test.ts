@@ -53,6 +53,10 @@ describe("Play Integrity verdict (Android)", () => {
     expect(await busy.verify({ token: "tok", binding })).toMatchObject({ why: "google_429" });
     const down = playIntegrityVerifier({ tokens: { get: async () => "a" }, packages: ["se.movera.rider"], clock: () => now, fetchFn: async () => ({ status: 503, text: async () => "{}" }) });
     expect(await down.verify({ token: "tok", binding })).toMatchObject({ why: "google_5xx" });
+    for (const status of [401, 403]) {
+      const ours = playIntegrityVerifier({ tokens: { get: async () => "a" }, packages: ["se.movera.rider"], clock: () => now, fetchFn: async () => ({ status, text: async () => "{}" }) });
+      expect(await ours.verify({ token: "tok", binding })).toMatchObject({ why: "google_auth" });
+    }
   });
 
   it("the time-out aborts the verifier's call (AbortSignal)", async () => {

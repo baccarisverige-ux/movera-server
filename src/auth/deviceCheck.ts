@@ -47,7 +47,10 @@ export function canonicalToken(input: DeviceCheckInput): Buffer | null {
   // Follow-up 3: every segment must be canonical base64url (no padding, zero padding bits), so one token has one
   // spelling; the one-use hash covers the decoded segments.
   const parts: Buffer[] = [];
-  for (const segment of input.token.split(".")) {
+  const segments = input.token.split(".");
+  // A Play Integrity token is a JWE in compact form: exactly 5 segments (header, key, iv, ciphertext, tag).
+  if (segments.length !== 5) return null;
+  for (const segment of segments) {
     if (!B64URL_SEGMENT.test(segment)) return null;
     const bytes = Buffer.from(segment, "base64url");
     if (bytes.toString("base64url") !== segment) return null;
@@ -79,7 +82,9 @@ export const resetDeviceCheckState = () => Object.assign(state, { inFlight: 0, e
  * cap or an open breaker is a failed check.
  */
 /** Follow-up 4: these failures are Movera's or Google's, not the caller's (never counted on the address ceiling). */
-export const SERVICE_FAILURES: ReadonlySet<string> = new Set(["timeout", "error", "google_429", "google_5xx", "busy", "breaker_open", "not_configured"]);
+/** Failures of the call itself (Google or our own setup): they feed the circuit breaker. google_auth = Google refused OUR credentials (401 / 403). */
+export const BREAKER_FAILURES: readonly string[] = ["timeout", "error", "google_429", "google_5xx", "google_auth"];
+export const SERVICE_FAILURES: ReadonlySet<string> = new Set([...BREAKER_FAILURES, "busy", "breaker_open", "not_configured"]);
 
 export async function runDeviceCheck(verifiers: DeviceVerifiers, input: DeviceCheckInput, binding: Buffer, now: () => number = Date.now, onBreakerOpen?: () => void): Promise<DeviceCheckOutcome> {
   const verifier = verifiers[input.platform];
@@ -92,7 +97,7 @@ export async function runDeviceCheck(verifiers: DeviceVerifiers, input: DeviceCh
   const timeout = new Promise<DeviceCheckOutcome>((resolve) => (timer = setTimeout(() => (controller.abort(), resolve({ ok: false, why: "timeout" })), DEVICE_CHECK.timeoutSeconds * 1000)));
   try {
     const outcome = await Promise.race([verifier.verify({ token: input.token, keyId: input.keyId, binding, signal: controller.signal }).catch(() => ({ ok: false, why: "error" }) as DeviceCheckOutcome), timeout]);
-    const failedService = !outcome.ok && ["timeout", "error", "google_429", "google_5xx"].includes(outcome.why);
+    const failedService = !outcome.ok && BREAKER_FAILURES.includes(outcome.why);
     state.errorsInRow = failedService ? state.errorsInRow + 1 : 0;
     if (state.errorsInRow >= BREAKER_ERRORS) {
       state.openUntil = now() + BREAKER_OPEN_MS;
@@ -166,6 +171,7 @@ export function playIntegrityVerifier(options: { tokens: { get(): Promise<string
         // Review SHOULD 6: Google's own trouble is told apart from a token it refuses (log + breaker).
         if (res.status === 429) return { ok: false, why: "google_429" };
         if (res.status >= 500) return { ok: false, why: "google_5xx" };
+        if (res.status === 401 || res.status === 403) return { ok: false, why: "google_auth" };
         if (res.status !== 200) continue;
         const payload = (JSON.parse(text) as { tokenPayloadExternal?: IntegrityPayload }).tokenPayloadExternal ?? {};
         return judgeIntegrity(payload, options.packages, binding, options.clock?.() ?? new Date());

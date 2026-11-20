@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { checkSmsSignIn } from "../../src/auth/smsSignIn.js";
-import { BREAKER_ERRORS, FAILED_CHECKS_PER_ADDRESS_PER_HOUR, canonicalToken, deviceBinding, deviceTokenHash, resetDeviceCheckState, resetFailedChecks, type DeviceVerifier } from "../../src/auth/deviceCheck.js";
+import { BREAKER_ERRORS, SERVICE_FAILURES, failedChecksFrom, FAILED_CHECKS_PER_ADDRESS_PER_HOUR, canonicalToken, deviceBinding, deviceTokenHash, resetDeviceCheckState, resetFailedChecks, type DeviceVerifier } from "../../src/auth/deviceCheck.js";
 import { TEST_PHONES, seedTestPhones } from "../../src/auth/testPhones.js";
 import { contract } from "../../src/contract/contract.js";
 import { readEnv } from "../../src/env.js";
@@ -27,18 +27,22 @@ let ins = 0;
 const realSE = () => `+467017${52000 + ++se}`;
 const address = () => `198.51.${Math.floor(++n / 250)}.${n % 250}`;
 /** A canonical base64url segment (Play Integrity tokens are JWE: base64url parts and dots). */
-const tok = (label: string) => Buffer.from(label).toString("base64url");
+const b64 = (label: string) => Buffer.from(label).toString("base64url");
+/** A well-formed fake Play Integrity token: 5 canonical base64url segments (JWE compact form). */
+const tok = (label: string) => [label, "key", "iv", "data", "tag"].map(b64).join(".");
 const install = () => `install-${String(++ins).padStart(12, "0")}`;
 
 /** Fake verifiers: `answer` decides; every call is kept (token, keyId, binding). */
 class FakeVerifier implements DeviceVerifier {
   calls: Array<{ token: string; keyId?: string | undefined; binding: Buffer }> = [];
-  answer: "ok" | "bad" | "throw" | "hang" | "google_5xx" = "ok";
+  answer: "ok" | "bad" | "throw" | "hang" | "google_5xx" | "custom" = "ok";
+  custom = "";
   async verify(input: { token: string; keyId?: string | undefined; binding: Buffer }) {
     this.calls.push(input);
     if (this.answer === "throw") throw new Error("google down");
     if (this.answer === "hang") return new Promise<never>(() => undefined);
     if (this.answer === "google_5xx") return { ok: false, why: "google_5xx" } as const;
+    if (this.answer === "custom") return { ok: false, why: this.custom } as const;
     return this.answer === "ok" ? ({ ok: true } as const) : ({ ok: false, why: "device_verdict" } as const);
   }
 }
@@ -201,7 +205,8 @@ describe("real-phone check (CountryRules.smsSignIn.requireDeviceCheck)", () => {
     expect(canonicalToken({ platform: "ios", token: "QUJD\n" })).toBeNull();
     expect(canonicalToken({ platform: "ios", token: "QUJ" })).toBeNull();
     expect(canonicalToken({ platform: "ios", token: "QU-D" })).toBeNull();
-    expect(canonicalToken({ platform: "android", token: `${tok("hdr")}.${tok("key")}.${tok("iv")}` })).not.toBeNull();
+    expect(canonicalToken({ platform: "android", token: tok("hdr") })).not.toBeNull();
+    expect(canonicalToken({ platform: "android", token: `${b64("a")}.${b64("b")}.${b64("c")}` })).toBeNull();
     expect(canonicalToken({ platform: "android", token: "eyJh b" })).toBeNull();
     expect(deviceTokenHash({ platform: "ios", token: "QUJD" })).not.toBe(deviceTokenHash({ platform: "android", token: tok("QUJD") }));
   });
@@ -244,14 +249,14 @@ describe("real-phone check (CountryRules.smsSignIn.requireDeviceCheck)", () => {
   it("follow-up 3: one Android token has one spelling: a segment that is not canonical base64url is refused, and other spellings never pass the one-use list", async () => {
     // "QUJDRA" = "ABCD"; "QUJDRB" decodes to the same bytes with non-zero padding bits.
     expect(Buffer.from("QUJDRB", "base64url").equals(Buffer.from("QUJDRA", "base64url"))).toBe(true);
-    expect(canonicalToken({ platform: "android", token: "QUJDRA.QUJD" })).not.toBeNull();
-    expect(canonicalToken({ platform: "android", token: "QUJDRB.QUJD" })).toBeNull();
-    expect(canonicalToken({ platform: "android", token: "QUJDRA==.QUJD" })).toBeNull();
-    expect(canonicalToken({ platform: "android", token: "QUJDR.QUJD" })).toBeNull();
-    expect(canonicalToken({ platform: "android", token: "QUJDRA..QUJD" })).toBeNull();
+    expect(canonicalToken({ platform: "android", token: "QUJDRA.QUJD.QUJD.QUJD.QUJD" })).not.toBeNull();
+    expect(canonicalToken({ platform: "android", token: "QUJDRB.QUJD.QUJD.QUJD.QUJD" })).toBeNull();
+    expect(canonicalToken({ platform: "android", token: "QUJDRA==.QUJD.QUJD.QUJD.QUJD" })).toBeNull();
+    expect(canonicalToken({ platform: "android", token: "QUJDR.QUJD.QUJD.QUJD.QUJD" })).toBeNull();
+    expect(canonicalToken({ platform: "android", token: "QUJDRA..QUJD.QUJD.QUJD" })).toBeNull();
     await setSE({ enabled: true, requireDeviceCheck: true });
-    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "QUJDRA.QUJD" } })).statusCode).toBe(200);
-    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "QUJDRB.QUJD" } })).json()).toMatchObject({ reason: "device_check_failed" });
+    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "QUJDRA.QUJD.QUJD.QUJD.QUJD" } })).statusCode).toBe(200);
+    expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: "QUJDRB.QUJD.QUJD.QUJD.QUJD" } })).json()).toMatchObject({ reason: "device_check_failed" });
     expect(android.calls).toHaveLength(1);
   });
 
@@ -265,5 +270,24 @@ describe("real-phone check (CountryRules.smsSignIn.requireDeviceCheck)", () => {
     resetDeviceCheckState();
     android.answer = "ok";
     expect((await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: tok("nat-user") } }, ip)).statusCode).toBe(200);
+  });
+
+  it("should: every service reason (Google trouble, our own Google credentials, cap, breaker, no keys) leaves the address ceiling at 0", async () => {
+    for (const why of [...SERVICE_FAILURES]) {
+      resetFailedChecks();
+      resetDeviceCheckState();
+      await setSE({ enabled: true, requireDeviceCheck: true });
+      android.answer = "custom";
+      android.custom = why;
+      const ip = "203.0.113.99";
+      await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: tok(`s-${why}`) } }, ip);
+      expect(failedChecksFrom(ip, Date.now()), why).toBe(0);
+    }
+    expect(SERVICE_FAILURES.has("google_auth")).toBe(true);
+    // A token the check refused does count.
+    resetFailedChecks();
+    android.answer = "bad";
+    await request({ phone: realSE(), installId: install(), deviceCheck: { platform: "android", token: tok("refused") } }, "203.0.113.98");
+    expect(failedChecksFrom("203.0.113.98", Date.now())).toBe(1);
   });
 });
