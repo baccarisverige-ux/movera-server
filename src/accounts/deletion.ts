@@ -171,6 +171,8 @@ async function eraseOne(trx: Trx, a: Due, now: Date): Promise<Record<string, num
   await run("auth_sessions", sql`DELETE FROM auth_sessions WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
   await run("push_devices", sql`DELETE FROM push_devices WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
   await run("notifications", sql`DELETE FROM notifications WHERE audience = ${a.kind} AND subject_id = ${a.id}`);
+  // Review round 3 SHOULD: unused Apple / Google sign-in link tokens of the person's identities (name, e-mail) first.
+  await run("auth_link_tokens", sql`DELETE FROM auth_link_tokens WHERE provider_subject IN (SELECT provider_subject FROM auth_provider_links WHERE actor = ${a.kind} AND subject_id = ${a.id}) AND app = ${a.kind}`);
   await run("auth_provider_links", sql`DELETE FROM auth_provider_links WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
   await run("email_changes", sql`DELETE FROM email_changes WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
   await run("account_change_starts", sql`DELETE FROM account_change_starts WHERE actor = ${a.kind} AND subject_id = ${a.id}`);

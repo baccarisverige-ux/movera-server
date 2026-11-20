@@ -8,7 +8,7 @@ import { HOUSEKEEPING_KINDS } from "../../src/jobs/housekeeping.js";
 import { RECURRING_JOBS } from "../../src/jobs/heartbeat.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { adminSession } from "../support/admin.js";
-import { insertRider, insertTrip } from "../support/seed.js";
+import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
@@ -93,13 +93,22 @@ describe("account deletion (v0.18.134)", () => {
     expect(await eraseDueAccounts(database.db, clock.now)).toEqual({ due: 2, erased: 0 });
     expect((await database.db.selectFrom("riders").select("erased_at").where("rider_id", "=", sara).executeTakeFirstOrThrow()).erased_at).toBeNull();
     await eraseOn(true);
-    await sql`INSERT INTO sms_outbox (phone, body, kind, status, created_at) VALUES (${SARA}, 'code', 'otp', 'sent', now())`.execute(database.db).catch(() => undefined);
-    await sql`INSERT INTO outbound_notices (channel, to_address, kind, language, status, created_at) VALUES ('sms', ${SARA}, 'x', 'sv', 'sent', now())`.execute(database.db);
+    // Review round 3 MUST: real rows (no .catch) in every table found by the number or e-mail.
+    const owner = await insertDriver(database.db);
+    await sql`INSERT INTO fleets (fleet_id, name, org_number, country, city_id, zone_id, owner_driver_id) VALUES ('flt_del1', 'Nord AB', '5560000000', 'SE', 'stockholm', 'Z001', ${owner})`.execute(database.db);
+    for (const phone of [SARA, ALI]) {
+      await sql`INSERT INTO otp_sessions (session_id, phone, app, code_sha256, is_test, max_attempts, expires_at, created_at) VALUES (${"otp_" + phone.slice(-4)}, ${phone}, 'rider', 'x', false, 5, now(), now())`.execute(database.db);
+      await sql`INSERT INTO sms_outbox (sms_id, phone, text, kind, status) VALUES (${"sms_" + phone.slice(-4)}, ${phone}, 'Your code', 'otp', 'sent')`.execute(database.db);
+      await sql`INSERT INTO fleet_invitations (invitation_id, fleet_id, direction, phone, expires_at) VALUES (${"inv_" + phone.slice(-4)}, 'flt_del1', 'owner_invite', ${phone}, now())`.execute(database.db);
+      await sql`INSERT INTO sign_in_waitlist (phone, app, first_at, last_at) VALUES (${phone}, 'rider', now(), now())`.execute(database.db);
+      await sql`INSERT INTO outbound_notices (channel, to_address, kind, language, status, created_at) VALUES ('sms', ${phone}, 'x', 'sv', 'sent', now())`.execute(database.db);
+    }
+    const seeded = async (table: string, col: string) => (await sql<{ n: number }>`SELECT count(*)::int AS n FROM ${sql.table(table)} WHERE ${sql.ref(col)} IN (${SARA}, ${ALI})`.execute(database.db)).rows[0]!.n;
+    // At least the two seeded rows each (the real sign-ins above added more sign-in codes).
+    for (const table of ["otp_sessions", "sms_outbox", "fleet_invitations", "sign_in_waitlist", "outbound_notices"]) expect(await seeded(table, table === "outbound_notices" ? "to_address" : "phone"), table).toBeGreaterThanOrEqual(2);
     expect(await eraseDueAccounts(database.db, clock.now)).toEqual({ due: 2, erased: 2 });
     for (const table of ["otp_sessions", "sms_outbox", "fleet_invitations", "sign_in_waitlist", "outbound_notices"]) {
-      const col = table === "outbound_notices" ? "to_address" : "phone";
-      const n = (await sql<{ n: number }>`SELECT count(*)::int AS n FROM ${sql.table(table)} WHERE ${sql.ref(col)} IN (${SARA}, ${ALI})`.execute(database.db)).rows[0]!.n;
-      expect([table, n]).toEqual([table, 0]);
+      expect([table, await seeded(table, table === "outbound_notices" ? "to_address" : "phone")]).toEqual([table, 0]);
     }
     const r = await database.db.selectFrom("riders").selectAll().where("rider_id", "=", sara).executeTakeFirstOrThrow();
     expect(r.erased_at?.toISOString()).toBe(clock.now.toISOString());
