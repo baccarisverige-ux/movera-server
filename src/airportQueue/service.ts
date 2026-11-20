@@ -13,6 +13,22 @@ import { inPolygon, type Polygon } from "../zones/geometry.js";
 
 export const QUEUE_REASON = "airport-queue";
 
+/**
+ * v0.18.145 (S4c load cut, contract.json#loadCut.airportQueueLive): a change of a line NOTIFYs this channel once per
+ * driver whose place changed ({ driverId, areaId }); every server copy LISTENs and its driver settings streams send
+ * airport_queue_changed (realtime/streams.ts attachConfig). NOTIFY inside the transaction is delivered at its commit,
+ * so a rolled-back change tells nobody (rule 33: any copy may make the change, every copy hears it).
+ */
+export const AIRPORT_QUEUE_CHANNEL = "movera_airport_queue";
+
+/** Tells each of `driverIds` and, with `line`, every driver still open in the area's line (they moved up). */
+async function tell(ex: Executor, areaId: string, driverIds: readonly string[], line: boolean): Promise<void> {
+  if (driverIds.length === 0 && !line) return;
+  await sql`SELECT pg_notify(${AIRPORT_QUEUE_CHANNEL}, json_build_object('driverId', t.d, 'areaId', ${areaId}::text)::text)
+    FROM (SELECT unnest(${[...driverIds]}::text[]) AS d
+          UNION SELECT e.driver_id FROM airport_queue_entries e WHERE ${line} AND e.area_id = ${areaId} AND e.left_at IS NULL) t`.execute(ex);
+}
+
 export type AreaRow = {
   area_id: string;
   airport_zone_id: string;
@@ -66,15 +82,18 @@ async function areaAt(ex: Executor, p: { lat: number; lng: number }): Promise<Ar
 const VALID = sql<boolean>`d.online_status = 'online' AND (d.online_since IS NULL OR d.online_since <= e.joined_at)`;
 
 async function leave(ex: Executor, entryId: string, reason: string, now: Date): Promise<void> {
-  await ex.updateTable("airport_queue_entries").set({ left_at: now, left_reason: reason }).where("entry_id", "=", entryId).where("left_at", "is", null).execute();
+  const gone = await ex.updateTable("airport_queue_entries").set({ left_at: now, left_reason: reason }).where("entry_id", "=", entryId).where("left_at", "is", null)
+    .returning(["area_id", "driver_id"]).executeTakeFirst();
+  if (gone) await tell(ex, gone.area_id, [gone.driver_id], true);
 }
 
 /** Lazily closes the entries of an area that no longer count (offline, new session, outside past the grace). */
 async function prune(ex: Executor, area: AreaRow, now: Date): Promise<void> {
   const graceStart = new Date(now.getTime() - area.leave_grace_min * 60_000);
-  await sql`UPDATE airport_queue_entries e SET left_at = ${now}, left_reason = CASE WHEN e.outside_since IS NOT NULL AND e.outside_since < ${graceStart} THEN 'left_area' ELSE 'offline' END
+  const gone = await sql<{ driver_id: string }>`UPDATE airport_queue_entries e SET left_at = ${now}, left_reason = CASE WHEN e.outside_since IS NOT NULL AND e.outside_since < ${graceStart} THEN 'left_area' ELSE 'offline' END
     FROM drivers d WHERE d.driver_id = e.driver_id AND e.area_id = ${area.area_id} AND e.left_at IS NULL
-    AND (NOT (${VALID}) OR (e.outside_since IS NOT NULL AND e.outside_since < ${graceStart}))`.execute(ex);
+    AND (NOT (${VALID}) OR (e.outside_since IS NOT NULL AND e.outside_since < ${graceStart})) RETURNING e.driver_id`.execute(ex);
+  if (gone.rows.length > 0) await tell(ex, area.area_id, gone.rows.map((r) => r.driver_id), true);
 }
 
 /**
@@ -115,19 +134,24 @@ export async function onDriverPosition(
   const area = await areaAt(trx, p);
   if (!area) return;
   // Two copies handling two batches of one driver at once: the unique open-row index keeps one.
-  await trx.insertInto("airport_queue_entries").values({ area_id: area.area_id, driver_id: driverId, joined_at: now })
-    .onConflict((c) => c.column("driver_id").where("left_at", "is", null).doNothing()).execute();
+  const joined = await trx.insertInto("airport_queue_entries").values({ area_id: area.area_id, driver_id: driverId, joined_at: now })
+    .onConflict((c) => c.column("driver_id").where("left_at", "is", null).doNothing()).returning("entry_id").executeTakeFirst();
+  // v0.18.145: only the driver who joined (at the back: nobody else's place changed).
+  if (joined) await tell(trx, area.area_id, [driverId], false);
 }
 
 /** Accepting any trip leaves the queue (a queue trip counts as an airport pickup for the Dashboard). */
 export async function leaveOnAccept(trx: Trx, driverId: string, reasonCode: string | null, now: Date): Promise<void> {
-  await trx.updateTable("airport_queue_entries").set({ left_at: now, left_reason: reasonCode === QUEUE_REASON ? "queue_trip" : "accepted" })
-    .where("driver_id", "=", driverId).where("left_at", "is", null).execute();
+  const gone = await trx.updateTable("airport_queue_entries").set({ left_at: now, left_reason: reasonCode === QUEUE_REASON ? "queue_trip" : "accepted" })
+    .where("driver_id", "=", driverId).where("left_at", "is", null).returning("area_id").execute();
+  for (const row of gone) await tell(trx, row.area_id, [driverId], true);
 }
 
 /** Turning an area off (or redrawing it off) empties its queue. */
 export async function emptyArea(trx: Trx, areaId: string, now: Date): Promise<void> {
-  await trx.updateTable("airport_queue_entries").set({ left_at: now, left_reason: "area_off" }).where("area_id", "=", areaId).where("left_at", "is", null).execute();
+  const gone = await trx.updateTable("airport_queue_entries").set({ left_at: now, left_reason: "area_off" }).where("area_id", "=", areaId).where("left_at", "is", null)
+    .returning("driver_id").execute();
+  await tell(trx, areaId, gone.map((r) => r.driver_id), false);
 }
 
 /** The valid open entries of an area, first in line first. */
@@ -192,8 +216,10 @@ export async function queuePick(trx: Trx, trip: Pick<TripRow, "trip_id" | "picku
     // keepPlaceAfterDecline false: a declined or missed queue offer sends him to the back (joined_at = when he answered).
     for (const o of asked) {
       if (o.reason_code !== QUEUE_REASON || !["declined", "expired"].includes(o.status) || !o.answered_at) continue;
-      await trx.updateTable("airport_queue_entries").set({ joined_at: o.answered_at }).where("driver_id", "=", o.driver_id).where("area_id", "=", area.area_id)
-        .where("left_at", "is", null).where("joined_at", "<", o.answered_at).execute();
+      const moved = await trx.updateTable("airport_queue_entries").set({ joined_at: o.answered_at }).where("driver_id", "=", o.driver_id).where("area_id", "=", area.area_id)
+        .where("left_at", "is", null).where("joined_at", "<", o.answered_at).returning("entry_id").execute();
+      // v0.18.145: he went to the back, so everyone behind him moved up.
+      if (moved.length > 0) await tell(trx, area.area_id, [o.driver_id], true);
     }
   }
   await prune(trx, area, now);

@@ -4,6 +4,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { cacheLiveDocuments } from "../../src/config/service.js";
+import { AIRPORT_QUEUE_CHANNEL, emptyArea } from "../../src/airportQueue/service.js";
+import { NotificationHub } from "../../src/realtime/hub.js";
 import { dispatchHandlers, ROUND } from "../../src/dispatch/runtime.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { scheduleTimer, TimerWorker } from "../../src/jobs/timers.js";
@@ -234,5 +236,108 @@ describe("airport queue — fix job 9 (v0.18.36 §60)", () => {
     await worker.runDue();
     const open = await openOffers(tripId);
     expect(open.map((o) => [keyOf(o.driver_id), o.reason_code])).toEqual([["C", "airport-queue"]]);
+  });
+});
+
+/**
+ * v0.18.145 (contract.json#loadCut.airportQueueLive, S4c load cut): every change of a line NOTIFYs (after the commit)
+ * each driver whose place changed — joined, left, moved up, picked — so the driver config stream can send
+ * airport_queue_changed and the app's poll becomes a 60 s fallback.
+ */
+describe("airport queue hints (v0.18.145 loadCut.airportQueueLive)", () => {
+  let hub: NotificationHub;
+  const heard: Array<Record<string, unknown>> = [];
+  beforeAll(async () => {
+    hub = new NotificationHub(database.url, [AIRPORT_QUEUE_CHANNEL]);
+    await hub.start();
+    hub.subscribe(AIRPORT_QUEUE_CHANNEL, (payload) => void (payload && heard.push(payload)));
+  });
+  afterAll(async () => {
+    await hub.stop();
+  });
+  beforeEach(async () => {
+    // Each test starts with an empty line (the tests above leave old rows open).
+    await database.db.updateTable("airport_queue_entries").set({ left_at: clock.now, left_reason: "offline" }).where("left_at", "is", null).execute();
+  });
+  const settle = async () => {
+    const end = Date.now() + 400;
+    let n = -1;
+    while (Date.now() < end && n !== heard.length) {
+      n = heard.length;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  };
+  /** The drivers told since the last call (sorted keys), then forgets them. */
+  const told = async () => {
+    await settle();
+    const keys = [...new Set(heard.map((p) => keyOf(String(p["driverId"]))))].sort();
+    expect(heard.every((p) => p["areaId"] === "AQ-BMA")).toBe(true);
+    heard.length = 0;
+    return keys;
+  };
+
+  it("joining tells the driver who joined; staying inside tells nobody", async () => {
+    expect((await putArea({ polygon: AREA, on: true })).statusCode).toBe(200);
+    await told();
+    tick(60);
+    await at("C", SPOTS.C);
+    expect(await told()).toEqual(["C"]);
+    tick(60);
+    await at("B", SPOTS.B);
+    expect(await told()).toEqual(["B"]);
+    tick(5);
+    await at("C", SPOTS.C);
+    await at("B", SPOTS.B);
+    expect(await told()).toEqual([]);
+  });
+
+  it("leaving the area (past the grace) tells him and everyone behind him", async () => {
+    await queueUp(["C", "B", "A"]);
+    await told();
+    tick(10);
+    await at("C", OUTSIDE);
+    expect(await told()).toEqual([]);
+    tick(200);
+    await at("C", OUTSIDE);
+    expect(await told()).toEqual(["A", "B", "C"]);
+  });
+
+  it("accepting a trip (the queue pick) tells the picked driver and the line", async () => {
+    await queueUp(["C", "B", "A"]);
+    await told();
+    const tripId = await book();
+    await worker.runDue();
+    const [offer] = await openOffers(tripId);
+    expect(keyOf(offer!.driver_id)).toBe("C");
+    await told();
+    expect((await call(app, "POST", `/offers/${offer!.offer_id}/accept`, drivers.C.headers, { expectedVersion: offer!.version })).statusCode).toBe(200);
+    expect(await told()).toEqual(["A", "B", "C"]);
+  });
+
+  it("a driver who went offline is pruned at the next pick: the line is told", async () => {
+    await queueUp(["C", "B", "A"]);
+    await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", drivers.C.id).execute();
+    await told();
+    const tripId = await book();
+    await worker.runDue();
+    expect(keyOf((await openOffers(tripId))[0]!.driver_id)).toBe("B");
+    expect(await told()).toEqual(["A", "B", "C"]);
+  });
+
+  it("the admin turning the area off empties the line and tells every driver in it", async () => {
+    await queueUp(["C", "B"]);
+    await told();
+    expect((await putArea({ polygon: AREA, on: false })).statusCode).toBe(200);
+    expect(await told()).toEqual(["B", "C"]);
+  });
+
+  it("a rolled-back change tells nobody (NOTIFY is sent at commit)", async () => {
+    await queueUp(["C"]);
+    await told();
+    await database.db.transaction().execute(async (trx) => {
+      await emptyArea(trx, "AQ-BMA", clock.now);
+      throw new Error("roll back");
+    }).catch(() => undefined);
+    expect(await told()).toEqual([]);
   });
 });

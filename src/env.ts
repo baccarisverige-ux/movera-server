@@ -215,6 +215,11 @@ const schema = z.object({
   /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
+  /**
+   * v0.18.145 (S4c load cut, contract.json#loadCut.nearbyCache): GET /rider/nearby-vehicles keeps the blurred cars of a
+   * 0.005° grid cell this many ms per server copy (0: off, every rider reads the database).
+   */
+  NEARBY_CACHE_MS: z.coerce.number().int().min(0).max(60_000).default(2500),
   SHED_LOOP_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1000),
   /**
    * B1.9 (owner W1 Q73, 2026-11-11): a failed stream read (trip, offer, settings, admin live, dispatch, incident
