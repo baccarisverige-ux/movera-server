@@ -18,7 +18,7 @@ type Money = { amountMinor: number; currency: string };
 const REASON_MAX = 300;
 
 /** The same sum as drivers/owes.ts owedByDriver, for every driver at once: unpaid entries + open payouts below 0. */
-const NET_PER_DRIVER = sql`
+export const NET_PER_DRIVER = sql`
   SELECT driver_id, currency, sum(s)::bigint AS net FROM (
     SELECT e.driver_id, e.currency, sum(e.amount_minor - CASE WHEN e.kind IN ('trip', 'tip') THEN coalesce(e.cash_minor, 0) ELSE 0 END) AS s
       FROM earnings_entries e WHERE e.payout_id IS NULL GROUP BY e.driver_id, e.currency
