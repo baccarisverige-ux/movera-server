@@ -16,6 +16,7 @@ import { applyCommand, expectVersion, lockOwnTrip, ownsTrip, touchTrip } from ".
 import { checkMaxStops, maxStopsOf, routeChangeSettings, type RouteChangeSettings } from "./onTripSettings.js";
 import { routeChangeDriverTotal, tripProjection } from "./projection.js";
 import { pricingOf } from "./ride.js";
+import { zoneAt } from "../config/zoneLookup.js";
 import { notify } from "../notifications/service.js";
 import { noticeLanguage } from "../notifications/noticeLanguage.js";
 
@@ -198,6 +199,12 @@ export async function quoteRouteChange(trx: Trx, routed: RoutedQuote | null, rid
   // v0.18.143: a new pickup is priced only while the trip is searched (any place); after accept it moves by PATCH { pickup }.
   if (req.pickup !== undefined && !whileSearching(trip)) throw badRequest("Move the pickup with PATCH /trips/{tripId} { pickup }.", "invalid_body");
   expectVersion(trip, req.expectedVersion, "rider");
+  // v0.18.143 (owner "But the price apply to zone from where booking is"): a new pickup keeps the booked zone's pricing,
+  // rules and currency (drivers from any zone); it must only be inside some open service area.
+  if (req.pickup !== undefined) {
+    const zone = await zoneAt(trx, req.pickup);
+    if (zone === null || !zone.open) throw new ApiError("forbidden", "Movera is not available at this pickup.", { reason: "service_not_available" });
+  }
   const leavesFixedPrice = checkOpen(trip, await routeChangeSettings(trx, trip.zone_id));
   await checkMaxStops(trx, trip.zone_id, req.stops.length);
   // Stops the driver already reached stay first, in the same order (their waiting is counted by index).

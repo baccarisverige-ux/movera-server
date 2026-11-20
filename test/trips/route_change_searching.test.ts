@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PLACES, Sim, bookAndAccept, type Driver, type Rider } from "../e2e/harness.js";
+import { requestRouteChange } from "../../src/trips/routeChange.js";
 
 /**
  * v0.18.143 (owner 2026-11-20 "must rider can change !!!!", contract.json#onTrip.routeChange.whileSearching): while a
@@ -90,5 +91,95 @@ describe("change route while searching (v0.18.143)", () => {
     const res = await rider.send("PATCH", `/trips/${tripId}`, { expectedVersion: now["version"], routeQuoteId: q.body["routeQuoteId"] });
     expect(res.status).toBe(409);
     expect((await rider.trip(tripId))["pickup"]).toMatchObject({ lat: PLACES.sergels.lat });
+  });
+  it("offered: fare, commission, booked pickup and driver pay follow the quote; nothing is charged", async () => {
+    const { tripId } = await rider.book();
+    await sim.tick();
+    const before = await rider.trip(tripId);
+    const q = await rider.post(`/trips/${tripId}/route-quote`, { expectedVersion: before["version"], pickup: FAR, stops: [] });
+    expect(q.status, JSON.stringify(q.body)).toBe(201);
+    const res = await rider.send("PATCH", `/trips/${tripId}`, { expectedVersion: before["version"], routeQuoteId: q.body["routeQuoteId"] });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const row = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    const quote = await sim.db.selectFrom("route_quotes").selectAll().where("route_quote_id", "=", q.body["routeQuoteId"]).executeTakeFirstOrThrow();
+    expect(Number(row.fare_minor)).toBe(Number(quote.total_minor));
+    expect(Number(row.driver_earnings_minor)).toBe(Number(quote.driver_earnings_minor));
+    expect(Number(row.commission_minor)).toBeGreaterThanOrEqual(0);
+    expect(row.booked_pickup).toMatchObject({ lat: FAR.lat, lng: FAR.lng });
+    expect(row.pickup).toMatchObject({ lat: FAR.lat, lng: FAR.lng });
+    expect(row.cancellation).toBeNull();
+    expect(row.zone_id).toBe("Z001");
+    expect(quote.used_at).not.toBeNull();
+    // The same price cannot be used twice.
+    const again = await rider.send("PATCH", `/trips/${tripId}`, { expectedVersion: res.body["version"], routeQuoteId: q.body["routeQuoteId"] });
+    expect([again.status, again.body.reason]).toEqual([409, "route_quote_used"]);
+  });
+
+  it("searching (no driver near): the change applies and the search starts again", async () => {
+    await a.moveTo(PLACES.atSea);
+    const { tripId } = await rider.book();
+    await sim.tick();
+    const before = await rider.trip(tripId);
+    expect(before["status"]).toBe("searching");
+    const q = await rider.post(`/trips/${tripId}/route-quote`, { expectedVersion: before["version"], pickup: FAR, stops: [] });
+    expect(q.status, JSON.stringify(q.body)).toBe(201);
+    const res = await rider.send("PATCH", `/trips/${tripId}`, { expectedVersion: before["version"], routeQuoteId: q.body["routeQuoteId"] });
+    expect([res.status, res.body["status"]]).toEqual([200, "searching"]);
+    const search = await sim.db.selectFrom("trips").select("search_started_at").where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(search.search_started_at?.toISOString()).toBe(sim.clock.now.toISOString());
+  });
+
+  it("a pickup in another open zone keeps the booked zone's pricing (owner: the price applies to the booking zone)", async () => {
+    await sim.db.insertInto("zones").values({ zone_id: "ZUP", name: "Uppsala", country: "SE", currency: "SEK", time_zone: "Europe/Stockholm", kind: "operating", center_lat: 59.86, center_lng: 17.64, open: true, south: 59.8, west: 17.5, north: 59.9, east: 17.8, names: JSON.stringify({ sv: "Uppsala", fr: "Uppsala", en: "Uppsala" }), polygon: JSON.stringify([[59.8, 17.5], [59.9, 17.5], [59.9, 17.8], [59.8, 17.8]]) } as never).onConflict((c) => c.column("zone_id").doNothing()).execute();
+    const { tripId } = await rider.book();
+    await sim.tick();
+    const before = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    const view = await rider.trip(tripId);
+    const UPPSALA = { address: "Uppsala C", lat: 59.858, lng: 17.646 };
+    const q = await rider.post(`/trips/${tripId}/route-quote`, { expectedVersion: view["version"], pickup: UPPSALA, stops: [] });
+    expect(q.status, JSON.stringify(q.body)).toBe(201);
+    expect(q.body["total"]["currency"]).toBe(before.currency);
+    const res = await rider.send("PATCH", `/trips/${tripId}`, { expectedVersion: view["version"], routeQuoteId: q.body["routeQuoteId"] });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const after = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect([after.zone_id, after.pricing_version, after.pricing_scope, after.currency]).toEqual([before.zone_id, before.pricing_version, before.pricing_scope, before.currency]);
+    expect(after.pickup).toMatchObject({ lat: UPPSALA.lat });
+  });
+
+  it("a pickup in no open zone is refused: 403 service_not_available, nothing changes", async () => {
+    const { tripId } = await rider.book();
+    await sim.tick();
+    const view = await rider.trip(tripId);
+    const q = await rider.post(`/trips/${tripId}/route-quote`, { expectedVersion: view["version"], pickup: PLACES.atSea, stops: [] });
+    expect([q.status, q.body.reason]).toEqual([403, "service_not_available"]);
+    expect((await rider.trip(tripId))["version"]).toBe(view["version"]);
+  });
+
+  it("a booked (scheduled) ride is not changed this way: 400 invalid_body for a pickup", async () => {
+    const at = new Date(sim.clock.now.getTime() + 2 * 3600_000).toISOString();
+    const quotes = await rider.quote({ categoryIds: ["economy"], kind: "scheduled", scheduledAt: at });
+    expect(quotes.status, JSON.stringify(quotes.body)).toBe(201);
+    const made = await rider.post("/trips", { quoteId: quotes.body["quotes"][0].quoteId, categoryId: "economy", pickup: PLACES.sergels, dropoff: PLACES.medborgar, stops: [], kind: "scheduled", scheduledAt: at, paymentMethod: "cash" });
+    expect(made.status, JSON.stringify(made.body)).toBe(201);
+    const q = await rider.post(`/trips/${made.body["tripId"]}/route-quote`, { expectedVersion: made.body["version"], pickup: FAR, stops: [] });
+    expect([q.status, q.body.reason]).toEqual([400, "invalid_body"]);
+  });
+
+  it("rollback: a change whose transaction fails leaves the trip, its price and its open offer as they were", async () => {
+    const { tripId } = await rider.book();
+    await sim.tick();
+    const offer = await a.offerFor(tripId);
+    const view = await rider.trip(tripId);
+    const q = await rider.post(`/trips/${tripId}/route-quote`, { expectedVersion: view["version"], pickup: FAR, stops: [] });
+    expect(q.status).toBe(201);
+    await expect(sim.db.transaction().execute(async (trx) => {
+      await requestRouteChange(trx, rider.id, tripId, { expectedVersion: view["version"], routeQuoteId: q.body["routeQuoteId"] }, sim.clock.now);
+      throw new Error("boom after the change");
+    })).rejects.toThrow("boom");
+    const row = await sim.db.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect([row.status, row.version]).toEqual(["offered", view["version"]]);
+    expect(row.pickup).toMatchObject({ lat: PLACES.sergels.lat });
+    expect((await sim.db.selectFrom("offers").select("status").where("offer_id", "=", offer!["offerId"]).executeTakeFirstOrThrow()).status).toBe("open");
+    expect((await sim.db.selectFrom("route_quotes").select("used_at").where("route_quote_id", "=", q.body["routeQuoteId"]).executeTakeFirstOrThrow()).used_at).toBeNull();
   });
 });

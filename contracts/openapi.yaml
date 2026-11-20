@@ -868,7 +868,10 @@ paths:
         }. Command change_route (transitions), version + 1, one trip_projection event. A quote made while searching is refused
         once a driver accepted (409 version_mismatch: ask again). Only the pickup moved and at most the trip''s booking.maxPickupMoveMeters
         from the booked pickup: the app keeps PATCH /trips/{tripId} { expectedVersion, pickup } (pickupWaiting.pickupMove,
-        same price, event pickup_moved).'
+        same price, event pickup_moved). Owner 2026-11-20 "But the price apply to zone from where booking is": while searching,
+        a pickup change keeps the booked zone''s pricing (and its rules and currency); drivers from any zone. The new pickup
+        must only be inside some open service area; else route-quote answers 403 forbidden, reason service_not_available ("Movera
+        is not available at this pickup.").'
   /trips/{tripId}/route-quote:
     post:
       operationId: quoteRouteChange
@@ -940,7 +943,10 @@ paths:
         }. Command change_route (transitions), version + 1, one trip_projection event. A quote made while searching is refused
         once a driver accepted (409 version_mismatch: ask again). Only the pickup moved and at most the trip''s booking.maxPickupMoveMeters
         from the booked pickup: the app keeps PATCH /trips/{tripId} { expectedVersion, pickup } (pickupWaiting.pickupMove,
-        same price, event pickup_moved).'
+        same price, event pickup_moved). Owner 2026-11-20 "But the price apply to zone from where booking is": while searching,
+        a pickup change keeps the booked zone''s pricing (and its rules and currency); drivers from any zone. The new pickup
+        must only be inside some open service area; else route-quote answers 403 forbidden, reason service_not_available ("Movera
+        is not available at this pickup.").'
   /trips/{tripId}/cancel:
     post:
       operationId: cancelTrip

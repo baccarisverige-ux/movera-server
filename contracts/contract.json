@@ -7098,6 +7098,7 @@
         ],
         "kind": "live",
         "smallMove": "Only the pickup moved and at most the trip's booking.maxPickupMoveMeters from the booked pickup: the app keeps PATCH /trips/{tripId} { expectedVersion, pickup } (pickupWaiting.pickupMove, same price, event pickup_moved).",
+        "zone": "Owner 2026-11-20 \"But the price apply to zone from where booking is\": while searching, a pickup change keeps the booked zone's pricing (and its rules and currency); drivers from any zone. The new pickup must only be inside some open service area; else route-quote answers 403 forbidden, reason service_not_available (\"Movera is not available at this pickup.\").",
         "flow": [
           "1. Rider: POST /trips/{tripId}/route-quote { expectedVersion, pickup?, dropoff?, stops } → 201 RouteQuote (+ pickup). pickup is accepted only while searching (any distance); after accept it stays 400 invalid_body. Priced as onTrip.routeChange.price from the new pickup. The zone switches on / beforePickup do not apply while searching (no driver to ask); fixedPriceTrips does.",
           "2. Rider confirms the new price: PATCH /trips/{tripId} { expectedVersion, routeQuoteId } → 200 TripProjection, status searching, the new pickup (also the new booked pickup), drop-off, stops, fare, fareLines; routeChange { status: accepted, answeredBy: system, pickup, reason: rider_changed_route }. Command change_route (transitions), version + 1, one trip_projection event. A quote made while searching is refused once a driver accepted (409 version_mismatch: ask again)."
