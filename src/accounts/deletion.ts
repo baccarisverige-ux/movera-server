@@ -203,6 +203,11 @@ async function eraseOne(trx: Trx, a: Due, now: Date): Promise<Record<string, num
     await run("driver_phone_data", sql`DELETE FROM driver_phone_data WHERE driver_id = ${a.id}`);
     await run("driver_locations", sql`DELETE FROM driver_locations WHERE driver_id = ${a.id}`);
     await run("documents", sql`DELETE FROM documents WHERE driver_id = ${a.id}`);
+    // Supervisor MUST: his own cars (no fleet) are anonymised in place, so trips keep their vehicle_id but the plate is
+    // freed (unique index vehicles_plate) and make / model / colour go; a fleet's car stays the fleet's, he is only
+    // taken off it. If the trip records must show the plate, that is for the lawyer (Rules plan/REMINDERS.md).
+    await run("vehicles", sql`UPDATE vehicles SET plate = 'ERASED-' || vehicle_id, make = '', model = '', color = '', status = 'blocked', version = version + 1, updated_at = ${now} WHERE driver_id = ${a.id} AND fleet_id IS NULL`);
+    await run("vehicles_fleet", sql`UPDATE vehicles SET driver_id = NULL, version = version + 1, updated_at = ${now} WHERE driver_id = ${a.id} AND fleet_id IS NOT NULL`);
     // Privacy Q2 open (FLAGGED): first_name / last_name stay for the money records (payouts, earnings point at the id).
     await trx
       .updateTable("drivers")

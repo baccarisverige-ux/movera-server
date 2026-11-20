@@ -78,6 +78,8 @@ describe("account deletion (v0.18.134)", () => {
     const h = (await signIn(app, ALI, "driver")).headers;
     const ali = (await database.db.selectFrom("drivers").select("driver_id").where("phone", "=", ALI).executeTakeFirstOrThrow()).driver_id;
     await database.db.updateTable("drivers").set({ online_status: "online", first_name: "Ali", last_name: "Larsson" }).where("driver_id", "=", ali).execute();
+    // Supervisor MUST: his own car (plate ABC 123) and a finished trip on it.
+    await database.db.insertInto("vehicles").values({ vehicle_id: "veh_ali1", driver_id: ali, make: "Volvo", model: "V60", year: 2021, color: "White", plate: "ABC 123" }).execute();
     const res = await call(app, "POST", "/driver/account/deletion", h);
     expect(res.statusCode).toBe(202);
     expect(res.json().status).toBe("requested");
@@ -117,6 +119,10 @@ describe("account deletion (v0.18.134)", () => {
     expect([r.first_name, r.email, r.language]).toEqual(["", null, null]);
     expect((await database.db.selectFrom("trips").select("fare_minor").where("trip_id", "=", trip).executeTakeFirstOrThrow()).fare_minor).toBeTruthy();
     expect((await database.db.selectFrom("kept_debts").select("phone").where("account_id", "=", sara).execute()).length).toBe(1);
+    // Supervisor MUST: his own car is anonymised (plate freed, no make / model / colour); trips still point at it.
+    const car = await database.db.selectFrom("vehicles").selectAll().where("vehicle_id", "=", "veh_ali1").executeTakeFirstOrThrow();
+    expect([car.plate, car.make, car.model, car.color, car.status]).toEqual(["ERASED-veh_ali1", "", "", "", "blocked"]);
+    await database.db.insertInto("vehicles").values({ vehicle_id: "veh_new1", driver_id: null, make: "Kia", model: "Niro", year: 2022, color: "Grey", plate: "ABC123" }).execute();
     const d = await database.db.selectFrom("drivers").select(["first_name", "last_name", "erased_at", "phone"]).where("phone", "like", "erased-%").executeTakeFirstOrThrow();
     // Privacy Q2 open: the driver's name stays for his money records.
     expect([d.first_name, d.last_name]).toEqual(["Ali", "Larsson"]);
