@@ -115,9 +115,9 @@ describe("POST /rider/fees/{tripId}/pay: a PaymentIntent for the server's amount
     await on(false);
     expect((await pay(tripId)).json()).toMatchObject({ reason: "stripe_off" });
     await on(true);
-    expect((await pay("trp_nothing")).json()).toMatchObject({ reason: "fee_not_owed" });
+    expect((await pay("trp_nothing")).json()).toMatchObject({ reason: "fee_not_found" });
     const other = (await signIn(app, TEST_PHONES[2]!, "rider")).headers;
-    expect((await call(app, "POST", `/rider/fees/${tripId}/pay`, other, {})).json()).toMatchObject({ reason: "fee_not_owed" });
+    expect((await call(app, "POST", `/rider/fees/${tripId}/pay`, other, {})).json()).toMatchObject({ reason: "fee_not_found" });
     expect(made).toHaveLength(0);
   });
 });

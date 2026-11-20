@@ -247,25 +247,23 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
   app.post(`${API_PREFIX}/rider/fees/:tripId/pay`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
-    const stripe = needStripe(deps.stripe);
     // Money review (6): not through the Idempotency-Key store (the answer holds clientSecret); a repeat gets the same open intent.
     const toCancel: string[] = [];
-    const view = await deps.db.transaction().execute((trx) => startFeePayment(trx, stripe, who.subjectId, tripId, now(), toCancel));
+    const view = await deps.db.transaction().execute((trx) => startFeePayment(trx, deps.stripe, who.subjectId, tripId, now(), toCancel));
     // Money review (3): after the commit; a failure is only logged (a late success is paidTwice for the admin).
-    for (const id of toCancel) await stripe.cancelPaymentIntent(id).catch((error: unknown) => request.log.warn({ paymentIntentId: id, error: String(error) }, "stripe: cancel failed"));
+    for (const id of toCancel) await needStripe(deps.stripe).cancelPaymentIntent(id).catch((error: unknown) => request.log.warn({ paymentIntentId: id, error: String(error) }, "stripe: cancel failed"));
     return view;
   });
   app.get(`${API_PREFIX}/admin/riders/:riderId/fee-payments`, async (request) => {
-    await authenticateAdmin(request, guard, "finance.read");
+    const who = await authenticateAdmin(request, guard, "finance.read");
     const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
-    return listFeePayments(deps.db, riderId);
+    return listFeePayments(deps.db, who, riderId);
   });
   app.post(`${API_PREFIX}/admin/riders/:riderId/fees/:tripId/stripe-refund`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.edit");
     const { riderId, tripId } = parseBody(z.object({ riderId: ID, tripId: ID }), request.params);
     const body = parseBody(StripeRefundBody, request.body);
-    const stripe = needStripe(deps.stripe);
-    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await refundFeePayment(trx, stripe, who, riderId, tripId, body, now()) }))).body;
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await refundFeePayment(trx, deps.stripe, who, riderId, tripId, body, now()) }))).body;
   });
 
   /* ---- the rider's wallet and refunds */

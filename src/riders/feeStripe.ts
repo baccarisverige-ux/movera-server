@@ -2,10 +2,11 @@ import { z } from "zod";
 import type { Principal } from "../auth/guard.js";
 import { adminCoversZone } from "../auth/guard.js";
 import { audit } from "../admin/audit.js";
+import { riderInZones, zonesOf } from "../admin/lists.js";
 import { liveDocument, standardKey } from "../config/service.js";
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
-import { OPEN_STATUSES, STRIPE_CURRENCIES, type StripeApi, type StripePaymentsTable } from "../payments/stripe.js";
+import { needStripe, OPEN_STATUSES, STRIPE_CURRENCIES, type StripeApi, type StripePaymentsTable } from "../payments/stripe.js";
 import type { StripeUse } from "../payments/stripeWebhook.js";
 import { cardPaidOfFees, correctFee, lockRiderRow, riderDebt } from "./debt.js";
 import { refreshOutstanding } from "../trips/ride/money.js";
@@ -53,16 +54,20 @@ const tripCountry = async (ex: Executor, tripId: string) =>
   (await ex.selectFrom("trips").innerJoin("zones", "zones.zone_id", "trips.zone_id").select(["trips.zone_id", "trips.cancellation", "zones.country"]).where("trips.trip_id", "=", tripId).executeTakeFirst()) ?? null;
 
 /** POST /rider/fees/{tripId}/pay: one open PaymentIntent per fee, for the server's amount. */
-export async function startFeePayment(trx: Trx, stripe: StripeApi, riderId: string, tripId: string, now: Date, toCancel: string[] = []) {
+export async function startFeePayment(trx: Trx, stripeOrNull: StripeApi | null | undefined, riderId: string, tripId: string, now: Date, toCancel: string[] = []) {
   await lockRider(trx, riderId); // lock order: the rider, then the payment rows, then the fee (as the webhook)
   const mine = await trx.selectFrom("stripe_payments").selectAll().where("purpose", "=", "rider_fee").where("ref_id", "=", tripId).forUpdate().execute();
   const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", tripId).where("rider_id", "=", riderId).forUpdate().executeTakeFirst();
-  if (!fee || fee.status !== "owed") throw new ApiError("invalid_transition", "There is no fee to pay for this trip.", { reason: "fee_not_owed" });
+  // Route matrix: no fee of hers on that trip is 404 (another rider's fee says nothing about it).
+  if (!fee) throw new ApiError("not_found", "There is no fee to pay for this trip.", { reason: "fee_not_found" });
+  if (fee.status !== "owed") throw new ApiError("invalid_transition", "There is no fee to pay for this trip.", { reason: "fee_not_owed" });
   const amountMinor = Math.min(await feeLeft(trx, fee), await riderDebt(trx, riderId, fee.currency));
   if (amountMinor <= 0) throw new ApiError("invalid_transition", "There is no fee to pay for this trip.", { reason: "fee_not_owed" });
   const trip = await tripCountry(trx, tripId);
   if (!(await riderFeeStripeOn(trx, trip?.country))) throw new ApiError("conflict", "Card payment of fees is off here.", { reason: "stripe_off" });
   if (!STRIPE_CURRENCIES.has(fee.currency)) throw new ApiError("conflict", "Card payment is not used for this currency.", { reason: "currency_not_supported" });
+  // Route matrix: another rider's fee is refused (fee_not_owed) before the keys are looked at.
+  const stripe = needStripe(stripeOrNull);
   const open = mine.find((p) => OPEN_STATUSES.includes(p.status));
   if (open && Number(open.amount_minor) === amountMinor && open.currency === fee.currency) return feePaymentView(open as Row, stripe);
   if (open) {
@@ -125,7 +130,7 @@ export const refundMinorOf = (row: { paid_twice: boolean; overpaid_minor: string
 export const StripeRefundBody = z.object({ reason: z.string().max(300).optional().default("") });
 
 /** POST /admin/riders/{riderId}/fees/{tripId}/stripe-refund: the full amount of the fee's succeeded payment. */
-export async function refundFeePayment(trx: Trx, stripe: StripeApi, who: Principal, riderId: string, tripId: string, body: { reason: string }, now: Date) {
+export async function refundFeePayment(trx: Trx, stripeOrNull: StripeApi | null | undefined, who: Principal, riderId: string, tripId: string, body: { reason: string }, now: Date) {
   const reason = body.reason.trim();
   if (!reason) throw new ApiError("invalid_request", "Write why the fee is refunded.", { reason: "reason_required" });
   await lockRider(trx, riderId);
@@ -133,6 +138,7 @@ export async function refundFeePayment(trx: Trx, stripe: StripeApi, who: Princip
   if (trip && !adminCoversZone(who, trip.zone_id)) throw new ApiError("forbidden", "This trip is outside your zones.", { reason: "zone_out_of_scope" });
   const paid = trip ? await trx.selectFrom("stripe_payments").selectAll().where("purpose", "=", "rider_fee").where("ref_id", "=", tripId).where("subject_id", "=", riderId).where("status", "=", "succeeded").orderBy("paid_twice", "desc").orderBy("created_at").forUpdate().executeTakeFirst() : undefined;
   if (!paid) throw new ApiError("invalid_transition", "No card payment of this fee to refund.", { reason: "no_stripe_payment" });
+  const stripe = needStripe(stripeOrNull); // after the zone check (route matrix)
   // Money review of 0203ebb8 (MUST 1): a payment that took part of a debt off gives back only its overpaid part; the part
   // that settled the fee stays paid. A full payment (or a fully paid-twice one) is refunded whole.
   const back = refundMinorOf(paid as Row);
@@ -143,9 +149,16 @@ export async function refundFeePayment(trx: Trx, stripe: StripeApi, who: Princip
 }
 
 /** GET /admin/riders/{riderId}/fee-payments: newest first, never the client secret. */
-export async function listFeePayments(ex: Executor, riderId: string) {
-  const rows = await ex.selectFrom("stripe_payments").selectAll().where("purpose", "=", "rider_fee").where("subject_id", "=", riderId).orderBy("created_at", "desc").limit(200).execute();
-  return { items: rows.map((r) => feePaymentView(r as Row, null)) };
+export async function listFeePayments(ex: Executor, who: Principal, riderId: string) {
+  // Route matrix: a rider who never rode in the admin's zones is 403 (as Add money to wallet).
+  const zones = zonesOf(who);
+  if (zones) {
+    const seen = await ex.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).where(riderInZones(zones)).executeTakeFirst();
+    if (!seen) throw new ApiError("forbidden", "This rider has not ridden in your zones.", { reason: "zone_out_of_scope" });
+  }
+  const rows = await ex.selectFrom("stripe_payments").innerJoin("trips", "trips.trip_id", "stripe_payments.ref_id").selectAll("stripe_payments").select("trips.zone_id as trip_zone").where("stripe_payments.purpose", "=", "rider_fee").where("stripe_payments.subject_id", "=", riderId).orderBy("stripe_payments.created_at", "desc").limit(200).execute();
+  // Route matrix: only the fees of trips in the admin's zones.
+  return { items: rows.filter((r) => adminCoversZone(who, r.trip_zone)).map((r) => feePaymentView(r as unknown as Row, null)) };
 }
 
 /**

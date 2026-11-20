@@ -26,6 +26,8 @@ const money = {
   payoutSchedule: { frequency: "every_2_weeks", day: "friday", time: "09:30" },
   maxRiderDebt: { amountMinor: 45000, currency: "SEK" },
   driverOwesLimit: { enabled: true, max: { amountMinor: 200000, currency: "SEK" } },
+  // v0.18.136: the Stripe rider fee switch is kept the same way.
+  riderFeeStripe: { enabled: true },
 };
 const calls = { on: true, adminCallRoles: ["super", "ops"], phoneProvider: "twilio" };
 const put = (doc: string, body: Record<string, unknown>) => call(app, "PUT", `/admin/config/${doc}`, admin, body);
@@ -80,7 +82,7 @@ describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
     expect(res.json().document.maxRiderDebt).toBeUndefined();
     expect(res.json().document.payoutSchedule).toBeUndefined();
     expect(res.json().document).toMatchObject({ payoutMode: "automatic", driverOwesLimit: money.driverOwesLimit });
-    expect([...res.json().keptKeys].sort()).toEqual(["driverOwesLimit", "payoutMode"]);
+    expect([...res.json().keptKeys].sort()).toEqual(["driverOwesLimit", "payoutMode", "riderFeeStripe"]);
   });
 
   it("a zone with no own document keeps nothing (no Standard-only key gets into a zone document)", async () => {
