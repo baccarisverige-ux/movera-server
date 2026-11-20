@@ -25,3 +25,5 @@ export function checkPhoneLimits(input: {
   accessTtl?: string | number;
   unsafeMax?: boolean;
 }): { drivers: number; riders: number; seconds: number; riderArrivalsPerMinute: number; accessTtlSeconds: number };
+export const START_SPREAD_DEFAULT_SECONDS: number;
+export function driverStartSpreadMs(value: string | undefined): number;

@@ -146,3 +146,16 @@ export function checkPhoneLimits({ drivers, riders, seconds, riderArrivals, acce
   if (!Number.isInteger(ttl) || ttl < 10 || ttl > PHONE_MAX.accessTtlSeconds) throw new LoadtestGuardError(`--access-ttl must be a whole number of seconds 10…${PHONE_MAX.accessTtlSeconds}, got "${accessTtl}"`);
   return { drivers: base.drivers, riders: base.riders, seconds: base.seconds, riderArrivalsPerMinute: rate, accessTtlSeconds: ttl };
 }
+
+/**
+ * S4c fix 1 (Rules audits/impact/stress-s4b-2026-11-20.md "S4c"): the drivers' first requests are spread over this many
+ * seconds (was a fixed 10 s, a sign-in burst no fleet sends; the 60 s runs had 4.3 % busy 503 against 21.4 %).
+ * --driver-start-spread <seconds>, 0 to 600, default 60. Tool only, the server is not changed.
+ */
+export const START_SPREAD_DEFAULT_SECONDS = 60;
+export function driverStartSpreadMs(value) {
+  if (value === undefined) return START_SPREAD_DEFAULT_SECONDS * 1000;
+  const s = Number(value);
+  if (!Number.isFinite(s) || s < 0 || s > 600) throw new LoadtestGuardError(`LOADTEST GUARD: --driver-start-spread must be 0 to 600 seconds, got ${value}`);
+  return Math.round(s * 1000);
+}
