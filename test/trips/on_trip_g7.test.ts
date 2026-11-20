@@ -497,12 +497,14 @@ describe("item 3: route change during the trip (rider proposes, driver accepts o
     expect(q.total.amountMinor).toBeGreaterThanOrEqual(Math.ceil(before.quote.total.amountMinor / 2));
   });
 
-  it("before a driver: not available (invalid_transition)", async () => {
+  // v0.18.143 (owner 2026-11-20 "must rider can change !!!!", whileSearching): before a driver the route may change
+  // at once (no driver to ask); the route quote is priced. Before v0.18.143 this was 409 invalid_transition.
+  it("before a driver: the route quote is priced (v0.18.143 whileSearching)", async () => {
     const quote = (await call(app, "POST", "/quotes", rider, { pickup: PARIS, dropoff: PARIS_DROP, stops: [], categoryIds: ["economy"] })).json().quotes[0];
     const res = await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: PARIS, dropoff: PARIS_DROP, stops: [], kind: "live", paymentMethod: "cash" });
     const r = await call(app, "POST", `/trips/${res.json().tripId}/route-quote`, rider, { expectedVersion: res.json().version, stops: [] });
-    expect(r.statusCode).toBe(409);
-    expect(r.json().code).toBe("invalid_transition");
+    expect(r.statusCode, r.body).toBe(201);
+    expect(r.json().routeQuoteId).toEqual(expect.any(String));
   });
 });
 
