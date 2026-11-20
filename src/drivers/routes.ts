@@ -1,3 +1,5 @@
+import { needStripe, type StripeApi } from "../payments/stripe.js";
+import { driverStripeOn, startDriverPayment } from "./payMoveraStripe.js";
 import { geometry } from "../config/geometryCache.js";
 import { driverPerformance } from "./performance.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -28,7 +30,7 @@ import { driverPayMovera } from "./payRequest.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
-export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date; router?: Router };
+export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date; router?: Router; stripe?: StripeApi | null };
 
 /** Document uploads a driver may start per hour by default (deep fix 2026-11-02: admin CountryRules.limits.uploadsPerHour). */
 export const UPLOADS_PER_HOUR = 30;
@@ -75,7 +77,18 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   // monthly pay request is on — the payment link. Read only; a payment is confirmed by the admin's "Driver paid Movera".
   app.get(`${API_PREFIX}/driver/pay-movera`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    return driverPayMovera(deps.db, who.subjectId, now());
+    const view = await driverPayMovera(deps.db, who.subjectId, now());
+    // DRAFT (contract.json#driverPayRequest.stripe): the Stripe Pay button instead of the link.
+    return { ...view, stripe: driverStripeOn(deps.stripe, view.enabled, view.owedToMovera.currency) };
+  });
+  app.post(`${API_PREFIX}/driver/pay-movera/pay`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const stripe = needStripe(deps.stripe);
+    const toCancel: string[] = [];
+    // Not through the Idempotency-Key store (the answer holds clientSecret); a repeat gets the same open intent.
+    const view = await deps.db.transaction().execute((trx) => startDriverPayment(trx, stripe, who.subjectId, now(), toCancel));
+    for (const id of toCancel) await stripe.cancelPaymentIntent(id).catch((error: unknown) => request.log.warn({ paymentIntentId: id, error: String(error) }, "stripe: cancel failed"));
+    return view;
   });
   app.get(`${API_PREFIX}/driver/onboarding/settings`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);

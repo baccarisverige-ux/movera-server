@@ -38,7 +38,7 @@ export async function payRequestSettingOf(ex: Executor, country: string | null, 
 }
 
 /** The country's currency and clock: its first zone's (as the country standard, config/service.ts). */
-async function countryHome(ex: Executor, country: string): Promise<{ currency: string; timeZone: string } | null> {
+export async function countryHome(ex: Executor, country: string): Promise<{ currency: string; timeZone: string } | null> {
   const row = await ex.selectFrom("zones").select(["currency", "time_zone"]).where("country", "=", country).orderBy("zone_id").executeTakeFirst();
   return row ? { currency: row.currency, timeZone: row.time_zone } : null;
 }

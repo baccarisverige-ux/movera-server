@@ -240,14 +240,14 @@ describe("driverPayRequest: the setting (country standard, off by default)", () 
 describe("driverPayRequest: GET /driver/pay-movera", () => {
   it("off (the default): the amount and the reference, no link, no request", async () => {
     await entry(ali.id, { amount: 32516, cash: 34900 });
-    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(2384), reference: `${ali.id}-202611` });
+    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(2384), reference: `${ali.id}-202611`, stripe: false });
   });
 
   it("on: the admin's link as it is and the minimum; the amount is the same owed as the wallet's", async () => {
     await live("SE", "SEK", ON());
     await entry(ali.id, { amount: 32516, cash: 34900 });
     const view = await payMovera();
-    expect(view).toEqual({ enabled: true, owedToMovera: SEK(2384), reference: `${ali.id}-202611`, payLink: LINK, minAmount: SEK(1000) });
+    expect(view).toEqual({ enabled: true, owedToMovera: SEK(2384), reference: `${ali.id}-202611`, payLink: LINK, minAmount: SEK(1000), stripe: false });
     expect(view.owedToMovera).toEqual((await earnings()).moveraBalance.owedToMovera);
   });
 
@@ -290,7 +290,7 @@ describe("driverPayRequest: the monthly job", () => {
     await scan();
     expect(await requests()).toEqual([]);
     expect(await notices()).toEqual([]);
-    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(500000), reference: `${ali.id}-202611` });
+    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(500000), reference: `${ali.id}-202611`, stripe: false });
   });
 
   it("two copies inside the same step at the same moment: the second one's insert meets the first one's row and writes no second notice (review should-fix 3)", async () => {
