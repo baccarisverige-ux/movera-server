@@ -12,8 +12,23 @@ export type PayRequestSetting = { enabled: boolean; dayOfMonth: number; payLink:
 export const DEFAULT_PAY_REQUEST: PayRequestSetting = (contract as unknown as { configDefaults: { driverPayRequest?: PayRequestSetting } }).configDefaults.driverPayRequest ?? { enabled: false, dayOfMonth: 1, payLink: "", minAmount: null };
 
 export const PAY_LINK_MAX = 500;
-/** https only, no white space: the app opens it as it is. */
-export const isPayLink = (value: unknown): value is string => typeof value === "string" && value.length <= PAY_LINK_MAX && /^https:\/\/[^\s]+$/.test(value) && URL.canParse(value);
+/** Control characters, white space and invisible / direction-changing characters: never part of a payment link. */
+const badLinkChar = (c: number): boolean =>
+  c <= 0x20 || (c >= 0x7f && c <= 0xa0) || (c >= 0x200b && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c === 0xfeff;
+const hasBadLinkChar = (value: string): boolean => {
+  for (let i = 0; i < value.length; i++) if (badLinkChar(value.charCodeAt(i))) return true;
+  return false;
+};
+
+/**
+ * A payment link the app may open as it is: https only, at most PAY_LINK_MAX characters, no white space, control or
+ * invisible characters, a host, and no "user:password@" part (so what the admin reads is where the link goes).
+ */
+export const isPayLink = (value: unknown): value is string => {
+  if (typeof value !== "string" || value.length > PAY_LINK_MAX || !value.startsWith("https://") || hasBadLinkChar(value) || !URL.canParse(value)) return false;
+  const url = new URL(value);
+  return url.protocol === "https:" && url.hostname !== "" && url.username === "" && url.password === "";
+};
 export const isDay = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 28;
 export const isAmount = (value: unknown, currency: string): value is Money =>
   typeof value === "object" && value !== null && Number.isInteger((value as Money).amountMinor) && (value as Money).amountMinor >= 0 && (value as Money).currency === currency;

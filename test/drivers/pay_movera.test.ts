@@ -5,7 +5,7 @@ import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { CONTRACTS_DIR } from "../../src/contract/contract.js";
 import { KEPT_KEYS } from "../../src/config/keptKeys.js";
 import { KEPT_ON_RESTORE } from "../../src/config/service.js";
-import { localMonthDay, PAY_REQUEST_BATCH, PAY_REQUEST_SCAN, payReference } from "../../src/drivers/payRequest.js";
+import { askCountry, localMonthDay, PAY_REQUEST_BATCH, PAY_REQUEST_SCAN, payReference } from "../../src/drivers/payRequest.js";
 import { owedByDriver } from "../../src/drivers/owes.js";
 import { seedDriver } from "../../src/drivers/service.js";
 import { RECURRING_JOBS } from "../../src/jobs/heartbeat.js";
@@ -177,6 +177,15 @@ describe("driverPayRequest: the setting (country standard, off by default)", () 
       [{ enabled: false, dayOfMonth: 1, payLink: "javascript:alert(1)", minAmount: null }, "pay_request_invalid"],
       [{ enabled: false, dayOfMonth: 1, payLink: `https://pay.sumup.com/${"x".repeat(500)}`, minAmount: null }, "pay_request_invalid"],
       [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/a b", minAmount: null }, "pay_request_invalid"],
+      // Review should-fix 1: nothing invisible, no control character, no "user:password@" part.
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u0000x", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u0001x", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u007fx", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u200bx", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://pay.sumup.com/\u202ex", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: true, dayOfMonth: 1, payLink: "https://sumup.com@evil.example/pay", minAmount: SEK(0) }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "https://user:pw@pay.sumup.com/x", minAmount: null }, "pay_request_invalid"],
+      [{ enabled: false, dayOfMonth: 1, payLink: "HTTPS://pay.sumup.com/x", minAmount: null }, "pay_request_invalid"],
       [{ enabled: true, dayOfMonth: 29, payLink: LINK, minAmount: SEK(0) }, "pay_request_invalid"],
       [{ enabled: true, dayOfMonth: 0, payLink: LINK, minAmount: SEK(0) }, "pay_request_invalid"],
       [{ enabled: true, dayOfMonth: 1.5, payLink: LINK, minAmount: SEK(0) }, "pay_request_invalid"],
@@ -228,7 +237,7 @@ describe("driverPayRequest: GET /driver/pay-movera", () => {
   });
 
   it("a live document that says on but has no usable link or amount is read as off (nobody is sent a bad link)", async () => {
-    for (const broken of [{ payLink: "http://x.example" }, { payLink: "" }, { minAmount: null }, { minAmount: { amountMinor: 5, currency: "EUR" } }]) {
+    for (const broken of [{ payLink: "http://x.example" }, { payLink: "" }, { payLink: "https://sumup.com@evil.example/pay" }, { payLink: "https://pay.sumup.com/\u200bx" }, { minAmount: null }, { minAmount: { amountMinor: 5, currency: "EUR" } }]) {
       await live("SE", "SEK", ON(broken));
       const view = await payMovera();
       expect([view.enabled, view.payLink], JSON.stringify(broken)).toEqual([false, undefined]);
@@ -258,6 +267,37 @@ describe("driverPayRequest: the monthly job", () => {
     await scan();
     expect(await requests()).toEqual([]);
     expect(await notices()).toEqual([]);
+  });
+
+  it("switched OFF but the link and the minimum are still stored: nobody is asked (review should-fix 2)", async () => {
+    await live("SE", "SEK", ON({ enabled: false }));
+    await entry(ali.id, { amount: 0, cash: 500000 });
+    await scan();
+    expect(await requests()).toEqual([]);
+    expect(await notices()).toEqual([]);
+    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(500000), reference: `${ali.id}-202611` });
+  });
+
+  it("two copies inside the same step at the same moment: the second one's insert meets the first one's row and writes no second notice (review should-fix 3)", async () => {
+    await live("SE", "SEK", ON());
+    await entry(ali.id, { amount: 0, cash: 5000 });
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    let asked!: () => void;
+    const firstAsked = new Promise<void>((resolve) => (asked = resolve));
+    // Copy 1 asks him and keeps its transaction open; copy 2 cannot see that row yet, so its own insert waits on it.
+    const first = database.db.transaction().execute(async (trx) => {
+      await askCountry(trx, "SE", clock.now);
+      asked();
+      await hold;
+    });
+    await firstAsked;
+    const second = database.db.transaction().execute((trx) => askCountry(trx, "SE", clock.now));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    release();
+    await Promise.all([first, second]);
+    expect(await requests()).toHaveLength(1);
+    expect(await notices()).toHaveLength(1);
   });
 
   it("on its day from 09:00: a driver who owes MORE than the minimum gets one bell notice + push with the amount; at the minimum or below, not", async () => {
