@@ -53,6 +53,21 @@ describe("Play Integrity verdict (Android)", () => {
     expect(await busy.verify({ token: "tok", binding })).toMatchObject({ why: "google_429" });
     const down = playIntegrityVerifier({ tokens: { get: async () => "a" }, packages: ["se.movera.rider"], clock: () => now, fetchFn: async () => ({ status: 503, text: async () => "{}" }) });
     expect(await down.verify({ token: "tok", binding })).toMatchObject({ why: "google_5xx" });
+    // An access token Google no longer takes (revoked or expired early): dropped and asked again once.
+    let n = 0;
+    let dropped = 0;
+    const statuses = [401, 200];
+    const retried = playIntegrityVerifier({
+      tokens: { get: async () => `access-${++n}`, invalidate: () => void dropped++ },
+      packages: ["se.movera.rider"],
+      clock: () => now,
+      fetchFn: async (_url, init) => {
+        const status = statuses.shift() ?? 401;
+        return { status, text: async () => (status === 200 && init.headers["authorization"] === "Bearer access-2" ? JSON.stringify({ tokenPayloadExternal: good() }) : "{}") };
+      },
+    });
+    expect(await retried.verify({ token: "tok", binding })).toEqual({ ok: true });
+    expect([n, dropped]).toEqual([2, 1]);
     for (const status of [401, 403]) {
       const ours = playIntegrityVerifier({ tokens: { get: async () => "a" }, packages: ["se.movera.rider"], clock: () => now, fetchFn: async () => ({ status, text: async () => "{}" }) });
       expect(await ours.verify({ token: "tok", binding })).toMatchObject({ why: "google_auth" });

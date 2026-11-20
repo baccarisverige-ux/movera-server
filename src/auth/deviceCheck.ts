@@ -153,20 +153,32 @@ export function judgeIntegrity(payload: IntegrityPayload, packages: readonly str
 
 export const PLAY_INTEGRITY_SCOPE = "https://www.googleapis.com/auth/playintegrity";
 
-export function playIntegrityVerifier(options: { tokens: { get(): Promise<string> }; packages: readonly string[]; fetchFn: FetchLike; clock?: () => Date }): DeviceVerifier {
+export function playIntegrityVerifier(options: { tokens: { get(): Promise<string>; invalidate?(): void }; packages: readonly string[]; fetchFn: FetchLike; clock?: () => Date }): DeviceVerifier {
   return {
     async verify({ token, binding, signal }) {
       if (token.length > 16384) return { ok: false, why: "shape" };
       // The token says which package asked; Google decodes it under that package name. Ask under each allowed one only
       // if needed: the first allowed package whose decode works and passes decides.
-      const access = await options.tokens.get();
-      for (const pkg of options.packages) {
-        const res = await options.fetchFn(`https://playintegrity.googleapis.com/v1/${encodeURIComponent(pkg)}:decodeIntegrityToken`, {
+      // The access token is kept until a minute before it expires (GoogleAccessTokens); one Google refuses
+      // earlier (revoked, clock skew) is dropped and asked for again ONCE per check.
+      let access = await options.tokens.get();
+      let renewed = false;
+      const decode = (pkg: string) =>
+        options.fetchFn(`https://playintegrity.googleapis.com/v1/${encodeURIComponent(pkg)}:decodeIntegrityToken`, {
           method: "POST",
           headers: { authorization: `Bearer ${access}`, "content-type": "application/json" },
           body: JSON.stringify({ integrity_token: token }),
           ...(signal ? { signal } : {}),
         });
+      for (const pkg of options.packages) {
+        let res = await decode(pkg);
+        if (res.status === 401 && !renewed && options.tokens.invalidate) {
+          renewed = true;
+          await res.text();
+          options.tokens.invalidate();
+          access = await options.tokens.get();
+          res = await decode(pkg);
+        }
         const text = await res.text();
         // Review SHOULD 6: Google's own trouble is told apart from a token it refuses (log + breaker).
         if (res.status === 429) return { ok: false, why: "google_429" };
