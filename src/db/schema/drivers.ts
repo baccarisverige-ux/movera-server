@@ -100,3 +100,35 @@ export interface DriverCancelsTable {
   reason_code: string;
   note: string | null;
 }
+
+/** v0.18.147 (migration 0127, contract.json#driverProfile): what the driver shows on his public profile. */
+export interface DriverPublicProfilesTable {
+  driver_id: string;
+  languages: ColumnType<string[], string[] | undefined, string[]>;
+  show_city: Generated<boolean>;
+  show_years: Generated<boolean>;
+  updated_at: ColumnType<Date, Date | string | undefined, Date | string>;
+}
+
+/** v0.18.147 (migration 0127): one count per driver and compliment code, raised in the rating transaction. */
+export interface DriverComplimentCountsTable {
+  driver_id: string;
+  code: string;
+  count: Generated<number>;
+}
+
+/** v0.18.147 (migration 0127): a short review; no rider id, phone or address (trip_id only for one per trip, never sent). */
+export interface DriverReviewsTable {
+  review_id: string;
+  driver_id: string;
+  trip_id: string;
+  zone_id: string;
+  stars: number;
+  text: string;
+  name: string | null;
+  month: string;
+  status: Generated<"pending" | "approved" | "hidden">;
+  created_at: ColumnType<Date, Date | string, Date | string>;
+  moderated_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  moderated_by: ColumnType<string | null, string | null | undefined, string | null>;
+}
