@@ -140,6 +140,20 @@ export async function onDriverPosition(
   if (joined) await tell(trx, area.area_id, [driverId], false);
 }
 
+/**
+ * v0.18.145 (contract.json#loadCut.airportQueueLive, review of server #304): a driver who is no longer online in the
+ * session he joined in (went offline by hand, by the no-position sweep, by an admin block, signed out, …) leaves the
+ * line NOW, so the drivers behind him are told at once and not only at the next trip pick (prune) or their 60 s poll.
+ * Runs from the withdraw-offers job every one of those paths schedules (dispatch/runtime/end.ts withdrawHandler) and
+ * directly where a path schedules none. A driver still online in the same session keeps his place.
+ */
+export async function leaveIfGone(ex: Executor, driverId: string, now: Date): Promise<void> {
+  const gone = await sql<{ area_id: string }>`UPDATE airport_queue_entries e SET left_at = ${now}, left_reason = 'offline'
+    FROM drivers d WHERE d.driver_id = e.driver_id AND e.driver_id = ${driverId} AND e.left_at IS NULL AND NOT (${VALID})
+    RETURNING e.area_id`.execute(ex);
+  for (const row of gone.rows) await tell(ex, row.area_id, [driverId], true);
+}
+
 /** Accepting any trip leaves the queue (a queue trip counts as an airport pickup for the Dashboard). */
 export async function leaveOnAccept(trx: Trx, driverId: string, reasonCode: string | null, now: Date): Promise<void> {
   const gone = await trx.updateTable("airport_queue_entries").set({ left_at: now, left_reason: reasonCode === QUEUE_REASON ? "queue_trip" : "accepted" })

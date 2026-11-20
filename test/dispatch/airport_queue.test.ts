@@ -324,6 +324,27 @@ describe("airport queue hints (v0.18.145 loadCut.airportQueueLive)", () => {
     expect(await told()).toEqual(["A", "B", "C"]);
   });
 
+  it("a driver going offline (no trip pick) leaves the line at once and the drivers behind him are told", async () => {
+    await queueUp(["C", "B", "A"]);
+    await told();
+    const me = (await call(app, "GET", "/driver/profile", drivers.C.headers)).json();
+    expect((await call(app, "POST", "/driver/availability", drivers.C.headers, { expectedVersion: me.version, onlineStatus: "offline" })).statusCode).toBe(200);
+    await worker.runDue();
+    expect(await told()).toEqual(["A", "B", "C"]);
+    const open = await database.db.selectFrom("airport_queue_entries").select("left_reason").where("driver_id", "=", drivers.C.id).orderBy("joined_at", "desc").executeTakeFirstOrThrow();
+    expect(open.left_reason).toBe("offline");
+    expect(await place("B")).toMatchObject({ position: 1 });
+  });
+
+  it("a driver who is still online and in the line is not dropped by a withdraw run", async () => {
+    await queueUp(["C", "B"]);
+    await told();
+    await database.db.transaction().execute((trx) => scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: drivers.C.id, dueAt: clock.now, payload: {} }));
+    await worker.runDue();
+    expect(await told()).toEqual([]);
+    expect(await place("C")).toMatchObject({ status: "in_queue", position: 1 });
+  });
+
   it("the admin turning the area off empties the line and tells every driver in it", async () => {
     await queueUp(["C", "B"]);
     await told();
