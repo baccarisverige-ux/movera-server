@@ -4,6 +4,7 @@ import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
 import { newId } from "../ids.js";
+import { closeOpenIntents } from "../payments/stripe.js";
 import { liveDocument, standardKey } from "../config/service.js";
 
 /**
@@ -107,16 +108,21 @@ async function liftOldCopySettlements(trx: Trx, riderId: string, currency: strin
  * that paid it, or null when credit in the wallet paid it). Only rows already in the wallet (a fee entry) count.
  */
 export async function settleFeesToWallet(trx: Trx, riderId: string, currency: string, carriedBy: string | null, now: Date): Promise<void> {
+  await lockRiderRow(trx, riderId);
   const owed = await trx.selectFrom("rider_fees").select(["trip_id", "amount_minor"]).where("rider_id", "=", riderId).where("status", "=", "owed").where("currency", "=", currency)
     .where(({ exists, selectFrom }) => exists(selectFrom("wallet_entries").select("entry_id").whereRef("wallet_entries.trip_id", "=", "rider_fees.trip_id").where("wallet_entries.kind", "=", "fee")))
     .orderBy("created_at").orderBy("trip_id").forUpdate().execute();
   if (owed.length === 0) return;
   const debt = await riderDebt(trx, riderId, currency);
-  let sum = owed.reduce((total, f) => total + Number(f.amount_minor), 0);
+  // v0.18.136 (money review 2): what a card payment already paid of a fee is not in the debt any more.
+  const byCard = await cardPaidOfFees(trx, owed.map((f) => f.trip_id));
+  const left = (f: { trip_id: string; amount_minor: string | number }) => Math.max(0, Number(f.amount_minor) - (byCard.get(f.trip_id) ?? 0));
+  let sum = owed.reduce((total, f) => total + left(f), 0);
   for (const fee of owed) {
     if (sum <= debt) break;
-    sum -= Number(fee.amount_minor);
+    sum -= left(fee);
     await trx.updateTable("rider_fees").set({ status: "paid", carried_by: carriedBy, settled_at: now, settled_in_wallet: true }).where("trip_id", "=", fee.trip_id).execute();
+    await closeOpenIntents(trx, "rider_fee", [fee.trip_id]);
     const source = await trx.selectFrom("trips").select("cancellation").where("trip_id", "=", fee.trip_id).executeTakeFirst();
     if (source?.cancellation) await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...(source.cancellation as object), feeStatus: "paid" }) }).where("trip_id", "=", fee.trip_id).execute();
   }
@@ -174,6 +180,7 @@ export async function debtForPayment(ex: Executor, trip: Pick<TripRow, "rider_id
  */
 export async function payDebt(trx: Trx, trip: Pick<TripRow, "trip_id" | "rider_id" | "currency">, paidMinor: number, now: Date): Promise<void> {
   if (paidMinor <= 0) return;
+  await lockRiderRow(trx, trip.rider_id);
   await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: trip.rider_id, kind: "debt_paid", currency: trip.currency, amount_minor: paidMinor, trip_id: trip.trip_id, at: now }).execute();
   await moveIntoDebt(trx, trip.rider_id, trip.currency, paidMinor, now);
   await settleFeesToWallet(trx, trip.rider_id, trip.currency, trip.trip_id, now);
@@ -184,10 +191,12 @@ export async function payDebt(trx: Trx, trip: Pick<TripRow, "trip_id" | "rider_i
  * (+the fee, at most what is still owed in that currency) — never an edit of a past entry. A ride open at that moment
  * simply reads the lower debt when it is paid (no fee_on_running_trip refusal any more).
  */
-export async function correctFee(trx: Trx, fee: { trip_id: string; rider_id: string; currency: string; amount_minor: string | number }, now: Date): Promise<number> {
+export async function correctFee(trx: Trx, fee: { trip_id: string; rider_id: string; currency: string; amount_minor: string | number }, now: Date, cap = Number.POSITIVE_INFINITY): Promise<number> {
   await sweepOwedFees(trx, fee.rider_id, fee.currency, now);
   const debt = await riderDebt(trx, fee.rider_id, fee.currency, true);
-  const back = Math.min(Number(fee.amount_minor), debt);
+  // v0.18.136 (money review 2026-11-20 MUST 1): a card payment takes off at most its own money (cap); every
+  // correction takes off at most what is left of the fee after earlier card payments.
+  const back = Math.max(0, Math.min(Number(fee.amount_minor) - ((await cardPaidOfFees(trx, [fee.trip_id])).get(fee.trip_id) ?? 0), debt, cap));
   if (back > 0) {
     await trx.insertInto("wallet_entries").values({ entry_id: newId("wlt", now.getTime()), rider_id: fee.rider_id, kind: "adjustment", currency: fee.currency, amount_minor: back, trip_id: fee.trip_id, at: now }).execute();
     await moveIntoDebt(trx, fee.rider_id, fee.currency, back, now);
@@ -234,4 +243,19 @@ export async function maxRiderDebtOf(ex: Executor, country: string, currency: st
   if (set && set.currency === currency && Number.isInteger(set.amountMinor) && set.amountMinor > 0) return set;
   const fallback = DEFAULT_MAX[country];
   return fallback && fallback.currency === currency ? fallback : null;
+}
+
+/** Lock order (v0.18.136 money review): the rider row first, before wallet, payment or fee rows. */
+export async function lockRiderRow(trx: Trx, riderId: string): Promise<void> {
+  await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).forUpdate().executeTakeFirst();
+}
+
+/** v0.18.136: per fee, what succeeded card payments took off the debt (amount − overpaid; a refund does not undo it). */
+export async function cardPaidOfFees(ex: Executor, tripIds: readonly string[], except?: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (tripIds.length === 0) return out;
+  let q = ex.selectFrom("stripe_payments").select(["ref_id", "amount_minor", "overpaid_minor"]).where("purpose", "=", "rider_fee").where("ref_id", "in", [...new Set(tripIds)]).where("status", "in", ["succeeded", "refund_pending", "refunded"]);
+  if (except) q = q.where("payment_intent_id", "<>", except);
+  for (const r of await q.execute()) out.set(r.ref_id, (out.get(r.ref_id) ?? 0) + Number(r.amount_minor) - Number(r.overpaid_minor));
+  return out;
 }

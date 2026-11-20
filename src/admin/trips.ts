@@ -2,7 +2,8 @@ import { exponentOf, moneyText, type CurrencyCode } from "../rules/money.js";
 import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
-import { correctFee } from "../riders/debt.js";
+import { cardPaidOfFees, correctFee, lockRiderRow } from "../riders/debt.js";
+import { closeOpenIntents } from "../payments/stripe.js";
 import { commissionOf } from "../rules/commission.js";
 import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
 import { boxAround, driversNear } from "../dispatch/nearArea.js";
@@ -392,6 +393,7 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
   if (trip.status !== "no_show") throw new ApiError("invalid_transition", "Only a no-show can be reversed.", { reason: "not_a_no_show", projection: tripProjection(trip, "admin") });
   expectVersion(trip, body.expectedVersion, "admin");
   const takeBack = body.takeBackDriverShare === true;
+  await lockRiderRow(trx, trip.rider_id); // v0.18.136 lock order: the rider before the fee and payment rows
   const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", trip.trip_id).forUpdate().executeTakeFirst();
   let feeStatus = cancellation["feeStatus"] as string | undefined;
   let refunded = false;
@@ -399,10 +401,16 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
     // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
     await correctFee(trx, fee, now);
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
+    await closeOpenIntents(trx, "rider_fee", [trip.trip_id]);
     await refreshOutstanding(trx, trip.rider_id, now);
     feeStatus = "waived";
   } else if (fee && fee.status === "paid") {
-    await creditWallet(trx, trip.rider_id, { amountMinor: Number(fee.amount_minor), currency: fee.currency }, trip.trip_id, now);
+    // v0.18.136 (money review 4): the part paid by card goes back by card, never also into the wallet: those payments
+    // are flagged paidTwice (overpaid = what they took off) for the admin's Refund; the wallet gets the rest only.
+    const byCard = (await cardPaidOfFees(trx, [fee.trip_id])).get(fee.trip_id) ?? 0;
+    if (byCard > 0) await trx.updateTable("stripe_payments").set({ paid_twice: true, overpaid_minor: sql<number>`amount_minor` }).where("purpose", "=", "rider_fee").where("ref_id", "=", fee.trip_id).where("status", "=", "succeeded").execute();
+    const toWallet = Math.max(0, Number(fee.amount_minor) - byCard);
+    if (toWallet > 0) await creditWallet(trx, trip.rider_id, { amountMinor: toWallet, currency: fee.currency }, trip.trip_id, now);
     await trx.updateTable("rider_fees").set({ status: "refunded", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
     // Checker round 1 (M3): live 0.18.7 apps know only paid / owed / waived (statusWords.feeStatus): the wire says waived,
     // refundedAt + refundedToWallet tell the money went back.
@@ -469,11 +477,13 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
   const set: Record<string, unknown> = {};
   if (p.waiveCancelFee) {
     // The rider owes nothing more; the driver keeps the share already credited (owner decision 34).
+    await lockRiderRow(trx, trip.rider_id); // v0.18.136 lock order
     const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", trip.trip_id).forUpdate().executeTakeFirst();
     if (!fee || fee.status !== "owed") throw new ApiError("conflict", "There is no unpaid fee on this trip.", { reason: "no_fee_to_waive", projection: tripProjection(trip, "admin") });
     // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
     await correctFee(trx, fee, now);
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
+    await closeOpenIntents(trx, "rider_fee", [trip.trip_id]);
     set["cancellation"] = JSON.stringify({ ...(trip.cancellation as object), feeStatus: "waived" });
     await refreshOutstanding(trx, trip.rider_id, now);
   }
