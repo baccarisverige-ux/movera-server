@@ -19606,12 +19606,14 @@ paths:
         reason fee_not_owed; the country of the trip''s zone has riderFeeStripe off = 409 conflict, reason stripe_off; a currency
         Stripe is not used for here (only SEK and EUR; TND is not) = 409 conflict, reason currency_not_supported; no test
         key = 503 payments_unavailable. The answer is not kept in the Idempotency-Key store (it holds clientSecret); a repeated
-        call gets the same open PaymentIntent. Rider app: after a cancel or no-show that charged a fee (cancellation.fee above
-        0, feeStatus owed) and on the Account outstanding fees line, while her country has riderFeeStripe on, a ''Pay now''
-        button. It calls POST /rider/fees/{tripId}/pay and opens the Stripe PaymentSheet (card, Apple Pay, Google Pay) for
-        the server''s amount; the phone never works out an amount. When the sheet says done, the app shows ''Payment received''
-        and reads her profile again (the fee drops when the webhook has marked it paid). A refusal or a closed sheet leaves
-        the fee owed as today. The button shows only for a fee listed in Rider.feesPayableByCard.'
+        call gets the same open PaymentIntent. The amount is min(what is left of the fee after earlier card payments, her
+        debt now); a card payment takes off at most its own money (a part payment leaves the fee owed for the rest). Rider
+        app: after a cancel or no-show that charged a fee (cancellation.fee above 0, feeStatus owed) and on the Account outstanding
+        fees line, while her country has riderFeeStripe on, a ''Pay now'' button. It calls POST /rider/fees/{tripId}/pay and
+        opens the Stripe PaymentSheet (card, Apple Pay, Google Pay) for the server''s amount; the phone never works out an
+        amount. When the sheet says done, the app shows ''Payment received'' and reads her profile again (the fee drops when
+        the webhook has marked it paid). A refusal or a closed sheet leaves the fee owed as today. The button shows only for
+        a fee listed in Rider.feesPayableByCard.'
       tags:
       - Rider · Payments
       x-actor:
@@ -19747,7 +19749,8 @@ paths:
         refund gives the money back and does NOT put the fee back in her debt (the fee row becomes refunded). Refusals: reason
         missing = 400 reason_required; no succeeded payment = 409 invalid_transition, reason no_stripe_payment. A paidTwice
         payment is refunded first. Stripe''s charge_already_refunded counts as done (refund_pending, the webhook makes it
-        refunded).'
+        refunded). A Reverse no-show of a fee paid by card flags those card payments paidTwice (overpaid = their amount) for
+        a card refund; only the rest goes to the wallet.'
       tags:
       - Admin · People
       x-actor:

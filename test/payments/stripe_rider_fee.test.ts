@@ -298,4 +298,61 @@ describe("money review of 05bb3ac (NO-GO fixes)", () => {
     const other = (async () => new Response(JSON.stringify({ error: { code: "other" } }), { status: 400 })) as unknown as typeof fetch;
     await expect(stripeFromEnv({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }, other)!.refund({ paymentIntentId: "pi_x", idempotencyKey: "k" })).rejects.toThrow();
   });
+  it("MUST 1 (review 5e606be5): fee 1000 with debt 600, card 600, a new fee 500: the debt drops by 600 only; the fee stays owed for 400", async () => {
+    const t1 = await owedFee(10000);
+    await database.db.insertInto("wallet_entries").values({ entry_id: "wlt_credit_m1", rider_id: sara.id, kind: "adjustment", currency: "SEK", amount_minor: 4000, trip_id: null, at: clock.now }).execute();
+    await database.db.updateTable("rider_wallets").set({ balance_minor: -6000 }).where("rider_id", "=", sara.id).execute();
+    const first = (await pay(t1)).json();
+    expect(first.amount).toEqual(SEK(6000));
+    const t2 = await owedFee(5000);
+    await hook("payment_intent.succeeded", succeeded(first.paymentIntentId, 6000));
+    // No money lost: the debt drops by exactly the card money that is not flagged for refund, never by more.
+    const row = (await payments()).find((p) => p["paymentIntentId"] === first.paymentIntentId)!;
+    const over = (row["overpaid"] as { amountMinor: number } | undefined)?.amountMinor ?? 0;
+    expect(await walletSum()).toBe(-(6000 + 5000) + (6000 - over));
+    expect(await feeStatus(t2)).toBe("owed");
+    // The first fee never takes more card money than its 1000 − 600 left.
+    if ((await feeStatus(t1)) === "owed") expect((await pay(t1)).json().amount.amountMinor).toBeLessThanOrEqual(4000);
+  });
+
+  it("(4) reverse no-show of a fee paid by card: the card payment is flagged for a card refund; no money into the wallet too", async () => {
+    const tripId = await owedFee(6500);
+    await database.db.updateTable("trips").set({ status: "no_show" }).where("trip_id", "=", tripId).execute();
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    await hook("payment_intent.succeeded", succeeded(pi));
+    expect(await walletSum()).toBe(0);
+    const admin = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    const version = (await database.db.selectFrom("trips").select("version").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).version;
+    expect((await call(app, "POST", `/admin/trips/${tripId}/reverse-no-show`, admin, { expectedVersion: version, reason: "Wrong no-show" })).statusCode).toBe(200);
+    expect(await walletSum()).toBe(0);
+    expect((await payments())[0]).toMatchObject({ paymentIntentId: pi, paidTwice: true, overpaid: SEK(6500) });
+  });
+
+  it("(5) a repeat refund while the first is pending is 409 no_stripe_payment; a canceled-then-succeeded intent after a new one paid is paidTwice", async () => {
+    const tripId = await owedFee(6500);
+    const pi1 = (await pay(tripId)).json().paymentIntentId;
+    await hook("payment_intent.canceled", { id: pi1, object: "payment_intent", amount: 6500, currency: "sek" });
+    const pi2 = (await pay(tripId)).json().paymentIntentId;
+    await hook("payment_intent.succeeded", succeeded(pi2));
+    await hook("payment_intent.succeeded", succeeded(pi1));
+    expect(await walletSum()).toBe(0);
+    const h = await finance();
+    await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/stripe-refund`, h, { reason: "Paid twice" });
+    await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/stripe-refund`, h, { reason: "Wrong" });
+    const again = await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/stripe-refund`, h, { reason: "again" });
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toMatchObject({ reason: "no_stripe_payment" });
+    expect(refunds).toEqual([pi1, pi2]);
+  });
+
+  it("(5) interleaved: two pay calls and the webhook of the first intent at once, then a webhook for any second intent: one fee paid, debt 0", async () => {
+    const tripId = await owedFee(6500);
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    const [a, b] = await Promise.all([pay(tripId), hook("payment_intent.succeeded", succeeded(pi)), pay(tripId)]);
+    for (const r of [a, b]) expect([200, 409]).toContain(r.statusCode);
+    for (const p of await payments()) if (p["paymentIntentId"] !== pi) await hook("payment_intent.succeeded", succeeded(String(p["paymentIntentId"])));
+    expect(await feeStatus(tripId)).toBe("paid");
+    expect(await walletSum()).toBe(0);
+  });
+
 });

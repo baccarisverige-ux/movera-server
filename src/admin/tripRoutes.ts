@@ -249,7 +249,11 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
     const stripe = needStripe(deps.stripe);
     // Money review (6): not through the Idempotency-Key store (the answer holds clientSecret); a repeat gets the same open intent.
-    return deps.db.transaction().execute((trx) => startFeePayment(trx, stripe, who.subjectId, tripId, now()));
+    const toCancel: string[] = [];
+    const view = await deps.db.transaction().execute((trx) => startFeePayment(trx, stripe, who.subjectId, tripId, now(), toCancel));
+    // Money review (3): after the commit; a failure is only logged (a late success is paidTwice for the admin).
+    for (const id of toCancel) await stripe.cancelPaymentIntent(id).catch((error: unknown) => request.log.warn({ paymentIntentId: id, error: String(error) }, "stripe: cancel failed"));
+    return view;
   });
   app.get(`${API_PREFIX}/admin/riders/:riderId/fee-payments`, async (request) => {
     await authenticateAdmin(request, guard, "finance.read");
