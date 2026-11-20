@@ -49,12 +49,13 @@ export async function owesLimitOf(ex: Executor, country: string | null): Promise
 }
 
 /**
- * What each driver owes Movera in `currency` (0 when nothing): one grouped query over the unpaid entries
- * (index earnings_unpaid) and one over the open payouts below 0, for all `driverIds` at once (Rule 33).
- * Carried rest before J13 (contract debtModel.driverOwes.owed, Q-M3 / Q-S5-7a): a payout below 0 that is not paid yet
- * is read as it is (no UPDATE).
+ * The signed sum S of each driver in `currency`: his next payout worked out now (unpaid entries, less the cash he
+ * holds) plus the rest carried from his open payouts below 0. Below 0 = he owes Movera −S; above 0 = Movera owes him S.
+ * One grouped query over the unpaid entries (index earnings_unpaid) and one over the open payouts below 0, for all
+ * `driverIds` at once (Rule 33). Carried rest before J13 (contract debtModel.driverOwes.owed, Q-M3 / Q-S5-7a): a payout
+ * below 0 that is not paid yet is read as it is (no UPDATE).
  */
-export async function owedByDriver(ex: Executor, driverIds: readonly string[], currency: string): Promise<Map<string, number>> {
+export async function netByDriver(ex: Executor, driverIds: readonly string[], currency: string): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (driverIds.length === 0) return out;
   const ids = [...new Set(driverIds)];
@@ -78,11 +79,27 @@ export async function owedByDriver(ex: Executor, driverIds: readonly string[], c
     .where("p.status", "in", ["pending", "pending_approval"])
     .groupBy("p.driver_id")
     .execute();
-  const net = new Map<string, number>();
-  for (const r of unpaid) net.set(r.driver_id, (net.get(r.driver_id) ?? 0) + Number(r.sum));
-  for (const r of carried) net.set(r.driver_id, (net.get(r.driver_id) ?? 0) + Number(r.sum));
-  for (const id of ids) out.set(id, Math.max(0, -(net.get(id) ?? 0)));
+  for (const id of ids) out.set(id, 0);
+  for (const r of unpaid) out.set(r.driver_id, (out.get(r.driver_id) ?? 0) + Number(r.sum));
+  for (const r of carried) out.set(r.driver_id, (out.get(r.driver_id) ?? 0) + Number(r.sum));
   return out;
+}
+
+/** What each driver owes Movera in `currency` (0 when nothing): max(0, −S) of netByDriver. */
+export async function owedByDriver(ex: Executor, driverIds: readonly string[], currency: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const [id, net] of await netByDriver(ex, driverIds, currency)) out.set(id, Math.max(0, -net));
+  return out;
+}
+
+/**
+ * Contract v0.18.139 `driverWalletBalance` (owner 2026-11-20 "Yes, server + app (Rec.)"): the driver's balance with
+ * Movera now in `currency`, the two sides of the one sum S (netByDriver): owedToMovera = max(0, −S) — always equal to
+ * owedByDriver, the number of the admin owing list and of the owes-limit — and moveraOwesYou = max(0, S).
+ */
+export async function moveraBalanceOf(ex: Executor, driverId: string, currency: string): Promise<{ owedToMovera: Money; moveraOwesYou: Money }> {
+  const net = (await netByDriver(ex, [driverId], currency)).get(driverId) ?? 0;
+  return { owedToMovera: { amountMinor: Math.max(0, -net), currency }, moveraOwesYou: { amountMinor: Math.max(0, net), currency } };
 }
 
 /** One driver's owed in his country's currency and his country's limit. */

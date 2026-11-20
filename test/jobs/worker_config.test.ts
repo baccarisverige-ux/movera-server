@@ -6,6 +6,7 @@ import type { TimerLane } from "../../src/jobs/timers.js";
 import { HOUSEKEEPING_KINDS } from "../../src/jobs/housekeeping.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "../../src/jobs/maintenance.js";
 import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "../../src/jobs/payouts.js";
+import { PAY_REQUEST_SCAN } from "../../src/drivers/payRequest.js";
 import { ALERT_SWEEP } from "../../src/alerts/detector.js";
 import { INCIDENT_ESCALATE } from "../../src/safety/incidents.js";
 import { EstimateRouter } from "../../src/maps/routing.js";
@@ -71,7 +72,7 @@ describe("buildWorkerConfig", () => {
   it("B1.7: housekeeping (13 jobs, hourly sweep, nightly run, S4 0.14a payout timer + driver steps) runs only on the housekeeping lane", () => {
     // v0.18.116 §94: + cleanup_trip_shares (share-my-trip rows after 30 days).
     expect(HOUSEKEEPING_KINDS).toHaveLength(13);
-    expect([...HOUSEKEEPING_LANE_KINDS].sort()).toEqual([...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER].sort());
+    expect([...HOUSEKEEPING_LANE_KINDS].sort()).toEqual([...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER, PAY_REQUEST_SCAN].sort());
     const housekeeping = lanes.filter((lane) => lane.name === "housekeeping");
     expect(housekeeping).toHaveLength(1);
     for (const kind of HOUSEKEEPING_LANE_KINDS) {

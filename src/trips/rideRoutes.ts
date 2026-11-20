@@ -14,6 +14,7 @@ import { checkPin, riderPin, verifyPin } from "./pin.js";
 import { driverReceipt, giveTip, riderReceipt } from "./finish.js";
 import { driverTrips } from "./ride/history.js";
 import { completePreview, completeTrip, PriceChanged, driverCancel, driverEarnings, driverStep, endEarly, noShow, rateTrip } from "./ride.js";
+import { moveraBalanceOf } from "../drivers/owes.js";
 
 /** contract §3: the driver's trip commands, the rider's early end, ratings and the driver's earnings. */
 
@@ -205,7 +206,11 @@ const tripId = (request: FastifyRequest) => parseBody(z.object({ tripId: ID }), 
     // Deep fix 2026-11-02 (live sweep M-5 "€ mixed into kr"): one currency per report — the asked one, else the driver's
     // own zone's — in that zone's clock.
     const home = await deps.db.selectFrom("drivers").innerJoin("zones", (j) => j.on(sql<boolean>`zones.zone_id = drivers.zone_ids[1]`)).select(["zones.currency", "zones.time_zone"]).where("drivers.driver_id", "=", who.subjectId).executeTakeFirst();
-    return driverEarnings(deps.db, who.subjectId, { period: query.period, ...(query.from ? { from: query.from } : {}), ...(query.to ? { to: query.to } : {}), timeZone: home?.time_zone ?? deps.timeZone, currency: query.currency ?? home?.currency ?? deps.currency }, now());
+    const currency = query.currency ?? home?.currency ?? deps.currency;
+    const report = await driverEarnings(deps.db, who.subjectId, { period: query.period, ...(query.from ? { from: query.from } : {}), ...(query.to ? { to: query.to } : {}), timeZone: home?.time_zone ?? deps.timeZone, currency }, now());
+    // v0.18.139 (contract.json#driverWalletBalance, owner 2026-11-20): his balance with Movera NOW in the report's
+    // currency — the server's own sum (drivers/owes.ts, the admin owing list's number), never a sum on the phone.
+    return { ...report, moveraBalance: await moveraBalanceOf(deps.db, who.subjectId, currency) };
   });
 }
 
