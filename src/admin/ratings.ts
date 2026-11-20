@@ -5,6 +5,7 @@ import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { audit } from "./audit.js";
+import { moveCompliments } from "../drivers/publicProfile.js";
 import { cursorOf, readCursor, zonesOf } from "./lists.js";
 
 /**
@@ -120,6 +121,7 @@ export async function moderateRating(trx: Trx, who: Principal, tripId: string, r
   // The rider rated the driver; the driver rated the rider (trips/ride.ts rateTrip).
   if (rater === "rider" && row.driver_id) {
     await trx.updateTable("drivers").set({ rating_sum: sql`rating_sum + ${sign * row.stars}`, rating_count: sql`rating_count + ${sign}` }).where("driver_id", "=", row.driver_id).execute();
+    await moveCompliments(trx, row.driver_id, row.stars, row.tags, sign); // v0.18.147
   } else if (rater === "driver") {
     await trx.updateTable("riders").set({ rating_sum: sql`rating_sum + ${sign * row.stars}`, rating_count: sql`rating_count + ${sign}` }).where("rider_id", "=", row.rider_id).execute();
   }

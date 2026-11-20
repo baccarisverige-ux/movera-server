@@ -1,7 +1,7 @@
 /** The Kysely Database interface: every table name to its row type. */
 import type { Generated } from "kysely";
 import type { RidersTable } from "./riders.js";
-import type { DriversTable, DriverLocationsTable, VehiclesTable, DriverCancelsTable } from "./drivers.js";
+import type { DriversTable, DriverLocationsTable, VehiclesTable, DriverCancelsTable, DriverPublicProfilesTable, DriverComplimentCountsTable, DriverReviewsTable } from "./drivers.js";
 import type { FleetsTable, FleetJoinAttemptsTable, FleetInvitationsTable } from "./fleets.js";
 import type { DocumentUploadAttemptsTable, DocumentsTable, DocumentFilesTable, DocumentRenewalsTable, LegalTextsTable, LegalAcceptancesTable, DocumentNoticesTable, SignUpRemindersTable, TermsAcceptancesTable } from "./documents.js";
 import type { TelemetryTable, ErrorGroupsTable, ErrorGroupDevicesTable } from "./telemetry.js";
@@ -25,6 +25,9 @@ export interface Database {
   riders: RidersTable;
   drivers: DriversTable;
   driver_locations: DriverLocationsTable;
+  driver_public_profiles: DriverPublicProfilesTable;
+  driver_compliment_counts: DriverComplimentCountsTable;
+  driver_reviews: DriverReviewsTable;
   trips: TripsTable;
   trip_events: TripEventsTable;
   trip_messages: TripMessagesTable;
