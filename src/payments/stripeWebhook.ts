@@ -5,15 +5,20 @@ import { ApiError } from "../http/errors.js";
 import { verifyStripeSignature, type StripeApi, type StripeEvent, type StripePaymentsTable, type StripePurpose } from "./stripe.js";
 
 /**
- * Contract v0.18.141 stripeFees.webhook: POST /webhooks/stripe (no sign-in). The raw body is checked against the
+ * Contract v0.18.136 stripeFees.webhook: POST /webhooks/stripe (no sign-in). The raw body is checked against the
  * Stripe-Signature header; each event id is handled once (stripe_events); the payment row is locked; each use (purpose)
  * owns its money effect (riders/feeStripe.ts riderFeeUse; later the driver's monthly payment).
  */
 
 type Payment = { [K in keyof StripePaymentsTable]: StripePaymentsTable[K] extends { __select__: infer S } ? S : StripePaymentsTable[K] };
 export interface StripeUse {
-  /** The PaymentIntent succeeded with the stored amount and currency. paidTwice: the debt was already settled. */
-  succeeded(trx: Trx, payment: Payment, now: Date): Promise<{ paidTwice: boolean }>;
+  /** Lock order (money review 3): the use locks its subject (the rider) before the payment row is locked. */
+  lockSubject(trx: Trx, subjectId: string): Promise<void>;
+  /**
+   * The PaymentIntent succeeded with the stored amount and currency. overpaidMinor: the part that took nothing off a
+   * debt (all of it when it was already settled another way); > 0 flags the payment paidTwice for the admin to refund.
+   */
+  succeeded(trx: Trx, payment: Payment, now: Date): Promise<{ overpaidMinor: number }>;
   /** The payment was refunded in full. */
   refunded(trx: Trx, payment: Payment, now: Date): Promise<void>;
 }
@@ -24,19 +29,25 @@ export async function handleStripeEvent(trx: Trx, uses: Partial<Record<StripePur
   const object = event.data?.object ?? {};
   const intentId = String(event.type.startsWith("charge.") ? object["payment_intent"] ?? "" : object["id"] ?? "");
   if (!intentId) return;
+  const seen = await trx.selectFrom("stripe_payments").select(["purpose", "subject_id"]).where("payment_intent_id", "=", intentId).executeTakeFirst();
+  if (!seen) return;
+  const use = uses[seen.purpose];
+  if (use) await use.lockSubject(trx, seen.subject_id);
   const payment = (await trx.selectFrom("stripe_payments").selectAll().where("payment_intent_id", "=", intentId).forUpdate().executeTakeFirst()) as Payment | undefined;
   if (!payment) return;
-  const use = uses[payment.purpose];
   const sameMoney = (amount: unknown) => Number(amount) === Number(payment.amount_minor) && String(object["currency"] ?? "").toUpperCase() === payment.currency;
   switch (event.type) {
     case "payment_intent.succeeded": {
       if (payment.status === "succeeded" || payment.status === "refund_pending" || payment.status === "refunded") return;
       if (!sameMoney(object["amount_received"] ?? object["amount"])) {
-        log("stripe: succeeded amount or currency differs; nothing changed", { paymentIntentId: intentId });
+        // Money review (7): visible to the admin (amountMismatch); no fee changes.
+        log("stripe: succeeded amount or currency differs; fee unchanged, flagged", { paymentIntentId: intentId });
+        await trx.updateTable("stripe_payments").set({ amount_mismatch: true }).where("payment_intent_id", "=", intentId).execute();
         return;
       }
-      const effect = use ? await use.succeeded(trx, payment, now) : { paidTwice: true };
-      await trx.updateTable("stripe_payments").set({ status: "succeeded", paid_at: now, client_secret: null, paid_twice: effect.paidTwice }).where("payment_intent_id", "=", intentId).execute();
+      const amount = Number(payment.amount_minor);
+      const over = use ? Math.min(amount, Math.max(0, (await use.succeeded(trx, payment, now)).overpaidMinor)) : amount;
+      await trx.updateTable("stripe_payments").set({ status: "succeeded", paid_at: now, client_secret: null, paid_twice: over > 0, overpaid_minor: over }).where("payment_intent_id", "=", intentId).execute();
       return;
     }
     case "payment_intent.payment_failed":

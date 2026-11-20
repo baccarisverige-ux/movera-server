@@ -123,7 +123,7 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
       throw badRequest(`Set an amount above 0 in ${zone.currency} to switch the owes-limit on.`, "owes_limit_needs_amount");
     }
   }
-  // v0.18.141 (contract.json#stripeFees.setting): the Stripe rider fee switch is a boolean.
+  // v0.18.136 (contract.json#stripeFees.setting): the Stripe rider fee switch is a boolean.
   if (doc === "country_rules") checkRiderFeeStripeSetting(document);
   // v0.18.115 BQ-V21 (contract.json#pickupSpots.server): booking.pickupSpots.on is true or false (checked here, so the
   // rule holds whatever contract copy the schema check reads).
@@ -584,7 +584,7 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
  */
 export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
   // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
-  // v0.18.141 (pricingHistory.restoreKeeps): the Stripe rider fee switch stays too.
+  // v0.18.136 (pricingHistory.restoreKeeps): the Stripe rider fee switch stays too.
   country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "riderFeeStripe"],
 };
 

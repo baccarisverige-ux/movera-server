@@ -1,3 +1,4 @@
+import { closeOpenIntents } from "../payments/stripe.js";
 import { z } from "zod";
 import type { Principal } from "../auth/guard.js";
 import { adminCoversZone } from "../auth/guard.js";
@@ -32,16 +33,19 @@ export async function markRiderFeePaid(trx: Trx, who: Principal, riderId: string
 }
 
 /**
- * The money effect of an owed fee paid outside a trip (Mark as paid; v0.18.141 a Stripe payment, riders/feeStripe.ts).
+ * The money effect of an owed fee paid outside a trip (Mark as paid; v0.18.136 a Stripe payment, riders/feeStripe.ts).
  * The caller holds the rider and rider_fees row locks and has checked the fee is owed.
  */
-export async function settleFeePaid(trx: Trx, fee: { trip_id: string; rider_id: string; currency: string; amount_minor: string | number }, cancellation: unknown, riderVersion: number, now: Date) {
+export async function settleFeePaid(trx: Trx, fee: { trip_id: string; rider_id: string; currency: string; amount_minor: string | number }, cancellation: unknown, riderVersion: number, now: Date): Promise<number> {
   // S5 J8 (contract v0.18.84 debtModel.adminCorrections): a correction entry in the wallet (+the fee, at most what is
   // still owed); a ride open now simply reads the lower debt when it is paid (no fee_on_running_trip any more).
-  await correctFee(trx, fee, now);
+  const back = await correctFee(trx, fee, now);
+  await closeOpenIntents(trx, "rider_fee", [fee.trip_id]);
   await trx.updateTable("rider_fees").set({ status: "paid", carried_by: null, settled_at: now, settled_in_wallet: true }).where("trip_id", "=", fee.trip_id).execute();
   // The original trip says paid too (no version change: nothing the driver or rider acts on changed).
   await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...((cancellation ?? {}) as object), feeStatus: "paid" }) }).where("trip_id", "=", fee.trip_id).execute();
   await refreshOutstanding(trx, fee.rider_id, now);
   await trx.updateTable("riders").set({ version: riderVersion + 1, updated_at: now }).where("rider_id", "=", fee.rider_id).execute();
+  /** What came off her debt (money review 1: a card payment above it is flagged paidTwice). */
+  return back;
 }

@@ -11,7 +11,7 @@ import { riderDebt } from "./debt.js";
 import { settleFeePaid } from "./feeMarkPaid.js";
 
 /**
- * Contract v0.18.141 `stripeFees` (DRAFT, Stripe TEST mode; owner 2026-11-20 "So we use stripe"): the rider pays an owed
+ * Contract v0.18.136 `stripeFees` (DRAFT, Stripe TEST mode; owner 2026-11-20 "So we use stripe"): the rider pays an owed
  * cancel or no-show fee in the app. Rides stay paid in the car.
  *
  * MONEY rules kept here:
@@ -43,7 +43,8 @@ export function feePaymentView(row: Row, withSecret: { publishableKey: string } 
     createdAt: row.created_at.toISOString(),
     ...(row.paid_at ? { paidAt: row.paid_at.toISOString() } : {}),
     ...(row.refunded_at ? { refundedAt: row.refunded_at.toISOString() } : {}),
-    ...(row.paid_twice ? { paidTwice: true } : {}),
+    ...(row.paid_twice ? { paidTwice: true, overpaid: { amountMinor: Number(row.overpaid_minor), currency: row.currency } } : {}),
+    ...(row.amount_mismatch ? { amountMismatch: true } : {}),
   };
 }
 
@@ -52,6 +53,8 @@ const tripCountry = async (ex: Executor, tripId: string) =>
 
 /** POST /rider/fees/{tripId}/pay: one open PaymentIntent per fee, for the server's amount. */
 export async function startFeePayment(trx: Trx, stripe: StripeApi, riderId: string, tripId: string, now: Date) {
+  await lockRider(trx, riderId); // lock order: the rider, then the payment rows, then the fee (as the webhook)
+  const mine = await trx.selectFrom("stripe_payments").selectAll().where("purpose", "=", "rider_fee").where("ref_id", "=", tripId).forUpdate().execute();
   const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", tripId).where("rider_id", "=", riderId).forUpdate().executeTakeFirst();
   if (!fee || fee.status !== "owed") throw new ApiError("invalid_transition", "There is no fee to pay for this trip.", { reason: "fee_not_owed" });
   const amountMinor = Math.min(Number(fee.amount_minor), await riderDebt(trx, riderId, fee.currency));
@@ -59,7 +62,6 @@ export async function startFeePayment(trx: Trx, stripe: StripeApi, riderId: stri
   const trip = await tripCountry(trx, tripId);
   if (!(await riderFeeStripeOn(trx, trip?.country))) throw new ApiError("conflict", "Card payment of fees is off here.", { reason: "stripe_off" });
   if (!STRIPE_CURRENCIES.has(fee.currency)) throw new ApiError("conflict", "Card payment is not used for this currency.", { reason: "currency_not_supported" });
-  const mine = await trx.selectFrom("stripe_payments").selectAll().where("purpose", "=", "rider_fee").where("ref_id", "=", tripId).forUpdate().execute();
   const open = mine.find((p) => OPEN_STATUSES.includes(p.status));
   if (open && Number(open.amount_minor) === amountMinor && open.currency === fee.currency) return feePaymentView(open as Row, stripe);
   if (open) {
@@ -81,16 +83,23 @@ export async function startFeePayment(trx: Trx, stripe: StripeApi, riderId: stri
   return feePaymentView(row as Row, stripe);
 }
 
+const lockRider = async (trx: Trx, riderId: string) => {
+  await trx.selectFrom("riders").select("rider_id").where("rider_id", "=", riderId).forUpdate().executeTakeFirst();
+};
+
 /** The webhook's money effect for purpose rider_fee (payments/stripeWebhook.ts calls it under the payment row lock). */
 export const riderFeeUse: StripeUse = {
+  lockSubject: lockRider,
   async succeeded(trx, payment, now) {
     const rider = await trx.selectFrom("riders").select(["rider_id", "version"]).where("rider_id", "=", payment.subject_id).forUpdate().executeTakeFirst();
     const fee = await trx.selectFrom("rider_fees").selectAll().where("trip_id", "=", payment.ref_id).where("rider_id", "=", payment.subject_id).forUpdate().executeTakeFirst();
-    if (!rider || !fee || fee.status !== "owed" || fee.currency !== payment.currency) return { paidTwice: true };
+    const amount = Number(payment.amount_minor);
+    if (!rider || !fee || fee.status !== "owed" || fee.currency !== payment.currency) return { overpaidMinor: amount };
     const trip = await tripCountry(trx, payment.ref_id);
-    await settleFeePaid(trx, fee, trip?.cancellation ?? null, rider.version, now);
+    // Money review (1): only what came off her debt counts; the rest of the card money is flagged for the admin to refund.
+    const back = await settleFeePaid(trx, fee, trip?.cancellation ?? null, rider.version, now);
     await audit(trx, { adminId: null, action: "rider.fee_paid_stripe", targetType: "rider", targetId: rider.rider_id, zoneId: trip?.zone_id ?? null, detail: { tripId: payment.ref_id, paymentIntentId: payment.payment_intent_id, amountMinor: Number(payment.amount_minor), currency: payment.currency }, at: now });
-    return { paidTwice: false };
+    return { overpaidMinor: Math.max(0, amount - back) };
   },
   async refunded(trx, payment) {
     // The money went back; the fee is not owed again (contract stripeFees.refund). A payment that came twice leaves the fee as it was.
@@ -105,9 +114,10 @@ export const StripeRefundBody = z.object({ reason: z.string().max(300).optional(
 export async function refundFeePayment(trx: Trx, stripe: StripeApi, who: Principal, riderId: string, tripId: string, body: { reason: string }, now: Date) {
   const reason = body.reason.trim();
   if (!reason) throw new ApiError("invalid_request", "Write why the fee is refunded.", { reason: "reason_required" });
+  await lockRider(trx, riderId);
   const trip = await trx.selectFrom("trips").select(["zone_id"]).where("trip_id", "=", tripId).where("rider_id", "=", riderId).executeTakeFirst();
   if (trip && !adminCoversZone(who, trip.zone_id)) throw new ApiError("forbidden", "This trip is outside your zones.", { reason: "zone_out_of_scope" });
-  const paid = trip ? await trx.selectFrom("stripe_payments").selectAll().where("purpose", "=", "rider_fee").where("ref_id", "=", tripId).where("subject_id", "=", riderId).where("status", "=", "succeeded").orderBy("created_at", "desc").forUpdate().executeTakeFirst() : undefined;
+  const paid = trip ? await trx.selectFrom("stripe_payments").selectAll().where("purpose", "=", "rider_fee").where("ref_id", "=", tripId).where("subject_id", "=", riderId).where("status", "=", "succeeded").orderBy("paid_twice", "desc").orderBy("created_at").forUpdate().executeTakeFirst() : undefined;
   if (!paid) throw new ApiError("invalid_transition", "No card payment of this fee to refund.", { reason: "no_stripe_payment" });
   const refund = await stripe.refund({ paymentIntentId: paid.payment_intent_id, idempotencyKey: `refund:${paid.payment_intent_id}` });
   const row = await trx.updateTable("stripe_payments").set({ status: "refund_pending", refund_id: refund.id }).where("payment_intent_id", "=", paid.payment_intent_id).returningAll().executeTakeFirstOrThrow();

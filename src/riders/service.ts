@@ -64,7 +64,7 @@ async function loadRider(ex: Executor, riderId: string, lock = false): Promise<R
 
 export async function getRiderProfile(ex: Executor, riderId: string, currency: string) {
   const view = riderView(await loadRider(ex, riderId), currency, await outstandingByCurrency(ex, riderId));
-  // v0.18.141 (DRAFT, contract.json#stripeFees.profile): the owed fees she can pay with Stripe in the app now.
+  // v0.18.136 (DRAFT, contract.json#stripeFees.profile): the owed fees she can pay with Stripe in the app now.
   const payable = await feesPayableByCard(ex, riderId);
   return payable.length > 0 ? { ...view, feesPayableByCard: payable } : view;
 }

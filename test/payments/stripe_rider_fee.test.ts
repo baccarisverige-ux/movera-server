@@ -16,7 +16,7 @@ import { insertTrip } from "../support/seed.js";
 import { call, signIn, WORLD_JWT_SECRET, fixedRouter } from "../support/world.js";
 
 /**
- * Contract v0.18.141 `stripeFees` (DRAFT, Stripe TEST mode; owner 2026-11-20 "So we use stripe"): Sara pays her owed
+ * Contract v0.18.136 `stripeFees` (DRAFT, Stripe TEST mode; owner 2026-11-20 "So we use stripe"): Sara pays her owed
  * 65 kr cancel fee with Stripe in the app. The server makes a PaymentIntent for the server's amount; only a signed
  * webhook marks the fee paid (as Mark as paid), once; a refund gives the money back. Fails on main: no routes.
  */
@@ -210,5 +210,92 @@ describe("keys, setting and signature", () => {
     expect(bad.json()).toMatchObject({ reason: "rider_fee_stripe_invalid" });
     expect(KEPT_KEYS.country_rules).toContain("riderFeeStripe");
     expect(KEPT_ON_RESTORE.country_rules).toContain("riderFeeStripe");
+  });
+});
+
+describe("money review of 05bb3ac (NO-GO fixes)", () => {
+  const finance = async () => (await adminSession(app, database.db, "finance", { now: clock.now })).headers;
+  const payments = async () => (await call(app, "GET", `/admin/riders/${sara.id}/fee-payments`, await finance())).json().items as Array<Record<string, unknown>>;
+  const walletSum = async () => (await database.db.selectFrom("wallet_entries").select("amount_minor").where("rider_id", "=", sara.id).execute()).reduce((a, e) => a + Number(e.amount_minor), 0);
+  const feeStatus = async (tripId: string) => (await database.db.selectFrom("rider_fees").select("status").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).status;
+
+  it("(1) fee 100, wallet credit leaves debt 50, card 100: 50 settles the fee, the other 50 is paidTwice (overpaid) to refund", async () => {
+    const tripId = await owedFee(10000);
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    await database.db.insertInto("wallet_entries").values({ entry_id: "wlt_credit_review", rider_id: sara.id, kind: "adjustment", currency: "SEK", amount_minor: 5000, trip_id: null, at: clock.now }).execute();
+    await database.db.updateTable("rider_wallets").set({ balance_minor: -5000 }).where("rider_id", "=", sara.id).execute();
+    await hook("payment_intent.succeeded", succeeded(pi, 10000));
+    expect(await feeStatus(tripId)).toBe("paid");
+    expect(await walletSum()).toBe(0);
+    expect((await payments())[0]).toMatchObject({ paymentIntentId: pi, status: "succeeded", paidTwice: true, overpaid: SEK(5000) });
+  });
+
+  it("(4)(8) a fee marked paid by hand cancels its open intent (no secret); money that still arrives is paidTwice for all of it", async () => {
+    const tripId = await owedFee(6500);
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    expect((await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/mark-paid`, await finance(), { reason: "Swish" })).statusCode).toBe(200);
+    expect((await payments())[0]).toMatchObject({ paymentIntentId: pi, status: "canceled" });
+    expect((await database.db.selectFrom("stripe_payments").select("client_secret").executeTakeFirstOrThrow()).client_secret).toBeNull();
+    expect((await pay(tripId)).json()).toMatchObject({ reason: "fee_not_owed" });
+    await hook("payment_intent.succeeded", succeeded(pi));
+    expect((await payments())[0]).toMatchObject({ status: "succeeded", paidTwice: true, overpaid: SEK(6500) });
+    expect(await walletSum()).toBe(0);
+  });
+
+  it("(2)(8) a failed intent that then succeeds after a second one paid: paidTwice; the refund takes the paidTwice one first; the fee stays paid", async () => {
+    const tripId = await owedFee(6500);
+    const pi1 = (await pay(tripId)).json().paymentIntentId;
+    await hook("payment_intent.payment_failed", { id: pi1, object: "payment_intent", amount: 6500, currency: "sek" });
+    const pi2 = (await pay(tripId)).json().paymentIntentId;
+    expect(pi2).not.toBe(pi1);
+    await hook("payment_intent.succeeded", succeeded(pi2));
+    await hook("payment_intent.succeeded", succeeded(pi1));
+    const byId = Object.fromEntries((await payments()).map((p) => [p["paymentIntentId"], p]));
+    expect(byId[pi1]).toMatchObject({ status: "succeeded", paidTwice: true });
+    expect(byId[pi2]).toMatchObject({ status: "succeeded" });
+    expect(byId[pi2]!["paidTwice"]).toBeUndefined();
+    expect(await walletSum()).toBe(0);
+    const h = await finance();
+    expect((await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/stripe-refund`, h, { reason: "Paid twice" })).json()).toMatchObject({ paymentIntentId: pi1, status: "refund_pending" });
+    await hook("charge.refunded", { id: "ch_r", object: "charge", payment_intent: pi1, amount_refunded: 6500, currency: "sek" });
+    expect(await feeStatus(tripId)).toBe("paid");
+    // (8) a repeated admin refund takes the other payment, never the same one twice.
+    expect((await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/stripe-refund`, h, { reason: "Wrong fee" })).json()).toMatchObject({ paymentIntentId: pi2 });
+    expect((await call(app, "POST", `/admin/riders/${sara.id}/fees/${tripId}/stripe-refund`, h, { reason: "again" })).json()).toMatchObject({ reason: "no_stripe_payment" });
+    expect(refunds).toEqual([pi1, pi2]);
+  });
+
+  it("(7) a succeeded event with another amount leaves amountMismatch for the admin; the fee stays owed", async () => {
+    const tripId = await owedFee(6500);
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    await hook("payment_intent.succeeded", succeeded(pi, 100));
+    expect((await payments())[0]).toMatchObject({ paymentIntentId: pi, status: "requires_payment", amountMismatch: true });
+    expect(await feeStatus(tripId)).toBe("owed");
+  });
+
+  it("(8) concurrent webhooks (same and different event ids) and pay calls: the fee is paid once", async () => {
+    const tripId = await owedFee(6500);
+    const pi = (await pay(tripId)).json().paymentIntentId;
+    await Promise.all([hook("payment_intent.succeeded", succeeded(pi), { id: "evt_dup" }), hook("payment_intent.succeeded", succeeded(pi), { id: "evt_dup" }), hook("payment_intent.succeeded", succeeded(pi)), pay(tripId), pay(tripId)]);
+    expect(await feeStatus(tripId)).toBe("paid");
+    expect(await walletSum()).toBe(0);
+    const adj = await database.db.selectFrom("wallet_entries").select("kind").where("rider_id", "=", sara.id).where("kind", "=", "adjustment").execute();
+    expect(adj).toHaveLength(1);
+    expect((await payments()).filter((p) => p["status"] === "succeeded")).toHaveLength(1);
+  });
+
+  it("(6) the pay answer (client secret) is not kept in the Idempotency-Key store", async () => {
+    const tripId = await owedFee(6500);
+    const secret = (await pay(tripId)).json().clientSecret as string;
+    const rows = await database.db.selectFrom("idempotency_keys").selectAll().execute();
+    expect(JSON.stringify(rows)).not.toContain(secret);
+  });
+
+  it("(5) Stripe's charge_already_refunded counts as a done refund", async () => {
+    const fetcher = (async () => new Response(JSON.stringify({ error: { code: "charge_already_refunded" } }), { status: 400 })) as unknown as typeof fetch;
+    const api = stripeFromEnv({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }, fetcher)!;
+    expect(await api.refund({ paymentIntentId: "pi_x", idempotencyKey: "refund:pi_x" })).toEqual({ id: "already_refunded" });
+    const other = (async () => new Response(JSON.stringify({ error: { code: "other" } }), { status: 400 })) as unknown as typeof fetch;
+    await expect(stripeFromEnv({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }, other)!.refund({ paymentIntentId: "pi_x", idempotencyKey: "k" })).rejects.toThrow();
   });
 });

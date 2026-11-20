@@ -1,6 +1,6 @@
 import { badRequest } from "../http/errors.js";
 
-/** v0.18.141 (contract.json#stripeFees.setting). A leaf module so config/service.ts can import it. */
+/** v0.18.136 (contract.json#stripeFees.setting). A leaf module so config/service.ts can import it. */
 /** Save check of CountryRules.riderFeeStripe (config/service.ts checkDocument). */
 export function checkRiderFeeStripeSetting(document: unknown): void {
   const set = (document as { riderFeeStripe?: unknown } | null)?.riderFeeStripe;

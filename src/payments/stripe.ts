@@ -1,9 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ColumnType } from "kysely";
+import type { Trx } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
 
+class AlreadyRefunded extends Error {}
+
 /**
- * Contract v0.18.141 `stripeFees` (DRAFT, Stripe TEST mode only; owner 2026-11-20 "So we use stripe" + "Stripe is used
+ * Contract v0.18.136 `stripeFees` (DRAFT, Stripe TEST mode only; owner 2026-11-20 "So we use stripe" + "Stripe is used
  * for exactly TWO things: the rider cancellation fee; the DRIVER paying his monthly invoice to Movera"). The ONE server
  * Stripe module for both uses: the keys (env names only), the small Stripe HTTP client, the webhook signature check and
  * the stripe_payments / stripe_events tables (migration 0124). Each use (riders/feeStripe.ts, later the driver's
@@ -29,6 +32,8 @@ export interface StripePaymentsTable {
   status: StripeStatus;
   client_secret: string | null;
   paid_twice: ColumnType<boolean, boolean | undefined, boolean>;
+  overpaid_minor: ColumnType<string, number | undefined, number>;
+  amount_mismatch: ColumnType<boolean, boolean | undefined, boolean>;
   refund_id: string | null;
   created_at: Date;
   paid_at: Date | null;
@@ -73,7 +78,11 @@ function stripeHttp(secret: string, publishableKey: string, webhookSecret: strin
       signal: AbortSignal.timeout(15_000),
     });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) throw new ApiError("unavailable", "The card payment service did not answer.", { reason: "payments_unavailable" });
+    if (!res.ok) {
+      const code = String(((body["error"] ?? {}) as Record<string, unknown>)["code"] ?? "");
+      if (code === "charge_already_refunded") throw new AlreadyRefunded();
+      throw new ApiError("unavailable", "The card payment service did not answer.", { reason: "payments_unavailable" });
+    }
     return body;
   };
   return {
@@ -89,8 +98,14 @@ function stripeHttp(secret: string, publishableKey: string, webhookSecret: strin
       await post(`payment_intents/${encodeURIComponent(id)}/cancel`, {});
     },
     async refund({ paymentIntentId, idempotencyKey }) {
-      const r = await post("refunds", { payment_intent: paymentIntentId }, idempotencyKey);
-      return { id: String(r["id"]) };
+      try {
+        const r = await post("refunds", { payment_intent: paymentIntentId }, idempotencyKey);
+        return { id: String(r["id"]) };
+      } catch (e) {
+        // Money review (5): a refund already done (e.g. a first try whose database step rolled back) counts as done.
+        if (e instanceof AlreadyRefunded) return { id: "already_refunded" };
+        throw e;
+      }
     },
   };
 }
@@ -125,3 +140,13 @@ export function stripeSignatureHeader(rawBody: string, secret: string, at: Date)
 }
 
 export type StripeEvent = { id: string; type: string; data: { object: Record<string, unknown> } };
+
+/**
+ * Money review (4): when what a payment pays for stops being owed another way (Mark as paid, waive, paid with a ride),
+ * its open PaymentIntents become canceled here and lose their client secret. The webhook still takes money that
+ * arrives for one, flagged paidTwice for the admin to refund.
+ */
+export async function closeOpenIntents(trx: Trx, purpose: StripePurpose, refIds: readonly string[]): Promise<void> {
+  if (refIds.length === 0) return;
+  await trx.updateTable("stripe_payments").set({ status: "canceled", client_secret: null }).where("purpose", "=", purpose).where("ref_id", "in", [...refIds]).where("status", "in", [...OPEN_STATUSES]).execute();
+}

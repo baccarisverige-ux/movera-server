@@ -243,12 +243,13 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await markRiderFeePaid(trx, who, riderId, tripId, body, deps.currency, now()) }))).body;
   });
 
-  // v0.18.141 (DRAFT, contract.json#stripeFees): the rider pays an owed fee with Stripe; the admin sees and refunds it.
+  // v0.18.136 (DRAFT, contract.json#stripeFees): the rider pays an owed fee with Stripe; the admin sees and refunds it.
   app.post(`${API_PREFIX}/rider/fees/:tripId/pay`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
     const stripe = needStripe(deps.stripe);
-    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await startFeePayment(trx, stripe, who.subjectId, tripId, now()) }))).body;
+    // Money review (6): not through the Idempotency-Key store (the answer holds clientSecret); a repeat gets the same open intent.
+    return deps.db.transaction().execute((trx) => startFeePayment(trx, stripe, who.subjectId, tripId, now()));
   });
   app.get(`${API_PREFIX}/admin/riders/:riderId/fee-payments`, async (request) => {
     await authenticateAdmin(request, guard, "finance.read");

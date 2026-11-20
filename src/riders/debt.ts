@@ -4,6 +4,7 @@ import { contract } from "../contract/contract.js";
 import type { Executor, Trx } from "../db/db.js";
 import type { TripRow } from "../db/tripLog.js";
 import { newId } from "../ids.js";
+import { closeOpenIntents } from "../payments/stripe.js";
 import { liveDocument, standardKey } from "../config/service.js";
 
 /**
@@ -117,6 +118,7 @@ export async function settleFeesToWallet(trx: Trx, riderId: string, currency: st
     if (sum <= debt) break;
     sum -= Number(fee.amount_minor);
     await trx.updateTable("rider_fees").set({ status: "paid", carried_by: carriedBy, settled_at: now, settled_in_wallet: true }).where("trip_id", "=", fee.trip_id).execute();
+    await closeOpenIntents(trx, "rider_fee", [fee.trip_id]);
     const source = await trx.selectFrom("trips").select("cancellation").where("trip_id", "=", fee.trip_id).executeTakeFirst();
     if (source?.cancellation) await trx.updateTable("trips").set({ cancellation: JSON.stringify({ ...(source.cancellation as object), feeStatus: "paid" }) }).where("trip_id", "=", fee.trip_id).execute();
   }

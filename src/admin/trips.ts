@@ -3,6 +3,7 @@ import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
 import { correctFee } from "../riders/debt.js";
+import { closeOpenIntents } from "../payments/stripe.js";
 import { commissionOf } from "../rules/commission.js";
 import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
 import { boxAround, driversNear } from "../dispatch/nearArea.js";
@@ -399,6 +400,7 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
     // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
     await correctFee(trx, fee, now);
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
+    await closeOpenIntents(trx, "rider_fee", [trip.trip_id]);
     await refreshOutstanding(trx, trip.rider_id, now);
     feeStatus = "waived";
   } else if (fee && fee.status === "paid") {
@@ -474,6 +476,7 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
     // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
     await correctFee(trx, fee, now);
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
+    await closeOpenIntents(trx, "rider_fee", [trip.trip_id]);
     set["cancellation"] = JSON.stringify({ ...(trip.cancellation as object), feeStatus: "waived" });
     await refreshOutstanding(trx, trip.rider_id, now);
   }

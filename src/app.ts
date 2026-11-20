@@ -357,7 +357,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
     await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
-    // v0.18.141 (DRAFT, contract.json#stripeFees): one Stripe module (test keys only); the rider fee is its first use.
+    // v0.18.136 (DRAFT, contract.json#stripeFees): one Stripe module (test keys only); the rider fee is its first use.
     const payments = stripe !== undefined ? stripe : stripeFromEnv(env);
     await stripeWebhookRoutes(app, { db, stripe: payments, uses: { rider_fee: riderFeeUse }, ...(clock ? { clock } : {}) });
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", stripe: payments, ...(clock ? { clock } : {}) });

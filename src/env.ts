@@ -113,7 +113,7 @@ const schema = z.object({
    * (SERVER_PAYMENT_METHODS). A method listed here (comma-separated, default none; cash is ignored and logged) is served as coming_soon and refused
    * with payment_method_coming_soon until it is taken off the list. The old PAYMENT_METHODS list is no longer read.
    */
-  /** v0.18.141 (DRAFT, contract.json#stripeFees.keys): Stripe TEST keys only (sk_test_ / pk_test_ / whsec_); unset or a
+  /** v0.18.136 (DRAFT, contract.json#stripeFees.keys): Stripe TEST keys only (sk_test_ / pk_test_ / whsec_); unset or a
    * live key = Stripe off (503 payments_unavailable). Never logged, never in a document. */
   STRIPE_SECRET_KEY: z.string().max(300).optional(),
   STRIPE_PUBLISHABLE_KEY: z.string().max(300).optional(),
