@@ -14,7 +14,9 @@
 //   - drivers: a fixed population (share --driver-offline-share offline with Home open), each a DriverPhone;
 //   - riders: an OPEN model — new riders arrive as a Poisson process of --rider-arrivals per minute, whatever the server
 //     answers; each is a RiderPhone that runs Home → Choose → book → … → Receipt and leaves;
-//   - every phone sends what its app sends in its state at the app's cadence (cadences.mjs, file:line per number),
+//   - every phone sends what its app sends in its state at the app's cadence (cadences.mjs, file:line per number);
+//     LOADTEST_CADENCE=real picks the load-cut apps' real cadences (S4e: no rider messages poll, trip watch 60 s with
+//     the stream up, 1 GET /driver/home-badges per 60 s, airport poll only online near an airport); unset = the old table,
 //     keeps the app's streams open and reacts to their events like the app;
 //   - tokens are real: the first access token lives a random part of --access-ttl, then every phone goes through a
 //     real POST /auth/refresh (401 → refresh → the same request again, the same Idempotency-Key) as the apps do.
@@ -27,7 +29,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import pg from "pg";
 import { realClock, poissonArrivals, seededRandom } from "./clock.mjs";
-import { cadenceRows } from "./cadences.mjs";
+import { cadenceRows, cadenceTable } from "./cadences.mjs";
 import { Counter, summaryLines } from "./counts.mjs";
 import { checkPhoneLimits, checkTarget, driverStartSpreadMs, dropAllowed, LoadtestGuardError, redact, serverEnv } from "./guards.mjs";
 import { Auth, DriverPhone, RiderPhone } from "./phones.mjs";
@@ -61,6 +63,8 @@ const OFFLINE_SHARE = Math.min(1, Math.max(0, Number(arg("driver-offline-share",
 const MIN_PHONE_MINUTES = Number(arg("min-phone-minutes", "5"));
 // S4c fix 1: the drivers start within this window (default 60 s, guards.mjs driverStartSpreadMs).
 const DRIVER_START_SPREAD_MS = driverStartSpreadMs(arg("driver-start-spread"));
+// S4e: LOADTEST_CADENCE=real runs the load-cut apps' real cadences (cadences.mjs CADENCES_REAL); unset = the old table.
+const CADENCE = cadenceTable(process.env.LOADTEST_CADENCE);
 const rng = seededRandom(Number(arg("seed", "60")));
 // Dwell times (ms, exponential means) of the states the phones leave on their own; JSON to override, e.g. {"home":60000}.
 const RIDER_DWELL = { home: 120_000, choose: 60_000, receipt: 60_000, abandonMs: 600_000, ...JSON.parse(arg("rider-dwell", "{}")) };
@@ -124,6 +128,7 @@ try {
     await db.insertInto("riders").values({ rider_id: id, phone: phoneNumber(zone, "rider", i), first_name: `Load r${i}`, status: "active", language: zone.language }).execute();
     riders.push({ id, zone, busy: false, ...(await session("rider", id, [])) });
   }
+  console.log(`cadence table: ${CADENCE.name} (LOADTEST_CADENCE)`);
   console.log(`seeded ${drivers.length} drivers (${online.length} online), ${riders.length} rider accounts; zones ${SHARES.map((s) => `${s.zoneId} ${Math.round(s.share * 100)} %`).join(", ")}`);
 
   /* ------------------------------------------------------------ server */
@@ -146,13 +151,13 @@ try {
   if (!healthy) throw new Error(`the server never became healthy on 127.0.0.1:${PORT}: ${redact(serverErr)}`);
 
   /* ------------------------------------------------------------ phones */
-  const counter = new Counter();
+  const counter = new Counter(CADENCE);
   const transport = httpTransport(PORT, counter);
   const phones = new Set();
   const zonesSeen = { rider: {}, driver: {} };
   const phone = (Kind, app, account, dwell) => {
     const auth = new Auth({ access: account.access, refresh: account.refresh, transport, counter, app });
-    const p = new Kind({ clock: realClock, rng, counter, transport, auth, zone: account.zone, dwell });
+    const p = new Kind({ clock: realClock, rng, counter, transport, auth, zone: account.zone, dwell, cadence: CADENCE });
     zonesSeen[app][account.zone.zoneId] = (zonesSeen[app][account.zone.zoneId] ?? 0) + 1;
     phones.add(p);
     return p;
@@ -192,9 +197,9 @@ try {
   /* ------------------------------------------------------------ results */
   const report = counter.report({ minPhoneMinutes: MIN_PHONE_MINUTES });
   const trips = await pool.query("SELECT zone_id, currency, status, count(*)::int AS n FROM trips GROUP BY 1, 2, 3 ORDER BY 1, 2, 3");
-  const result = { when: new Date().toISOString(), dist: DIST, limits: LIMITS, zoneShare: SHARES, zonesSeen, riderDwell: RIDER_DWELL, driverDwell: DRIVER_DWELL, report, tripsByZone: trips.rows, cadenceTable: cadenceRows() };
+  const result = { when: new Date().toISOString(), dist: DIST, limits: LIMITS, zoneShare: SHARES, zonesSeen, riderDwell: RIDER_DWELL, driverDwell: DRIVER_DWELL, report, tripsByZone: trips.rows, cadence: CADENCE.name, cadenceTable: cadenceRows(CADENCE) };
   console.log(summaryLines(report).join("\n"));
-  console.log(JSON.stringify({ pass: report.pass, reactions: report.reactions, extra: report.extra, status: report.status, errors: report.errors, toolLagMs: report.toolLagMs, latencyFromPlannedMs: report.latencyFromPlannedMs, zonesSeen, tripsByZone: trips.rows }, null, 2));
+  console.log(JSON.stringify({ pass: report.pass, cadence: CADENCE.name, reactions: report.reactions, extra: report.extra, status: report.status, errors: report.errors, toolLagMs: report.toolLagMs, latencyFromPlannedMs: report.latencyFromPlannedMs, zonesSeen, tripsByZone: trips.rows }, null, 2));
   if (OUT) fs.writeFileSync(OUT, JSON.stringify(result, null, 2));
   if (serverErr && process.env.LOADTEST_SHOW_STDERR) console.error(redact(serverErr));
   exitCode = report.pass ? 0 : 1;

@@ -3,6 +3,7 @@ export type EndpointCount = { count: number; perMinute: number; budgetPerMinute:
 export type StateReport = { phoneMinutes: number; gated: boolean; within: boolean; budgetPerMinute: number; perMinute: number; endpoints: Record<string, EndpointCount> };
 export type PhoneReport = {
   pass: boolean;
+  cadence: string;
   tolerancePct: number;
   minPhoneMinutes: number;
   gatedStates: number;
@@ -26,4 +27,6 @@ export function runVirtual(options?: {
   noDriverShare?: number;
   riderDwell?: Record<string, number>;
   driverDwell?: Record<string, number>;
+  /** cadence table: "old" (default) or "real" (S4e, LOADTEST_CADENCE=real) */
+  cadence?: string;
 }): Promise<{ report: PhoneReport; arrivals: number; expectedArrivals: number; zones: { rider: Record<string, number>; driver: Record<string, number> }; refreshCalls: number }>;

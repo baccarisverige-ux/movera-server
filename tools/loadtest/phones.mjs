@@ -2,8 +2,9 @@
 // the real app sends in that state, at the app's cadence (cadences.mjs), reacts to stream events like the app, and
 // refreshes its access token like the app (a 401 → one POST /auth/refresh → the request again; apps: rider
 // lib/core/api/api_client.dart:235, driver lib/core/api/api_client.dart:87-99). Clock and transport are injected, so the
-// same code runs live (phone-load.mjs) and in simulated time (simulate.mjs, the request-budget test).
-import { CADENCES, ON_ENTER, REACTIONS } from "./cadences.mjs";
+// same code runs live (phone-load.mjs) and in simulated time (simulate.mjs, the request-budget test). The cadence table
+// is per phone (option `cadence`, default the "old" table; LOADTEST_CADENCE=real picks the S4e table, cadences.mjs).
+import { CADENCE_TABLES } from "./cadences.mjs";
 import { expWait } from "./clock.mjs";
 import { near } from "./zones.mjs";
 
@@ -53,11 +54,12 @@ const timerKey = (e) => e.timer ?? e.id;
 class Phone {
   constructor(app, o) {
     Object.assign(this, { app, ...o });
+    this.table = o.cadence ?? CADENCE_TABLES.old;
     this.state = null;
     this.since = 0;
     this.timers = new Map(); // entry id → { handle, every }
     this.streams = new Map(); // name → { close }
-    this.lastReaction = 0;
+    this.lastReaction = new Map(); // reaction kind → last time (each hint has its own gap)
     this.gone = false;
     this.zone = o.zone;
     this.pos = near(o.zone, o.rng);
@@ -71,7 +73,7 @@ class Phone {
     if (this.state) this.counter.stay(this.app, this.state, now - this.since);
     this.state = state;
     this.since = now;
-    const entries = state ? (CADENCES[this.app][state] ?? []) : [];
+    const entries = state ? (this.table.cadences[this.app][state] ?? []) : [];
     const keep = new Set(entries.map(timerKey));
     for (const [key, t] of this.timers) {
       if (keep.has(key)) continue;
@@ -79,7 +81,7 @@ class Phone {
       this.timers.delete(key);
     }
     for (const e of entries) if (!this.timers.has(timerKey(e))) this.startTimer(e, now);
-    for (const e of ON_ENTER[this.app][state] ?? []) void this.send(e.id, e.method, typeof e.path === "function" ? e.path(this.ctx) : e.path, this.bodyFor(e));
+    for (const e of this.table.onEnter[this.app][state] ?? []) void this.send(e.id, e.method, typeof e.path === "function" ? e.path(this.ctx) : e.path, this.bodyFor(e));
     this.onEnter?.(state);
   }
   /** App Timer.periodic: the first tick one period after start. Planned times stay on the grid (open model). */
@@ -91,8 +93,9 @@ class Phone {
       t.handle = this.clock.at(planned, () => {
         if (this.gone || this.timers.get(key) !== t) return;
         // the request of the CURRENT state for this timer (one app timer, its branch follows the screen)
-        const entry = (CADENCES[this.app][this.state] ?? []).find((e) => timerKey(e) === key) ?? first;
-        const paths = entry.batch ?? [entry.path(this.ctx)];
+        const entry = (this.table.cadences[this.app][this.state] ?? []).find((e) => timerKey(e) === key) ?? first;
+        // the app's timer runs, but a tick asks only while the entry's condition holds (e.g. near an airport)
+        const paths = entry.when && !entry.when(this) ? [] : (entry.batch ?? [entry.path(this.ctx)]);
         for (const p of paths)
           void this.send(entry.id, entry.method, p, entry.body ? this.bodyFor(entry) : undefined, planned).then((r) => {
             const d = entry.dynamic;
@@ -127,13 +130,14 @@ class Phone {
     this.streams.delete(name);
   }
   react(kind) {
-    const rule = REACTIONS[this.app][kind];
+    const rule = this.table.reactions[this.app][kind];
     if (!rule || this.gone) return;
+    if (rule.when && !rule.when(this)) return;
     this.counter.event(this.app, this.state, kind);
     const now = this.clock.now();
-    if (rule.minGapSeconds && now - this.lastReaction < rule.minGapSeconds * 1000) return;
-    this.lastReaction = now;
-    for (const q of rule.requests(this.state)) void this.send(q.id, q.method, q.path);
+    if (rule.minGapSeconds && now - (this.lastReaction.get(kind) ?? 0) < rule.minGapSeconds * 1000) return;
+    this.lastReaction.set(kind, now);
+    for (const q of rule.requests(this.state, this)) void this.send(q.id, q.method, q.path);
   }
   later(meanMs, fn) {
     const h = this.clock.at(this.clock.now() + expWait(this.rng, meanMs), () => !this.gone && fn());
@@ -165,8 +169,8 @@ export class RiderPhone extends Phone {
     this.dwell = { home: 120_000, choose: 60_000, receipt: 60_000, abandonMs: 600_000, ...(o.dwell ?? {}) };
   }
   start() {
-    this.openStream("config", "/rider/config/stream", (e) => e.kind === "rider_trip_changed" && this.react("rider_trip_changed"));
-    for (const e of ON_ENTER.rider.signed_in) void this.send(e.id, e.method, e.path);
+    this.openStream("config", "/rider/config/stream", (e) => Object.hasOwn(this.table.reactions.rider, e.kind) && this.react(e.kind));
+    for (const e of this.table.onEnter.rider.signed_in) void this.send(e.id, e.method, e.path);
     this.enter("home");
     this.later(this.dwell.home, () => this.choose());
   }
@@ -238,8 +242,8 @@ export class DriverPhone extends Phone {
     this.dwell = { think: 3_000, toPickup: 240_000, atPickup: 60_000, onTrip: 600_000, acceptShare: 0.85, ...(o.dwell ?? {}) };
   }
   start(online) {
-    this.openStream("config", "/driver/config/stream", (e) => e.kind === "driver_reservations_changed" && this.react("driver_reservations_changed"));
-    for (const e of ON_ENTER.driver.signed_in) void this.send(e.id, e.method, e.path);
+    this.openStream("config", "/driver/config/stream", (e) => Object.hasOwn(this.table.reactions.driver, e.kind) && this.react(e.kind));
+    for (const e of this.table.onEnter.driver.signed_in) void this.send(e.id, e.method, e.path);
     if (!online) return this.enter("offline_home");
     this.openStream("offers", "/driver/offers/stream", (e) => e.kind === "offer_created" && e.offer && this.onOffer(e.offer));
     this.enter("online_idle");

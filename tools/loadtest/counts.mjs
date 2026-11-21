@@ -1,6 +1,6 @@
 // Measured request counts per app and phone state, compared with the cadence table (global plan step 60 proof:
 // "G0 counts = request budgets within 10 %"). A count is filed under the state the phone was in when it SENT.
-import { CADENCES, REACTIONS, budgetPerMinute } from "./cadences.mjs";
+import { CADENCE_TABLES, budgetPerMinute } from "./cadences.mjs";
 
 const quantile = (a, p) => {
   if (!a.length) return null;
@@ -9,7 +9,9 @@ const quantile = (a, p) => {
 };
 
 export class Counter {
-  constructor() {
+  /** `table`: the cadence table the phones run (default "old"; cadences.mjs cadenceTable). */
+  constructor(table = CADENCE_TABLES.old) {
+    this.table = table;
     this.requests = new Map(); // app|state|id → n
     this.stayMs = new Map(); // app|state → ms
     this.events = new Map(); // app|state|kind → n
@@ -50,10 +52,10 @@ export class Counter {
     const states = {};
     let pass = true;
     let gated = 0;
-    for (const [app, table] of Object.entries(CADENCES)) {
+    for (const [app, table] of Object.entries(this.table.cadences)) {
       for (const state of Object.keys(table)) {
         const minutes = (this.stayMs.get(`${app}|${state}`) ?? 0) / 60_000;
-        const budget = budgetPerMinute(app, state);
+        const budget = budgetPerMinute(app, state, this.table);
         const endpoints = {};
         let stateOk = true;
         for (const [id, perMin] of Object.entries(budget)) {
@@ -76,12 +78,14 @@ export class Counter {
     }
     // Event reactions: requests per event (the app's 2 GETs per hint). The driver hint is capped at one per 2 s.
     const reactions = {};
-    for (const [app, kinds] of Object.entries(REACTIONS)) {
+    for (const [app, kinds] of Object.entries(this.table.reactions)) {
       for (const [kind, rule] of Object.entries(kinds)) {
         let events = 0;
         for (const [k, n] of this.events) if (k.startsWith(`${app}|`) && k.endsWith(`|${kind}`)) events += n;
         let sent = 0;
-        for (const [k, n] of this.requests) if (k.startsWith(`${app}|`) && k.split("|")[2].startsWith("reaction ")) sent += n;
+        // the requests of THIS hint (its ids), so two hints of one app are not mixed
+        const ids = new Set(rule.ids ?? []);
+        for (const [k, n] of this.requests) if (k.startsWith(`${app}|`) && ids.has(k.split("|")[2])) sent += n;
         reactions[`${app}.${kind}`] = { events, requests: sent, perEvent: events ? round2(sent / events) : null, budgetPerEvent: rule.perEvent, capSeconds: rule.minGapSeconds };
       }
     }
@@ -89,11 +93,12 @@ export class Counter {
     const other = {};
     for (const [k, n] of this.requests) {
       const [app, state, id] = k.split("|");
-      if (budgetPerMinute(app, state)[id] !== undefined || id.startsWith("reaction ")) continue;
+      if (budgetPerMinute(app, state, this.table)[id] !== undefined || id.startsWith("reaction ")) continue;
       (other[`${app}.${state}`] ??= {})[id] = n;
     }
     return {
       pass: pass && gated > 0,
+      cadence: this.table.name,
       tolerancePct: tolerance * 100,
       minPhoneMinutes,
       gatedStates: gated,
