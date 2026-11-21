@@ -36,13 +36,17 @@ const page = () => ({ status: 200, body: { items: [], nextCursor: null } });
  * brand-new account gets — empty lists, a blank profile, a zero wallet — never an error and never fake data. Reads
  * that already answer empty for an unknown account (trips, offers, payouts, documents, notifications…) need no entry.
  */
+const PREVIEW_DRIVER_PROFILE = ({ sub, zone }: { sub: string; zone: string }) => ({ driverId: sub, accountStatus: "active", onlineStatus: "offline", moving: false, firstName: "", zoneIds: [zone], categoryIds: [], documents: [], version: 1 });
+
 export const PREVIEW_EMPTY_READS: Record<string, Empty> = {
   "/rider/profile": ({ sub }) => ({ status: 200, body: { riderId: sub, firstName: "", status: "active", version: 1, rating: null, outstanding: null, outstandingByCurrency: [] } }),
   "/wallet": ({ sub, currency, now }) => ({ status: 200, body: { ownerId: sub, balance: { amountMinor: 0, currency }, updatedAt: now.toISOString() } }),
-  "/driver/profile": ({ sub, zone }) => ({ status: 200, body: { driverId: sub, accountStatus: "active", onlineStatus: "offline", moving: false, firstName: "", zoneIds: [zone], categoryIds: [], documents: [], version: 1 } }),
+  "/driver/profile": (who) => ({ status: 200, body: PREVIEW_DRIVER_PROFILE(who) }),
   "/driver/fleet": () => ({ status: 404, body: { code: "not_found", message: "You are not in a fleet yet.", retryable: false, reason: "no_fleet" } }),
   "/driver/fleet/invitations": () => ({ status: 200, body: { items: [] } }),
   "/driver/reminders": () => ({ status: 200, body: { items: [], blocksOnline: 0 } }),
+  // v0.18.145 (contract.json#loadCut.homeBadges): the four answers above in one; a preview account has no country.
+  "/driver/home-badges": (who) => ({ status: 200, body: { profile: PREVIEW_DRIVER_PROFILE(who), notifications: { items: [], nextCursor: null }, reminders: { items: [], blocksOnline: 0 }, onboardingSettings: null } }),
   "/driver/reservations": page,
   "/driver/vehicles": page,
 };

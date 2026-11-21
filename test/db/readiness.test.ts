@@ -52,7 +52,7 @@ describe("environment", () => {
     expect(() => readEnv({ MOVERA_ENV: "staging", DATABASE_URL: "postgres://a:b@db:5432/movera", JWT_SECRET: "short" })).toThrow(/JWT_SECRET/);
     expect(readEnv({ MOVERA_ENV: "staging", DATABASE_URL: "postgres://a:b@db:5432/movera", JWT_SECRET: "k".repeat(32) })).toMatchObject({
       MIGRATE_ON_START: true,
-      DATABASE_POOL_MAX: 20,
+      DATABASE_POOL_MAX: 40,
       TRUST_PROXY_HOPS: 0,
     });
     expect(readEnv({ MOVERA_ENV: "development", MIGRATE_ON_START: "false" }).MIGRATE_ON_START).toBe(false);

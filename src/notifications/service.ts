@@ -106,6 +106,9 @@ export async function notify(
 }
 
 /** GET /notifications?cursor&limit&unreadOnly: newest first; cursor = the last row's (createdAt, id). */
+/** GET /notifications: the first page's size when the app names none (also GET /driver/home-badges, v0.18.145). */
+export const NOTIFICATION_PAGE = 50;
+
 export async function listNotifications(ex: Executor, who: { audience: Audience; subjectId: string }, input: { cursor?: string | undefined; limit: number; unreadOnly?: boolean | undefined }) {
   // v0.18.6: push-only rows (bell = false, the new-offer push) are never bell notices.
   let q = ex.selectFrom("notifications").selectAll().where("audience", "=", who.audience).where("subject_id", "=", who.subjectId).where("bell", "=", true);

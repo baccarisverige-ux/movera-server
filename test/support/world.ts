@@ -22,7 +22,8 @@ export async function testWorld(db: Db, url: string, clock: { now: Date }, extra
   await seedTestPhones(db);
   const pricing = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/pricing_document.json`, "utf8"));
   await db.insertInto("config_live").values({ doc: "pricing", zone_id: "Z001", version: 1, document: JSON.stringify(pricing), published_at: clock.now, published_by: null }).execute();
-  const app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: url, JWT_SECRET: WORLD_JWT_SECRET }), logger: false, db, clock: () => clock.now, router: fixedRouter, ...extra });
+  // v0.18.145: the nearby cache off here (the exact path); test/riders/nearby.test.ts tests NearbyCache itself.
+  const app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: url, JWT_SECRET: WORLD_JWT_SECRET, NEARBY_CACHE_MS: "0" }), logger: false, db, clock: () => clock.now, router: fixedRouter, ...extra });
   return app;
 }
 
