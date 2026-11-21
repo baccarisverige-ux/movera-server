@@ -19479,11 +19479,14 @@ paths:
         retries, and 404 below), or a 200 whose stream closes before it counts as connected (a 200 alone is not connected).
         A try that counts as connected resets the count to 0. realtime.oneStream true: the app counts the failed tries of
         GET /driver/stream in a row. At failuresInARow it opens the two old streams (offers and settings, as with the switch
-        off) and does not ask GET /driver/stream again until retryOneAfterMinutes have passed; the next reconnect after that
-        asks the one stream again (a failure there counts again from 0). An app restart forgets the count and the backup.
-        While on backup a published switch change is still followed (off: stay on the two; on: the backup time still applies).
-        Unchanged: a 404 (an older server) means the two streams until the app restarts; a 404 zone_not_found means the two
-        streams once. One app log line when the backup starts and one when the one stream is used again. No text on screen.'
+        off) at once, without waiting for a Retry-After of GET /driver/stream. Way back: when retryOneAfterMinutes have passed,
+        the app opens GET /driver/stream while the two old streams stay open (offers keep coming on the old feed); only when
+        the one stream counts as connected (a real event, or 30 s up) does it close the two old streams. If that return try
+        fails (any failed try), the app stays on the two old streams for another retryOneAfterMinutes (one failed return try
+        is enough; failuresInARow is not counted again). An app restart forgets the count and the backup. While on backup
+        a published switch change is still followed (off: stay on the two; on: the backup time still applies). Unchanged:
+        a 404 (an older server) means the two streams until the app restarts; a 404 zone_not_found means the two streams once.
+        One app log line when the backup starts and one when the one stream is used again. No text on screen.'
       tags:
       - Realtime
       x-actor:
@@ -27202,13 +27205,16 @@ components:
                 whole number 1-60, default 10 (configDefaults.driverOneStreamFallback.retryOneAfterMinutes). Both keys optional;
                 a missing key takes its default. Kept on a save that leaves it out (configDocs.keptKeys.driver_app_config).
                 realtime.oneStream true: the app counts the failed tries of GET /driver/stream in a row. At failuresInARow
-                it opens the two old streams (offers and settings, as with the switch off) and does not ask GET /driver/stream
-                again until retryOneAfterMinutes have passed; the next reconnect after that asks the one stream again (a failure
-                there counts again from 0). An app restart forgets the count and the backup. While on backup a published switch
-                change is still followed (off: stay on the two; on: the backup time still applies). Unchanged: a 404 (an older
-                server) means the two streams until the app restarts; a 404 zone_not_found means the two streams once. One
-                app log line when the backup starts and one when the one stream is used again. No text on screen. Admin ›
-                Dispatch, per zone, under the switch ''One live connection per driver phone'': two number fields ''Backup
+                it opens the two old streams (offers and settings, as with the switch off) at once, without waiting for a
+                Retry-After of GET /driver/stream. Way back: when retryOneAfterMinutes have passed, the app opens GET /driver/stream
+                while the two old streams stay open (offers keep coming on the old feed); only when the one stream counts
+                as connected (a real event, or 30 s up) does it close the two old streams. If that return try fails (any failed
+                try), the app stays on the two old streams for another retryOneAfterMinutes (one failed return try is enough;
+                failuresInARow is not counted again). An app restart forgets the count and the backup. While on backup a published
+                switch change is still followed (off: stay on the two; on: the backup time still applies). Unchanged: a 404
+                (an older server) means the two streams until the app restarts; a 404 zone_not_found means the two streams
+                once. One app log line when the backup starts and one when the one stream is used again. No text on screen.
+                Admin › Dispatch, per zone, under the switch ''One live connection per driver phone'': two number fields ''Backup
                 after failed tries'' (1-10, default 3) and ''Try the one connection again after (minutes)'' (1-60, default
                 10), each with an ''i'' text (en / sv / fr) in plain words with an example: driver Ali''s phone fails the
                 one connection 3 times in a row, so it uses the two old connections for 10 minutes and then tries the one
