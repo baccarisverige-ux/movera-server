@@ -16,7 +16,7 @@ import { insertTrip } from "../support/seed.js";
 import { call, signIn, WORLD_JWT_SECRET, fixedRouter } from "../support/world.js";
 
 /**
- * Contract v0.18.136 `stripeFees` (DRAFT, Stripe TEST mode; owner 2026-11-20 "So we use stripe"): Sara pays her owed
+ * Contract v0.18.136 `stripeFees` (DRAFT, Stripe test-mode fake here; owner 2026-11-20 "So we use stripe"): Sara pays her owed
  * 65 kr cancel fee with Stripe in the app. The server makes a PaymentIntent for the server's amount; only a signed
  * webhook marks the fee paid (as Mark as paid), once; a refund gives the money back. Fails on main: no routes.
  */
