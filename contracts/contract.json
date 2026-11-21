@@ -10563,13 +10563,13 @@
     "admin": "Admin › Dispatch, per zone: the switch 'One live connection per driver phone' (default off), with an 'i' text (what it does, what it saves, who it affects, when to turn it on, the way back, older apps). It is the way back without an app release."
   },
   "sosPressTime": {
-    "note": "v0.18.148 (CONTRACT.md §15 SOS by press time; Rules LAUNCH-RULE.md 'Queued (after freeze)' item 1, owner 2026-11-20 'SOS kept and retried; after 30 min or any refusal the driver sees SOS not sent, call 112', plan/NUMBERS.md; Rule 0; X-Api-Version stays 0.5; additive: one optional Incident field, three refusal reasons; server migration 0129 (incidents.pressed_at); no admin setting). Before: an SOS that reached the server after the trip ended was 409 trip_not_live, so a kept or queued SOS (no network at the press) could only expire. Now the server judges an SOS of a trip that has ended by its press time `at`.",
+    "note": "v0.18.148 (CONTRACT.md §15 SOS by press time; Rules LAUNCH-RULE.md 'Queued (after freeze)' item 1, owner 2026-11-20 'SOS kept and retried; after 30 min or any refusal the driver sees SOS not sent, call 112', plan/NUMBERS.md; Rule 0; X-Api-Version stays 0.5; additive: one optional Incident field, two refusal reasons; server migration 0129 (incidents.pressed_at); no admin setting). Before: an SOS that reached the server after the trip ended was 409 trip_not_live, so a kept or queued SOS (no network at the press) could only expire. Now the server judges an SOS of a trip that has ended by its press time `at`.",
     "at": "SosRequest.at (required, as before) = the moment the rider or driver pressed SOS, by the phone's clock (ISO 8601). The app sets it once at the press and sends the SAME body and the SAME Idempotency-Key on every retry of that press (also after an app restart).",
     "liveTrip": "While the trip is live (safety.sos.riderStatuses / driverStatuses) the SOS is always taken, whatever `at` says: a wrong phone clock never blocks a live SOS (unchanged).",
     "endedTrip": "When the trip has ended (tripStatus.terminal; its end = trips.ended_at, else the trip's last change) the SOS is taken when BOTH hold, with p the press time of `clock`: (1) the SOS arrives not more than maxAgeSeconds after p (exactly maxAgeSeconds is taken); (2) p is from the driver assignment (trips.accepted_at) until afterEndSeconds after the end (both ends included). It then opens or joins the trip's sos incident exactly like a live SOS (alarm, escalation, admin feed, the driver's emergency-contacts SMS of §92) and answers the same SosReceipt.",
     "afterEndSeconds": 1800,
     "maxAgeSeconds": 1800,
-    "clock": "A phone clock that runs fast never refuses an SOS (review 2026-11-21, owner: push the fix): the server's press time is p = the earlier of `at` and the moment the server received the SOS (p = min(at, receivedAt)). p is used for the ended-trip checks and stored as Incident.pressedAt. A phone clock that runs slow can still make a check fail; the app's own 30-minute drop measures from the same `at`, so the app and the server agree on that case.",
+    "clock": "A phone clock that runs fast never refuses an SOS (review 2026-11-21, owner: push the fix): the server's press time is p = the earlier of `at` and the moment the server received the SOS (p = min(at, receivedAt)). p is used for the ended-trip checks and stored as Incident.pressedAt. A phone clock that runs slow makes p earlier than the real press, so the server can answer sos_too_old before the app's own 30 minutes are over, or sos_not_during_trip when p falls before the driver assignment; that refusal is final and the app shows 'SOS not sent, call 112' at once (the 112 call was already opened at the press).",
     "refusals": {
       "sos_too_old": "409 invalid_transition, reason sos_too_old: the trip has ended and the SOS arrives more than maxAgeSeconds after the press time p.",
       "sos_not_during_trip": "409 invalid_transition, reason sos_not_during_trip: the trip has ended and the press time p is before the driver assignment (or the trip never had one) or more than afterEndSeconds after the end.",
@@ -10645,10 +10645,9 @@
         "id": "phone_clock_fast",
         "actor": "driver",
         "trip": "completed",
-        "atFromEndSeconds": -120,
         "atFromNowSeconds": 300,
         "expect": "taken",
-        "note": "Ali's phone clock is 5 min fast; he pressed just before drop-off and it arrives a moment later: taken, pressedAt = the received time (never a refusal for a fast clock)."
+        "note": "Ali's phone clock is 5 min fast; the trip ended a moment ago and his SOS arrives now: taken, pressedAt = the received time (never a refusal for a fast clock)."
       },
       {
         "id": "small_clock_skew",
