@@ -19,9 +19,8 @@ CREATE TABLE IF NOT EXISTS kept_debts (
   settled_at   timestamptz,
   PRIMARY KEY (account_kind, account_id, currency)
 );
-CREATE INDEX IF NOT EXISTS riders_deletion_due ON riders (deletion_requested_at) WHERE deletion_requested_at IS NOT NULL AND erased_at IS NULL;
-CREATE INDEX IF NOT EXISTS drivers_deletion_due ON drivers (deletion_requested_at) WHERE deletion_requested_at IS NOT NULL AND erased_at IS NULL;
+-- The two "deletion due" indexes are in 0131 (CREATE INDEX CONCURRENTLY, Rule 46: no lock on riders / drivers).
 -- undo:
--- DROP INDEX IF EXISTS drivers_deletion_due; DROP INDEX IF EXISTS riders_deletion_due; DROP TABLE IF EXISTS kept_debts;
+-- DROP TABLE IF EXISTS kept_debts;
 -- ALTER TABLE drivers DROP COLUMN IF EXISTS erased_at; ALTER TABLE riders DROP COLUMN IF EXISTS erased_at;
 -- ALTER TABLE drivers DROP COLUMN IF EXISTS deletion_requested_at;
