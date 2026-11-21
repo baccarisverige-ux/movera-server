@@ -28679,28 +28679,30 @@ components:
         cashDueRide:
           allOf:
           - $ref: '#/components/schemas/Money'
-          description: 'v0.18.140 (owner 2026-11-19 ''Yes, build M2 + M3 (Rec.)'', M3 driver collect sheet; display only,
+          description: 'v0.18.140 (owner 2026-11-19 ''Yes, build M2 + M3 (Rec.)'', M3 debt split, waybill rows; display only,
             no amount changes): on a trip paid in the car whose cashDue holds the rider''s earlier unpaid fee (the outstanding_fee
             line read at payment, debtModel.readAtPayment), CompletePreview also sends cashDueRide: Money (the cash for this
             ride) and cashDueOutstandingFee: Money (the earlier fee, owed to Movera), both in the trip''s currency, worked
             out by the server: cashDueOutstandingFee = min(the outstanding_fee line, cashDue), cashDueRide = cashDue − cashDueOutstandingFee,
             so cashDueRide + cashDueOutstandingFee = cashDue exactly. Both are absent when that fee part is 0 (no debt, or
-            a trip not paid in the car). The driver app keeps the big ''Ta emot <cashDue> kontant'' and shows two rows under
-            it, ''Resa <cashDueRide>'' and ''Tidigare avgift (till Movera) <cashDueOutstandingFee>'', only from these two
-            fields (never a sum or difference on the phone); without them (an older server) the sheet is as before. cashCollected
+            a trip not paid in the car). Owner 2026-11-21: the driver''s collect cash screen shows ONLY cashDue (one total,
+            ''Ta emot <cashDue> kontant'') and the finish button; the two rows ''Resa <cashDueRide>'' and ''Tidigare avgift
+            (till Movera) <cashDueOutstandingFee>'' are shown only on the trip''s waybill, only from these two fields (never
+            a sum or difference on the phone); without them (an older server) the waybill has no such rows. cashCollected
             stays cashDue.'
         cashDueOutstandingFee:
           allOf:
           - $ref: '#/components/schemas/Money'
-          description: 'v0.18.140 (owner 2026-11-19 ''Yes, build M2 + M3 (Rec.)'', M3 driver collect sheet; display only,
+          description: 'v0.18.140 (owner 2026-11-19 ''Yes, build M2 + M3 (Rec.)'', M3 debt split, waybill rows; display only,
             no amount changes): on a trip paid in the car whose cashDue holds the rider''s earlier unpaid fee (the outstanding_fee
             line read at payment, debtModel.readAtPayment), CompletePreview also sends cashDueRide: Money (the cash for this
             ride) and cashDueOutstandingFee: Money (the earlier fee, owed to Movera), both in the trip''s currency, worked
             out by the server: cashDueOutstandingFee = min(the outstanding_fee line, cashDue), cashDueRide = cashDue − cashDueOutstandingFee,
             so cashDueRide + cashDueOutstandingFee = cashDue exactly. Both are absent when that fee part is 0 (no debt, or
-            a trip not paid in the car). The driver app keeps the big ''Ta emot <cashDue> kontant'' and shows two rows under
-            it, ''Resa <cashDueRide>'' and ''Tidigare avgift (till Movera) <cashDueOutstandingFee>'', only from these two
-            fields (never a sum or difference on the phone); without them (an older server) the sheet is as before. cashCollected
+            a trip not paid in the car). Owner 2026-11-21: the driver''s collect cash screen shows ONLY cashDue (one total,
+            ''Ta emot <cashDue> kontant'') and the finish button; the two rows ''Resa <cashDueRide>'' and ''Tidigare avgift
+            (till Movera) <cashDueOutstandingFee>'' are shown only on the trip''s waybill, only from these two fields (never
+            a sum or difference on the phone); without them (an older server) the waybill has no such rows. cashCollected
             stays cashDue.'
       additionalProperties: false
     RouteRequest:
