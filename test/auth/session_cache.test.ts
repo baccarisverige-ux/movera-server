@@ -69,6 +69,12 @@ describe("session check cache with a LISTEN hub (S4c fix 3)", () => {
     expect(sessionCache.ms).toBe(5000);
   });
 
+  it("the window can never be set above 10 s (owner OK 2026-11-21: at most 5 s, Fable cap 10 s)", () => {
+    const base = { MOVERA_ENV: "staging", DATABASE_URL: "postgres://x/y", JWT_SECRET: "j".repeat(48) };
+    expect(readEnv({ ...base, SESSION_CACHE_MS: "10000" }).SESSION_CACHE_MS).toBe(10_000);
+    expect(() => readEnv({ ...base, SESSION_CACHE_MS: "10001" })).toThrow();
+  });
+
   it("sign-out: the session is refused at once, inside the cache window", async () => {
     const { headers } = await signIn(app, TEST_PHONES[0]!, "rider");
     expect((await profile(headers)).statusCode).toBe(200);
