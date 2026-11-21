@@ -349,8 +349,11 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
   if (body.onlineStatus === "online") {
     // v0.18.154 P16c (contract.json#appUpdate.server): an Android / iOS driver app below the minimum of his zones (and the
     // zone of his last position) does not go online (426). Never on a trip: that case returned above.
+    // Review SF (safety first): a driver who holds a booked ride (accepted, not started) is never refused: the booked
+    // rider depends on him, and starting it needs him online (reservations/service.ts startReservation).
+    const holdsBooked = app ? await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("kind", "=", "scheduled").where("status", "=", "accepted").limit(1).executeTakeFirst() : undefined;
     const at = await trx.selectFrom("driver_locations").select("zone_id").where("driver_id", "=", driverId).executeTakeFirst();
-    await refuseOldApp(trx, "driver_app_config", [...row.zone_ids, ...(at?.zone_id ? [at.zone_id] : [])], app);
+    if (holdsBooked === undefined) await refuseOldApp(trx, "driver_app_config", [...row.zone_ids, ...(at?.zone_id ? [at.zone_id] : [])], app);
     if (row.account_status !== "active") throw await refuse("Your account is not active yet.", "account_not_active");
     // v0.5.3: a driver account works for a fleet; the fleet must be approved (not blocked).
     if (row.account_type === "driver" && row.fleet_id === null) throw await refuse("Join a fleet first.", "no_fleet");

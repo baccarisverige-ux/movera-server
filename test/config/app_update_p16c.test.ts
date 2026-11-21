@@ -191,6 +191,14 @@ describe("driver go-online (POST /driver/availability)", () => {
     await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", driver.id).execute();
     expect((await goOnline({})).statusCode).toBe(200);
   });
+  it("a driver who holds a booked ride (accepted reservation) goes online whatever the version", async () => {
+    const trip = (await book({})).json();
+    await database.db.updateTable("trips").set({ kind: "scheduled", status: "accepted", driver_id: driver.id, scheduled_at: new Date(clock.now.getTime() + 3600_000) }).where("trip_id", "=", trip.tripId).execute();
+    await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", driver.id).execute();
+    const res = await goOnline(phone("1.0.0"));
+    expect(res.statusCode, res.body).toBe(200);
+    await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", trip.tripId).execute();
+  });
   it("go offline is never refused", async () => {
     await database.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", driver.id).execute();
     const res = await goOnline(phone("1.0.0"), "offline");
