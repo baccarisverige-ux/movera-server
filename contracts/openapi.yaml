@@ -8307,20 +8307,23 @@ paths:
         longer has searching / offered: a trip counts only once a driver is assigned, accepted … approaching_dropoff; a rider
         still searching sees only ''Call 112''). Sharing needs a live trip too. v0.18.148 (sosPressTime): While the trip is
         live (safety.sos.riderStatuses / driverStatuses) the SOS is always taken, whatever `at` says: a wrong phone clock
-        never blocks a live SOS (unchanged). When the trip has ended (tripStatus.terminal; its end = trips.ended_at, else
-        the trip''s last change) the SOS is taken when ALL hold: (1) `at` is not more than futureSkewSeconds after the server''s
-        clock; (2) the SOS arrives not more than maxAgeSeconds after `at`; (3) `at` is from the driver assignment (trips.accepted_at)
-        until afterEndSeconds after the end. It then opens or joins the trip''s sos incident exactly like a live SOS (alarm,
+        never blocks a live SOS (unchanged). A phone clock that runs fast never refuses an SOS (review 2026-11-21, owner:
+        push the fix): the server''s press time is p = the earlier of `at` and the moment the server received the SOS (p =
+        min(at, receivedAt)). p is used for the ended-trip checks and stored as Incident.pressedAt. A phone clock that runs
+        slow can still make a check fail; the app''s own 30-minute drop measures from the same `at`, so the app and the server
+        agree on that case. When the trip has ended (tripStatus.terminal; its end = trips.ended_at, else the trip''s last
+        change) the SOS is taken when BOTH hold, with p the press time of `clock`: (1) the SOS arrives not more than maxAgeSeconds
+        after p (exactly maxAgeSeconds is taken); (2) p is from the driver assignment (trips.accepted_at) until afterEndSeconds
+        after the end (both ends included). It then opens or joins the trip''s sos incident exactly like a live SOS (alarm,
         escalation, admin feed, the driver''s emergency-contacts SMS of §92) and answers the same SosReceipt. Refusals: 409
-        invalid_transition, reason sos_at_in_future: the trip has ended and `at` is more than futureSkewSeconds after the
-        server''s clock. 409 invalid_transition, reason sos_too_old: the trip has ended and the SOS arrives more than maxAgeSeconds
-        after `at`. 409 invalid_transition, reason sos_not_during_trip: the trip has ended and `at` is before the driver assignment
-        (or the trip never had one) or more than afterEndSeconds after the end. A trip that is neither live nor ended (the
-        rider still searching or offered, a booked ride not started) stays 409 invalid_transition, reason trip_not_live; another
-        person''s trip stays 404 trip_not_found. Each 409 carries the trip (projection). One press = one Idempotency-Key =
-        one case: the same key with the same body replays the first SosReceipt (no second incident, no second SMS), also after
-        the trip ended; the same key with another body is 409 conflict, reason idempotency_key_reused. A new press, or the
-        other side, while the trip''s sos incident is open joins it (one open SOS per trip, as before).'
+        invalid_transition, reason sos_too_old: the trip has ended and the SOS arrives more than maxAgeSeconds after the press
+        time p. 409 invalid_transition, reason sos_not_during_trip: the trip has ended and the press time p is before the
+        driver assignment (or the trip never had one) or more than afterEndSeconds after the end. A trip that is neither live
+        nor ended (the rider still searching or offered, a booked ride not started) stays 409 invalid_transition, reason trip_not_live;
+        another person''s trip stays 404 trip_not_found. Each 409 carries the trip (projection). One press = one Idempotency-Key
+        = one case: the same key with the same body replays the first SosReceipt (no second incident, no second SMS), also
+        after the trip ended; the same key with another body is 409 conflict, reason idempotency_key_reused. A new press,
+        or the other side, while the trip''s sos incident is open joins it (one open SOS per trip, as before).'
       tags:
       - Safety
       x-actor:
@@ -8377,20 +8380,23 @@ paths:
         longer has searching / offered: a trip counts only once a driver is assigned, accepted … approaching_dropoff; a rider
         still searching sees only ''Call 112''). Sharing needs a live trip too. v0.18.148 (sosPressTime): While the trip is
         live (safety.sos.riderStatuses / driverStatuses) the SOS is always taken, whatever `at` says: a wrong phone clock
-        never blocks a live SOS (unchanged). When the trip has ended (tripStatus.terminal; its end = trips.ended_at, else
-        the trip''s last change) the SOS is taken when ALL hold: (1) `at` is not more than futureSkewSeconds after the server''s
-        clock; (2) the SOS arrives not more than maxAgeSeconds after `at`; (3) `at` is from the driver assignment (trips.accepted_at)
-        until afterEndSeconds after the end. It then opens or joins the trip''s sos incident exactly like a live SOS (alarm,
+        never blocks a live SOS (unchanged). A phone clock that runs fast never refuses an SOS (review 2026-11-21, owner:
+        push the fix): the server''s press time is p = the earlier of `at` and the moment the server received the SOS (p =
+        min(at, receivedAt)). p is used for the ended-trip checks and stored as Incident.pressedAt. A phone clock that runs
+        slow can still make a check fail; the app''s own 30-minute drop measures from the same `at`, so the app and the server
+        agree on that case. When the trip has ended (tripStatus.terminal; its end = trips.ended_at, else the trip''s last
+        change) the SOS is taken when BOTH hold, with p the press time of `clock`: (1) the SOS arrives not more than maxAgeSeconds
+        after p (exactly maxAgeSeconds is taken); (2) p is from the driver assignment (trips.accepted_at) until afterEndSeconds
+        after the end (both ends included). It then opens or joins the trip''s sos incident exactly like a live SOS (alarm,
         escalation, admin feed, the driver''s emergency-contacts SMS of §92) and answers the same SosReceipt. Refusals: 409
-        invalid_transition, reason sos_at_in_future: the trip has ended and `at` is more than futureSkewSeconds after the
-        server''s clock. 409 invalid_transition, reason sos_too_old: the trip has ended and the SOS arrives more than maxAgeSeconds
-        after `at`. 409 invalid_transition, reason sos_not_during_trip: the trip has ended and `at` is before the driver assignment
-        (or the trip never had one) or more than afterEndSeconds after the end. A trip that is neither live nor ended (the
-        rider still searching or offered, a booked ride not started) stays 409 invalid_transition, reason trip_not_live; another
-        person''s trip stays 404 trip_not_found. Each 409 carries the trip (projection). One press = one Idempotency-Key =
-        one case: the same key with the same body replays the first SosReceipt (no second incident, no second SMS), also after
-        the trip ended; the same key with another body is 409 conflict, reason idempotency_key_reused. A new press, or the
-        other side, while the trip''s sos incident is open joins it (one open SOS per trip, as before).'
+        invalid_transition, reason sos_too_old: the trip has ended and the SOS arrives more than maxAgeSeconds after the press
+        time p. 409 invalid_transition, reason sos_not_during_trip: the trip has ended and the press time p is before the
+        driver assignment (or the trip never had one) or more than afterEndSeconds after the end. A trip that is neither live
+        nor ended (the rider still searching or offered, a booked ride not started) stays 409 invalid_transition, reason trip_not_live;
+        another person''s trip stays 404 trip_not_found. Each 409 carries the trip (projection). One press = one Idempotency-Key
+        = one case: the same key with the same body replays the first SosReceipt (no second incident, no second SMS), also
+        after the trip ended; the same key with another body is 409 conflict, reason idempotency_key_reused. A new press,
+        or the other side, while the trip''s sos incident is open joins it (one open SOS per trip, as before).'
       tags:
       - Safety
       x-actor:
@@ -24068,9 +24074,10 @@ components:
         pressedAt:
           allOf:
           - $ref: '#/components/schemas/Timestamp'
-          description: 'v0.18.148 (sosPressTime.incident): Incident.pressedAt (optional, sos only): the `at` of the SOS that
-            opened the case; Incident.openedAt is when the server received it. A later SOS that joins the case leaves pressedAt
-            unchanged. Cases opened before v0.18.148 and other kinds have no pressedAt.'
+          description: 'v0.18.148 (sosPressTime.incident): Incident.pressedAt (optional, sos only): the press time p (`clock`:
+            the earlier of `at` and the received time) of the SOS that opened the case, on a live or an ended trip; Incident.openedAt
+            is when the server received it. A later SOS that joins the case leaves pressedAt unchanged. Cases opened before
+            v0.18.148 and other kinds have no pressedAt.'
     RideCheckTrigger:
       type: string
       enum:

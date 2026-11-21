@@ -164,19 +164,27 @@ export async function openOf(ex: Executor, tripId: string, kind: string): Promis
 
 /* ---------------------------------------------------------------- SOS */
 
-type PressTime = { afterEndSeconds: number; maxAgeSeconds: number; futureSkewSeconds: number };
+type PressTime = { afterEndSeconds: number; maxAgeSeconds: number };
 /** v0.18.148: the press-time windows of an SOS on a trip that has ended (fixed, the same in every zone). */
 export const SOS_PRESS_TIME = (contract as unknown as { sosPressTime: PressTime }).sosPressTime;
 const TERMINAL = (contract as unknown as { tripStatus: { terminal: string[] } }).tripStatus.terminal;
 
 /**
- * v0.18.148 (contract.json#sosPressTime.endedTrip): the refusal reason for an SOS pressed at `at` on a trip that has
- * ended, or null when it is taken. The end is trips.ended_at, else the trip's last change; the trip starts at the
- * driver assignment (accepted_at). Checked in this order: ahead of the clock, too old, outside the trip.
+ * v0.18.148 (contract.json#sosPressTime.clock): the press time p = the earlier of the phone's `at` and the server's
+ * receive time, so a phone clock that runs fast never refuses an SOS.
  */
-export function sosPressRefusal(trip: Pick<TripRow, "accepted_at" | "ended_at" | "updated_at">, at: Date, now: Date): "sos_at_in_future" | "sos_too_old" | "sos_not_during_trip" | null {
+export function sosPressTime(at: Date, now: Date): Date {
+  return at.getTime() > now.getTime() ? now : at;
+}
+
+/**
+ * v0.18.148 (contract.json#sosPressTime.endedTrip): the refusal reason for an SOS with press time `at` (already
+ * sosPressTime) on a trip that has ended, or null when it is taken. The end is trips.ended_at, else the trip's last
+ * change; the trip starts at the driver assignment (accepted_at). Both 30-minute limits are inclusive. Checked in this
+ * order: too old, outside the trip.
+ */
+export function sosPressRefusal(trip: Pick<TripRow, "accepted_at" | "ended_at" | "updated_at">, at: Date, now: Date): "sos_too_old" | "sos_not_during_trip" | null {
   const t = at.getTime();
-  if (t - now.getTime() > SOS_PRESS_TIME.futureSkewSeconds * 1000) return "sos_at_in_future";
   if (now.getTime() - t > SOS_PRESS_TIME.maxAgeSeconds * 1000) return "sos_too_old";
   const end = new Date(trip.ended_at ?? trip.updated_at).getTime();
   if (!trip.accepted_at || t < new Date(trip.accepted_at).getTime() || t > end + SOS_PRESS_TIME.afterEndSeconds * 1000) return "sos_not_during_trip";
@@ -195,7 +203,7 @@ export async function raiseSos(
   const own = who.actor === "rider" ? trip.rider_id === who.subjectId : trip.driver_id === who.subjectId;
   if (!own) throw notFound("No such trip.", "trip_not_found");
   const live = who.actor === "rider" ? SAFETY.sos.riderStatuses : SAFETY.sos.driverStatuses;
-  const pressedAt = new Date(body.at);
+  const pressedAt = sosPressTime(new Date(body.at), now);
   // v0.18.148 (sosPressTime): a live trip always takes it (a wrong phone clock never blocks a live SOS); a trip that
   // has ended takes it by its press time; a trip that is neither (still searching, a booked ride) never.
   if (!live.includes(trip.status)) {

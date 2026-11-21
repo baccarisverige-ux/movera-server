@@ -7,8 +7,9 @@ import { bookAndAccept, drive, Driver, fakeOsrm, newKey, PLACES, Sim, type Admin
  *
  * The apps keep an SOS pressed without network and send it again with the same Idempotency-Key and body. Before
  * v0.18.148 the server answered 409 trip_not_live once the trip had ended, so such an SOS could only expire. Now an
- * ended trip's SOS is judged by `at`, the press time: from the driver assignment until 30 min after the end, at most
- * 120 s ahead of the server's clock, and received within 30 min of the press. A live trip always takes it.
+ * ended trip's SOS is judged by its press time p = the earlier of `at` and the received time (a fast phone clock is
+ * never refused): from the driver assignment until 30 min after the end, and received within 30 min of the press
+ * (both limits inclusive). A live trip always takes it.
  */
 
 const MIN = 60;
@@ -129,13 +130,24 @@ describe("scenario 16d: SOS by press time (v0.18.148)", () => {
     expect(await sosCases(tripId)).toEqual([]);
   });
 
-  it("a press time ahead of the server's clock on an ended trip: 409 sos_at_in_future beyond 120 s, taken within it", async () => {
+  it("a phone clock that runs fast never refuses an SOS on an ended trip: pressedAt = the received time", async () => {
     const { tripId } = await endedRide();
+    const received = new Date(sim.clock.now);
     const ahead = await sosAt(a, tripId, new Date(sim.clock.now.getTime() + 5 * MIN * 1000));
-    expect(ahead.status).toBe(409);
-    expect(ahead.body).toMatchObject({ code: "invalid_transition", reason: "sos_at_in_future" });
-    const skew = await sosAt(a, tripId, new Date(sim.clock.now.getTime() + 60_000));
-    expect(skew.status, JSON.stringify(skew.body)).toBe(200);
+    expect(ahead.status, JSON.stringify(ahead.body)).toBe(200);
+    expect((await safety.get(`/admin/incidents/${ahead.body["incidentId"]}`)).body).toMatchObject({ pressedAt: iso(received) });
+    expect(await sosCases(tripId)).toHaveLength(1);
+  });
+
+  it("exactly 30 min after the press is still taken (inclusive limit)", async () => {
+    const { tripId } = await bookAndAccept(sim, rider, a);
+    await drive(a, tripId, "in_trip");
+    const pressed = new Date(sim.clock.now);
+    await complete(tripId);
+    await sim.advance(30 * MIN - (sim.clock.now.getTime() - pressed.getTime()) / 1000);
+    expect(sim.clock.now.getTime() - pressed.getTime()).toBe(30 * MIN * 1000);
+    const res = await sosAt(a, tripId, pressed);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
   });
 
   it("a live trip always takes the SOS, whatever the phone's clock says", async () => {
