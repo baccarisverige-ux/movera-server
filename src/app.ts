@@ -30,6 +30,10 @@ import { callRoutes } from "./calls/routes.js";
 import { rideRoutes } from "./trips/rideRoutes.js";
 import { supportedPaymentMethods } from "./trips/finish.js";
 import { adminTripRoutes } from "./admin/tripRoutes.js";
+import { setServerStripeStatus, stripeFromEnv, stripeKeyStatus, type StripeApi } from "./payments/stripe.js";
+import { stripeWebhookRoutes } from "./payments/stripeWebhook.js";
+import { riderFeeUse } from "./riders/feeStripe.js";
+import { driverInvoiceUse } from "./drivers/payMoveraStripe.js";
 import { realDataRoutes } from "./admin/realdataRoutes.js";
 import { adminEventRoutes } from "./realtime/adminEvents.js";
 import { driverRoutes } from "./drivers/routes.js";
@@ -65,7 +69,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 /** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
 const NO_ROUTE = "(no route)";
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db; shed?: ShedOptions };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db; shed?: ShedOptions; stripe?: StripeApi | null };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
@@ -107,7 +111,7 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
 }
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb, shed }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb, shed, stripe }: BuildOptions): Promise<FastifyInstance> {
   // G34 P2: the health checks ask the database on their own small pool (main.ts, db.ts createHealthPool) when given, so a
   // full app pool is never reported as "database not reachable"; without one (tests, tools) they use the app's.
   const probeDb = healthDb ?? db;
@@ -354,14 +358,19 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
     await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
-    await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
+    // v0.18.136 (DRAFT, contract.json#stripeFees): one Stripe module (test or live keys); the rider fee is its first use.
+    const payments = stripe !== undefined ? stripe : stripeFromEnv(env);
+    // Live mode (contract.json#stripeFees.status): the admin status and the system_health alert read this copy's mode.
+    setServerStripeStatus(stripe === undefined ? stripeKeyStatus(env) : stripe ? { mode: stripe.mode ?? "test" } : { mode: "off", reason: "no_keys" });
+    await stripeWebhookRoutes(app, { db, stripe: payments, uses: { rider_fee: riderFeeUse, driver_invoice: driverInvoiceUse }, ...(clock ? { clock } : {}) });
+    await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", stripe: payments, ...(clock ? { clock } : {}) });
     // v0.18.38 §62: in-app call steps (answer, end, signal) and the admin call log.
     await callRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.56 §78 (G9 part 2): chat options, translate (503 coming_soon without a provider), admin chats + Message.
     await chatRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}), ...(translator ? { translator } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
-    await driverRoutes(app, { db, jwtSecret, documentKey, invites, router: roads, ...(clock ? { clock } : {}) });
+    await driverRoutes(app, { db, jwtSecret, documentKey, invites, router: roads, stripe: payments, ...(clock ? { clock } : {}) });
     await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     // v0.18.54 §76: Reveal with a reason (riders, drivers, fleets) and the one-click SOS reveal.
     await revealRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
