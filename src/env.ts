@@ -31,11 +31,13 @@ const schema = z.object({
     .default("true")
     .transform((value) => value === "true"),
   /**
-   * B12 (architecture audit item 14): database connections. Render basic-1gb Postgres allows about 100 connections;
-   * the web service has 1 CPU. 20 per instance + 1 LISTEN client leaves room for a second instance during a deploy
-   * (2 × 21), migrations and the admin CLI. Raise only together with the database plan.
+   * B12 (architecture audit item 14): database connections. Default 40 per instance (load test S4d/S4e 2026-11-21:
+   * pool 40 + TRIP_LANES 2 passed 2,000 riders + 2,000 drivers with the most headroom; owner 2026-11-20 18:49
+   * "as code defaults only"). 40 + 1 LISTEN client per instance; a deploy overlap doubles it (2 × 41 = 82), so the
+   * database must allow at least ~100 connections per server copy kept during a deploy (Render Pro-8gb: 200). Was 20
+   * (Render basic-1gb, ~100 connections); set DATABASE_POOL_MAX=20 there.
    */
-  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(20),
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(40),
   /** An idle pooled connection is closed after this many ms (0: never). */
   DATABASE_POOL_IDLE_MS: z.coerce.number().int().min(0).max(3_600_000).default(30_000),
   /** A query waits at most this long for a free pooled connection, then fails (0: wait forever). */
@@ -208,10 +210,11 @@ const schema = z.object({
   HOUSEKEEPING_LANES: z.coerce.number().int().min(1).max(16).default(1),
   /**
    * G34 S3 (contract v0.18.83 fastDispatch.lateAlarm; owner 2026-11-13 12:18 UTC, GM S3b): loops per instance for the
-   * per-trip GPS timers (trip_eta, ride_check_scan, near_dropoff). Default 1, as before: more lanes are not proven to help
-   * (sup1 P3); /healthz/jobs reports when these timers fall behind.
+   * per-trip GPS timers (trip_eta, ride_check_scan, near_dropoff). Default 2 (load test S4d/S4e 2026-11-21: with pool 40
+   * it passed with the lowest latency; owner 2026-11-20 18:49 "as code defaults only"); was 1. /healthz/jobs reports when
+   * these timers fall behind.
    */
-  TRIP_LANES: z.coerce.number().int().min(1).max(16).default(1),
+  TRIP_LANES: z.coerce.number().int().min(1).max(16).default(2),
   /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
