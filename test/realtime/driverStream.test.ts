@@ -197,7 +197,7 @@ describe("GET /driver/stream (v0.18.122, one live connection per driver phone)",
     const { headers } = await driverWith(TEST_PHONES[5]!);
     const res = await call(app, "GET", "/driver/config?zoneId=Z001", headers);
     expect(res.statusCode).toBe(200);
-    expect(res.json().realtime).toEqual({ oneStream: false });
+    expect(res.json().realtime).toEqual({ oneStream: false, oneStreamFallback: { failuresInARow: 3, retryOneAfterMinutes: 10 } });
     const admin = (await adminSession(app, database.db, "super")).headers;
     for (const realtime of [true, "on", { oneStream: "yes" }, { oneStream: 1 }, { oneStream: null }]) {
       const put = await call(app, "PUT", "/admin/config/driver_app_config", admin, { expectedVersion: 1, zoneId: "Z001", document: { ...driverDoc, realtime } });
@@ -205,7 +205,7 @@ describe("GET /driver/stream (v0.18.122, one live connection per driver phone)",
       expect(put.json()).toMatchObject({ code: "invalid_request", reason: "invalid_document" });
     }
     await database.db.updateTable("config_live").set({ document: JSON.stringify({ ...driverDoc, realtime: { oneStream: true } }) }).where("doc", "=", "driver_app_config").where("zone_id", "=", "Z001").execute();
-    expect((await call(app, "GET", "/driver/config?zoneId=Z001", headers)).json().realtime).toEqual({ oneStream: true });
+    expect((await call(app, "GET", "/driver/config?zoneId=Z001", headers)).json().realtime).toEqual({ oneStream: true, oneStreamFallback: { failuresInARow: 3, retryOneAfterMinutes: 10 } });
   });
 
   it("L20 fix (Test Lab 44513034674): the app's exact reconnect, ?after=<seq>.<live - 1>&zoneId=Z001 plus the same Last-Event-ID, gets config_published at once", async () => {
