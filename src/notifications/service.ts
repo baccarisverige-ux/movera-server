@@ -2,6 +2,7 @@ import { sql } from "kysely";
 import type { Executor } from "../db/db.js";
 import { badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
+import { noticeLanguage } from "./noticeLanguage.js";
 
 /**
  * In-app notifications (contract `Notification`, GET /notifications, POST /notifications/{id}/read): one row per
@@ -118,11 +119,11 @@ export async function listNotifications(ex: Executor, who: { audience: Audience;
   const rows = await q.orderBy("created_at", "desc").orderBy("notification_id", "desc").limit(input.limit + 1).execute();
   const page = rows.slice(0, input.limit) as unknown as NotificationRow[];
   const last = page[page.length - 1];
-  const person = who.audience === "rider"
-    ? await ex.selectFrom("riders").select("language").where("rider_id", "=", who.subjectId).executeTakeFirst()
-    : await ex.selectFrom("drivers").select("language").where("driver_id", "=", who.subjectId).executeTakeFirst();
+  // Audit 2026-11-20 N4: the reader's language by the §87 rule (his own, else his zone's country's, else en), not only
+  // his own language (a driver with none saw the row as written, e.g. French in a Swedish zone).
+  const language = await noticeLanguage(ex, { actor: who.audience, id: who.subjectId });
   return {
-    items: page.map((r) => notificationView(r, person?.language)),
+    items: page.map((r) => notificationView(r, language)),
     nextCursor: rows.length > input.limit && last ? Buffer.from(`${last.created_at.toISOString()}|${last.notification_id}`).toString("base64url") : null,
   };
 }
@@ -132,7 +133,9 @@ export async function markNotificationRead(ex: Executor, who: { audience: Audien
   const row = await ex.selectFrom("notifications").selectAll().where("notification_id", "=", notificationId).executeTakeFirst();
   if (row === undefined || row.audience !== who.audience || row.subject_id !== who.subjectId || row.bell === false) throw notFound("No such notification.", "notification_not_found");
   if (row.read_at === null) await ex.updateTable("notifications").set({ read_at: now }).where("notification_id", "=", notificationId).execute();
-  return notificationView({ ...(row as unknown as NotificationRow), read_at: row.read_at ?? now });
+  // Review P26 (#299): answer in the reader's language, as GET /notifications does.
+  const language = await noticeLanguage(ex, { actor: who.audience, id: who.subjectId });
+  return notificationView({ ...(row as unknown as NotificationRow), read_at: row.read_at ?? now }, language);
 }
 
 /** Unread notices of one kind, for a badge. */
