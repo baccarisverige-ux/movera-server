@@ -2,7 +2,7 @@ import type { FastifyRequest } from "fastify";
 import type { Executor } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
 import { verifyAccessToken, type Actor } from "./jwt.js";
-import { endAdminSessions, REFRESH_TTL_MS, sessionIsActive } from "./service.js";
+import { endAdminSessions, endedReason, REFRESH_TTL_MS, sessionIsActive } from "./service.js";
 import { noteStreamOwner } from "../realtime/sessionWatch.js";
 import { sessionCache } from "./sessionCache.js";
 
@@ -50,9 +50,9 @@ export async function authenticate(
     return { actor: claims.actor, subjectId: claims.sub, sessionId: claims.sid, zones: claims.zones, preview: true };
   }
   if (options.allowEndedSession !== true && !(await sessionActive(deps.db, claims.actor, claims.sid, now))) {
-    // v0.18.14 (one phone at a time): the old phone hears why.
+    // v0.18.14 (one phone at a time) and v0.18.149 (admin sign-out): the phone hears why.
     const ended = await deps.db.selectFrom("auth_sessions").select("revoked_reason").where("session_id", "=", claims.sid).executeTakeFirst();
-    throw new ApiError("unauthenticated", "Please sign in again.", { reason: ended?.revoked_reason === "signed_in_elsewhere" ? "signed_in_elsewhere" : "session_ended" });
+    throw new ApiError("unauthenticated", "Please sign in again.", { reason: endedReason(ended?.revoked_reason) });
   }
   // Step 38 (owner Q42): an admin's rights live in the token, so a role change or a deactivation ends every session
   // of that admin at once, however the row was changed (route, CLI or hand); one select by primary key.
