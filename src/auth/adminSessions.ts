@@ -129,12 +129,12 @@ export async function adminSignOutSessions(trx: Trx, who: Principal, subject: Se
   if (!all) q = q.where("session_id", "=", body.sessionId!);
   const ended = (await q.returning("session_id").execute()).map((r) => r.session_id);
   if (!all && ended.length === 0) throw notFound("No such signed-in session for this person.", "session_not_found");
-  if (ended.length > 0) {
-    await trx.updateTable("refresh_tokens").set({ expires_at: now }).where("session_id", "in", ended).where("expires_at", ">", now).execute();
-    await trx.deleteFrom("push_devices").where("session_id", "in", ended).execute();
-    // movera-server#306: the one revoke path of the session check cache (forget here, NOTIFY every copy at commit).
-    await sessionsRevoked(trx, ended);
-  }
+  // `all: true` that ends nothing changes nothing: no audit row, no NOTIFY, no offline step.
+  if (ended.length === 0) return { signedOut: 0, items: await activeSessions(trx, subject, now) };
+  await trx.updateTable("refresh_tokens").set({ expires_at: now }).where("session_id", "in", ended).where("expires_at", ">", now).execute();
+  await trx.deleteFrom("push_devices").where("session_id", "in", ended).execute();
+  // movera-server#306: the one revoke path of the session check cache (forget here, NOTIFY every copy at commit).
+  await sessionsRevoked(trx, ended);
   const left = await activeSessions(trx, subject, now);
   if (subject.actor === "driver" && driver?.online_status === "online" && left.length === 0) {
     // Like "signed in elsewhere": a free driver with no phone left goes offline and his offers are withdrawn.

@@ -150,6 +150,11 @@ describe("POST /admin/{riders|drivers}/{id}/sessions/sign-out (v0.18.149)", () =
     expect(res.json()).toMatchObject({ signedOut: 2, items: [] });
     for (const s of [a, b]) expect((await call(app, "GET", "/rider/profile", s.headers)).json().reason).toBe("signed_out_by_movera");
     expect(await database.db.selectFrom("push_devices").select("token").where("session_id", "in", [a.sid, b.sid]).execute()).toHaveLength(0);
+    // all: true again ends nothing: 200 signedOut 0, and no second audit row (nothing changed).
+    const none = await call(app, "POST", `/admin/riders/${a.sub}/sessions/sign-out`, superAdmin, { all: true, reason: "Account taken over" });
+    expect(none.statusCode, none.body).toBe(200);
+    expect(none.json()).toMatchObject({ signedOut: 0, items: [] });
+    expect(await database.db.selectFrom("admin_audit").select("action").where("action", "=", "rider.sessions_sign_out").where("target_id", "=", a.sub).execute()).toHaveLength(1);
   });
 
   it("session check cache (movera-server#306): a session cached on ANOTHER copy is forgotten there at once (NOTIFY)", async () => {

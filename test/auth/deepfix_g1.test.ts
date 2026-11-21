@@ -94,6 +94,14 @@ describe("G1-D3 / G1-B6: why the app was signed out, and the retry window", () =
     advance(60);
     await post("/auth/otp/verify", { phone: dPhone, sessionId: (await post("/auth/otp/request", { phone: dPhone, app: "driver" })).json().sessionId, code: TEST_CODE });
     seen.add((await post("/auth/refresh", { refreshToken: d1.refreshToken })).json().reason);
+    // v0.18.149 (owner G12 Q6): an admin signs the session out through the admin route; the next refresh says so.
+    const rPhone = TEST_PHONES[2]!;
+    const r1 = (await post("/auth/otp/verify", { phone: rPhone, sessionId: (await post("/auth/otp/request", { phone: rPhone, app: "rider" })).json().sessionId, code: TEST_CODE })).json();
+    const rClaims = JSON.parse(Buffer.from(String(r1.accessToken).split(".")[1]!, "base64url").toString()) as { sub: string; sid: string };
+    const sup = await adminSession(app, database.db, "super", { now: clock.now });
+    const byAdmin = await call(app, "POST", `/admin/riders/${rClaims.sub}/sessions/sign-out`, sup.headers, { sessionId: rClaims.sid, reason: "Rider lost the phone" });
+    expect(byAdmin.statusCode, byAdmin.body).toBe(200);
+    seen.add((await post("/auth/refresh", { refreshToken: r1.refreshToken })).json().reason);
     expect([...seen].sort()).toEqual(Object.keys(AUTH.signedOut.reasons).sort());
   });
 
