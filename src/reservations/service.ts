@@ -804,7 +804,10 @@ export async function afterHeldAccept(trx: Trx, trip: TripRow, now: Date): Promi
   const s = await settingsFor(trx, trip.zone_id);
   const rideType = await rideTypeFor(trx, trip, s);
   const times = driverTimes(now, trip.scheduled_at!, s.rideTypes[rideType], s.offlineBackupAfterMin);
-  await saveState(trx, trip.trip_id, { ...stateOf(trip)!, takenBack: null, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true, listHeld: true });
+  // v0.18.152 (bookedRideSeen.searchSeen): keep how the ride was taken (an on-trip driver's Exclusive from the search is
+  // listHeld false, a list or early admin offer true); only a ride with no value yet counts as list-held.
+  const before = stateOf(trip)!;
+  await saveState(trx, trip.trip_id, { ...before, takenBack: null, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true, listHeld: before.listHeld ?? true });
   for (const [index, at] of times.reminders.entries()) await scheduleTimer(trx, { kind: TIMER.driverReminder, refId: `${trip.trip_id}:${index}`, dueAt: at, payload: { tripId: trip.trip_id, driverId: trip.driver_id } });
   await scheduleTimer(trx, { kind: TIMER.goOnline, refId: trip.trip_id, dueAt: times.goOnlineAt, payload: { driverId: trip.driver_id } });
   await scheduleTimer(trx, { kind: TIMER.offlineCheck, refId: trip.trip_id, dueAt: times.offlineCheckAt, payload: { driverId: trip.driver_id } });
