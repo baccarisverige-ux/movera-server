@@ -1,8 +1,31 @@
 // Types for cadences.mjs (tsconfig has no allowJs).
-export type CadenceEntry = { id: string; method: string; every: number; source: string; timer?: string; immediate?: boolean; batch?: string[]; dynamic?: { field: string; min: number; max: number } };
-export const CADENCES: Readonly<Record<"rider" | "driver", Record<string, CadenceEntry[]>>>;
-export const REACTIONS: Readonly<Record<"rider" | "driver", Record<string, { perEvent: number; minGapSeconds: number; source: string }>>>;
-export const ON_ENTER: Readonly<Record<"rider" | "driver", Record<string, { id: string; method: string; source: string }[]>>>;
+export type PhoneLike = { app: string; state: string | null; pos?: { lat: number; lng: number }; hasBookedRide?: boolean };
+export type PathCtx = { lat: number; lng: number; toLat: number; toLng: number; tripId?: string };
+export type CadenceEntry = {
+  id: string;
+  method: string;
+  every: number;
+  source: string;
+  path?: (ctx: PathCtx) => string;
+  timer?: string;
+  immediate?: boolean;
+  batch?: string[];
+  dynamic?: { field: string; min: number; max: number };
+  only?: string;
+  when?: (phone: PhoneLike) => boolean;
+};
+export type ReactionRule = { perEvent: number; minGapSeconds: number; source: string; ids?: string[]; only?: string; when?: (phone: PhoneLike) => boolean };
+type PerApp<T> = Readonly<Record<"rider" | "driver", Record<string, T>>>;
+export type CadenceTable = Readonly<{ name: string; cadences: PerApp<CadenceEntry[]>; reactions: PerApp<ReactionRule>; onEnter: PerApp<{ id: string; method: string; source: string }[]> }>;
+export const CADENCES: PerApp<CadenceEntry[]>;
+export const CADENCES_REAL: PerApp<CadenceEntry[]>;
+export const REACTIONS: PerApp<ReactionRule>;
+export const REACTIONS_REAL: PerApp<ReactionRule>;
+export const ON_ENTER: PerApp<{ id: string; method: string; source: string }[]>;
 export const STREAMS: Readonly<Record<"rider" | "driver", Record<string, string>>>;
-export function budgetPerMinute(app: "rider" | "driver", state: string): Record<string, number>;
-export function cadenceRows(): { app: string; state: string; id: string; everySeconds: number; perMinute: number; source: string }[];
+export const CADENCE_TABLES: Readonly<{ old: CadenceTable; real: CadenceTable }>;
+export const AIRPORT_ZONES: readonly { zoneId: string; south: number; west: number; north: number; east: number }[];
+export function nearAirport(pos: { lat: number; lng: number } | undefined, zones?: readonly { south: number; west: number; north: number; east: number }[], margin?: number): boolean;
+export function cadenceTable(name: string | undefined): CadenceTable;
+export function budgetPerMinute(app: "rider" | "driver", state: string, table?: CadenceTable): Record<string, number>;
+export function cadenceRows(table?: CadenceTable): { app: string; state: string; id: string; everySeconds: number; perMinute: number; only?: string; source: string }[];

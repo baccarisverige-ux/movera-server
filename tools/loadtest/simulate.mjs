@@ -3,6 +3,7 @@
 // that expire, refresh, quotes, bookings, a simple dispatch, offers on the offer stream, trip steps, trip events and the
 // rider_trip_changed hint for every trip event — including one per GPS fix of the driver on the trip, as the server
 // does, drivers/service.ts:376-378 + realtime/streams.ts:128-133).
+import { cadenceTable } from "./cadences.mjs";
 import { Counter } from "./counts.mjs";
 import { VirtualClock, poissonArrivals, seededRandom } from "./clock.mjs";
 import { Auth, DriverPhone, RiderPhone } from "./phones.mjs";
@@ -117,10 +118,11 @@ class FakeServer {
  * Runs riders arriving by Poisson rate + a fixed driver population for `minutes` of simulated time and returns the
  * counter's report (measured requests per state vs the cadence table) plus what the run did.
  */
-export async function runVirtual({ minutes = 60, riderArrivalsPerMinute = 6, drivers = 150, driverOfflineShare = 0.2, zoneShare, seed = 60, accessTtlSeconds = 120, noDriverShare = 0.25, riderDwell, driverDwell } = {}) {
+export async function runVirtual({ minutes = 60, riderArrivalsPerMinute = 6, drivers = 150, driverOfflineShare = 0.2, zoneShare, seed = 60, accessTtlSeconds = 120, noDriverShare = 0.25, riderDwell, driverDwell, cadence } = {}) {
+  const table = cadenceTable(cadence); // "old" (default) or "real"
   const clock = new VirtualClock();
   const rng = seededRandom(seed);
-  const counter = new Counter();
+  const counter = new Counter(table);
   const server = new FakeServer(clock, rng, { accessTtlSeconds, noDriverShare });
   const shares = parseZoneShare(zoneShare);
   const zones = { rider: {}, driver: {} };
@@ -133,7 +135,7 @@ export async function runVirtual({ minutes = 60, riderArrivalsPerMinute = 6, dri
     const s = server.session(subject, Math.max(1, Math.round(accessTtlSeconds * (0.2 + 0.8 * rng()))));
     const auth = new Auth({ access: s.access, refresh: s.refresh, transport: server, counter, app });
     auth.subject = subject;
-    const phone = new Kind({ clock, rng, counter, transport: server, auth, zone, ...extra });
+    const phone = new Kind({ clock, rng, counter, transport: server, auth, zone, cadence: table, ...extra });
     phone.subject = subject;
     return phone;
   };
