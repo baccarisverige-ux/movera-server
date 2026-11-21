@@ -122,6 +122,11 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
       throw badRequest(`Set an amount above 0 in ${zone.currency} to switch the owes-limit on.`, "owes_limit_needs_amount");
     }
   }
+  // v0.18.133 (contract.json#payoutLines.switch): CountryRules.payoutLinesOn is true or false.
+  if (doc === "country_rules") {
+    const on = (document as { payoutLinesOn?: unknown } | null)?.payoutLinesOn;
+    if (on !== undefined && typeof on !== "boolean") throw badRequest("The country_rules document is not valid: payoutLinesOn must be true or false.", "invalid_document");
+  }
   // v0.18.115 BQ-V21 (contract.json#pickupSpots.server): booking.pickupSpots.on is true or false (checked here, so the
   // rule holds whatever contract copy the schema check reads).
   if (doc === "rider_app_config") {
@@ -581,7 +586,8 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
  */
 export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
   // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
-  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider"],
+  // v0.18.133 review M1 (pricingHistory.restoreKeeps): the payout lines switch keeps today's live value too.
+  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "payoutLinesOn"],
 };
 
 function keepOnRestore(doc: ConfigDoc, old: Record<string, unknown>, live: { document: unknown } | undefined): { document: Record<string, unknown>; removed: string[] } {

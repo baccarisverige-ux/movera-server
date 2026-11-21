@@ -5,7 +5,7 @@ import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
 import { audit } from "./audit.js";
-import { owedByDriver, owesLimitOf, PAID_AFTER_PAYOUT, type OwesLimit } from "../drivers/owes.js";
+import { CARRY_ROW, CARRY_VALUE, NOT_SUPERSEDED, owedByDriver, owesLimitOf, PAID_AFTER_PAYOUT, type OwesLimit } from "../drivers/owes.js";
 import { freezePayoutSummary } from "./payoutSummary.js";
 
 /**
@@ -23,8 +23,8 @@ const NET_PER_DRIVER = sql`
     SELECT e.driver_id, e.currency, sum(e.amount_minor - CASE WHEN e.kind IN ('trip', 'tip') THEN coalesce(e.cash_minor, 0) ELSE 0 END) AS s
       FROM earnings_entries e WHERE e.payout_id IS NULL GROUP BY e.driver_id, e.currency
     UNION ALL
-    SELECT p.driver_id, p.currency, sum(p.amount_minor + ${PAID_AFTER_PAYOUT}) AS s
-      FROM payouts p WHERE p.amount_minor < 0 AND p.status IN ('pending', 'pending_approval') GROUP BY p.driver_id, p.currency
+    SELECT p.driver_id, p.currency, sum(${CARRY_VALUE}) AS s
+      FROM payouts p WHERE ${CARRY_ROW} GROUP BY p.driver_id, p.currency
   ) parts GROUP BY driver_id, currency HAVING sum(s) < 0`;
 
 type OwingRow = { driver_id: string; currency: string; owed: string; first_name: string | null; last_name: string | null; zone_id: string | null; country: string | null; last_paid_at: Date | null };
@@ -121,7 +121,7 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
   // makePayouts), never by a later one. The payout step takes this same driver lock (lockPayoutDriver).
   // J8b: the rest of each = −amount − the money linked to it after it was made (PAID_AFTER_PAYOUT, the same as owed).
   const open = await trx.selectFrom("payouts as p").select(["p.payout_id", "p.amount_minor", "p.zone_id", PAID_AFTER_PAYOUT.as("linked")]).where("p.driver_id", "=", driverId).where("p.currency", "=", currency)
-    .where("p.amount_minor", "<", "0").where("p.status", "in", ["pending", "pending_approval"]).orderBy("p.period_start").orderBy("p.payout_id").forUpdate("p").execute();
+    .where("p.amount_minor", "<", "0").where("p.status", "in", ["pending", "pending_approval"]).where(NOT_SUPERSEDED).orderBy("p.period_start").orderBy("p.payout_id").forUpdate("p").execute();
   let left = body.amount.amountMinor;
   let n = 0;
   // J8b round 2 (supervisor SF1): the audit row names the entries this payment wrote, so a later split of one of them

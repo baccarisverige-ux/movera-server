@@ -56,6 +56,11 @@ export interface PayoutsTable {
   paid_by: ColumnType<string | null, string | null | undefined, string | null>;
   /** v0.18.95 BQ-M26 (0109): { admin, driver } Payout.summary frozen when marked paid; null while unpaid. */
   paid_summary: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.133 (0119, contract.json#payoutLines): the parts of a payout made with CountryRules.payoutLinesOn; null before. */
+  earned_minor: ColumnType<string | null, number | null | undefined, number | null>;
+  owed_minor: ColumnType<string | null, number | null | undefined, number | null>;
+  carried_in_minor: ColumnType<string | null, number | null | undefined, number | null>;
+  carried_out_minor: ColumnType<string | null, number | null | undefined, number | null>;
 }
 
 export interface WalletEntriesTable {

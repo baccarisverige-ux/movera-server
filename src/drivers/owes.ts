@@ -35,6 +35,24 @@ export const PAID_AFTER_PAYOUT = sql<string>`(coalesce((SELECT sum(x.amount_mino
   - coalesce((SELECT sum((l->>'amountMinor')::bigint) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.lines) = 'array' THEN p.lines ELSE '[]'::jsonb END) l WHERE l->>'code' = 'paid_to_movera'), 0))`;
 
 /**
+ * v0.18.133 (contract.json#payoutLines.carry / .owed; owner 2026-11-19 "carry counts toward owed limit"): the payouts
+ * whose rest is still carried, for alias `p`. A payout made with the switch on (carried_out_minor set) is the driver's
+ * newest carry point for that currency: its carriedOut is the rest, and every payout older than it is taken (read, never
+ * rewritten). An older-style payout below 0 (carried_out_minor NULL, open) counts only while no newer carry point exists.
+ * Order: the order they were made, created_at, then period_end, then payout_id (a catch-up run makes several payouts
+ * at the same moment, oldest period first). Not period_end first: a carry point took every carry row that existed when
+ * it was made, so it supersedes exactly the rows made before it. A Create payout by hand for an older range made after
+ * a newer switched-on payout takes that payout's rest and becomes the newest point, so the rest is taken once
+ * (review M2; makePayouts stamps a lined payout after every payout it read, payoutCarry.ts carryOf).
+ */
+export const NOT_SUPERSEDED = sql<boolean>`NOT EXISTS (SELECT 1 FROM payouts b WHERE b.driver_id = p.driver_id AND b.currency = p.currency AND b.carried_out_minor IS NOT NULL
+  AND (b.created_at, b.period_end, b.payout_id) > (p.created_at, p.period_end, p.payout_id))`;
+/** The carried rows of `p` (see NOT_SUPERSEDED): a carry point with a rest, or an open older-style payout below 0. */
+export const CARRY_ROW = sql<boolean>`((p.carried_out_minor > 0) OR (p.carried_out_minor IS NULL AND p.amount_minor < 0 AND p.status IN ('pending', 'pending_approval'))) AND ${NOT_SUPERSEDED}`;
+/** A carried row's signed part of the payout sum (below 0 = owed): −carriedOut, or amount + money linked after (J8b). */
+export const CARRY_VALUE = sql<string>`CASE WHEN p.carried_out_minor IS NOT NULL THEN -p.carried_out_minor ELSE p.amount_minor + ${PAID_AFTER_PAYOUT} END`;
+
+/**
  * CountryRules.driverOwesLimit of the country standard (a zone's own value is ignored). Missing = the contract default
  * (OFF everywhere; TN 150 DT stored). Usable only when enabled with a max > 0.
  */
@@ -71,11 +89,11 @@ export async function owedByDriver(ex: Executor, driverIds: readonly string[], c
   // amount); a payout they cover in full is paid and drops out.
   const carried = await ex
     .selectFrom("payouts as p")
-    .select(["p.driver_id", sql<string>`coalesce(sum(p.amount_minor + ${PAID_AFTER_PAYOUT}), 0)`.as("sum")])
+    .select(["p.driver_id", sql<string>`coalesce(sum(${CARRY_VALUE}), 0)`.as("sum")])
     .where("p.driver_id", "in", ids)
     .where("p.currency", "=", currency)
-    .where("p.amount_minor", "<", "0")
-    .where("p.status", "in", ["pending", "pending_approval"])
+    // v0.18.133 (payoutLines.owed): the carry of a switched-on payout counts; the older rows it took no longer do.
+    .where(CARRY_ROW)
     .groupBy("p.driver_id")
     .execute();
   const net = new Map<string, number>();

@@ -205,6 +205,17 @@ describe("History and Restore of a country's standard documents", () => {
     expect((now!["document"] as Json)["tips"]).toEqual([{ amount: sek(1500), enabled: true }]);
   });
 
+  /** v0.18.133 review M1 (pricingHistory.restoreKeeps): Restore keeps today's CountryRules.payoutLinesOn. */
+  it("Restore keeps the current payout lines switch (MONEY, v0.18.133)", async () => {
+    const old = await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips: [{ amount: sek(1700), enabled: true }], payoutLinesOn: false }));
+    const live = await sim.publish(owner, "country_rules", "SE", (doc) => ({ ...doc, tips: [{ amount: sek(1800), enabled: true }], payoutLinesOn: true }));
+    const undone = await owner.post("/admin/config/country_rules/restore", { country: "SE", version: old["version"], expectedVersion: live["version"] });
+    expect(undone.status, JSON.stringify(undone.body)).toBe(200);
+    const [now] = await items("country=SE&limit=1");
+    expect((now!["document"] as Json)["payoutLinesOn"]).toBe(true);
+    expect((now!["document"] as Json)["tips"]).toEqual([{ amount: sek(1700), enabled: true }]);
+  });
+
   it("names exactly one of zoneId or country; an unknown zone or country is 404; another country's admin is refused", async () => {
     expect((await owner.get("/admin/config/country_rules/history")).body).toMatchObject({ code: "invalid_request", reason: "scope_required" });
     expect((await owner.get("/admin/config/country_rules/history?zoneId=Z001&country=SE")).body).toMatchObject({ reason: "scope_required" });
