@@ -68,9 +68,9 @@ describe("buildWorkerConfig", () => {
 
   // B1.7 (owner W1 Q71): housekeeping on its own lane; SOS escalation and the alert sweep on lanes it never uses.
   const takes = (lane: TimerLane, kind: string) => (lane.kinds !== undefined ? lane.kinds.includes(kind) : !(lane.exclude ?? []).includes(kind));
-  it("B1.7: housekeeping (13 jobs, hourly sweep, nightly run, S4 0.14a payout timer + driver steps) runs only on the housekeeping lane", () => {
+  it("B1.7: housekeeping (14 jobs, v0.18.134 account_erase, hourly sweep, nightly run, S4 0.14a payout timer + driver steps) runs only on the housekeeping lane", () => {
     // v0.18.116 §94: + cleanup_trip_shares (share-my-trip rows after 30 days).
-    expect(HOUSEKEEPING_KINDS).toHaveLength(13);
+    expect(HOUSEKEEPING_KINDS).toHaveLength(14);
     expect([...HOUSEKEEPING_LANE_KINDS].sort()).toEqual([...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER].sort());
     const housekeeping = lanes.filter((lane) => lane.name === "housekeeping");
     expect(housekeeping).toHaveLength(1);

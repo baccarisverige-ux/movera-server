@@ -17,6 +17,8 @@ export interface RidersTable {
   outstanding_currency: ColumnType<string | null, string | null | undefined, string | null>;
   consents: JsonDefault;
   deletion_requested_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+  /** v0.18.134 (migration 0123, contract.json#accountDeletion): set last by account_erase. */
+  erased_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   /** v0.18.4 (G3-R4): the last map or price call and its zone, for riders online. */
   last_seen_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   last_seen_zone_id: ColumnType<string | null, string | null | undefined, string | null>;

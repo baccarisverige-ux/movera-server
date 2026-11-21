@@ -6,6 +6,7 @@ import { contract } from "../contract/contract.js";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { riderBlocked, suspendedError } from "../riders/moderation.js";
+import { closedError, isClosed } from "../accounts/deletion.js";
 import { newId } from "../ids.js";
 import { signAccessToken, type Actor } from "./jwt.js";
 import { splitName, type Provider, type ProviderIdentity, type ProviderVerifier } from "./provider.js";
@@ -336,7 +337,9 @@ async function findOrCreateAccount(trx: Trx, app: App, phone: string, now: Date)
       .returning("rider_id")
       .executeTakeFirst();
     if (inserted !== undefined) return { id: inserted.rider_id, created: true, zones: [] };
-    const rider = await trx.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("phone", "=", phone).executeTakeFirstOrThrow();
+    const rider = await trx.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at", "deletion_requested_at", "erased_at"]).where("phone", "=", phone).executeTakeFirstOrThrow();
+    // v0.18.134 (contract.json#accountDeletion.closeAtOnce): a closed account cannot sign in until it is erased.
+    if (isClosed(rider)) throw closedError();
     if (riderBlocked(rider, now)) throw suspendedError(rider);
     return { id: rider.rider_id, created: false, zones: [] };
   }
@@ -352,7 +355,8 @@ async function findOrCreateAccount(trx: Trx, app: App, phone: string, now: Date)
     return { id: inserted.driver_id, created: true, zones: [] };
   }
   // A suspended driver still signs in: the driver app shows its Suspended screen (contract §6 account status).
-  const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids"]).where("phone", "=", phone).executeTakeFirstOrThrow();
+  const driver = await trx.selectFrom("drivers").select(["driver_id", "zone_ids", "deletion_requested_at", "erased_at"]).where("phone", "=", phone).executeTakeFirstOrThrow();
+  if (isClosed(driver)) throw closedError();
   return { id: driver.driver_id, created: false, zones: driver.zone_ids };
 }
 
@@ -421,12 +425,14 @@ export async function signInWithProvider(
 
 async function existingAccount(ex: Executor, app: App, subjectId: string, now: Date): Promise<{ id: string; zones: string[] } | undefined> {
   if (app === "rider") {
-    const rider = await ex.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at"]).where("rider_id", "=", subjectId).executeTakeFirst();
+    const rider = await ex.selectFrom("riders").select(["rider_id", "status", "moderation_level", "moderation_reason", "moderation_until", "moderation_set_at", "deletion_requested_at", "erased_at"]).where("rider_id", "=", subjectId).executeTakeFirst();
     if (rider === undefined) return undefined;
+    if (isClosed(rider)) throw closedError();
     if (riderBlocked(rider, now)) throw suspendedError(rider);
     return { id: rider.rider_id, zones: [] };
   }
-  const driver = await ex.selectFrom("drivers").select(["driver_id", "zone_ids"]).where("driver_id", "=", subjectId).executeTakeFirst();
+  const driver = await ex.selectFrom("drivers").select(["driver_id", "zone_ids", "deletion_requested_at", "erased_at"]).where("driver_id", "=", subjectId).executeTakeFirst();
+  if (driver !== undefined && isClosed(driver)) throw closedError();
   return driver === undefined ? undefined : { id: driver.driver_id, zones: driver.zone_ids };
 }
 

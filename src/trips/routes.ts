@@ -9,7 +9,8 @@ import { API_PREFIX } from "../http/prefix.js";
 import { hasStoredAnswer, readIdempotencyKey, runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
 import { nearbyVehicles } from "../riders/nearby.js";
-import { getRiderProfile, requestDeletion, updateRiderProfile } from "../riders/service.js";
+import { getRiderProfile, updateRiderProfile } from "../riders/service.js";
+import { requestAccountDeletion } from "../accounts/deletion.js";
 import { tripProjection } from "./projection.js";
 import { answerRouteChange, quoteOutsideLock, quoteRouteChange, requestRouteChange } from "./routeChange.js";
 import { tripPath } from "./path.js";
@@ -301,7 +302,8 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
 
   app.post(`${API_PREFIX}/account/deletion`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider"]);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 202, body: await requestDeletion(trx, who.subjectId, now()) }));
+    // v0.18.134 (contract.json#accountDeletion): closes the account at once, keeps a debt as a record; 409 deletion_open_trip.
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 202, body: await requestAccountDeletion(trx, "rider", who.subjectId, now()) }));
     return reply.status(result.status).send(result.body);
   });
 }
