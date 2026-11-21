@@ -133,7 +133,9 @@ export async function markNotificationRead(ex: Executor, who: { audience: Audien
   const row = await ex.selectFrom("notifications").selectAll().where("notification_id", "=", notificationId).executeTakeFirst();
   if (row === undefined || row.audience !== who.audience || row.subject_id !== who.subjectId || row.bell === false) throw notFound("No such notification.", "notification_not_found");
   if (row.read_at === null) await ex.updateTable("notifications").set({ read_at: now }).where("notification_id", "=", notificationId).execute();
-  return notificationView({ ...(row as unknown as NotificationRow), read_at: row.read_at ?? now });
+  // Review P26 (#299): answer in the reader's language, as GET /notifications does.
+  const language = await noticeLanguage(ex, { actor: who.audience, id: who.subjectId });
+  return notificationView({ ...(row as unknown as NotificationRow), read_at: row.read_at ?? now }, language);
 }
 
 /** Unread notices of one kind, for a badge. */

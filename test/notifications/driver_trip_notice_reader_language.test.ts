@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { TripRow } from "../../src/db/tripLog.js";
 import { DRIVER_TRIP_PUSH, pushDriverTripMoment } from "../../src/notifications/driverTripPush.js";
-import { listNotifications, notify } from "../../src/notifications/service.js";
+import { listNotifications, markNotificationRead, notify } from "../../src/notifications/service.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
 
@@ -47,5 +47,13 @@ describe("N4: a driver notice reads in the driver's language now, not the one at
     const t = DRIVER_TRIP_PUSH;
     await notify(database.db, { audience: "driver", subjectId: driverId, kind: t.kind, title: t.title.fr, body: t.texts.rider_cancelled.fr, data: { texts: { title: t.title, body: t.texts.rider_cancelled } } }, now);
     expect((await bell(driverId))[0]).toMatchObject({ title: t.title.sv, body: t.texts.rider_cancelled.sv });
+  });
+  it("POST read answers in the same language as the list (fail-before: the stored language)", async () => {
+    const { driverId, trip } = await driverWithTrip("fr");
+    await pushDriverTripMoment(database.db, driverId, trip, "rider_cancelled", now);
+    await database.db.updateTable("drivers").set({ language: "sv" }).where("driver_id", "=", driverId).execute();
+    const [row] = await bell(driverId);
+    const read = await markNotificationRead(database.db, { audience: "driver", subjectId: driverId }, (row as { notificationId: string }).notificationId, now);
+    expect(read).toMatchObject({ title: DRIVER_TRIP_PUSH.title.sv, body: DRIVER_TRIP_PUSH.texts.rider_cancelled.sv });
   });
 });
