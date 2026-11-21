@@ -47,11 +47,11 @@ async function book(at: string) {
   return res.body as Json;
 }
 const active = () => rider.get("/rider/trips/active");
-/** The rider's "driver found" pushes of a trip: the normal ride's (kind trip, moment driver_found) and the booked one's. */
+/** The rider's "driver found" pushes of a trip: the normal ride's (kind trip_update, moment driver_found) and the booked one's. */
 async function found(tripId: string) {
   const rows = await sim.db.selectFrom("notifications").select(["kind", "data"]).where("subject_id", "=", rider.id).where("trip_id", "=", tripId).execute();
   return {
-    normal: rows.filter((r) => r.kind === "trip" && (r.data as Json | null)?.moment === "driver_found").length,
+    normal: rows.filter((r) => r.kind === "trip_update" && (r.data as Json | null)?.moment === "driver_found").length,
     booked: rows.filter((r) => r.kind === "reservation_driver_found").length,
   };
 }

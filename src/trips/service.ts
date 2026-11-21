@@ -1,6 +1,7 @@
 import { maxRiderDebtOf, riderDebt } from "../riders/debt.js";
 import { writeAutoMessage } from "./messages.js";
 import { checkOpenBookedCap, checkWindow, planBookedRide } from "../reservations/service.js";
+import { LIST_HELD } from "../reservations/view.js";
 import { appendTripEvent } from "../db/tripLog.js";
 import { checkPaymentMethod } from "./finish.js";
 import { commissionOf } from "../rules/commission.js";
@@ -395,6 +396,8 @@ export async function riderOnTheWay(trx: Trx, riderId: string, tripId: string, n
 }
 
 const NOT_OVER = [...TERMINAL];
+/** v0.18.152 (bookedRideSeen.searchSeen): a booked trip being searched or just accepted. */
+const SEARCH_SEEN = ["searching", "offered", "accepted"] as const;
 
 /** GET /rider/trips/active: the rider's live trip that is not over (204 when none). */
 export async function activeTrip(ex: Executor, riderId: string): Promise<TripRow | undefined> {
@@ -410,13 +413,20 @@ export async function activeTrip(ex: Executor, riderId: string): Promise<TripRow
   if (live !== undefined) return live;
   // v0.18.32 (bookedRideSeen.activeTrip, owner fix-plan Q5 + Q2): a booked trip is a regular ride once its driver
   // started driving to the pickup, and stays one while a new driver is found after a give-back.
+  // v0.18.152 (bookedRideSeen.searchSeen, owner 2026-11-21 (A)): also from its search on (searching, offered, accepted)
+  // when no list driver holds it or ever held it; a ride a list driver gave back before driving stays hidden (owner Q2).
   return ex
     .selectFrom("trips")
     .selectAll()
     .where("rider_id", "=", riderId)
     .where("kind", "=", "scheduled")
     .where("status", "not in", NOT_OVER)
-    .where((eb) => eb.exists(eb.selectFrom("trip_events as e").select(sql.lit(1).as("one")).whereRef("e.trip_id", "=", "trips.trip_id").where(sql<string>`e.projection->>'status'`, "=", "driver_to_pickup")))
+    .where((eb) =>
+      eb.or([
+        eb.exists(eb.selectFrom("trip_events as e").select(sql.lit(1).as("one")).whereRef("e.trip_id", "=", "trips.trip_id").where(sql<string>`e.projection->>'status'`, "=", "driver_to_pickup")),
+        eb.and([eb("status", "in", SEARCH_SEEN), sql<boolean>`NOT ${LIST_HELD}`]),
+      ]),
+    )
     .orderBy("scheduled_at", "asc")
     .executeTakeFirst();
 }
