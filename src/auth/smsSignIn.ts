@@ -34,7 +34,7 @@ const DEFAULTS = (contract as unknown as { configDefaults: { smsSignIn: { enable
 export const SMS_CODE_LENGTH = SMS_SIGN_IN.codeLength;
 
 export const SIGN_IN_SMS_KIND = "sign_in_code";
-/** v0.18.149 (contract.json#sosContactsSms.send.dailyCap): the SOS contacts SMS count in the same daily limit. */
+/** v0.18.151 (contract.json#sosContactsSms.send.dailyCap): the SOS contacts SMS count in the same daily limit. */
 export const SOS_CONTACT_SMS_KIND = "sos_contact";
 const CAP_KINDS = [SIGN_IN_SMS_KIND, SOS_CONTACT_SMS_KIND];
 export const DAY_MS = 24 * 3_600_000;
@@ -90,7 +90,7 @@ export function smsCountryOf(phone: string): string | null {
 export const SMS_NO_ANSWER = "no_answer";
 
 /**
- * The cost guard's count: sign-in SMS (and, v0.18.149, SOS contacts SMS) to this country's numbers handed to the SMS company in the last 24 h, and when
+ * The cost guard's count: sign-in SMS (and, v0.18.151, SOS contacts SMS) to this country's numbers handed to the SMS company in the last 24 h, and when
  * the oldest of them was made. Counted: accepted (`sent`), still being sent (`queued`, also a row left by a crash),
  * and a send the company did not answer or answered with a server error (`failed` with no_answer or http_5xx: it may
  * still have sent and billed it). Only a send the company refused (a 4xx answer) is free and not counted. Fail closed.

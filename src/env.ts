@@ -101,7 +101,7 @@ const schema = z.object({
   /** The SMS sender name (3-11 letters and digits). Unset or not usable: contract.json#smsSignIn.sender ("Movera"). */
   SMS_SENDER_NAME: z.string().optional(),
   /**
-   * Contract v0.18.149 (contract.json#sosContactsSms.send.serverSwitch): "on" sends the SOS contacts SMS through the
+   * Contract v0.18.151 (contract.json#sosContactsSms.send.serverSwitch): "on" sends the SOS contacts SMS through the
    * sign-in sender (the 46elks keys above); unset or any other value = off, the default (the SMS stay not_connected).
    * Set by the owner next to the keys. Read leniently: a wrong value never stops the server, it is simply off.
    */

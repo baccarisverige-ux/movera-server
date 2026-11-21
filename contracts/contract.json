@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.149",
+  "version": "0.18.151",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -10183,7 +10183,7 @@
       }
     },
     "send": {
-      "note": "v0.18.149 (CONTRACT.md §92; owner 2026-11-02 Q2 'Use them in SOS (Recommended)', Rules decisions/driver-g14.md:12; Rules plan/NUMBERS.md; Rule 0; follows v0.18.133 smsSignIn, whose otherSms said the SOS contacts SMS stay not connected 'until a later version says so': this version says so for the SOS contacts SMS only (the fleet invitation SMS stays not connected). X-Api-Version stays 0.5; no API shape change, no migration, no new status, no new text. The 46elks account and its keys are the owner's.",
+      "note": "v0.18.151 (CONTRACT.md §92; owner 2026-11-02 Q2 'Use them in SOS (Recommended)', Rules decisions/driver-g14.md:12; Rules plan/NUMBERS.md; Rule 0; follows v0.18.133 smsSignIn, whose otherSms said the SOS contacts SMS stay not connected 'until a later version says so': this version says so for the SOS contacts SMS only (the fleet invitation SMS stays not connected). X-Api-Version stays 0.5; no API shape change, no migration, no new status, no new text. The 46elks account and its keys are the owner's.",
       "sender": "The SOS contacts SMS go through the same SMS company sender as the sign-in codes (smsSignIn.serverKeys, the same sender name). Connected only when BOTH hold: (1) the server has those two keys; (2) the server switch serverSwitch is on. Otherwise exactly as before: rows skipped, result not_connected, DriverAppConfig.sosContactsSms.connected false.",
       "serverSwitch": "SOS_CONTACTS_SMS_SEND",
       "serverSwitchNote": "A server environment variable set by the owner next to the keys (never in a repository): only the value on (any case) turns sending on; unset or any other value = off, the default. Off with the keys set: sign-in codes go out, the SOS contacts SMS stay not_connected. The country switch CountryRules.sosContactsSms (setting, default on) stays as it is and is checked first: off = result off, nothing written.",
@@ -10645,6 +10645,6 @@
     "logs": "The server log and the stored SMS row never hold the code; the log never holds the full phone number (calling code and the last two digits at most). The stored SMS row keeps the text with the code replaced by dots.",
     "otherSms": "Only sign-in codes use the keys in this version. The fleet invitation SMS and the SOS contacts SMS (sosContactsSms) stay not connected until a later version says so.",
     "apps": "Contract: this block (errors: the reasons beside auth.signInErrors, which is kept as released), configDefaults.smsSignIn, CountryRules.smsSignIn. Server: the sender, the rules above. Admin: the card with the switch and the daily limit per country, the alert texts. Driver and rider apps: the code field has OtpChallenge.codeLength boxes (sign-in and phone change; 4 when the answer has no codeLength); texts.smsNotSent and texts.smsDailyLimit for the two new reasons on the phone-number and code screens (resend with the countdown, wrong code, expired code, too many tries and the waiting list are unchanged).",
-    "otherSmsV0_18_149": "v0.18.149 (sosContactsSms.send): the SOS contacts SMS use the same sender when the server switch SOS_CONTACTS_SMS_SEND is on (default off), and count in dailyCap with the sign-in SMS. The fleet invitation SMS stays not connected."
+    "otherSmsV0_18_151": "v0.18.151 (sosContactsSms.send): the SOS contacts SMS use the same sender when the server switch SOS_CONTACTS_SMS_SEND is on (default off), and count in dailyCap with the sign-in SMS. The fleet invitation SMS stays not connected."
   }
 }

@@ -138,14 +138,14 @@ async function smsRows(trx: Trx, incident: SosIncident, press: unknown, connecte
   const emergency = country ? ((await emergencyNumbersFor(trx, country))[0]?.number ?? "112") : "112";
   const text = sosSmsText(lang, { driver: driver.first_name, position: latLng(press) ?? latLng(incident.driver_fix) ?? latLng(incident.position), emergency });
   const queued: string[] = [];
-  // v0.18.149 (sosContactsSms.send.dailyCap): with an SMS company, the trip zone country's daily SMS limit, counted
+  // v0.18.151 (sosContactsSms.send.dailyCap): with an SMS company, the trip zone country's daily SMS limit, counted
   // with the sign-in SMS, one step at a time per country (the same lock as the sign-in codes). Fail closed.
   let room = Number.POSITIVE_INFINITY;
   if (connected && country !== null) {
     await sql`SELECT pg_advisory_xact_lock(hashtext(${`sms-cap:${country}`}))`.execute(trx);
     room = (await smsSignInFor(trx, country)).dailyCap - (await signInSmsLastDay(trx, country, now)).count;
   }
-  // v0.18.149 (sosContactsSms.send.once): one SMS per contact number per case.
+  // v0.18.151 (sosContactsSms.send.once): one SMS per contact number per case.
   const numbers = new Set<string>();
   for (const [i, contact] of items.entries()) {
     const smsId = newId("sms", now.getTime() + i);
@@ -190,7 +190,7 @@ export async function deliverSosSms(
       await db.updateTable("sms_outbox").set({ status: "sent", provider_ref: ref, sent_at: deps.now() }).where("sms_id", "=", smsId).execute();
       sent++;
     } catch (error) {
-      // v0.18.149: the sender's error is a code (http_<status> | no_answer), stored as such so the daily limit counts a
+      // v0.18.151: the sender's error is a code (http_<status> | no_answer), stored as such so the daily limit counts a
       // send that may have been billed (smsSignIn.dailyCap); never the number, the text or a position in the log.
       const code = (error instanceof Error ? error.message : String(error)).slice(0, 500);
       await db.updateTable("sms_outbox").set({ status: "failed", error: code }).where("sms_id", "=", smsId).execute();

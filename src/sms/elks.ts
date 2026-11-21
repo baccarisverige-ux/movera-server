@@ -81,7 +81,7 @@ export function smsStartupWarnings(env: ElksEnv): string[] {
 }
 
 /**
- * Contract v0.18.149 (contract.json#sosContactsSms.send): the SOS contacts SMS go through the SAME sender as the
+ * Contract v0.18.151 (contract.json#sosContactsSms.send): the SOS contacts SMS go through the SAME sender as the
  * sign-in codes, only when the server switch SOS_CONTACTS_SMS_SEND is "on" (any case; unset or anything else = off, the
  * default). The SOS code path (safety/sosContactsSms.ts) wants an SmsProvider that answers the company's id or throws:
  * the error says only http_<status> or no_answer (never the number, the text or a position), and is what sms_outbox and

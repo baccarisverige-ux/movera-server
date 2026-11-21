@@ -54,7 +54,7 @@ export const BOOTSTRAP_EMAIL = "owner@movera.test";
 
 /** poolMax: the server gets its own pool of this size (the test's own reads keep the default pool). */
 /** env: extra server environment (e.g. a production-size write limit, B1.22). */
-export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date; poolMax?: number; env?: Record<string, string>; /** v0.18.101: a fake SMS company (none = "SMS not connected"). */ sms?: SmsProvider; /** v0.18.149: a fake sign-in SMS sender (the 46elks keys set). */ signInSms?: CodeSmsSender };
+export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date; poolMax?: number; env?: Record<string, string>; /** v0.18.101: a fake SMS company (none = "SMS not connected"). */ sms?: SmsProvider; /** v0.18.151: a fake sign-in SMS sender (the 46elks keys set). */ signInSms?: CodeSmsSender };
 
 let keyCounter = 0;
 export const newKey = (prefix = "e2e") => `${prefix}-key-${String(++keyCounter).padStart(12, "0")}-${process.pid}`;

@@ -56,7 +56,7 @@ services:
         sync: false
       - key: ELKS_API_PASSWORD
         sync: false
-      # Contract v0.18.149 (sosContactsSms.send): "on" also sends the SOS emergency-contact SMS through those keys;
+      # Contract v0.18.151 (sosContactsSms.send): "on" also sends the SOS emergency-contact SMS through those keys;
       # unset = off (the default). Set by the owner in Render's dashboard.
       - key: SOS_CONTACTS_SMS_SEND
         sync: false

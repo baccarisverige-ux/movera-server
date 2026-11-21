@@ -22,7 +22,7 @@ week change the plans to `starter` (server) and `basic-256mb` (database). The lo
      `sign_in_restricted`, as before. With both, a country still needs its admin switch (Pricing › Tips & limits ›
      "Real SMS sign-in codes", default off). Optional `SMS_SENDER_NAME` (3-11 letters and digits; default `Movera`).
      Only sign-in codes use these keys (invitation and SOS-contact SMS stay off). Owner steps: Rules `plan/SMS-SETUP-STEPS.md`.
-   - `SOS_CONTACTS_SMS_SEND` (contract v0.18.149 `sosContactsSms.send`): `on` also sends the SOS emergency-contact SMS
+   - `SOS_CONTACTS_SMS_SEND` (contract v0.18.151 `sosContactsSms.send`): `on` also sends the SOS emergency-contact SMS
      (the driver's SOS texts his contacts his position) through the same keys; unset or any other value = off, the
      default, and those SMS stay "not connected". The country switch (Tips & limits › Emergency numbers) still applies,
      and they count in the country's daily SMS limit with the sign-in codes.

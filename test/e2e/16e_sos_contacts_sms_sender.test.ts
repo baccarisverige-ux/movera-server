@@ -4,7 +4,7 @@ import { FakeCodeSms, setSmsSignIn } from "../support/smsSignIn.js";
 import { bookAndAccept, drive, Driver, fakeOsrm, newKey, PLACES, Sim, until, type Admin, type Rider } from "./harness.js";
 
 /**
- * v0.18.149 (contract.json#sosContactsSms.send; owner 2026-11-02 Q2 "Use them in SOS (Recommended)", Rules
+ * v0.18.151 (contract.json#sosContactsSms.send; owner 2026-11-02 Q2 "Use them in SOS (Recommended)", Rules
  * decisions/driver-g14.md:12): the driver's SOS texts his emergency contacts through the SAME sender as the sign-in
  * codes (v0.18.133, the 46elks keys), only with the server switch SOS_CONTACTS_SMS_SEND on (default off). One SMS per
  * contact number per case; counted with the sign-in SMS in the country's daily SMS limit. A fake sender: no test
@@ -37,7 +37,7 @@ async function endTrip(sim: Sim, rider: Rider, a: Driver) {
   await a.moveTo(PLACES.nearSergels);
 }
 
-describe("v0.18.149 the server switch", () => {
+describe("v0.18.151 the server switch", () => {
   it("only 'on' (any case) turns it on; no sender (keys not both set) is never on", () => {
     for (const v of ["on", "ON", " On "]) expect(sosSmsSwitchOn(v)).toBe(true);
     for (const v of [undefined, "", "off", "true", "1", "yes"]) expect(sosSmsSwitchOn(v)).toBe(false);

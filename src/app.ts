@@ -326,9 +326,9 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const emailSender = email ?? emailSenderFrom(env);
     // v0.18.133 (contract.json#smsSignIn): the sign-in code SMS goes out through 46elks only when BOTH keys are set
     // (tests inject a fake); without a sender every real number stays sign_in_restricted. The country switch is the
-    // second condition (auth/smsSignIn.ts). `sms` (fleet invitations) is unchanged; the SOS contacts SMS use it only with the switch below (v0.18.149).
+    // second condition (auth/smsSignIn.ts). `sms` (fleet invitations) is unchanged; the SOS contacts SMS use it only with the switch below (v0.18.151).
     const codeSms = signInSms ?? signInSmsFrom(env, SMS_SIGN_IN.sender);
-    // v0.18.149 (contract.json#sosContactsSms.send): the SOS contacts SMS use the sign-in sender only with the server
+    // v0.18.151 (contract.json#sosContactsSms.send): the SOS contacts SMS use the sign-in sender only with the server
     // switch on (default off); a test's injected `sms` stays as it is.
     const sosSms = sms ?? sosContactsProviderFrom(env.SOS_CONTACTS_SMS_SEND, codeSms);
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(emailSender ? { email: emailSender } : {}), ...(codeSms ? { signInSms: codeSms } : {}), warn: (data, message) => app.log.warn(data, message), logCodes: env.MOVERA_ENV === "development", ...(clock ? { clock } : {}) });
