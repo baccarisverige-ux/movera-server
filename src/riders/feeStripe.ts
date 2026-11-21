@@ -13,7 +13,7 @@ import { refreshOutstanding } from "../trips/ride/money.js";
 import { settleFeePaid } from "./feeMarkPaid.js";
 
 /**
- * Contract v0.18.136 `stripeFees` (DRAFT, Stripe TEST mode; owner 2026-11-20 "So we use stripe"): the rider pays an owed
+ * Contract v0.18.136 `stripeFees` (DRAFT, Stripe test or live keys; owner 2026-11-20 "So we use stripe"): the rider pays an owed
  * cancel or no-show fee in the app. Rides stay paid in the car.
  *
  * MONEY rules kept here:
