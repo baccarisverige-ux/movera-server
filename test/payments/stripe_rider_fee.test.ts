@@ -84,7 +84,8 @@ const pay = (tripId: string) => call(app, "POST", `/rider/fees/${tripId}/pay`, s
 const profile = async () => (await call(app, "GET", "/rider/profile", sara.headers)).json();
 let ev = 0;
 async function hook(type: string, object: Record<string, unknown>, opts: { id?: string; secret?: string; at?: Date } = {}) {
-  const body = JSON.stringify({ id: opts.id ?? `evt_${++ev}`, type, data: { object } });
+  // Live mode (stripeFees.webhook): the fake is a test-mode client, so its events are test events (livemode false).
+  const body = JSON.stringify({ id: opts.id ?? `evt_${++ev}`, type, livemode: false, data: { object } });
   return app.inject({ method: "POST", url: "/api/v1/webhooks/stripe", headers: { "content-type": "application/json", "stripe-signature": stripeSignatureHeader(body, opts.secret ?? HOOK, opts.at ?? clock.now) }, payload: body });
 }
 const succeeded = (id: string, amount = 6500, currency = "sek") => ({ id, object: "payment_intent", amount, amount_received: amount, currency });
@@ -190,10 +191,10 @@ describe("POST /webhooks/stripe: signed, once, the server's amount only", () => 
 });
 
 describe("keys, setting and signature", () => {
-  it("only test keys turn Stripe on; none or live keys = off (503 payments_unavailable)", () => {
-    expect(stripeFromEnv({})).toBeNull();
-    expect(stripeFromEnv({ STRIPE_SECRET_KEY: "sk_live_x", STRIPE_PUBLISHABLE_KEY: "pk_live_x", STRIPE_WEBHOOK_SECRET: "whsec_x" })).toBeNull();
-    expect(stripeFromEnv({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" })?.publishableKey).toBe("pk_test_x");
+  it("test keys turn Stripe on on staging; none or live keys there = off (503 payments_unavailable); live mode: stripe_live_mode.test.ts", () => {
+    expect(stripeFromEnv({ MOVERA_ENV: "staging" })).toBeNull();
+    expect(stripeFromEnv({ MOVERA_ENV: "staging", STRIPE_SECRET_KEY: "sk_live_x", STRIPE_PUBLISHABLE_KEY: "pk_live_x", STRIPE_WEBHOOK_SECRET: "whsec_x" })).toBeNull();
+    expect(stripeFromEnv({ MOVERA_ENV: "staging", STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" })?.publishableKey).toBe("pk_test_x");
   });
 
   it("verifyStripeSignature: right secret and time only", () => {
@@ -294,10 +295,10 @@ describe("money review of 05bb3ac (NO-GO fixes)", () => {
 
   it("(5) Stripe's charge_already_refunded counts as a done refund", async () => {
     const fetcher = (async () => new Response(JSON.stringify({ error: { code: "charge_already_refunded" } }), { status: 400 })) as unknown as typeof fetch;
-    const api = stripeFromEnv({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }, fetcher)!;
+    const api = stripeFromEnv({ MOVERA_ENV: "staging", STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }, fetcher)!;
     expect(await api.refund({ paymentIntentId: "pi_x", idempotencyKey: "refund:pi_x" })).toEqual({ id: "already_refunded" });
     const other = (async () => new Response(JSON.stringify({ error: { code: "other" } }), { status: 400 })) as unknown as typeof fetch;
-    await expect(stripeFromEnv({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }, other)!.refund({ paymentIntentId: "pi_x", idempotencyKey: "k" })).rejects.toThrow();
+    await expect(stripeFromEnv({ MOVERA_ENV: "staging", STRIPE_SECRET_KEY: "sk_test_x", STRIPE_PUBLISHABLE_KEY: "pk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }, other)!.refund({ paymentIntentId: "pi_x", idempotencyKey: "k" })).rejects.toThrow();
   });
   it("MUST 1 (review 5e606be5): fee 1000 with debt 600, card 600, a new fee 500: the debt drops by 600 only; the fee stays owed for 400", async () => {
     const t1 = await owedFee(10000);

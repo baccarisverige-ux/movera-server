@@ -2,18 +2,24 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ColumnType } from "kysely";
 import type { Trx } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
+import { stripeKeyStatus, type StripeEnv, type StripeMode } from "./stripeKeys.js";
+
+export { serverStripeStatus, setServerStripeStatus, stripeKeyStatus, type StripeKeyStatus, type StripeMode, type StripeOffReason } from "./stripeKeys.js";
 
 class AlreadyRefunded extends Error {}
 
 /**
- * Contract v0.18.136 `stripeFees` (DRAFT, Stripe TEST mode only; owner 2026-11-20 "So we use stripe" + "Stripe is used
+ * Contract v0.18.136 `stripeFees` (DRAFT, Stripe test or live keys; owner 2026-11-20 "So we use stripe" + "Stripe is used
  * for exactly TWO things: the rider cancellation fee; the DRIVER paying his monthly invoice to Movera"). The ONE server
  * Stripe module for both uses: the keys (env names only), the small Stripe HTTP client, the webhook signature check and
  * the stripe_payments / stripe_events tables (migration 0124). Each use (riders/feeStripe.ts, later the driver's
  * monthly payment) owns its own money effect; this module never moves money in Movera's books.
  *
- * Keys: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET (server env only). Only test keys are accepted
- * ("sk_test_", "pk_test_"): with none or a live key, Stripe is off (503 payments_unavailable) and nothing is charged.
+ * Keys: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET (server env only). Live mode (owner 2026-11-21
+ * "Yes, build live mode now (Recommended)", contract.json#stripeFees.keys): one mode at a time from the key prefixes,
+ * sk_test_ + pk_test_ or sk_live_ + pk_live_ (+ the whsec_ of that mode's webhook endpoint); production takes live keys
+ * only, staging and development test keys only. Anything else (none, a mix, a wrong mode for this server) = Stripe off
+ * (503 payments_unavailable), nothing is charged, and every reason except no_keys is a system_health alert.
  */
 
 export type StripePurpose = "rider_fee" | "driver_invoice";
@@ -55,6 +61,8 @@ export type PaymentIntent = { id: string; clientSecret: string; amountMinor: num
 
 /** What the server asks of Stripe (tests use a fake; real calls go through stripeHttp). */
 export interface StripeApi {
+  /** The keys' mode (missing = test: the tests' fakes). A webhook event of the other mode is refused (wrong_mode). */
+  readonly mode?: StripeMode;
   readonly publishableKey: string;
   readonly webhookSecret: string;
   createPaymentIntent(input: { amountMinor: number; currency: string; metadata: Record<string, string>; idempotencyKey: string }): Promise<PaymentIntent>;
@@ -63,14 +71,14 @@ export interface StripeApi {
   refund(input: { paymentIntentId: string; idempotencyKey: string; amountMinor?: number }): Promise<{ id: string }>;
 }
 
-/** The Stripe client from the server env, or null (off) unless all three keys are set and are TEST keys. */
-export function stripeFromEnv(env: { STRIPE_SECRET_KEY?: string | undefined; STRIPE_PUBLISHABLE_KEY?: string | undefined; STRIPE_WEBHOOK_SECRET?: string | undefined }, fetcher: typeof fetch = fetch): StripeApi | null {
-  const secret = env.STRIPE_SECRET_KEY ?? "", publishable = env.STRIPE_PUBLISHABLE_KEY ?? "", hook = env.STRIPE_WEBHOOK_SECRET ?? "";
-  if (!secret.startsWith("sk_test_") || !publishable.startsWith("pk_test_") || !hook.startsWith("whsec_")) return null;
-  return stripeHttp(secret, publishable, hook, fetcher);
+/** The Stripe client from the server env, or null (off) unless stripeKeyStatus gives test or live. */
+export function stripeFromEnv(env: StripeEnv, fetcher: typeof fetch = fetch): StripeApi | null {
+  const status = stripeKeyStatus(env);
+  if (status.mode === "off") return null;
+  return stripeHttp(status.mode, env.STRIPE_SECRET_KEY!, env.STRIPE_PUBLISHABLE_KEY!, env.STRIPE_WEBHOOK_SECRET!, fetcher);
 }
 
-function stripeHttp(secret: string, publishableKey: string, webhookSecret: string, fetcher: typeof fetch): StripeApi {
+function stripeHttp(mode: StripeMode, secret: string, publishableKey: string, webhookSecret: string, fetcher: typeof fetch): StripeApi {
   const post = async (path: string, form: Record<string, string>, idempotencyKey?: string) => {
     const res = await fetcher(`https://api.stripe.com/v1/${path}`, {
       method: "POST",
@@ -87,6 +95,7 @@ function stripeHttp(secret: string, publishableKey: string, webhookSecret: strin
     return body;
   };
   return {
+    mode,
     publishableKey,
     webhookSecret,
     async createPaymentIntent({ amountMinor, currency, metadata, idempotencyKey }) {
@@ -111,7 +120,7 @@ function stripeHttp(secret: string, publishableKey: string, webhookSecret: strin
   };
 }
 
-/** Off (no test keys): the Stripe routes answer 503 payments_unavailable. */
+/** Off (stripeKeyStatus not test or live): the Stripe routes answer 503 payments_unavailable. */
 export function needStripe(stripe: StripeApi | null | undefined): StripeApi {
   if (!stripe) throw new ApiError("unavailable", "Card payment is not available now.", { reason: "payments_unavailable" });
   return stripe;
@@ -140,7 +149,7 @@ export function stripeSignatureHeader(rawBody: string, secret: string, at: Date)
   return `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${rawBody}`).digest("hex")}`;
 }
 
-export type StripeEvent = { id: string; type: string; data: { object: Record<string, unknown> } };
+export type StripeEvent = { id: string; type: string; livemode?: unknown; data: { object: Record<string, unknown> } };
 
 /**
  * Money review (4): when what a payment pays for stops being owed another way (Mark as paid, waive, paid with a ride),

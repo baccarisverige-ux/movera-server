@@ -65,7 +65,8 @@ async function owes(amountMinor: number) {
 const owed = async () => (await owedByDriver(database.db, [ali.id], "SEK")).get(ali.id) ?? 0;
 const pay = () => call(app, "POST", "/driver/pay-movera/pay", ali.headers, {});
 async function hook(type: string, object: Record<string, unknown>) {
-  const body = JSON.stringify({ id: `evt_d${++e}`, type, data: { object } });
+  // Live mode (stripeFees.webhook): the fake is a test-mode client, so its events are test events (livemode false).
+  const body = JSON.stringify({ id: `evt_d${++e}`, type, livemode: false, data: { object } });
   return app.inject({ method: "POST", url: "/api/v1/webhooks/stripe", headers: { "content-type": "application/json", "stripe-signature": stripeSignatureHeader(body, HOOK, clock.now) }, payload: body });
 }
 const succeeded = (id: string, amount: number) => ({ id, object: "payment_intent", amount, amount_received: amount, currency: "sek" });

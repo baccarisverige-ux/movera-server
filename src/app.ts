@@ -30,7 +30,7 @@ import { callRoutes } from "./calls/routes.js";
 import { rideRoutes } from "./trips/rideRoutes.js";
 import { supportedPaymentMethods } from "./trips/finish.js";
 import { adminTripRoutes } from "./admin/tripRoutes.js";
-import { stripeFromEnv, type StripeApi } from "./payments/stripe.js";
+import { setServerStripeStatus, stripeFromEnv, stripeKeyStatus, type StripeApi } from "./payments/stripe.js";
 import { stripeWebhookRoutes } from "./payments/stripeWebhook.js";
 import { riderFeeUse } from "./riders/feeStripe.js";
 import { driverInvoiceUse } from "./drivers/payMoveraStripe.js";
@@ -358,8 +358,10 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
     await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
-    // v0.18.136 (DRAFT, contract.json#stripeFees): one Stripe module (test keys only); the rider fee is its first use.
+    // v0.18.136 (DRAFT, contract.json#stripeFees): one Stripe module (test or live keys); the rider fee is its first use.
     const payments = stripe !== undefined ? stripe : stripeFromEnv(env);
+    // Live mode (contract.json#stripeFees.status): the admin status and the system_health alert read this copy's mode.
+    setServerStripeStatus(stripe === undefined ? stripeKeyStatus(env) : stripe ? { mode: stripe.mode ?? "test" } : { mode: "off", reason: "no_keys" });
     await stripeWebhookRoutes(app, { db, stripe: payments, uses: { rider_fee: riderFeeUse, driver_invoice: driverInvoiceUse }, ...(clock ? { clock } : {}) });
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", stripe: payments, ...(clock ? { clock } : {}) });
     // v0.18.38 §62: in-app call steps (answer, end, signal) and the admin call log.

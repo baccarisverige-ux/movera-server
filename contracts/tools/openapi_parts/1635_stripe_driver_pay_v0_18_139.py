@@ -7,7 +7,7 @@ S["StripeDriverPayment"] = obj({
     "amount": {"allOf": [ref("Money")], "description": "The server's amount: what he owes Movera now."},
     "status": s(enum=["requires_payment", "processing", "succeeded", "failed", "canceled", "refund_pending", "refunded"]),
     "clientSecret": s("Only to the paying driver while requires_payment.", maxLength=500),
-    "publishableKey": s("A Stripe test publishable key, with clientSecret.", maxLength=255),
+    "publishableKey": s("The Stripe publishable key of the server's mode (pk_test_ or pk_live_, stripeFees.keys), with clientSecret.", maxLength=255),
     "createdAt": ref("Timestamp")},
     ["paymentIntentId", "amount", "status", "createdAt"], _DPS, addl=False)
 op("post", "/driver/pay-movera/pay", "payMoveraStripe", "Pay what he owes Movera with Stripe", ["driver"], "Driver · Account",

@@ -9,7 +9,7 @@ import { countryHome, localMonthDay, payReference, payRequestSettingOf } from ".
 
 /**
  * DRAFT (contract.json#driverPayRequest.stripe; owner 2026-11-20 "Stripe is used for exactly TWO things: ... (2) the
- * DRIVER paying his monthly invoice to Movera"; Stripe TEST mode only): the Pay Movera screen's button pays by Stripe.
+ * DRIVER paying his monthly invoice to Movera"; Stripe test or live keys, stripeFees.keys): the Pay Movera screen's button pays by Stripe.
  *
  * MONEY rules kept here:
  *   - the amount is the server's owed now (drivers/owes.ts, the same number as the admin owing list); the app sends none;

@@ -92,6 +92,8 @@ export async function stripeWebhookRoutes(app: FastifyInstance, deps: { db: Db; 
         throw new ApiError("invalid_request", "The Stripe event is not valid.", { reason: "bad_signature" });
       }
       if (typeof event?.id !== "string" || typeof event.type !== "string") throw new ApiError("invalid_request", "The Stripe event is not valid.", { reason: "bad_signature" });
+      // Live mode (contract.json#stripeFees.webhook): an event of the other mode than the keys' is refused (wrong_mode).
+      if (event.livemode !== ((deps.stripe.mode ?? "test") === "live")) throw new ApiError("invalid_request", "The Stripe event is of the other mode (test or live) than this server.", { reason: "wrong_mode" });
       await deps.db.transaction().execute((trx) => handleStripeEvent(trx, deps.uses, event, now(), (msg, data) => request.log.warn(data, msg)));
       return { received: true };
     });

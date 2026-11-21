@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseExtraTestPhones } from "./auth/testPhones.js";
+import { stripeKeyStatus } from "./payments/stripeKeys.js";
 import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./maps/osrmSettings.js";
 import { READ_RETRY_DEFAULTS } from "./realtime/retry.js";
 import { SESSION_CHECK_DEFAULT_MS, SESSION_CHECK_MAX_MS } from "./realtime/sessionWatch.js";
@@ -113,8 +114,9 @@ const schema = z.object({
    * (SERVER_PAYMENT_METHODS). A method listed here (comma-separated, default none; cash is ignored and logged) is served as coming_soon and refused
    * with payment_method_coming_soon until it is taken off the list. The old PAYMENT_METHODS list is no longer read.
    */
-  /** v0.18.136 (DRAFT, contract.json#stripeFees.keys): Stripe TEST keys only (sk_test_ / pk_test_ / whsec_); unset or a
-   * live key = Stripe off (503 payments_unavailable). Never logged, never in a document. */
+  /** v0.18.136 (DRAFT, contract.json#stripeFees.keys, live mode owner 2026-11-21): sk_test_ + pk_test_ or sk_live_ +
+   * pk_live_ (+ whsec_), never a mix; production live only, staging / development test only; otherwise Stripe off (503
+   * payments_unavailable) and a system_health alert (payments/stripe.ts stripeKeyStatus). Never logged, never in a document. */
   STRIPE_SECRET_KEY: z.string().max(300).optional(),
   STRIPE_PUBLISHABLE_KEY: z.string().max(300).optional(),
   STRIPE_WEBHOOK_SECRET: z.string().max(300).optional(),
@@ -323,5 +325,8 @@ export function startupWarnings(env: Env): string[] {
   if (env.MOVERA_ENV !== "development" && env.MOVERA_TURN_URLS === undefined) {
     out.push("MOVERA_TURN_URLS and MOVERA_TURN_SECRET are not set: in-app calls work only on open networks (no TURN relay).");
   }
+  // Live mode (contract.json#stripeFees.keys): a Stripe key setup mistake is named (the reason only, never a key).
+  const stripe = stripeKeyStatus(env);
+  if (stripe.mode === "off" && stripe.reason !== "no_keys") out.push(`Stripe keys are not usable (${stripe.reason}): card payments are off.`);
   return out;
 }

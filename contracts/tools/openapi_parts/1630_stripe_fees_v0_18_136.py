@@ -1,4 +1,4 @@
-# Runs inside tools/gen_openapi.py in name order with its globals (rule 25 split). v0.18.136 (DRAFT, Stripe TEST mode;
+# Runs inside tools/gen_openapi.py in name order with its globals (rule 25 split). v0.18.136 (DRAFT, Stripe test or live keys;
 # owner 2026-11-20 "So we use stripe"): the rider pays an owed fee in the app (contract.json#stripeFees).
 _SF = C["stripeFees"]
 _V136 = "v0.18.136 (stripeFees): "
@@ -11,7 +11,7 @@ S["StripeFeePayment"] = obj({
     "amount": {"allOf": [ref("Money")], "description": "The server's amount: min(fee, debt now)."},
     "status": s(enum=["requires_payment", "processing", "succeeded", "failed", "canceled", "refund_pending", "refunded"]),
     "clientSecret": s("Only to the paying rider while requires_payment.", maxLength=500),
-    "publishableKey": s("A Stripe test publishable key, with clientSecret.", maxLength=255),
+    "publishableKey": s("The Stripe publishable key of the server's mode (pk_test_ or pk_live_, stripeFees.keys), with clientSecret.", maxLength=255),
     "createdAt": ref("Timestamp"), "paidAt": ref("Timestamp"), "refundedAt": ref("Timestamp"),
     "paidTwice": b("Succeeded after the fee was already settled another way: refund it."),
     "overpaid": {"allOf": [ref("Money")], "description": "The part that took nothing off a debt: refund it."},
@@ -37,3 +37,10 @@ _rk136 = S["ConfigDraftUpdate"]["properties"]["removeKeys"]
 assert "riderFeeStripe" in C["configDocs"]["keptKeys"]["country_rules"], "riderFeeStripe is a kept key"
 _rk136["items"]["enum"] = sorted(set(_rk136["items"]["enum"]) | {"riderFeeStripe"})
 _rk136["maxItems"] = len(_rk136["items"]["enum"])
+# Stripe live mode (owner 2026-11-21 "Yes, build live mode now (Recommended)"): the server's Stripe mode for the admin.
+S["StripeStatus"] = obj({
+    "mode": s(enum=["live", "test", "off"]),
+    "reason": s("Only with mode off.", enum=["no_keys", "keys_incomplete", "mixed_keys", "bad_webhook_secret", "test_keys_in_production", "live_keys_outside_production"])},
+    ["mode"], _V136 + _SF["status"], addl=False)
+op("get", "/admin/payments/stripe-status", "adminStripeStatus", "The server's Stripe mode (live, test or off)", ["admin"], "Admin · Money",
+   ok=(200, "StripeStatus"), read_only=True, permission="finance.read", desc=_V136 + _SF["status"] + " " + _SF["keys"])
