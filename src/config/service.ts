@@ -13,6 +13,7 @@ import { arrivedDistanceProblem } from "../trips/ride/settings.js";
 import { geofenceProblem } from "../trips/ride/geofence.js";
 import { checkEmergencyNumbers } from "./emergencyNumbers.js";
 import { checkSosContactsSms } from "../safety/sosContactsSms.js";
+import { checkSmsSignIn } from "../auth/smsSignIn.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
@@ -105,6 +106,8 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "country_rules") checkEmergencyNumbers(zone.kind, document);
   // v0.18.101 §92: CountryRules.sosContactsSms (country standard only; true / false).
   if (doc === "country_rules") checkSosContactsSms(zone.kind, document);
+  // v0.18.133 (contract.json#smsSignIn.setting): CountryRules.smsSignIn (country standard only; enabled, dailyCap).
+  if (doc === "country_rules") checkSmsSignIn(zone.kind, document);
   // v0.18.86 J5b (contract.json#commissionSteps.validation): the steps have their own reason and details, so they are
   // checked before the schema (which would answer invalid_document); the warn rule is advisory and never refused here.
   if (doc === "pricing") {

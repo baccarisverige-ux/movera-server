@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseExtraTestPhones } from "./auth/testPhones.js";
+import { smsStartupWarnings } from "./sms/elks.js";
 import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./maps/osrmSettings.js";
 import { READ_RETRY_DEFAULTS } from "./realtime/retry.js";
 import { SESSION_CHECK_DEFAULT_MS, SESSION_CHECK_MAX_MS } from "./realtime/sessionWatch.js";
@@ -89,6 +90,16 @@ const schema = z.object({
    * filled in Render's dashboard (never committed, never logged). Unset: no e-mail is sent, delivery pending_provider.
    */
   RESEND_API_KEY: z.string().min(8).optional(),
+  /**
+   * Contract v0.18.133 (contract.json#smsSignIn.serverKeys): the 46elks API username and password for the sign-in code
+   * SMS, filled in Render's dashboard by the owner (never committed, never logged). Read leniently on purpose: a wrong
+   * or half-filled value must never stop the server from starting; without BOTH, real SMS codes stay off and every real
+   * number is answered sign_in_restricted as before (sms/elks.ts).
+   */
+  ELKS_API_USERNAME: z.string().optional(),
+  ELKS_API_PASSWORD: z.string().optional(),
+  /** The SMS sender name (3-11 letters and digits). Unset or not usable: contract.json#smsSignIn.sender ("Movera"). */
+  SMS_SENDER_NAME: z.string().optional(),
   /** The sender of those e-mails. Unset: Resend's own test sender "Movera <onboarding@resend.dev>" (no own domain yet). */
   EMAIL_FROM: z.string().min(3).max(200).optional(),
   /** One send waits at most this long for Resend, then counts as not sent (pending_provider). */
@@ -318,5 +329,6 @@ export function startupWarnings(env: Env): string[] {
   if (env.MOVERA_ENV !== "development" && env.MOVERA_TURN_URLS === undefined) {
     out.push("MOVERA_TURN_URLS and MOVERA_TURN_SECRET are not set: in-app calls work only on open networks (no TURN relay).");
   }
+  out.push(...smsStartupWarnings(env));
   return out;
 }
