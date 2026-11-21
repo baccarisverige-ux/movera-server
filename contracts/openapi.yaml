@@ -19604,12 +19604,12 @@ paths:
         open (requires_payment or processing) for the same amount answers the same one; if the amount changed, the old one
         is canceled and a new one made. Refusals: no owed fee of hers on that trip or the amount is 0 = 409 invalid_transition,
         reason fee_not_owed; the country of the trip''s zone has riderFeeStripe off = 409 conflict, reason stripe_off; a currency
-        Stripe is not used for here (only SEK and EUR; TND is not) = 409 conflict, reason currency_not_supported; no test
-        key = 503 payments_unavailable. The answer is not kept in the Idempotency-Key store (it holds clientSecret); a repeated
-        call gets the same open PaymentIntent. The amount is min(what is left of the fee after earlier card payments, her
-        debt now); a card payment takes off at most its own money (a part payment leaves the fee owed for the rest). No fee
-        of hers on that trip (another rider''s, or none): 404 not_found, reason fee_not_found; a fee that is not owed: 409
-        fee_not_owed; both before the Stripe keys are looked at. A PaymentIntent Stripe is still processing is never canceled
+        Stripe is not used for here (only SEK and EUR; TND is not) = 409 conflict, reason currency_not_supported; Stripe off
+        (stripeFees.keys) = 503 payments_unavailable. The answer is not kept in the Idempotency-Key store (it holds clientSecret);
+        a repeated call gets the same open PaymentIntent. The amount is min(what is left of the fee after earlier card payments,
+        her debt now); a card payment takes off at most its own money (a part payment leaves the fee owed for the rest). No
+        fee of hers on that trip (another rider''s, or none): 404 not_found, reason fee_not_found; a fee that is not owed:
+        409 fee_not_owed; both before the Stripe keys are looked at. A PaymentIntent Stripe is still processing is never canceled
         or replaced: a call with another amount is 409 conflict, reason payment_processing. Rider app: after a cancel or no-show
         that charged a fee (cancellation.fee above 0, feeStatus owed) and on the Account outstanding fees line, while her
         country has riderFeeStripe on, a ''Pay now'' button. It calls POST /rider/fees/{tripId}/pay and opens the Stripe PaymentSheet
@@ -19657,22 +19657,33 @@ paths:
       summary: Stripe events (signature checked, no sign-in)
       description: 'v0.18.136 (stripeFees): POST /webhooks/stripe (no sign-in; Stripe calls it). The raw body is checked against
         the Stripe-Signature header with STRIPE_WEBHOOK_SECRET (HMAC-SHA256 of ''<t>.<body>'', any v1 value, t at most 300
-        s from now); a bad or missing signature = 400 invalid_request, reason bad_signature, nothing changes. Each event id
-        is handled once (a repeat answers 200 and changes nothing). payment_intent.succeeded (also after the payment was failed
-        or canceled) for a known PaymentIntent whose amount and currency equal the stored ones: the payment becomes succeeded,
-        and if the fee is still owed it becomes paid exactly as the admin''s Mark as paid (a wallet correction +the fee at
-        most the debt, rider_fees paid, cancellation.feeStatus paid, Rider.outstanding drops it; audit rider.fee_paid_stripe).
-        If the fee was already settled another way (paid in the car, marked paid), nothing more is taken off and the payment
-        is marked paidTwice with overpaid = the whole amount; if only part of it was still owed (min(fee, debt) at the webhook)
-        that part settles the fee and the rest is paidTwice with overpaid = the rest, for the admin to refund. An amount or
-        currency that does not match changes no fee and marks the payment amountMismatch for the admin. payment_intent.payment_failed
+        s from now); a bad or missing signature = 400 invalid_request, reason bad_signature, nothing changes. Then the event''s
+        livemode must match the server''s mode (live keys: true; test keys: false): a test event on a live server or a live
+        event on a test server = 400 invalid_request, reason wrong_mode, nothing changes. Each event id is handled once (a
+        repeat answers 200 and changes nothing). payment_intent.succeeded (also after the payment was failed or canceled)
+        for a known PaymentIntent whose amount and currency equal the stored ones: the payment becomes succeeded, and if the
+        fee is still owed it becomes paid exactly as the admin''s Mark as paid (a wallet correction +the fee at most the debt,
+        rider_fees paid, cancellation.feeStatus paid, Rider.outstanding drops it; audit rider.fee_paid_stripe). If the fee
+        was already settled another way (paid in the car, marked paid), nothing more is taken off and the payment is marked
+        paidTwice with overpaid = the whole amount; if only part of it was still owed (min(fee, debt) at the webhook) that
+        part settles the fee and the rest is paidTwice with overpaid = the rest, for the admin to refund. An amount or currency
+        that does not match changes no fee and marks the payment amountMismatch for the admin. payment_intent.payment_failed
         -> failed; payment_intent.canceled -> canceled; charge.refunded -> refunded. Unknown events and PaymentIntents: 200,
         nothing changes. Lock order: the rider row first, then the payment, then the fee (also in pay and refund). When a
         fee stops being owed (Mark as paid, waive, paid with a ride), its open PaymentIntents become canceled and lose their
         clientSecret; money that still arrives for one is paidTwice. Server environment variables only, names: STRIPE_SECRET_KEY,
         STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET. Values are never in code, the contract, a config document or a log.
-        This draft accepts only test-mode keys (secret ''sk_test_…'', publishable ''pk_test_…''); with no key, or a live key,
-        the Stripe routes answer 503 unavailable, reason payments_unavailable, and nothing is charged.'
+        One Stripe mode at a time, read from the key prefixes (live mode, owner 2026-11-21 "Yes, build live mode now (Recommended)"):
+        test mode = secret ''sk_test_…'' + publishable ''pk_test_…''; live mode = secret ''sk_live_…'' + publishable ''pk_live_…'';
+        the webhook secret (''whsec_…'') is the signing secret of the Stripe webhook endpoint made in that same mode. MOVERA_ENV
+        production takes live keys only; staging and development take test keys only. Stripe is off (the Stripe routes answer
+        503 unavailable, reason payments_unavailable, and nothing is charged) with no key (reason no_keys), with only one
+        or two of the three (keys_incomplete), with a mix of test and live keys such as a test secret with a live publishable
+        key (mixed_keys), with a webhook secret that does not start with ''whsec_'' (bad_webhook_secret), with test keys in
+        production (test_keys_in_production) or with live keys on staging or development (live_keys_outside_production); any
+        other key kind (a restricted key ''rk_…'') counts as a mix. Only no_keys is the normal off; every other reason is
+        a setup mistake and is shown to the admin (stripeFees.status). The apps never assume a mode: they get only publishableKey
+        with a payment (StripeFeePayment, StripeDriverPayment) and pass it to the Stripe SDK as is.'
       tags:
       - System
       x-actor: []
@@ -19791,6 +19802,67 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /admin/payments/stripe-status:
+    get:
+      operationId: adminStripeStatus
+      summary: The server's Stripe mode (live, test or off)
+      description: 'v0.18.136 (stripeFees): GET /admin/payments/stripe-status (finance.read) -> StripeStatus { mode: live
+        | test | off, reason? (only with off: no_keys, keys_incomplete, mixed_keys, bad_webhook_secret, test_keys_in_production,
+        live_keys_outside_production) } for this server, read from its env at start; never a key or any part of one. Admin
+        > Pricing > Tips & limits shows it under ''Card payment of fees'': ''Stripe: Live'', ''Stripe: Test'' or ''Stripe:
+        Off'' with the reason. Every off reason except no_keys also raises one system_health alert per country book (cause
+        system_health:stripe_keys:<country>, the kind''s level, only where the book''s system_health is on) with a whole-sentence
+        title per reason: mixed_keys ''Card payments are off: the server has a mix of Stripe test and live keys''; keys_incomplete
+        ''Card payments are off: a Stripe key is missing on the server''; bad_webhook_secret ''Card payments are off: the
+        Stripe webhook secret is not valid''; test_keys_in_production ''Card payments are off: Stripe test keys on the production
+        server''; live_keys_outside_production ''Card payments are off: Stripe live keys on a test server''; detail ''Fix
+        the Stripe keys in the server settings and restart the server''. It turns solved by itself when the server starts
+        with right keys. No new alert kind or setting. Server environment variables only, names: STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY,
+        STRIPE_WEBHOOK_SECRET. Values are never in code, the contract, a config document or a log. One Stripe mode at a time,
+        read from the key prefixes (live mode, owner 2026-11-21 "Yes, build live mode now (Recommended)"): test mode = secret
+        ''sk_test_…'' + publishable ''pk_test_…''; live mode = secret ''sk_live_…'' + publishable ''pk_live_…''; the webhook
+        secret (''whsec_…'') is the signing secret of the Stripe webhook endpoint made in that same mode. MOVERA_ENV production
+        takes live keys only; staging and development take test keys only. Stripe is off (the Stripe routes answer 503 unavailable,
+        reason payments_unavailable, and nothing is charged) with no key (reason no_keys), with only one or two of the three
+        (keys_incomplete), with a mix of test and live keys such as a test secret with a live publishable key (mixed_keys),
+        with a webhook secret that does not start with ''whsec_'' (bad_webhook_secret), with test keys in production (test_keys_in_production)
+        or with live keys on staging or development (live_keys_outside_production); any other key kind (a restricted key ''rk_…'')
+        counts as a mix. Only no_keys is the normal off; every other reason is a setup mistake and is shown to the admin (stripeFees.status).
+        The apps never assume a mode: they get only publishableKey with a payment (StripeFeePayment, StripeDriverPayment)
+        and pass it to the Stripe SDK as is.'
+      tags:
+      - Admin · Money
+      x-actor:
+      - admin
+      x-permission: finance.read
+      x-read-only: true
+      parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StripeStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -39367,7 +39439,7 @@ components:
         publishableKey:
           type: string
           maxLength: 255
-          description: A Stripe test publishable key, with clientSecret.
+          description: The Stripe publishable key of the server's mode (pk_test_ or pk_live_, stripeFees.keys), with clientSecret.
         createdAt:
           $ref: '#/components/schemas/Timestamp'
         paidAt:
@@ -39393,4 +39465,38 @@ components:
         reason:
           type: string
           maxLength: 300
+      additionalProperties: false
+    StripeStatus:
+      type: object
+      description: 'v0.18.136 (stripeFees): GET /admin/payments/stripe-status (finance.read) -> StripeStatus { mode: live
+        | test | off, reason? (only with off: no_keys, keys_incomplete, mixed_keys, bad_webhook_secret, test_keys_in_production,
+        live_keys_outside_production) } for this server, read from its env at start; never a key or any part of one. Admin
+        > Pricing > Tips & limits shows it under ''Card payment of fees'': ''Stripe: Live'', ''Stripe: Test'' or ''Stripe:
+        Off'' with the reason. Every off reason except no_keys also raises one system_health alert per country book (cause
+        system_health:stripe_keys:<country>, the kind''s level, only where the book''s system_health is on) with a whole-sentence
+        title per reason: mixed_keys ''Card payments are off: the server has a mix of Stripe test and live keys''; keys_incomplete
+        ''Card payments are off: a Stripe key is missing on the server''; bad_webhook_secret ''Card payments are off: the
+        Stripe webhook secret is not valid''; test_keys_in_production ''Card payments are off: Stripe test keys on the production
+        server''; live_keys_outside_production ''Card payments are off: Stripe live keys on a test server''; detail ''Fix
+        the Stripe keys in the server settings and restart the server''. It turns solved by itself when the server starts
+        with right keys. No new alert kind or setting.'
+      required:
+      - mode
+      properties:
+        mode:
+          type: string
+          enum:
+          - live
+          - test
+          - 'off'
+        reason:
+          type: string
+          enum:
+          - no_keys
+          - keys_incomplete
+          - mixed_keys
+          - bad_webhook_secret
+          - test_keys_in_production
+          - live_keys_outside_production
+          description: Only with mode off.
       additionalProperties: false

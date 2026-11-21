@@ -1,5 +1,5 @@
 import { addTripNote, flagTrip, openTripCase, revealTripContact, tripNotes } from "./tripTools.js";
-import { needStripe, type StripeApi } from "../payments/stripe.js";
+import { needStripe, serverStripeStatus, type StripeApi } from "../payments/stripe.js";
 import { listFeePayments, refundFeePayment, startFeePayment, StripeRefundBody } from "../riders/feeStripe.js";
 import { adminDriverPay, adminReceipt, resendReceipt } from "../trips/finish.js";
 import { ModerationBody } from "../riders/moderation.js";
@@ -253,6 +253,11 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     // Money review (3): after the commit; a failure is only logged (a late success is paidTwice for the admin).
     for (const id of toCancel) await needStripe(deps.stripe).cancelPaymentIntent(id).catch((error: unknown) => request.log.warn({ paymentIntentId: id, error: String(error) }, "stripe: cancel failed"));
     return view;
+  });
+  // Live mode (contract.json#stripeFees.status): this server's Stripe mode (live, test or off + reason), never a key.
+  app.get(`${API_PREFIX}/admin/payments/stripe-status`, async (request) => {
+    await authenticateAdmin(request, guard, "finance.read");
+    return serverStripeStatus();
   });
   app.get(`${API_PREFIX}/admin/riders/:riderId/fee-payments`, async (request) => {
     const who = await authenticateAdmin(request, guard, "finance.read");
