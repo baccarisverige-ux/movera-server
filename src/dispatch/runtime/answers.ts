@@ -1,4 +1,5 @@
 import { tellDriverFound, afterHeldAccept, currentTripOf, heldForLater } from "../../reservations/service.js";
+import { refuseOldApp, type AppClient } from "../../config/appUpdate.js";
 import { commissionOf } from "../../rules/commission.js";
 import { bonusFor, priorityFor } from "../bonusScope.js";
 import { driverPhotoUrl } from "../../trips/driverPhoto.js";
@@ -23,7 +24,7 @@ function staleOffer(offer: NonNullable<OfferRow>, trip: TripRow) {
 }
 
 /** POST /offers/{offerId}/accept (contract: expectedVersion is the offer's). */
-export async function acceptOffer(trx: Trx, driverId: string, offerId: string, expectedVersion: number, now: Date): Promise<TripRow> {
+export async function acceptOffer(trx: Trx, driverId: string, offerId: string, expectedVersion: number, now: Date, app?: AppClient | null): Promise<TripRow> {
   const head = await trx.selectFrom("offers").select(["trip_id", "driver_id"]).where("offer_id", "=", offerId).executeTakeFirst();
   if (!head || head.driver_id !== driverId) throw new ApiError("not_found", "No such offer.", { reason: "offer_not_found" });
   let trip = await lockTrip(trx, head.trip_id);
@@ -36,6 +37,9 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
     const status = offer.status === "open" ? "expired" : offer.status;
     throw new ApiError("conflict", status === "claimed_elsewhere" ? "Another driver took this ride." : "This offer is no longer open.", { reason: `offer_${status}`, projection: offerView({ ...offer, status }, trip) });
   }
+  // v0.18.154 P16c (contract.json#appUpdate.server): an Android / iOS driver app below the minimum of the trip's zone
+  // takes no new trip (426, the offer stays open); a driver who is on a trip (a next or booked ride) is never refused.
+  if (app && !(await currentTripOf(trx, driverId))) await refuseOldApp(trx, "driver_app_config", [trip.zone_id], app);
   const queue = new FeedQueue();
   // The trip's other offers are closed first (trip → offer), then every driver to tell is locked in id order.
   await closeOpenOffers(trx, trip, "claimed_elsewhere", now, queue, offerId);
