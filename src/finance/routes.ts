@@ -19,6 +19,7 @@ const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Base = { year: z.string().max(10), month: z.string().max(10).optional(), payeeId: ID.optional() };
 const AdminQuery = { ...Base, ...ZoneFilterQuery, detail: z.enum(["quarter", "month", "day", "trips"]).default("quarter") };
 const PageQuery = { ...AdminQuery, cursor: z.string().max(400).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) };
+const CSV_BATCH = 200;
 const DriverQuery = { year: Base.year, month: Base.month, detail: z.enum(["month", "day", "trips"]).default("month") };
 
 export async function financeRoutes(app: FastifyInstance, deps: FinanceDeps): Promise<void> {
@@ -53,12 +54,14 @@ export async function financeRoutes(app: FastifyInstance, deps: FinanceDeps): Pr
     const who = await authenticateAdmin(request, guard, "finance.read");
     const query = parseQuery(AdminQuery, request.query);
     const scope = await adminScope(who, query);
+    // The first page is read before the headers go out, so most failures are a clean JSON error (not a cut file).
+    const first = await incomePage(deps.db, scope, { limit: CSV_BATCH });
     await audit(deps.db, { adminId: who.subjectId, action: "finance.driver_income.csv", targetType: "driver_income", targetId: String(scope.year), detail: auditDetail(scope, query, "csv"), at: now() });
     const db = deps.db;
     async function* lines() {
       yield `﻿${CSV_COLUMNS.join(",")}\r\n`;
       // Every payee, in the JSON order (payeeId, then currency), 200 at a time: nothing is held for the whole file.
-      for await (const rows of incomeAllPages(db, scope)) yield rows.flatMap((row) => csvLines(row)).map((l) => `${l}\r\n`).join("");
+      for await (const rows of incomeAllPages(db, scope, CSV_BATCH, first)) yield rows.flatMap((row) => csvLines(row)).map((l) => `${l}\r\n`).join("");
     }
     const name = `movera-driver-income-${scope.year}${scope.month ? `-${scope.month.slice(5)}` : ""}-${scope.detail}.csv`;
     return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="${name}"`).header("cache-control", "no-store").send(Readable.from(lines()));

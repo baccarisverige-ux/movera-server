@@ -19685,16 +19685,17 @@ paths:
       operationId: adminDriverIncomeCsv
       summary: The same as a CSV file for the accountant
       description: 'v0.18.153 GET /admin/finance/driver-income.csv: same query, permission and scope (no cursor or limit:
-        every payee). text/csv; charset=utf-8, UTF-8 with BOM, streamed (every payee, read 200 at a time), comma separated,
-        CRLF, header line, one line per payee and level: level (year | quarter | month | day | trip), period, payeeKind, payeeId,
-        name, orgNumber, address, country, currency, bankHolder, bankLast4, driverIds (space separated), rides, the money
-        fields in major units with a dot (12.50; TND 3 decimals), and for a trip line: localTime, tripId, zoneId, paymentMethod.
-        Content-Disposition attachment; filename movera-driver-income-<year>[-<month>]-<detail>.csv. Formula guard: a text
-        cell that starts with = + - @, a tab or a carriage return gets a leading single quote (''). The same tooBig rule applies.
-        Every download (JSON or CSV) writes one admin audit row: action finance.driver_income.read (JSON) or finance.driver_income.csv
-        (CSV), target driver_income / <year>, detail { year, detail, month?, country?, zoneIds?, payeeId?, format, rows? }
-        (rows: the payee rows of a JSON page; the CSV is streamed, so its row is written before it). No personal data in the
-        detail.'
+        every payee). text/csv; charset=utf-8, UTF-8 with BOM, streamed (every payee, read 200 at a time; the first 200 are
+        read before the headers go out, so a failure there is a clean JSON error), comma separated, CRLF, header line, one
+        line per payee and level: level (year | quarter | month | day | trip), period, payeeKind, payeeId, name, orgNumber,
+        address, country, currency, bankHolder, bankLast4, driverIds (space separated), partial (true or empty), rides, the
+        money fields in major units with a dot (12.50; TND 3 decimals), and for a trip line: localTime, tripId, zoneId, paymentMethod,
+        lineKind. Content-Disposition attachment; filename movera-driver-income-<year>[-<month>]-<detail>.csv. Formula guard:
+        a text cell that starts with = + - @, a tab or a carriage return gets a leading single quote (''). The same tooBig
+        rule applies. Every download (JSON or CSV) writes one admin audit row: action finance.driver_income.read (JSON) or
+        finance.driver_income.csv (CSV), target driver_income / <year>, detail { year, detail, month?, country?, zoneIds?,
+        payeeId?, format, rows? } (rows: the payee rows of a JSON page; the CSV is streamed, so its row is written before
+        it). No personal data in the detail.'
       tags:
       - Admin · Money
       x-actor:
@@ -39386,7 +39387,8 @@ components:
           allOf:
           - $ref: '#/components/schemas/Money'
           description: 'v0.18.153 What the payee earned: Σ the entries of the kinds trip, pickup_pay, fee_share, tip, adjustment
-            and bonus (= GET /driver/earnings net). This is the DAC7 consideration.'
+            and bonus. netEarnings = GET /driver/earnings net for the same period (the same entries, by the same entry time).
+            This is the DAC7 consideration.'
         cashCollectedByDriver:
           allOf:
           - $ref: '#/components/schemas/Money'
@@ -39395,15 +39397,17 @@ components:
         paidOutByMovera:
           allOf:
           - $ref: '#/components/schemas/Money'
-          description: 'v0.18.153 Σ (amount − cash) of the same entries that are in a payout marked paid: what Movera paid
-            out to the payee for this period''s money. Can be below netEarnings − cashCollectedByDriver while a payout is
-            not paid yet, and negative when the driver owed Movera.'
+          description: v0.18.153 Σ max(0, payouts.amount_minor) of the payee's drivers' payouts marked paid, counted on the
+            zone-local day of payouts.paid_at (the payout's zone, else the driver's first zone, else his country); never below
+            0 (a payout where the driver owed Movera pays nothing out). Not derived from the entries. A pending payout never
+            counts.
     DriverIncomeTripLine:
       allOf:
       - $ref: '#/components/schemas/DriverIncomeTotals'
       - type: object
         required:
         - localTime
+        - lineKind
         - tripId
         - zoneId
         - paymentMethod
@@ -39411,7 +39415,13 @@ components:
           localTime:
             type: string
             pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$
-            description: Zone-local end time 'YYYY-MM-DDTHH:MM' (the trip's end, else the entry's time).
+            description: 'Zone-local time ''YYYY-MM-DDTHH:MM'' the line''s money was credited (a payout: paid).'
+          lineKind:
+            type: string
+            enum:
+            - trip
+            - credit
+            - payout
           tripId:
             type:
             - string
@@ -39428,9 +39438,11 @@ components:
             description: The trip's payment method (cash = pay in the car); null with no trip.
       description: 'v0.18.153 One trip line (detail trips): The totals add up exactly at every level: Σ trip lines = the day,
         Σ days = the month, Σ months = the quarter, Σ quarters = the year, for every money field and rides, because every
-        level is the sum of the same entries. A day or month with nothing is left out. Entries with no trip (a campaign bonus,
-        a lost-driver payment of a trip he did not end) are one line of their own in the trips detail (tripId of the trip
-        when there is one, else null; paymentMethod null).'
+        level is the sum of the same rows. A day or month with nothing is left out. In the trips detail each line has lineKind:
+        trip (the trip''s own entries credited that day: the trip entry and what came with it; tripId and paymentMethod of
+        the trip), credit (money credited that day without the trip entry: a later tip, pay change or bonus of a trip, shown
+        with that trip''s tripId, rides 0; or an entry with no trip such as a bonus campaign, tripId null) or payout (one
+        paid payout: paidOutByMovera only, tripId null).'
     DriverIncomeDay:
       allOf:
       - $ref: '#/components/schemas/DriverIncomeTotals'
@@ -39540,6 +39552,13 @@ components:
               row, the same row the accountant files (every driver of the fleet in it). Any other driver of a fleet gets a
               row with the fleet's kind, name and orgNumber but only HIS OWN entries in the money, and ownPartOnly true (another
               driver's money is never sent to him, as moneyBase.lostDriverPaid.driverView).
+          partial:
+            type: boolean
+            description: 'v0.18.153 review SHOULD-4: on a zone-limited answer (an admin with some zones, or a zoneId / zoneIds
+              / country filter) a payee row whose payee also has money rows (entries or paid payouts) outside those zones,
+              or with no zone, in the same period carries partial: true; the row holds only the zones in scope. Absent otherwise.
+              Admin shows ''Only your zones'' with an (i); the CSV has a partial column (true or empty). The driver''s statement
+              is never partial.'
           quarters:
             type: array
             items:
@@ -39556,11 +39575,13 @@ components:
         yet). The fleet is read as it is now (drivers.fleet_id), for the whole year. country = the fleet''s country, else
         the driver''s country, else the country of his first zone. bank = { holder, last4 } when Movera stores the payee''s
         bank details as data, else null; never the full account number. Today bank details are an uploaded document (driverOnboarding.adminActions.bankType),
-        so bank is null until a later job stores them as data. Each entry is placed on a zone-local day: the trip''s end time
-        (trips.ended_at) in the trip''s zone time zone; an entry with no trip (a bonus campaign) or a trip with no end time
-        uses the entry''s own time, in the time zone of the driver''s first zone, else his country''s (payouts.schedule.countryTimeZones),
-        else Europe/Stockholm. The year, quarter (Q1 = January-March), month (YYYY-MM) and day (YYYY-MM-DD) come from that
-        local day. A tip or a later bonus written in January on a 31 December trip belongs to the old year.'
+        so bank is null until a later job stores them as data. v0.18.153 review SHOULD-1 (coordinator): DAC7 counts what was
+        paid or credited in the period, so each earnings entry is placed on the zone-local day of its OWN time (earnings_entries.at,
+        when it was credited), exactly as GET /driver/earnings: in the time zone of its trip''s zone, else the driver''s first
+        zone, else his country''s (payouts.schedule.countryTimeZones), else Europe/Stockholm. A paid payout is placed on its
+        paid_at. The year, quarter (Q1 = January-March), month (YYYY-MM) and day (YYYY-MM-DD) come from that local day. A
+        tip or a pay change credited in January on a December trip belongs to the new year; the old year''s totals do not
+        move.'
     DriverIncomePage:
       type: object
       description: v0.18.153 Page of GET /admin/finance/driver-income.

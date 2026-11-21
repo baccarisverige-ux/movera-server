@@ -19,7 +19,8 @@ import { exponentOf, type CurrencyCode } from "../rules/money.js";
  */
 
 const DI = (contract as unknown as { driverIncomeYear: { admin: { maxTripLines: number } } }).driverIncomeYear;
-export const MAX_TRIP_LINES = DI.admin.maxTripLines;
+/** The trip-line cap (contract maxTripLines); an object so a test can lower it (SHOULD-5). */
+export const incomeLimits = { maxTripLines: DI.admin.maxTripLines };
 const COUNTRY_TZ = (contract as unknown as { payouts: { schedule: { countryTimeZones: Record<string, string> } } }).payouts.schedule.countryTimeZones;
 
 export type IncomeDetail = "quarter" | "month" | "day" | "trips";
@@ -60,23 +61,30 @@ export async function checkCountry(ex: Executor, country: string | undefined): P
 
 const tzCase = sql.join(Object.entries(COUNTRY_TZ).map(([country, tz]) => sql`WHEN ${country} THEN ${tz}`), sql` `);
 
-/** Every entry in scope with its payee, zone and zone-local time (the entry rows the levels are summed from). */
-function entries(scope: IncomeScope): RawBuilder<unknown> {
-  // An entry of the year is written at or after its trip's end, and the end is at most 14 h off the UTC year: entries
-  // from a day before the year on; a later entry counts only when its trip ended in the year (by local day, below).
+/**
+ * Every money row in scope with its payee, zone and zone-local time (the rows the levels are summed from):
+ * - each earnings entry at its OWN time (e.at, when it was credited; SHOULD-1, the DAC7 "paid or credited" period, the same
+ *   periods as GET /driver/earnings), in the time zone of its trip's zone, else the driver's first zone, else his country;
+ * - each PAID payout of the payee's drivers at its paid_at, as a row of kind payout that carries only paid_out =
+ *   max(0, payouts.amount_minor) (SHOULD-2: what Movera paid out, never below 0; a payout the driver owed on pays nothing).
+ * Both bounds of the time range sit on an index (earnings_at, migration 0132; payouts by paid_at is a small table).
+ */
+function moneyRows(scope: IncomeScope, zones: string[] | null = scope.zones): RawBuilder<unknown> {
+  // The local year is at most 14 h off the UTC year: read a day more on each side, then keep the local year (below).
   const lo = new Date(Date.UTC(scope.year, 0, 1) - 86_400_000);
   const hi = new Date(Date.UTC(scope.year + 1, 0, 1) + 86_400_000);
-  const zoneFilter = scope.zones === null ? sql`` : scope.zones.length === 0 ? sql`AND false` : sql`AND x.zone_id IN (${sql.join(scope.zones)})`;
+  const zoneFilter = zones === null ? sql`` : zones.length === 0 ? sql`AND false` : sql`AND x.zone_id IN (${sql.join(zones)})`;
   const monthFilter = scope.month === undefined ? sql`` : sql`AND to_char(x.local, 'YYYY-MM') = ${scope.month}`;
   const payeeFilter = scope.payeeId === undefined ? sql`` : sql`AND x.payee_id = ${scope.payeeId}`;
   const driverFilter = scope.driverId === undefined ? sql`` : sql`AND x.driver_id = ${scope.driverId}`;
+  const driverTz = sql`coalesce(zd.time_zone, CASE d.country ${tzCase} END, 'Europe/Stockholm')`;
   return sql`
     SELECT x.* FROM (
       SELECT e.entry_id, e.driver_id, e.trip_id, e.kind, e.currency,
              e.amount_minor AS amount, coalesce(e.gross_minor, 0) AS gross, coalesce(e.commission_minor, 0) AS commission, coalesce(e.cash_minor, 0) AS cash,
              CASE WHEN e.kind = 'fee_share' THEN coalesce(t.commission_minor, 0) ELSE 0 END AS movera_fee,
-             CASE WHEN p.status = 'paid' THEN e.amount_minor - coalesce(e.cash_minor, 0) ELSE 0 END AS paid_out,
-             coalesce(t.ended_at, e.at) AT TIME ZONE coalesce(zt.time_zone, zd.time_zone, CASE d.country ${tzCase} END, 'Europe/Stockholm') AS local,
+             0::bigint AS paid_out,
+             e.at AT TIME ZONE coalesce(zt.time_zone, ${driverTz}) AS local,
              coalesce(t.zone_id, d.zone_ids[1]) AS zone_id,
              t.payment_method,
              CASE WHEN d.fleet_id IS NOT NULL THEN 'company' ELSE 'driver' END AS payee_kind,
@@ -86,8 +94,21 @@ function entries(scope: IncomeScope): RawBuilder<unknown> {
         LEFT JOIN trips t ON t.trip_id = e.trip_id
         LEFT JOIN zones zt ON zt.zone_id = t.zone_id
         LEFT JOIN zones zd ON zd.zone_id = d.zone_ids[1]
-        LEFT JOIN payouts p ON p.payout_id = e.payout_id
-       WHERE e.kind <> 'paid_to_movera' AND e.at >= ${lo} AND (e.at < ${hi} OR t.ended_at < ${hi})
+       WHERE e.kind <> 'paid_to_movera' AND e.at >= ${lo} AND e.at < ${hi}
+      UNION ALL
+      SELECT p.payout_id, p.driver_id, NULL, 'payout', p.currency,
+             0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint,
+             greatest(p.amount_minor, 0)::bigint,
+             p.paid_at AT TIME ZONE coalesce(zp.time_zone, ${driverTz}),
+             coalesce(p.zone_id, d.zone_ids[1]),
+             NULL,
+             CASE WHEN d.fleet_id IS NOT NULL THEN 'company' ELSE 'driver' END,
+             coalesce(d.fleet_id, d.driver_id)
+        FROM payouts p
+        JOIN drivers d ON d.driver_id = p.driver_id
+        LEFT JOIN zones zp ON zp.zone_id = p.zone_id
+        LEFT JOIN zones zd ON zd.zone_id = d.zone_ids[1]
+       WHERE p.status = 'paid' AND p.paid_at >= ${lo} AND p.paid_at < ${hi}
     ) x
     WHERE extract(year FROM x.local) = ${scope.year} ${monthFilter} ${zoneFilter} ${payeeFilter} ${driverFilter}`;
 }
@@ -102,11 +123,11 @@ const SUMS = sql`
   coalesce(sum(amount) FILTER (WHERE kind = 'fee_share'), 0) AS "feeShare",
   coalesce(sum(commission) FILTER (WHERE kind = 'trip'), 0) AS "moveraCommission",
   coalesce(sum(movera_fee), 0) AS "moveraFees",
-  coalesce(sum(amount), 0) AS "netEarnings",
+  coalesce(sum(amount) FILTER (WHERE kind <> 'payout'), 0) AS "netEarnings",
   coalesce(sum(cash) FILTER (WHERE kind IN ('trip', 'tip')), 0) AS "cashCollectedByDriver",
   coalesce(sum(paid_out), 0) AS "paidOutByMovera"`;
 
-type Group = { payee_id: string; payee_kind: "company" | "driver"; currency: string; period: string; drivers: string[]; line_key?: string | null; trip_id?: string | null; zone_id?: string | null; payment_method?: string | null; local_time?: string } & Record<string, unknown>;
+type Group = { payee_id: string; payee_kind: "company" | "driver"; currency: string; period: string; drivers: string[]; line_key?: string | null; trip_id?: string | null; zone_id?: string | null; payment_method?: string | null; local_time?: string; has_trip?: boolean; is_payout?: boolean } & Record<string, unknown>;
 
 const zero = (): Sums => ({ rides: 0, grossFares: 0, tips: 0, bonuses: 0, adjustments: 0, pickupPay: 0, feeShare: 0, moveraCommission: 0, moveraFees: 0, netEarnings: 0, cashCollectedByDriver: 0, paidOutByMovera: 0 });
 const sumsOf = (g: Record<string, unknown>): Sums => {
@@ -125,11 +146,11 @@ const view = (s: Sums, currency: string) => {
   return out;
 };
 
-/** How many trip lines the query holds (all its payees): over MAX_TRIP_LINES is 400 income_detail_too_big. */
+/** How many trip lines the query holds (all its payees): over incomeLimits.maxTripLines is 400 income_detail_too_big. */
 export async function checkTripLines(ex: Executor, scope: IncomeScope): Promise<void> {
   if (scope.detail !== "trips") return;
-  const row = await sql<{ n: string }>`SELECT count(*) AS n FROM (SELECT 1 FROM (${entries(scope)}) y GROUP BY payee_id, currency, to_char(local, 'YYYY-MM-DD'), coalesce(trip_id, entry_id) LIMIT ${MAX_TRIP_LINES + 1}) c`.execute(ex);
-  if (Number(row.rows[0]!.n) > MAX_TRIP_LINES) throw badRequest(`More than ${MAX_TRIP_LINES} trip lines: pick a month or one payee.`, "income_detail_too_big");
+  const row = await sql<{ n: string }>`SELECT count(*) AS n FROM (SELECT 1 FROM (${moneyRows(scope)}) y GROUP BY payee_id, currency, to_char(local, 'YYYY-MM-DD'), coalesce(trip_id, entry_id) LIMIT ${incomeLimits.maxTripLines + 1}) c`.execute(ex);
+  if (Number(row.rows[0]!.n) > incomeLimits.maxTripLines) throw badRequest(`More than ${incomeLimits.maxTripLines} trip lines: pick a month or one payee.`, "income_detail_too_big");
 }
 
 export type IncomePayee = { payeeId: string; currency: string };
@@ -144,7 +165,7 @@ function readCursor(cursor: string): IncomePayee {
 export async function incomePage(ex: Executor, scope: IncomeScope, input: { cursor?: string | undefined; limit: number }): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
   const after = input.cursor ? readCursor(input.cursor) : null;
   const keys = await sql<{ payee_id: string; currency: string }>`
-    SELECT payee_id, currency FROM (${entries(scope)}) y
+    SELECT payee_id, currency FROM (${moneyRows(scope)}) y
      ${after ? sql`WHERE (payee_id, currency) > (${after.payeeId}, ${after.currency})` : sql``}
      GROUP BY payee_id, currency ORDER BY payee_id, currency LIMIT ${input.limit + 1}`.execute(ex);
   const page = keys.rows.slice(0, input.limit);
@@ -159,16 +180,17 @@ export async function incomeRows(ex: Executor, scope: IncomeScope, payees: reado
   const ids = [...new Set(payees.map((p) => p.payeeId))];
   const level = scope.detail === "quarter" || scope.detail === "month" ? sql`to_char(local, 'YYYY-MM')` : sql`to_char(local, 'YYYY-MM-DD')`;
   const tripCols = scope.detail === "trips"
-    ? sql`, coalesce(trip_id, entry_id) AS line_key, trip_id, max(zone_id) AS zone_id, max(payment_method) AS payment_method, to_char(min(local), 'YYYY-MM-DD"T"HH24:MI') AS local_time`
+    ? sql`, coalesce(trip_id, entry_id) AS line_key, trip_id, max(zone_id) AS zone_id, max(payment_method) AS payment_method, to_char(min(local), 'YYYY-MM-DD"T"HH24:MI') AS local_time, bool_or(kind = 'trip') AS has_trip, bool_or(kind = 'payout') AS is_payout`
     : sql``;
   const tripGroup = scope.detail === "trips" ? sql`, coalesce(trip_id, entry_id), trip_id` : sql``;
   const groups = await sql<Group>`
     SELECT payee_id, max(payee_kind) AS payee_kind, currency, ${level} AS period, array_agg(DISTINCT driver_id) AS drivers ${tripCols}, ${SUMS}
-      FROM (${entries(scope)}) y
+      FROM (${moneyRows(scope)}) y
      WHERE payee_id IN (${sql.join(ids)})
      GROUP BY payee_id, currency, ${level} ${tripGroup}
      ORDER BY payee_id, currency, period ${scope.detail === "trips" ? sql`, local_time, line_key` : sql``}`.execute(ex);
   const info = await payeeInfo(ex, groups.rows);
+  const partial = await outsideScope(ex, scope, ids);
   const wanted = new Set(payees.map((p) => `${p.payeeId}|${p.currency}`));
   const rows = new Map<string, Record<string, unknown>>();
   for (const p of payees) rows.set(`${p.payeeId}|${p.currency}`, {});
@@ -192,7 +214,7 @@ export async function incomeRows(ex: Executor, scope: IncomeScope, payees: reado
       if (!m.days.has(g.period)) m.days.set(g.period, { sums: zero(), trips: [] });
       const d = m.days.get(g.period)!;
       add(d.sums, s);
-      if (scope.detail === "trips") d.trips.push({ localTime: g.local_time, tripId: g.trip_id ?? null, zoneId: g.zone_id ?? null, paymentMethod: g.trip_id ? (g.payment_method ?? null) : null, ...view(s, g.currency) });
+      if (scope.detail === "trips") d.trips.push({ localTime: g.local_time, lineKind: g.is_payout ? "payout" : g.has_trip ? "trip" : "credit", tripId: g.trip_id ?? null, zoneId: g.zone_id ?? null, paymentMethod: g.trip_id ? (g.payment_method ?? null) : null, ...view(s, g.currency) });
     }
   }
   const out: Record<string, unknown>[] = [];
@@ -211,6 +233,8 @@ export async function incomeRows(ex: Executor, scope: IncomeScope, payees: reado
       // Bank details are an uploaded document today (driverOnboarding.adminActions.bankType), never data: null.
       bank: null,
       driverIds: [...b.drivers].sort(),
+      // SHOULD-4: a zone-limited view of a payee who also has money outside those zones in the same period.
+      ...(partial.has(`${p.payeeId}|${p.currency}`) ? { partial: true } : {}),
       ...(scope.driverId !== undefined && b.kind === "company" ? { ownPartOnly: true } : {}),
       ...view(b.year, p.currency),
       quarters: [...b.quarters.entries()].sort(([a], [c]) => a - c).map(([quarter, s]) => ({ quarter, ...view(s, p.currency) })),
@@ -227,6 +251,17 @@ export async function incomeRows(ex: Executor, scope: IncomeScope, payees: reado
     out.push(row);
   }
   return out;
+}
+
+/** SHOULD-4: the payees (payeeId|currency) that also have money rows outside the scope's zones in the same period. */
+async function outsideScope(ex: Executor, scope: IncomeScope, ids: readonly string[]): Promise<Set<string>> {
+  if (scope.zones === null || ids.length === 0) return new Set();
+  const inside = scope.zones.length ? sql`x2.zone_id IN (${sql.join(scope.zones)})` : sql`false`;
+  const found = await sql<{ payee_id: string; currency: string }>`
+    SELECT payee_id, currency FROM (${moneyRows(scope, null)}) x2
+     WHERE payee_id IN (${sql.join(ids)}) AND (x2.zone_id IS NULL OR NOT (${inside}))
+     GROUP BY payee_id, currency`.execute(ex);
+  return new Set(found.rows.map((r) => `${r.payee_id}|${r.currency}`));
 }
 
 /** Name, org number, address and country of each payee: the fleet's, else the driver's (no home address is stored). */
@@ -258,9 +293,17 @@ export async function ownPayee(ex: Executor, driverId: string): Promise<{ payeeI
   return me.owner_driver_id === driverId ? { payeeId: me.fleet_id } : { payeeId: me.fleet_id, driverId };
 }
 
-/** All payees of the scope, for the CSV (in pages of `batch`). */
-export async function* incomeAllPages(ex: Executor, scope: IncomeScope, batch = 200): AsyncGenerator<Record<string, unknown>[]> {
+/**
+ * All payees of the scope, for the CSV (in pages of `batch`), after a `first` page the caller already read (so a failure of
+ * the first read is a clean error answer before any header is sent).
+ */
+export async function* incomeAllPages(ex: Executor, scope: IncomeScope, batch = 200, first?: { items: Record<string, unknown>[]; nextCursor: string | null }): AsyncGenerator<Record<string, unknown>[]> {
   let cursor: string | undefined;
+  if (first) {
+    if (first.items.length) yield first.items;
+    if (!first.nextCursor) return;
+    cursor = first.nextCursor;
+  }
   for (;;) {
     const page = await incomePage(ex, scope, { ...(cursor ? { cursor } : {}), limit: batch });
     if (page.items.length) yield page.items;
@@ -271,7 +314,7 @@ export async function* incomeAllPages(ex: Executor, scope: IncomeScope, batch = 
 
 /* ------------------------------------------------------------------------------------------------------------ CSV */
 
-export const CSV_COLUMNS = ["level", "period", "payeeKind", "payeeId", "name", "orgNumber", "address", "country", "currency", "bankHolder", "bankLast4", "driverIds", "rides", ...MONEY_FIELDS, "localTime", "tripId", "zoneId", "paymentMethod"] as const;
+export const CSV_COLUMNS = ["level", "period", "payeeKind", "payeeId", "name", "orgNumber", "address", "country", "currency", "bankHolder", "bankLast4", "driverIds", "partial", "rides", ...MONEY_FIELDS, "localTime", "tripId", "zoneId", "paymentMethod", "lineKind"] as const;
 
 /** A CSV cell: a text that could run as a spreadsheet formula (= + - @, tab, CR) gets a leading quote; quoted when needed. */
 export function csvCell(value: unknown, numeric = false): string {
@@ -292,12 +335,12 @@ const major = (minor: number, currency: string) => {
 export function csvLines(row: Record<string, unknown>): string[] {
   const currency = row["currency"] as string;
   const bank = row["bank"] as { holder: string; last4: string } | null;
-  const head = [row["kind"], row["payeeId"], row["name"], row["orgNumber"], row["address"], row["country"], currency, bank?.holder ?? "", bank?.last4 ?? "", (row["driverIds"] as string[]).join(" ")];
+  const head = [row["kind"], row["payeeId"], row["name"], row["orgNumber"], row["address"], row["country"], currency, bank?.holder ?? "", bank?.last4 ?? "", (row["driverIds"] as string[]).join(" "), row["partial"] === true ? "true" : ""];
   const line = (level: string, period: string, t: Record<string, unknown>, trip?: Record<string, unknown>) =>
     [
       csvCell(level), csvCell(period), ...head.map((v) => csvCell(v)), csvCell(t["rides"], true),
       ...MONEY_FIELDS.map((f) => csvCell(major((t[f] as Money).amountMinor, currency), true)),
-      csvCell(trip?.["localTime"] ?? ""), csvCell(trip?.["tripId"] ?? ""), csvCell(trip?.["zoneId"] ?? ""), csvCell(trip?.["paymentMethod"] ?? ""),
+      csvCell(trip?.["localTime"] ?? ""), csvCell(trip?.["tripId"] ?? ""), csvCell(trip?.["zoneId"] ?? ""), csvCell(trip?.["paymentMethod"] ?? ""), csvCell(trip?.["lineKind"] ?? ""),
     ].join(",");
   const out = [line("year", "", row)];
   for (const q of row["quarters"] as Record<string, unknown>[]) out.push(line("quarter", `Q${q["quarter"]}`, q));

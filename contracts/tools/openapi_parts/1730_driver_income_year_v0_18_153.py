@@ -12,11 +12,12 @@ _FIELDS = ["grossFares", "tips", "bonuses", "adjustments", "pickupPay", "feeShar
 S["DriverIncomeTotals"] = obj(dict([("rides", i(_V153 + _M["rides"], minimum=0))] + [(f, money(_V153 + _M[f])) for f in _FIELDS]),
                               ["rides"] + _FIELDS, _V153 + _M["note"])
 _T = lambda extra, req, desc: {"allOf": [ref("DriverIncomeTotals"), obj(extra, req)], "description": _V153 + desc}
-S["DriverIncomeTripLine"] = _T({"localTime": s("Zone-local end time 'YYYY-MM-DDTHH:MM' (the trip's end, else the entry's time).", pattern="^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$"),
+S["DriverIncomeTripLine"] = _T({"localTime": s("Zone-local time 'YYYY-MM-DDTHH:MM' the line's money was credited (a payout: paid).", pattern="^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$"),
+                                "lineKind": s(enum=["trip", "credit", "payout"]),
                                 "tripId": {"type": ["string", "null"], "description": "The trip; null for an entry with no trip (a bonus campaign)."},
                                 "zoneId": {"type": ["string", "null"]},
                                 "paymentMethod": {"type": ["string", "null"], "description": "The trip's payment method (cash = pay in the car); null with no trip."}},
-                               ["localTime", "tripId", "zoneId", "paymentMethod"], "One trip line (detail trips): " + _DI["addUp"])
+                               ["localTime", "lineKind", "tripId", "zoneId", "paymentMethod"], "One trip line (detail trips): " + _DI["addUp"])
 S["DriverIncomeDay"] = _T({"day": s(pattern="^\\d{4}-\\d{2}-\\d{2}$"), "trips": arr(ref("DriverIncomeTripLine"), description="detail trips only.")}, ["day"], "One zone-local day.")
 S["DriverIncomeMonth"] = _T({"month": s(pattern="^\\d{4}-\\d{2}$"), "days": arr(ref("DriverIncomeDay"), description="detail day and trips only.")}, ["month"], "One month.")
 S["DriverIncomeQuarter"] = _T({"quarter": i(minimum=1, maximum=4)}, ["quarter"], "One quarter (Q1 = January-March).")
@@ -25,7 +26,7 @@ S["DriverIncomeRow"] = _T({
     "orgNumber": {"type": ["string", "null"]}, "address": {"type": ["string", "null"]}, "country": {"type": ["string", "null"], "pattern": "^[A-Z]{2}$"},
     "currency": ref("CurrencyCode"),
     "bank": {"oneOf": [obj({"holder": s(), "last4": s(pattern="^[0-9A-Z]{1,4}$")}, ["holder", "last4"]), {"type": "null"}], "description": "Holder and last 4 only, never the full account; null when not stored as data."},
-    "driverIds": arr(ref("Id")), "ownPartOnly": b(_DI["driver"]["fleetDriver"]),
+    "driverIds": arr(ref("Id")), "ownPartOnly": b(_DI["driver"]["fleetDriver"]), "partial": b(_DI["partial"]),
     "quarters": arr(ref("DriverIncomeQuarter")), "months": arr(ref("DriverIncomeMonth"), description="detail month, day and trips."),
 }, ["kind", "payeeId", "name", "orgNumber", "address", "country", "currency", "bank", "driverIds", "quarters"], _DI["payee"] + " " + _DI["periods"])
 S["DriverIncomePage"] = obj({"year": i(minimum=2020), "detail": s(enum=["quarter", "month", "day", "trips"]), "month": s(pattern="^\\d{4}-\\d{2}$"),
