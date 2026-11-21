@@ -162,7 +162,7 @@ export function timerLanes(o: { dispatchKinds: string[]; tripKinds: string[]; ti
   const housekeeping = o.housekeepingKinds ?? [];
   return [
     ...Array.from({ length: Math.max(1, o.dispatchLanes) }, () => ({ kinds: o.dispatchKinds })),
-    // G34 S3: TRIP_LANES loops (default 1) for the per-trip GPS timers; each takes its own timer with SKIP LOCKED.
+    // G34 S3: TRIP_LANES loops (default 2 since the 2026-11-20 load-test decision, src/env.ts) for the per-trip GPS timers; each takes its own timer with SKIP LOCKED.
     ...Array.from({ length: Math.max(1, o.tripLanes ?? 1) }, () => ({ kinds: o.tripKinds })),
     ...Array.from({ length: Math.max(1, o.timerLanes - 2) }, () => ({ exclude: [...o.tripKinds, ...housekeeping] })),
     ...(housekeeping.length > 0 ? Array.from({ length: Math.max(1, o.housekeepingLanes ?? 1) }, () => ({ kinds: housekeeping, name: "housekeeping" })) : []),

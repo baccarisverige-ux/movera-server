@@ -13,6 +13,7 @@ import { addVehicle, driverView, getDriverProfile, liveDrivers, type MapBox, lis
 import { setNextTrips } from "./presence.js";
 import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, startOwnCompany, submitOnboarding } from "./onboarding.js";
 import { listReminders } from "./reminders.js";
+import { listNotifications, NOTIFICATION_PAGE } from "../notifications/service.js";
 import { documentTypes, onboardingSettings } from "./onboardingSettings.js";
 import { acceptInvitation, cancelInvitation, declineInvitation, inviteByPhone, listInvitations, requestJoin, type InviteDeps } from "./invitations.js";
 import { schemaProblem } from "../contract/schemas.js";
@@ -53,10 +54,35 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   // here so app.ts stays as it is.
   await phoneDataRoutes(app, { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) });
 
+  // v0.18.4 (G3-D2): his own acceptance %, cancellation % and rating.
+  const profileOf = async (driverId: string) => ({ ...(await getDriverProfile(deps.db, driverId, now())), performance: await driverPerformance(deps.db, driverId, now()) });
+  // v0.18.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
+  const settingsOf = async (country: string) => {
+    const settings = await onboardingSettings(deps.db, country);
+    return { ...settings, country, documentTypes: documentTypes(settings) };
+  };
+  // G30: the line email_not_verified only for driver apps on contract 0.18.76 or later (X-Contract-Version).
+  const remindersOf = (request: FastifyRequest, row: Awaited<ReturnType<typeof loadDriver>>) => listReminders(deps.db, row, now(), { contractVersion: request.headers["x-contract-version"] });
+
   app.get(`${API_PREFIX}/driver/profile`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    // v0.18.4 (G3-D2): his own acceptance %, cancellation % and rating.
-    return { ...(await getDriverProfile(deps.db, who.subjectId, now())), performance: await driverPerformance(deps.db, who.subjectId, now()) };
+    return profileOf(who.subjectId);
+  });
+
+  /**
+   * v0.18.145 (S4c load cut, contract.json#loadCut.homeBadges): the driver Home's four badge reads in one request, each
+   * part exactly what its own read answers (GET /driver/profile, GET /notifications?unreadOnly=true first page,
+   * GET /driver/reminders, GET /driver/onboarding/settings of his own country; null while the account has no country).
+   * One after the other on one request, so a Home refresh holds at most one pool connection at a time. Never shed: it
+   * carries the profile, which is never shed (http/shed.ts). The four reads stay for older apps.
+   */
+  app.get(`${API_PREFIX}/driver/home-badges`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const profile = await profileOf(who.subjectId);
+    const notifications = await listNotifications(deps.db, { audience: "driver", subjectId: who.subjectId }, { limit: NOTIFICATION_PAGE, unreadOnly: true });
+    const row = await loadDriver(deps.db, who.subjectId);
+    const reminders = await remindersOf(request, row);
+    return { profile, notifications, reminders, onboardingSettings: row.country ? await settingsOf(row.country) : null };
   });
 
   app.patch(`${API_PREFIX}/driver/profile`, async (request) => {
@@ -67,8 +93,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   // v0.18.0 (§27): the Home sheet's important reminders, the country's onboarding settings, Start my own company.
   app.get(`${API_PREFIX}/driver/reminders`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    // G30: the line email_not_verified only for driver apps on contract 0.18.76 or later (X-Contract-Version).
-    return listReminders(deps.db, await loadDriver(deps.db, who.subjectId), now(), { contractVersion: request.headers["x-contract-version"] });
+    return remindersOf(request, await loadDriver(deps.db, who.subjectId));
   });
   app.get(`${API_PREFIX}/driver/onboarding/settings`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
@@ -76,9 +101,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const row = await loadDriver(deps.db, who.subjectId);
     const pick = row.country ?? country;
     if (!pick) throw new ApiError("invalid_request", "Name the country.", { reason: "country_required" });
-    const settings = await onboardingSettings(deps.db, pick);
-    // v0.18.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
-    return { ...settings, country: pick, documentTypes: documentTypes(settings) };
+    return settingsOf(pick);
   });
   app.post(`${API_PREFIX}/driver/fleet/start-company`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);

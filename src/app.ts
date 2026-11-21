@@ -353,7 +353,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     app.decorate("router", roads);
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
-    await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", nearbyCacheMs: env.NEARBY_CACHE_MS, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
     // v0.18.38 §62: in-app call steps (answer, end, signal) and the admin call log.
     await callRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });

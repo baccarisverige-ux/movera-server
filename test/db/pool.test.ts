@@ -5,9 +5,9 @@ import { readEnv } from "../../src/env.js";
 
 /** B12: pool size, idle and wait timeouts and the LISTEN address come from the environment; /healthz shows counts. */
 describe("database pool settings", () => {
-  it("reads sane defaults for Render basic-1gb and lets env override them", () => {
+  it("reads sane defaults (pool 40: load test S4d/S4e 2026-11-21) and lets env override them", () => {
     const env = readEnv({ MOVERA_ENV: "development" });
-    expect(poolOptionsFrom(env)).toEqual({ max: 20, idleMs: 30_000, connectTimeoutMs: 10_000 });
+    expect(poolOptionsFrom(env)).toEqual({ max: 40, idleMs: 30_000, connectTimeoutMs: 10_000 });
     expect(env.DATABASE_LISTEN_URL).toBeUndefined();
     const custom = readEnv({ MOVERA_ENV: "development", DATABASE_POOL_MAX: "40", DATABASE_POOL_IDLE_MS: "5000", DATABASE_POOL_CONNECT_TIMEOUT_MS: "2000", DATABASE_LISTEN_URL: "postgres://u:p@direct/db" });
     expect(poolOptionsFrom(custom)).toEqual({ max: 40, idleMs: 5000, connectTimeoutMs: 2000 });
