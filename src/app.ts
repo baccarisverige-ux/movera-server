@@ -31,6 +31,7 @@ import { rideRoutes } from "./trips/rideRoutes.js";
 import { supportedPaymentMethods } from "./trips/finish.js";
 import { adminTripRoutes } from "./admin/tripRoutes.js";
 import { realDataRoutes } from "./admin/realdataRoutes.js";
+import { financeRoutes } from "./finance/routes.js";
 import { adminEventRoutes } from "./realtime/adminEvents.js";
 import { driverRoutes } from "./drivers/routes.js";
 import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
@@ -373,6 +374,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // v0.18.116 §94 (BQ-S10): the rider's live trip link and its two public reads (their own budget, per copy).
     await shareRoutes(app, { db, jwtSecret, ...(env.SHARE_LINK_BASE ? { linkBase: env.SHARE_LINK_BASE } : {}), perAddressPerMinute: shareOf(SHARE_LIMITS.perAddressPerMinute, env.WEB_COPIES), perTokenPerMinute: shareOf(SHARE_LIMITS.perTokenPerMinute, env.WEB_COPIES), ...(clock ? { clock } : {}) });
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await financeRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) }); // v0.18.153 P29 driver income year (DAC7)
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
