@@ -57,11 +57,8 @@ export async function financeRoutes(app: FastifyInstance, deps: FinanceDeps): Pr
     const db = deps.db;
     async function* lines() {
       yield `﻿${CSV_COLUMNS.join(",")}\r\n`;
-      for await (const rows of incomeAllPages(db, scope)) {
-        // The accountant's order: country, name, payee, currency (inside one page; pages follow payeeId).
-        const sorted = [...rows].sort((a, b) => `${a["country"] ?? ""}|${a["name"]}|${a["payeeId"]}|${a["currency"]}`.localeCompare(`${b["country"] ?? ""}|${b["name"]}|${b["payeeId"]}|${b["currency"]}`, "sv"));
-        yield sorted.flatMap((row) => csvLines(row)).map((l) => `${l}\r\n`).join("");
-      }
+      // Every payee, in the JSON order (payeeId, then currency), 200 at a time: nothing is held for the whole file.
+      for await (const rows of incomeAllPages(db, scope)) yield rows.flatMap((row) => csvLines(row)).map((l) => `${l}\r\n`).join("");
     }
     const name = `movera-driver-income-${scope.year}${scope.month ? `-${scope.month.slice(5)}` : ""}-${scope.detail}.csv`;
     return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="${name}"`).header("cache-control", "no-store").send(Readable.from(lines()));

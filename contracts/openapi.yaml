@@ -19604,10 +19604,10 @@ paths:
         or after the current year), income_month_invalid (not YYYY-MM or not in year), unknown_country (no zone of that country),
         income_detail_too_big; unknown query key: unknown_filter (adminListFilters). 403 zone_out_of_scope. Cursor-paged over
         the payee rows, ordered by payeeId then currency; nextCursor null on the last page. A page never splits one payee
-        row. The CSV holds every row, sorted by country, name, payeeId and currency. Every download (JSON or CSV) writes one
-        admin audit row: action finance.driver_income.read (JSON) or finance.driver_income.csv (CSV), target driver_income
-        / <year>, detail { year, detail, month?, country?, zoneIds?, payeeId?, format, rows? } (rows: the payee rows of a
-        JSON page; the CSV is streamed, so its row is written before it). No personal data in the detail.'
+        row. The CSV holds every row in the same order. Every download (JSON or CSV) writes one admin audit row: action finance.driver_income.read
+        (JSON) or finance.driver_income.csv (CSV), target driver_income / <year>, detail { year, detail, month?, country?,
+        zoneIds?, payeeId?, format, rows? } (rows: the payee rows of a JSON page; the CSV is streamed, so its row is written
+        before it). No personal data in the detail.'
       tags:
       - Admin · Money
       x-actor:
