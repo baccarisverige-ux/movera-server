@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { seedDriver } from "../../src/drivers/service.js";
+import { incomeLimits } from "../../src/finance/driverIncome.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { adminSession } from "../support/admin.js";
 import { insertDriver, insertRider, insertTrip } from "../support/seed.js";
@@ -19,9 +20,10 @@ let app: FastifyInstance;
 const clock = { now: new Date("2026-03-01T10:00:00Z") };
 let finance: Record<string, string>;
 let franceOnly: Record<string, string>;
+let z001Only: Record<string, string>;
 let support: Record<string, string>;
 let financeId: string;
-const ids = { fleet: "flt_inc_test1", d1: "", d2: "", d3: "", d4: "", t1: "", t2: "", t3: "", t4: "", t5: "", t6: "", t7: "" };
+const ids = { fleet: "flt_inc_test1", d1: "", d2: "", d3: "", d4: "", t1: "", t2: "", t3: "", t4: "", t5: "", t6: "", t7: "", t8: "" };
 const drv: Record<string, Record<string, string>> = {};
 let n = 0;
 
@@ -69,6 +71,7 @@ beforeAll(async () => {
   finance = fin.headers;
   financeId = fin.adminId;
   franceOnly = (await adminSession(app, database.db, "finance", { zoneIds: ["FR-PC"], now: clock.now })).headers;
+  z001Only = (await adminSession(app, database.db, "finance", { zoneIds: ["Z001"], now: clock.now })).headers;
   support = (await adminSession(app, database.db, "support", { now: clock.now })).headers;
   // D1 owns the fleet (a company), D2 drives for it, D3 drives alone (Sweden), D4 alone in France (EUR).
   for (const [key, i] of [["d1", 1], ["d2", 2], ["d3", 3]] as const) {
@@ -84,6 +87,12 @@ beforeAll(async () => {
   // A paid payout (D2's January cash trip is in it).
   await database.db.insertInto("payouts").values({ payout_id: "pay_inc_1", driver_id: ids.d2, zone_id: "Z001", currency: "SEK", amount_minor: -2000, lines: "[]", trip_count: 1, source: "manual", status: "paid", period_start: new Date("2025-01-13T00:00:00Z"), period_end: new Date("2025-01-20T00:00:00Z"), note: null, created_by: null, created_at: new Date("2025-01-20T08:00:00Z"), paid_at: new Date("2025-01-21T08:00:00Z") }).execute();
 
+  // SHOULD-2: paidOutByMovera = the paid payouts (by paid_at), never below 0. D1: 50 kr paid 2025-04-07 (zone Z002, outside a
+  // Z001-only admin: SHOULD-4 partial); a pending 99 kr payout never counts. D2's −20 kr payout (he owed) counts 0.
+  await database.db.insertInto("payouts").values([
+    { payout_id: "pay_inc_2", driver_id: "", zone_id: "Z002", currency: "SEK", amount_minor: 5000, lines: "[]", trip_count: 1, source: "manual" as const, status: "paid" as const, period_start: new Date("2025-03-31T00:00:00Z"), period_end: new Date("2025-04-07T00:00:00Z"), note: null, created_by: null, created_at: new Date("2025-04-07T06:00:00Z"), paid_at: new Date("2025-04-07T08:00:00Z") },
+    { payout_id: "pay_inc_3", driver_id: "", zone_id: "Z001", currency: "SEK", amount_minor: 9900, lines: "[]", trip_count: 1, source: "manual" as const, status: "pending" as const, period_start: new Date("2025-05-05T00:00:00Z"), period_end: new Date("2025-05-12T00:00:00Z"), note: null, created_by: null, created_at: new Date("2025-05-12T06:00:00Z") },
+  ].map((p) => ({ ...p, driver_id: ids.d1 }))).execute();
   // t1: D1, card, ends 2025-03-31 22:30 UTC = 2025-04-01 00:30 in Stockholm → Q2, April.
   ids.t1 = await trip(ids.d1, { zone: "Z001", currency: "SEK", method: "card", endedAt: "2025-03-31T22:30:00Z" });
   await entry(ids.d1, ids.t1, "trip", "SEK", 16_000, { gross: 20_000, commission: 4_000, cash: 0, at: "2025-03-31T22:30:00Z" });
@@ -109,6 +118,10 @@ beforeAll(async () => {
   // t5: D4, Paris, EUR, 2025-07-01.
   ids.t5 = await trip(ids.d4, { zone: "FR-PC", currency: "EUR", method: "card", endedAt: "2025-07-01T12:00:00Z" });
   await entry(ids.d4, ids.t5, "trip", "EUR", 2_400, { gross: 3_000, commission: 600, cash: 0, at: "2025-07-01T12:00:00Z" });
+  // t8: D3, cash, 2025-12-20; its pay change is credited 2026-01-10 (SHOULD-1: counted when credited, in 2026).
+  ids.t8 = await trip(ids.d3, { zone: "Z001", currency: "SEK", method: "cash", endedAt: "2025-12-20T10:00:00Z" });
+  await entry(ids.d3, ids.t8, "trip", "SEK", 4_000, { gross: 5_000, commission: 1_000, cash: 5_000, at: "2025-12-20T10:00:00Z" });
+  await entry(ids.d3, ids.t8, "adjustment", "SEK", 777, { at: "2026-01-10T09:00:00Z" });
   // t7: D3 in 2024 (another year): never in 2025.
   ids.t7 = await trip(ids.d3, { zone: "Z001", currency: "SEK", method: "cash", endedAt: "2024-06-01T10:00:00Z" });
   await entry(ids.d3, ids.t7, "trip", "SEK", 1_000, { gross: 1_200, commission: 200, cash: 1_200, at: "2024-06-01T10:00:00Z" });
@@ -136,27 +149,74 @@ describe("v0.18.153 GET /admin/finance/driver-income (driverIncomeYear)", () => 
 
   it("pay in the car (cash) rides count; the 1 January 00:30 trip is in, the 31 December 00:30-next-day trip is out; paid_to_movera is in no field", async () => {
     const d3 = rowOf((await page("year=2025")).items, ids.d3);
-    // t4 (cash) only: t3 is 2026-01-01 local, t7 is 2024.
+    // t4 + t8 (cash): t3 is 2026-01-01 local, t7 is 2024; t8's pay change was credited in 2026.
     expect(flat(d3)).toEqual({
-      rides: 1, grossFares: 15_000, tips: 700, bonuses: 5_000, adjustments: -300, pickupPay: 500, feeShare: 3_250, moveraCommission: 3_000, moveraFees: 3_250,
-      netEarnings: 12_000 + 500 + 700 - 300 + 3_250 + 5_000, cashCollectedByDriver: 15_700, paidOutByMovera: 0,
+      rides: 2, grossFares: 20_000, tips: 700, bonuses: 5_000, adjustments: -300, pickupPay: 500, feeShare: 3_250, moveraCommission: 4_000, moveraFees: 3_250,
+      netEarnings: 12_000 + 4_000 + 500 + 700 - 300 + 3_250 + 5_000, cashCollectedByDriver: 20_700, paidOutByMovera: 0,
     });
     const next = rowOf((await page("year=2026")).items, ids.d3);
-    expect(flat(next)).toMatchObject({ rides: 1, grossFares: 11_000, cashCollectedByDriver: 11_000 });
+    expect(flat(next)).toMatchObject({ rides: 1, grossFares: 11_000, cashCollectedByDriver: 11_000, adjustments: 777 });
   });
 
-  it("paidOutByMovera = amount − cash of the entries in a paid payout (D2's cash trip: 80 − 100 kr)", async () => {
-    const company = rowOf((await page("year=2025")).items, ids.fleet);
-    expect(flat(company).paidOutByMovera).toBe(-2_000);
+  it("SHOULD-1: money counts when it is credited (entry time), as GET /driver/earnings: a Jan-2026 change on a Dec-2025 trip is in 2026, the 2025 total does not move", async () => {
+    const before = flat(rowOf((await page("year=2025")).items, ids.d3));
+    expect(before.adjustments).toBe(-300);
+    const jan = rowOf((await page(`year=2026&detail=trips&month=2026-01&payeeId=${ids.d3}`)).items, ids.d3);
+    const line = jan.months![0]!.days!.find((d) => d.day === "2026-01-10")!.trips![0]!;
+    expect(line).toMatchObject({ tripId: ids.t8, lineKind: "credit", localTime: "2026-01-10T10:00" });
+    expect(flat(line)).toMatchObject({ rides: 0, adjustments: 777, netEarnings: 777 });
+    // The same as GET /driver/earnings for the same period.
+    const earnings = await get("/driver/earnings?period=month&from=2024-12-31T23:00:00Z&to=2025-12-31T23:00:00Z", drv["d3"]!);
+    expect(earnings.statusCode, earnings.body).toBe(200);
+    const net = (earnings.json().periods as { net: { amountMinor: number } }[]).reduce((s, p) => s + p.net.amountMinor, 0);
+    expect(net).toBe(before.netEarnings);
+  });
+
+  it("SHOULD-2: paidOutByMovera = the payee's paid payouts by paid_at, never below 0; a pending payout never counts", async () => {
+    const company = rowOf((await page("year=2025&detail=trips&payeeId=" + ids.fleet)).items, ids.fleet);
+    // D1's 50 kr (paid 2025-04-07, Q2) + D2's −20 kr payout counted as 0.
+    expect(flat(company).paidOutByMovera).toBe(5_000);
+    expect(company.quarters.map((q) => [q["quarter"], flat(q).paidOutByMovera])).toEqual([[1, 0], [2, 5_000]]);
+    const april = company.months!.find((m) => m.month === "2025-04")!.days!.find((d) => d.day === "2025-04-07")!.trips!;
+    expect(april).toEqual([expect.objectContaining({ lineKind: "payout", tripId: null })]);
+    expect(flat(april[0]!)).toMatchObject({ rides: 0, netEarnings: 0, paidOutByMovera: 5_000 });
+    expect(flat(rowOf((await page("year=2025")).items, ids.d3)).paidOutByMovera).toBe(0);
+  });
+
+  it("SHOULD-4: a zone-limited admin sees partial true on a payee that also has money outside his zones", async () => {
+    const items = (await page("year=2025", z001Only)).items;
+    const company = rowOf(items, ids.fleet);
+    expect(company["partial"]).toBe(true);
+    expect(flat(company).paidOutByMovera).toBe(0);
+    expect(rowOf(items, ids.d3)["partial"]).toBeUndefined();
+    expect(rowOf((await page("year=2025")).items, ids.fleet)["partial"]).toBeUndefined();
+    const csv = await get("/admin/finance/driver-income.csv?year=2025", z001Only);
+    const fleetLine = csv.body.split("\r\n").find((l) => l.startsWith("year,") && l.includes(ids.fleet))!;
+    expect(fleetLine).toContain(`,${[ids.d1, ids.d2].sort().join(" ")},true,`);
+  });
+
+  it("SHOULD-5: over the trip-line cap is 400 income_detail_too_big", async () => {
+    const kept = incomeLimits.maxTripLines;
+    incomeLimits.maxTripLines = 3;
+    try {
+      const res = await get(`/admin/finance/driver-income?year=2025&detail=trips&payeeId=${ids.d3}`, finance);
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.json().reason).toBe("income_detail_too_big");
+      const csv = await get(`/admin/finance/driver-income.csv?year=2025&detail=trips&payeeId=${ids.d3}`, finance);
+      expect(csv.statusCode).toBe(400);
+      expect(csv.json().reason).toBe("income_detail_too_big");
+    } finally {
+      incomeLimits.maxTripLines = kept;
+    }
   });
 
   it("month and day details: months[] then days[]; the levels add up trips → day → month → quarter → year for every field", async () => {
     const months = rowOf((await page("year=2025&detail=month")).items, ids.d3);
-    // The later tip (2 January) and pay change (10 February) of t4 sit on t4's end day (1 January): by trip end time.
-    expect(months.months!.map((m) => m.month)).toEqual(["2025-01", "2025-05", "2025-06"]);
+    // SHOULD-1: the later tip (2 January) and pay change (10 February) of t4 sit on the day they were credited.
+    expect(months.months!.map((m) => m.month)).toEqual(["2025-01", "2025-02", "2025-05", "2025-06", "2025-12"]);
     expect(months.months![0]!["days"]).toBeUndefined();
     const days = rowOf((await page("year=2025&detail=day")).items, ids.d3);
-    expect(days.months![0]!.days!.map((d) => d.day)).toEqual(["2025-01-01"]);
+    expect(days.months![0]!.days!.map((d) => d.day)).toEqual(["2025-01-01", "2025-01-02"]);
     const trips = rowOf((await page(`year=2025&detail=trips&payeeId=${ids.d3}`)).items, ids.d3);
     const year = flat(trips);
     expect(sum(trips.quarters)).toEqual(year);
@@ -167,10 +227,11 @@ describe("v0.18.153 GET /admin/finance/driver-income (driverIncomeYear)", () => 
     }
     const jan1 = trips.months![0]!.days![0]!.trips!;
     expect(jan1).toHaveLength(1);
-    expect(jan1[0]).toMatchObject({ tripId: ids.t4, zoneId: "Z001", paymentMethod: "cash", localTime: "2025-01-01T00:30" });
+    expect(jan1[0]).toMatchObject({ tripId: ids.t4, lineKind: "trip", zoneId: "Z001", paymentMethod: "cash", localTime: "2025-01-01T00:30" });
+    expect(trips.months![0]!.days![1]!.trips![0]).toMatchObject({ tripId: ids.t4, lineKind: "credit", localTime: "2025-01-02T10:00" });
     // The campaign award has no trip: a line of its own.
     const june = trips.months!.find((m) => m.month === "2025-06")!.days![0]!.trips!;
-    expect(june[0]).toMatchObject({ tripId: null, paymentMethod: null });
+    expect(june[0]).toMatchObject({ tripId: null, paymentMethod: null, lineKind: "credit" });
     expect(flat(june[0]!).bonuses).toBe(5_000);
   });
 
@@ -244,6 +305,7 @@ describe("v0.18.153 GET /admin/finance/driver-income.csv", () => {
     // The fleet name "=Test Taxi AB" gets a leading quote, so a spreadsheet never runs it.
     expect(company[0]).toContain(`,'=Test Taxi AB,`);
     expect(company.map((l) => l.split(",")[0])).toEqual(["year", "quarter", "quarter", "month", "month"]);
+    expect(res.body.slice(1).split("\r\n")[0]!.split(",")[12]).toBe("partial");
     expect(company[0]).toContain(",300.00,");
     const audit = await database.db.selectFrom("admin_audit").select(["detail"]).where("admin_id", "=", financeId).where("action", "=", "finance.driver_income.csv").execute();
     expect(audit.at(-1)!.detail).toMatchObject({ year: 2025, detail: "month", format: "csv" });
@@ -261,7 +323,7 @@ describe("v0.18.153 GET /driver/income-statement", () => {
     const body = res.json();
     expect(body.detail).toBe("month");
     expect(body.items.map((r: Row) => r.payeeId)).toEqual([ids.d3]);
-    expect(flat(body.items[0]).netEarnings).toBe(21_150);
+    expect(flat(body.items[0]).netEarnings).toBe(25_150);
   });
 
   it("the fleet owner sees the fleet's row (what is reported); another fleet driver only his own money (ownPartOnly)", async () => {
