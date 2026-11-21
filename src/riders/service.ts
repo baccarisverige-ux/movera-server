@@ -92,8 +92,3 @@ export async function updateRiderProfile(trx: Trx, riderId: string, body: unknow
     .execute();
   return riderView(await loadRider(trx, riderId), currency, await outstandingByCurrency(trx, riderId));
 }
-
-export async function requestDeletion(trx: Trx, riderId: string, now: Date) {
-  await trx.updateTable("riders").set({ deletion_requested_at: now }).where("rider_id", "=", riderId).where("deletion_requested_at", "is", null).execute();
-  return { status: "requested" as const };
-}

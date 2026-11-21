@@ -27,6 +27,8 @@ import type { Router } from "../maps/routing.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
+import { requestAccountDeletion } from "../accounts/deletion.js";
+
 export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date; router?: Router };
 
 /** Document uploads a driver may start per hour by default (deep fix 2026-11-02: admin CountryRules.limits.uploadsPerHour). */
@@ -57,6 +59,13 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const who = await authenticate(request, guard, ["driver"]);
     // v0.18.4 (G3-D2): his own acceptance %, cancellation % and rating.
     return { ...(await getDriverProfile(deps.db, who.subjectId, now())), performance: await driverPerformance(deps.db, who.subjectId, now()) };
+  });
+
+  // v0.18.134 (contract.json#accountDeletion): Profile > Delete my account. WAITS FOR THE NEW SERVER.
+  app.post(`${API_PREFIX}/driver/account/deletion`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const result = await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 202, body: await requestAccountDeletion(trx, "driver", who.subjectId, now()) }));
+    return reply.status(result.status).send(result.body);
   });
 
   app.patch(`${API_PREFIX}/driver/profile`, async (request) => {
