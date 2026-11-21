@@ -214,6 +214,12 @@ const schema = z.object({
   TRIP_LANES: z.coerce.number().int().min(1).max(16).default(1),
   /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
+  /**
+   * S4c fix 3 (src/auth/sessionCache.ts): a rider / driver session read active is not read again on this copy for this
+   * many ms (0: off). Used only with a LISTEN hub; every revoke reaches every copy at once by NOTIFY. It is the hard
+   * bound on how long a signed-out session can still be used, so at most 10 s (owner OK 2026-11-21 "at most 5 s").
+   */
+  SESSION_CACHE_MS: z.coerce.number().int().min(0).max(10_000).default(5000),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
   SHED_LOOP_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1000),
   /**
