@@ -1,4 +1,4 @@
-import { settleFeesToWallet } from "./debt.js";
+import { lockRiderRow, settleFeesToWallet } from "./debt.js";
 import { sql } from "kysely";
 import { z } from "zod";
 import type { Executor, Trx } from "../db/db.js";
@@ -87,6 +87,7 @@ export async function walletEntries(ex: Executor, riderId: string, input: { curs
 
 /** Puts money in the wallet (a refund the rider chose to keep there). */
 export async function creditWallet(trx: Trx, riderId: string, amount: { amountMinor: number; currency: string }, tripId: string | null, now: Date, kind: "refund" | "adjustment" = "refund"): Promise<string> {
+  await lockRiderRow(trx, riderId); // v0.18.136 lock order: the rider first
   // v0.18.28 (owner Q4): into the balance of the money's own currency (a France refund is EUR), never another.
   // v0.18.29 fix job 0: an admin's Add money to wallet uses this same path (kind adjustment).
   await moveWallet(trx, riderId, amount.currency, amount.amountMinor, now);

@@ -1,4 +1,4 @@
-# Movera shared contract v0.18.132
+# Movera shared contract v0.18.136
 
 v0.18.132 (S7 W2 Q117 + Q118 follow-up SF-1 + SF-2; owner Sitting W2 2026-11-15 Q117 "Yes, per user (Rec.)", Q118 "Yes, phone + address (Rec.)", 2026-11-16 OQ-2 "Keep fixed in server (Rec.)", Rules decisions/session-2026-11-06.md, audits/impact/s7-q117-followup.md; Rule 0; X-Api-Version stays `0.5`; wording only, of what the server does since v0.18.119 (server #268); no new status, reason, field or setting; no migration; no app change; follows v0.18.131): on the four sign-in / refresh calls (`POST /auth/otp/request`, `/auth/otp/verify`, `/auth/refresh`, `/admin/auth/refresh`) an access token sent with the call is not read: they are always keyed by phone + address or session + address, with the two 10 × ceilings, token or not; and a call on these four whose body cannot be read (not valid JSON, too large, wrong media type) counts against the client address at the address budget: over it, `429 rate_limited` instead of the 400 (`contract.json#rateLimit.key`, old text kept as `keyBefore0_18_132`).
 

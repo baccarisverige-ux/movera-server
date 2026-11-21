@@ -1,4 +1,6 @@
 import { addTripNote, flagTrip, openTripCase, revealTripContact, tripNotes } from "./tripTools.js";
+import { needStripe, serverStripeStatus, type StripeApi } from "../payments/stripe.js";
+import { listFeePayments, refundFeePayment, startFeePayment, StripeRefundBody } from "../riders/feeStripe.js";
 import { adminDriverPay, adminReceipt, resendReceipt } from "../trips/finish.js";
 import { ModerationBody } from "../riders/moderation.js";
 import { WalletCreditBody, creditRiderWallet } from "../riders/walletCredit.js";
@@ -22,7 +24,7 @@ import { adminAdjust, adminAssign, adminCancel, adminComplete, adminDriverBonus,
 
 /** contract §3.1, §7: the admin's trip tools, lists, account status, audit; the rider's wallet and refunds. */
 
-export type AdminTripDeps = { db: Db; jwtSecret: string; currency: string; clock?: () => Date };
+export type AdminTripDeps = { db: Db; jwtSecret: string; currency: string; stripe?: StripeApi | null; clock?: () => Date };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Money = z.object({ amountMinor: z.number().int(), currency: z.string().regex(/^[A-Z]{3}$/) });
@@ -239,6 +241,34 @@ export async function adminTripRoutes(app: FastifyInstance, deps: AdminTripDeps)
     const { riderId, tripId } = parseBody(z.object({ riderId: ID, tripId: ID }), request.params);
     const body = parseBody(FeeMarkPaidBody, request.body);
     return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await markRiderFeePaid(trx, who, riderId, tripId, body, deps.currency, now()) }))).body;
+  });
+
+  // v0.18.136 (DRAFT, contract.json#stripeFees): the rider pays an owed fee with Stripe; the admin sees and refunds it.
+  app.post(`${API_PREFIX}/rider/fees/:tripId/pay`, async (request) => {
+    const who = await authenticate(request, guard, ["rider"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    // Money review (6): not through the Idempotency-Key store (the answer holds clientSecret); a repeat gets the same open intent.
+    const toCancel: string[] = [];
+    const view = await deps.db.transaction().execute((trx) => startFeePayment(trx, deps.stripe, who.subjectId, tripId, now(), toCancel));
+    // Money review (3): after the commit; a failure is only logged (a late success is paidTwice for the admin).
+    for (const id of toCancel) await needStripe(deps.stripe).cancelPaymentIntent(id).catch((error: unknown) => request.log.warn({ paymentIntentId: id, error: String(error) }, "stripe: cancel failed"));
+    return view;
+  });
+  // Live mode (contract.json#stripeFees.status): this server's Stripe mode (live, test or off + reason), never a key.
+  app.get(`${API_PREFIX}/admin/payments/stripe-status`, async (request) => {
+    await authenticateAdmin(request, guard, "finance.read");
+    return serverStripeStatus();
+  });
+  app.get(`${API_PREFIX}/admin/riders/:riderId/fee-payments`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.read");
+    const { riderId } = parseBody(z.object({ riderId: ID }), request.params);
+    return listFeePayments(deps.db, who, riderId);
+  });
+  app.post(`${API_PREFIX}/admin/riders/:riderId/fees/:tripId/stripe-refund`, async (request) => {
+    const who = await authenticateAdmin(request, guard, "finance.edit");
+    const { riderId, tripId } = parseBody(z.object({ riderId: ID, tripId: ID }), request.params);
+    const body = parseBody(StripeRefundBody, request.body);
+    return (await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: await refundFeePayment(trx, deps.stripe, who, riderId, tripId, body, now()) }))).body;
   });
 
   /* ---- the rider's wallet and refunds */
