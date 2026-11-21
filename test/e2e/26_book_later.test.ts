@@ -335,6 +335,13 @@ describe("book later (owner Q1–Q7)", () => {
       expect(took.status, JSON.stringify(took.body)).toBe(200);
       const held = await sim.db.selectFrom("trips").select(["status", "driver_id", "reservation"]).where("trip_id", "=", next.tripId).executeTakeFirstOrThrow();
       expect(held).toMatchObject({ status: "accepted", driver_id: a.id, reservation: { held: true } });
+      // v0.18.152 (bookedRideSeen.searchSeen, owner (A)): taken from the search, not the list → the rider sees it as a
+      // normal ride (fail-before: afterHeldAccept overwrote listHeld with true, so the rider saw no driver).
+      expect((held.reservation as Record<string, unknown>)["listHeld"]).toBe(false);
+      const seen = await rider.get("/rider/trips/active");
+      expect(seen.status, JSON.stringify(seen.body)).toBe(200);
+      expect(seen.body["tripId"]).toBe(next.tripId);
+      expect(seen.body["driver"], "rider sees the driver").toBeDefined();
       expect((await a.get("/driver/profile")).body["onlineStatus"]).toBe("on_trip");
       await sim.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", next.tripId).execute();
 
