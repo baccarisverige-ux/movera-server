@@ -1,3 +1,4 @@
+import { sessionsRevoked } from "../auth/sessionCache.js";
 import { sql } from "kysely";
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
@@ -112,7 +113,9 @@ export async function requestAccountDeletion(trx: Trx, kind: Kind, id: string, n
     await trx.updateTable("drivers").set({ deletion_requested_at: now, online_status: "offline", online_since: null, updated_at: now }).where("driver_id", "=", id).execute();
     await trx.insertInto("timers").values({ kind: "withdraw_driver_offers", ref_id: id, due_at: now, payload: JSON.stringify({}) }).onConflict((c) => c.columns(["kind", "ref_id"]).doUpdateSet({ due_at: now })).execute();
   }
-  await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "account_closed" }).where("actor", "=", kind).where("subject_id", "=", id).where("revoked_at", "is", null).execute();
+  const ended = await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "account_closed" }).where("actor", "=", kind).where("subject_id", "=", id).where("revoked_at", "is", null).returning("session_id").execute();
+  // S4c fix 3 (session check cache): the closed account is refused at once on every server copy.
+  await sessionsRevoked(trx, ended.map((r) => r.session_id));
   await trx.deleteFrom("push_devices").where("actor", "=", kind).where("subject_id", "=", id).execute();
   return answer(now, setting);
 }
@@ -168,7 +171,10 @@ async function eraseOne(trx: Trx, a: Due, now: Date): Promise<Record<string, num
   };
   const sessions = sql`SELECT session_id FROM auth_sessions WHERE actor = ${a.kind} AND subject_id = ${a.id}`;
   await run("refresh_tokens", sql`DELETE FROM refresh_tokens WHERE session_id IN (${sessions})`);
-  await run("auth_sessions", sql`DELETE FROM auth_sessions WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
+  // S4c fix 3 (session check cache): a deleted session row is forgotten at once on every server copy.
+  const gone = await sql<{ session_id: string }>`DELETE FROM auth_sessions WHERE actor = ${a.kind} AND subject_id = ${a.id} RETURNING session_id`.execute(trx);
+  counts["auth_sessions"] = gone.rows.length;
+  await sessionsRevoked(trx, gone.rows.map((r) => r.session_id));
   await run("push_devices", sql`DELETE FROM push_devices WHERE actor = ${a.kind} AND subject_id = ${a.id}`);
   await run("notifications", sql`DELETE FROM notifications WHERE audience = ${a.kind} AND subject_id = ${a.id}`);
   // Review round 3 SHOULD: unused Apple / Google sign-in link tokens of the person's identities (name, e-mail) first.
