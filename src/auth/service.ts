@@ -676,7 +676,7 @@ export async function rotateRefresh(trx: Trx, refreshToken: string, now: Date, o
   const session = await trx.selectFrom("auth_sessions").selectAll().where("session_id", "=", owner.session_id).forUpdate().executeTakeFirstOrThrow();
   const token = await trx.selectFrom("refresh_tokens").selectAll().where("token_sha256", "=", hash).forUpdate().executeTakeFirstOrThrow();
   if (!options.actors.includes(session.actor)) return { ok: false, error: unauthenticated("refresh_token_unknown") };
-  if (session.revoked_at !== null) return { ok: false, error: unauthenticated(session.revoked_reason === "signed_in_elsewhere" ? "signed_in_elsewhere" : "session_ended") };
+  if (session.revoked_at !== null) return { ok: false, error: unauthenticated(endedReason(session.revoked_reason)) };
   if (session.expires_at.getTime() <= now.getTime() || token.expires_at.getTime() <= now.getTime()) {
     return { ok: false, error: unauthenticated("session_expired") };
   }
@@ -796,6 +796,14 @@ export async function signOut(db: Db, sessionId: string, now: Date = new Date(),
 export async function endAdminSessions(ex: Executor, adminId: string, now: Date, reason: "role_changed" | "admin_deactivated"): Promise<number> {
   const ended = await ex.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: reason }).where("actor", "=", "admin").where("subject_id", "=", adminId).where("revoked_at", "is", null).returning("session_id").execute();
   return ended.length;
+}
+
+/**
+ * The 401 reason for an ended session (contract.json#auth.signedOut.reasons): the other phone (v0.18.14), an admin
+ * sign-out (v0.18.149, owner G12 Q6: "You were signed out by Movera"), else session_ended.
+ */
+export function endedReason(revokedReason: string | null | undefined): "signed_in_elsewhere" | "signed_out_by_movera" | "session_ended" {
+  return revokedReason === "signed_in_elsewhere" || revokedReason === "signed_out_by_movera" ? revokedReason : "session_ended";
 }
 
 /** True while the session behind an access token is neither signed out nor expired. */
