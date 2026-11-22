@@ -1,3 +1,4 @@
+import { sessionsRevoked } from "./sessionCache.js";
 import type { EmailSender } from "../email/resend.js";
 import { emailTakenByOther } from "./emailTaken.js";
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
@@ -692,6 +693,8 @@ export async function rotateRefresh(trx: Trx, refreshToken: string, now: Date, o
     const isLostAnswer = unusedReplacement && !isRetry && token.late_retry_at === null;
     if (!isRetry && !isLostAnswer) {
       await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "refresh_token_reused" }).where("session_id", "=", session.session_id).execute();
+      // S4c fix 3: every copy forgets it now (session check cache).
+      await sessionsRevoked(trx, [session.session_id]);
       return { ok: false, error: unauthenticated("refresh_token_reused") };
     }
     // Drop the replacement the app never received; it can no longer be used.
@@ -779,6 +782,8 @@ export async function signOut(db: Db, sessionId: string, now: Date = new Date(),
       .where("session_id", "=", sessionId)
       .where("revoked_at", "is", null)
       .execute();
+    // S4c fix 3: refused at once on every copy (session check cache), also when it was ended before.
+    await sessionsRevoked(trx, [sessionId]);
     await trx.deleteFrom("push_devices").where("session_id", "=", sessionId).execute();
   });
 }
@@ -804,6 +809,8 @@ const ELSEWHERE = { sv: { title: "Inloggad på en annan telefon", body: "Ditt ko
 async function signOutOtherPhones(trx: Trx, driverId: string, now: Date): Promise<void> {
   const ended = await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "signed_in_elsewhere" }).where("actor", "=", "driver").where("subject_id", "=", driverId).where("revoked_at", "is", null).where("expires_at", ">", now).returning("session_id").execute();
   if (ended.length === 0) return;
+  // S4c fix 3: the old phone is refused at once on every copy (session check cache).
+  await sessionsRevoked(trx, ended.map((r) => r.session_id));
   // Decision (driver-g1.md): the OLD phone goes offline — a free driver is set offline (offers withdrawn) and goes
   // online again from the new phone; one on a trip keeps it (the new phone carries on with it).
   const driver = await trx.selectFrom("drivers").select(["language", "online_status", "version"]).where("driver_id", "=", driverId).executeTakeFirst();

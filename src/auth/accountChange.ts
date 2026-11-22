@@ -1,3 +1,4 @@
+import { sessionsRevoked } from "./sessionCache.js";
 import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
@@ -237,5 +238,7 @@ async function afterChange(trx: Trx, who: Who, what: "phone" | "email", old: str
   // address keeps its own language rule above (supervisor answer 13, owner to review).
   const n = await noticeLanguage(trx, { actor: who.actor, id: who.subjectId, language: row?.language ?? null });
   await notify(trx, { audience: who.actor, subjectId: who.subjectId, kind: `${what}_changed`, title: TEXT[what][n], body: TEXT.body[n], data: { texts: { title: TEXT[what], body: TEXT.body } } }, now);
-  await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "account_changed" }).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("session_id", "!=", who.sessionId).where("revoked_at", "is", null).execute();
+  const ended = await trx.updateTable("auth_sessions").set({ revoked_at: now, revoked_reason: "account_changed" }).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("session_id", "!=", who.sessionId).where("revoked_at", "is", null).returning("session_id").execute();
+  // S4c fix 3: refused at once on every copy (session check cache).
+  await sessionsRevoked(trx, ended.map((r) => r.session_id));
 }
