@@ -9,6 +9,7 @@ import { noticeLanguage, type Lang } from "../notifications/noticeLanguage.js";
 import type { SmsProvider } from "../sms/sms.js";
 import { scrubText } from "../telemetry/scrub.js";
 import { driverContacts, driverCountry } from "../accounts/phoneData.js";
+import { signInSmsLastDay, smsSignInFor } from "../auth/smsSignIn.js";
 
 /**
  * v0.18.101 §92 (contract.json#sosContactsSms; BQ-V34 = BQ-S12, owner 2026-11-02 Q2 "Use them in SOS (Recommended)",
@@ -137,9 +138,24 @@ async function smsRows(trx: Trx, incident: SosIncident, press: unknown, connecte
   const emergency = country ? ((await emergencyNumbersFor(trx, country))[0]?.number ?? "112") : "112";
   const text = sosSmsText(lang, { driver: driver.first_name, position: latLng(press) ?? latLng(incident.driver_fix) ?? latLng(incident.position), emergency });
   const queued: string[] = [];
+  // v0.18.151 (sosContactsSms.send.dailyCap): with an SMS company, the trip zone country's daily SMS limit, counted
+  // with the sign-in SMS, one step at a time per country (the same lock as the sign-in codes). Fail closed.
+  let room = Number.POSITIVE_INFINITY;
+  if (connected && country !== null) {
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${`sms-cap:${country}`}))`.execute(trx);
+    room = (await smsSignInFor(trx, country)).dailyCap - (await signInSmsLastDay(trx, country, now)).count;
+  }
+  // v0.18.151 (sosContactsSms.send.once): one SMS per contact number per case.
+  const numbers = new Set<string>();
   for (const [i, contact] of items.entries()) {
     const smsId = newId("sms", now.getTime() + i);
     const number = sosSmsNumber(contact.phone, phoneCountry);
+    if (number !== null && numbers.has(number)) continue;
+    if (number !== null) numbers.add(number);
+    if (number !== null && connected && queued.length >= room) {
+      await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: number, text, kind: SOS_SMS_KIND, status: "skipped", provider: null, error: "daily_limit", created_at: now }).execute();
+      continue;
+    }
     if (number === null) {
       // Supervisor S2: a wrong number must never get the driver's position.
       const raw = typeof contact.phone === "string" ? contact.phone : "";
@@ -174,8 +190,11 @@ export async function deliverSosSms(
       await db.updateTable("sms_outbox").set({ status: "sent", provider_ref: ref, sent_at: deps.now() }).where("sms_id", "=", smsId).execute();
       sent++;
     } catch (error) {
-      await db.updateTable("sms_outbox").set({ status: "failed", error: String(error).slice(0, 500) }).where("sms_id", "=", smsId).execute();
-      deps.warn?.({ smsId, err: scrubText(String(error)) }, "SOS SMS failed");
+      // v0.18.151: the sender's error is a code (http_<status> | no_answer), stored as such so the daily limit counts a
+      // send that may have been billed (smsSignIn.dailyCap); never the number, the text or a position in the log.
+      const code = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+      await db.updateTable("sms_outbox").set({ status: "failed", error: code }).where("sms_id", "=", smsId).execute();
+      deps.warn?.({ smsId, incidentId, err: scrubText(code).slice(0, 80) }, "SOS SMS failed");
     }
   }
   await db.transaction().execute(async (trx) => {

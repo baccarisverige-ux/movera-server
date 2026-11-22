@@ -50,7 +50,7 @@ import { TELEMETRY, telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
 import { emailSenderFrom, type EmailSender } from "./email/resend.js";
-import { signInSmsFrom, type CodeSmsSender } from "./sms/elks.js";
+import { signInSmsFrom, sosContactsProviderFrom, type CodeSmsSender } from "./sms/elks.js";
 import { SMS_SIGN_IN } from "./auth/smsSignIn.js";
 import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
@@ -332,8 +332,11 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const emailSender = email ?? emailSenderFrom(env);
     // v0.18.133 (contract.json#smsSignIn): the sign-in code SMS goes out through 46elks only when BOTH keys are set
     // (tests inject a fake); without a sender every real number stays sign_in_restricted. The country switch is the
-    // second condition (auth/smsSignIn.ts). Only sign-in codes use it: `sms` (invitations, SOS contacts) is unchanged.
+    // second condition (auth/smsSignIn.ts). `sms` (fleet invitations) is unchanged; the SOS contacts SMS use it only with the switch below (v0.18.151).
     const codeSms = signInSms ?? signInSmsFrom(env, SMS_SIGN_IN.sender);
+    // v0.18.151 (contract.json#sosContactsSms.send): the SOS contacts SMS use the sign-in sender only with the server
+    // switch on (default off); a test's injected `sms` stays as it is.
+    const sosSms = sms ?? sosContactsProviderFrom(env.SOS_CONTACTS_SMS_SEND, codeSms);
     await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(emailSender ? { email: emailSender } : {}), ...(codeSms ? { signInSms: codeSms } : {}), warn: (data, message) => app.log.warn(data, message), logCodes: env.MOVERA_ENV === "development", ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await telemetryRoutes(app, { db, jwtSecret, perAddressPerMinute: shareOf(env.TELEMETRY_PER_ADDRESS_PER_MINUTE ?? TELEMETRY.perAddressPerMinute, env.WEB_COPIES), anonRowsPerMinute: env.TELEMETRY_ANON_ROWS_PER_MINUTE ?? TELEMETRY.anonRowsPerMinute, anonBytesPerMinute: env.TELEMETRY_ANON_BYTES_PER_MINUTE ?? TELEMETRY.anonBytesPerMinute, ...(clock ? { clock } : {}) });
@@ -351,7 +354,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await blockedPairRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.110 BQ-V44 (contract.json#bonusCampaigns): Admin › Drivers › Bonuses and the driver's Campaigns.
     await bonusRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, smsConnected: sms !== undefined, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, smsConnected: sosSms !== undefined, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??
       (env.OSRM_URL !== undefined
@@ -388,7 +391,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await reservationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.6 §32 (owner G4-F2..F6): the admin's Dispatch tools and the driver's events.
     await dispatchToolRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}), ...(sms ? { sms } : {}), warn: (data, message) => app.log.warn(data, message) });
+    await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}), ...(sosSms ? { sms: sosSms } : {}), warn: (data, message) => app.log.warn(data, message) });
     // v0.18.116 §94 (BQ-S10): the rider's live trip link and its two public reads (their own budget, per copy).
     await shareRoutes(app, { db, jwtSecret, ...(env.SHARE_LINK_BASE ? { linkBase: env.SHARE_LINK_BASE } : {}), perAddressPerMinute: shareOf(SHARE_LIMITS.perAddressPerMinute, env.WEB_COPIES), perTokenPerMinute: shareOf(SHARE_LIMITS.perTokenPerMinute, env.WEB_COPIES), ...(clock ? { clock } : {}) });
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });

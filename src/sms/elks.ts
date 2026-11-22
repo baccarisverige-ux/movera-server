@@ -1,4 +1,5 @@
 import type { Env } from "../env.js";
+import type { SmsProvider } from "./sms.js";
 
 /**
  * Contract v0.18.133 (contract.json#smsSignIn; owner 2026-11-19 "Yes, build it now (Rec.)", SMS company 46elks per
@@ -77,4 +78,26 @@ export function smsStartupWarnings(env: ElksEnv): string[] {
   const asked = set(env.SMS_SENDER_NAME);
   if (asked !== undefined && !SENDER_NAME.test(asked)) out.push("SMS_SENDER_NAME is not 3-11 letters and digits starting with a letter: the default sender name is used.");
   return out;
+}
+
+/**
+ * Contract v0.18.151 (contract.json#sosContactsSms.send): the SOS contacts SMS go through the SAME sender as the
+ * sign-in codes, only when the server switch SOS_CONTACTS_SMS_SEND is "on" (any case; unset or anything else = off, the
+ * default). The SOS code path (safety/sosContactsSms.ts) wants an SmsProvider that answers the company's id or throws:
+ * the error says only http_<status> or no_answer (never the number, the text or a position), and is what sms_outbox and
+ * the log keep. Off, or no sender (the keys are not both set): undefined, the SMS stay not_connected as before.
+ */
+export const SOS_SMS_SWITCH = "SOS_CONTACTS_SMS_SEND";
+export const sosSmsSwitchOn = (value: string | undefined): boolean => value !== undefined && value.trim().toLowerCase() === "on";
+
+export function sosContactsProviderFrom(switchValue: string | undefined, sender: CodeSmsSender | undefined): SmsProvider | undefined {
+  if (sender === undefined || !sosSmsSwitchOn(switchValue)) return undefined;
+  return {
+    name: sender.name,
+    async send(message) {
+      const out = await sender.send({ to: message.phone, text: message.text });
+      if (!out.accepted) throw new Error(out.status !== undefined ? `http_${out.status}` : "no_answer");
+      return out.ref ?? "";
+    },
+  };
 }
