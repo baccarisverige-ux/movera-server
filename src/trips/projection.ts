@@ -1,4 +1,4 @@
-import { reservationView } from "../reservations/view.js";
+import { listHeldOf, reservationView } from "../reservations/view.js";
 import { headingView } from "./headingCheck.js";
 import type { TripRow } from "../db/tripLog.js";
 import { bonusFor, priorityFor } from "../dispatch/bonusScope.js";
@@ -291,6 +291,7 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   // sent (the trip-start event said "there at the start time" until the next tick).
   const stored = row.driver_id ? (row.eta as { etaSeconds: number; target?: string } | null) : null;
   const eta = stored && ETA_TARGET_OF[row.status] !== undefined && stored.target === ETA_TARGET_OF[row.status] ? stored : null;
+  const riderSeesAssignedOnly = viewer === "rider" && row.kind === "scheduled" && row.status === "accepted" && listHeldOf(row);
   const projection: Record<string, unknown> = {
     tripId: row.trip_id,
     rideId: row.trip_id,
@@ -327,8 +328,10 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
     // v0.18.8: the PIN (rider and admin views; taken out for the driver below and on his stream) and whether it was given.
     ...(row.pin_required && row.pickup_pin ? { pickupPin: row.pickup_pin, pinVerified: row.pin_verified_at !== null, pinAttempts: Number(row.pin_attempts ?? 0), pinBlocked: row.pin_blocked === true } : {}),
     // Owner D (v0.18.19): a held booked ride shows the rider "Driver assigned" only; the driver from driver_to_pickup on.
-    ...(row.driver_summary && !(viewer === "rider" && row.kind === "scheduled" && row.status === "accepted") ? { driver: row.driver_summary } : {}),
-    ...(viewer === "rider" && row.kind === "scheduled" && row.status === "accepted" && row.driver_id ? { driverAssigned: true } : {}),
+    // v0.18.152 (bookLater.liveFixes.driverShown, owner 2026-11-21 (A)): only while a list driver holds it or held it
+    // before; a booked ride no list driver ever held shows its driver at accept, like a normal ride.
+    ...(row.driver_summary && !riderSeesAssignedOnly ? { driver: row.driver_summary } : {}),
+    ...(riderSeesAssignedOnly && row.driver_id ? { driverAssigned: true } : {}),
     // v0.18.7 (Q1): the rider as the driver sees him; never in the rider's own view.
     ...(row.rider_summary && viewer !== "rider" ? { rider: row.rider_summary } : {}),
     // v0.18.7: the rules this trip is charged by, and the server's road-route ETA (TripEta) while it has one.

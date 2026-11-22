@@ -1,11 +1,11 @@
-# Movera API v0.18.151 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.152 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.151
+  version: 0.18.152
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.151 in this folder; this file must agree with them.
+    v0.18.152 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.151
+  version: 0.18.152
   source: contract.json
 paths:
   /auth/otp/request:
@@ -1441,7 +1441,11 @@ paths:
       description: '204 when there is none. v0.18.32 (contract.json#bookedRideSeen): a booked trip (kind scheduled) is returned
         once it reached driver_to_pickup, until it ends; a live trip wins when both are active (owner Q1, the app shows a
         banner for the booked one). v0.18.83 (owner): never refused with server_busy by load shedding, also under overload
-        (the restore read; contract.json#fastDispatch.shedPolls.neverShed).'
+        (the restore read; contract.json#fastDispatch.shedPolls.neverShed). v0.18.152 (contract.json#bookedRideSeen.searchSeen):
+        also a booked trip in searching, offered or accepted that no list driver holds or ever held (its search started: 30
+        min before the pickup, or at once when booked under 30 min ahead): the rider app shows the normal Finding driver and
+        driver screens, the driver at accept. A ride a list driver holds, or gave back before driving, is not returned before
+        driver_to_pickup.'
       tags:
       - Rider · Booking
       x-actor:
@@ -22371,6 +22375,12 @@ components:
             64e7ad1 src/calls/openUntil.ts:10-13, :21-22): "an early end" above is the rider''s early end (POST /trips/{tripId}/end-early,
             status cancelled_by_rider): no callOpenUntil. A driver''s end before the drop-off is a completed trip (finish.endedEarly
             true) and carries callOpenUntil like any completed trip.'
+        driverAssigned:
+          type: boolean
+          description: 'Rider view only. v0.18.19 Owner D / v0.18.152 (contract.json#bookLater.liveFixes.driverShown): true
+            while a list driver holds this booked ride (status accepted), or one held it before; then driver and driverLocation
+            are not sent until driver_to_pickup. Absent otherwise (a booked ride no list driver ever held shows its driver
+            at accept).'
     DriverSilentAlert:
       type: object
       description: 'v0.7.0: documents the server''s alert of 2026-10-26: no position for 30 min with the rider on board; the
