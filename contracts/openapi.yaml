@@ -1,11 +1,11 @@
-# Movera API v0.18.140 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.143 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.140
+  version: 0.18.143
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.140 in this folder; this file must agree with them.
+    v0.18.143 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.140
+  version: 0.18.143
   source: contract.json
 paths:
   /auth/otp/request:
@@ -870,7 +870,25 @@ paths:
         Root cause of ''the driver never sees the change'' was in the driver app: its trip stream dropped every trip_projection
         whose status equals one the driver himself set (an ''own echo'', e.g. in_trip after Start), and the change keeps the
         trip''s status. Driver app rule: a trip_projection whose version is higher than the version of this phone''s own last
-        command is never an echo; it must reach the trip screen.'
+        command is never an echo; it must reach the trip screen. v0.18.143 (onTrip.routeChange.whileSearching): v0.18.143
+        (owner 2026-11-20 "must rider can change !!!!", Rules decisions/session-2026-11-06.md): while a LIVE trip is still
+        being searched (requested, searching, offered; no driver accepted) the rider may change the pickup to ANY place, the
+        destination and the stops. One server transaction: the old search ends for free (open offers withdrawn; the drivers
+        see the offer go) and a new search starts with the new route and price. Never two app calls (cancel, then book). After
+        a driver accepted, the rules above stay (pickup only by pickupWaiting.pickupMove, at most maxPickupMoveMeters; destination
+        and stops with the driver''s Accept / Refuse). 1. Rider: POST /trips/{tripId}/route-quote { expectedVersion, pickup?,
+        dropoff?, stops } → 201 RouteQuote (+ pickup). pickup is accepted only while searching (any distance); after accept
+        it stays 400 invalid_body. Priced as onTrip.routeChange.price from the new pickup. The zone switches on / beforePickup
+        do not apply while searching (no driver to ask); fixedPriceTrips does. 2. Rider confirms the new price: PATCH /trips/{tripId}
+        { expectedVersion, routeQuoteId } → 200 TripProjection, status searching, the new pickup (also the new booked pickup),
+        drop-off, stops, fare, fareLines; routeChange { status: accepted, answeredBy: system, pickup, reason: rider_changed_route
+        }. Command change_route (transitions), version + 1, one trip_projection event. A quote made while searching is refused
+        once a driver accepted (409 version_mismatch: ask again). Only the pickup moved and at most the trip''s booking.maxPickupMoveMeters
+        from the booked pickup: the app keeps PATCH /trips/{tripId} { expectedVersion, pickup } (pickupWaiting.pickupMove,
+        same price, event pickup_moved). Owner 2026-11-20 "But the price apply to zone from where booking is": while searching,
+        a pickup change keeps the booked zone''s pricing (and its rules and currency); drivers from any zone. The new pickup
+        must only be inside some open service area; else route-quote answers 403 forbidden, reason service_not_available ("Movera
+        is not available at this pickup.").'
   /trips/{tripId}/route-quote:
     post:
       operationId: quoteRouteChange
@@ -927,7 +945,25 @@ paths:
         409 route_quote_expired / route_quote_used; a route quote made at another trip version → 409 version_mismatch on PATCH.
         Zone switch off → 409 route_change_off; status outside statuses → 409 invalid_transition. accept / refuse with another
         changeId or a change no longer pending → 409 route_change_not_pending. beforePickup false and the trip still before
-        pickup (beforePickupStatuses) → 409 route_change_before_pickup_off.'
+        pickup (beforePickupStatuses) → 409 route_change_before_pickup_off. v0.18.143 (onTrip.routeChange.whileSearching):
+        v0.18.143 (owner 2026-11-20 "must rider can change !!!!", Rules decisions/session-2026-11-06.md): while a LIVE trip
+        is still being searched (requested, searching, offered; no driver accepted) the rider may change the pickup to ANY
+        place, the destination and the stops. One server transaction: the old search ends for free (open offers withdrawn;
+        the drivers see the offer go) and a new search starts with the new route and price. Never two app calls (cancel, then
+        book). After a driver accepted, the rules above stay (pickup only by pickupWaiting.pickupMove, at most maxPickupMoveMeters;
+        destination and stops with the driver''s Accept / Refuse). 1. Rider: POST /trips/{tripId}/route-quote { expectedVersion,
+        pickup?, dropoff?, stops } → 201 RouteQuote (+ pickup). pickup is accepted only while searching (any distance); after
+        accept it stays 400 invalid_body. Priced as onTrip.routeChange.price from the new pickup. The zone switches on / beforePickup
+        do not apply while searching (no driver to ask); fixedPriceTrips does. 2. Rider confirms the new price: PATCH /trips/{tripId}
+        { expectedVersion, routeQuoteId } → 200 TripProjection, status searching, the new pickup (also the new booked pickup),
+        drop-off, stops, fare, fareLines; routeChange { status: accepted, answeredBy: system, pickup, reason: rider_changed_route
+        }. Command change_route (transitions), version + 1, one trip_projection event. A quote made while searching is refused
+        once a driver accepted (409 version_mismatch: ask again). Only the pickup moved and at most the trip''s booking.maxPickupMoveMeters
+        from the booked pickup: the app keeps PATCH /trips/{tripId} { expectedVersion, pickup } (pickupWaiting.pickupMove,
+        same price, event pickup_moved). Owner 2026-11-20 "But the price apply to zone from where booking is": while searching,
+        a pickup change keeps the booked zone''s pricing (and its rules and currency); drivers from any zone. The new pickup
+        must only be inside some open service area; else route-quote answers 403 forbidden, reason service_not_available ("Movera
+        is not available at this pickup.").'
   /trips/{tripId}/cancel:
     post:
       operationId: cancelTrip
@@ -22175,6 +22211,10 @@ components:
             is switch_to_normal: on accept the trip is priced like a normal trip.'
         expiresAt:
           $ref: '#/components/schemas/Timestamp'
+        pickup:
+          allOf:
+          - $ref: '#/components/schemas/Place'
+          description: 'v0.18.143: the new pickup, only on a quote made while searching.'
     Rider:
       type: object
       required:
@@ -30954,7 +30994,8 @@ components:
         pickup:
           allOf:
           - $ref: '#/components/schemas/Place'
-          description: 'v0.5.1, optional: price a moved pickup.'
+          description: 'v0.5.1, optional: price a moved pickup. v0.18.143: accepted only while searching (any distance); after
+            accept 400 invalid_body.'
       description: 'v0.18.9: 1. Rider: POST /trips/{tripId}/route-quote { expectedVersion, dropoff?, stops } → 201 RouteQuote
         { routeQuoteId, tripId, total, difference, fareLines, dropoff, stops, expiresAt } (the new price; no driver money).
         dropoff absent = the current one. Valid 5 minutes.'
@@ -35745,7 +35786,8 @@ components:
       description: 'v0.18.9: TripProjection.routeChange { changeId, routeQuoteId, status: pending | accepted | refused | expired
         | withdrawn, dropoff, stops, total, difference, askedAt, answerBy, answeredAt?, answeredBy?: driver | rider | system,
         driverEarnings?, earningsDifference? } — the latest change of the trip; driverEarnings and earningsDifference only
-        in the driver and admin views. Owner decision 5 of v0.4.3 (§3 ''Route-change pricing''), in practice: total = current
+        in the driver and admin views. v0.18.143: + pickup and reason (rider_changed_route) when the change was made while
+        searching (whileSearching). Owner decision 5 of v0.4.3 (§3 ''Route-change pricing''), in practice: total = current
         fare + (price of the new route − price of the current route), both priced with the trip''s own pricing document, surge
         and car type (distance, time, stop fee, app fee, minimum); never below half of (booked fare + raises); difference
         = total − current fare (may be negative). The driver''s new earnings = current earnings + (his share of the new route
@@ -35809,6 +35851,15 @@ components:
             what the driver gets for the whole trip with the new route = its driverEarnings + pickupPay + driverBonus (pending:
             if he accepts; accepted: what he gets now). The driver''s route-change card and trip details show this number;
             the app never adds earningsDifference to a total of its own. Absent → the card shows earningsDifference only.'
+        pickup:
+          allOf:
+          - $ref: '#/components/schemas/Place'
+          description: 'v0.18.143: the new pickup of a change made while searching.'
+        reason:
+          type: string
+          enum:
+          - rider_changed_route
+          description: 'v0.18.143: rider_changed_route on a change made while searching (no driver had accepted).'
     DriverBonusOfKind:
       type: object
       description: The admin's money and Priority badge for one kind of offer.

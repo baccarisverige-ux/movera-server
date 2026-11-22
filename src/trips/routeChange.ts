@@ -10,11 +10,13 @@ import { haversineKm, legKey, type LatLng, type RouteLeg, type Router } from "..
 import { FareError, priceFare, type Fare, type FareLine } from "../rules/fare.js";
 import { extrasOf } from "../rules/priceExtras.js";
 import { contract } from "../contract/contract.js";
-import { lockTripNow } from "../dispatch/runtime.js";
-import { expectVersion, lockOwnTrip, ownsTrip, touchTrip } from "./commands.js";
+import { lockTripNow, startSearch, stopSearch } from "../dispatch/runtime.js";
+import { sql } from "kysely";
+import { applyCommand, expectVersion, lockOwnTrip, ownsTrip, touchTrip } from "./commands.js";
 import { checkMaxStops, maxStopsOf, routeChangeSettings, type RouteChangeSettings } from "./onTripSettings.js";
 import { routeChangeDriverTotal, tripProjection } from "./projection.js";
 import { pricingOf } from "./ride.js";
+import { zoneAt } from "../config/zoneLookup.js";
 import { notify } from "../notifications/service.js";
 import { noticeLanguage } from "../notifications/noticeLanguage.js";
 
@@ -39,6 +41,9 @@ export type RouteChange = {
   answerBy: string;
   answeredAt?: string;
   answeredBy?: "driver" | "rider" | "system";
+  /** v0.18.143 (whileSearching): the new pickup and the reason of a change made while the trip was searched. */
+  pickup?: Place;
+  reason?: "rider_changed_route";
   driverEarnings: Money;
   earningsDifference: Money;
 };
@@ -47,6 +52,13 @@ export const ROUTE_CHANGE_EXPIRE = "route_change_expire";
 const RX = (contract as unknown as { onTrip: { routeChange: { statuses: string[]; beforePickupStatuses: string[] } } }).onTrip.routeChange;
 const STATUSES: ReadonlySet<string> = new Set(RX.statuses);
 const BEFORE_PICKUP: ReadonlySet<string> = new Set(RX.beforePickupStatuses);
+/**
+ * v0.18.143 (owner 2026-11-20 "must rider can change !!!!", contract.json#onTrip.routeChange.whileSearching): a live
+ * trip still being searched (no driver accepted) may change its route, the pickup to any place, at once.
+ */
+const WS = (contract as unknown as { onTrip: { routeChange: { whileSearching: { statuses: string[]; kind: string } } } }).onTrip.routeChange.whileSearching;
+const SEARCHING: ReadonlySet<string> = new Set(WS.statuses);
+export const whileSearching = (trip: Pick<TripRow, "status" | "kind" | "driver_id">): boolean => SEARCHING.has(trip.status) && trip.kind === WS.kind && trip.driver_id === null;
 const QUOTE_TTL_MS = 5 * 60_000;
 const SAME_STOP_KM = 0.05;
 type StopVisit = { stopIndex: number; arrivedAt: string; leftAt?: string };
@@ -61,6 +73,8 @@ export function pendingChange(trip: Pick<TripRow, "route_change">): RouteChange 
 
 /** Checks the trip may change its route now; true when it has a fixed price that the change will leave (switch_to_normal). */
 function checkOpen(trip: TripRow, settings: RouteChangeSettings): boolean {
+  // v0.18.143: while searching there is no driver to ask: on / beforePickup / pending do not apply; fixedPriceTrips does.
+  if (whileSearching(trip)) return checkFixed(trip, settings);
   if (!STATUSES.has(trip.status)) {
     throw new ApiError("invalid_transition", `The route cannot be changed while the trip is ${trip.status}.`, { projection: tripProjection(trip, "rider") });
   }
@@ -68,6 +82,10 @@ function checkOpen(trip: TripRow, settings: RouteChangeSettings): boolean {
   // Owner rule 16 (G7 open question 1): admin switch routeChange.beforePickup.
   if (!settings.beforePickup && BEFORE_PICKUP.has(trip.status)) throw conflict("route_change_before_pickup_off", "The route can be changed once you are in the car.", trip);
   if (pendingChange(trip)) throw conflict("route_change_pending", "The driver has not answered your last change yet.", trip);
+  return checkFixed(trip, settings);
+}
+
+function checkFixed(trip: TripRow, settings: RouteChangeSettings): boolean {
   const fixed = Boolean(extrasOf(trip.price_extras as Record<string, unknown>).fixedRouteId);
   // Owner rule 16 (G7 open question 4): admin setting routeChange.fixedPriceTrips block | switch_to_normal.
   if (fixed && settings.fixedPriceTrips === "block") throw conflict("route_change_fixed_route", "A fixed-price route cannot be changed.", trip);
@@ -106,9 +124,9 @@ const money = (amountMinor: number, currency: string): Money => ({ amountMinor, 
 
 type RouteQuoteBody = { expectedVersion: number; dropoff?: Place; stops: Place[]; pickup?: Place };
 
-/** The new route's points: the trip's pickup, the asked stops, the asked (else the trip's) drop-off. */
+/** The new route's points: the asked (v0.18.143, only while searching) else the trip's pickup, the asked stops, the asked (else the trip's) drop-off. */
 function newRoutePoints(trip: Pick<TripRow, "pickup" | "dropoff">, req: RouteQuoteBody): LatLng[] {
-  return [trip.pickup as Place, ...req.stops, req.dropoff ?? (trip.dropoff as Place)].map((p) => ({ lat: p.lat, lng: p.lng }));
+  return [req.pickup ?? (trip.pickup as Place), ...req.stops, req.dropoff ?? (trip.dropoff as Place)].map((p) => ({ lat: p.lat, lng: p.lng }));
 }
 
 /**
@@ -133,16 +151,22 @@ export const ROUTE_QUOTE_TRIES = 3;
 export async function routeForQuote(ex: Executor, router: Router, riderId: string, tripId: string, body: unknown): Promise<RoutedQuote | null> {
   if (schemaProblem("RouteQuoteRequest", body) !== null) return null;
   const req = body as RouteQuoteBody;
-  if (req.pickup !== undefined) return null;
   const trip = await ex.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirst();
   if (trip === undefined || !ownsTrip(trip, { actor: "rider", subjectId: riderId })) return null;
+  const searching = whileSearching(trip);
+  if (req.pickup !== undefined && !searching) return null;
   // What step 2 refuses without any settings read is not routed at all.
-  if (trip.version !== req.expectedVersion || !STATUSES.has(trip.status) || pendingChange(trip)) return null;
+  if (trip.version !== req.expectedVersion || (!searching && (!STATUSES.has(trip.status) || pendingChange(trip)))) return null;
   // Q120 follow-up SF-1 (Rules REMINDERS 137): nor what step 2 refuses on the zone's settings before it prices (route
   // change off, more stops than the zone allows). Plain reads; step 2 reads them again under the lock and decides, so
   // a setting changed in between only costs one more try. Without this a request with 2,000 stops was routed with all
   // its points before its 400 too_many_stops (the schema has no upper limit on stops).
-  if (!(await routeChangeSettings(ex, trip.zone_id)).on || req.stops.length > (await maxStopsOf(ex, trip.zone_id))) return null;
+  if ((!searching && !(await routeChangeSettings(ex, trip.zone_id)).on) || req.stops.length > (await maxStopsOf(ex, trip.zone_id))) return null;
+  // v0.18.143 (reviewer S1): a pickup in no open zone is not routed; step 2 answers 403 service_not_available.
+  if (req.pickup !== undefined) {
+    const zone = await zoneAt(ex, req.pickup);
+    if (zone === null || !zone.open) return null;
+  }
   const points = newRoutePoints(trip, req);
   // The price needs the distance and the time only, never the road's shape.
   return { key: legKey(points), leg: await router.route(points, { shape: false }) };
@@ -177,8 +201,15 @@ export async function quoteRouteChange(trx: Trx, routed: RoutedQuote | null, rid
   const problem = schemaProblem("RouteQuoteRequest", body);
   if (problem !== null) throw badRequest(`The request is not valid: ${problem}.`, "invalid_body");
   const req = body as RouteQuoteBody;
-  if (req.pickup !== undefined) throw badRequest("Move the pickup with PATCH /trips/{tripId} { pickup }.", "invalid_body");
+  // v0.18.143: a new pickup is priced only while the trip is searched (any place); after accept it moves by PATCH { pickup }.
+  if (req.pickup !== undefined && !whileSearching(trip)) throw badRequest("Move the pickup with PATCH /trips/{tripId} { pickup }.", "invalid_body");
   expectVersion(trip, req.expectedVersion, "rider");
+  // v0.18.143 (owner "But the price apply to zone from where booking is"): a new pickup keeps the booked zone's pricing,
+  // rules and currency (drivers from any zone); it must only be inside some open service area.
+  if (req.pickup !== undefined) {
+    const zone = await zoneAt(trx, req.pickup);
+    if (zone === null || !zone.open) throw new ApiError("forbidden", "Movera is not available at this pickup.", { reason: "service_not_available" });
+  }
   const leavesFixedPrice = checkOpen(trip, await routeChangeSettings(trx, trip.zone_id));
   await checkMaxStops(trx, trip.zone_id, req.stops.length);
   // Stops the driver already reached stay first, in the same order (their waiting is counted by index).
@@ -216,6 +247,7 @@ export async function quoteRouteChange(trx: Trx, routed: RoutedQuote | null, rid
       base_change_id: (trip.route_change as RouteChange | null)?.changeId ?? null,
       dropoff: JSON.stringify(dropoff),
       stops: JSON.stringify(req.stops),
+      pickup: req.pickup === undefined ? null : JSON.stringify(req.pickup),
       distance_meters: leg.distanceMeters,
       duration_seconds: leg.durationSeconds,
       currency: trip.currency,
@@ -236,6 +268,7 @@ export async function quoteRouteChange(trx: Trx, routed: RoutedQuote | null, rid
     fareLines: lines.filter((l) => !["pickup_pay", "driver_bonus"].includes(l.code)),
     dropoff,
     stops: req.stops,
+    ...(req.pickup !== undefined ? { pickup: req.pickup } : {}),
     expiresAt: expiresAt.toISOString(),
     ...(leavesFixedPrice ? { leavesFixedPrice: true } : {}),
   };
@@ -280,6 +313,8 @@ export async function requestRouteChange(trx: Trx, riderId: string, tripId: stri
   if (fareThen !== Number(trip.fare_minor) || changeNow !== quote.base_change_id) {
     throw new ApiError("version_mismatch", "The trip changed since this price. Ask for a new one.", { projection: tripProjection(trip, "rider") });
   }
+  // v0.18.143: a price with a new pickup was made while searching; once a driver accepted it is stale (ask again).
+  if (quote.pickup !== null && !whileSearching(trip)) throw new ApiError("version_mismatch", "The trip changed since this price. Ask for a new one.", { projection: tripProjection(trip, "rider") });
   const settings = await routeChangeSettings(trx, trip.zone_id);
   const fixedNow = checkOpen(trip, settings);
   if (Boolean(quote.leaves_fixed_price) !== fixedNow) throw new ApiError("version_mismatch", "The trip changed since this price. Ask for a new one.", { projection: tripProjection(trip, "rider") });
@@ -298,12 +333,54 @@ export async function requestRouteChange(trx: Trx, riderId: string, tripId: stri
     driverEarnings: money(Number(quote.driver_earnings_minor), currency),
     earningsDifference: money(Number(quote.driver_earnings_minor) - Number(trip.driver_earnings_minor ?? 0), currency),
   };
+  // v0.18.143 (whileSearching): no driver yet: the change applies now and the search starts again (change_route).
+  if (whileSearching(trip)) return applyWhileSearching(trx, trip, quote, { ...change, answerBy: change.askedAt }, now);
   // Admin "Driver can refuse" off: the change applies now and the driver is told.
   if (!settings.driverCanRefuse) return applyChange(trx, trip, { ...change, answerBy: change.askedAt }, "system", now);
   await scheduleTimer(trx, { kind: ROUTE_CHANGE_EXPIRE, refId: `${tripId}|${change.changeId}`, dueAt: new Date(change.answerBy) });
   const updated = await touchTrip(trx, trip, { route_change: JSON.stringify(change) }, now);
   await pushRouteChange(trx, trip, change, settings.answerSeconds, now);
   return updated;
+}
+
+/**
+ * v0.18.143 (contract.json#onTrip.routeChange.whileSearching, transition change_route): in ONE transaction the old
+ * search ends for free (open offers withdrawn; the drivers who declined may be asked again, as for raise_price), the
+ * trip takes the new pickup (also as the booked pickup), route and price, and a new search starts.
+ */
+async function applyWhileSearching(trx: Trx, trip: TripRow, quote: { route_quote_id: string; pickup: unknown; dropoff: unknown; stops: unknown; total_minor: string; difference_minor: string; fare_lines: unknown; driver_earnings_minor: string; distance_meters: number; duration_seconds: number; leaves_fixed_price: boolean }, change: RouteChange, now: Date): Promise<TripRow> {
+  await stopSearch(trx, trip, now);
+  await trx.updateTable("searches").set({ state: sql`state - 'asked'` }).where("trip_id", "=", trip.trip_id).execute();
+  const total = Number(quote.total_minor);
+  const earnings = Number(quote.driver_earnings_minor);
+  const extras = { ...((trip.price_extras as Record<string, unknown> | null) ?? {}) };
+  if (quote.leaves_fixed_price) delete extras["fixedRouteId"];
+  const pickup = (quote.pickup as Place | null) ?? undefined;
+  const done: RouteChange = { ...change, status: "accepted", answeredAt: now.toISOString(), answeredBy: "system", reason: "rider_changed_route", ...(pickup ? { pickup } : {}) };
+  const changed = await applyCommand(trx, trip, {
+    command: "change_route",
+    actor: "rider",
+    now,
+    set: {
+      ...(quote.leaves_fixed_price ? { price_extras: JSON.stringify(extras) } : {}),
+      ...(pickup ? { pickup: JSON.stringify(pickup), booked_pickup: JSON.stringify(pickup) } : {}),
+      dropoff: JSON.stringify(quote.dropoff),
+      stops: JSON.stringify(quote.stops),
+      fare_minor: total,
+      route_delta_minor: Number(trip.route_delta_minor ?? 0) + Number(quote.difference_minor),
+      fare_lines: JSON.stringify(quote.fare_lines),
+      driver_earnings_minor: earnings,
+      commission_minor: commissionOf(total, quote.fare_lines, earnings, Number(trip.pickup_pay_minor ?? 0), Number(trip.driver_bonus_minor ?? 0)),
+      distance_meters: quote.distance_meters,
+      duration_seconds: quote.duration_seconds,
+      planned_route: null,
+      route_change: JSON.stringify(done),
+      search_step: null,
+      search_started_at: now,
+    },
+  });
+  await startSearch(trx, changed, now);
+  return changed;
 }
 
 /** POST /trips/{tripId}/route-change/accept | refuse (driver) | withdraw (rider). */
