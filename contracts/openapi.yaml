@@ -9602,10 +9602,10 @@ paths:
         (1-28, default 1), payLink (an https:// link, at most 500 characters, '''' = none), minAmount (Money in the country''s
         currency, 0 or above, or null) } on the country standard only (Admin > Pricing > Tips & limits; a zone''s own value
         is ignored). configDefaults.driverPayRequest: off, day 1, no link, no amount, in every country. Saving enabled true
-        needs minAmount in the country''s currency (else 400 invalid_request, reason pay_request_needs_amount); DRAFT (owner
-        2026-11-20 "So we use stripe ... And for the driver to pay his monthly invoice"): Stripe replaces the payment link,
-        so payLink is no longer needed to switch it on (the reason pay_request_needs_link is no longer sent); payLink stays
-        as hidden legacy (Rule D: hidden, not removed): kept, checked when set, sent to the app (DriverPayMovera.payLink)
+        needs minAmount in the country''s currency (else 400 invalid_request, reason pay_request_needs_amount); v0.18.141
+        DRAFT (owner 2026-11-20 "So we use stripe ... And for the driver to pay his monthly invoice"): Stripe replaces the
+        payment link, so payLink is no longer needed to switch it on (the reason pay_request_needs_link is no longer sent);
+        payLink stays as hidden legacy (Rule D: hidden, not removed): kept, checked when set, sent to the app (DriverPayMovera.payLink)
         only while Stripe is not available (DriverPayMovera.stripe false); with neither Stripe nor a usable link, DriverPayMovera.enabled
         is false (nothing to pay with); a dayOfMonth outside 1-28 or a payLink that is not https or is too long is 400 invalid_request,
         reason pay_request_invalid. A kept key of country_rules (configDocs.keptKeys.country_rules): a whole-document save
@@ -9621,9 +9621,9 @@ paths:
         retryOneAfterMinutes }: the document''s values, else the defaults (a document published before v0.18.150). GET /driver/stream
         and the two old streams are unchanged. v0.18.154 (configDocs.keptKeys; rider_app_config and driver_app_config: appUpdate.minVersion,
         appUpdate.storeUrls): v0.18.154 (P16c minimum app version; owner 2026-11-21 20:30 "Yes, build it now (Recommended)",
-        Rules plan/NUMBERS.md P16c; Rule 0; X-Api-Version stays 0.5; additive; no migration; follows v0.18.132; 0.18.133–0.18.153
-        reserved for other drafts): both app documents keep appUpdate.minVersion and appUpdate.storeUrls (contract.json#appUpdate.keptKeys)
-        when a save leaves them out, so a save from another screen never turns the minimum off.'
+        Rules plan/NUMBERS.md P16c; Rule 0; X-Api-Version stays 0.5; additive; no migration; follows v0.18.153): both app
+        documents keep appUpdate.minVersion and appUpdate.storeUrls (contract.json#appUpdate.keptKeys) when a save leaves
+        them out, so a save from another screen never turns the minimum off.'
       tags:
       - Admin · Config
       x-actor:
@@ -12332,7 +12332,8 @@ paths:
         restored as before). The four payout/debt keys are changed in Finance › Payouts settings only. Every other field,
         and every other document, is restored as before. The restored document is saved through the same draft path, so configDocs.keptKeys
         applies to it too. v0.18.139 (driverPayRequest.setting): CountryRules.driverPayRequest is kept the same way (the switch,
-        the day, the payment link and the minimum amount stay as they are live now). v0.18.139 (driverPayRequest): Restore
+        the day, the payment link and the minimum amount stay as they are live now). v0.18.136 (stripeFees): CountryRules.riderFeeStripe
+        (the switch for paying a rider fee with Stripe in the app) is kept the same way. v0.18.139 (driverPayRequest): Restore
         keeps driverPayRequest (pricingHistory.restoreKeeps). v0.18.136 (stripeFees): Restore keeps riderFeeStripe (pricingHistory.restoreKeeps).'
       tags:
       - Admin · Config
@@ -20304,10 +20305,10 @@ paths:
     post:
       operationId: payMoveraStripe
       summary: Pay what he owes Movera with Stripe
-      description: 'v0.18.136 + v0.18.139 DRAFT (owner 2026-11-20 "Stripe is used for exactly TWO things: ... (2) the DRIVER
-        paying his monthly invoice to Movera"; Stripe test or live keys, stripeFees.keys): POST /driver/pay-movera/pay (driver,
-        no body): a Stripe PaymentIntent for what he owes Movera NOW in his country''s currency (the server''s amount; the
-        app sends none), only while his country''s monthly request is on and he owes above 0 (409 conflict reason pay_request_off
+      description: 'v0.18.141 DRAFT (v0.18.136 + v0.18.139 together; owner 2026-11-20 "Stripe is used for exactly TWO things:
+        ... (2) the DRIVER paying his monthly invoice to Movera"; Stripe test or live keys, stripeFees.keys): POST /driver/pay-movera/pay
+        (driver, no body): a Stripe PaymentIntent for what he owes Movera NOW in his country''s currency (the server''s amount;
+        the app sends none), only while his country''s monthly request is on and he owes above 0 (409 conflict reason pay_request_off
         / nothing_owed), SEK or EUR only (409 currency_not_supported), Stripe off (stripeFees.keys: no keys, a mix, or a wrong
         mode for the server) 503 payments_unavailable; one open PaymentIntent per driver and month (ref = the reference);
         a repeat call returns it, a changed amount cancels it and makes a new one. Answer StripeDriverPayment { paymentIntentId,
@@ -26719,20 +26720,20 @@ components:
       type: object
       description: 'Below minimumVersion = forced update; below latestVersion = soft update. v0.18.154 (contract.json#appUpdate):
         v0.18.154 (P16c minimum app version; owner 2026-11-21 20:30 "Yes, build it now (Recommended)", Rules plan/NUMBERS.md
-        P16c; Rule 0; X-Api-Version stays 0.5; additive; no migration; follows v0.18.132; 0.18.133–0.18.153 reserved for other
-        drafts): the admin sets a minimum app version per app (rider_app_config, driver_app_config), per platform (android,
-        ios) and per zone or country Standard. Default off (null). A phone below it sees one full screen "Update Movera to
-        continue" with a button to its store; the server refuses booking, go-online and offer accept from it with 426. A driver
-        or rider on a trip is never blocked mid-trip. Why: the first store version must already carry the check, else old
-        phones can never be made to update. At start and on every config_published, each app compares its own build version
-        with appUpdate.minVersion of its platform in the zone''s document. Below: one full screen "Update Movera to continue"
-        over every screen with an Update button that opens storeUrls.<platform> (else the built-in store link) and the SOS
-        / emergency button; it goes away only when a newer document says the version is OK. A 426 app_update_required answer
-        shows it too until the next config. Driver: never while a trip is active (accepted, to pickup, arrived, on trip) or
-        a held next ride runs; only a small line, the block when the trip ends. A driver who holds a booked ride not started
-        yet (or whose booked rides are not known yet) never gets the full screen, only the small line, as the server never
-        refuses his go-online. Rider: never while a ride is live; the block at Home when it ends. Web builds and "dev" builds
-        are never blocked. The content slot app-versions (§19) keeps working as before; either one below its minimum blocks.'
+        P16c; Rule 0; X-Api-Version stays 0.5; additive; no migration; follows v0.18.153): the admin sets a minimum app version
+        per app (rider_app_config, driver_app_config), per platform (android, ios) and per zone or country Standard. Default
+        off (null). A phone below it sees one full screen "Update Movera to continue" with a button to its store; the server
+        refuses booking, go-online and offer accept from it with 426. A driver or rider on a trip is never blocked mid-trip.
+        Why: the first store version must already carry the check, else old phones can never be made to update. At start and
+        on every config_published, each app compares its own build version with appUpdate.minVersion of its platform in the
+        zone''s document. Below: one full screen "Update Movera to continue" over every screen with an Update button that
+        opens storeUrls.<platform> (else the built-in store link) and the SOS / emergency button; it goes away only when a
+        newer document says the version is OK. A 426 app_update_required answer shows it too until the next config. Driver:
+        never while a trip is active (accepted, to pickup, arrived, on trip) or a held next ride runs; only a small line,
+        the block when the trip ends. A driver who holds a booked ride not started yet (or whose booked rides are not known
+        yet) never gets the full screen, only the small line, as the server never refuses his go-online. Rider: never while
+        a ride is live; the block at Home when it ends. Web builds and "dev" builds are never blocked. The content slot app-versions
+        (§19) keeps working as before; either one below its minimum blocks.'
       properties:
         minimumVersion:
           type: string
@@ -40785,12 +40786,12 @@ components:
         default 1), payLink (an https:// link, at most 500 characters, '''' = none), minAmount (Money in the country''s currency,
         0 or above, or null) } on the country standard only (Admin > Pricing > Tips & limits; a zone''s own value is ignored).
         configDefaults.driverPayRequest: off, day 1, no link, no amount, in every country. Saving enabled true needs minAmount
-        in the country''s currency (else 400 invalid_request, reason pay_request_needs_amount); DRAFT (owner 2026-11-20 "So
-        we use stripe ... And for the driver to pay his monthly invoice"): Stripe replaces the payment link, so payLink is
-        no longer needed to switch it on (the reason pay_request_needs_link is no longer sent); payLink stays as hidden legacy
-        (Rule D: hidden, not removed): kept, checked when set, sent to the app (DriverPayMovera.payLink) only while Stripe
-        is not available (DriverPayMovera.stripe false); with neither Stripe nor a usable link, DriverPayMovera.enabled is
-        false (nothing to pay with); a dayOfMonth outside 1-28 or a payLink that is not https or is too long is 400 invalid_request,
+        in the country''s currency (else 400 invalid_request, reason pay_request_needs_amount); v0.18.141 DRAFT (owner 2026-11-20
+        "So we use stripe ... And for the driver to pay his monthly invoice"): Stripe replaces the payment link, so payLink
+        is no longer needed to switch it on (the reason pay_request_needs_link is no longer sent); payLink stays as hidden
+        legacy (Rule D: hidden, not removed): kept, checked when set, sent to the app (DriverPayMovera.payLink) only while
+        Stripe is not available (DriverPayMovera.stripe false); with neither Stripe nor a usable link, DriverPayMovera.enabled
+        is false (nothing to pay with); a dayOfMonth outside 1-28 or a payLink that is not https or is too long is 400 invalid_request,
         reason pay_request_invalid. A kept key of country_rules (configDocs.keptKeys.country_rules): a whole-document save
         that leaves it out keeps the stored value, and a Restore or Undo last publish keeps today''s live value, so no other
         screen switches it off or changes the link by a save. A change applies at once (the next run of the job and the next
@@ -40812,8 +40813,8 @@ components:
           type: string
           maxLength: 500
           pattern: ^(https://[^\s]+)?$
-          description: 'Legacy, hidden while Stripe pays (DRAFT): the payment link the Pay Movera button opens (https only;
-            '''' = none); not needed to switch on.'
+          description: 'Legacy, hidden while Stripe pays (v0.18.141 DRAFT): the payment link the Pay Movera button opens (https
+            only; '''' = none); not needed to switch on.'
           default: ''
         minAmount:
           oneOf:
@@ -41079,10 +41080,10 @@ components:
       additionalProperties: false
     StripeDriverPayment:
       type: object
-      description: 'v0.18.136 + v0.18.139 DRAFT (owner 2026-11-20 "Stripe is used for exactly TWO things: ... (2) the DRIVER
-        paying his monthly invoice to Movera"; Stripe test or live keys, stripeFees.keys): POST /driver/pay-movera/pay (driver,
-        no body): a Stripe PaymentIntent for what he owes Movera NOW in his country''s currency (the server''s amount; the
-        app sends none), only while his country''s monthly request is on and he owes above 0 (409 conflict reason pay_request_off
+      description: 'v0.18.141 DRAFT (v0.18.136 + v0.18.139 together; owner 2026-11-20 "Stripe is used for exactly TWO things:
+        ... (2) the DRIVER paying his monthly invoice to Movera"; Stripe test or live keys, stripeFees.keys): POST /driver/pay-movera/pay
+        (driver, no body): a Stripe PaymentIntent for what he owes Movera NOW in his country''s currency (the server''s amount;
+        the app sends none), only while his country''s monthly request is on and he owes above 0 (409 conflict reason pay_request_off
         / nothing_owed), SEK or EUR only (409 currency_not_supported), Stripe off (stripeFees.keys: no keys, a mix, or a wrong
         mode for the server) 503 payments_unavailable; one open PaymentIntent per driver and month (ref = the reference);
         a repeat call returns it, a changed amount cancels it and makes a new one. Answer StripeDriverPayment { paymentIntentId,

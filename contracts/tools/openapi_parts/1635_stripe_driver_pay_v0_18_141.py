@@ -1,4 +1,4 @@
-# Runs inside tools/gen_openapi.py in name order with its globals. DRAFT (owner 2026-11-20 "Stripe is used for exactly
+# Runs inside tools/gen_openapi.py in name order with its globals. v0.18.141 DRAFT (owner 2026-11-20 "Stripe is used for exactly
 # TWO things"): the driver pays his monthly amount owed to Movera with Stripe (contract.json#driverPayRequest.stripe).
 _DPS = C["driverPayRequest"]["stripe"]
 S["DriverPayMovera"]["properties"]["stripe"] = b("True: the app shows the Stripe Pay button (POST /driver/pay-movera/pay) instead of the link.")
