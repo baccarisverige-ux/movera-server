@@ -287,6 +287,52 @@ describe("J8 rider debt (debtModel.riderWallet / readAtPayment / changeover)", (
     expect(again.json().fareLines.map((l: { code: string }) => l.code)).not.toContain("outstanding_fee");
   });
 
+  it("M3 (owner 2026-11-19, v0.18.140): the complete-preview splits cashDue into the ride and the earlier fee; absent with no debt", async () => {
+    await feeOwed(6_500);
+    const { tripId, version } = await accepted();
+    let v = version;
+    for (const path of ["head-to-pickup", "arrive", "board", "start"]) expect((await step(tripId, path, v++)).statusCode).toBe(200);
+    clock.now = new Date(clock.now.getTime() + 1000);
+    await moveTo("A", SODERMALM);
+    const pv = (await call(app, "GET", `/driver/trips/${tripId}/complete-preview`, drivers.A.headers)).json();
+    const fare = Number((await database.db.selectFrom("trips").select("fare_minor").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).fare_minor);
+    expect(pv.cashDue).toEqual(SEK(fare + 6_500));
+    expect(pv.cashDueOutstandingFee).toEqual(SEK(6_500));
+    expect(pv.cashDueRide).toEqual(SEK(fare));
+    expect(pv.cashDueRide.amountMinor + pv.cashDueOutstandingFee.amountMinor).toBe(pv.cashDue.amountMinor);
+    // The amount the driver sends is still cashDue; the debt is paid once.
+    expect((await step(tripId, "complete", v, { previewId: pv.previewId, cashCollected: pv.cashDue })).statusCode).toBe(200);
+    expect(await balance()).toBe(0);
+    // No debt: no split fields.
+    const second = await accepted();
+    let w = second.version;
+    for (const path of ["head-to-pickup", "arrive", "board", "start"]) expect((await step(second.tripId, path, w++)).statusCode).toBe(200);
+    const plain = (await call(app, "GET", `/driver/trips/${second.tripId}/complete-preview`, drivers.A.headers)).json();
+    expect(plain).not.toHaveProperty("cashDueRide");
+    expect(plain).not.toHaveProperty("cashDueOutstandingFee");
+  });
+
+  it("M3 (v0.18.140): the 409 price_changed preview carries the split; a card trip with a fee has none", async () => {
+    await feeOwed(3_500);
+    const { tripId, version } = await accepted();
+    let v = version;
+    for (const path of ["head-to-pickup", "arrive", "board", "start"]) expect((await step(tripId, path, v++)).statusCode).toBe(200);
+    clock.now = new Date(clock.now.getTime() + 1000);
+    await moveTo("A", SODERMALM);
+    const pv = (await call(app, "GET", `/driver/trips/${tripId}/complete-preview`, drivers.A.headers)).json();
+    const wrong = await step(tripId, "complete", v, { previewId: pv.previewId, cashCollected: SEK(pv.cashDue.amountMinor - 100) });
+    expect(wrong.statusCode).toBe(409);
+    const fresh = wrong.json().preview;
+    expect(fresh.cashDueOutstandingFee).toEqual(SEK(3_500));
+    expect(fresh.cashDueRide.amountMinor + fresh.cashDueOutstandingFee.amountMinor).toBe(fresh.cashDue.amountMinor);
+    // The same trip paid by card: no cash, so no split (contract.json#priceDisplay.nonCashZero).
+    await database.db.updateTable("trips").set({ payment_method: "card" }).where("trip_id", "=", tripId).execute();
+    const card = (await call(app, "GET", `/driver/trips/${tripId}/complete-preview`, drivers.A.headers)).json();
+    expect(card.cashDue).toEqual(SEK(0));
+    expect(card).not.toHaveProperty("cashDueRide");
+    expect(card).not.toHaveProperty("cashDueOutstandingFee");
+  });
+
   it("negative wallet charged once even when two trips are paid one after the other with walletFirst false", async () => {
     await feeOwed(24_000);
     const one = await accepted();
