@@ -248,7 +248,10 @@ describe("offer accept and the trip (never mid-trip)", () => {
     const riderSos = await call(app, "POST", `/rider/trips/${tripId}/sos`, { ...rider, ...phone("1.0.0") }, { at: clock.now.toISOString() });
     expect(riderSos.statusCode).toBe(200);
     const deletion = await call(app, "POST", "/account/deletion", { ...rider, ...phone("1.0.0") });
-    expect(deletion.statusCode).toBe(202);
+    // Launch merge (account deletion v0.18.134 + P16c): the old app is not refused for its version (never 426); the
+    // deletion rule itself answers "finish or cancel your ride first" while this ride is open (409 deletion_open_trip).
+    expect(deletion.statusCode).toBe(409);
+    expect(deletion.json()).toMatchObject({ code: "conflict", reason: "deletion_open_trip" });
     const out = await app.inject({ method: "POST", url: "/api/v1/auth/sign-out", headers: { ...rider, ...phone("1.0.0") } });
     expect(out.statusCode).toBe(204);
   });
