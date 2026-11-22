@@ -144,7 +144,8 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
     const live = liveLocationProblem(document);
     if (live !== null) throw badRequest(`The rider_app_config document is not valid: ${live}.`, "invalid_document");
   }
-  // v0.18.122 L20 stream (contract.json#driverOneStream.server): realtime.oneStream is true or false.
+  // v0.18.122 L20 stream (contract.json#driverOneStream.server): realtime.oneStream is true or false. v0.18.150
+  // (driverOneStreamFallback.server): realtime.oneStreamFallback is an object of whole numbers in range (1-10 / 1-60).
   if (doc === "driver_app_config") {
     const realtime = oneStreamProblem(document);
     if (realtime !== null) throw badRequest(`The driver_app_config document is not valid: ${realtime}.`, "invalid_document");

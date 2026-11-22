@@ -8,6 +8,7 @@ import { ApiError } from "../http/errors.js";
  */
 const listed = (contract as unknown as { configDocs: { keptKeys: Record<string, unknown> } }).configDocs.keptKeys;
 // v0.18.130 (configDocs.keptKeys.driver_app_config): the driver document keeps realtime.oneStream (v0.18.122 switch).
+// v0.18.150: and realtime.oneStreamFallback (the two backup numbers under the switch), from the same contract list.
 export const KEPT_KEYS: Partial<Record<ConfigDoc, readonly string[]>> = {
   country_rules: listed["country_rules"] as string[],
   dispatch: listed["dispatch"] as string[],
