@@ -2,6 +2,7 @@ import { followFloor } from "../riders/debtFloor.js";
 import { checkCountryCashOffers } from "../drivers/owes.js";
 import { pickupSpotsProblem } from "./pickupSpots.js";
 import { oneStreamProblem } from "./oneStream.js";
+import { liveLocationProblem } from "../trips/liveLocation.js";
 import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
@@ -137,6 +138,11 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "rider_app_config") {
     const spots = pickupSpotsProblem(document);
     if (spots !== null) throw badRequest(`The rider_app_config document is not valid: ${spots}.`, "invalid_document");
+  }
+  // v0.18.144 (contract.json#liveLocation.setting): liveLocation is checked here (the contract copy may be older).
+  if (doc === "rider_app_config") {
+    const live = liveLocationProblem(document);
+    if (live !== null) throw badRequest(`The rider_app_config document is not valid: ${live}.`, "invalid_document");
   }
   // v0.18.122 L20 stream (contract.json#driverOneStream.server): realtime.oneStream is true or false.
   if (doc === "driver_app_config") {

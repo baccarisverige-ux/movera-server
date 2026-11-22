@@ -25,6 +25,7 @@ import { scopeKey } from "./scope.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
 import { withShareTrip } from "./shareTrip.js";
 import { withOneStream } from "./oneStream.js";
+import { withLiveLocation } from "../trips/liveLocation.js";
 import { attachOfferFeed, offerHead } from "../dispatch/offerFeed.js";
 import { COUNTRY_ONLY_DOCS, CONFIG_DOCS, EDIT_PERMISSION, PUBLISH_PERMISSION, getDraft, getZone, liveDocument, publishDraft, putDraft, useStandard, withLivePricing } from "./service.js";
 
@@ -123,6 +124,8 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     if (doc === "rider_app_config") document = withPickupSpots(document);
     // v0.18.116 §94 (contract.json#shareTrip.setting): the zone's Share trip switch, also as features.shareTrip.
     if (doc === "rider_app_config") document = withShareTrip(document);
+    // v0.18.144 (contract.json#liveLocation.setting): liveLocation is always served with its three keys.
+    if (doc === "rider_app_config") document = withLiveLocation(document);
     // v0.18.101 §92 (contract.json#sosContactsSms.driverConfig): the switch of the zone's country and whether SMS can go.
     // v0.18.122 L20 stream (contract.json#driverOneStream.server): the driver app always gets realtime.oneStream (missing = false).
     if (doc === "driver_app_config") document = withOneStream(document);

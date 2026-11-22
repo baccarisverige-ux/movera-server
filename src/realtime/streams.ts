@@ -8,6 +8,7 @@ import { newId } from "../ids.js";
 import { eventEnvelope } from "./events.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "./hub.js";
+import { LIVE_LOCATION_CHANNEL } from "../trips/liveLocation.js";
 import { openEventStream, type EventStream } from "./sse.js";
 import { giveUpStream, readRetry, spreadClose } from "./retry.js";
 
@@ -39,6 +40,7 @@ export async function streamTrip(
   tripId: string,
   who: Who,
   after: number,
+  live = false,
 ): Promise<void> {
   const viewer = who.actor === "rider" || who.actor === "driver" ? who.actor : "admin";
   const stream = openEventStream(request, reply);
@@ -86,6 +88,14 @@ export async function streamTrip(
     // S7 0.15: the hub finds this stream by its trip id instead of calling every open trip stream.
   }, { match: [{ tripId }] });
   stream.onClose(unsubscribe);
+  // v0.18.144 (contract.json#liveLocation.relay): with ?live=true the rider / driver also gets the other side's live
+  // point as `event: live_location` (no id). Its own channel: a point never makes this stream re-read the trip log.
+  if (live && viewer !== "admin") {
+    stream.onClose(deps.hub.subscribe(LIVE_LOCATION_CHANNEL, (payload) => {
+      if (payload === null || payload["tripId"] !== tripId || payload["side"] === viewer) return;
+      stream.event("live_location", payload);
+    }, { match: [{ tripId }] }));
+  }
   if (viewer !== "admin") markPresence(request, deps, stream, tripId, who);
   await pump();
 }

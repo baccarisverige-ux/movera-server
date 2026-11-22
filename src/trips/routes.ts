@@ -23,6 +23,8 @@ import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "../realtime/hub.js";
 import { wantsEventStream } from "../realtime/sse.js";
 import { streamTrip } from "../realtime/streams.js";
+import { shareLiveLocation } from "./liveLocation.js";
+import { readOwnTrip } from "./commands.js";
 import { DriverCancelBody, driverCancel } from "./rideRoutes.js";
 import { activeTrip, createTrip, getTrip, movePickup, raisePrice, riderCancel, riderTrips, setCancelReason, riderOnTheWay, withDriverPosition } from "./service.js";
 
@@ -46,7 +48,8 @@ const ListQuery = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
 });
-const EventsQuery = z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(500).default(200) });
+const EventsQuery = z.object({ live: z.enum(["true", "false"]).optional(), after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(500).default(200) });
+const LiveLocationBody = z.object({ sharing: z.boolean(), lat: z.number().min(-90).max(90).optional(), lng: z.number().min(-180).max(180).optional(), accuracyM: z.number().min(0).max(5000).optional() }).strict();
 const MessagesQuery = z.object({ cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
 const DefaultMethodBody = z.object({ method: z.string(), paymentMethodId: z.string().optional() });
 
@@ -188,7 +191,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
     const hideMessage = viewer !== "admin" && TERMINAL.has(seen["status"] as TripStatus);
     if (wantsEventStream(request)) {
       if (deps.hub === undefined) throw new ApiError("unavailable", "Live updates are not available; poll the trip instead.", { reason: "realtime_unavailable", retryAfterSeconds: 5 });
-      await streamTrip(request, reply, { db: deps.db, hub: deps.hub, ...(deps.clock ? { clock: deps.clock } : {}) }, tripId, who, after);
+      await streamTrip(request, reply, { db: deps.db, hub: deps.hub, ...(deps.clock ? { clock: deps.clock } : {}) }, tripId, who, after, query.live === "true");
       return reply;
     }
     const rows = await tripEventsAfter(deps.db, tripId, after, query.limit + 1);
@@ -200,6 +203,17 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
 
   // The trip chat (contract Message): both sides of the trip and admins (as support). Not a trip change: no
   // expectedVersion, no version bump; the message goes out as a `message` event on the trip's stream.
+  // v0.18.144 (contract.json#liveLocation): one side's live point, relayed to the other side's open stream, never stored.
+  app.put(`${API_PREFIX}/trips/:tripId/live-location`, async (request) => {
+    const who = await authenticate(request, guard, ["rider", "driver"]);
+    const { tripId } = parseBody(z.object({ tripId: ID }), request.params);
+    const side = { actor: who.actor as "rider" | "driver", subjectId: who.subjectId };
+    // Someone else's trip is 404 before the body is read (owner-scoped route, e2e route matrix).
+    const trip = await readOwnTrip(deps.db, tripId, side);
+    const body = parseBody(LiveLocationBody, request.body);
+    return shareLiveLocation(deps.db, side, tripId, body, now(), trip);
+  });
+
   app.get(`${API_PREFIX}/trips/:tripId/messages`, async (request) => {
     const who = await authenticate(request, guard, ["rider", "driver", "admin"]);
     const { tripId } = parseBody(z.object({ tripId: ID }), request.params);

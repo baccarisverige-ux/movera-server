@@ -1,11 +1,11 @@
-# Movera API v0.18.143 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.144 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.143
+  version: 0.18.144
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.143 in this folder; this file must agree with them.
+    v0.18.144 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.143
+  version: 0.18.144
   source: contract.json
 paths:
   /auth/otp/request:
@@ -1218,7 +1218,11 @@ paths:
         same stream for the live map. v0.18.55 §77 (owner Q34): Admin callers need trips.read and the trip''s zone in their
         zones (a Super admin with all zones passes); otherwise 403 forbidden with reason missing_permission or zone_out_of_scope,
         the same answers as GET/POST /trips/{tripId}/messages with support.reply. This applies to both the JSON poll and the
-        SSE stream of /events. Riders and drivers: unchanged (own trip only). x-permission applies to admins only.'
+        SSE stream of /events. Riders and drivers: unchanged (own trip only). x-permission applies to admins only. v0.18.144
+        (contract.json#liveLocation): The server relays each accepted send to the other side''s open GET /trips/{tripId}/events
+        stream (only one opened with ?live=true) as an SSE frame ''event: live_location'' with no id: LiveLocationEvent {
+        tripId, side, sharing, lat?, lng?, accuracyM?, at }. The relay uses its own NOTIFY channel (not the trip event channel),
+        so no stream re-reads the trip log. A stream without ?live=true never gets the frame (apps built before v0.18.144).'
       tags:
       - Realtime
       x-actor:
@@ -1229,6 +1233,18 @@ paths:
       - $ref: '#/components/parameters/TripId'
       - $ref: '#/components/parameters/After'
       - $ref: '#/components/parameters/Limit'
+      - name: live
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+        description: 'v0.18.144 (contract.json#liveLocation): true: the SSE stream also carries the other side''s ''event:
+          live_location'' frames (LiveLocationEvent, no id). The server relays each accepted send to the other side''s open
+          GET /trips/{tripId}/events stream (only one opened with ?live=true) as an SSE frame ''event: live_location'' with
+          no id: LiveLocationEvent { tripId, side, sharing, lat?, lng?, accuracyM?, at }. The relay uses its own NOTIFY channel
+          (not the trip event channel), so no stream re-reads the trip log. A stream without ?live=true never gets the frame
+          (apps built before v0.18.144).'
       - $ref: '#/components/parameters/LastEventId'
       - $ref: '#/components/parameters/RequestId'
       - $ref: '#/components/parameters/ApiVersion'
@@ -20201,6 +20217,72 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /trips/{tripId}/live-location:
+    put:
+      operationId: shareLiveLocation
+      summary: Share my live location
+      description: 'v0.18.144 (contract.json#liveLocation): PUT /trips/{tripId}/live-location { sharing, lat?, lng?, accuracyM?
+        } (rider or driver of the trip). sharing true needs lat and lng. 200 { sharing, sendEverySeconds }. Outside the ride
+        window (before accept, after the rider is on board, or terminal) -> 409 conflict, reason live_location_not_active;
+        zone switch off -> 409 conflict, reason live_location_off; sooner than sendEverySeconds - 1 after the same side''s
+        previous send -> 429 rate_limited, retryAfterSeconds. No Idempotency-Key row, no version bump, no trip event. From
+        accept until the rider is on board (pickup): statuses accepted, driver_to_pickup, arrived (contract.json#tripStatus.driverAssigned
+        minus riderOnboard and terminal). The apps stop sending at pickup, ride end or cancel; the server refuses after (409
+        live_location_not_active) and relays nothing after pickup. Positions are never stored: no table, no trip event, no
+        log line with a position; only passed on to the open streams of the other side of that trip. Nothing to delete at
+        ride end (GDPR: no history). At pickup, ride end or cancel the server keeps nothing to delete; each app drops the
+        other side''s last point from memory. The share switch''s consent text (texts.privacyNote) needs the owner''s OK and
+        the legal check (Rules plan/legal-drafts-SE). The rider already sees the driver from the trip''s location events;
+        this does not change. The driver''s ''Share my location'' switch is OPT-IN like the rider''s (starts off; the driver
+        taps it): it sends his own phone''s live point the same way. The app learns whether the zone allows sharing from one
+        PUT { sharing: false } when the trip screen opens (200 = allowed, 409 live_location_off = hidden; 429 / 5xx / no answer
+        = asked again later).'
+      tags:
+      - Trips
+      x-actor:
+      - rider
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/TripId'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LiveLocationUpdate'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveLocationAnswer'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        '409':
+          description: 'v0.18.144 (contract.json#liveLocation): conflict, reason live_location_not_active (outside accept
+            -> pickup) or live_location_off (zone switch off).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     bearerAuth:
@@ -27506,6 +27588,37 @@ components:
               type: boolean
               description: The zone's switch.
               default: true
+        liveLocation:
+          type: object
+          description: 'v0.18.144 (contract.json#liveLocation): Per zone in the zone''s rider document (rider_app_config;
+            its own, else its country standard): liveLocation { share (boolean, default configDefaults.liveLocationShare FALSE
+            (supervisor 2026-11-20: off until the load test passes the bar; rider GPS adds server load)), adjustPickupMeters
+            (integer 0 or 10-500, default configDefaults.adjustPickupMeters 30; 0 = the adjust-pickup banner is off), sendEverySeconds
+            (integer 5-10, default configDefaults.liveLocationSendEverySeconds 8) }, saved and published like every rider
+            document field (settings.edit / settings.publish). Admin: Dispatch > Safety, card ''Live location'', switch ''Riders
+            and drivers can share their live location'', number ''Adjust-pickup banner from (m)''. GET /rider/config always
+            serves liveLocation with the three keys (stored value, else the default). The driver document gets nothing: the
+            driver app learns the switch from the route''s answer (409 live_location_off). Banner: Rider app only, on the
+            searching screen (requested / searching / offered) and while the driver comes (accepted / driver_to_pickup; NOT
+            arrived: the pickup is fixed once the driver is there), when the phone''s own GPS fix (accuracy 50 m or better)
+            is more than liveLocation.adjustPickupMeters from the trip''s pickup. adjustPickupMeters 0 = the banner is off
+            in the zone.'
+          properties:
+            share:
+              type: boolean
+              default: false
+            adjustPickupMeters:
+              type: integer
+              minimum: 0
+              maximum: 500
+              default: 30
+              description: 0 = the adjust-pickup banner is off; else 10-500.
+            sendEverySeconds:
+              type: integer
+              minimum: 5
+              maximum: 10
+              default: 8
+          additionalProperties: false
     DriverAppConfig:
       type: object
       description: Per-zone driver document built by Admin exporters. Unknown keys are ignored; missing keys fall back to
@@ -40180,5 +40293,88 @@ components:
           maxLength: 255
           description: The Stripe publishable key of the server's mode (pk_test_ or pk_live_, stripeFees.keys), with clientSecret.
         createdAt:
+          $ref: '#/components/schemas/Timestamp'
+      additionalProperties: false
+    LiveLocationUpdate:
+      type: object
+      description: 'v0.18.144 (contract.json#liveLocation): PUT /trips/{tripId}/live-location { sharing, lat?, lng?, accuracyM?
+        } (rider or driver of the trip). sharing true needs lat and lng. 200 { sharing, sendEverySeconds }. Outside the ride
+        window (before accept, after the rider is on board, or terminal) -> 409 conflict, reason live_location_not_active;
+        zone switch off -> 409 conflict, reason live_location_off; sooner than sendEverySeconds - 1 after the same side''s
+        previous send -> 429 rate_limited, retryAfterSeconds. No Idempotency-Key row, no version bump, no trip event.'
+      required:
+      - sharing
+      properties:
+        sharing:
+          type: boolean
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        lng:
+          type: number
+          minimum: -180
+          maximum: 180
+        accuracyM:
+          type: number
+          minimum: 0
+          maximum: 5000
+      additionalProperties: false
+    LiveLocationAnswer:
+      type: object
+      description: 'v0.18.144 (contract.json#liveLocation): The apps send at most every sendEverySeconds, and only while the
+        ride screen is open and the switch is on; a switch turned off sends sharing false once. The other side treats a dot
+        older than 3 x sendEverySeconds as gone. At pickup (rider on board) the server answers 409 live_location_not_active,
+        so no final sharing:false frame follows: each app drops the other side''s dot on that status change itself (the driver
+        app when the trip leaves the to-pickup / arrived steps; the rider app shows no driver dot from these frames).'
+      required:
+      - sharing
+      - sendEverySeconds
+      properties:
+        sharing:
+          type: boolean
+        sendEverySeconds:
+          type: integer
+          minimum: 5
+          maximum: 10
+      additionalProperties: false
+    LiveLocationEvent:
+      type: object
+      description: 'v0.18.144 (contract.json#liveLocation): The server relays each accepted send to the other side''s open
+        GET /trips/{tripId}/events stream (only one opened with ?live=true) as an SSE frame ''event: live_location'' with
+        no id: LiveLocationEvent { tripId, side, sharing, lat?, lng?, accuracyM?, at }. The relay uses its own NOTIFY channel
+        (not the trip event channel), so no stream re-reads the trip log. A stream without ?live=true never gets the frame
+        (apps built before v0.18.144). Positions are never stored: no table, no trip event, no log line with a position; only
+        passed on to the open streams of the other side of that trip. Nothing to delete at ride end (GDPR: no history). At
+        pickup, ride end or cancel the server keeps nothing to delete; each app drops the other side''s last point from memory.
+        The share switch''s consent text (texts.privacyNote) needs the owner''s OK and the legal check (Rules plan/legal-drafts-SE).'
+      required:
+      - tripId
+      - side
+      - sharing
+      - at
+      properties:
+        tripId:
+          $ref: '#/components/schemas/Id'
+        side:
+          type: string
+          enum:
+          - rider
+          - driver
+        sharing:
+          type: boolean
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        lng:
+          type: number
+          minimum: -180
+          maximum: 180
+        accuracyM:
+          type: number
+          minimum: 0
+          maximum: 5000
+        at:
           $ref: '#/components/schemas/Timestamp'
       additionalProperties: false

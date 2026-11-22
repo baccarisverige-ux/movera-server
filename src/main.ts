@@ -20,6 +20,7 @@ import { ALERT_SWEEP, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OutageRecorder, outageCopyId } from "./realtime/outages.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
+import { LIVE_LOCATION_CHANNEL } from "./trips/liveLocation.js";
 import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
 import { CONFIG_CHANNEL, cacheLiveDocumentsOn } from "./config/service.js";
@@ -56,7 +57,7 @@ if (env.DATABASE_URL !== undefined) {
   if (env.MIGRATE_ON_START) await migrate(pool, undefined, { lockTimeoutMs: env.DATABASE_MIGRATION_LOCK_TIMEOUT_MS });
   db = createDb(pool);
   healthDb = createDb(createHealthPool(env.DATABASE_URL));
-  hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL, TIMER_DUE_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL, TIMER_DUE_CHANNEL, LIVE_LOCATION_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   // S4 B1.16 Q-B13 (owner W1 Q78 "Do not count it"): this copy writes its LISTEN outage windows, so an Exclusive that
   // expired while any copy's live link was down is not counted toward auto-offline (dispatch/autoOffline.ts).
   hub.watchLink(new OutageRecorder(db, outageCopyId(), { warn: (data, message) => warn(Object.assign(new Error(message), data)) }));
