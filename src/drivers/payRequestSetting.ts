@@ -45,7 +45,8 @@ export function checkPayRequestSetting(currency: string, document: unknown): voi
   const min = s["minAmount"];
   if (min !== undefined && min !== null && !isAmount(min, currency)) throw badRequest(`The minimum amount must be 0 or above in ${currency}.`, s["enabled"] === true ? "pay_request_needs_amount" : "pay_request_invalid");
   if (s["enabled"] === true) {
-    if (!isPayLink(link)) throw badRequest("Set the payment link to switch the monthly pay request on.", "pay_request_needs_link");
+    // DRAFT (owner 2026-11-20 "So we use stripe ... for the driver to pay his monthly invoice"): Stripe replaces the
+    // link, so no link is needed to switch it on; a link stays hidden legacy (checked above when set).
     if (!isAmount(min, currency)) throw badRequest(`Set a minimum amount in ${currency} to switch the monthly pay request on.`, "pay_request_needs_amount");
   }
 }

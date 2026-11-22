@@ -9424,7 +9424,7 @@ paths:
         "problem:<code>"] (not_a_list, too_many_steps, pct_or_amount, up_to_missing, pct_out_of_range, amount_out_of_range,
         above_not_last, last_not_above, up_to_out_of_range, up_to_not_increasing); nothing is saved. v0.18.123 (configDocs.keptKeys;
         country_rules: payoutMode, payoutSchedule, maxRiderDebt, driverOwesLimit, calls.adminCallRoles, calls.phoneProvider,
-        riderFeeStripe, driverPayRequest; dispatch: radar.reaskAfterSeconds, exclusive.reaskAfterSeconds): v0.18.123 (SF-F1-3
+        driverPayRequest, riderFeeStripe; dispatch: radar.reaskAfterSeconds, exclusive.reaskAfterSeconds): v0.18.123 (SF-F1-3
         safe config saves; owner 2026-11-17 Q-SCS-1 "Keep values, save rest (Rec.)", 2026-11-16 Q-SCS-2 "No, keep current
         (Rec.)", Rules audits/impact/safe-config-saves.md §3, decisions/session-2026-11-06.md): PUT /admin/config/{doc} replaces
         the draft, except the kept keys of the document listed here (dotted paths). A kept key that the stored document (the
@@ -9446,16 +9446,19 @@ paths:
         enabled (default false), dayOfMonth (1-28, default 1), payLink (an https:// link, at most 500 characters, '''' = none),
         minAmount (Money in the country''s currency, 0 or above, or null) } on the country standard only (Admin > Pricing
         > Tips & limits; a zone''s own value is ignored). configDefaults.driverPayRequest: off, day 1, no link, no amount,
-        in every country. Saving enabled true needs payLink (else 400 invalid_request, reason pay_request_needs_link) and
-        minAmount in the country''s currency (else 400 invalid_request, reason pay_request_needs_amount); a dayOfMonth outside
-        1-28 or a payLink that is not https or is too long is 400 invalid_request, reason pay_request_invalid. A kept key
-        of country_rules (configDocs.keptKeys.country_rules): a whole-document save that leaves it out keeps the stored value,
-        and a Restore or Undo last publish keeps today''s live value, so no other screen switches it off or changes the link
-        by a save. A change applies at once (the next run of the job and the next read of the screen). v0.18.136 (stripeFees):
-        CountryRules.riderFeeStripe { enabled (default false) } on the country standard only (Admin > Pricing > Tips & limits;
-        a zone''s own value is ignored). configDefaults.riderFeeStripe: off in every country. enabled not a boolean is 400
-        invalid_request, reason rider_fee_stripe_invalid. A kept key of country_rules (configDocs.keptKeys.country_rules)
-        and kept by Restore / Undo last publish (pricingHistory.restoreKeeps).'
+        in every country. Saving enabled true needs minAmount in the country''s currency (else 400 invalid_request, reason
+        pay_request_needs_amount); DRAFT (owner 2026-11-20 "So we use stripe ... And for the driver to pay his monthly invoice"):
+        Stripe replaces the payment link, so payLink is no longer needed to switch it on (the reason pay_request_needs_link
+        is no longer sent); payLink stays as hidden legacy (Rule D: hidden, not removed): kept, checked when set, sent to
+        the app (DriverPayMovera.payLink) only while Stripe is not available (DriverPayMovera.stripe false); with neither
+        Stripe nor a usable link, DriverPayMovera.enabled is false (nothing to pay with); a dayOfMonth outside 1-28 or a payLink
+        that is not https or is too long is 400 invalid_request, reason pay_request_invalid. A kept key of country_rules (configDocs.keptKeys.country_rules):
+        a whole-document save that leaves it out keeps the stored value, and a Restore or Undo last publish keeps today''s
+        live value, so no other screen switches it off or changes the link by a save. A change applies at once (the next run
+        of the job and the next read of the screen). v0.18.136 (stripeFees): CountryRules.riderFeeStripe { enabled (default
+        false) } on the country standard only (Admin > Pricing > Tips & limits; a zone''s own value is ignored). configDefaults.riderFeeStripe:
+        off in every country. enabled not a boolean is 400 invalid_request, reason rider_fee_stripe_invalid. A kept key of
+        country_rules (configDocs.keptKeys.country_rules) and kept by Restore / Undo last publish (pricingHistory.restoreKeeps).'
       tags:
       - Admin · Config
       x-actor:
@@ -20105,6 +20108,59 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /driver/pay-movera/pay:
+    post:
+      operationId: payMoveraStripe
+      summary: Pay what he owes Movera with Stripe
+      description: 'v0.18.136 + v0.18.139 DRAFT (owner 2026-11-20 "Stripe is used for exactly TWO things: ... (2) the DRIVER
+        paying his monthly invoice to Movera"; Stripe test or live keys, stripeFees.keys): POST /driver/pay-movera/pay (driver,
+        no body): a Stripe PaymentIntent for what he owes Movera NOW in his country''s currency (the server''s amount; the
+        app sends none), only while his country''s monthly request is on and he owes above 0 (409 conflict reason pay_request_off
+        / nothing_owed), SEK or EUR only (409 currency_not_supported), Stripe off (stripeFees.keys: no keys, a mix, or a wrong
+        mode for the server) 503 payments_unavailable; one open PaymentIntent per driver and month (ref = the reference);
+        a repeat call returns it, a changed amount cancels it and makes a new one. Answer StripeDriverPayment { paymentIntentId,
+        amount: Money, status, clientSecret?, publishableKey?, createdAt }. The signed webhook (stripeFees.webhook, purpose
+        driver_invoice) records the money with the same effect as the admin''s "Driver paid Movera" (paid_to_movera entries,
+        the carried rest of open payouts first; audit driver.paid_movera_stripe), at most what he owes at that moment; the
+        rest is paidTwice with overpaid for the admin to refund in Stripe. The admin can still mark paid by hand. DriverPayMovera.stripe
+        = true when the app shows the Stripe Pay button (request on, Stripe on in test or live mode, currency SEK/EUR); otherwise
+        the old link button. The request is on with enabled true and a minimum amount; no payment link is needed. A PaymentIntent
+        Stripe is still processing is kept: a call with another owed amount is 409 conflict, reason payment_processing (never
+        canceled and replaced).'
+      tags:
+      - Driver · Account
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StripeDriverPayment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '503':
@@ -39731,9 +39787,13 @@ components:
       description: 'v0.18.139 (driverPayRequest): CountryRules.driverPayRequest { enabled (default false), dayOfMonth (1-28,
         default 1), payLink (an https:// link, at most 500 characters, '''' = none), minAmount (Money in the country''s currency,
         0 or above, or null) } on the country standard only (Admin > Pricing > Tips & limits; a zone''s own value is ignored).
-        configDefaults.driverPayRequest: off, day 1, no link, no amount, in every country. Saving enabled true needs payLink
-        (else 400 invalid_request, reason pay_request_needs_link) and minAmount in the country''s currency (else 400 invalid_request,
-        reason pay_request_needs_amount); a dayOfMonth outside 1-28 or a payLink that is not https or is too long is 400 invalid_request,
+        configDefaults.driverPayRequest: off, day 1, no link, no amount, in every country. Saving enabled true needs minAmount
+        in the country''s currency (else 400 invalid_request, reason pay_request_needs_amount); DRAFT (owner 2026-11-20 "So
+        we use stripe ... And for the driver to pay his monthly invoice"): Stripe replaces the payment link, so payLink is
+        no longer needed to switch it on (the reason pay_request_needs_link is no longer sent); payLink stays as hidden legacy
+        (Rule D: hidden, not removed): kept, checked when set, sent to the app (DriverPayMovera.payLink) only while Stripe
+        is not available (DriverPayMovera.stripe false); with neither Stripe nor a usable link, DriverPayMovera.enabled is
+        false (nothing to pay with); a dayOfMonth outside 1-28 or a payLink that is not https or is too long is 400 invalid_request,
         reason pay_request_invalid. A kept key of country_rules (configDocs.keptKeys.country_rules): a whole-document save
         that leaves it out keeps the stored value, and a Restore or Undo last publish keeps today''s live value, so no other
         screen switches it off or changes the link by a save. A change applies at once (the next run of the job and the next
@@ -39755,7 +39815,8 @@ components:
           type: string
           maxLength: 500
           pattern: ^(https://[^\s]+)?$
-          description: The payment link the Pay Movera button opens (https only; '' = none). Required when enabled.
+          description: 'Legacy, hidden while Stripe pays (DRAFT): the payment link the Pay Movera button opens (https only;
+            '''' = none); not needed to switch on.'
           default: ''
         minAmount:
           oneOf:
@@ -39809,6 +39870,9 @@ components:
             askedAmount:
               $ref: '#/components/schemas/Money'
           additionalProperties: false
+        stripe:
+          type: boolean
+          description: 'True: the app shows the Stripe Pay button (POST /driver/pay-movera/pay) instead of the link.'
       additionalProperties: false
     DeletionRequest:
       type: object
@@ -40015,4 +40079,55 @@ components:
           - test_keys_in_production
           - live_keys_outside_production
           description: Only with mode off.
+      additionalProperties: false
+    StripeDriverPayment:
+      type: object
+      description: 'v0.18.136 + v0.18.139 DRAFT (owner 2026-11-20 "Stripe is used for exactly TWO things: ... (2) the DRIVER
+        paying his monthly invoice to Movera"; Stripe test or live keys, stripeFees.keys): POST /driver/pay-movera/pay (driver,
+        no body): a Stripe PaymentIntent for what he owes Movera NOW in his country''s currency (the server''s amount; the
+        app sends none), only while his country''s monthly request is on and he owes above 0 (409 conflict reason pay_request_off
+        / nothing_owed), SEK or EUR only (409 currency_not_supported), Stripe off (stripeFees.keys: no keys, a mix, or a wrong
+        mode for the server) 503 payments_unavailable; one open PaymentIntent per driver and month (ref = the reference);
+        a repeat call returns it, a changed amount cancels it and makes a new one. Answer StripeDriverPayment { paymentIntentId,
+        amount: Money, status, clientSecret?, publishableKey?, createdAt }. The signed webhook (stripeFees.webhook, purpose
+        driver_invoice) records the money with the same effect as the admin''s "Driver paid Movera" (paid_to_movera entries,
+        the carried rest of open payouts first; audit driver.paid_movera_stripe), at most what he owes at that moment; the
+        rest is paidTwice with overpaid for the admin to refund in Stripe. The admin can still mark paid by hand. DriverPayMovera.stripe
+        = true when the app shows the Stripe Pay button (request on, Stripe on in test or live mode, currency SEK/EUR); otherwise
+        the old link button. The request is on with enabled true and a minimum amount; no payment link is needed. A PaymentIntent
+        Stripe is still processing is kept: a call with another owed amount is 409 conflict, reason payment_processing (never
+        canceled and replaced).'
+      required:
+      - paymentIntentId
+      - amount
+      - status
+      - createdAt
+      properties:
+        paymentIntentId:
+          type: string
+          maxLength: 255
+        amount:
+          allOf:
+          - $ref: '#/components/schemas/Money'
+          description: 'The server''s amount: what he owes Movera now.'
+        status:
+          type: string
+          enum:
+          - requires_payment
+          - processing
+          - succeeded
+          - failed
+          - canceled
+          - refund_pending
+          - refunded
+        clientSecret:
+          type: string
+          maxLength: 500
+          description: Only to the paying driver while requires_payment.
+        publishableKey:
+          type: string
+          maxLength: 255
+          description: The Stripe publishable key of the server's mode (pk_test_ or pk_live_, stripeFees.keys), with clientSecret.
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
       additionalProperties: false

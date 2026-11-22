@@ -19,8 +19,8 @@ import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
 import { KEPT_KEYS, checkRemoveKeys, withKeptKeys } from "./keptKeys.js";
-import { checkRiderFeeStripeSetting } from "./riderFeeStripeSetting.js";
 import { checkPayRequestSetting } from "../drivers/payRequestSetting.js";
+import { checkRiderFeeStripeSetting } from "./riderFeeStripeSetting.js";
 import { perMinWithAppFee } from "../rules/fare.js";
 import { pricingStepsProblem } from "../rules/commissionSteps.js";
 import { randomBytes } from "node:crypto";
@@ -127,11 +127,11 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
       throw badRequest(`Set an amount above 0 in ${zone.currency} to switch the owes-limit on.`, "owes_limit_needs_amount");
     }
   }
-  // v0.18.136 (contract.json#stripeFees.setting): the Stripe rider fee switch is a boolean.
-  if (doc === "country_rules") checkRiderFeeStripeSetting(document);
   // v0.18.139 (contract.json#driverPayRequest.setting): the monthly pay request — a valid day and https link; switched
   // on it needs the link and a minimum amount in the country's currency.
   if (doc === "country_rules") checkPayRequestSetting(zone.currency, document);
+  // v0.18.136 (contract.json#stripeFees.setting): the Stripe rider fee switch is a boolean.
+  if (doc === "country_rules") checkRiderFeeStripeSetting(document);
   // v0.18.115 BQ-V21 (contract.json#pickupSpots.server): booking.pickupSpots.on is true or false (checked here, so the
   // rule holds whatever contract copy the schema check reads).
   if (doc === "rider_app_config") {
@@ -591,9 +591,9 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
  */
 export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
   // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
-  // v0.18.136 (pricingHistory.restoreKeeps): the Stripe rider fee switch stays too.
   // v0.18.139 (pricingHistory.restoreKeeps): the monthly pay request (switch, day, payment link, minimum) stays too.
-  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "riderFeeStripe", "driverPayRequest"],
+  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "driverPayRequest", "riderFeeStripe"],
+  // v0.18.136 (pricingHistory.restoreKeeps): the Stripe rider fee switch stays too.
 };
 
 function keepOnRestore(doc: ConfigDoc, old: Record<string, unknown>, live: { document: unknown } | undefined): { document: Record<string, unknown>; removed: string[] } {

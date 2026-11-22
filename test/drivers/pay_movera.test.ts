@@ -168,8 +168,6 @@ describe("driverPayRequest: the setting (country standard, off by default)", () 
 
   it("switched on it needs an https link and a minimum amount in the country's currency", async () => {
     const cases: Array<[unknown, string]> = [
-      [{ enabled: true, dayOfMonth: 1, payLink: "", minAmount: SEK(0) }, "pay_request_needs_link"],
-      [{ enabled: true, dayOfMonth: 1, minAmount: SEK(0) }, "pay_request_needs_link"],
       [{ enabled: true, dayOfMonth: 1, payLink: LINK, minAmount: null }, "pay_request_needs_amount"],
       [{ enabled: true, dayOfMonth: 1, payLink: LINK }, "pay_request_needs_amount"],
       [{ enabled: true, dayOfMonth: 1, payLink: LINK, minAmount: { amountMinor: 100, currency: "EUR" } }, "pay_request_needs_amount"],
@@ -240,22 +238,28 @@ describe("driverPayRequest: the setting (country standard, off by default)", () 
 describe("driverPayRequest: GET /driver/pay-movera", () => {
   it("off (the default): the amount and the reference, no link, no request", async () => {
     await entry(ali.id, { amount: 32516, cash: 34900 });
-    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(2384), reference: `${ali.id}-202611` });
+    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(2384), reference: `${ali.id}-202611`, stripe: false });
   });
 
   it("on: the admin's link as it is and the minimum; the amount is the same owed as the wallet's", async () => {
     await live("SE", "SEK", ON());
     await entry(ali.id, { amount: 32516, cash: 34900 });
     const view = await payMovera();
-    expect(view).toEqual({ enabled: true, owedToMovera: SEK(2384), reference: `${ali.id}-202611`, payLink: LINK, minAmount: SEK(1000) });
+    expect(view).toEqual({ enabled: true, owedToMovera: SEK(2384), reference: `${ali.id}-202611`, payLink: LINK, minAmount: SEK(1000), stripe: false });
     expect(view.owedToMovera).toEqual((await earnings()).moveraBalance.owedToMovera);
   });
 
-  it("a live document that says on but has no usable link or amount is read as off (nobody is sent a bad link)", async () => {
-    for (const broken of [{ payLink: "http://x.example" }, { payLink: "" }, { payLink: "https://sumup.com@evil.example/pay" }, { payLink: "https://pay.sumup.com/\u200bx" }, { minAmount: null }, { minAmount: { amountMinor: 5, currency: "EUR" } }]) {
+  it("a live document that says on but has no usable amount is read as off; a bad or missing link is never sent (Stripe replaces the link)", async () => {
+    for (const broken of [{ minAmount: null }, { minAmount: { amountMinor: 5, currency: "EUR" } }]) {
       await live("SE", "SEK", ON(broken));
       const view = await payMovera();
       expect([view.enabled, view.payLink], JSON.stringify(broken)).toEqual([false, undefined]);
+    }
+    for (const badLink of [{ payLink: "http://x.example" }, { payLink: "" }, { payLink: "https://sumup.com@evil.example/pay" }, { payLink: "https://pay.sumup.com/\u200bx" }]) {
+      await live("SE", "SEK", ON(badLink));
+      const view = await payMovera();
+      // No Stripe keys in this world and no usable link: nothing to pay with, so the request reads as off.
+      expect([view.enabled, view.payLink], JSON.stringify(badLink)).toEqual([false, undefined]);
     }
   });
 
@@ -290,7 +294,7 @@ describe("driverPayRequest: the monthly job", () => {
     await scan();
     expect(await requests()).toEqual([]);
     expect(await notices()).toEqual([]);
-    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(500000), reference: `${ali.id}-202611` });
+    expect(await payMovera()).toEqual({ enabled: false, owedToMovera: SEK(500000), reference: `${ali.id}-202611`, stripe: false });
   });
 
   it("two copies inside the same step at the same moment: the second one's insert meets the first one's row and writes no second notice (review should-fix 3)", async () => {

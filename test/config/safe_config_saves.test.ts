@@ -26,10 +26,10 @@ const money = {
   payoutSchedule: { frequency: "every_2_weeks", day: "friday", time: "09:30" },
   maxRiderDebt: { amountMinor: 45000, currency: "SEK" },
   driverOwesLimit: { enabled: true, max: { amountMinor: 200000, currency: "SEK" } },
-  // v0.18.136: the Stripe rider fee switch is kept the same way.
-  riderFeeStripe: { enabled: true },
   // v0.18.139: the monthly pay request (the payment link is where the drivers' money goes) is kept the same way.
   driverPayRequest: { enabled: true, dayOfMonth: 5, payLink: "https://pay.sumup.com/b2c/MOVERA1", minAmount: { amountMinor: 10000, currency: "SEK" } },
+  // v0.18.136: the Stripe rider fee switch is kept the same way.
+  riderFeeStripe: { enabled: true },
 };
 const calls = { on: true, adminCallRoles: ["super", "ops"], phoneProvider: "twilio" };
 const put = (doc: string, body: Record<string, unknown>) => call(app, "PUT", `/admin/config/${doc}`, admin, body);

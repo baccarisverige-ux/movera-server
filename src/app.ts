@@ -33,6 +33,7 @@ import { adminTripRoutes } from "./admin/tripRoutes.js";
 import { setServerStripeStatus, stripeFromEnv, stripeKeyStatus, type StripeApi } from "./payments/stripe.js";
 import { stripeWebhookRoutes } from "./payments/stripeWebhook.js";
 import { riderFeeUse } from "./riders/feeStripe.js";
+import { driverInvoiceUse } from "./drivers/payMoveraStripe.js";
 import { realDataRoutes } from "./admin/realdataRoutes.js";
 import { adminEventRoutes } from "./realtime/adminEvents.js";
 import { driverRoutes } from "./drivers/routes.js";
@@ -367,7 +368,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const payments = stripe !== undefined ? stripe : stripeFromEnv(env);
     // Live mode (contract.json#stripeFees.status): the admin status and the system_health alert read this copy's mode.
     setServerStripeStatus(stripe === undefined ? stripeKeyStatus(env) : stripe ? { mode: stripe.mode ?? "test" } : { mode: "off", reason: "no_keys" });
-    await stripeWebhookRoutes(app, { db, stripe: payments, uses: { rider_fee: riderFeeUse }, ...(clock ? { clock } : {}) });
+    await stripeWebhookRoutes(app, { db, stripe: payments, uses: { rider_fee: riderFeeUse, driver_invoice: driverInvoiceUse }, ...(clock ? { clock } : {}) });
     await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", stripe: payments, ...(clock ? { clock } : {}) });
     // v0.18.38 §62: in-app call steps (answer, end, signal) and the admin call log.
     await callRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
@@ -375,7 +376,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await chatRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}), ...(translator ? { translator } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
-    await driverRoutes(app, { db, jwtSecret, documentKey, invites, router: roads, ...(clock ? { clock } : {}) });
+    await driverRoutes(app, { db, jwtSecret, documentKey, invites, router: roads, stripe: payments, ...(clock ? { clock } : {}) });
     await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     // v0.18.54 §76: Reveal with a reason (riders, drivers, fleets) and the one-click SOS reveal.
     await revealRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });

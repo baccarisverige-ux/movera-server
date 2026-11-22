@@ -113,6 +113,19 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
     throw new ApiError("conflict", "What the driver owes changed; check it again.", { reason: "owed_changed", projection: await owingDriver(trx, driverId, currency) });
   }
   if (body.amount.amountMinor > owedBefore) throw badRequest("That is more than the driver owes Movera.", "paid_above_owed");
+  await recordPaidToMovera(trx, { adminId: who.subjectId, driverId, zone, currency, amountMinor: body.amount.amountMinor, owedBefore, reason, action: "driver.paid_movera" }, now);
+  return owingDriver(trx, driverId, currency);
+}
+
+/**
+ * The money effect of "Driver paid Movera" (J8b), shared with the driver's Stripe payment (drivers/payMoveraStripe.ts,
+ * adminId null, action driver.paid_movera_stripe). The caller holds the driver row lock and checked 0 < amount <= owed.
+ */
+export async function recordPaidToMovera(trx: Trx, p: { adminId: string | null; driverId: string; zone: string | null; currency: string; amountMinor: number; owedBefore: number; reason: string; action: string }, now: Date): Promise<void> {
+  const { driverId, currency, reason, zone } = p;
+  const body = { amount: { amountMinor: p.amountMinor, currency } };
+  const who = { subjectId: p.adminId };
+  const owedBefore = p.owedBefore;
   // Must-fix 2 (supervisor J8 round 1; owner Q-M3 "Next payout" + Q-S5-7 "Carry over": the negative rest carries): the
   // money settles the carried rest first. Each open payout below 0, oldest first, gets an entry LINKED to it (payout_id
   // set, so no later payout run ever takes it and pays it back to him); one it covers in full is paid. Only the part
@@ -149,8 +162,8 @@ export async function driverPaidMovera(trx: Trx, who: Principal, driverId: strin
   }
   if (left > 0) await trx.insertInto("earnings_entries").values(entry(left, null)).execute();
   const owedAfter = owedBefore - body.amount.amountMinor;
-  await audit(trx, { adminId: who.subjectId, action: "driver.paid_movera", targetType: "driver", targetId: driverId, zoneId: zone, detail: { amount: body.amount, owedBefore: { amountMinor: owedBefore, currency }, owedAfter: { amountMinor: owedAfter, currency }, reason, entries: written }, at: now });
-  // v0.18.134 (contract.json#accountDeletion.debt): a kept debt record follows the live amount (0 = settled).
+  await audit(trx, { adminId: who.subjectId, action: p.action, targetType: "driver", targetId: driverId, zoneId: zone, detail: { amount: body.amount, owedBefore: { amountMinor: owedBefore, currency }, owedAfter: { amountMinor: owedAfter, currency }, reason, entries: written }, at: now });
+  // v0.18.134 (contract.json#accountDeletion.debt): a kept debt record follows the live amount (0 = settled); the
+  // same for the admin's "Driver paid Movera" and the driver's own Stripe payment (both come through here).
   await refreshKeptDebts(trx, "driver", driverId, now);
-  return owingDriver(trx, driverId, currency);
 }
