@@ -8,7 +8,7 @@ import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { hasStoredAnswer, readIdempotencyKey, runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
-import { nearbyVehicles } from "../riders/nearby.js";
+import { NearbyCache, nearbyVehicles } from "../riders/nearby.js";
 import { getRiderProfile, updateRiderProfile } from "../riders/service.js";
 import { requestAccountDeletion } from "../accounts/deletion.js";
 import { tripProjection } from "./projection.js";
@@ -35,7 +35,7 @@ const NearbyQuery = z.object({ lat: z.coerce.number().min(-90).max(90), lng: z.c
 const RouteChangeBody = z.object({ expectedVersion: z.number().int().min(1), routeQuoteId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
 const RouteChangeAnswer = z.object({ expectedVersion: z.number().int().min(1), changeId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
 
-export type TripDeps = { db: Db; router?: Router; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date; telephony?: TelephonyProvider };
+export type TripDeps = { db: Db; router?: Router; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date; telephony?: TelephonyProvider; nearbyCacheMs?: number };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional() });
@@ -256,12 +256,14 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   });
 
   // contract v0.5.2 §13: the free cars around the rider's map, with nothing that tells who drives.
+  // v0.18.145 (contract.json#loadCut.nearbyCache): kept per grid cell for NEARBY_CACHE_MS on this copy.
+  const nearbyCache = new NearbyCache(deps.nearbyCacheMs ?? 0);
   app.get(`${API_PREFIX}/rider/nearby-vehicles`, async (request) => {
     const who = await authenticate(request, guard, ["rider"]);
     const point = parseBody(NearbyQuery, request.query);
     // v0.18.4 (G3-R4): the open map makes the rider "online" in its zone for the admin's Dashboard.
     await markRiderSeen(deps.db, who.subjectId, point, now());
-    return nearbyVehicles(deps.db, point, deps.jwtSecret, now());
+    return nearbyVehicles(deps.db, point, deps.jwtSecret, now(), nearbyCache);
   });
 
   app.patch(`${API_PREFIX}/rider/profile`, async (request) => {

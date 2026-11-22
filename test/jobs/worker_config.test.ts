@@ -95,8 +95,8 @@ describe("buildWorkerConfig", () => {
     expect(lanes).toHaveLength(5);
     expect(lanes.filter((lane) => lane.exclude !== undefined)).toHaveLength(2);
   });
-  it("G34 S3 (v0.18.83 fastDispatch.lateAlarm): TRIP_LANES defaults to 1 and sets the per-trip lane count; no other lane takes those kinds", () => {
-    expect(readEnv({ MOVERA_ENV: "development" }).TRIP_LANES).toBe(1);
+  it("G34 S3 (v0.18.83 fastDispatch.lateAlarm): TRIP_LANES defaults to 2 (load test S4d/S4e 2026-11-21) and sets the per-trip lane count; no other lane takes those kinds", () => {
+    expect(readEnv({ MOVERA_ENV: "development" }).TRIP_LANES).toBe(2);
     for (const kind of TRIP_LANE_KINDS) expect(lanes.filter((lane) => takes(lane, kind))).toHaveLength(1);
     const three = buildWorkerConfig(new EstimateRouter(), { timerLanes: 4, dispatchLanes: 1, tripLanes: 3 }).lanes;
     for (const kind of TRIP_LANE_KINDS) expect(three.filter((lane) => takes(lane, kind))).toHaveLength(3);

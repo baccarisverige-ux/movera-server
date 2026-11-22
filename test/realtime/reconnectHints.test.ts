@@ -174,7 +174,7 @@ describe("B1.18 proof: settings streams after a LISTEN reconnect", () => {
     const trip = fakeSse();
     const tripDb = { selectFrom: () => { throw new Error("no read needed here"); } } as unknown as Db;
     await streamTrip(trip.request, trip.reply, { db: tripDb, hub }, "trp_1", { actor: "admin", subjectId: "adm_1" }, 0);
-    expect(settings).toHaveLength(4);
+    expect(settings).toHaveLength(5); // v0.18.145: + the driver airport_queue_changed subscription
     expect(settings.every((s) => s.catchUp === "spread")).toBe(true);
     expect(asked).toEqual([{ channel: TRIP_EVENTS_CHANNEL, catchUp: undefined }]);
   });

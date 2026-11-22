@@ -363,7 +363,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     app.decorate("router", roads);
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
-    await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", nearbyCacheMs: env.NEARBY_CACHE_MS, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     // v0.18.136 (DRAFT, contract.json#stripeFees): one Stripe module (test or live keys); the rider fee is its first use.
     const payments = stripe !== undefined ? stripe : stripeFromEnv(env);
     // Live mode (contract.json#stripeFees.status): the admin status and the system_health alert read this copy's mode.

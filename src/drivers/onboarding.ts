@@ -1,3 +1,4 @@
+import { leaveIfGone } from "../airportQueue/service.js";
 import { NOT_HELD } from "../reservations/view.js";
 import { randomInt } from "node:crypto";
 import { sql } from "kysely";
@@ -276,6 +277,8 @@ export async function startOwnCompany(trx: Trx, driverId: string, body: unknown,
     .set({ account_type: "fleet", account_status: row.account_status === "suspended" ? "suspended" : "on_hold", fleet_id: fleetId, fleet_linked_at: now, vehicle_id: null, ...(online ? { online_status: "offline", online_since: null } : {}), version: row.version + 1, updated_at: now })
     .where("driver_id", "=", driverId)
     .execute();
+  // v0.18.145: set offline here without the withdraw job: he leaves the airport line now (the line is told).
+  if (online) await leaveIfGone(trx, driverId, now);
   // Requests to join other fleets are his no more.
   await trx.updateTable("fleet_invitations").set((eb) => ({ status: "cancelled", decided_at: now, decided_by: "system", updated_at: now, version: eb("version", "+", 1) })).where("driver_id", "=", driverId).where("status", "=", "pending").execute();
   return driverView(trx, await loadDriver(trx, driverId), "driver", now);

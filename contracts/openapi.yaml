@@ -1,11 +1,11 @@
-# Movera API v0.18.144 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.145 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.144
+  version: 0.18.145
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.144 in this folder; this file must agree with them.
+    v0.18.145 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.144
+  version: 0.18.145
   source: contract.json
 paths:
   /auth/otp/request:
@@ -1481,9 +1481,13 @@ paths:
     get:
       operationId: getRiderNearbyVehicles
       summary: Free cars near a point, for the rider's map
-      description: CONTRACT.md §13 (v0.5.2). Drivers online and free within 3000 m of the point with a fix not older than
+      description: 'CONTRACT.md §13 (v0.5.2). Drivers online and free within 3000 m of the point with a fix not older than
         120 s, nearest first, at most 15. No id, name, plate or trip; positions rounded to 4 decimals. The app asks again
-        every refreshSeconds while the rider chooses a ride. An empty list is normal.
+        every refreshSeconds while the rider chooses a ride. An empty list is normal. v0.18.145 (contract.json#loadCut): GET
+        /rider/nearby-vehicles: each server copy keeps the answer''s cars per grid cell (0.005 degrees) for at most NEARBY_CACHE_MS
+        (server env, default 2500, 0 = off). Only the already blurred, rounded positions, keys and headings are kept (never
+        a driver id or a true position); each rider still gets only the cars within radiusMeters of his own point, nearest
+        first, at most maxVehicles. A car may show up to that long late.'
       tags:
       - Rider · Booking
       x-actor:
@@ -1625,7 +1629,11 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
       description: 'v0.18.128 (contract.json#realtime.appStreamsPerSession): more than 3 open app streams of one session on
-        a server copy are logged and counted, never refused in this version.'
+        a server copy are logged and counted, never refused in this version. v0.18.145 (contract.json#loadCut): While GET
+        /rider/config/stream is connected the rider app''s trip watch (GET /rider/trips/active on Home, the booked-driver
+        banner read on a ride screen) polls every streamUpSeconds instead of bookedRideSeen pollSeconds (8): rider_trip_changed
+        already reads at once (bookedRideSeen.riderTripEvent), and a stream reconnect reads at once. While the stream is down
+        the 8 s poll and its backoff stay as before. Server: no change. streamUpSeconds = 60.'
   /rider/profile:
     get:
       operationId: getRiderProfile
@@ -3609,7 +3617,12 @@ paths:
         not exist is 404 zone_not_found (config and stream); on GET /driver/config a zone with nothing published (own or country
         standard) is 404 config_not_published and the app keeps its document. There is no rule limiting which zone a driver
         may read (unchanged). v0.18.128 (contract.json#realtime.appStreamsPerSession): more than 3 open app streams of one
-        session on a server copy are logged and counted, never refused in this version.'
+        session on a server copy are logged and counted, never refused in this version. v0.18.145 (contract.json#loadCut):
+        also AirportQueueChangedEvent (kind airport_queue_changed). The server sends { eventId, kind: ''airport_queue_changed'',
+        areaId, occurredAt, serverTime } on GET /driver/config/stream (and GET /driver/stream) to every driver whose place
+        in that airport line changed (joined, left, moved up, picked). No SSE id (not replayed). The driver app reads GET
+        /driver/airport-queue again on it, at most once per 5 s; its timer becomes a fallback every fallbackSeconds (was 20
+        s), and on every stream reconnect it reads at once.'
   /driver/earnings:
     get:
       operationId: getDriverEarnings
@@ -18174,7 +18187,11 @@ paths:
         minutes in a row; he goes offline or goes online again later (a new online session never keeps the old place); he
         accepts any trip (queue or not); the area is turned off or removed. The others move up. v0.18.83 (S2, owner ''Yes,
         7 checks''): under overload it may answer 503 unavailable, reason server_busy, Retry-After 2 at once; the app keeps
-        the last value (contract.json#fastDispatch.shedPolls).'
+        the last value (contract.json#fastDispatch.shedPolls). v0.18.145 (contract.json#loadCut): The server sends { eventId,
+        kind: ''airport_queue_changed'', areaId, occurredAt, serverTime } on GET /driver/config/stream (and GET /driver/stream)
+        to every driver whose place in that airport line changed (joined, left, moved up, picked). No SSE id (not replayed).
+        The driver app reads GET /driver/airport-queue again on it, at most once per 5 s; its timer becomes a fallback every
+        fallbackSeconds (was 20 s), and on every stream reconnect it reads at once. Fallback poll: 60 s.'
       tags:
       - Driver · Session
       x-actor:
@@ -19601,7 +19618,12 @@ paths:
         as before) and give its events to the two existing readers (offers by sequence, settings by kind); do not open the
         two old streams. false or missing, or GET /driver/stream answers 404 (an older server): the two streams as before,
         and after a 404 the app does not try the one stream again until it restarts. When the switch changes, the app closes
-        what it holds and opens the other within one settings update.'
+        what it holds and opens the other within one settings update. v0.18.145 (contract.json#loadCut): also AirportQueueChangedEvent
+        (kind airport_queue_changed). The server sends { eventId, kind: ''airport_queue_changed'', areaId, occurredAt, serverTime
+        } on GET /driver/config/stream (and GET /driver/stream) to every driver whose place in that airport line changed (joined,
+        left, moved up, picked). No SSE id (not replayed). The driver app reads GET /driver/airport-queue again on it, at
+        most once per 5 s; its timer becomes a fallback every fallbackSeconds (was 20 s), and on every stream reconnect it
+        reads at once.'
       tags:
       - Realtime
       x-actor:
@@ -20283,6 +20305,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /driver/home-badges:
+    get:
+      operationId: getDriverHomeBadges
+      summary: Home's four badge reads in one
+      description: 'v0.18.145 (contract.json#loadCut): GET /driver/home-badges answers Home''s four badge reads in one request:
+        { profile (= GET /driver/profile), notifications (= GET /notifications?unreadOnly=true, first page), reminders (=
+        GET /driver/reminders), onboardingSettings (= GET /driver/onboarding/settings for the driver''s own country, null
+        when the account has no country yet) }. Same rules, texts and shed class as the four reads. The driver app sends it
+        instead of the four (every 60 s while Home shows, on resume and back); on 404 (an older server) it falls back to the
+        four.'
+      tags:
+      - Driver · Session
+      x-actor:
+      - driver
+      parameters:
+      - $ref: '#/components/parameters/RequestId'
+      - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id:
+              description: Echo of the request id (server-generated if absent).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverHomeBadges'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 components:
   securitySchemes:
     bearerAuth:
@@ -40378,3 +40441,52 @@ components:
         at:
           $ref: '#/components/schemas/Timestamp'
       additionalProperties: false
+    DriverHomeBadges:
+      type: object
+      description: 'v0.18.145 (contract.json#loadCut): GET /driver/home-badges answers Home''s four badge reads in one request:
+        { profile (= GET /driver/profile), notifications (= GET /notifications?unreadOnly=true, first page), reminders (=
+        GET /driver/reminders), onboardingSettings (= GET /driver/onboarding/settings for the driver''s own country, null
+        when the account has no country yet) }. Same rules, texts and shed class as the four reads. The driver app sends it
+        instead of the four (every 60 s while Home shows, on resume and back); on 404 (an older server) it falls back to the
+        four.'
+      required:
+      - profile
+      - notifications
+      - reminders
+      - onboardingSettings
+      properties:
+        profile:
+          $ref: '#/components/schemas/Driver'
+        notifications:
+          $ref: '#/components/schemas/NotificationPage'
+        reminders:
+          $ref: '#/components/schemas/DriverReminderList'
+        onboardingSettings:
+          oneOf:
+          - $ref: '#/components/schemas/OnboardingSettings'
+          - type: 'null'
+    AirportQueueChangedEvent:
+      type: object
+      description: 'v0.18.145 (contract.json#loadCut): The server sends { eventId, kind: ''airport_queue_changed'', areaId,
+        occurredAt, serverTime } on GET /driver/config/stream (and GET /driver/stream) to every driver whose place in that
+        airport line changed (joined, left, moved up, picked). No SSE id (not replayed). The driver app reads GET /driver/airport-queue
+        again on it, at most once per 5 s; its timer becomes a fallback every fallbackSeconds (was 20 s), and on every stream
+        reconnect it reads at once.'
+      required:
+      - eventId
+      - kind
+      - areaId
+      - occurredAt
+      - serverTime
+      properties:
+        eventId:
+          $ref: '#/components/schemas/Id'
+        kind:
+          type: string
+          const: airport_queue_changed
+        areaId:
+          type: string
+        occurredAt:
+          $ref: '#/components/schemas/Timestamp'
+        serverTime:
+          $ref: '#/components/schemas/Timestamp'
