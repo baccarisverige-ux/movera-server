@@ -199,6 +199,16 @@ describe("driver go-online (POST /driver/availability)", () => {
     expect(res.statusCode, res.body).toBe(200);
     await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", trip.tripId).execute();
   });
+  it("another driver's booked ride does not exempt him", async () => {
+    const other = await database.db.transaction().execute((trx) =>
+      seedDriver(trx, { phone: TEST_PHONES[2]!, firstName: "Driver Q", make: "Volvo", model: "V60", year: 2021, color: "Black", plate: "MINV002", categoryIds: ["economy"], zoneIds: ["Z001"] }, clock.now),
+    );
+    const trip = (await book({})).json();
+    await database.db.updateTable("trips").set({ kind: "scheduled", status: "accepted", driver_id: other.driverId, scheduled_at: new Date(clock.now.getTime() + 3600_000) }).where("trip_id", "=", trip.tripId).execute();
+    await database.db.updateTable("drivers").set({ online_status: "offline" }).where("driver_id", "=", driver.id).execute();
+    expect426(await goOnline(phone("1.0.0")));
+    await database.db.updateTable("trips").set({ status: "cancelled_by_admin" }).where("trip_id", "=", trip.tripId).execute();
+  });
   it("go offline is never refused", async () => {
     await database.db.updateTable("drivers").set({ online_status: "online" }).where("driver_id", "=", driver.id).execute();
     const res = await goOnline(phone("1.0.0"), "offline");
