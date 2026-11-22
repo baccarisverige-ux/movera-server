@@ -4,6 +4,7 @@ import type { Db, Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
 import "./schema.js";
 import { LANE_LATE_LIMITS, LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
+import { nearCap, signInSmsLastDay, smsSignInFor } from "../auth/smsSignIn.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
 /**
@@ -335,7 +336,7 @@ async function systemCauses(ctx: Ctx): Promise<Cause[]> {
   const parked = await sql<{ kind: string; n: string; refs: string[] }>`
     SELECT kind, count(*) AS n, (array_agg(ref_id ORDER BY ref_id))[1:${sql.lit(PARKED_REFS_SHOWN)}] AS refs
       FROM timers WHERE attempts >= ${MAX_ATTEMPTS} GROUP BY kind ORDER BY kind`.execute(ctx.ex);
-  const late = await laneLateCauses(ctx);
+  const late = [...(await laneLateCauses(ctx)), ...(await smsCapCauses(ctx))];
   if (parked.rows.length === 0) return late;
   // No zone: one per country book (Super admins see alerts without a zone).
   const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
@@ -385,6 +386,29 @@ async function laneLateCauses(ctx: Ctx): Promise<Cause[]> {
       ref: {},
     }));
   });
+}
+
+/**
+ * Contract v0.18.133 (contract.json#smsSignIn.alert): the daily sign-in SMS limit of a country. From nearPercent % of
+ * the limit an important alert, at the limit a critical one (new sign-in codes are refused there, fail closed); each
+ * turns solved by itself when the 24 h count falls below its line. Only for a country whose switch is on.
+ */
+async function smsCapCauses(ctx: Ctx): Promise<Cause[]> {
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  const out: Cause[] = [];
+  for (const country of countries) {
+    if (!settingsOf(ctx, country).kind("system_health").on) continue;
+    const setting = await smsSignInFor(ctx.ex, country);
+    if (!setting.enabled) continue;
+    const { count } = await signInSmsLastDay(ctx.ex, country, ctx.now);
+    const detail = T("Raise the daily limit in Tips & limits per country if these are real people");
+    if (count >= setting.dailyCap) {
+      out.push({ key: `system_health:sms_cap:${country}`, kind: "system_health", country, zoneId: null, level: "critical", title: T("Sign-in SMS limit reached: {0} of {1} in the last 24 hours. New sign-in codes are stopped", [count, setting.dailyCap]), detail, ref: {} });
+    } else if (count >= nearCap(setting.dailyCap)) {
+      out.push({ key: `system_health:sms_cap_near:${country}`, kind: "system_health", country, zoneId: null, level: "important", title: T("Sign-in SMS: {0} of {1} sent in the last 24 hours", [count, setting.dailyCap]), detail, ref: {} });
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ custom rules (owner A3) */
