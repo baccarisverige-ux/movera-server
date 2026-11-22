@@ -12,6 +12,7 @@ import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers } from "./jobs/maintenance.js";
 import { HOUSEKEEPING_KINDS } from "./jobs/housekeeping.js";
 import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "./jobs/payouts.js";
+import { PAY_REQUEST_SCAN } from "./drivers/payRequest.js";
 import { freezePaidPayoutSummaries } from "./admin/payoutSummary.js";
 import { NO_FIX_OFFLINE, NO_FIX_SWEEP } from "./drivers/presence.js";
 import { TIMER_DUE_CHANNEL, TimerWorker, rearmParkedRecurringTimers, restartParkedOnce, wakeTimersOn } from "./jobs/timers.js";
@@ -98,7 +99,7 @@ if (db !== undefined) {
   // S05 A1: a recurring job parked after repeated failures runs again at every start (one warning each).
   // S4 0.14b: every housekeeping job (one timer per clean-up) too.
   // S4 0.14a: the payout timer too, and a driver's payout step parked after repeated failures (tried again after a fix).
-  await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS, PAYOUT_CLOSE, PAYOUT_DRIVER], app.log);
+  await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS, PAYOUT_CLOSE, PAYOUT_DRIVER, PAY_REQUEST_SCAN], app.log);
   // B1.6b (owner W1 Q70): a trip or safety timer parked before restart-once existed runs once more (once in all).
   await restartParkedOnce(db, RESTART_ONCE_KINDS, app.log);
   // v0.18.95 BQ-M26 (freeze at deploy): a payout paid before migration 0109 gets its summary frozen once, now. In the

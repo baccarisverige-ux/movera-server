@@ -24,6 +24,7 @@ import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 import { phoneDataRoutes } from "../accounts/phoneDataRoutes.js";
 import { snapDriverGaps } from "../trips/ride/gapRoads.js";
 import type { Router } from "../maps/routing.js";
+import { driverPayMovera } from "./payRequest.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
@@ -78,6 +79,12 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const who = await authenticate(request, guard, ["driver"]);
     // G30: the line email_not_verified only for driver apps on contract 0.18.76 or later (X-Contract-Version).
     return listReminders(deps.db, await loadDriver(deps.db, who.subjectId), now(), { contractVersion: request.headers["x-contract-version"] });
+  });
+  // v0.18.139 (contract.json#driverPayRequest.read): what he owes Movera now, the reference and — while his country's
+  // monthly pay request is on — the payment link. Read only; a payment is confirmed by the admin's "Driver paid Movera".
+  app.get(`${API_PREFIX}/driver/pay-movera`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    return driverPayMovera(deps.db, who.subjectId, now());
   });
   app.get(`${API_PREFIX}/driver/onboarding/settings`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);

@@ -8,6 +8,7 @@ import { HOUSEKEEPING_KINDS } from "./housekeeping.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "./maintenance.js";
 import { PAYOUT_CLOSE } from "./payouts.js";
 import { LANE_LATE_LIMITS } from "./parkedKinds.js";
+import { PAY_REQUEST_SCAN } from "../drivers/payRequest.js";
 
 /**
  * S4 B1.28 (owner W1 Q88 "An outside check that wakes you when background jobs stop? — A) Yes"): the recurring server
@@ -32,6 +33,8 @@ export const RECURRING_JOBS: ReadonlyArray<{ kind: string; everyMs: number }> = 
   { kind: SWEEP_IDEMPOTENCY_KEYS, everyMs: HOUR_MS },
   // S4 0.14a: the one payout job, hourly (5 s between batches while a backlog is listed).
   { kind: PAYOUT_CLOSE, everyMs: HOUR_MS },
+  // v0.18.139: the monthly pay request scan, hourly (contract.json#driverPayRequest.job).
+  { kind: PAY_REQUEST_SCAN, everyMs: HOUR_MS },
   // Every housekeeping job is hourly (5 s while a backlog is left).
   ...HOUSEKEEPING_KINDS.map((kind) => ({ kind, everyMs: HOUR_MS })),
   // Daily at 01:00 UTC: late after 3 days (3 × its period, like every job).

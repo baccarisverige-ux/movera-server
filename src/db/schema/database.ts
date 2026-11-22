@@ -123,4 +123,6 @@ export interface Database {
   admin_trip_notes: AdminTripNotesTable;
   /** S4 B1.16 Q-B13 (migration 0116): the LISTEN outage windows of every server copy (src/realtime/outages.ts). */
   realtime_outages: { outage_id: Generated<string>; copy_id: string; down_at: Date; seen_at: Date; up_at: Date | null };
+  /** v0.18.139 (migration 0122, contract.json#driverPayRequest): one row per driver and month he was asked to pay Movera. */
+  driver_pay_requests: { driver_id: string; month: string; currency: string; asked_minor: ColumnType<string, number | string, number | string>; asked_at: Date };
 }
