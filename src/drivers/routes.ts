@@ -25,6 +25,7 @@ import type { DocumentKey } from "../documents/files.js";
 import { ONBOARDING } from "./onboardingRules.js";
 import { riderDriverPhoto } from "../trips/driverPhoto.js";
 import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
+import { publicProfileRoutes } from "./publicProfileRoutes.js";
 import { phoneDataRoutes } from "../accounts/phoneDataRoutes.js";
 import { snapDriverGaps } from "../trips/ride/gapRoads.js";
 import type { Router } from "../maps/routing.js";
@@ -59,6 +60,8 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   // BASE B13 (contract v0.18.26 §47): saved places, ride preferences and emergency contacts on the server. Registered
   // here so app.ts stays as it is.
   await phoneDataRoutes(app, { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) });
+  // v0.18.155 (contract.json#driverProfile.routes): the rider's profile read, Min profil, admin moderation.
+  await publicProfileRoutes(app, { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) });
 
   // v0.18.4 (G3-D2): his own acceptance %, cancellation % and rating.
   const profileOf = async (driverId: string) => ({ ...(await getDriverProfile(deps.db, driverId, now())), performance: await driverPerformance(deps.db, driverId, now()) });
