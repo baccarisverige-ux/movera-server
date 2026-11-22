@@ -5,6 +5,7 @@ import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.j
 import "./schema.js";
 import { LANE_LATE_LIMITS, LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
 import { nearCap, signInSmsLastDay, smsSignInFor } from "../auth/smsSignIn.js";
+import { serverStripeStatus, type StripeOffReason } from "../payments/stripeKeys.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
 /**
@@ -336,7 +337,7 @@ async function systemCauses(ctx: Ctx): Promise<Cause[]> {
   const parked = await sql<{ kind: string; n: string; refs: string[] }>`
     SELECT kind, count(*) AS n, (array_agg(ref_id ORDER BY ref_id))[1:${sql.lit(PARKED_REFS_SHOWN)}] AS refs
       FROM timers WHERE attempts >= ${MAX_ATTEMPTS} GROUP BY kind ORDER BY kind`.execute(ctx.ex);
-  const late = [...(await laneLateCauses(ctx)), ...(await smsCapCauses(ctx))];
+  const late = [...(await laneLateCauses(ctx)), ...(await smsCapCauses(ctx)), ...stripeKeyCauses(ctx)];
   if (parked.rows.length === 0) return late;
   // No zone: one per country book (Super admins see alerts without a zone).
   const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
@@ -409,6 +410,32 @@ async function smsCapCauses(ctx: Ctx): Promise<Cause[]> {
     }
   }
   return out;
+}
+
+/** contract.json#stripeFees.status: one whole sentence per setup mistake (the admin translates it). */
+const STRIPE_KEY_TITLE: Record<Exclude<StripeOffReason, "no_keys">, string> = {
+  mixed_keys: "Card payments are off: the server has a mix of Stripe test and live keys",
+  keys_incomplete: "Card payments are off: a Stripe key is missing on the server",
+  bad_webhook_secret: "Card payments are off: the Stripe webhook secret is not valid",
+  test_keys_in_production: "Card payments are off: Stripe test keys on the production server",
+  live_keys_outside_production: "Card payments are off: Stripe live keys on a test server",
+};
+
+/**
+ * Live mode (owner 2026-11-21, contract.json#stripeFees.status): Stripe keys this server copy cannot use (a mix, test
+ * keys in production, live keys on staging, one missing, a bad webhook secret) are one system_health alert per country
+ * book while it lasts; no keys at all is the normal off (no alert). Solved by itself after a start with right keys.
+ */
+function stripeKeyCauses(ctx: Ctx): Cause[] {
+  const status = serverStripeStatus();
+  if (status.mode !== "off" || status.reason === "no_keys") return [];
+  const title = STRIPE_KEY_TITLE[status.reason];
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  return countries.flatMap((country): Cause[] => {
+    const k = settingsOf(ctx, country).kind("system_health");
+    if (!k.on) return [];
+    return [{ key: `system_health:stripe_keys:${country}`, kind: "system_health", country, zoneId: null, level: k.level, title: T(title), detail: T("Fix the Stripe keys in the server settings and restart the server"), ref: {} }];
+  });
 }
 
 /* ------------------------------------------------------------------ custom rules (owner A3) */

@@ -2,7 +2,8 @@ import { exponentOf, moneyText, type CurrencyCode } from "../rules/money.js";
 import { tripTerms } from "../trips/ride.js";
 import { notify } from "../notifications/service.js";
 import { sql } from "kysely";
-import { correctFee } from "../riders/debt.js";
+import { cardPaidOfFees, correctFee, lockRiderRow } from "../riders/debt.js";
+import { closeOpenIntents } from "../payments/stripe.js";
 import { commissionOf } from "../rules/commission.js";
 import { GROUP_MAX_DRIVERS, pickGroup, pickRadarZone, startRadarZoneSend, stopRadarZoneSend } from "../dispatch/tools.js";
 import { boxAround, driversNear } from "../dispatch/nearArea.js";
@@ -385,6 +386,7 @@ export async function adminNoShow(trx: Trx, who: Principal, tripId: string, body
  * Again on a reversed trip: the trip as it is, nothing changes.
  */
 export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: string, body: { expectedVersion: number; reason: string; takeBackDriverShare?: boolean }, now: Date): Promise<TripRow> {
+  await lockRiderOfTrip(trx, tripId); // v0.18.136 lock order: the rider before the trip (the Stripe webhook's order)
   const trip = await lockTrip(trx, tripId);
   if (!adminCoversZone(who, trip.zone_id)) throw new ApiError("forbidden", "This trip is outside your zones.", { reason: "zone_out_of_scope" });
   const cancellation = (trip.cancellation ?? {}) as Record<string, unknown> & { reversal?: unknown; driverShare?: Money; fee?: Money | null };
@@ -399,10 +401,19 @@ export async function adminReverseNoShow(trx: Trx, who: Principal, tripId: strin
     // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
     await correctFee(trx, fee, now);
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
+    await closeOpenIntents(trx, "rider_fee", [trip.trip_id]);
+    await flagCardPaymentsForRefund(trx, trip.trip_id); // v0.18.136: card money of a waived fee goes back by card
     await refreshOutstanding(trx, trip.rider_id, now);
     feeStatus = "waived";
   } else if (fee && fee.status === "paid") {
-    await creditWallet(trx, trip.rider_id, { amountMinor: Number(fee.amount_minor), currency: fee.currency }, trip.trip_id, now);
+    // v0.18.136 (money review 4): the part paid by card goes back by card, never also into the wallet: those payments
+    // are flagged paidTwice (overpaid = what they took off) for the admin's Refund; the wallet gets the rest only.
+    // Review of 2c918ac6 (1): only the succeeded payments go back by card (flagged); what a refunded or refund-pending
+    // payment settled was not given back, so it goes to the wallet with the rest.
+    const byCard = (await cardPaidOfFees(trx, [fee.trip_id], undefined, ["succeeded"])).get(fee.trip_id) ?? 0;
+    await flagCardPaymentsForRefund(trx, fee.trip_id);
+    const toWallet = Math.max(0, Number(fee.amount_minor) - byCard);
+    if (toWallet > 0) await creditWallet(trx, trip.rider_id, { amountMinor: toWallet, currency: fee.currency }, trip.trip_id, now);
     await trx.updateTable("rider_fees").set({ status: "refunded", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
     // Checker round 1 (M3): live 0.18.7 apps know only paid / owed / waived (statusWords.feeStatus): the wire says waived,
     // refundedAt + refundedToWallet tell the money went back.
@@ -463,6 +474,7 @@ type AdjustPayload = { tripId: string; expectedVersion: number; driverPay?: Mone
 
 async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record<string, unknown>> {
   refuseOldFare(p);
+  if (p.waiveCancelFee) await lockRiderOfTrip(trx, p.tripId); // v0.18.136 lock order: the rider before the trip
   const trip = await lockTrip(trx, p.tripId);
   expectVersion(trip, p.expectedVersion, "admin");
   sameCurrency(trip, p.driverPay, "The driver's pay");
@@ -474,6 +486,8 @@ async function adjustTrip(trx: Trx, p: AdjustPayload, now: Date): Promise<Record
     // S5 J8 (debtModel.adminCorrections): a wallet correction entry, no fee_on_running_trip refusal any more.
     await correctFee(trx, fee, now);
     await trx.updateTable("rider_fees").set({ status: "waived", settled_at: now, settled_in_wallet: true }).where("trip_id", "=", trip.trip_id).execute();
+    await closeOpenIntents(trx, "rider_fee", [trip.trip_id]);
+    await flagCardPaymentsForRefund(trx, trip.trip_id); // v0.18.136: card money of a waived fee goes back by card
     set["cancellation"] = JSON.stringify({ ...(trip.cancellation as object), feeStatus: "waived" });
     await refreshOutstanding(trx, trip.rider_id, now);
   }
@@ -676,4 +690,18 @@ export async function nearbyDrivers(ex: Executor, trip: TripRow, input: { scope:
       ...(open.find((o) => o.driver_id === d.driver_id) ? { openOfferId: open.find((o) => o.driver_id === d.driver_id)!.offer_id } : {}),
     }));
   return { items, scope: input.scope, ...(input.scope === "radius" ? { radiusKm } : {}) };
+}
+
+/** v0.18.136 lock order (money review of 0203ebb8): the trip's rider row before the trip row, as the Stripe webhook. */
+async function lockRiderOfTrip(trx: Trx, tripId: string): Promise<void> {
+  const row = await trx.selectFrom("trips").select("rider_id").where("trip_id", "=", tripId).executeTakeFirst();
+  if (row?.rider_id) await lockRiderRow(trx, row.rider_id);
+}
+
+/**
+ * v0.18.136: a fee that stops being owed by a waive or a reversed no-show gives its card money back by card: each
+ * succeeded card payment of it is flagged paidTwice with overpaid = its whole amount (the admin's Refund).
+ */
+async function flagCardPaymentsForRefund(trx: Trx, tripId: string): Promise<void> {
+  await trx.updateTable("stripe_payments").set({ paid_twice: true, overpaid_minor: sql<number>`amount_minor` }).where("purpose", "=", "rider_fee").where("ref_id", "=", tripId).where("status", "=", "succeeded").execute();
 }

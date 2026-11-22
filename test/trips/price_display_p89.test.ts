@@ -161,7 +161,7 @@ describe("v0.18.89 contract copy", () => {
   it("the server's contract copy is v0.18.115 (priceDisplay, moneyDisplay.wholeAmounts)", async () => {
     const { contract } = await import("../../src/contract/contract.js");
     const c = contract as unknown as { version: string; priceDisplay?: unknown; moneyDisplay: { wholeAmounts?: unknown } };
-    expect(c.version).toBe("0.18.134");
+    expect(c.version).toBe("0.18.136");
     expect(c.priceDisplay).toBeDefined();
     expect(c.moneyDisplay.wholeAmounts).toBeDefined();
   });
