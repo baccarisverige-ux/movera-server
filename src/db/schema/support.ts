@@ -140,6 +140,8 @@ export interface IncidentsTable {
   ride_check: ColumnType<unknown, string | null | undefined, string | null>;
   /** v0.18.101 §92 (migration 0111): Incident.contactsSms, set by the case's first driver SOS. */
   contacts_sms: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.148 (migration 0129, contract.json#sosPressTime.incident): Incident.pressedAt, the `at` of the SOS that opened the case. */
+  pressed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 export interface IncidentEventsTable {

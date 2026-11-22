@@ -135,7 +135,7 @@ describe("scenario 16: SOS and incidents", () => {
     expect(Number(start.body.nextCursor)).toBeGreaterThan(1);
   });
 
-  it("SOS only from the trip's own rider or driver, only while the trip is live", async () => {
+  it("SOS only from the trip's own rider or driver; after the trip ended only by its press time (v0.18.148)", async () => {
     const other = await sim.rider(1);
     const { tripId } = await bookAndAccept(sim, rider, a);
     expect((await sos(other, tripId)).status).toBe(404);
@@ -143,9 +143,12 @@ describe("scenario 16: SOS and incidents", () => {
     const bad = await rider.post(`/rider/trips/${tripId}/sos`, { position: GPS });
     expect(bad.status).toBe(400);
     await rider.command(tripId, "cancel", { reasonCode: "plans_changed" });
+    // v0.18.148 (contract.json#sosPressTime): before, any SOS after the end was 409 trip_not_live. Now a press more
+    // than 30 min after the end is refused (sos_not_during_trip), for both sides.
+    await sim.advance(31 * 60);
     const ended = await sos(rider, tripId);
     expect(ended.status).toBe(409);
-    expect(ended.body).toMatchObject({ code: "invalid_transition", reason: "trip_not_live", projection: { tripId } });
+    expect(ended.body).toMatchObject({ code: "invalid_transition", reason: "sos_not_during_trip", projection: { tripId } });
     expect((await sos(a, tripId)).status).toBe(409);
   });
 
