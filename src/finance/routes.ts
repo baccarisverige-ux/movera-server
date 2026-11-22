@@ -59,7 +59,7 @@ export async function financeRoutes(app: FastifyInstance, deps: FinanceDeps): Pr
     await audit(deps.db, { adminId: who.subjectId, action: "finance.driver_income.csv", targetType: "driver_income", targetId: String(scope.year), detail: auditDetail(scope, query, "csv"), at: now() });
     const db = deps.db;
     async function* lines() {
-      yield `﻿${CSV_COLUMNS.join(",")}\r\n`;
+      yield `\uFEFF${CSV_COLUMNS.join(",")}\r\n`;
       // Every payee, in the JSON order (payeeId, then currency), 200 at a time: nothing is held for the whole file.
       for await (const rows of incomeAllPages(db, scope, CSV_BATCH, first)) yield rows.flatMap((row) => csvLines(row)).map((l) => `${l}\r\n`).join("");
     }
