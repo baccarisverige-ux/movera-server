@@ -4,6 +4,8 @@ import type { Db, Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
 import "./schema.js";
 import { LANE_LATE_LIMITS, LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
+import { nearCap, signInSmsLastDay, smsSignInFor } from "../auth/smsSignIn.js";
+import { serverStripeStatus, type StripeOffReason } from "../payments/stripeKeys.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
 /**
@@ -335,7 +337,7 @@ async function systemCauses(ctx: Ctx): Promise<Cause[]> {
   const parked = await sql<{ kind: string; n: string; refs: string[] }>`
     SELECT kind, count(*) AS n, (array_agg(ref_id ORDER BY ref_id))[1:${sql.lit(PARKED_REFS_SHOWN)}] AS refs
       FROM timers WHERE attempts >= ${MAX_ATTEMPTS} GROUP BY kind ORDER BY kind`.execute(ctx.ex);
-  const late = await laneLateCauses(ctx);
+  const late = [...(await laneLateCauses(ctx)), ...(await smsCapCauses(ctx)), ...stripeKeyCauses(ctx)];
   if (parked.rows.length === 0) return late;
   // No zone: one per country book (Super admins see alerts without a zone).
   const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
@@ -384,6 +386,55 @@ async function laneLateCauses(ctx: Ctx): Promise<Cause[]> {
       detail: l.group === "trip_timers" ? T("{0} trip timers overdue", [l.overdue]) : T("{0} dispatch rounds overdue", [l.overdue]),
       ref: {},
     }));
+  });
+}
+
+/**
+ * Contract v0.18.133 (contract.json#smsSignIn.alert): the daily sign-in SMS limit of a country. From nearPercent % of
+ * the limit an important alert, at the limit a critical one (new sign-in codes are refused there, fail closed); each
+ * turns solved by itself when the 24 h count falls below its line. Only for a country whose switch is on.
+ */
+async function smsCapCauses(ctx: Ctx): Promise<Cause[]> {
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  const out: Cause[] = [];
+  for (const country of countries) {
+    if (!settingsOf(ctx, country).kind("system_health").on) continue;
+    const setting = await smsSignInFor(ctx.ex, country);
+    if (!setting.enabled) continue;
+    const { count } = await signInSmsLastDay(ctx.ex, country, ctx.now);
+    const detail = T("Raise the daily limit in Tips & limits per country if these are real people");
+    if (count >= setting.dailyCap) {
+      out.push({ key: `system_health:sms_cap:${country}`, kind: "system_health", country, zoneId: null, level: "critical", title: T("Sign-in SMS limit reached: {0} of {1} in the last 24 hours. New sign-in codes are stopped", [count, setting.dailyCap]), detail, ref: {} });
+    } else if (count >= nearCap(setting.dailyCap)) {
+      out.push({ key: `system_health:sms_cap_near:${country}`, kind: "system_health", country, zoneId: null, level: "important", title: T("Sign-in SMS: {0} of {1} sent in the last 24 hours", [count, setting.dailyCap]), detail, ref: {} });
+    }
+  }
+  return out;
+}
+
+/** contract.json#stripeFees.status: one whole sentence per setup mistake (the admin translates it). */
+const STRIPE_KEY_TITLE: Record<Exclude<StripeOffReason, "no_keys">, string> = {
+  mixed_keys: "Card payments are off: the server has a mix of Stripe test and live keys",
+  keys_incomplete: "Card payments are off: a Stripe key is missing on the server",
+  bad_webhook_secret: "Card payments are off: the Stripe webhook secret is not valid",
+  test_keys_in_production: "Card payments are off: Stripe test keys on the production server",
+  live_keys_outside_production: "Card payments are off: Stripe live keys on a test server",
+};
+
+/**
+ * Live mode (owner 2026-11-21, contract.json#stripeFees.status): Stripe keys this server copy cannot use (a mix, test
+ * keys in production, live keys on staging, one missing, a bad webhook secret) are one system_health alert per country
+ * book while it lasts; no keys at all is the normal off (no alert). Solved by itself after a start with right keys.
+ */
+function stripeKeyCauses(ctx: Ctx): Cause[] {
+  const status = serverStripeStatus();
+  if (status.mode !== "off" || status.reason === "no_keys") return [];
+  const title = STRIPE_KEY_TITLE[status.reason];
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  return countries.flatMap((country): Cause[] => {
+    const k = settingsOf(ctx, country).kind("system_health");
+    if (!k.on) return [];
+    return [{ key: `system_health:stripe_keys:${country}`, kind: "system_health", country, zoneId: null, level: k.level, title: T(title), detail: T("Fix the Stripe keys in the server settings and restart the server"), ref: {} }];
   });
 }
 

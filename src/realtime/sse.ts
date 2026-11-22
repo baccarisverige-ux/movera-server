@@ -16,6 +16,8 @@ export type EventStream = {
   /** An `id:` with no data: the client's cursor (Last-Event-ID) moves there, no event is dispatched (SSE). */
   cursor: (id: string | number) => void;
   comment: (text: string) => void;
+  /** v0.18.144 (contract.json#liveLocation.relay): a named frame with no id (the client's cursor does not move). */
+  event: (name: string, data: unknown) => boolean;
   close: () => void;
   closed: () => boolean;
   onClose: (fn: () => void) => void;
@@ -106,6 +108,10 @@ export function openEventStream(request: FastifyRequest, reply: FastifyReply, he
     },
     cursor: (id) => {
       if (!done) raw.write(`id: ${id}\n\n`);
+    },
+    event: (name, data) => {
+      if (done) return false;
+      return raw.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
     },
     comment: (text) => {
       if (!done) raw.write(`: ${text.replace(/\n/g, " ")}\n\n`);

@@ -1,5 +1,5 @@
 /** The Kysely Database interface: every table name to its row type. */
-import type { Generated } from "kysely";
+import type { ColumnType, Generated } from "kysely";
 import type { RidersTable } from "./riders.js";
 import type { DriversTable, DriverLocationsTable, VehiclesTable, DriverCancelsTable } from "./drivers.js";
 import type { FleetsTable, FleetJoinAttemptsTable, FleetInvitationsTable } from "./fleets.js";
@@ -110,6 +110,8 @@ export interface Database {
   dispatch_presets: DispatchPresetsTable;
   driver_groups: DriverGroupsTable;
   rider_favourite_drivers: { rider_id: string; driver_id: string; created_at: Generated<Date> };
+  /** v0.18.134 (migration 0123): the debt record kept after an account deletion until paid or written off. */
+  kept_debts: { account_kind: "rider" | "driver"; account_id: string; first_name: string; last_name: string; phone: string; amount_minor: ColumnType<string, number | string, number | string>; currency: string; created_at: Date; settled_at: ColumnType<Date | null, Date | null | undefined, Date | null> };
   radar_zones: RadarZonesTable;
   radar_zone_rules: RadarZoneRulesTable;
   radar_zone_sends: RadarZoneSendsTable;
@@ -121,4 +123,6 @@ export interface Database {
   admin_trip_notes: AdminTripNotesTable;
   /** S4 B1.16 Q-B13 (migration 0116): the LISTEN outage windows of every server copy (src/realtime/outages.ts). */
   realtime_outages: { outage_id: Generated<string>; copy_id: string; down_at: Date; seen_at: Date; up_at: Date | null };
+  /** v0.18.139 (migration 0122, contract.json#driverPayRequest): one row per driver and month he was asked to pay Movera. */
+  driver_pay_requests: { driver_id: string; month: string; currency: string; asked_minor: ColumnType<string, number | string, number | string>; asked_at: Date };
 }

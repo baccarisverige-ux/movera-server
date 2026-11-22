@@ -3,6 +3,8 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { seedDriver } from "../../src/drivers/service.js";
+import { readEnv } from "../../src/env.js";
+import { NearbyCache, nearbyCell, nearbyVehicles } from "../../src/riders/nearby.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -132,3 +134,83 @@ async function busy(driverId: string) {
   const trip = (await call(app, "POST", "/trips", rider, { quoteId: quote.quoteId, categoryId: "economy", pickup: NORRMALM, dropoff: SODERMALM, stops: [], kind: "live", paymentMethod: "cash" })).json();
   await database.db.updateTable("trips").set({ status: "driver_to_pickup", driver_id: driverId, accepted_at: clock.now }).where("trip_id", "=", trip.tripId).execute();
 }
+
+/**
+ * v0.18.145 (contract.json#loadCut.nearbyCache, S4c load cut): each server copy keeps the cars of a grid cell (0.005°)
+ * for at most NEARBY_CACHE_MS (default 2500, 0 = off): only blurred, rounded positions, keys and headings.
+ */
+describe("nearby cars cache per grid cell (v0.18.145 loadCut.nearbyCache)", () => {
+  const ENV = { MOVERA_ENV: "staging", DATABASE_URL: "postgres://localhost/movera", JWT_SECRET: "nearby-cache-secret".padEnd(48, "s") };
+  const RIDER_A = { lat: 59.3326, lng: 18.0649 };
+  // Same 0.005° cell as RIDER_A (59.330–59.335, 18.060–18.065), about 250 m south.
+  const RIDER_B = { lat: 59.3304, lng: 18.0645 };
+
+  it("NEARBY_CACHE_MS defaults to 2500; 0 turns the cache off", () => {
+    expect(readEnv({ ...ENV }).NEARBY_CACHE_MS).toBe(2500);
+    expect(readEnv({ ...ENV, NEARBY_CACHE_MS: "0" }).NEARBY_CACHE_MS).toBe(0);
+    expect(nearbyCell(RIDER_A)).toBe(nearbyCell(RIDER_B));
+    expect(nearbyCell(RIDER_A)).not.toBe(nearbyCell({ lat: 59.3376, lng: 18.0649 }));
+  });
+
+  it("a second rider of the same cell within NEARBY_CACHE_MS gets the kept cars (a car may show up that long late)", async () => {
+    const cache = new NearbyCache(2500);
+    await place(ids[0]!, north(300));
+    const first = await nearbyVehicles(database.db, RIDER_A, "s".repeat(48), clock.now, cache);
+    expect(first.items).toHaveLength(1);
+    await place(ids[1]!, north(600));
+    const soon = new Date(clock.now.getTime() + 2000);
+    expect((await nearbyVehicles(database.db, RIDER_B, "s".repeat(48), soon, cache)).items).toHaveLength(1);
+    const later = new Date(clock.now.getTime() + 2600);
+    expect((await nearbyVehicles(database.db, RIDER_B, "s".repeat(48), later, cache)).items).toHaveLength(2);
+    // Off: every read goes to the database.
+    const off = new NearbyCache(0);
+    await nearbyVehicles(database.db, RIDER_A, "s".repeat(48), clock.now, off);
+    await place(ids[2]!, north(900));
+    expect((await nearbyVehicles(database.db, RIDER_A, "s".repeat(48), clock.now, off)).items).toHaveLength(3);
+  });
+
+  it("keeps blurred, rounded cars only: no driver id and no true position", async () => {
+    const cache = new NearbyCache(2500);
+    const real = [north(300), north(700)];
+    await place(ids[0]!, real[0]!);
+    await place(ids[1]!, real[1]!);
+    const answer = await nearbyVehicles(database.db, RIDER_A, "s".repeat(48), clock.now, cache);
+    const kept = cache.keptCars();
+    expect(kept.length).toBeGreaterThanOrEqual(2);
+    const text = JSON.stringify(kept);
+    for (const id of ids) expect(text).not.toContain(id);
+    for (const p of real) expect(text).not.toContain(String(p.lat));
+    for (const car of kept) {
+      expect(Object.keys(car).every((k) => ["key", "lat", "lng", "heading"].includes(k))).toBe(true);
+      expect(car.lat).toBe(Math.round(car.lat * 1e4) / 1e4);
+    }
+    expect(answer.items.every((i) => kept.some((k) => k.key === i.key && k.lat === i.lat && k.lng === i.lng))).toBe(true);
+  });
+
+  it("each rider gets only the cars within radiusMeters of his own point, nearest first, at most maxVehicles", async () => {
+    const cache = new NearbyCache(2500);
+    // About 2.9 km north of RIDER_A, so about 3.15 km from RIDER_B (the blur moves it at most 200 m).
+    await place(ids[0]!, north(2900 + 300));
+    for (let i = 1; i < 18; i++) await place(ids[i]!, north(-200 + i * 20));
+    const a = await nearbyVehicles(database.db, { lat: RIDER_A.lat + 0.0015, lng: RIDER_A.lng }, "s".repeat(48), clock.now, cache);
+    const b = await nearbyVehicles(database.db, RIDER_B, "s".repeat(48), clock.now, cache);
+    expect(a.items).toHaveLength(15);
+    expect(b.items).toHaveLength(15);
+    for (const [point, answer] of [[{ lat: RIDER_A.lat + 0.0015, lng: RIDER_A.lng }, a], [RIDER_B, b]] as const) {
+      const meters = answer.items.map((i) => haversineKm(point, i) * 1000);
+      expect(meters.every((m) => m <= 3000)).toBe(true);
+      expect([...meters].sort((x, y) => x - y)).toEqual(meters);
+    }
+    const far = cache.keptCars().find((c) => haversineKm(RIDER_B, c) * 1000 > 3000);
+    if (far) expect(b.items.map((i) => i.key)).not.toContain(far.key);
+  });
+
+  it("different cells are kept apart", async () => {
+    const cache = new NearbyCache(2500);
+    await place(ids[0]!, north(300));
+    expect((await nearbyVehicles(database.db, RIDER_A, "s".repeat(48), clock.now, cache)).items).toHaveLength(1);
+    await place(ids[1]!, north(400));
+    const other = { lat: RIDER_A.lat + 0.006, lng: RIDER_A.lng };
+    expect((await nearbyVehicles(database.db, other, "s".repeat(48), clock.now, cache)).items).toHaveLength(2);
+  });
+});

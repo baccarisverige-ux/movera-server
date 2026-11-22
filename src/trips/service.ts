@@ -1,6 +1,7 @@
 import { maxRiderDebtOf, riderDebt } from "../riders/debt.js";
 import { writeAutoMessage } from "./messages.js";
 import { checkOpenBookedCap, checkWindow, planBookedRide } from "../reservations/service.js";
+import { LIST_HELD } from "../reservations/view.js";
 import { appendTripEvent } from "../db/tripLog.js";
 import { checkPaymentMethod } from "./finish.js";
 import { commissionOf } from "../rules/commission.js";
@@ -31,6 +32,7 @@ import { tripProjection, type Viewer } from "./projection.js";
 import { withCallOpenUntil } from "../calls/openUntil.js";
 import type { CallSettings } from "../calls/settings.js";
 import { assertAdminTripScope, type MessageWho } from "./messages.js";
+import { refuseOldApp, type AppClient } from "../config/appUpdate.js";
 
 /** Trip requests, reads and the rider's cancel (contract §3, §7). */
 
@@ -67,7 +69,7 @@ async function quotedPricing(ex: Executor, quote: { zone_id: string; pricing_ver
  */
 const PAYMENT_METHODS = (contract as unknown as { paymentMethods: string[] }).paymentMethods;
 
-export async function createTrip(trx: Trx, riderId: string, request: unknown, options: { paymentMethods: readonly string[]; now: Date }): Promise<TripRow> {
+export async function createTrip(trx: Trx, riderId: string, request: unknown, options: { paymentMethods: readonly string[]; now: Date; app?: AppClient | null }): Promise<TripRow> {
   // v0.18.10 (contract.json#finish.paymentMethods.booking): a method that no longer exists (google_pay) gets its clear
   // reason, not a schema error.
   const asked = (request as { paymentMethod?: unknown } | null)?.paymentMethod;
@@ -103,6 +105,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   // v0.11.0 §20: a zone closed since the quote takes no new rides ("Movera isn't here yet").
   const zoneRow = await trx.selectFrom("zones").select("open").where("zone_id", "=", quote.zone_id).executeTakeFirst();
   if (zoneRow?.open !== true) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
+  // v0.18.154 P16c (contract.json#appUpdate.server): an Android / iOS rider app below the zone's minimum books nothing (426).
+  await refuseOldApp(trx, "rider_app_config", [quote.zone_id], options.app);
   // v0.18.17 (contract.json#bookLater.window): the window again at booking (the quote may be minutes old).
   if (body.kind === "scheduled" && quote.scheduled_at) await checkWindow(trx, quote.zone_id, quote.scheduled_at, now);
   // v0.18.81 B1.34 (contract.json#bookLater.riderCap): a booked ride locks the rider row first, so two bookings of one
@@ -395,6 +399,8 @@ export async function riderOnTheWay(trx: Trx, riderId: string, tripId: string, n
 }
 
 const NOT_OVER = [...TERMINAL];
+/** v0.18.152 (bookedRideSeen.searchSeen): a booked trip being searched or just accepted. */
+const SEARCH_SEEN = ["searching", "offered", "accepted"] as const;
 
 /** GET /rider/trips/active: the rider's live trip that is not over (204 when none). */
 export async function activeTrip(ex: Executor, riderId: string): Promise<TripRow | undefined> {
@@ -410,13 +416,20 @@ export async function activeTrip(ex: Executor, riderId: string): Promise<TripRow
   if (live !== undefined) return live;
   // v0.18.32 (bookedRideSeen.activeTrip, owner fix-plan Q5 + Q2): a booked trip is a regular ride once its driver
   // started driving to the pickup, and stays one while a new driver is found after a give-back.
+  // v0.18.152 (bookedRideSeen.searchSeen, owner 2026-11-21 (A)): also from its search on (searching, offered, accepted)
+  // when no list driver holds it or ever held it; a ride a list driver gave back before driving stays hidden (owner Q2).
   return ex
     .selectFrom("trips")
     .selectAll()
     .where("rider_id", "=", riderId)
     .where("kind", "=", "scheduled")
     .where("status", "not in", NOT_OVER)
-    .where((eb) => eb.exists(eb.selectFrom("trip_events as e").select(sql.lit(1).as("one")).whereRef("e.trip_id", "=", "trips.trip_id").where(sql<string>`e.projection->>'status'`, "=", "driver_to_pickup")))
+    .where((eb) =>
+      eb.or([
+        eb.exists(eb.selectFrom("trip_events as e").select(sql.lit(1).as("one")).whereRef("e.trip_id", "=", "trips.trip_id").where(sql<string>`e.projection->>'status'`, "=", "driver_to_pickup")),
+        eb.and([eb("status", "in", SEARCH_SEEN), sql<boolean>`NOT ${LIST_HELD}`]),
+      ]),
+    )
     .orderBy("scheduled_at", "asc")
     .executeTakeFirst();
 }

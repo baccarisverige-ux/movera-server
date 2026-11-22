@@ -26,6 +26,10 @@ const money = {
   payoutSchedule: { frequency: "every_2_weeks", day: "friday", time: "09:30" },
   maxRiderDebt: { amountMinor: 45000, currency: "SEK" },
   driverOwesLimit: { enabled: true, max: { amountMinor: 200000, currency: "SEK" } },
+  // v0.18.139: the monthly pay request (the payment link is where the drivers' money goes) is kept the same way.
+  driverPayRequest: { enabled: true, dayOfMonth: 5, payLink: "https://pay.sumup.com/b2c/MOVERA1", minAmount: { amountMinor: 10000, currency: "SEK" } },
+  // v0.18.136: the Stripe rider fee switch is kept the same way.
+  riderFeeStripe: { enabled: true },
 };
 const calls = { on: true, adminCallRoles: ["super", "ops"], phoneProvider: "twilio" };
 const put = (doc: string, body: Record<string, unknown>) => call(app, "PUT", `/admin/config/${doc}`, admin, body);
@@ -46,7 +50,8 @@ afterAll(async () => {
 describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
   it("the server's list is the contract's list", () => {
     const kk = (contract as unknown as { configDocs: { keptKeys: Record<string, unknown> } }).configDocs.keptKeys;
-    expect(KEPT_KEYS).toEqual({ country_rules: kk["country_rules"], dispatch: kk["dispatch"], driver_app_config: kk["driver_app_config"] });
+    // v0.18.154 P16c adds rider_app_config (appUpdate.minVersion, appUpdate.storeUrls; test/config/app_update_p16c.test.ts).
+    expect(KEPT_KEYS).toEqual({ country_rules: kk["country_rules"], dispatch: kk["dispatch"], driver_app_config: kk["driver_app_config"], rider_app_config: kk["rider_app_config"] });
   });
 
   it("an old tab's country_rules save keeps payout mode, schedule, debt limits and call settings; the answer and the audit say so", async () => {
@@ -79,8 +84,8 @@ describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().document.maxRiderDebt).toBeUndefined();
     expect(res.json().document.payoutSchedule).toBeUndefined();
-    expect(res.json().document).toMatchObject({ payoutMode: "automatic", driverOwesLimit: money.driverOwesLimit });
-    expect([...res.json().keptKeys].sort()).toEqual(["driverOwesLimit", "payoutMode"]);
+    expect(res.json().document).toMatchObject({ payoutMode: "automatic", driverOwesLimit: money.driverOwesLimit, driverPayRequest: money.driverPayRequest });
+    expect([...res.json().keptKeys].sort()).toEqual(["driverOwesLimit", "driverPayRequest", "payoutMode", "riderFeeStripe"]);
   });
 
   it("a zone with no own document keeps nothing (no Standard-only key gets into a zone document)", async () => {

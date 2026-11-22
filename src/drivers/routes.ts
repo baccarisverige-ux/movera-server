@@ -1,4 +1,7 @@
+import { needStripe, type StripeApi } from "../payments/stripe.js";
+import { driverStripeOn, startDriverPayment } from "./payMoveraStripe.js";
 import { geometry } from "../config/geometryCache.js";
+import { appClientOf } from "../config/appUpdate.js";
 import { driverPerformance } from "./performance.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -13,6 +16,7 @@ import { addVehicle, driverView, getDriverProfile, liveDrivers, type MapBox, lis
 import { setNextTrips } from "./presence.js";
 import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, startOwnCompany, submitOnboarding } from "./onboarding.js";
 import { listReminders } from "./reminders.js";
+import { listNotifications, NOTIFICATION_PAGE } from "../notifications/service.js";
 import { documentTypes, onboardingSettings } from "./onboardingSettings.js";
 import { acceptInvitation, cancelInvitation, declineInvitation, inviteByPhone, listInvitations, requestJoin, type InviteDeps } from "./invitations.js";
 import { schemaProblem } from "../contract/schemas.js";
@@ -24,10 +28,13 @@ import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 import { phoneDataRoutes } from "../accounts/phoneDataRoutes.js";
 import { snapDriverGaps } from "../trips/ride/gapRoads.js";
 import type { Router } from "../maps/routing.js";
+import { driverPayMovera } from "./payRequest.js";
 
 /** contract §2, §3.3, §12: driver profile, availability, location, vehicles; admin live drivers and trip trace. */
 
-export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date; router?: Router };
+import { requestAccountDeletion } from "../accounts/deletion.js";
+
+export type DriverDeps = { db: Db; jwtSecret: string; documentKey: DocumentKey; invites: InviteDeps; clock?: () => Date; router?: Router; stripe?: StripeApi | null };
 
 /** Document uploads a driver may start per hour by default (deep fix 2026-11-02: admin CountryRules.limits.uploadsPerHour). */
 export const UPLOADS_PER_HOUR = 30;
@@ -53,10 +60,42 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   // here so app.ts stays as it is.
   await phoneDataRoutes(app, { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) });
 
+  // v0.18.4 (G3-D2): his own acceptance %, cancellation % and rating.
+  const profileOf = async (driverId: string) => ({ ...(await getDriverProfile(deps.db, driverId, now())), performance: await driverPerformance(deps.db, driverId, now()) });
+  // v0.18.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
+  const settingsOf = async (country: string) => {
+    const settings = await onboardingSettings(deps.db, country);
+    return { ...settings, country, documentTypes: documentTypes(settings) };
+  };
+  // G30: the line email_not_verified only for driver apps on contract 0.18.76 or later (X-Contract-Version).
+  const remindersOf = (request: FastifyRequest, row: Awaited<ReturnType<typeof loadDriver>>) => listReminders(deps.db, row, now(), { contractVersion: request.headers["x-contract-version"] });
+
   app.get(`${API_PREFIX}/driver/profile`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    // v0.18.4 (G3-D2): his own acceptance %, cancellation % and rating.
-    return { ...(await getDriverProfile(deps.db, who.subjectId, now())), performance: await driverPerformance(deps.db, who.subjectId, now()) };
+    return profileOf(who.subjectId);
+  });
+
+  /**
+   * v0.18.145 (S4c load cut, contract.json#loadCut.homeBadges): the driver Home's four badge reads in one request, each
+   * part exactly what its own read answers (GET /driver/profile, GET /notifications?unreadOnly=true first page,
+   * GET /driver/reminders, GET /driver/onboarding/settings of his own country; null while the account has no country).
+   * One after the other on one request, so a Home refresh holds at most one pool connection at a time. Never shed: it
+   * carries the profile, which is never shed (http/shed.ts). The four reads stay for older apps.
+   */
+  app.get(`${API_PREFIX}/driver/home-badges`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const profile = await profileOf(who.subjectId);
+    const notifications = await listNotifications(deps.db, { audience: "driver", subjectId: who.subjectId }, { limit: NOTIFICATION_PAGE, unreadOnly: true });
+    const row = await loadDriver(deps.db, who.subjectId);
+    const reminders = await remindersOf(request, row);
+    return { profile, notifications, reminders, onboardingSettings: row.country ? await settingsOf(row.country) : null };
+  });
+
+  // v0.18.134 (contract.json#accountDeletion): Profile > Delete my account. WAITS FOR THE NEW SERVER.
+  app.post(`${API_PREFIX}/driver/account/deletion`, async (request, reply) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const result = await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 202, body: await requestAccountDeletion(trx, "driver", who.subjectId, now()) }));
+    return reply.status(result.status).send(result.body);
   });
 
   app.patch(`${API_PREFIX}/driver/profile`, async (request) => {
@@ -67,8 +106,28 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   // v0.18.0 (§27): the Home sheet's important reminders, the country's onboarding settings, Start my own company.
   app.get(`${API_PREFIX}/driver/reminders`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    // G30: the line email_not_verified only for driver apps on contract 0.18.76 or later (X-Contract-Version).
-    return listReminders(deps.db, await loadDriver(deps.db, who.subjectId), now(), { contractVersion: request.headers["x-contract-version"] });
+    return remindersOf(request, await loadDriver(deps.db, who.subjectId));
+  });
+  // v0.18.139 (contract.json#driverPayRequest.read): what he owes Movera now, the reference and — while his country's
+  // monthly pay request is on — the payment link. Read only; a payment is confirmed by the admin's "Driver paid Movera".
+  app.get(`${API_PREFIX}/driver/pay-movera`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const view = await driverPayMovera(deps.db, who.subjectId, now());
+    // DRAFT (contract.json#driverPayRequest.stripe): the Stripe Pay button instead of the link. The legacy link is
+    // sent only while Stripe is not available; with neither, the request reads as off (nothing to pay with).
+    const stripe = driverStripeOn(deps.stripe, view.enabled, view.owedToMovera.currency);
+    const { payLink, minAmount, ...rest } = view as typeof view & { payLink?: string; minAmount?: unknown };
+    const usable = view.enabled && (stripe || Boolean(payLink));
+    return { ...rest, enabled: usable, ...(usable ? { ...(!stripe && payLink ? { payLink } : {}), minAmount } : {}), stripe };
+  });
+  app.post(`${API_PREFIX}/driver/pay-movera/pay`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    const stripe = needStripe(deps.stripe);
+    const toCancel: string[] = [];
+    // Not through the Idempotency-Key store (the answer holds clientSecret); a repeat gets the same open intent.
+    const view = await deps.db.transaction().execute((trx) => startDriverPayment(trx, stripe, who.subjectId, now(), toCancel));
+    for (const id of toCancel) await stripe.cancelPaymentIntent(id).catch((error: unknown) => request.log.warn({ paymentIntentId: id, error: String(error) }, "stripe: cancel failed"));
+    return view;
   });
   app.get(`${API_PREFIX}/driver/onboarding/settings`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
@@ -76,9 +135,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
     const row = await loadDriver(deps.db, who.subjectId);
     const pick = row.country ?? country;
     if (!pick) throw new ApiError("invalid_request", "Name the country.", { reason: "country_required" });
-    const settings = await onboardingSettings(deps.db, pick);
-    // v0.18.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
-    return { ...settings, country: pick, documentTypes: documentTypes(settings) };
+    return settingsOf(pick);
   });
   app.post(`${API_PREFIX}/driver/fleet/start-company`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
@@ -88,7 +145,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   app.post(`${API_PREFIX}/driver/availability`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     const body = parseBody(AvailabilityBody, request.body);
-    return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await setAvailability(trx, who.subjectId, body, now()) }))).body;
+    return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await setAvailability(trx, who.subjectId, body, now(), appClientOf(request)) }))).body;
   });
 
   app.post(`${API_PREFIX}/driver/next-trips`, async (request) => {

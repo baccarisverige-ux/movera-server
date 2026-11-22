@@ -10,6 +10,7 @@ import { appendTripEvent, lockTrip, type TripRow } from "../db/tripLog.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { audit } from "../admin/audit.js";
 import { notify } from "../notifications/service.js";
+import { pushTripMoment } from "../notifications/tripPush.js";
 import { cancelTimer, scheduleTimer, TimerBusy, type Timer } from "../jobs/timers.js";
 import { applyCommand, expectVersion } from "../trips/commands.js";
 import { driverTotalOf, tripProjection } from "../trips/projection.js";
@@ -74,6 +75,8 @@ export type ReservationState = {
   toldDrivers?: string[];
   /** Checker H1: held for later (not the driver's current trip until he starts it). */
   held?: boolean;
+  /** v0.18.152 (bookedRideSeen.searchSeen): a list driver holds or held this ride (reservations/view.ts listHeldOf). */
+  listHeld?: boolean;
   /** BL-Q7: the pickup time passed with no driver (admin alert). */
   overdue?: boolean;
   /** v0.18.39 §63 (P17): the server ended it, no driver found (admin alert booked_no_driver_ended). */
@@ -476,7 +479,8 @@ export async function acceptReservation(trx: Trx, driverId: string, tripId: stri
   const rideType = await rideTypeFor(trx, trip, s);
   const times = driverTimes(now, trip.scheduled_at!, s.rideTypes[rideType], s.offlineBackupAfterMin);
   const state = stateOf(trip)!;
-  const fresh = { ...withoutDriverState(state), takenBack: null, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true };
+  // v0.18.152 (bookedRideSeen.searchSeen): taken from Booked rides = held by a list driver (stays so after a give-back).
+  const fresh = { ...withoutDriverState(state), takenBack: null, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true, listHeld: true };
   await saveState(trx, tripId, fresh);
   const accepted = await applyCommand(trx, { ...trip, reservation: fresh }, {
     command: "accept",
@@ -800,7 +804,10 @@ export async function afterHeldAccept(trx: Trx, trip: TripRow, now: Date): Promi
   const s = await settingsFor(trx, trip.zone_id);
   const rideType = await rideTypeFor(trx, trip, s);
   const times = driverTimes(now, trip.scheduled_at!, s.rideTypes[rideType], s.offlineBackupAfterMin);
-  await saveState(trx, trip.trip_id, { ...stateOf(trip)!, takenBack: null, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true });
+  // v0.18.152 (bookedRideSeen.searchSeen): keep how the ride was taken (an on-trip driver's Exclusive from the search is
+  // listHeld false, a list or early admin offer true); only a ride with no value yet counts as list-held.
+  const before = stateOf(trip)!;
+  await saveState(trx, trip.trip_id, { ...before, takenBack: null, rideType, mustBeOnlineAt: times.goOnlineAt.toISOString(), held: true, listHeld: before.listHeld ?? true });
   for (const [index, at] of times.reminders.entries()) await scheduleTimer(trx, { kind: TIMER.driverReminder, refId: `${trip.trip_id}:${index}`, dueAt: at, payload: { tripId: trip.trip_id, driverId: trip.driver_id } });
   await scheduleTimer(trx, { kind: TIMER.goOnline, refId: trip.trip_id, dueAt: times.goOnlineAt, payload: { driverId: trip.driver_id } });
   await scheduleTimer(trx, { kind: TIMER.offlineCheck, refId: trip.trip_id, dueAt: times.offlineCheckAt, payload: { driverId: trip.driver_id } });
@@ -823,13 +830,22 @@ export async function notifyOffered(trx: Trx, trip: TripRow, driverId: string, n
   await push(trx, trip, { audience: "driver", id: driverId }, "reservation_offered", now);
 }
 
-/** v0.18.19 (liveFixes.driverFoundOnce): "driver found" once per driver of a booked ride. */
-export async function tellDriverFound(trx: Trx, trip: TripRow, now: Date): Promise<void> {
+/**
+ * v0.18.19 (liveFixes.driverFoundOnce): "driver found" once per driver of a booked ride.
+ * v0.18.152 (bookedRideSeen.searchSeen, owner 2026-11-21 (A)): a booked ride no list driver ever held (`normalRide`) is
+ * told with the normal ride's push (trip, moment driver_found, the driver's name) instead of reservation_driver_found:
+ * one push per driver, never both.
+ */
+export async function tellDriverFound(trx: Trx, trip: TripRow, now: Date, options: { normalRide?: boolean } = {}): Promise<void> {
   if (trip.kind !== "scheduled" || !trip.driver_id) return;
   const fresh = await trx.selectFrom("trips").selectAll().where("trip_id", "=", trip.trip_id).executeTakeFirstOrThrow();
   const state = stateOf(fresh);
   if (!state || (state.toldDrivers ?? []).includes(trip.driver_id)) return;
   await saveState(trx, trip.trip_id, { ...state, toldDrivers: [...(state.toldDrivers ?? []), trip.driver_id] });
+  if (options.normalRide) {
+    await pushTripMoment(trx, fresh, "driver_found", now);
+    return;
+  }
   await push(trx, fresh, { audience: "rider", id: fresh.rider_id }, "reservation_driver_found", now, { driver: (fresh.driver_summary as { firstName?: string } | null)?.firstName ?? "" });
 }
 

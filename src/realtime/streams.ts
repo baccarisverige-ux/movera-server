@@ -3,11 +3,13 @@ import type { Db } from "../db/db.js";
 import type { ConfigDoc } from "../db/schema.js";
 import { TRIP_EVENTS_CHANNEL, tripEventsAfter } from "../db/tripLog.js";
 import { CONFIG_CHANNEL, liveDocument } from "../config/service.js";
+import { AIRPORT_QUEUE_CHANNEL } from "../airportQueue/service.js";
 import type { Principal } from "../auth/guard.js";
 import { newId } from "../ids.js";
 import { eventEnvelope } from "./events.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import type { NotificationHub } from "./hub.js";
+import { LIVE_LOCATION_CHANNEL } from "../trips/liveLocation.js";
 import { openEventStream, type EventStream } from "./sse.js";
 import { giveUpStream, readRetry, spreadClose } from "./retry.js";
 
@@ -39,6 +41,7 @@ export async function streamTrip(
   tripId: string,
   who: Who,
   after: number,
+  live = false,
 ): Promise<void> {
   const viewer = who.actor === "rider" || who.actor === "driver" ? who.actor : "admin";
   const stream = openEventStream(request, reply);
@@ -86,6 +89,14 @@ export async function streamTrip(
     // S7 0.15: the hub finds this stream by its trip id instead of calling every open trip stream.
   }, { match: [{ tripId }] });
   stream.onClose(unsubscribe);
+  // v0.18.144 (contract.json#liveLocation.relay): with ?live=true the rider / driver also gets the other side's live
+  // point as `event: live_location` (no id). Its own channel: a point never makes this stream re-read the trip log.
+  if (live && viewer !== "admin") {
+    stream.onClose(deps.hub.subscribe(LIVE_LOCATION_CHANNEL, (payload) => {
+      if (payload === null || payload["tripId"] !== tripId || payload["side"] === viewer) return;
+      stream.event("live_location", payload);
+    }, { match: [{ tripId }] }));
+  }
   if (viewer !== "admin") markPresence(request, deps, stream, tripId, who);
   await pump();
 }
@@ -226,6 +237,18 @@ export async function attachConfig(
       // only) of this zone or naming this driver. NOT the zone alone: every trip event carries its zone, so that would
       // run every driver stream of the zone for every GPS fix of every trip in it.
     }, { catchUp: "spread", match: [{ reservations: true, zoneId }, { reservations: true, driverId }] }));
+  }
+  // v0.18.145 (S4c load cut, contract.json#loadCut.airportQueueLive): this driver's place in an airport line changed
+  // (joined, left, moved up, picked). A hint only, like the two above: the app reads GET /driver/airport-queue again
+  // (at most once per 5 s) and its poll becomes a 60 s fallback. The id stays the document version already sent, so
+  // it is never replayed; a reconnect makes the app read at once.
+  if (driverId !== undefined) {
+    stream.onClose(deps.hub.subscribe(AIRPORT_QUEUE_CHANNEL, (payload) => {
+      if (payload === null) return missedHints();
+      if (payload["driverId"] !== driverId || typeof payload["areaId"] !== "string" || stream.closed()) return;
+      const now = deps.clock?.() ?? new Date();
+      send(sent, { eventId: newId("evt", now.getTime()), kind: "airport_queue_changed", areaId: payload["areaId"], occurredAt: now.toISOString(), serverTime: now.toISOString() });
+    }, { catchUp: "spread", match: [{ driverId }] }));
   }
   // A reconnect with Last-Event-ID older than the live version gets the newest at once.
   await safeCheck();

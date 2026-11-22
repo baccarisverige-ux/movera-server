@@ -1,4 +1,6 @@
 import { tellDriverFound, afterHeldAccept, currentTripOf, heldForLater } from "../../reservations/service.js";
+import { listHeldOf } from "../../reservations/view.js";
+import { refuseOldApp, type AppClient } from "../../config/appUpdate.js";
 import { commissionOf } from "../../rules/commission.js";
 import { bonusFor, priorityFor } from "../bonusScope.js";
 import { driverPhotoUrl } from "../../trips/driverPhoto.js";
@@ -23,7 +25,7 @@ function staleOffer(offer: NonNullable<OfferRow>, trip: TripRow) {
 }
 
 /** POST /offers/{offerId}/accept (contract: expectedVersion is the offer's). */
-export async function acceptOffer(trx: Trx, driverId: string, offerId: string, expectedVersion: number, now: Date): Promise<TripRow> {
+export async function acceptOffer(trx: Trx, driverId: string, offerId: string, expectedVersion: number, now: Date, app?: AppClient | null): Promise<TripRow> {
   const head = await trx.selectFrom("offers").select(["trip_id", "driver_id"]).where("offer_id", "=", offerId).executeTakeFirst();
   if (!head || head.driver_id !== driverId) throw new ApiError("not_found", "No such offer.", { reason: "offer_not_found" });
   let trip = await lockTrip(trx, head.trip_id);
@@ -36,6 +38,9 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
     const status = offer.status === "open" ? "expired" : offer.status;
     throw new ApiError("conflict", status === "claimed_elsewhere" ? "Another driver took this ride." : "This offer is no longer open.", { reason: `offer_${status}`, projection: offerView({ ...offer, status }, trip) });
   }
+  // v0.18.154 P16c (contract.json#appUpdate.server): an Android / iOS driver app below the minimum of the trip's zone
+  // takes no new trip (426, the offer stays open); a driver who is on a trip (a next or booked ride) is never refused.
+  if (app && !(await currentTripOf(trx, driverId))) await refuseOldApp(trx, "driver_app_config", [trip.zone_id], app);
   const queue = new FeedQueue();
   // The trip's other offers are closed first (trip → offer), then every driver to tell is locked in id order.
   await closeOpenOffers(trx, trip, "claimed_elsewhere", now, queue, offerId);
@@ -84,6 +89,10 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
   const riderRow = await trx.selectFrom("riders").select("first_name").where("rider_id", "=", trip.rider_id).executeTakeFirstOrThrow();
   const riderRating = await riderRatingForOffer(trx, trip);
   const riderSummary = { firstName: riderRow.first_name || "Rider", ...(riderRating !== null ? { rating: riderRating } : {}) };
+  // v0.18.152 (bookedRideSeen.searchSeen): an admin's early offer taken before the search is a list driver's hold; a ride a
+  // list driver held before stays one; any other accept of a searched booked ride is a normal ride for the rider (an
+  // on-trip driver's Exclusive accept too, owner Q7: no list driver).
+  const listHeld = trip.kind === "scheduled" && (heldForLater(trip, now) || listHeldOf({ ...trip, driver_id: driverId }));
   const earnings = Number(offer.driver_earnings_minor);
   const pickupPay = Number(offer.pickup_pay_minor);
   trip = await applyCommand(trx, trip, {
@@ -108,14 +117,15 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       // Where the driver started from: the rider cancel "came closer" check measures against it.
       accept_pickup_meters: offer.pickup_meters,
       // v0.18.33 (owner Q7): held in the same change, so it never counts as a second current trip (trips_one_active_per_driver).
-      ...(next && !queuedLive ? { reservation: JSON.stringify({ ...((trip.reservation as Record<string, unknown> | null) ?? {}), held: true }) } : {}),
+      // v0.18.152 (bookedRideSeen.searchSeen): every booked accept writes listHeld (see listHeldOf).
+      ...(trip.kind === "scheduled" ? { reservation: JSON.stringify({ ...((trip.reservation as Record<string, unknown> | null) ?? {}), ...(next && !queuedLive ? { held: true } : {}), listHeld }) } : {}),
       next_after_trip_id: queuedLive ? busy!.trip_id : null,
       chained: queuedLive,
       chain_free_cancel_at: queuedLive ? new Date(now.getTime() + (await chainLateFreeCancelMin(trx, trip.zone_id)) * 60_000) : null,
     },
   });
   // v0.18.19: a booked ride tells its rider "driver found" once per driver.
-  if (trip.kind === "scheduled") await tellDriverFound(trx, trip, now);
+  if (trip.kind === "scheduled") await tellDriverFound(trx, trip, now, { normalRide: !listHeld });
   if (queuedLive) {
     // Queued: no ETA, heading check or pickup clock until his current trip ends (money.ts releaseDriver starts it).
   } else if (held) {

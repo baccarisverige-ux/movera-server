@@ -1,3 +1,4 @@
+import { configureSessionCache } from "./auth/sessionCache.js";
 import { pricingRoutes } from "./pricing/routes.js";
 import { jobsHeartbeat } from "./jobs/heartbeat.js";
 import { contentRoutes } from "./content/routes.js";
@@ -30,11 +31,17 @@ import { callRoutes } from "./calls/routes.js";
 import { rideRoutes } from "./trips/rideRoutes.js";
 import { supportedPaymentMethods } from "./trips/finish.js";
 import { adminTripRoutes } from "./admin/tripRoutes.js";
+import { setServerStripeStatus, stripeFromEnv, stripeKeyStatus, type StripeApi } from "./payments/stripe.js";
+import { stripeWebhookRoutes } from "./payments/stripeWebhook.js";
+import { riderFeeUse } from "./riders/feeStripe.js";
+import { driverInvoiceUse } from "./drivers/payMoveraStripe.js";
 import { realDataRoutes } from "./admin/realdataRoutes.js";
+import { financeRoutes } from "./finance/routes.js";
 import { adminEventRoutes } from "./realtime/adminEvents.js";
 import { driverRoutes } from "./drivers/routes.js";
 import { adminPeopleRoutes } from "./admin/peopleRoutes.js";
 import { revealRoutes } from "./admin/revealRoutes.js";
+import { adminSessionRoutes } from "./admin/sessionRoutes.js";
 import { documentKeyFrom } from "./documents/files.js";
 import { providersFrom, type Provider, type ProviderVerifier } from "./auth/provider.js";
 import { recordServerError } from "./telemetry/errors.js";
@@ -44,6 +51,8 @@ import { TELEMETRY, telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
 import { emailSenderFrom, type EmailSender } from "./email/resend.js";
+import { signInSmsFrom, sosContactsProviderFrom, type CodeSmsSender } from "./sms/elks.js";
+import { SMS_SIGN_IN } from "./auth/smsSignIn.js";
 import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
 import { reservationRoutes } from "./reservations/routes.js";
@@ -65,7 +74,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 /** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
 const NO_ROUTE = "(no route)";
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; healthDb?: Db; shed?: ShedOptions };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; signInSms?: CodeSmsSender; healthDb?: Db; shed?: ShedOptions; stripe?: StripeApi | null };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
@@ -105,9 +114,9 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
     FROM timers WHERE due_at <= now() OR due_at = 'infinity' GROUP BY kind`.execute(db);
   return Object.fromEntries(rows.map((r) => [r.kind, { parked: Number(r.parked), overdue: Number(r.overdue), overdueOldestMs: Number(r.oldest_ms ?? 0) }]));
 }
-const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
+const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, X-App-Version, X-App-Platform, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, healthDb, shed }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, signInSms, healthDb, shed, stripe }: BuildOptions): Promise<FastifyInstance> {
   // G34 P2: the health checks ask the database on their own small pool (main.ts, db.ts createHealthPool) when given, so a
   // full app pool is never reported as "database not reachable"; without one (tests, tools) they use the app's.
   const probeDb = healthDb ?? db;
@@ -322,7 +331,14 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     const signInProviders = providers ?? providersFrom(env);
     // G30b (owner Q1): e-mail change codes go out through Resend when RESEND_API_KEY is set (tests inject a fake).
     const emailSender = email ?? emailSenderFrom(env);
-    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(emailSender ? { email: emailSender } : {}), logCodes: env.MOVERA_ENV === "development", ...(clock ? { clock } : {}) });
+    // v0.18.133 (contract.json#smsSignIn): the sign-in code SMS goes out through 46elks only when BOTH keys are set
+    // (tests inject a fake); without a sender every real number stays sign_in_restricted. The country switch is the
+    // second condition (auth/smsSignIn.ts). `sms` (fleet invitations) is unchanged; the SOS contacts SMS use it only with the switch below (v0.18.151).
+    const codeSms = signInSms ?? signInSmsFrom(env, SMS_SIGN_IN.sender);
+    // v0.18.151 (contract.json#sosContactsSms.send): the SOS contacts SMS use the sign-in sender only with the server
+    // switch on (default off); a test's injected `sms` stays as it is.
+    const sosSms = sms ?? sosContactsProviderFrom(env.SOS_CONTACTS_SMS_SEND, codeSms);
+    await authRoutes(app, { db, jwtSecret, testSignInEnabled: env.MOVERA_ENV !== "production", fastTestSignIn: env.MOVERA_ENV === "staging", providers: signInProviders, ...(emailSender ? { email: emailSender } : {}), ...(codeSms ? { signInSms: codeSms } : {}), warn: (data, message) => app.log.warn(data, message), logCodes: env.MOVERA_ENV === "development", ...(clock ? { clock } : {}) });
     await notificationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await telemetryRoutes(app, { db, jwtSecret, perAddressPerMinute: shareOf(env.TELEMETRY_PER_ADDRESS_PER_MINUTE ?? TELEMETRY.perAddressPerMinute, env.WEB_COPIES), anonRowsPerMinute: env.TELEMETRY_ANON_ROWS_PER_MINUTE ?? TELEMETRY.anonRowsPerMinute, anonBytesPerMinute: env.TELEMETRY_ANON_BYTES_PER_MINUTE ?? TELEMETRY.anonBytesPerMinute, ...(clock ? { clock } : {}) });
     // SMS: none until the owner picks a provider; messages are kept in sms_outbox as skipped.
@@ -339,7 +355,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await blockedPairRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.110 BQ-V44 (contract.json#bonusCampaigns): Admin › Drivers › Bonuses and the driver's Campaigns.
     await bonusRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, smsConnected: sms !== undefined, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, smsConnected: sosSms !== undefined, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     const roads =
       router ??
       (env.OSRM_URL !== undefined
@@ -353,26 +369,34 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     app.decorate("router", roads);
     await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
-    await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
-    await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", ...(clock ? { clock } : {}) });
+    await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", nearbyCacheMs: env.NEARBY_CACHE_MS, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    // v0.18.136 (DRAFT, contract.json#stripeFees): one Stripe module (test or live keys); the rider fee is its first use.
+    const payments = stripe !== undefined ? stripe : stripeFromEnv(env);
+    // Live mode (contract.json#stripeFees.status): the admin status and the system_health alert read this copy's mode.
+    setServerStripeStatus(stripe === undefined ? stripeKeyStatus(env) : stripe ? { mode: stripe.mode ?? "test" } : { mode: "off", reason: "no_keys" });
+    await stripeWebhookRoutes(app, { db, stripe: payments, uses: { rider_fee: riderFeeUse, driver_invoice: driverInvoiceUse }, ...(clock ? { clock } : {}) });
+    await adminTripRoutes(app, { db, jwtSecret, currency: "SEK", stripe: payments, ...(clock ? { clock } : {}) });
     // v0.18.38 §62: in-app call steps (answer, end, signal) and the admin call log.
     await callRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.56 §78 (G9 part 2): chat options, translate (503 coming_soon without a provider), admin chats + Message.
     await chatRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}), ...(translator ? { translator } : {}) });
     await rideRoutes(app, { db, jwtSecret, currency: "SEK", timeZone: "Europe/Stockholm", paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(clock ? { clock } : {}) });
     const documentKey = documentKeyFrom(env, jwtSecret);
-    await driverRoutes(app, { db, jwtSecret, documentKey, invites, router: roads, ...(clock ? { clock } : {}) });
+    await driverRoutes(app, { db, jwtSecret, documentKey, invites, router: roads, stripe: payments, ...(clock ? { clock } : {}) });
     await adminPeopleRoutes(app, { db, jwtSecret, documentKey, invites, ...(clock ? { clock } : {}) });
     // v0.18.54 §76: Reveal with a reason (riders, drivers, fleets) and the one-click SOS reveal.
     await revealRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    // v0.18.149 (owner G12 Q6): a rider's / driver's signed-in sessions, signed out one or all by an admin.
+    await adminSessionRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await dispatchRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await reservationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.6 §32 (owner G4-F2..F6): the admin's Dispatch tools and the driver's events.
     await dispatchToolRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
-    await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}), ...(sms ? { sms } : {}), warn: (data, message) => app.log.warn(data, message) });
+    await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}), ...(sosSms ? { sms: sosSms } : {}), warn: (data, message) => app.log.warn(data, message) });
     // v0.18.116 §94 (BQ-S10): the rider's live trip link and its two public reads (their own budget, per copy).
     await shareRoutes(app, { db, jwtSecret, ...(env.SHARE_LINK_BASE ? { linkBase: env.SHARE_LINK_BASE } : {}), perAddressPerMinute: shareOf(SHARE_LIMITS.perAddressPerMinute, env.WEB_COPIES), perTokenPerMinute: shareOf(SHARE_LIMITS.perTokenPerMinute, env.WEB_COPIES), ...(clock ? { clock } : {}) });
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await financeRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) }); // v0.18.153 P29 driver income year (DAC7)
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
   }
@@ -382,6 +406,9 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
   // (SHED_*, its pool); without `shed` (tests, tools) both limits are 0 = never shed, but the gone-client checks still run.
   const stopShedding = registerLoadShedding(app, shed ?? { maxPoolWaiting: 0, maxLoopDelayMs: 0, poolWaiting: () => 0 });
   app.addHook("onClose", async () => stopShedding());
+  // S4c fix 3: the session check cache, only with a LISTEN hub (auth/sessionCache.ts).
+  const stopSessionCache = configureSessionCache(env.SESSION_CACHE_MS, hub);
+  app.addHook("onClose", async () => stopSessionCache());
 
   return app;
 }

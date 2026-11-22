@@ -6,6 +6,7 @@ import type { TimerLane } from "../../src/jobs/timers.js";
 import { HOUSEKEEPING_KINDS } from "../../src/jobs/housekeeping.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "../../src/jobs/maintenance.js";
 import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "../../src/jobs/payouts.js";
+import { PAY_REQUEST_SCAN } from "../../src/drivers/payRequest.js";
 import { ALERT_SWEEP } from "../../src/alerts/detector.js";
 import { INCIDENT_ESCALATE } from "../../src/safety/incidents.js";
 import { EstimateRouter } from "../../src/maps/routing.js";
@@ -68,10 +69,10 @@ describe("buildWorkerConfig", () => {
 
   // B1.7 (owner W1 Q71): housekeeping on its own lane; SOS escalation and the alert sweep on lanes it never uses.
   const takes = (lane: TimerLane, kind: string) => (lane.kinds !== undefined ? lane.kinds.includes(kind) : !(lane.exclude ?? []).includes(kind));
-  it("B1.7: housekeeping (13 jobs, hourly sweep, nightly run, S4 0.14a payout timer + driver steps) runs only on the housekeeping lane", () => {
+  it("B1.7: housekeeping (14 jobs, v0.18.134 account_erase, hourly sweep, nightly run, S4 0.14a payout timer + driver steps) runs only on the housekeeping lane", () => {
     // v0.18.116 §94: + cleanup_trip_shares (share-my-trip rows after 30 days).
-    expect(HOUSEKEEPING_KINDS).toHaveLength(13);
-    expect([...HOUSEKEEPING_LANE_KINDS].sort()).toEqual([...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER].sort());
+    expect(HOUSEKEEPING_KINDS).toHaveLength(14);
+    expect([...HOUSEKEEPING_LANE_KINDS].sort()).toEqual([...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER, PAY_REQUEST_SCAN].sort());
     const housekeeping = lanes.filter((lane) => lane.name === "housekeeping");
     expect(housekeeping).toHaveLength(1);
     for (const kind of HOUSEKEEPING_LANE_KINDS) {
@@ -94,8 +95,8 @@ describe("buildWorkerConfig", () => {
     expect(lanes).toHaveLength(5);
     expect(lanes.filter((lane) => lane.exclude !== undefined)).toHaveLength(2);
   });
-  it("G34 S3 (v0.18.83 fastDispatch.lateAlarm): TRIP_LANES defaults to 1 and sets the per-trip lane count; no other lane takes those kinds", () => {
-    expect(readEnv({ MOVERA_ENV: "development" }).TRIP_LANES).toBe(1);
+  it("G34 S3 (v0.18.83 fastDispatch.lateAlarm): TRIP_LANES defaults to 2 (load test S4d/S4e 2026-11-21) and sets the per-trip lane count; no other lane takes those kinds", () => {
+    expect(readEnv({ MOVERA_ENV: "development" }).TRIP_LANES).toBe(2);
     for (const kind of TRIP_LANE_KINDS) expect(lanes.filter((lane) => takes(lane, kind))).toHaveLength(1);
     const three = buildWorkerConfig(new EstimateRouter(), { timerLanes: 4, dispatchLanes: 1, tripLanes: 3 }).lanes;
     for (const kind of TRIP_LANE_KINDS) expect(three.filter((lane) => takes(lane, kind))).toHaveLength(3);

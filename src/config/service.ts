@@ -2,6 +2,8 @@ import { followFloor } from "../riders/debtFloor.js";
 import { checkCountryCashOffers } from "../drivers/owes.js";
 import { pickupSpotsProblem } from "./pickupSpots.js";
 import { oneStreamProblem } from "./oneStream.js";
+import { liveLocationProblem } from "../trips/liveLocation.js";
+import { appUpdateProblem } from "./appUpdate.js";
 import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
@@ -13,11 +15,14 @@ import { arrivedDistanceProblem } from "../trips/ride/settings.js";
 import { geofenceProblem } from "../trips/ride/geofence.js";
 import { checkEmergencyNumbers } from "./emergencyNumbers.js";
 import { checkSosContactsSms } from "../safety/sosContactsSms.js";
+import { checkSmsSignIn } from "../auth/smsSignIn.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
 import { pricingProblems } from "./pricingRules.js";
 import { KEPT_KEYS, checkRemoveKeys, withKeptKeys } from "./keptKeys.js";
+import { checkPayRequestSetting } from "../drivers/payRequestSetting.js";
+import { checkRiderFeeStripeSetting } from "./riderFeeStripeSetting.js";
 import { perMinWithAppFee } from "../rules/fare.js";
 import { pricingStepsProblem } from "../rules/commissionSteps.js";
 import { randomBytes } from "node:crypto";
@@ -105,6 +110,8 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "country_rules") checkEmergencyNumbers(zone.kind, document);
   // v0.18.101 §92: CountryRules.sosContactsSms (country standard only; true / false).
   if (doc === "country_rules") checkSosContactsSms(zone.kind, document);
+  // v0.18.133 (contract.json#smsSignIn.setting): CountryRules.smsSignIn (country standard only; enabled, dailyCap).
+  if (doc === "country_rules") checkSmsSignIn(zone.kind, document);
   // v0.18.86 J5b (contract.json#commissionSteps.validation): the steps have their own reason and details, so they are
   // checked before the schema (which would answer invalid_document); the warn rule is advisory and never refused here.
   if (doc === "pricing") {
@@ -122,16 +129,33 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
       throw badRequest(`Set an amount above 0 in ${zone.currency} to switch the owes-limit on.`, "owes_limit_needs_amount");
     }
   }
+  // v0.18.139 (contract.json#driverPayRequest.setting): the monthly pay request — a valid day and https link; switched
+  // on it needs the link and a minimum amount in the country's currency.
+  if (doc === "country_rules") checkPayRequestSetting(zone.currency, document);
+  // v0.18.136 (contract.json#stripeFees.setting): the Stripe rider fee switch is a boolean.
+  if (doc === "country_rules") checkRiderFeeStripeSetting(document);
   // v0.18.115 BQ-V21 (contract.json#pickupSpots.server): booking.pickupSpots.on is true or false (checked here, so the
   // rule holds whatever contract copy the schema check reads).
   if (doc === "rider_app_config") {
     const spots = pickupSpotsProblem(document);
     if (spots !== null) throw badRequest(`The rider_app_config document is not valid: ${spots}.`, "invalid_document");
   }
-  // v0.18.122 L20 stream (contract.json#driverOneStream.server): realtime.oneStream is true or false.
+  // v0.18.144 (contract.json#liveLocation.setting): liveLocation is checked here (the contract copy may be older).
+  if (doc === "rider_app_config") {
+    const live = liveLocationProblem(document);
+    if (live !== null) throw badRequest(`The rider_app_config document is not valid: ${live}.`, "invalid_document");
+  }
+  // v0.18.122 L20 stream (contract.json#driverOneStream.server): realtime.oneStream is true or false. v0.18.150
+  // (driverOneStreamFallback.server): realtime.oneStreamFallback is an object of whole numbers in range (1-10 / 1-60).
   if (doc === "driver_app_config") {
     const realtime = oneStreamProblem(document);
     if (realtime !== null) throw badRequest(`The driver_app_config document is not valid: ${realtime}.`, "invalid_document");
+  }
+  // v0.18.154 P16c (contract.json#appUpdate.validation): appUpdate.minVersion / storeUrls per platform (checked here,
+  // so the rule holds whatever contract copy the schema check reads).
+  if (doc === "rider_app_config" || doc === "driver_app_config") {
+    const update = appUpdateProblem(document);
+    if (update !== null) throw badRequest(`The ${doc} document is not valid: ${update}.`, "invalid_document");
   }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
@@ -581,7 +605,9 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
  */
 export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
   // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
-  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider"],
+  // v0.18.139 (pricingHistory.restoreKeeps): the monthly pay request (switch, day, payment link, minimum) stays too.
+  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "driverPayRequest", "riderFeeStripe"],
+  // v0.18.136 (pricingHistory.restoreKeeps): the Stripe rider fee switch stays too.
 };
 
 function keepOnRestore(doc: ConfigDoc, old: Record<string, unknown>, live: { document: unknown } | undefined): { document: Record<string, unknown>; removed: string[] } {

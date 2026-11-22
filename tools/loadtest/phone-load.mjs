@@ -99,6 +99,11 @@ try {
   // TN-TC is closed in the migrations (contract §21): opened here, in this private copy only, for the TN-9a share.
   await db.updateTable("zones").set({ open: true }).where("zone_id", "in", SHARES.map((s) => s.zoneId)).execute();
   await db.transaction().execute((trx) => seedSampleConfig(trx, t0));
+  // v0.18.144 rider-sharing mode (env LOADTEST_LIVE_SHARE=1, read by cadences.mjs at load): the zone switch on in THIS private copy only (default OFF).
+  if (process.env.LOADTEST_LIVE_SHARE === "1") {
+    const docs = await db.selectFrom("config_live").select(["zone_id", "document"]).where("doc", "=", "rider_app_config").execute();
+    for (const d of docs) await db.updateTable("config_live").set({ document: JSON.stringify({ ...d.document, liveLocation: { share: true } }) }).where("doc", "=", "rider_app_config").where("zone_id", "=", d.zone_id).execute();
+  }
   const session = async (actor, subjectId, zones) => {
     const s = await db.transaction().execute((trx) => startSession(trx, { jwtSecret: JWT }, { actor, subjectId, zones }, { ip: "127.0.0.1", userAgent: "load-phone" }, t0, 24 * 3600_000));
     // The first access token expires early (20–100 % of --access-ttl) so every phone refreshes during the run.

@@ -2,8 +2,9 @@ import type { FastifyRequest } from "fastify";
 import type { Executor } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
 import { verifyAccessToken, type Actor } from "./jwt.js";
-import { endAdminSessions, REFRESH_TTL_MS, sessionIsActive } from "./service.js";
+import { endAdminSessions, endedReason, REFRESH_TTL_MS, sessionIsActive } from "./service.js";
 import { noteStreamOwner } from "../realtime/sessionWatch.js";
+import { sessionCache } from "./sessionCache.js";
 
 /** Who is calling, from the access token (contract: actor and ids come from the token, never from the body). */
 export type Principal = { actor: Actor; subjectId: string; sessionId: string; zones: string[]; role?: string; perms?: string[]; preview?: true };
@@ -48,10 +49,10 @@ export async function authenticate(
     noteStreamOwner(request, { sessionId: claims.sid, actor: claims.actor, previewEndsAt: claims.exp * 1000 });
     return { actor: claims.actor, subjectId: claims.sub, sessionId: claims.sid, zones: claims.zones, preview: true };
   }
-  if (options.allowEndedSession !== true && !(await sessionIsActive(deps.db, claims.sid, now))) {
-    // v0.18.14 (one phone at a time): the old phone hears why.
+  if (options.allowEndedSession !== true && !(await sessionActive(deps.db, claims.actor, claims.sid, now))) {
+    // v0.18.14 (one phone at a time) and v0.18.149 (admin sign-out): the phone hears why.
     const ended = await deps.db.selectFrom("auth_sessions").select("revoked_reason").where("session_id", "=", claims.sid).executeTakeFirst();
-    throw new ApiError("unauthenticated", "Please sign in again.", { reason: ended?.revoked_reason === "signed_in_elsewhere" ? "signed_in_elsewhere" : "session_ended" });
+    throw new ApiError("unauthenticated", "Please sign in again.", { reason: endedReason(ended?.revoked_reason) });
   }
   // Step 38 (owner Q42): an admin's rights live in the token, so a role change or a deactivation ends every session
   // of that admin at once, however the row was changed (route, CLI or hand); one select by primary key.
@@ -65,6 +66,20 @@ export async function authenticate(
     zones: claims.zones,
     ...(claims.role !== undefined ? { role: claims.role, perms: claims.perms ?? [] } : {}),
   };
+}
+
+/**
+ * S4c fix 3 (auth/sessionCache.ts): a rider / driver session read active less than SESSION_CACHE_MS ago on this copy
+ * is not read again; every revoke forgets it here and on every copy (NOTIFY at commit). Admin sessions: always read.
+ */
+async function sessionActive(db: Executor, actor: Actor, sessionId: string, now: Date): Promise<boolean> {
+  const cached = sessionCache.cachesActor(actor);
+  if (cached && sessionCache.active(sessionId, now.getTime())) return true;
+  if (!cached || sessionCache.ms <= 0) return sessionIsActive(db, sessionId, now);
+  const row = await db.selectFrom("auth_sessions").select(["revoked_at", "expires_at"]).where("session_id", "=", sessionId).executeTakeFirst();
+  const active = row !== undefined && row.revoked_at === null && row.expires_at.getTime() > now.getTime();
+  if (active) sessionCache.put(sessionId, now.getTime(), row.expires_at.getTime());
+  return active;
 }
 
 async function assertAdminUnchanged(db: Executor, adminId: string, tokenRole: string | undefined, now: Date): Promise<void> {

@@ -12,6 +12,7 @@ import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
 import { NIGHTLY, SWEEP_IDEMPOTENCY_KEYS, ensureMaintenanceTimers } from "./jobs/maintenance.js";
 import { HOUSEKEEPING_KINDS } from "./jobs/housekeeping.js";
 import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "./jobs/payouts.js";
+import { PAY_REQUEST_SCAN } from "./drivers/payRequest.js";
 import { freezePaidPayoutSummaries } from "./admin/payoutSummary.js";
 import { NO_FIX_OFFLINE, NO_FIX_SWEEP } from "./drivers/presence.js";
 import { TIMER_DUE_CHANNEL, TimerWorker, rearmParkedRecurringTimers, restartParkedOnce, wakeTimersOn } from "./jobs/timers.js";
@@ -19,12 +20,15 @@ import { ALERT_SWEEP, ensureAlertSweep } from "./alerts/detector.js";
 import { NotificationHub } from "./realtime/hub.js";
 import { OutageRecorder, outageCopyId } from "./realtime/outages.js";
 import { OFFER_EVENTS_CHANNEL, TRIP_EVENTS_CHANNEL } from "./db/tripLog.js";
+import { LIVE_LOCATION_CHANNEL } from "./trips/liveLocation.js";
 import { setLeaveRouter } from "./reservations/service.js";
 import type { Router } from "./maps/routing.js";
 import { CONFIG_CHANNEL, cacheLiveDocumentsOn } from "./config/service.js";
 import { INCIDENT_EVENTS_CHANNEL } from "./safety/incidents.js";
 import { ADMIN_EVENTS_CHANNEL } from "./realtime/adminEvents.js";
 import { DISPATCH_EVENTS_CHANNEL } from "./dispatch/feed.js";
+import { AIRPORT_QUEUE_CHANNEL } from "./airportQueue/service.js";
+import { SESSION_REVOKED_CHANNEL } from "./auth/sessionCache.js";
 import { prepareTestWeek } from "./testWeek.js";
 import { pushServicesFrom } from "./push/config.js";
 import { PushDispatcher } from "./push/dispatcher.js";
@@ -55,7 +59,7 @@ if (env.DATABASE_URL !== undefined) {
   if (env.MIGRATE_ON_START) await migrate(pool, undefined, { lockTimeoutMs: env.DATABASE_MIGRATION_LOCK_TIMEOUT_MS });
   db = createDb(pool);
   healthDb = createDb(createHealthPool(env.DATABASE_URL));
-  hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL, TIMER_DUE_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
+  hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL, TIMER_DUE_CHANNEL, LIVE_LOCATION_CHANNEL, AIRPORT_QUEUE_CHANNEL, SESSION_REVOKED_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   // S4 B1.16 Q-B13 (owner W1 Q78 "Do not count it"): this copy writes its LISTEN outage windows, so an Exclusive that
   // expired while any copy's live link was down is not counted toward auto-offline (dispatch/autoOffline.ts).
   hub.watchLink(new OutageRecorder(db, outageCopyId(), { warn: (data, message) => warn(Object.assign(new Error(message), data)) }));
@@ -98,7 +102,7 @@ if (db !== undefined) {
   // S05 A1: a recurring job parked after repeated failures runs again at every start (one warning each).
   // S4 0.14b: every housekeeping job (one timer per clean-up) too.
   // S4 0.14a: the payout timer too, and a driver's payout step parked after repeated failures (tried again after a fix).
-  await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS, PAYOUT_CLOSE, PAYOUT_DRIVER], app.log);
+  await rearmParkedRecurringTimers(db, [SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, NO_FIX_OFFLINE, NO_FIX_SWEEP, SMART_SURGE_CHECK, ALERT_SWEEP, ...HOUSEKEEPING_KINDS, PAYOUT_CLOSE, PAYOUT_DRIVER, PAY_REQUEST_SCAN], app.log);
   // B1.6b (owner W1 Q70): a trip or safety timer parked before restart-once existed runs once more (once in all).
   await restartParkedOnce(db, RESTART_ONCE_KINDS, app.log);
   // v0.18.95 BQ-M26 (freeze at deploy): a payout paid before migration 0109 gets its summary frozen once, now. In the

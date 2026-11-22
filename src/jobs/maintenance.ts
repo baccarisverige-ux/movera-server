@@ -5,6 +5,7 @@ import { purgeOldMessages } from "../trips/messages.js";
 import { NO_FIX_OFFLINE, NO_FIX_SWEEP, ensureNoFixTimer, noFixOfflineHandler, noFixSweepHandler } from "../drivers/presence.js";
 import type { TimerHandler } from "./timers.js";
 import { ensureHousekeepingTimers, housekeepingHandlers } from "./housekeeping.js";
+import { ensurePayRequestTimer, payRequestHandlers } from "../drivers/payRequest.js";
 
 /** Housekeeping that runs on the timer worker, so only one instance does it at a time. */
 
@@ -75,6 +76,8 @@ export async function ensureMaintenanceTimers(ex: Executor, now: Date = new Date
   await ensureHousekeepingTimers(ex, now);
   // S4 0.14a: the one payout job (hourly).
   await ensurePayoutTimer(ex, now);
+  // v0.18.139 (contract.json#driverPayRequest.job): the monthly pay request scan (hourly; asks nobody while off).
+  await ensurePayRequestTimer(ex, now);
   // contract v0.18.4 §29 (G3-R1): online drivers with no position for noFixMinutes go offline (every 30 s).
   await ensureNoFixTimer(ex, now);
 }
@@ -86,4 +89,5 @@ export const maintenanceHandlers: Record<string, TimerHandler> = {
   [NO_FIX_SWEEP]: noFixSweepHandler,
   ...housekeepingHandlers,
   ...payoutHandlers,
+  ...payRequestHandlers,
 };

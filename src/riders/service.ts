@@ -1,4 +1,5 @@
 import { debtsByCurrency } from "./debt.js";
+import { feesPayableByCard } from "./feeStripe.js";
 import type { Executor, Trx } from "../db/db.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
@@ -62,7 +63,10 @@ async function loadRider(ex: Executor, riderId: string, lock = false): Promise<R
 }
 
 export async function getRiderProfile(ex: Executor, riderId: string, currency: string) {
-  return riderView(await loadRider(ex, riderId), currency, await outstandingByCurrency(ex, riderId));
+  const view = riderView(await loadRider(ex, riderId), currency, await outstandingByCurrency(ex, riderId));
+  // v0.18.136 (DRAFT, contract.json#stripeFees.profile): the owed fees she can pay with Stripe in the app now.
+  const payable = await feesPayableByCard(ex, riderId);
+  return payable.length > 0 ? { ...view, feesPayableByCard: payable } : view;
 }
 
 export async function updateRiderProfile(trx: Trx, riderId: string, body: unknown, currency: string, now: Date) {
@@ -91,9 +95,4 @@ export async function updateRiderProfile(trx: Trx, riderId: string, body: unknow
     .where("rider_id", "=", riderId)
     .execute();
   return riderView(await loadRider(trx, riderId), currency, await outstandingByCurrency(trx, riderId));
-}
-
-export async function requestDeletion(trx: Trx, riderId: string, now: Date) {
-  await trx.updateTable("riders").set({ deletion_requested_at: now }).where("rider_id", "=", riderId).where("deletion_requested_at", "is", null).execute();
-  return { status: "requested" as const };
 }

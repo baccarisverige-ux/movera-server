@@ -34,6 +34,8 @@ export const SHARED_ROWS: Record<string, Row> = {
   "GET /trips/:tripId/messages/options": { scope: "trip" },
   "POST /trips/:tripId/messages/translate": { scope: "trip" },
   "POST /trips/:tripId/call": { scope: "trip" },
+  // v0.18.144 (contract.json#liveLocation): the trip's rider and driver only (no admin).
+  "PUT /trips/:tripId/live-location": { scope: "trip" },
   "GET /support/tickets": { scope: "self" },
   "POST /support/tickets": { scope: "self" },
   "GET /support/tickets/:ticketId": { scope: "ticket" },
@@ -86,6 +88,7 @@ export function validBody(route: string, actor: string): Json | undefined {
     "POST /trips/:tripId/rating": { ...v, stars: 1 },
     "POST /trips/:tripId/messages": { ...v, text: "matrix" },
     "POST /trips/:tripId/call": {},
+    "PUT /trips/:tripId/live-location": { sharing: false },
     "POST /support/tickets/:ticketId/messages": { text: "matrix" },
     "POST /support/tickets/:ticketId/feedback": { text: "matrix" },
     "POST /calls/:callId/signal": { type: "ice", candidate: { candidate: "candidate:matrix" } },

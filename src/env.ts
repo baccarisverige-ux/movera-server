@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { parseExtraTestPhones } from "./auth/testPhones.js";
+import { smsStartupWarnings } from "./sms/elks.js";
+import { stripeKeyStatus } from "./payments/stripeKeys.js";
 import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./maps/osrmSettings.js";
 import { READ_RETRY_DEFAULTS } from "./realtime/retry.js";
 import { SESSION_CHECK_DEFAULT_MS, SESSION_CHECK_MAX_MS } from "./realtime/sessionWatch.js";
@@ -31,11 +33,13 @@ const schema = z.object({
     .default("true")
     .transform((value) => value === "true"),
   /**
-   * B12 (architecture audit item 14): database connections. Render basic-1gb Postgres allows about 100 connections;
-   * the web service has 1 CPU. 20 per instance + 1 LISTEN client leaves room for a second instance during a deploy
-   * (2 × 21), migrations and the admin CLI. Raise only together with the database plan.
+   * B12 (architecture audit item 14): database connections. Default 40 per instance (load test S4d/S4e 2026-11-21:
+   * pool 40 + TRIP_LANES 2 passed 2,000 riders + 2,000 drivers with the most headroom; owner 2026-11-20 18:49
+   * "as code defaults only"). 40 + 1 LISTEN client per instance; a deploy overlap doubles it (2 × 41 = 82), so the
+   * database must allow at least ~100 connections per server copy kept during a deploy (Render Pro-8gb: 200). Was 20
+   * (Render basic-1gb, ~100 connections); set DATABASE_POOL_MAX=20 there.
    */
-  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(20),
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(40),
   /** An idle pooled connection is closed after this many ms (0: never). */
   DATABASE_POOL_IDLE_MS: z.coerce.number().int().min(0).max(3_600_000).default(30_000),
   /** A query waits at most this long for a free pooled connection, then fails (0: wait forever). */
@@ -89,6 +93,22 @@ const schema = z.object({
    * filled in Render's dashboard (never committed, never logged). Unset: no e-mail is sent, delivery pending_provider.
    */
   RESEND_API_KEY: z.string().min(8).optional(),
+  /**
+   * Contract v0.18.133 (contract.json#smsSignIn.serverKeys): the 46elks API username and password for the sign-in code
+   * SMS, filled in Render's dashboard by the owner (never committed, never logged). Read leniently on purpose: a wrong
+   * or half-filled value must never stop the server from starting; without BOTH, real SMS codes stay off and every real
+   * number is answered sign_in_restricted as before (sms/elks.ts).
+   */
+  ELKS_API_USERNAME: z.string().optional(),
+  ELKS_API_PASSWORD: z.string().optional(),
+  /** The SMS sender name (3-11 letters and digits). Unset or not usable: contract.json#smsSignIn.sender ("Movera"). */
+  SMS_SENDER_NAME: z.string().optional(),
+  /**
+   * Contract v0.18.151 (contract.json#sosContactsSms.send.serverSwitch): "on" sends the SOS contacts SMS through the
+   * sign-in sender (the 46elks keys above); unset or any other value = off, the default (the SMS stay not_connected).
+   * Set by the owner next to the keys. Read leniently: a wrong value never stops the server, it is simply off.
+   */
+  SOS_CONTACTS_SMS_SEND: z.string().optional(),
   /** The sender of those e-mails. Unset: Resend's own test sender "Movera <onboarding@resend.dev>" (no own domain yet). */
   EMAIL_FROM: z.string().min(3).max(200).optional(),
   /** One send waits at most this long for Resend, then counts as not sent (pending_provider). */
@@ -113,6 +133,12 @@ const schema = z.object({
    * (SERVER_PAYMENT_METHODS). A method listed here (comma-separated, default none; cash is ignored and logged) is served as coming_soon and refused
    * with payment_method_coming_soon until it is taken off the list. The old PAYMENT_METHODS list is no longer read.
    */
+  /** v0.18.136 (DRAFT, contract.json#stripeFees.keys, live mode owner 2026-11-21): sk_test_ + pk_test_ or sk_live_ +
+   * pk_live_ (+ whsec_), never a mix; production live only, staging / development test only; otherwise Stripe off (503
+   * payments_unavailable) and a system_health alert (payments/stripe.ts stripeKeyStatus). Never logged, never in a document. */
+  STRIPE_SECRET_KEY: z.string().max(300).optional(),
+  STRIPE_PUBLISHABLE_KEY: z.string().max(300).optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().max(300).optional(),
   PAYMENT_METHODS_PAUSED: z
     .string()
     .default("")
@@ -208,13 +234,25 @@ const schema = z.object({
   HOUSEKEEPING_LANES: z.coerce.number().int().min(1).max(16).default(1),
   /**
    * G34 S3 (contract v0.18.83 fastDispatch.lateAlarm; owner 2026-11-13 12:18 UTC, GM S3b): loops per instance for the
-   * per-trip GPS timers (trip_eta, ride_check_scan, near_dropoff). Default 1, as before: more lanes are not proven to help
-   * (sup1 P3); /healthz/jobs reports when these timers fall behind.
+   * per-trip GPS timers (trip_eta, ride_check_scan, near_dropoff). Default 2 (load test S4d/S4e 2026-11-21: with pool 40
+   * it passed with the lowest latency; owner 2026-11-20 18:49 "as code defaults only"); was 1. /healthz/jobs reports when
+   * these timers fall behind.
    */
-  TRIP_LANES: z.coerce.number().int().min(1).max(16).default(1),
+  TRIP_LANES: z.coerce.number().int().min(1).max(16).default(2),
   /** Job 1 (stress H3): shed new low-priority requests (503 server_busy: quotes, rider map, address search, admin lists) while more than this many queries wait for a pooled connection (0: off). */
   SHED_POOL_WAITING: z.coerce.number().int().min(0).max(100_000).default(200),
+  /**
+   * S4c fix 3 (src/auth/sessionCache.ts): a rider / driver session read active is not read again on this copy for this
+   * many ms (0: off). Used only with a LISTEN hub; every revoke reaches every copy at once by NOTIFY. It is the hard
+   * bound on how long a signed-out session can still be used, so at most 10 s (owner OK 2026-11-21 "at most 5 s").
+   */
+  SESSION_CACHE_MS: z.coerce.number().int().min(0).max(10_000).default(5000),
   /** Job 1 (stress H3): shed new low-priority requests while the event loop is this many ms late (p99 in both of the last two 0.5 s samples; 0: off). */
+  /**
+   * v0.18.145 (S4c load cut, contract.json#loadCut.nearbyCache): GET /rider/nearby-vehicles keeps the blurred cars of a
+   * 0.005° grid cell this many ms per server copy (0: off, every rider reads the database).
+   */
+  NEARBY_CACHE_MS: z.coerce.number().int().min(0).max(60_000).default(2500),
   SHED_LOOP_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(1000),
   /**
    * B1.9 (owner W1 Q73, 2026-11-11): a failed stream read (trip, offer, settings, admin live, dispatch, incident
@@ -318,5 +356,9 @@ export function startupWarnings(env: Env): string[] {
   if (env.MOVERA_ENV !== "development" && env.MOVERA_TURN_URLS === undefined) {
     out.push("MOVERA_TURN_URLS and MOVERA_TURN_SECRET are not set: in-app calls work only on open networks (no TURN relay).");
   }
+  out.push(...smsStartupWarnings(env));
+  // Live mode (contract.json#stripeFees.keys): a Stripe key setup mistake is named (the reason only, never a key).
+  const stripe = stripeKeyStatus(env);
+  if (stripe.mode === "off" && stripe.reason !== "no_keys") out.push(`Stripe keys are not usable (${stripe.reason}): card payments are off.`);
   return out;
 }

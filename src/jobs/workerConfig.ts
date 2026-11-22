@@ -3,6 +3,7 @@ import { RESTART_ONCE_KINDS } from "./parkedKinds.js";
 import { maintenanceHandlers, NIGHTLY, SWEEP_IDEMPOTENCY_KEYS } from "./maintenance.js";
 import { HOUSEKEEPING_KINDS } from "./housekeeping.js";
 import { PAYOUT_CLOSE, PAYOUT_DRIVER } from "./payouts.js";
+import { PAY_REQUEST_SCAN } from "../drivers/payRequest.js";
 import { RIDE_CHECK_SCAN, rideCheckScanHandler } from "../safety/rideCheckServer.js";
 import { pricingHandlers } from "../pricing/surge.js";
 import { ALERT_SWEEP, alertSweepHandler, raiseParkedAlert } from "../alerts/detector.js";
@@ -25,7 +26,7 @@ export const TRIP_LANE_KINDS: readonly string[] = [TRIP_ETA, RIDE_CHECK_SCAN, NE
  * payout step. They run only on the housekeeping lane; every other kind (incident_escalate, alert_sweep, booked rides,
  * calls, …) never waits behind them.
  */
-export const HOUSEKEEPING_LANE_KINDS: readonly string[] = [...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER];
+export const HOUSEKEEPING_LANE_KINDS: readonly string[] = [...HOUSEKEEPING_KINDS, SWEEP_IDEMPOTENCY_KEYS, NIGHTLY, PAYOUT_CLOSE, PAYOUT_DRIVER, PAY_REQUEST_SCAN];
 
 /**
  * The timer worker's handlers and lanes (S08 A1/A2, moved out of main.ts with no behaviour change).

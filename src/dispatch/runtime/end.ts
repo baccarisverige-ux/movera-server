@@ -1,3 +1,4 @@
+import { leaveIfGone } from "../../airportQueue/service.js";
 import { searchesAgain } from "../../reservations/service.js";
 import type { Trx } from "../../db/db.js";
 import { appendTripEvent, lockTrip, type TripRow } from "../../db/tripLog.js";
@@ -171,6 +172,8 @@ export const withdrawCashHandler: TimerHandler = async (trx, timer) => {
 export const withdrawHandler: TimerHandler = async (trx, timer) => {
   const driverId = timer.refId;
   const now = timer.firedAt;
+  // v0.18.145: a driver who went offline leaves the airport line now (the line is told).
+  await leaveIfGone(trx, driverId, now);
   const open = await trx.selectFrom("offers").select(["offer_id", "trip_id"]).where("driver_id", "=", driverId).where("status", "=", "open").orderBy("trip_id").execute();
   const queue = new FeedQueue();
   for (const { trip_id } of open) {

@@ -1,3 +1,5 @@
+import type { StripeApi } from "../../src/payments/stripe.js";
+import type { NotificationHub } from "../../src/realtime/hub.js";
 import { TEST_CODE } from "../../src/auth/service.js";
 import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
@@ -18,11 +20,12 @@ export const fixedRouter: Router = { route: async (_points: LatLng[]) => ({ dist
 /** The test server's JWT secret (also the HMAC key of the rider's nearby cars, src/riders/nearby.ts). */
 export const WORLD_JWT_SECRET = "world-test-secret".padEnd(48, "w");
 
-export async function testWorld(db: Db, url: string, clock: { now: Date }, extra: { translator?: Translator } = {}) {
+export async function testWorld(db: Db, url: string, clock: { now: Date }, extra: { translator?: Translator; stripe?: StripeApi | null; hub?: NotificationHub } = {}) {
   await seedTestPhones(db);
   const pricing = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/pricing_document.json`, "utf8"));
   await db.insertInto("config_live").values({ doc: "pricing", zone_id: "Z001", version: 1, document: JSON.stringify(pricing), published_at: clock.now, published_by: null }).execute();
-  const app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: url, JWT_SECRET: WORLD_JWT_SECRET }), logger: false, db, clock: () => clock.now, router: fixedRouter, ...extra });
+  // v0.18.145: the nearby cache off here (the exact path); test/riders/nearby.test.ts tests NearbyCache itself.
+  const app = await buildApp({ env: readEnv({ MOVERA_ENV: "staging", DATABASE_URL: url, JWT_SECRET: WORLD_JWT_SECRET, NEARBY_CACHE_MS: "0" }), logger: false, db, clock: () => clock.now, router: fixedRouter, ...extra });
   return app;
 }
 

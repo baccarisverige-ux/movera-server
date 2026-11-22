@@ -7,6 +7,7 @@ import { pruneAdminLiveEvents } from "../realtime/adminEvents.js";
 import { sweepDocumentExpiry, sweepSignUpReminders } from "../drivers/reminders.js";
 import { liftEndedPauses } from "../riders/moderation.js";
 import { purgeOldShares } from "../safety/shareCleanup.js";
+import { ACCOUNT_ERASE, eraseDueAccounts } from "../accounts/deletion.js";
 import type { TimerHandler } from "./timers.js";
 
 /**
@@ -94,6 +95,8 @@ const JOBS: Record<string, (ex: Executor, now: Date) => Promise<unknown>> = {
   [SIGN_UP_REMINDERS]: sweepSignUpReminders,
   // v0.18.39 A2 (G16 Q16-2): a rider pause that ended lifts by itself.
   [LIFT_ENDED_PAUSES]: liftEndedPauses,
+  // v0.18.134 (contract.json#accountDeletion.job): erase accounts 30 days after the request (dry-run while the switch is off).
+  [ACCOUNT_ERASE]: eraseDueAccounts,
 };
 
 /** Every housekeeping kind (recurring: re-armed at start, booked at start). Not trip or safety: not in the loud list. */
