@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { appClientOf } from "../config/appUpdate.js";
 import { z } from "zod";
 import { adminCoversZone, authenticate, authenticateAdmin } from "../auth/guard.js";
 import type { Db } from "../db/db.js";
@@ -109,7 +110,7 @@ export async function dispatchRoutes(app: FastifyInstance, deps: DispatchDeps): 
     const who = await authenticate(request, guard, ["driver"]);
     const { offerId } = parseBody(z.object({ offerId: ID }), request.params);
     const body = parseBody(OfferBody, request.body);
-    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await acceptOffer(trx, who.subjectId, offerId, body.expectedVersion, now()), "driver") }));
+    const result = await runIdempotent(deps.db, idem(request, who), async (trx) => ({ status: 200, body: tripProjection(await acceptOffer(trx, who.subjectId, offerId, body.expectedVersion, now(), appClientOf(request)), "driver") }));
     return result.body;
   });
 

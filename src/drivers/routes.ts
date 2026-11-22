@@ -1,4 +1,5 @@
 import { geometry } from "../config/geometryCache.js";
+import { appClientOf } from "../config/appUpdate.js";
 import { driverPerformance } from "./performance.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -88,7 +89,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   app.post(`${API_PREFIX}/driver/availability`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     const body = parseBody(AvailabilityBody, request.body);
-    return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await setAvailability(trx, who.subjectId, body, now()) }))).body;
+    return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await setAvailability(trx, who.subjectId, body, now(), appClientOf(request)) }))).body;
   });
 
   app.post(`${API_PREFIX}/driver/next-trips`, async (request) => {

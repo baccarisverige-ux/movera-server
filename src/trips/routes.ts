@@ -1,4 +1,5 @@
 import { markRiderSeen } from "../riders/presence.js";
+import { appClientOf } from "../config/appUpdate.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { authenticate, type Principal } from "../auth/guard.js";
@@ -73,7 +74,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   app.post(`${API_PREFIX}/trips`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider"]);
     const result = await runIdempotent(deps.db, idem(request, who), async (trx) => {
-      const trip = await createTrip(trx, who.subjectId, request.body ?? {}, { paymentMethods: deps.paymentMethods, now: now() });
+      const trip = await createTrip(trx, who.subjectId, request.body ?? {}, { paymentMethods: deps.paymentMethods, now: now(), app: appClientOf(request) });
       return { status: 201, body: tripProjection(trip, "rider") };
     });
     return reply.status(result.status).send(result.body);
