@@ -128,6 +128,9 @@ function bodyFor(route: string): Json | undefined {
     // v0.18.9 (G7): valid bodies, so the zone / owner / permission check is what answers.
     "POST /admin/trips/:tripId/flag": { flagged: true, reason: "audit matrix" },
     "POST /admin/trips/:tripId/notes": { text: "audit matrix" },
+    // v0.18.149 (admin sign-out, #311): a valid body (strict schema), so the zone check is what answers.
+    "POST /admin/riders/:riderId/sessions/sign-out": { all: true, reason: "audit matrix" },
+    "POST /admin/drivers/:driverId/sessions/sign-out": { all: true, reason: "audit matrix" },
     "POST /admin/trips/:tripId/case": { about: "rider", category: "help", subject: "audit matrix", text: "audit matrix" },
     "POST /admin/trips/:tripId/reveal-contact": { who: "rider", reason: "audit matrix" },
     "POST /admin/incidents/:incidentId/level": { ...v, severity: "low" },
