@@ -114,7 +114,7 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
     FROM timers WHERE due_at <= now() OR due_at = 'infinity' GROUP BY kind`.execute(db);
   return Object.fromEntries(rows.map((r) => [r.kind, { parked: Number(r.parked), overdue: Number(r.overdue), overdueOldestMs: Number(r.oldest_ms ?? 0) }]));
 }
-const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, Last-Event-ID, Accept, Accept-Language";
+const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, X-App-Version, X-App-Platform, Last-Event-ID, Accept, Accept-Language";
 
 export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, signInSms, healthDb, shed, stripe }: BuildOptions): Promise<FastifyInstance> {
   // G34 P2: the health checks ask the database on their own small pool (main.ts, db.ts createHealthPool) when given, so a

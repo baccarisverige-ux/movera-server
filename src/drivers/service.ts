@@ -1,4 +1,5 @@
 import { sql } from "kysely";
+import { refuseOldApp, type AppClient } from "../config/appUpdate.js";
 import { NOT_HELD } from "../reservations/view.js";
 import { drivingTimeOf, resetOnOnline } from "./drivingTime.js";
 import { scheduleRideCheckScan } from "../safety/rideCheckServer.js";
@@ -332,7 +333,7 @@ export async function updateDriverProfile(trx: Trx, driverId: string, body: unkn
 }
 
 /** POST /driver/availability: online or offline (contract: 409 with the Driver when it cannot be). */
-export async function setAvailability(trx: Trx, driverId: string, body: { expectedVersion: number; onlineStatus: "online" | "offline"; location?: Fix }, now: Date) {
+export async function setAvailability(trx: Trx, driverId: string, body: { expectedVersion: number; onlineStatus: "online" | "offline"; location?: Fix }, now: Date, app?: AppClient | null) {
   // The fix first: on a trip it locks the trip row, and the lock order is trip, then driver.
   if (body.location) {
     const facts = await locationFacts(trx, driverId);
@@ -346,6 +347,13 @@ export async function setAvailability(trx: Trx, driverId: string, body: { expect
   // On a trip the driver already counts as online; "online" must not turn on_trip into free.
   if (body.onlineStatus === row.online_status || (body.onlineStatus === "online" && row.online_status === "on_trip")) return driverView(trx, row, "driver", now);
   if (body.onlineStatus === "online") {
+    // v0.18.154 P16c (contract.json#appUpdate.server): an Android / iOS driver app below the minimum of his zones (and the
+    // zone of his last position) does not go online (426). Never on a trip: that case returned above.
+    // Review SF (safety first): a driver who holds a booked ride (accepted, not started) is never refused: the booked
+    // rider depends on him, and starting it needs him online (reservations/service.ts startReservation).
+    const holdsBooked = app ? await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", driverId).where("kind", "=", "scheduled").where("status", "=", "accepted").limit(1).executeTakeFirst() : undefined;
+    const at = await trx.selectFrom("driver_locations").select("zone_id").where("driver_id", "=", driverId).executeTakeFirst();
+    if (holdsBooked === undefined) await refuseOldApp(trx, "driver_app_config", [...row.zone_ids, ...(at?.zone_id ? [at.zone_id] : [])], app);
     if (row.account_status !== "active") throw await refuse("Your account is not active yet.", "account_not_active");
     // v0.5.3: a driver account works for a fleet; the fleet must be approved (not blocked).
     if (row.account_type === "driver" && row.fleet_id === null) throw await refuse("Join a fleet first.", "no_fleet");

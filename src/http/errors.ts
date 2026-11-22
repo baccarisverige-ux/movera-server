@@ -13,7 +13,9 @@ export type ErrorCode =
   | "documents_not_approved"
   | "rate_limited"
   | "unavailable"
-  | "internal";
+  | "internal"
+  /** v0.18.154 P16c (contract.json#appUpdate): the app is below the zone's minimum version (HTTP 426). */
+  | "upgrade_required";
 
 /** HTTP status per error code (CONTRACT.md §1 Errors, openapi responses). */
 export const STATUS_OF: Record<ErrorCode, number> = {
@@ -29,6 +31,7 @@ export const STATUS_OF: Record<ErrorCode, number> = {
   rate_limited: 429,
   unavailable: 503,
   internal: 500,
+  upgrade_required: 426,
 };
 
 /** Only these are worth retrying with the same Idempotency-Key. */

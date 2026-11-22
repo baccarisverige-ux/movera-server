@@ -3,6 +3,7 @@ import { checkCountryCashOffers } from "../drivers/owes.js";
 import { pickupSpotsProblem } from "./pickupSpots.js";
 import { oneStreamProblem } from "./oneStream.js";
 import { liveLocationProblem } from "../trips/liveLocation.js";
+import { appUpdateProblem } from "./appUpdate.js";
 import { reservationSettings } from "../reservations/plan.js";
 import { rideCheckSettingsOf } from "../trips/onTripSettings.js";
 import { sql } from "kysely";
@@ -149,6 +150,12 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "driver_app_config") {
     const realtime = oneStreamProblem(document);
     if (realtime !== null) throw badRequest(`The driver_app_config document is not valid: ${realtime}.`, "invalid_document");
+  }
+  // v0.18.154 P16c (contract.json#appUpdate.validation): appUpdate.minVersion / storeUrls per platform (checked here,
+  // so the rule holds whatever contract copy the schema check reads).
+  if (doc === "rider_app_config" || doc === "driver_app_config") {
+    const update = appUpdateProblem(document);
+    if (update !== null) throw badRequest(`The ${doc} document is not valid: ${update}.`, "invalid_document");
   }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");

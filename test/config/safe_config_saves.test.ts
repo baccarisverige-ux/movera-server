@@ -50,7 +50,8 @@ afterAll(async () => {
 describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
   it("the server's list is the contract's list", () => {
     const kk = (contract as unknown as { configDocs: { keptKeys: Record<string, unknown> } }).configDocs.keptKeys;
-    expect(KEPT_KEYS).toEqual({ country_rules: kk["country_rules"], dispatch: kk["dispatch"], driver_app_config: kk["driver_app_config"] });
+    // v0.18.154 P16c adds rider_app_config (appUpdate.minVersion, appUpdate.storeUrls; test/config/app_update_p16c.test.ts).
+    expect(KEPT_KEYS).toEqual({ country_rules: kk["country_rules"], dispatch: kk["dispatch"], driver_app_config: kk["driver_app_config"], rider_app_config: kk["rider_app_config"] });
   });
 
   it("an old tab's country_rules save keeps payout mode, schedule, debt limits and call settings; the answer and the audit say so", async () => {

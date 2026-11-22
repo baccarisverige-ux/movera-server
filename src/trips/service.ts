@@ -32,6 +32,7 @@ import { tripProjection, type Viewer } from "./projection.js";
 import { withCallOpenUntil } from "../calls/openUntil.js";
 import type { CallSettings } from "../calls/settings.js";
 import { assertAdminTripScope, type MessageWho } from "./messages.js";
+import { refuseOldApp, type AppClient } from "../config/appUpdate.js";
 
 /** Trip requests, reads and the rider's cancel (contract §3, §7). */
 
@@ -68,7 +69,7 @@ async function quotedPricing(ex: Executor, quote: { zone_id: string; pricing_ver
  */
 const PAYMENT_METHODS = (contract as unknown as { paymentMethods: string[] }).paymentMethods;
 
-export async function createTrip(trx: Trx, riderId: string, request: unknown, options: { paymentMethods: readonly string[]; now: Date }): Promise<TripRow> {
+export async function createTrip(trx: Trx, riderId: string, request: unknown, options: { paymentMethods: readonly string[]; now: Date; app?: AppClient | null }): Promise<TripRow> {
   // v0.18.10 (contract.json#finish.paymentMethods.booking): a method that no longer exists (google_pay) gets its clear
   // reason, not a schema error.
   const asked = (request as { paymentMethod?: unknown } | null)?.paymentMethod;
@@ -104,6 +105,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
   // v0.11.0 §20: a zone closed since the quote takes no new rides ("Movera isn't here yet").
   const zoneRow = await trx.selectFrom("zones").select("open").where("zone_id", "=", quote.zone_id).executeTakeFirst();
   if (zoneRow?.open !== true) throw new ApiError("forbidden", "Movera is not available here yet.", { reason: "service_not_available" });
+  // v0.18.154 P16c (contract.json#appUpdate.server): an Android / iOS rider app below the zone's minimum books nothing (426).
+  await refuseOldApp(trx, "rider_app_config", [quote.zone_id], options.app);
   // v0.18.17 (contract.json#bookLater.window): the window again at booking (the quote may be minutes old).
   if (body.kind === "scheduled" && quote.scheduled_at) await checkWindow(trx, quote.zone_id, quote.scheduled_at, now);
   // v0.18.81 B1.34 (contract.json#bookLater.riderCap): a booked ride locks the rider row first, so two bookings of one
