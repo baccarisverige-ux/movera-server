@@ -22,11 +22,11 @@ CREATE TABLE IF NOT EXISTS driver_reviews (
   driver_id text NOT NULL REFERENCES drivers (driver_id) ON DELETE CASCADE,
   trip_id text NOT NULL UNIQUE,
   zone_id text NOT NULL,
-  stars integer NOT NULL,
+  stars integer NOT NULL CHECK (stars BETWEEN 1 AND 5),
   text text NOT NULL,
   name text,
   month text NOT NULL,
-  status text NOT NULL DEFAULT 'pending',
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'hidden')),
   created_at timestamptz NOT NULL,
   moderated_at timestamptz,
   moderated_by text
