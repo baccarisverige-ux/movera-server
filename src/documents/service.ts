@@ -1,7 +1,7 @@
 import type { Executor, Trx } from "../db/db.js";
 import { ApiError, badRequest, notFound } from "../http/errors.js";
 import { newId } from "../ids.js";
-import { ONBOARDING, documentKind } from "../drivers/onboardingRules.js";
+import { COUNTRY_TIME_ZONE, ONBOARDING, documentKind } from "../drivers/onboardingRules.js";
 import { audit } from "../admin/audit.js";
 import { onboardingSettings, ownerKindOf, typeInfo } from "../drivers/onboardingSettings.js";
 import { noticeDocumentReview } from "../drivers/reviewNotices.js";
@@ -324,12 +324,16 @@ async function approvalExpiry(trx: Trx, row: DocumentRow, body: ReviewBody, fall
   if (body.decision !== "approved") return typed ?? fallback;
   const settings = await onboardingSettings(trx, await countryOfDocument(trx, row));
   // v0.18.3 (R9, settings.validMonths): the issue date plus the type's valid months, unless the admin typed the date.
-  if (typed === null && body.issuedAt !== undefined) {
+  if (body.issuedAt !== undefined) {
     const issued = new Date(body.issuedAt);
     if (Number.isNaN(issued.getTime())) throw badRequest("issuedAt is not a date.", "invalid_issued_at");
-    if (issued.getTime() > now.getTime()) throw badRequest("The issue date cannot be in the future.", "issued_in_future");
+    // Doc dates (2026-11-24): the issue date is a calendar day; it is compared with today in the document's country
+    // (Stockholm 00:30 is still the day before in UTC), and it is checked whether or not the admin typed the end date.
+    const country = await countryOfDocument(trx, row);
+    const today = new Intl.DateTimeFormat("sv-SE", { timeZone: COUNTRY_TIME_ZONE[country ?? ""] ?? "Europe/Stockholm", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+    if (issued.toISOString().slice(0, 10) > today) throw badRequest("The issue date cannot be in the future.", "issued_in_future");
     const months = settings.validMonths?.[row.type];
-    if (months !== undefined) typed = addMonths(issued, months);
+    if (typed === null && months !== undefined) typed = addMonths(issued, months);
   }
   if (settings.expiringTypes.includes(row.type) && typed === null) throw badRequest("Type the expiry date to approve this document.", "expiry_required");
   if (typed !== null && typed.getTime() <= now.getTime()) throw badRequest("The expiry date must be in the future.", "expiry_in_past");
