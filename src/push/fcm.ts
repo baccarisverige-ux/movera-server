@@ -91,6 +91,17 @@ export type PushMessage = {
 };
 
 const NATIVE = (contract as unknown as { driverOffers: { push: { native: { androidChannel: string; androidQuietChannel: string; soundFile: string; iosSound: string } } } }).driverOffers.push.native;
+/**
+ * v0.18.160 (contract.json#auth.devices.sending.apns): what an iPhone needs to show the push as an Android phone does.
+ * An alert push at priority 10 (Android is always HIGH), the notice's title + body, grouped by kind. Never a badge and
+ * never content-available (no silent background push); Android has no collapse key, so no apns-collapse-id either.
+ */
+const APNS_HEADERS = { "apns-push-type": "alert", "apns-priority": "10" } as const;
+function aps(message: PushMessage): { alert: { title: string; body: string }; "thread-id"?: string } {
+  const kind = message.data.kind;
+  return { alert: { title: message.title, body: message.body }, ...(kind ? { "thread-id": kind } : {}) };
+}
+
 /** sent; dead_token: FCM says the token is gone (remove it); retry: try again later; failed: give up on this one. */
 export type SendResult = "sent" | "dead_token" | "retry" | "failed";
 
@@ -129,8 +140,8 @@ export class FcmSender implements PushSender {
             },
           },
           apns: {
-            ...(ttl ? { headers: { "apns-expiration": String(Math.floor(Date.now() / 1000) + ttl) } } : {}),
-            payload: { aps: loud ? { sound: NATIVE.iosSound, "interruption-level": "time-sensitive" } : {} },
+            headers: { ...APNS_HEADERS, ...(ttl ? { "apns-expiration": String(Math.floor(Date.now() / 1000) + ttl) } : {}) },
+            payload: { aps: { ...aps(message), ...(loud ? { sound: NATIVE.iosSound, "interruption-level": "time-sensitive" } : {}) } },
           },
         },
       };
@@ -141,7 +152,7 @@ export class FcmSender implements PushSender {
         notification: { title: message.title, body: message.body },
         data,
         android: { priority: "HIGH", notification: { click_action: "FLUTTER_NOTIFICATION_CLICK" } },
-        apns: { payload: { aps: { sound: "default" } } },
+        apns: { headers: { ...APNS_HEADERS }, payload: { aps: { ...aps(message), sound: "default" } } },
       },
     };
   }

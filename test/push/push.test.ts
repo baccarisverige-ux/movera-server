@@ -38,6 +38,16 @@ function fakeGoogle(fcm: (body: { message: { token: string } }) => { status: num
       const file = { project_info: { project_number: "42", project_id: "movera-test" }, client: [{ client_info: { mobilesdk_app_id: "1:42:android:other", android_client_info: { package_name: "se.movera.other" } }, api_key: [{ current_key: "other-key" }] }, { client_info: { mobilesdk_app_id: "1:42:android:driver", android_client_info: { package_name: "se.movera.driver" } }, api_key: [{ current_key: "public-android-key" }] }] };
       return reply(200, { configFilename: "google-services.json", configFileContents: Buffer.from(JSON.stringify(file)).toString("base64") });
     }
+    // v0.18.160: the iOS apps (rider's config has a web app id, never used) and the driver's GoogleService-Info.plist.
+    if (url.includes("/iosApps?")) return reply(200, { apps: [{ appId: "1:42:ios:old", bundleId: "se.movera.driver", state: "DELETED" }, { appId: "1:42:ios:driver", bundleId: "se.movera.driver", state: "ACTIVE" }, { appId: "1:42:ios:rider", bundleId: "com.movera.rider" }] });
+    if (url.endsWith("/iosApps/1%3A42%3Aios%3Adriver/config")) {
+      const plist = `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n\t<key>API_KEY</key>\n\t<string>public-ios-key</string>\n\t<key>GCM_SENDER_ID</key>\n\t<string>42</string>\n\t<key>PLIST_VERSION</key>\n\t<string>1</string>\n\t<key>BUNDLE_ID</key>\n\t<string>se.movera.driver</string>\n\t<key>PROJECT_ID</key>\n\t<string>movera-test</string>\n\t<key>IS_GCM_ENABLED</key>\n\t<true></true>\n\t<key>GOOGLE_APP_ID</key>\n\t<string>1:42:ios:driver</string>\n</dict>\n</plist>\n`;
+      return reply(200, { configFilename: "GoogleService-Info.plist", configFileContents: Buffer.from(plist).toString("base64") });
+    }
+    if (url.endsWith("/iosApps/1%3A42%3Aios%3Arider/config")) {
+      const plist = `<plist><dict><key>API_KEY</key><string>k</string><key>GCM_SENDER_ID</key><string>42</string><key>GOOGLE_APP_ID</key><string>1:42:web:rider</string></dict></plist>`;
+      return reply(200, { configFileContents: Buffer.from(plist).toString("base64") });
+    }
     return reply(404, {});
   };
   return { calls, fetch };
@@ -86,6 +96,26 @@ describe("FCM sender (unit)", () => {
     expect(send.headers.authorization).toBe("Bearer access-1");
     expect(JSON.parse(send.body!).message).toMatchObject({ token: "tok-a", notification: { title: "T", body: "B" }, data: { ...data, title: "T", body: "B" } });
     expect(FcmSender.body({ token: "w", platform: "web", title: "T", body: "B", data }).message).not.toHaveProperty("notification");
+  });
+
+  it("v0.18.160: a phone message carries the apns block an iPhone needs (alert, priority 10, thread by kind, no badge)", () => {
+    const data = { notificationId: "ntf_1", kind: "driver_found", deepLink: "movera://trips/t1" };
+    const plain = FcmSender.body({ token: "i", platform: "ios", title: "T", body: "B", data }).message as unknown as { apns: { headers: Record<string, string>; payload: { aps: Record<string, unknown> } }; data: Record<string, string> };
+    expect(plain.apns.headers).toEqual({ "apns-push-type": "alert", "apns-priority": "10" });
+    expect(plain.apns.payload.aps).toEqual({ alert: { title: "T", body: "B" }, "thread-id": "driver_found", sound: "default" });
+    expect(plain.data).toEqual({ ...data, title: "T", body: "B" });
+    const offer = { notificationId: "off_1", kind: "new_offer", deepLink: "movera-driver://offers/off_1" };
+    const loud = FcmSender.body({ token: "i", platform: "ios", title: "New ride", body: "2 min", data: offer, sound: "offer", ttlSeconds: 20 }).message as unknown as typeof plain;
+    expect(loud.apns.headers["apns-priority"]).toBe("10");
+    expect(loud.apns.headers["apns-push-type"]).toBe("alert");
+    expect(Number(loud.apns.headers["apns-expiration"])).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    expect(loud.apns.payload.aps).toEqual({ alert: { title: "New ride", body: "2 min" }, "thread-id": "new_offer", sound: "movera_offer.caf", "interruption-level": "time-sensitive" });
+    const quiet = FcmSender.body({ token: "i", platform: "ios", title: "Radar", body: "x", data: offer, sound: "none" }).message as unknown as typeof plain;
+    expect(quiet.apns.payload.aps).toEqual({ alert: { title: "Radar", body: "x" }, "thread-id": "new_offer" });
+    for (const m of [plain, loud, quiet]) {
+      expect(m.apns.payload.aps).not.toHaveProperty("badge");
+      expect(m.apns.payload.aps).not.toHaveProperty("content-available");
+    }
   });
 
   it("classifies FCM errors: unregistered / invalid token = remove, 429 / 5xx / 401 = retry, others = failed", () => {
@@ -302,13 +332,34 @@ describe("GET /push/config and disabled mode", () => {
     expect(web.webConfig.appId).toBe("1:42:web:driver");
   });
 
-  it("v0.18.105 BQ-V43: an Android app Firebase cannot give, iOS (no APNs key yet), no service account: enabled false", async () => {
+  it("v0.18.105 BQ-V43: an Android app Firebase cannot give, no service account: enabled false", async () => {
     expect((await on.inject({ method: "GET", url: "/api/v1/push/config?app=rider&platform=android" })).json()).toEqual({ provider: "fcm", enabled: false });
-    const ios = await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=ios" });
-    expect(ios.statusCode).toBe(200);
-    expect(ios.json()).toEqual({ provider: "fcm", enabled: false });
-    expect(google.calls.some((c) => c.url.includes("iosApps"))).toBe(false);
+    expect((await off.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=ios" })).json()).toEqual({ provider: "fcm", enabled: false });
     expect((await off.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=android" })).json()).toEqual({ provider: "fcm", enabled: false });
     expect((await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=windows" })).statusCode).toBe(400);
+  });
+
+  it("v0.18.160: platform=ios gives the iOS app's public settings by bundle id (from its plist), read once", async () => {
+    const res = await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=ios" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      provider: "fcm",
+      enabled: true,
+      projectId: "movera-test",
+      iosConfig: { apiKey: "public-ios-key", appId: "1:42:ios:driver", messagingSenderId: "42", projectId: "movera-test", iosBundleId: "se.movera.driver" },
+    });
+    expect(res.headers["cache-control"]).toBe("public, max-age=300");
+    await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=ios" });
+    expect(google.calls.filter((c) => c.url.includes("/iosApps?"))).toHaveLength(1);
+    expect(google.calls.find((c) => c.url.includes("/iosApps?"))!.url).toBe("https://firebase.googleapis.com/v1beta1/projects/movera-test/iosApps?pageSize=100");
+    expect(google.calls.some((c) => c.url.includes("ios%3Aold"))).toBe(false);
+    // The other platforms' answers are unchanged.
+    const android = (await on.inject({ method: "GET", url: "/api/v1/push/config?app=driver&platform=android" })).json();
+    expect(android).not.toHaveProperty("iosConfig");
+    expect(android.androidConfig.appId).toBe("1:42:android:driver");
+  });
+
+  it("v0.18.160: an iOS config whose app id is not an iOS one is never served (it would abort the iPhone app)", async () => {
+    expect((await on.inject({ method: "GET", url: "/api/v1/push/config?app=rider&platform=ios" })).json()).toEqual({ provider: "fcm", enabled: false });
   });
 });
