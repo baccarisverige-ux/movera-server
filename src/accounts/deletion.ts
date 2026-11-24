@@ -199,6 +199,8 @@ async function eraseOne(trx: Trx, a: Due, now: Date): Promise<Record<string, num
     await run("rider_places_imported", sql`DELETE FROM rider_places_imported WHERE rider_id = ${a.id}`);
     await run("rider_phone_data", sql`DELETE FROM rider_phone_data WHERE rider_id = ${a.id}`);
     await run("rider_favourite_drivers", sql`DELETE FROM rider_favourite_drivers WHERE rider_id = ${a.id}`);
+    // v0.18.155 privacy: the first name the rider let a driver review show is wiped (the review text stays, anonymous).
+    await run("driver_reviews_name", sql`UPDATE driver_reviews SET name = NULL WHERE name IS NOT NULL AND trip_id IN (SELECT trip_id FROM trips WHERE rider_id = ${a.id})`);
     await trx
       .updateTable("riders")
       .set({ phone: placeholder, first_name: "", email: null, email_verified_at: null, language: null, consents: JSON.stringify({}), moderation_reason: null, last_seen_zone_id: null, erased_at: now, updated_at: now })
