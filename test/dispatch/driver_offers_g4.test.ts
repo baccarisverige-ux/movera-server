@@ -154,7 +154,8 @@ describe("G4 decision 1 + E6: a push with sound and vibration for a new offer", 
     const quiet = FcmSender.body({ token: "t", platform: "android", title: "x", body: "y", data: {}, sound: "none" }) as { message: { android: { notification: Record<string, unknown> }; apns: { payload: { aps: Record<string, unknown> } } } };
     expect(quiet.message.android.notification).toMatchObject({ channel_id: "movera_offers_quiet" });
     expect(quiet.message.android.notification).not.toHaveProperty("sound");
-    expect(quiet.message.apns.payload.aps).toEqual({});
+    // v0.18.156: still no sound; the alert (title + body) is there so an iPhone shows it.
+    expect(quiet.message.apns.payload.aps).toEqual({ alert: { title: "x", body: "y" } });
   });
 });
 
