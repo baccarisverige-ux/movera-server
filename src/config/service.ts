@@ -15,7 +15,7 @@ import { arrivedDistanceProblem } from "../trips/ride/settings.js";
 import { geofenceProblem } from "../trips/ride/geofence.js";
 import { checkEmergencyNumbers } from "./emergencyNumbers.js";
 import { checkSosContactsSms } from "../safety/sosContactsSms.js";
-import { checkSmsSignIn } from "../auth/smsSignIn.js";
+import { checkSmsSignIn, checkSmsSignInOther, otherSettingIn } from "../auth/smsSignIn.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
@@ -112,6 +112,8 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "country_rules") checkSosContactsSms(zone.kind, document);
   // v0.18.133 (contract.json#smsSignIn.setting): CountryRules.smsSignIn (country standard only; enabled, dailyCap).
   if (doc === "country_rules") checkSmsSignIn(zone.kind, document);
+  // v0.18.157 (contract.json#smsSignIn.otherCountries.setting): CountryRules.smsSignInOtherCountries (home standard only).
+  if (doc === "country_rules") checkSmsSignInOther(zone.kind, zone.country, document);
   // v0.18.86 J5b (contract.json#commissionSteps.validation): the steps have their own reason and details, so they are
   // checked before the schema (which would answer invalid_document); the warn rule is advisory and never refused here.
   if (doc === "pricing") {
@@ -222,7 +224,7 @@ async function lockDraftVersion(trx: Trx, doc: ConfigDoc, zoneId: string): Promi
 }
 
 /** PUT /admin/config/{doc}: replace the draft, inside the caller's transaction. */
-export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string; removeKeys?: readonly string[] }, now: Date): Promise<ConfigDraftView> {
+export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string; removeKeys?: readonly string[]; role?: string }, now: Date): Promise<ConfigDraftView> {
   checkRemoveKeys(input.doc, input.removeKeys ?? []);
   const zone = await getScope(trx, input.zoneId);
   if (input.doc === "onboarding" && schemaProblem(SCHEMA.onboarding, input.document) === null) {
@@ -248,6 +250,14 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
   if (kept.length > 0) {
     input = { ...input, document: whole };
     checkDocument(input.doc, zone, input.document);
+  }
+  // v0.18.157 (contract.json#smsSignIn.otherCountries.setting): only a super admin changes the other-countries switch
+  // or limit (a save that leaves it as stored, or out, is fine for every admin with settings.edit).
+  if (input.doc === "country_rules" && input.role !== undefined && input.role !== "super") {
+    const stored = otherSettingIn(current.document);
+    if (otherSettingIn(input.document) !== stored) {
+      throw new ApiError("forbidden", "Only a super admin can change SMS sign-in for numbers from other countries.", { reason: "super_admin_only" });
+    }
   }
   // v0.8.1 §6.5: tips, raise steps and driver bonus limits come from the scope's rules (its own, else the standard).
   const rules = await liveRules(trx, input.zoneId);

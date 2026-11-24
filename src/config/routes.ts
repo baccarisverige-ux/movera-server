@@ -205,7 +205,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const result = await runIdempotent(
       deps.db,
       { actor: "admin", subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "PUT", route: request.url.split("?")[0]!, body },
-      async (trx) => ({ status: 200, body: await putDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, document: body.document, adminId: who.subjectId, ...(body.removeKeys ? { removeKeys: body.removeKeys } : {}) }, now()) }),
+      async (trx) => ({ status: 200, body: await putDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, document: body.document, adminId: who.subjectId, role: who.role, ...(body.removeKeys ? { removeKeys: body.removeKeys } : {}) }, now()) }),
     );
     return result.body;
   });
