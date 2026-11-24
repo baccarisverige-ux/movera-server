@@ -140,9 +140,9 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date,
       else if (!exempt && photos.some((t) => mine.find((d) => d.type === t)?.status === "in_review")) items.push({ kind: "document_in_review", level: "waiting", scope: "vehicle", vehicleId: id, documentType: photos.find((t) => mine.find((d) => d.type === t)?.status === "in_review")! });
     }
     // v0.18.159 (contract.json#fleetNeedsCar, owner 2026-11-24 "Why fleet owner after sign in don't know that he need to add
-    // car ?"): the owner of a fleet with zero cars is told to add his first car from the first sign-in, whatever the
-    // fleet's status; only apps that know the line. It replaces fleet_no_approved_car (one car line).
-    const noCar = owner && fleet !== undefined && carIds.length === 0 && contractAtLeast(options.contractVersion, FLEET_NO_CAR_SINCE);
+    // car ?"): the owner of a fleet with zero cars is told to add his first car from the first sign-in, while the
+    // fleet is not approved (an approved fleet keeps fleet_no_approved_car); only apps that know the line.
+    const noCar = owner && fleet !== undefined && fleet.status !== "approved" && carIds.length === 0 && contractAtLeast(options.contractVersion, FLEET_NO_CAR_SINCE);
     if (noCar) items.push({ kind: "fleet_no_car", level: "blocks_online", fix: { target: "fleet_vehicles" } });
     if (fleet && fleet.status !== "approved") items.push({ kind: "fleet_not_approved", level: "blocks_online" });
     // v0.18.3 (R4): a driver account in no fleet is told to join one (or start his own company).
@@ -154,7 +154,7 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date,
         .where("fleet_invitations.status", "=", "pending").where("fleet_invitations.expires_at", ">", now).orderBy("fleet_invitations.created_at").execute();
       for (const i of invites) items.push({ kind: "fleet_invitation", level: "waiting", invitationId: i.invitation_id, fleetName: i.name, actions: [{ target: "accept_invitation", invitationId: i.invitation_id }, { target: "decline_invitation", invitationId: i.invitation_id }] });
     }
-    if (fleet && fleet.status === "approved" && driver.vehicle_id === null && !noCar) {
+    if (fleet && fleet.status === "approved" && driver.vehicle_id === null) {
       const pickable = await pickableCars(ex, fleet.fleet_id, now, driver.driver_id);
       if (pickable.length === 0) items.push({ kind: "fleet_no_approved_car", level: "blocks_online", ...(owner ? { fix: { target: "fleet_vehicles" } } : {}) });
       else items.push({ kind: "no_vehicle", level: "blocks_online", fix: { target: "pick_vehicle" } });

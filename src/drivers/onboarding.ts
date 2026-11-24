@@ -19,7 +19,7 @@ import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from ".
 import { cancelFleetInvitations, fleetInvitationViews, requestJoin, type InviteDeps } from "./invitations.js";
 import { notify } from "../notifications/service.js";
 import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
-import { onboardingSettings } from "./onboardingSettings.js";
+import { onboardingSettings, onboardingSettingsOf, type OnboardingSettings } from "./onboardingSettings.js";
 
 export { loadFleet, ownedFleet } from "./fleets.js";
 
@@ -43,6 +43,7 @@ export async function fleetView(ex: Executor, row: FleetRow, viewer: "owner" | "
     .where("fleet_id", "=", row.fleet_id)
     .executeTakeFirstOrThrow();
   const privileged = viewer !== "member";
+  const blocked = viewer === "admin" && blocksApproval(row.status, Number(cars.n), await onboardingSettings(ex, row.country));
   return {
     fleetId: row.fleet_id,
     name: row.name,
@@ -57,14 +58,23 @@ export async function fleetView(ex: Executor, row: FleetRow, viewer: "owner" | "
     ...(privileged && row.code && row.status === "approved" ? { code: row.code } : {}),
     driverCount: Number(counts.n),
     vehicleCount: Number(cars.n),
+    ...(blocked ? { approvalBlockedReason: "fleet_has_no_car" as const } : {}),
     createdAt: row.created_at.toISOString(),
     version: row.version,
   };
 }
 
 /**
+ * v0.18.159 (contract.json#fleetNeedsCar.adminView / refusal): a fleet that is not approved yet, has zero cars and whose
+ * country's PUBLISHED fleetNeedsCarForApproval is on (missing = on) cannot be approved.
+ */
+export function blocksApproval(status: string, vehicleCount: number, settings: OnboardingSettings): boolean {
+  return status !== "approved" && vehicleCount === 0 && settings.fleetNeedsCarForApproval !== false;
+}
+
+/**
  * SUP3 P7 (audits/fix-plan-2026-11-13/sup3-admin.md): fleetView of a page of fleets for an admin, 3 queries for any page
- * (owners, driver counts, car counts) instead of 3 per fleet one after the other. Field for field the same view
+ * (owners, driver counts, car counts; v0.18.159: + one read of the countries' published onboarding settings) instead of 3 per fleet one after the other. Field for field the same view
  * (test/admin/vehicles_list_batched.test.ts).
  */
 export async function adminFleetViews(ex: Executor, rows: FleetRow[]): Promise<Array<Awaited<ReturnType<typeof fleetView>>>> {
@@ -76,6 +86,7 @@ export async function adminFleetViews(ex: Executor, rows: FleetRow[]): Promise<A
   const ownerOf = new Map(owners.map((o) => [o.driver_id, o]));
   const driversOf = new Map(drivers.map((d) => [d.fleet_id, Number(d.n)]));
   const carsOf = new Map(cars.map((c) => [c.fleet_id, Number(c.n)]));
+  const settingsOf = await onboardingSettingsOf(ex, rows.map((r) => r.country));
   return rows.map((row) => {
     const owner = ownerOf.get(row.owner_driver_id);
     if (!owner) throw new Error(`fleet ${row.fleet_id}: owner ${row.owner_driver_id} not found`);
@@ -93,6 +104,7 @@ export async function adminFleetViews(ex: Executor, rows: FleetRow[]): Promise<A
       ...(row.code && row.status === "approved" ? { code: row.code } : {}),
       driverCount: driversOf.get(row.fleet_id) ?? 0,
       vehicleCount: carsOf.get(row.fleet_id) ?? 0,
+      ...(blocksApproval(row.status, carsOf.get(row.fleet_id) ?? 0, settingsOf.get(row.country ?? "")!) ? { approvalBlockedReason: "fleet_has_no_car" as const } : {}),
       createdAt: row.created_at.toISOString(),
       version: row.version,
     };
@@ -391,7 +403,7 @@ export async function reviewFleet(trx: Trx, who: Admin, fleetId: string, body: {
   if (fleet.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The fleet changed since you last saw it.", { projection: maskFleetView(await fleetView(trx, fleet, "admin"), who) });
   // v0.18.159 (contract.json#fleetNeedsCar.refusal, owner 2026-11-24 "No but in sheet must see that it's missing to add
   // car"): with the country's fleetNeedsCarForApproval on (default), a fleet with zero cars is never approved.
-  if (body.decision === "approved" && (await onboardingSettings(trx, fleet.country)).fleetNeedsCarForApproval !== false) {
+  if (body.decision === "approved" && (await onboardingSettings(trx, fleet.country)).fleetNeedsCarForApproval !== false && fleet.status !== "approved") {
     const car = await trx.selectFrom("vehicles").select("vehicle_id").where("fleet_id", "=", fleetId).limit(1).executeTakeFirst();
     if (car === undefined) throw new ApiError("invalid_transition", "The fleet has no car yet.", { reason: "fleet_has_no_car", projection: maskFleetView(await fleetView(trx, fleet, "admin"), who) });
   }

@@ -128,15 +128,61 @@ describe("v0.18.159 fleetNeedsCar: no fleet approval with zero cars", () => {
     expect((await review("frOwner", "approved")).statusCode).toBe(200);
   });
 
-  it("setting off (Sweden): approval ignores the cars; the owner of the approved car-less fleet still gets one car line, fleet_no_car", async () => {
+  it("an approved fleet with no car keeps fleet_no_approved_car, never fleet_no_car (\"before Movera can approve it\" would be false)", async () => {
     expect((await setting("SE", false)).statusCode).toBe(200);
     const res = await review("seOwner2", "approved");
     expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().approvalBlockedReason).toBeUndefined();
     const k = await kinds("seOwner2", NEW);
-    expect(k).toContain("fleet_no_car");
-    expect(k).not.toContain("fleet_no_approved_car");
-    // An older app keeps its old line.
+    expect(k).not.toContain("fleet_no_car");
+    expect(k).toContain("fleet_no_approved_car");
     expect(await kinds("seOwner2", OLD)).toContain("fleet_no_approved_car");
+    expect((await setting("SE", true)).statusCode).toBe(200);
+  });
+
+  it("a blocked fleet with no car: the owner gets fleet_no_car again; re-approving is refused", async () => {
+    expect((await review("seOwner2", "blocked")).statusCode).toBe(200);
+    expect(await kinds("seOwner2", NEW)).toContain("fleet_no_car");
+    expect((await review("seOwner2", "approved")).json()).toMatchObject({ reason: "fleet_has_no_car" });
+  });
+
+  it("a member of a fleet never gets fleet_no_car", async () => {
+    const fleet = await fleetOf("seOwner");
+    const join = await call(app, "POST", "/driver/fleet/join", H.seMember!, { code: fleet.code, ownerName: "Anna Lind", ownerEmail: "anna@example.se" });
+    expect(join.statusCode, join.body).toBeLessThan(300);
+    await call(app, "POST", `/driver/fleet/invitations/${join.json().invitationId}/accept`, H.seOwner!);
+    await database.db.deleteFrom("vehicles").where("fleet_id", "=", FLEET.seOwner!).execute();
+    await database.db.updateTable("fleets").set({ status: "pending" }).where("fleet_id", "=", FLEET.seOwner!).execute();
+    expect(await kinds("seMember", NEW)).not.toContain("fleet_no_car");
+    expect(await kinds("seOwner", NEW)).toContain("fleet_no_car");
+  });
+});
+
+describe("v0.18.159 fleetNeedsCar: Fleet.approvalBlockedReason in the admin views (published setting)", () => {
+  it("set on a not-approved fleet with no car, in the detail and the list; absent once it has a car", async () => {
+    expect((await fleetOf("seOwner2")).approvalBlockedReason).toBe("fleet_has_no_car");
+    const list = (await call(app, "GET", "/admin/fleets?status=blocked", sup.headers)).json();
+    expect(list.items.find((f: { fleetId: string }) => f.fleetId === FLEET.seOwner2)).toMatchObject({ approvalBlockedReason: "fleet_has_no_car" });
+    expect((await fleetOf("frOwner")).approvalBlockedReason).toBeUndefined();
+  });
+
+  it("an admin without settings.read (compliance) still gets it", async () => {
+    const compliance = await adminSession(app, database.db, "compliance", { now: clock.now });
+    const res = await call(app, "GET", `/admin/fleets/${FLEET.seOwner2}`, compliance.headers);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().fleet.approvalBlockedReason).toBe("fleet_has_no_car");
+    expect((await call(app, "GET", "/admin/config/onboarding?country=SE", compliance.headers)).statusCode).toBe(403);
+  });
+
+  it("a DRAFT turned off but not published changes nothing; once published the reason goes and approval works", async () => {
+    const draft = (await call(app, "GET", "/admin/config/onboarding?country=SE", sup.headers)).json();
+    const put = await call(app, "PUT", "/admin/config/onboarding", sup.headers, { expectedVersion: draft.version, country: "SE", document: { ...draft.document, fleetNeedsCarForApproval: false } });
+    expect(put.statusCode).toBe(200);
+    expect((await fleetOf("seOwner2")).approvalBlockedReason).toBe("fleet_has_no_car");
+    expect((await review("seOwner2", "approved")).json()).toMatchObject({ reason: "fleet_has_no_car" });
+    expect((await call(app, "POST", "/admin/config/onboarding/publish", sup.headers, { expectedVersion: put.json().version, country: "SE" })).statusCode).toBe(200);
+    expect((await fleetOf("seOwner2")).approvalBlockedReason).toBeUndefined();
+    expect((await review("seOwner2", "approved")).statusCode).toBe(200);
     expect((await setting("SE", true)).statusCode).toBe(200);
   });
 });
