@@ -19,6 +19,7 @@ import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from ".
 import { cancelFleetInvitations, fleetInvitationViews, requestJoin, type InviteDeps } from "./invitations.js";
 import { notify } from "../notifications/service.js";
 import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
+import { onboardingSettings } from "./onboardingSettings.js";
 
 export { loadFleet, ownedFleet } from "./fleets.js";
 
@@ -388,6 +389,12 @@ export async function reviewFleet(trx: Trx, who: Admin, fleetId: string, body: {
   const fleet = await loadFleet(trx, fleetId, true);
   coversFleet(who, fleet);
   if (fleet.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The fleet changed since you last saw it.", { projection: maskFleetView(await fleetView(trx, fleet, "admin"), who) });
+  // v0.18.159 (contract.json#fleetNeedsCar.refusal, owner 2026-11-24 "No but in sheet must see that it's missing to add
+  // car"): with the country's fleetNeedsCarForApproval on (default), a fleet with zero cars is never approved.
+  if (body.decision === "approved" && (await onboardingSettings(trx, fleet.country)).fleetNeedsCarForApproval !== false) {
+    const car = await trx.selectFrom("vehicles").select("vehicle_id").where("fleet_id", "=", fleetId).limit(1).executeTakeFirst();
+    if (car === undefined) throw new ApiError("invalid_transition", "The fleet has no car yet.", { reason: "fleet_has_no_car", projection: maskFleetView(await fleetView(trx, fleet, "admin"), who) });
+  }
   const code = body.decision === "approved" && fleet.code === null ? await freshCode(trx) : fleet.code;
   await trx
     .updateTable("fleets")

@@ -42,6 +42,8 @@ export type Reminder = {
 type DriverLike = { driver_id: string; country: string | null; account_type: string | null; account_status: string; fleet_id: string | null; vehicle_id: string | null; language?: string | null; created_at?: Date; email?: string | null; email_verified_at?: Date | null; first_activated_at?: Date | null };
 /** G30: the first contract the driver app knows the line email_not_verified in (older apps never get it). */
 export const EMAIL_LINE_SINCE = "0.18.76";
+/** v0.18.159 (contract.json#fleetNeedsCar.since): the first contract the driver app knows the line fleet_no_car in. */
+export const FLEET_NO_CAR_SINCE = "0.18.159";
 
 /** True when an X-Contract-Version header is at least `min` (missing or malformed: false = an older app). */
 export function contractAtLeast(header: unknown, min: string): boolean {
@@ -137,6 +139,11 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date,
       if (!exempt && todo.length > 0) items.push({ kind: "vehicle_photos_needed", level: "blocks_online", scope: "vehicle", vehicleId: id, documentType: todo[0]!, fix: { target: "document", documentType: todo[0]!, scope: "vehicle", vehicleId: id } });
       else if (!exempt && photos.some((t) => mine.find((d) => d.type === t)?.status === "in_review")) items.push({ kind: "document_in_review", level: "waiting", scope: "vehicle", vehicleId: id, documentType: photos.find((t) => mine.find((d) => d.type === t)?.status === "in_review")! });
     }
+    // v0.18.159 (contract.json#fleetNeedsCar, owner 2026-11-24 "Why fleet owner after sign in don't know that he need to add
+    // car ?"): the owner of a fleet with zero cars is told to add his first car from the first sign-in, whatever the
+    // fleet's status; only apps that know the line. It replaces fleet_no_approved_car (one car line).
+    const noCar = owner && fleet !== undefined && carIds.length === 0 && contractAtLeast(options.contractVersion, FLEET_NO_CAR_SINCE);
+    if (noCar) items.push({ kind: "fleet_no_car", level: "blocks_online", fix: { target: "fleet_vehicles" } });
     if (fleet && fleet.status !== "approved") items.push({ kind: "fleet_not_approved", level: "blocks_online" });
     // v0.18.3 (R4): a driver account in no fleet is told to join one (or start his own company).
     if (driver.account_type === "driver" && driver.fleet_id === null) items.push({ kind: "no_fleet", level: "blocks_online", fix: { target: "join_fleet" }, actions: [{ target: "join_fleet" }, { target: "start_company" }] });
@@ -147,7 +154,7 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date,
         .where("fleet_invitations.status", "=", "pending").where("fleet_invitations.expires_at", ">", now).orderBy("fleet_invitations.created_at").execute();
       for (const i of invites) items.push({ kind: "fleet_invitation", level: "waiting", invitationId: i.invitation_id, fleetName: i.name, actions: [{ target: "accept_invitation", invitationId: i.invitation_id }, { target: "decline_invitation", invitationId: i.invitation_id }] });
     }
-    if (fleet && fleet.status === "approved" && driver.vehicle_id === null) {
+    if (fleet && fleet.status === "approved" && driver.vehicle_id === null && !noCar) {
       const pickable = await pickableCars(ex, fleet.fleet_id, now, driver.driver_id);
       if (pickable.length === 0) items.push({ kind: "fleet_no_approved_car", level: "blocks_online", ...(owner ? { fix: { target: "fleet_vehicles" } } : {}) });
       else items.push({ kind: "no_vehicle", level: "blocks_online", fix: { target: "pick_vehicle" } });
@@ -169,7 +176,8 @@ export async function listReminders(ex: Executor, driver: DriverLike, now: Date,
   }
   // v0.18.3 (R10): "not active yet" only once every document is done (none needed, rejected, expired, in review or waiting);
   // v0.18.76 (supervisor round 3): nor when a red email_not_verified line was actually sent.
-  const waitsOnDriver = items.some((i) => DOCUMENT_TODO.includes(i.kind) || (i.kind === "email_not_verified" && i.level === "blocks_online"));
+  // v0.18.159 (fleetNeedsCar): nor while the fleet owner still has to add his first car.
+  const waitsOnDriver = items.some((i) => DOCUMENT_TODO.includes(i.kind) || i.kind === "fleet_no_car" || (i.kind === "email_not_verified" && i.level === "blocks_online"));
   if (driver.account_status !== "active" && !waitsOnDriver) items.push({ kind: "account_not_active", level: "blocks_online" });
   items.sort((a, b) => RANK[a.level] - RANK[b.level] || (a.expiresAt ?? "~").localeCompare(b.expiresAt ?? "~") || (a.documentType ?? "").localeCompare(b.documentType ?? ""));
   return { items, blocksOnline: items.filter((i) => i.level === "blocks_online").length };

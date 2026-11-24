@@ -20,6 +20,7 @@ let fleetCode: string;
 let ownerId: string;
 let memberId: string;
 let carId: string;
+let firstCar: Awaited<ReturnType<typeof call>> | undefined;
 
 const details = (extra: Record<string, unknown> = {}) => ({
   firstName: "Fredrik",
@@ -144,6 +145,10 @@ describe("the admin approves the fleet and gets the code", () => {
   it("lists the pending fleet in its zones and approves it; the code appears for the owner", async () => {
     const list = (await call(app, "GET", "/admin/fleets?status=pending", admin.headers)).json();
     expect(list.items).toEqual([expect.objectContaining({ fleetId, name: "Åkessons Taxi AB", status: "pending" })]);
+    // v0.18.159 (fleetNeedsCar): no approval while the fleet has no car; the owner adds his first car (checked below).
+    const noCar = await call(app, "POST", `/admin/fleets/${fleetId}/review`, admin.headers, { expectedVersion: list.items[0].version, decision: "approved", note: "Papers checked" });
+    expect(noCar.json()).toMatchObject({ code: "invalid_transition", reason: "fleet_has_no_car" });
+    firstCar = await call(app, "POST", "/driver/vehicles", owner, { make: "Volvo", model: "V90", year: 2023, color: "Black", plate: "FLT 001", seats: 4, categoryIds: ["economy", "comfort"] });
     const review = await call(app, "POST", `/admin/fleets/${fleetId}/review`, admin.headers, { expectedVersion: list.items[0].version, decision: "approved", note: "Papers checked" });
     expect(review.statusCode).toBe(200);
     expect(review.json()).toMatchObject({ status: "approved" });
@@ -228,7 +233,8 @@ describe("joining the fleet", () => {
 
 describe("the fleet's cars", () => {
   it("the owner adds a car; the admin lists and approves it; the member sees it and picks it", async () => {
-    const car = await call(app, "POST", "/driver/vehicles", owner, { make: "Volvo", model: "V90", year: 2023, color: "Black", plate: "FLT 001", seats: 4, categoryIds: ["economy", "comfort"] });
+    // v0.18.159 (fleetNeedsCar): the owner added it before the fleet's approval (above).
+    const car = firstCar!;
     expect(car.statusCode).toBe(201);
     expect(car.json()).toMatchObject({ fleetId, status: "pending", inUse: false, documents: [], requiredDocuments: ["vehicle_registration", "insurance", "vehicle_photo_front", "vehicle_photo_back", "vehicle_photo_side", "vehicle_photo_inside"] });
     carId = car.json().vehicleId;
