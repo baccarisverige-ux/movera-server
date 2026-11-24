@@ -315,6 +315,12 @@ export function addMonths(date: Date, months: number): Date {
 
 type ReviewBody = { decision: "approved" | "rejected"; expiresAt?: string | undefined; issuedAt?: string | undefined; note?: string | undefined };
 
+/** Doc dates: is the issue day (its UTC calendar day, as the admin sends it) after today in the country's own zone? */
+export function issuedDayInFuture(issued: Date, now: Date, country: string | null): boolean {
+  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: COUNTRY_TIME_ZONE[country ?? ""] ?? "Europe/Stockholm", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  return issued.toISOString().slice(0, 10) > today;
+}
+
 /** The expiry an approval sets: the admin's date, else issuedAt + validMonths, else `fallback`; checked (items 1, R9, D5.8). */
 async function approvalExpiry(trx: Trx, row: DocumentRow, body: ReviewBody, fallback: Date | null, now: Date): Promise<Date | null> {
   // v0.18.0 (owner item 1, contract.json#driverOnboarding.documentExpiry): the admin types the expiry date when
@@ -322,16 +328,15 @@ async function approvalExpiry(trx: Trx, row: DocumentRow, body: ReviewBody, fall
   let typed = body.expiresAt ? new Date(body.expiresAt) : null;
   if (typed !== null && Number.isNaN(typed.getTime())) throw badRequest("expiresAt is not a date.", "invalid_expires_at");
   if (body.decision !== "approved") return typed ?? fallback;
-  const settings = await onboardingSettings(trx, await countryOfDocument(trx, row));
+  const country = await countryOfDocument(trx, row);
+  const settings = await onboardingSettings(trx, country);
   // v0.18.3 (R9, settings.validMonths): the issue date plus the type's valid months, unless the admin typed the date.
   if (body.issuedAt !== undefined) {
     const issued = new Date(body.issuedAt);
     if (Number.isNaN(issued.getTime())) throw badRequest("issuedAt is not a date.", "invalid_issued_at");
     // Doc dates (2026-11-24): the issue date is a calendar day; it is compared with today in the document's country
     // (Stockholm 00:30 is still the day before in UTC), and it is checked whether or not the admin typed the end date.
-    const country = await countryOfDocument(trx, row);
-    const today = new Intl.DateTimeFormat("sv-SE", { timeZone: COUNTRY_TIME_ZONE[country ?? ""] ?? "Europe/Stockholm", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
-    if (issued.toISOString().slice(0, 10) > today) throw badRequest("The issue date cannot be in the future.", "issued_in_future");
+    if (issuedDayInFuture(issued, now, country)) throw badRequest("The issue date cannot be in the future.", "issued_in_future");
     const months = settings.validMonths?.[row.type];
     if (typed === null && months !== undefined) typed = addMonths(issued, months);
   }
