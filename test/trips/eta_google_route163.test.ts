@@ -116,6 +116,12 @@ describe("ETA along the stored Google route (v0.18.163)", () => {
     googleCalls = 0;
     const { tripId, version } = await accepted();
     expect(googleCalls).toBe(1);
+    // The driver's route line is the stored Google route of this leg: no new call (contract.json#liveTraffic.navigation).
+    const nav = await call(app, "GET", `/routes/driving/${FAR.lng},${FAR.lat};${NORRMALM.lng},${NORRMALM.lat}`, driver.headers);
+    expect(nav.statusCode, nav.body).toBe(200);
+    expect(nav.json().routes[0].geometry.coordinates).toHaveLength(2);
+    expect(nav.json().routes[0].distance).toBeGreaterThan(1200);
+    expect(googleCalls).toBe(1);
     const first = (await riderView(tripId)).eta;
     expect(first).toMatchObject({ target: "pickup", source: "google" });
     await step(tripId, "head-to-pickup", version);
