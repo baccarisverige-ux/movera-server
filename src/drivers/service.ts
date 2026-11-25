@@ -735,6 +735,10 @@ export async function addVehicle(trx: Trx, driverId: string, body: unknown, now:
   // v0.5.3: fleet accounts own the cars; a driver account picks one of its fleet's.
   if (me.account_type === "driver") throw new ApiError("forbidden", "Your fleet adds its cars; you pick one of them.", { reason: "fleet_vehicles_only" });
   const fleetId = me.account_type === "fleet" ? me.fleet_id : null;
+  // v0.18.162 (contract.json#driverCountryFirst.required): no car is saved for a driver with no country (the hole where
+  // a car was saved while account type and country were still null).
+  const fleetCountry = fleetId !== null ? (await trx.selectFrom("fleets").select("country").where("fleet_id", "=", fleetId).executeTakeFirst())?.country ?? null : null;
+  if (me.country === null || (fleetId !== null && fleetCountry === null)) throw new ApiError("invalid_transition", "Choose the country you work in first.", { reason: "country_required" });
   // v0.18.0 (owner item 11): every category must fit the country's car rules.
   const country = await vehicleCountry(trx, { fleet_id: fleetId, driver_id: driverId });
   if (country) {

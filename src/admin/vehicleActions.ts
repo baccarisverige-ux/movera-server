@@ -9,6 +9,7 @@ import { vehicleCountry, vehicleDocumentBlockers } from "../drivers/readiness.js
 import { driverView, loadDriver, vehicleFullView, type DriverRow, type VehicleRow } from "../drivers/service.js";
 import { audit } from "./audit.js";
 import { maskDriverView } from "./masking.js";
+import { adminMoveDriverCountry } from "../drivers/onboarding.js";
 
 /**
  * Contract v0.18.0 (contract.json#driverOnboarding.adminActions; owner rule "every admin item of the group must work
@@ -176,4 +177,27 @@ export async function adminReviewBank(trx: Trx, who: Principal, driverId: string
   // v0.18.5 (G2-D1): new bank details waiting as a renewal are the ones reviewed.
   const renewal = await trx.selectFrom("document_renewals").select("renewal_id").where("document_id", "=", doc.document_id).where("status", "=", "in_review").executeTakeFirst();
   return reviewDocument(trx, who, renewal?.renewal_id ?? doc.document_id, { decision: body.decision, ...(body.note ? { note: body.note } : {}) }, now);
+}
+
+const CountryBody = z.object({ expectedVersion: z.number().int().min(1), country: z.string().regex(/^[A-Z]{2}$/), reason: z.string().max(500).optional() });
+
+/**
+ * POST /admin/drivers/{driverId}/country (drivers.activate, v0.18.162 contract.json#driverCountryFirst.adminSet): the only
+ * admin change of a driver's country. Own-country scope: a driver in the admin's zones (a driver with no zone: any),
+ * moved only to a country where the admin holds a zone; a reason; one audit entry.
+ */
+export async function adminSetDriverCountry(trx: Trx, who: Principal, driverId: string, rawBody: unknown, now: Date) {
+  const row = await loadDriver(trx, driverId);
+  const all = who.zones.includes("*");
+  if (!all && row.zone_ids.length > 0 && !row.zone_ids.some((z) => who.zones.includes(z))) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
+  const body = parseBody(CountryBody, rawBody);
+  const reason = (body.reason ?? "").trim();
+  if (!reason) throw badRequest("Say why the country changes.", "reason_required");
+  if (!all) {
+    const mine = await trx.selectFrom("zones").select("zone_id").where("country", "=", body.country).where("zone_id", "in", who.zones.length ? who.zones : ["-"]).executeTakeFirst();
+    if (mine === undefined) throw new ApiError("forbidden", "You hold no zone in this country.", { reason: "zone_out_of_scope" });
+  }
+  const view = async (r: DriverRow) => maskDriverView(await driverView(trx, r, "admin", now), who);
+  const fresh = await adminMoveDriverCountry(trx, who, row.driver_id, { expectedVersion: body.expectedVersion, country: body.country, reason }, now, view);
+  return view(fresh);
 }
