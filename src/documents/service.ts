@@ -122,6 +122,8 @@ export const documentSummary = (row: DocumentRow) => ({
   type: row.type,
   status: row.status,
   ...(row.expires_at ? { expiresAt: row.expires_at.toISOString() } : {}),
+  // v0.18.164 (documents.reviewNeedsFile): whether a file is stored, so the admin panel shows Open/Approve only then.
+  hasFile: row.file_name !== null,
 });
 
 /** DocumentSummary[] of one owner (a driver or a car), oldest first. */
@@ -131,7 +133,7 @@ export async function documentSummaries(ex: Executor, ownerKind: "driver" | "veh
 
 /** S06 F9: documentSummaries of many owners in two queries (the documents, then their waiting renewals). */
 export async function documentSummariesOf(ex: Executor, ownerKind: "driver" | "vehicle", ownerIds: string[]) {
-  const out = new Map<string, Array<ReturnType<typeof documentSummary> | { documentId: string; type: string; status: string; expiresAt?: string; renewalOf: string }>>();
+  const out = new Map<string, Array<ReturnType<typeof documentSummary> | { documentId: string; type: string; status: string; expiresAt?: string; renewalOf: string; hasFile: boolean }>>();
   if (ownerIds.length === 0) return out;
   const rows = await ex.selectFrom("documents").selectAll().where("owner_kind", "=", ownerKind).where("owner_id", "in", ownerIds).orderBy("created_at").orderBy("document_id").execute();
   const renewals = await renewalsOf(ex, rows.map((r) => r.document_id));
@@ -141,7 +143,7 @@ export async function documentSummariesOf(ex: Executor, ownerKind: "driver" | "v
     const own = documentSummary(r as DocumentRow);
     const list = out.get(r.owner_id) ?? [];
     list.push(own);
-    if (renewal) list.push({ documentId: renewal.renewal_id, type: r.type, status: renewal.status, ...(renewal.expires_at ? { expiresAt: renewal.expires_at.toISOString() } : {}), renewalOf: r.document_id });
+    if (renewal) list.push({ documentId: renewal.renewal_id, type: r.type, status: renewal.status, ...(renewal.expires_at ? { expiresAt: renewal.expires_at.toISOString() } : {}), renewalOf: r.document_id, hasFile: true });
     out.set(r.owner_id, list);
   }
   return out;
@@ -193,7 +195,8 @@ export async function uploadDocument(trx: Trx, key: DocumentKey, driverId: strin
   // v0.18.5 (G2-D5.2): the content must be a real JPEG, PNG, HEIC or PDF; it is stored as what it is.
   const detected = sniffMediaType(upload.bytes);
   if (detected === null) throw badRequest("This file is not a photo or PDF.", "invalid_file_content");
-  const expected = info ? ownerKindOf(info) : ONBOARDING.documents.types[upload.type]!.owner;
+  // v0.18.164 (documents.ownerFleet): a company paper (owner fleet) is stored as a driver document, with or without a country.
+  const expected = info ? ownerKindOf(info) : ONBOARDING.documents.types[upload.type]!.owner === "vehicle" ? "vehicle" : "driver";
   let ownerKind: "driver" | "vehicle" = "driver";
   let ownerId = driverId;
   if (upload.ownerId !== undefined && upload.ownerId !== driverId) {
@@ -357,6 +360,11 @@ export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: 
   if (renewal) return reviewRenewal(trx, who, renewal, body, now);
   const row = await loadForAdmin(trx, who, documentId, true);
   assertReason(body.decision, body.note);
+  // v0.18.164 (owner 2026-11-25 "Yes, fix all 3", upload safety): a file document with no file is never approved.
+  if (body.decision === "approved" && (await documentKindIn(trx, row)) === "file") {
+    const file = row.file_name === null ? undefined : await trx.selectFrom("document_files").select("document_id").where("document_id", "=", row.document_id).executeTakeFirst();
+    if (file === undefined) throw badRequest("This document has no file yet; it cannot be approved.", "no_file");
+  }
   const expiresAt = await approvalExpiry(trx, row, body, row.expires_at, now);
   await trx
     .updateTable("documents")
@@ -395,6 +403,12 @@ async function reviewRenewal(trx: Trx, who: { subjectId: string; zones: string[]
   await audit(trx, { adminId: who.subjectId, action: "document.review", targetType: "document", targetId: row.document_id, zoneId, detail, at: now });
   const fresh = await trx.selectFrom("documents").selectAll().where("document_id", "=", row.document_id).executeTakeFirstOrThrow();
   return documentView(fresh as DocumentRow, "admin");
+}
+
+/** v0.18.164: the kind of a document's type in its country (the country's custom type, else the contract's). */
+async function documentKindIn(trx: Trx, row: DocumentRow): Promise<string | undefined> {
+  const settings = await onboardingSettings(trx, await countryOfDocument(trx, row));
+  return typeInfo(settings, row.type)?.kind ?? documentKind(row.type);
 }
 
 /** The driver, or 404; 403 when he is outside the admin's zones. */

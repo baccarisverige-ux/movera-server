@@ -103,7 +103,10 @@ for (const c of COUNTRIES) {
     it("Drivers › Bank details: approve or reject (with a reason) the uploaded bank document", async () => {
       const none = await call(app, "POST", `/admin/drivers/${w.ownerId}/bank/review`, admin.headers, { decision: "approved" });
       expect(none.json()).toMatchObject({ code: "not_found", reason: "bank_not_uploaded" });
-      await database.db.insertInto("documents").values({ document_id: newId("doc"), driver_id: w.ownerId, owner_kind: "driver", owner_id: w.ownerId, type: "bank_statement", status: "in_review", created_at: clock.now, updated_at: clock.now }).execute();
+      // v0.18.164 (documents.reviewNeedsFile): the bank document has its file, else approval is 400 no_file.
+      const bankDoc = newId("doc");
+      await database.db.insertInto("documents").values({ document_id: bankDoc, driver_id: w.ownerId, owner_kind: "driver", owner_id: w.ownerId, type: "bank_statement", status: "in_review", file_name: "rib.pdf", media_type: "application/pdf", file_size: 3, uploaded_at: clock.now, created_at: clock.now, updated_at: clock.now }).execute();
+      await database.db.insertInto("document_files").values({ document_id: bankDoc, key_id: "k-test", iv: Buffer.alloc(12), tag: Buffer.alloc(16), ciphertext: Buffer.from("rib") }).execute();
       const noNote = await call(app, "POST", `/admin/drivers/${w.ownerId}/bank/review`, admin.headers, { decision: "rejected" });
       expect(noNote.json()).toMatchObject({ reason: "note_required" });
       const ok = await call(app, "POST", `/admin/drivers/${w.ownerId}/bank/review`, admin.headers, { decision: "approved" });
