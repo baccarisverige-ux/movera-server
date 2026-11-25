@@ -228,6 +228,19 @@ describe("R9: valid N months from the issue date", () => {
     expect((await review(doc, { decision: "approved", issuedAt: "2026-12-01T00:00:00.000Z" })).json()).toMatchObject({ reason: "issued_in_future" });
     expect((await review(doc, { decision: "approved", issuedAt: "2026-01-01T00:00:00.000Z" })).json()).toMatchObject({ reason: "expiry_in_past" });
   });
+  it("doc dates: the issue date is checked against the country's own day, not UTC (Stockholm 00:30 = 23:30Z the day before)", async () => {
+    const saved = clock.now;
+    try {
+      clock.now = new Date("2026-11-01T23:30:00Z"); // 2026-11-02 00:30 in Stockholm
+      const doc = await upload("seDriver", { type: "taxi_driver_license" });
+      const today = await review(doc, { decision: "approved", issuedAt: "2026-11-02T00:00:00.000Z", expiresAt: "2031-11-03T00:00:00.000Z" });
+      expect(today.statusCode, today.body).toBe(200);
+      await upload("seDriver", { type: "taxi_driver_license" });
+      expect((await review(doc, { decision: "approved", issuedAt: "2026-11-03T00:00:00.000Z", expiresAt: "2031-11-03T00:00:00.000Z" })).json()).toMatchObject({ reason: "issued_in_future" });
+    } finally {
+      clock.now = saved;
+    }
+  });
   it("Sweden: the admin sets 'valid 12 months' for the taxi licence and approval follows it", async () => {
     expect((await settingsOf("SE")).document.validMonths).toEqual({});
     expect((await publishSettings("SE", (d) => (d.validMonths = { taxi_driver_license: 12 }))).statusCode).toBe(200);

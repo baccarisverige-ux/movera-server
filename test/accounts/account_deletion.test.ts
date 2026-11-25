@@ -108,6 +108,10 @@ describe("account deletion (v0.18.134)", () => {
     const seeded = async (table: string, col: string) => (await sql<{ n: number }>`SELECT count(*)::int AS n FROM ${sql.table(table)} WHERE ${sql.ref(col)} IN (${SARA}, ${ALI})`.execute(database.db)).rows[0]!.n;
     // At least the two seeded rows each (the real sign-ins above added more sign-in codes).
     for (const table of ["otp_sessions", "sms_outbox", "fleet_invitations", "sign_in_waitlist", "outbound_notices"]) expect(await seeded(table, table === "outbound_notices" ? "to_address" : "phone"), table).toBeGreaterThanOrEqual(2);
+    // v0.18.155 privacy: Sara's review keeps its text but loses her first name; another rider's review is untouched.
+    for (const [id, tripId, name] of [["rev_sara1", trip, "Sara"], ["rev_bo1", "trp_not_sara", "Bo"]] as const) {
+      await sql`INSERT INTO driver_reviews (review_id, driver_id, trip_id, zone_id, stars, text, name, month, status, created_at) VALUES (${id}, ${owner}, ${tripId}, 'Z001', 5, 'Great ride', ${name}, '2026-11', 'approved', now())`.execute(database.db);
+    }
     expect(await eraseDueAccounts(database.db, clock.now)).toEqual({ due: 2, erased: 2 });
     for (const table of ["otp_sessions", "sms_outbox", "fleet_invitations", "sign_in_waitlist", "outbound_notices"]) {
       expect([table, await seeded(table, table === "outbound_notices" ? "to_address" : "phone")]).toEqual([table, 0]);
@@ -119,6 +123,8 @@ describe("account deletion (v0.18.134)", () => {
     expect([r.first_name, r.email, r.language]).toEqual(["", null, null]);
     expect((await database.db.selectFrom("trips").select("fare_minor").where("trip_id", "=", trip).executeTakeFirstOrThrow()).fare_minor).toBeTruthy();
     expect((await database.db.selectFrom("kept_debts").select("phone").where("account_id", "=", sara).execute()).length).toBe(1);
+    const reviews = await database.db.selectFrom("driver_reviews").select(["review_id", "name", "text"]).orderBy("review_id").execute();
+    expect(reviews.map((x) => [x.review_id, x.name, x.text])).toEqual([["rev_bo1", "Bo", "Great ride"], ["rev_sara1", null, "Great ride"]]);
     // Supervisor MUST: his own car is anonymised (plate freed, no make / model / colour); trips still point at it.
     const car = await database.db.selectFrom("vehicles").selectAll().where("vehicle_id", "=", "veh_ali1").executeTakeFirstOrThrow();
     expect([car.plate, car.make, car.model, car.color, car.status]).toEqual(["ERASED-veh_ali1", "", "", "", "blocked"]);
