@@ -255,6 +255,18 @@ export function ageYear(settings: OnboardingSettings, car: Pick<CarFacts, "fuel"
   return now.getUTCFullYear() - years;
 }
 
+/**
+ * v0.18.164 (vehicleRules.maxAge, driver read): GET /driver/onboarding/settings serves each category's minYear raised to
+ * at least the country's age year, so the driver app's base year ("the car must be from {year} or later") follows the
+ * rolling age with no app change. The stored document, the admin read and the server's own checks are unchanged.
+ */
+export function driverReadSettings(settings: OnboardingSettings, now: Date): OnboardingSettings {
+  const years = settings.vehicles.maxAgeYears;
+  if (years === undefined || years === null) return settings;
+  const age = now.getUTCFullYear() - years;
+  return { ...settings, vehicles: { ...settings.vehicles, categories: settings.vehicles.categories.map((r) => ({ ...r, minYear: Math.max(r.minYear, age) })) } };
+}
+
 const tooOldForAge = (car: CarFacts, settings: OnboardingSettings): boolean => {
   const year = ageYear(settings, car);
   return year !== null && car.year < year;

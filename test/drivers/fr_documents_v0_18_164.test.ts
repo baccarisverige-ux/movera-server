@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ageYear, carRuleProblems, categoryProblem, defaultSettings, settingsProblems, typeInfo } from "../../src/drivers/onboardingSettings.js";
+import { ageYear, carRuleProblems, driverReadSettings, categoryProblem, defaultSettings, settingsProblems, typeInfo } from "../../src/drivers/onboardingSettings.js";
 
 /** Contract v0.18.164 (owner 2026-11-25, France document lists): vehicleRules.maxAge, REVTC 60 months, owner fleet. */
 const year = new Date().getUTCFullYear();
@@ -40,6 +40,14 @@ describe("v0.18.164 France car age (Moins de 6 ans, hybrid/electric exempt)", ()
       expect(ageYear(s, { fuel: "petrol" })).toBeNull();
     }
     expect(categoryProblem({ year: 2015, seats: 4, fuel: "petrol" }, defaultSettings("SE"), "economy")).toBeNull();
+  });
+  it("driver read: category years raised to the age year (the app's 'from {year}' text); SE unchanged", () => {
+    const fr = driverReadSettings(defaultSettings("FR"), new Date("2026-11-25T00:00:00Z"));
+    expect(fr.vehicles.categories.find((r) => r.category === "economy")?.minYear).toBe(2020);
+    expect(fr.vehicles.categories.find((r) => r.category === "premium")?.minYear).toBe(2022);
+    expect(defaultSettings("FR").vehicles.categories.find((r) => r.category === "economy")?.minYear).toBe(2016);
+    const se = defaultSettings("SE");
+    expect(driverReadSettings(se, new Date())).toBe(se);
   });
   it("the admin setting is checked: 1 to 30 years, the toggle a boolean", () => {
     const fr = defaultSettings("FR");

@@ -17,7 +17,7 @@ import { setNextTrips } from "./presence.js";
 import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, setDriverCountry, startOwnCompany, submitOnboarding } from "./onboarding.js";
 import { listReminders } from "./reminders.js";
 import { listNotifications, NOTIFICATION_PAGE } from "../notifications/service.js";
-import { documentTypes, onboardingSettings } from "./onboardingSettings.js";
+import { documentTypes, driverReadSettings, onboardingSettings } from "./onboardingSettings.js";
 import { acceptInvitation, cancelInvitation, declineInvitation, inviteByPhone, listInvitations, requestJoin, type InviteDeps } from "./invitations.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { driverDocumentFile, listDocuments, uploadDocument, type Upload } from "../documents/service.js";
@@ -67,7 +67,7 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   const profileOf = async (driverId: string) => ({ ...(await getDriverProfile(deps.db, driverId, now())), performance: await driverPerformance(deps.db, driverId, now()) });
   // v0.18.0 (owner item 14): every type of the lists with its texts, so the app renders types it does not know.
   const settingsOf = async (country: string) => {
-    const settings = await onboardingSettings(deps.db, country);
+    const settings = driverReadSettings(await onboardingSettings(deps.db, country), now());
     return { ...settings, country, documentTypes: documentTypes(settings) };
   };
   // G30: the line email_not_verified only for driver apps on contract 0.18.76 or later (X-Contract-Version).
