@@ -1,6 +1,7 @@
 import { sessionsRevoked } from "./sessionCache.js";
 import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { sql } from "kysely";
+import { contract } from "../contract/contract.js";
 import type { Db, Executor, Trx } from "../db/db.js";
 import type { EmailSender } from "../email/resend.js";
 import { emailTakenByOther } from "./emailTaken.js";
@@ -58,6 +59,8 @@ async function recentSignIn(ex: Executor, who: Who, now: Date): Promise<void> {
  * stores an email_changes row); null = no such cap. For e-mail both are counted under the per-account start lock
  * (startEmailChange, supervisor G30 F5), so parallel starts cannot pass them.
  */
+/** v0.18.165 (owner 2026-11-25 "Mail 90 s"): the account e-mail change code's own life and resend wait (contract auth.emailCode). */
+export const EMAIL_CODE = (contract as unknown as { auth: { emailCode: { expiresSeconds: number; retryAfterSeconds: number } } }).auth.emailCode;
 export const EMAIL_TRIES_PER_HOUR = 10;
 export const EMAIL_LIMITS: { acceptedPerHour: number; allTriesPerHour: number | null } = { acceptedPerHour: STARTS_PER_HOUR, allTriesPerHour: EMAIL_TRIES_PER_HOUR };
 const tooMany = () => new ApiError("rate_limited", "Too many changes. Try again later.", { reason: "change_too_many", retryAfterSeconds: 3600 });
@@ -131,8 +134,8 @@ const lastSend = new WeakMap<EmailSender, { accepted: boolean; ms: number }>();
 export const SILENT_WAIT_DEFAULT_MS = 400;
 export const SILENT_WAIT_MAX_MS = 5000;
 /**
- * v0.18.165 (owner 2026-11-25 "Nn on laisse 60 seconde"): the code lives auth.otp.expiresSeconds (60 s), so the mail says
- * "60 seconds", not "1 minutes"; a life of 2 minutes or more is still said in minutes.
+ * v0.18.165 (owner 2026-11-25 "Mail 90 s"): the e-mail code lives auth.emailCode.expiresSeconds (90 s), so the mail says
+ * "90 seconds", not "2 minutes"; a life of 2 minutes or more is still said in minutes.
  */
 export function lifeText(lang: "sv" | "fr" | "en", seconds: number): string {
   if (seconds < 120) return { sv: `${seconds} sekunder`, fr: `${seconds} secondes`, en: `${seconds} seconds` }[lang];
@@ -156,7 +159,7 @@ export async function startEmailChange(db: Db, who: Who, email: string, now: Dat
   const own = account?.email != null && account.email.trim().toLowerCase() === value;
   if (!own) await recentSignIn(db, who, now);
   const challengeId = newId("emc", now.getTime());
-  const expiresAt = new Date(now.getTime() + OTP.expiresSeconds * 1000);
+  const expiresAt = new Date(now.getTime() + EMAIL_CODE.expiresSeconds * 1000);
   const answer = (delivery: "sent" | "pending_provider") => ({ challengeId, expiresAt: expiresAt.toISOString(), delivery });
   const taken = await emailTakenByOther(db, who.actor, who.subjectId, value);
   // Supervisor G30 F4: the silent answer stores a challenge too (a random code that is never sent), so a wrong code answers
@@ -169,6 +172,16 @@ export async function startEmailChange(db: Db, who: Who, email: string, now: Dat
   // The lock ends with this transaction, before any e-mail is sent.
   await db.transaction().execute(async (trx) => {
     await sql`SELECT pg_advisory_xact_lock(hashtext(${`email_start:${who.actor}:${who.subjectId}`}))`.execute(trx);
+    // v0.18.165 (owner "Mail 90 s"): a new code for the same address only auth.emailCode.retryAfterSeconds after the last one
+    // (also after a silent start, so the wait tells nothing); before the start count, so a refused try uses no place. Another
+    // address is a new start, held by the hourly limits.
+    const last = await trx.selectFrom("email_changes").select("created_at").where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("email", "=", value).orderBy("created_at", "desc").limit(1).executeTakeFirst();
+    if (last !== undefined) {
+      const waited = (now.getTime() - last.created_at.getTime()) / 1000;
+      if (waited < EMAIL_CODE.retryAfterSeconds) {
+        throw new ApiError("rate_limited", "Wait a moment before asking for a new code.", { reason: "otp_resend_too_soon", retryAfterSeconds: Math.max(1, Math.ceil(EMAIL_CODE.retryAfterSeconds - waited)) });
+      }
+    }
     await startsLeft(trx, who, "email", now);
     // Wrong tries of the last hour carry over to the new challenge (a restart never resets them).
     const earlier = await trx.selectFrom("email_changes").select((eb) => eb.fn.coalesce(eb.fn.max("attempts"), eb.val(0)).as("n")).where("actor", "=", who.actor).where("subject_id", "=", who.subjectId).where("created_at", ">", hourAgo(now)).executeTakeFirstOrThrow();
@@ -190,7 +203,7 @@ export async function startEmailChange(db: Db, who: Who, email: string, now: Dat
         const lang = await noticeLanguage(db, { actor: who.actor, id: who.subjectId, language: account?.language ?? null });
         const started = performance.now();
         // A sender that throws counts as a failed send (never a server error, never 'sent').
-        const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, OTP.expiresSeconds) }).catch(() => ({ accepted: false }));
+        const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, EMAIL_CODE.expiresSeconds) }).catch(() => ({ accepted: false }));
         lastSend.set(options.sender, { accepted: outcome.accepted, ms: performance.now() - started });
         if (outcome.accepted) delivery = "sent";
       }
@@ -213,7 +226,7 @@ export async function verifyEmailChange(db: Db, who: Who, input: { challengeId: 
     const c = await trx.selectFrom("email_changes").selectAll().where("challenge_id", "=", input.challengeId).forUpdate().executeTakeFirst();
     if (!c || c.actor !== who.actor || c.subject_id !== who.subjectId) return badRequest("This code is not active. Ask for a new one.", "invalid_email_challenge");
     if (c.expires_at.getTime() <= now.getTime()) return new ApiError("otp_expired", "The code expired. Ask for a new one.");
-    if (c.attempts >= OTP.maxAttempts) return new ApiError("rate_limited", "Too many wrong codes. Ask for a new code.", { reason: "otp_too_many_attempts", retryAfterSeconds: OTP.retryAfterSeconds });
+    if (c.attempts >= OTP.maxAttempts) return new ApiError("rate_limited", "Too many wrong codes. Ask for a new code.", { reason: "otp_too_many_attempts", retryAfterSeconds: EMAIL_CODE.retryAfterSeconds });
     if (!same(c.code_sha256, sha(`${c.challenge_id}:${input.code}`))) {
       await trx.updateTable("email_changes").set({ attempts: c.attempts + 1 }).where("challenge_id", "=", c.challenge_id).execute();
       return badRequest("That code is not right.", "invalid_otp_code");

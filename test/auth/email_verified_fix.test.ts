@@ -155,11 +155,12 @@ describe("G30 fix round: the silent answer looks like a real start", () => {
     advance(11 * 60);
     for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: `n${i}@example.se` }, me)).json()).toMatchObject({ reason: "reauth_required" });
     // Checking his own current address needs no recent sign-in, but each start counts: 5 now + 5 half an hour later.
-    for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: "own@example.se" }, me)).statusCode).toBe(200);
+    for (let i = 0; i < 5; i++) expect((advance(91), await post("/account/email/change", { email: "own@example.se" }, me)).statusCode).toBe(200);
     advance(30 * 60);
     let again = await signIn(mine); // the access token outlives neither half hour; signing in again changes no count
-    for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: "own@example.se" }, again)).statusCode).toBe(200);
+    for (let i = 0; i < 5; i++) expect((advance(91), await post("/account/email/change", { email: "own@example.se" }, again)).statusCode).toBe(200);
     for (let i = 0; i < 3; i++) {
+      advance(91); // v0.18.165: past the 90 s resend wait for the same address, so the hourly limit answers
       const over = await post("/account/email/change", { email: "own@example.se" }, again);
       expect(over.statusCode).toBe(429);
       expect(over.headers["retry-after"]).toBe("3600");
@@ -168,8 +169,8 @@ describe("G30 fix round: the silent answer looks like a real start", () => {
     // The first 5 leave the rolling hour; the three 429s did not count, so exactly 5 more are allowed.
     advance(31 * 60);
     again = await signIn(mine);
-    for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: "own@example.se" }, again)).statusCode).toBe(200);
-    expect((await post("/account/email/change", { email: "own@example.se" }, again)).json()).toMatchObject({ reason: "change_too_many" });
+    for (let i = 0; i < 5; i++) expect((advance(91), await post("/account/email/change", { email: "own@example.se" }, again)).statusCode).toBe(200);
+    expect((advance(91), await post("/account/email/change", { email: "own@example.se" }, again)).json()).toMatchObject({ reason: "change_too_many" });
   }, 30_000);
 
   it("F5: 25 parallel starts from one account keep both limits (at most 10 tries, at most 3 accepted, the rest 429)", async () => {
