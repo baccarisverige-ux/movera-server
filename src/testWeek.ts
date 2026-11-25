@@ -4,6 +4,7 @@ import { seedSampleConfig } from "./config/seedConfig.js";
 import type { Db } from "./db/db.js";
 import { DEFAULT_TEST_ACCOUNTS, TEST_FLEET_CODE, seedTestAccounts, type TestAccounts } from "./drivers/seedTest.js";
 import type { Env } from "./env.js";
+import { documentKeyFrom } from "./documents/files.js";
 
 type Log = { info: (data: Record<string, unknown>, message: string) => void };
 
@@ -27,21 +28,23 @@ async function testDriversMissSomething(db: Db | Parameters<typeof seedTestAccou
 export async function prepareTestWeek(
   db: Db,
   env: Pick<Env, "MOVERA_ENV" | "SEED_TEST_ON_START" | "ADMIN_BOOTSTRAP_EMAIL" | "ADMIN_BOOTSTRAP_NAME" | "ADMIN_PANEL_URL"> &
-    Partial<Pick<Env, "ADMIN_PASSWORD_RESET" | "ADMIN_TEST_EMAIL" | "ADMIN_TEST_NAME" | "ADMIN_TEST_PASSWORD_RESET">>,
+    Partial<Pick<Env, "ADMIN_PASSWORD_RESET" | "ADMIN_TEST_EMAIL" | "ADMIN_TEST_NAME" | "ADMIN_TEST_PASSWORD_RESET" | "DOCUMENT_FILES_KEY" | "JWT_SECRET">>,
   log: Log,
   { accounts = DEFAULT_TEST_ACCOUNTS, now = new Date() }: { accounts?: TestAccounts; now?: Date } = {},
 ): Promise<void> {
   if (env.MOVERA_ENV === "production") return;
+  // v0.18.164: seeded file documents get a placeholder file sealed with the server's own key (only a fixed key: a random dev key would not open after a restart).
+  const documentKey = env.DOCUMENT_FILES_KEY !== undefined || env.JWT_SECRET !== undefined ? documentKeyFrom(env, env.JWT_SECRET ?? "") : undefined;
   if (env.SEED_TEST_ON_START) {
     await db.transaction().execute(async (trx) => {
       const fleet = await trx.selectFrom("fleets").select("fleet_id").where("code", "=", TEST_FLEET_CODE).executeTakeFirst();
       if (fleet === undefined) {
-        const made = await seedTestAccounts(trx, accounts, now);
+        const made = await seedTestAccounts(trx, accounts, now, documentKey);
         log.info({ fleetId: made.fleetId, drivers: made.drivers.length, riders: made.riders.length }, "test accounts made (sign in with the fixed code of contract.json#auth.testSignIn)");
       } else if (await testDriversMissSomething(trx, accounts)) {
         // Accounts seeded by an earlier server worked one zone or a few categories only: give them every open zone
         // and every category (names, cars and documents are set again to the same values).
-        const made = await seedTestAccounts(trx, accounts, now);
+        const made = await seedTestAccounts(trx, accounts, now, documentKey);
         log.info({ drivers: made.drivers.length }, "test drivers registered in every open zone and category");
       }
       const settings = await seedSampleConfig(trx, now);

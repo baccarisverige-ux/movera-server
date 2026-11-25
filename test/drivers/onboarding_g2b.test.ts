@@ -216,7 +216,7 @@ describe("R8: the upload guide text the admin writes per country and document", 
 
 describe("R9: valid N months from the issue date", () => {
   it("France: URSSAF valid 6 months by default; issuedAt fills the expiry; the admin's own date wins", async () => {
-    expect((await settingsOf("FR")).document.validMonths).toEqual({ urssaf_certificate: 6 });
+    expect((await settingsOf("FR")).document.validMonths).toEqual({ urssaf_certificate: 6, vtc_register_certificate: 60 }); // v0.18.164 REVTC 60
     const doc = await upload("frOwner", { type: "urssaf_certificate" });
     const res = await review(doc, { decision: "approved", issuedAt: "2026-10-15T00:00:00.000Z" });
     expect(res.statusCode, res.body).toBe(200);
