@@ -91,8 +91,8 @@ const schema = z.object({
   GOOGLE_MAPS_API_KEY: z.string().min(10).optional(),
   /**
    * v0.18.163 (contract.json#liveTraffic): the same key also asks Google Routes for trip times with live traffic. Knobs
-   * (defaults fine; no need to set them): how long one ask waits before OSRM takes it, and the per-copy cap of Google
-   * asks a minute (a cost cap; above it OSRM for the rest of the minute; 0 = no cap).
+   * (defaults fine; no need to set them): how long one ask waits before the estimate takes it, and the per-copy cap of Google
+   * asks a minute (a cost cap; above it the straight-line estimate for the rest of the minute; 0 = no cap).
    */
   GOOGLE_ROUTES_TIMEOUT_MS: z.coerce.number().int().min(200).max(10_000).default(GOOGLE_TIMEOUT_MS_DEFAULT),
   GOOGLE_ROUTES_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).default(GOOGLE_PER_MINUTE_DEFAULT),

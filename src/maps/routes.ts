@@ -12,7 +12,8 @@ import { countryLanguage } from "../notifications/noticeLanguage.js";
 
 /** contract §10: /locations/autocomplete, /geocode, /reverse-geocode, /routes, /routes/driving/{coordinates}. Read-only: no Idempotency-Key. */
 
-export type MapsDeps = { db: Db; jwtSecret: string; places: Places; router: Router; osrmUrl?: string; clock?: () => Date };
+/** v0.18.163: `traffic` (Google live traffic) serves GET /routes/driving now that OSRM is not used (owner 2026-11-25). */
+export type MapsDeps = { db: Db; jwtSecret: string; places: Places; router: Router; traffic?: Router; osrmUrl?: string; clock?: () => Date };
 
 const LANGUAGES = ["sv", "en", "fr"];
 const NAV_PER_MINUTE = 30;
@@ -141,7 +142,19 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
     recent.push(now);
     navCalls.set(who.subjectId, recent);
 
-    if (deps.osrmUrl === undefined) throw new ApiError("unavailable", "Navigation routes are not available yet.", { reason: "routing_unavailable", retryAfterSeconds: 60 });
+    if (deps.osrmUrl === undefined) {
+      // v0.18.163 (contract.json#liveTraffic.navigation; owner "no OpenStreetMap"): the driver's route line from Google
+      // (live traffic, the same SKU), answered in the OSRM shape the driver app reads (routes[0].geometry.coordinates,
+      // distance, duration; no turn steps). Google not answering = 503 routing_unavailable, never a straight line.
+      if (deps.traffic === undefined) throw new ApiError("unavailable", "Navigation routes are not available yet.", { reason: "routing_unavailable", retryAfterSeconds: 60 });
+      const points = pairs.map((pair) => {
+        const [lng, lat] = pair.split(",").map(Number);
+        return { lat: lat!, lng: lng! };
+      });
+      const leg = await deps.traffic.route(points);
+      if (leg.source !== "google" || !leg.points || leg.points.length < 2) throw new ApiError("unavailable", "Navigation routes are not available right now.", { reason: "routing_unavailable", retryAfterSeconds: 10 });
+      return reply.status(200).send({ code: "Ok", routes: [{ distance: leg.distanceMeters, duration: leg.durationSeconds, geometry: { type: "LineString", coordinates: leg.points.map((p) => [p.lng, p.lat]) }, legs: [] }], waypoints: [] });
+    }
     const params = new URLSearchParams();
     for (const name of ["overview", "steps", "annotations", "alternatives"]) if (query[name] !== undefined) params.set(name, String(query[name]));
     params.set("geometries", "geojson");

@@ -21,7 +21,7 @@ const clock = { now: new Date("2026-11-25T08:00:00Z") };
 const SECRET = "live-traffic-test-secret".padEnd(48, "t");
 const roads: Router = { route: async (_p: LatLng[]): Promise<RouteLeg> => ({ distanceMeters: 8000, durationSeconds: 780, source: "osrm" }) };
 let googleUp = true;
-const traffic: Router = { route: async (p: LatLng[]): Promise<RouteLeg> => (googleUp ? { distanceMeters: 8100, durationSeconds: 1560, source: "google" } : roads.route(p)) };
+const traffic: Router = { route: async (p: LatLng[]): Promise<RouteLeg> => (googleUp ? { distanceMeters: 8100, durationSeconds: 1560, source: "google", points: p } : { ...(await roads.route(p)), source: "estimate" }) };
 const NORRMALM = { address: "Sergels torg", lat: 59.3326, lng: 18.0649 };
 const SODERMALM = { address: "Medborgarplatsen", lat: 59.3143, lng: 18.0735 };
 
@@ -58,9 +58,23 @@ beforeEach(async () => {
 });
 
 describe("live traffic (v0.18.163)", () => {
+  it("GET /routes/driving (the driver's route line) comes from Google in the OSRM shape; Google down = 503, never a straight line", async () => {
+    const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone: TEST_PHONES[1]!, app: "driver" } });
+    const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone: TEST_PHONES[1]!, sessionId: challenge.json().sessionId, code: TEST_CODE } });
+    const driver = { authorization: `Bearer ${verify.json().accessToken}` };
+    const res = await app.inject({ method: "GET", url: "/api/v1/routes/driving/18.0649,59.3326;18.0735,59.3143?overview=full&geometries=geojson", headers: driver });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ code: "Ok", routes: [{ distance: 8100, duration: 1560, geometry: { type: "LineString", coordinates: [[18.0649, 59.3326], [18.0735, 59.3143]] } }] });
+    googleUp = false;
+    const down = await app.inject({ method: "GET", url: "/api/v1/routes/driving/18.0649,59.3326;18.0735,59.3143", headers: driver });
+    expect(down.statusCode).toBe(503);
+    expect(down.json()).toMatchObject({ reason: "routing_unavailable" });
+  });
+
   it("defaults: on for SE and FR, off elsewhere", async () => {
     expect([liveTrafficDefault("SE"), liveTrafficDefault("FR"), liveTrafficDefault("TN"), liveTrafficDefault(null)]).toEqual([true, true, false, false]);
     expect(await liveTrafficOn(database.db, "Z001")).toBe(true);
+    googleUp = true;
   });
 
   it("a Stockholm quote uses live traffic: tripSeconds, tripMeters, routeSource google, stored as google, priced per minute on it", async () => {
@@ -85,10 +99,10 @@ describe("live traffic (v0.18.163)", () => {
     expect(q).toMatchObject({ tripSeconds: 780, routeSource: "osrm" });
   });
 
-  it("Google down: the quote falls back to OSRM, and the admin gets one system_health alert while it lasts", async () => {
+  it("Google down: the quote falls back to the estimate, and the admin gets one system_health alert while it lasts", async () => {
     setLiveTrafficConfigured(true);
     googleUp = false;
-    for (let k = 0; k < 2; k++) expect((await quote({ pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0].routeSource).toBe("osrm");
+    for (let k = 0; k < 2; k++) expect((await quote({ pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0].routeSource).toBe("estimate");
     expect((await findCauses(database.db, clock.now)).filter((c) => c.key.startsWith("system_health:live_traffic"))).toEqual([]);
     await quote({ pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] });
     const alerts = (await findCauses(database.db, clock.now)).filter((c) => c.key.startsWith("system_health:live_traffic"));

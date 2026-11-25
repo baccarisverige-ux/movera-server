@@ -412,7 +412,7 @@ export async function buildApp({ env, logger = true, db, clock, router, traffic,
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await financeRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) }); // v0.18.153 P29 driver income year (DAC7)
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
-    await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(clock ? { clock } : {}) });
+    await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(trafficRoads ? { traffic: trafficRoads } : {}), ...(clock ? { clock } : {}) });
   }
 
   // Live outage 2026-11-17 (#268 post-mortem): the load-shedding hooks are part of EVERY built app, last (as main.ts

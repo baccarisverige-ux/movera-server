@@ -29,7 +29,8 @@ describe("GoogleRoutesRouter", () => {
     expect(init.headers).toMatchObject({ "x-goog-api-key": KEY, "x-goog-fieldmask": GOOGLE_ROUTES_FIELD_MASK });
     expect(GOOGLE_ROUTES_FIELD_MASK).toBe("routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline");
     const body = JSON.parse(String(init.body));
-    expect(body).toMatchObject({ travelMode: "DRIVE", routingPreference: "TRAFFIC_AWARE", departureTime: "2026-11-25T08:00:00.000Z" });
+    expect(body).toMatchObject({ travelMode: "DRIVE", routingPreference: "TRAFFIC_AWARE" });
+    expect(body.departureTime).toBeUndefined();
     expect(body.origin.location.latLng).toEqual({ latitude: A.lat, longitude: A.lng });
     expect(body.destination.location.latLng).toEqual({ latitude: B.lat, longitude: B.lng });
     expect(body.intermediates).toHaveLength(1);

@@ -13,7 +13,8 @@ import { headingTick } from "./headingCheck.js";
 import { takeBackLateBooked } from "./ride.js";
 import { statusTarget, TRIP_ETA } from "./etaNow.js";
 import { maybePushArriving } from "../notifications/tripPush.js";
-import { isEtaRoutePrepared, prepareEtaRoute } from "./etaRoute.js";
+import { etaRouteBasis, isEtaRoutePrepared, prepareEtaRoute } from "./etaRoute.js";
+import { nextStopIndex, visitsOf } from "./ride/stopClock.js";
 
 /**
  * v0.18.7 (contract.json#pickupWaiting.eta, owner status item 2 and Q4 "same road-route ETA for both apps"): ONE ETA,
@@ -97,7 +98,9 @@ export function etaHandler(router: Router, traffic?: Router): TimerHandler {
       const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
       // v0.18.163 (contract.json#liveTraffic.calls): with live traffic the tick follows the stored Google route
       // (trips/etaRoute.ts, prepared outside the lock); else the router (the straight-line estimate) as before.
-      const followed = isEtaRoutePrepared(timer.prepared) ? timer.prepared : null;
+      // Review #328 F6: only for the same target (the rider may have boarded meanwhile), and a route change that
+      // cleared the stored route in between is not written back over.
+      const followed = isEtaRoutePrepared(timer.prepared) && timer.prepared.target === target && timer.prepared.basis === etaRouteBasis(trip) ? timer.prepared : null;
       const routed = followed !== null ? followed.leg : await routerNow.route([{ lat: fix.lat, lng: fix.lng }, to]);
       leg = routed;
       eta = { etaSeconds: Math.max(ETA_MIN_SECONDS, routed.durationSeconds), distanceMeters: routed.distanceMeters, target, at: now.toISOString(), source: routed.source };
@@ -122,7 +125,9 @@ export function etaHandler(router: Router, traffic?: Router): TimerHandler {
     if (!fix || isStaleFix(fix, timer.firedAt)) return null;
     const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
     // v0.18.163: live traffic on → the stored Google route (a call only after accept, off the route or far behind).
-    const viaRoute = await prepareEtaRoute(db, trip, target, { lat: fix.lat, lng: fix.lng }, to, timer.firedAt, traffic);
+    const stops = (Array.isArray(trip.stops) ? (trip.stops as Place[]) : []).map((p) => ({ lat: p.lat, lng: p.lng }));
+    const next = target === "dropoff" ? nextStopIndex(stops.length, visitsOf({ stop_visits: trip.stop_visits })) : null;
+    const viaRoute = await prepareEtaRoute(db, trip, target, { lat: fix.lat, lng: fix.lng }, to, timer.firedAt, traffic, next === null ? [] : stops.slice(next));
     if (viaRoute !== null) return viaRoute;
     // S7 0.17: an ETA tick needs the time and the distance only, never the road's shape.
     return prepareLegs(router, [[{ lat: fix.lat, lng: fix.lng }, to]], { shape: false });

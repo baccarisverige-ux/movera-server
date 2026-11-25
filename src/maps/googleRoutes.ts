@@ -121,7 +121,7 @@ export class GoogleRoutesRouter implements Router {
       ...(points.length > 2 ? { intermediates: points.slice(1, -1).map(waypoint) } : {}),
       travelMode: "DRIVE",
       routingPreference: "TRAFFIC_AWARE",
-      departureTime: new Date(this.now()).toISOString(),
+      // No departureTime (review #328 F1): for DRIVE Google takes only a future time; left out = the request time.
     };
     let response: Response;
     try {
@@ -139,8 +139,9 @@ export class GoogleRoutesRouter implements Router {
     const json = (await response.json().catch(() => null)) as { routes?: Array<{ duration?: unknown; distanceMeters?: unknown; polyline?: { encodedPolyline?: unknown } }> } | null;
     const best = json?.routes?.[0];
     const seconds = parseGoogleDuration(best?.duration);
-    const meters = typeof best?.distanceMeters === "number" && Number.isFinite(best.distanceMeters) ? Math.round(best.distanceMeters) : null;
-    if (seconds === null || meters === null) throw new GoogleRoutesError("no_route");
+    // proto3 JSON leaves out a 0 (review #328 F3): a route with a duration and no distanceMeters is 0 m.
+    const meters = best?.distanceMeters === undefined ? 0 : typeof best.distanceMeters === "number" && Number.isFinite(best.distanceMeters) ? Math.round(best.distanceMeters) : null;
+    if (best === undefined || seconds === null || meters === null) throw new GoogleRoutesError("no_route");
     const polyline = typeof best?.polyline?.encodedPolyline === "string" && best.polyline.encodedPolyline.length > 0 ? best.polyline.encodedPolyline : undefined;
     return { distanceMeters: meters, durationSeconds: seconds, source: "google", ...(polyline ? { polyline, points: decodePolyline(polyline) } : {}) };
   }

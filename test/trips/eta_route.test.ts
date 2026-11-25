@@ -45,3 +45,11 @@ describe("followRoute", () => {
     expect(followRoute(route, LINE[0]!, plus(240), S).recall).toBe(false);
   });
 });
+
+describe("followRoute near the end (review #328 F3)", () => {
+  it("a 0 m route or the last 50 m never asks Google again", () => {
+    const zero: EtaRoute = { ...route, meters: 0, seconds: 0 };
+    expect(followRoute(zero, LINE[2]!, plus(600), S).recall).toBe(false);
+    expect(followRoute(route, { lat: 59.3178, lng: 18.05 }, plus(3600), S).recall).toBe(false);
+  });
+});

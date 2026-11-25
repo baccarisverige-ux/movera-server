@@ -483,6 +483,8 @@ async function liveTrafficCauses(ctx: Ctx): Promise<Cause[]> {
     .selectFrom("quotes")
     .select(["zone_id", "route_source"])
     .select(sql<string>`count(*)`.as("n"))
+    // Review #328 F5: quotes live QUOTE_TTL (5 min) so expires_at > since uses the expires_at index; created_at narrows.
+    .where("expires_at", ">", since)
     .where("created_at", ">", since)
     .groupBy(["zone_id", "route_source"])
     .execute();
@@ -503,7 +505,7 @@ async function liveTrafficCauses(ctx: Ctx): Promise<Cause[]> {
     if (c.google > 0 || c.other < LIVE_TRAFFIC_ALERT_MIN) continue;
     const k = settingsOf(ctx, country).kind("system_health");
     if (!k.on) continue;
-    out.push({ key: `system_health:live_traffic:${country}`, kind: "system_health", country, zoneId: null, level: k.level, title: T("Live traffic is not available: trip times use roads without traffic"), detail: T("Check that the Routes API is enabled for the server's Google Maps key, and its billing"), ref: {} });
+    out.push({ key: `system_health:live_traffic:${country}`, kind: "system_health", country, zoneId: null, level: k.level, title: T("Live traffic is not available: trip times are estimated (straight line)"), detail: T("Check that the Routes API is enabled for the server's Google Maps key, and its billing"), ref: {} });
   }
   return out;
 }

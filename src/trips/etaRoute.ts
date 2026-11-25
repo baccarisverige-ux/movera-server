@@ -27,7 +27,10 @@ export type EtaRoute = {
   calls: number;
 };
 
-export type EtaRoutePrepared = { kind: "eta_route"; route: EtaRoute | null; leg: { distanceMeters: number; durationSeconds: number; source: "google" | "estimate" } };
+/** Closer than this to the end of the route: no new Google call (review #328 F3). */
+export const NEAR_END_METERS = 50;
+
+export type EtaRoutePrepared = { kind: "eta_route"; target: "pickup" | "dropoff"; basis: string; route: EtaRoute | null; leg: { distanceMeters: number; durationSeconds: number; source: "google" | "estimate" } };
 
 const asRoute = (value: unknown): EtaRoute | null => {
   const r = value as Partial<EtaRoute> | null;
@@ -45,15 +48,18 @@ export function followRoute(route: EtaRoute, fix: LatLng, now: Date, s: Pick<Liv
   const offTooLong = offSince !== null && now.getTime() - Date.parse(offSince) > s.offRouteSeconds * 1000;
   const planned = Date.parse(route.at) + route.seconds * 1000;
   const behind = now.getTime() + remainingSeconds * 1000 - planned > s.behindMinutes * 60_000;
-  return { route: { ...route, offSince }, remainingMeters: Math.round(remainingMeters), remainingSeconds: Math.round(remainingSeconds), recall: offTooLong || behind || speed === 0 };
+  // Review #328 F3: almost there (or a 0 m route) never asks Google again.
+  const near = remainingMeters < NEAR_END_METERS;
+  return { route: { ...route, offSince }, remainingMeters: Math.round(remainingMeters), remainingSeconds: Math.round(remainingSeconds), recall: !near && (offTooLong || behind || speed === 0) };
 }
 
 /**
  * The prepared ETA of one tick, or null when live traffic is off for the zone or the server has no Google router
  * (then the tick uses the estimate as before). `traffic` falls back to the estimate itself when Google fails.
  */
-export async function prepareEtaRoute(ex: Executor, trip: TripRow, target: "pickup" | "dropoff", fix: LatLng, to: LatLng, now: Date, traffic: Router | undefined): Promise<EtaRoutePrepared | null> {
+export async function prepareEtaRoute(ex: Executor, trip: TripRow, target: "pickup" | "dropoff", fix: LatLng, to: LatLng, now: Date, traffic: Router | undefined, via: LatLng[] = []): Promise<EtaRoutePrepared | null> {
   if (traffic === undefined) return null;
+  const basis = etaRouteBasis(trip);
   const settings = await liveTrafficSettings(ex, trip.zone_id);
   if (!settings.on) return null;
   let route = asRoute(trip.eta_route);
@@ -64,15 +70,19 @@ export async function prepareEtaRoute(ex: Executor, trip: TripRow, target: "pick
   }
   if (route !== null) {
     const followed = followRoute(route, fix, now, settings);
-    if (!followed.recall) return { kind: "eta_route", route: followed.route, leg: { distanceMeters: followed.remainingMeters, durationSeconds: followed.remainingSeconds, source: "google" } };
+    if (!followed.recall) return { kind: "eta_route", target, basis, route: followed.route, leg: { distanceMeters: followed.remainingMeters, durationSeconds: followed.remainingSeconds, source: "google" } };
   }
   const calls = (route?.calls ?? asRoute(trip.eta_route)?.calls ?? 0) + 1;
-  const leg = await traffic.route([fix, to], { shape: false });
+  // Review #328 F4: to the drop-off through the stops still ahead, so a trip with stops is not "off the route" at once.
+  const leg = await traffic.route([fix, ...via, to], { shape: false });
   if (leg.source === "google" && leg.polyline) {
-    return { kind: "eta_route", route: { target, polyline: leg.polyline, meters: leg.distanceMeters, seconds: leg.durationSeconds, at: now.toISOString(), offSince: null, calls }, leg: { distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds, source: "google" } };
+    return { kind: "eta_route", target, basis, route: { target, polyline: leg.polyline, meters: leg.distanceMeters, seconds: leg.durationSeconds, at: now.toISOString(), offSince: null, calls }, leg: { distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds, source: "google" } };
   }
   // Google did not answer: the estimate for this tick; the next tick tries again (the breaker keeps that cheap).
-  return { kind: "eta_route", route: null, leg: { distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds, source: "estimate" } };
+  return { kind: "eta_route", target, basis, route: null, leg: { distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds, source: "estimate" } };
 }
+
+/** What the prepared tick was worked out from; the handler uses it only if the trip still holds the same (review #328 F6). */
+export const etaRouteBasis = (trip: Pick<TripRow, "eta_route" | "route_polyline">): string => `${JSON.stringify(trip.eta_route ?? null)}|${trip.route_polyline ?? ""}`;
 
 export const isEtaRoutePrepared = (value: unknown): value is EtaRoutePrepared => (value as { kind?: unknown } | null)?.kind === "eta_route";
