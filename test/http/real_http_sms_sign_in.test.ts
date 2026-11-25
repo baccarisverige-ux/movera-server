@@ -4,7 +4,7 @@ import { createServer, type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
-import { TEST_CODE } from "../../src/auth/service.js";
+import { OTP, TEST_CODE } from "../../src/auth/service.js";
 import { TEST_PHONES, seedTestPhones } from "../../src/auth/testPhones.js";
 import { readEnv } from "../../src/env.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
@@ -107,7 +107,7 @@ describe.each(["staging", "production"] as const)("real HTTP sign-in with SMS co
       const asked = await call(base, "POST", "/api/v1/auth/otp/request", { phone: real(), app: "rider" });
       expect(asked.status).toBe(503);
       expect(json(asked)).toMatchObject({ code: "unavailable", reason: "sms_not_sent", retryable: true });
-      expect(asked.headers["retry-after"]).toBe("30");
+      expect(asked.headers["retry-after"]).toBe(String(OTP.retryAfterSeconds)); // v0.18.165: 60 s
     } finally {
       sms.next = { accepted: true };
     }

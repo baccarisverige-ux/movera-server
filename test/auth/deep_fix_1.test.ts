@@ -194,6 +194,7 @@ describe("phone and e-mail change by code (owner 2026-11-02, checker round)", ()
     await database.db.updateTable("drivers").set({ email: "old@example.se" }).where("phone", "=", TEST_PHONES[0]!).execute();
     const first = (await change(me.accessToken, "email/change", { email: "New@Example.se" })).json();
     for (let i = 0; i < 3; i++) await change(me.accessToken, "email/verify", { challengeId: first.challengeId, code: "9999" });
+    advance(90); // v0.18.165 (owner "Mail 90 s"): a new code for the same address after 90 s
     const { challengeId } = (await change(me.accessToken, "email/change", { email: "New@Example.se" })).json();
     expect((await database.db.selectFrom("email_changes").select("attempts").where("challenge_id", "=", challengeId).executeTakeFirstOrThrow()).attempts).toBe(3);
     const { createHash } = await import("node:crypto");
