@@ -22,3 +22,8 @@ UPDATE config_drafts
    SET document = jsonb_set(document, '{booking,maxPickupMoveMeters}', '300'::jsonb), version = version + 1, updated_at = now()
  WHERE doc IN ('rider_app_config', 'driver_app_config')
    AND (document #>> '{booking,maxPickupMoveMeters}')::numeric = 200;
+-- undo: (data only; the admin can also set any zone back in Dispatch › Booking) every document this file moved, i.e. still on
+-- 300 with the 0133 history row as its live version, goes back to 200 as the next version:
+-- UPDATE config_live l SET document = jsonb_set(jsonb_set(l.document, '{booking,maxPickupMoveMeters}', '200'::jsonb), '{version}', to_jsonb(l.version + 1)), version = l.version + 1, published_at = now(), published_by = NULL
+--   FROM config_history h WHERE h.doc = l.doc AND h.zone_id = l.zone_id AND h.version = l.version AND h.note LIKE '%migration 0133%'
+--   AND l.doc IN ('rider_app_config', 'driver_app_config') AND (l.document #>> '{booking,maxPickupMoveMeters}')::numeric = 300;
