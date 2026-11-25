@@ -114,10 +114,10 @@ describe("routes", () => {
     expect(res.json()).toMatchObject({ points: [{ lat: 59.3326, lng: 18.0649 }, { lat: 59.3143, lng: 18.0735 }], provider: "estimate", distanceMeters: expect.any(Number), durationSeconds: expect.any(Number) });
   });
 
-  it("driver navigation needs OSRM (503 routing_unavailable now) and valid points", async () => {
+  it("driver navigation: v0.18.163 (no OSRM) the straight line with no trip, and valid points", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/routes/driving/18.0649,59.3326;18.0735,59.3143?overview=full&geometries=geojson&steps=true", headers: driver });
-    expect(res.statusCode).toBe(503);
-    expect(res.json()).toMatchObject({ reason: "routing_unavailable" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ code: "Ok", routes: [{ geometry: { coordinates: [[18.0649, 59.3326], [18.0735, 59.3143]] } }] });
     const bad = await app.inject({ method: "GET", url: "/api/v1/routes/driving/18.06,59.33", headers: driver });
     expect(bad.json()).toMatchObject({ reason: "invalid_coordinates" });
     const asRider = await app.inject({ method: "GET", url: "/api/v1/routes/driving/18.0649,59.3326;18.0735,59.3143", headers: rider });

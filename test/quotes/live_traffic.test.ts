@@ -58,17 +58,24 @@ beforeEach(async () => {
 });
 
 describe("live traffic (v0.18.163)", () => {
-  it("GET /routes/driving (the driver's route line) comes from Google in the OSRM shape; Google down = 503, never a straight line", async () => {
+  it("GET /routes/driving with no trip: the straight line through the asked points, never a Google call", async () => {
     const challenge = await app.inject({ method: "POST", url: "/api/v1/auth/otp/request", payload: { phone: TEST_PHONES[1]!, app: "driver" } });
     const verify = await app.inject({ method: "POST", url: "/api/v1/auth/otp/verify", payload: { phone: TEST_PHONES[1]!, sessionId: challenge.json().sessionId, code: TEST_CODE } });
     const driver = { authorization: `Bearer ${verify.json().accessToken}` };
-    const res = await app.inject({ method: "GET", url: "/api/v1/routes/driving/18.0649,59.3326;18.0735,59.3143?overview=full&geometries=geojson", headers: driver });
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toMatchObject({ code: "Ok", routes: [{ distance: 8100, duration: 1560, geometry: { type: "LineString", coordinates: [[18.0649, 59.3326], [18.0735, 59.3143]] } }] });
-    googleUp = false;
-    const down = await app.inject({ method: "GET", url: "/api/v1/routes/driving/18.0649,59.3326;18.0735,59.3143", headers: driver });
-    expect(down.statusCode).toBe(503);
-    expect(down.json()).toMatchObject({ reason: "routing_unavailable" });
+    let calls = 0;
+    const before = traffic.route;
+    traffic.route = async (p) => {
+      calls += 1;
+      return before(p);
+    };
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/v1/routes/driving/18.0649,59.3326;18.0735,59.3143?overview=full&geometries=geojson", headers: driver });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ code: "Ok", routes: [{ geometry: { type: "LineString", coordinates: [[18.0649, 59.3326], [18.0735, 59.3143]] } }] });
+      expect(calls).toBe(0);
+    } finally {
+      traffic.route = before;
+    }
   });
 
   it("defaults: on for SE and FR, off elsewhere", async () => {
