@@ -51,6 +51,8 @@ export async function fleetView(ex: Executor, row: FleetRow, viewer: "owner" | "
     ...(row.address ? { address: row.address } : {}),
     country: row.country,
     cityId: row.city_id,
+    // v0.18.161 (adminListFilters.carZones.fields): Fleet.zoneId on the admin's reads.
+    ...(viewer === "admin" ? { zoneId: row.zone_id } : {}),
     ownerDriverId: row.owner_driver_id,
     ownerName: `${owner.first_name} ${owner.last_name}`.trim(),
     ...(privileged && owner.email ? { ownerEmail: owner.email } : {}),
@@ -97,6 +99,7 @@ export async function adminFleetViews(ex: Executor, rows: FleetRow[]): Promise<A
       ...(row.address ? { address: row.address } : {}),
       country: row.country,
       cityId: row.city_id,
+      zoneId: row.zone_id,
       ownerDriverId: row.owner_driver_id,
       ownerName: `${owner.first_name} ${owner.last_name}`.trim(),
       ...(owner.email ? { ownerEmail: owner.email } : {}),
@@ -451,12 +454,12 @@ export async function adminRemoveFleetDriver(trx: Trx, who: Admin, fleetId: stri
 }
 
 /** GET /admin/fleets (cursor page) within the admin's zones. */
-export async function listFleets(ex: Executor, who: Admin, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; country?: string | undefined; zoneId?: string | undefined; q?: string | undefined; total?: boolean | undefined }) {
+export async function listFleets(ex: Executor, who: Admin, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; country?: string | undefined; q?: string | undefined; total?: boolean | undefined }) {
   let q = ex.selectFrom("fleets").selectAll();
+  // v0.18.161 (adminListFilters.carZones): zoneId / zoneIds / country arrive as the narrowed admin's zones (narrowToZones).
   if (!who.zones.includes("*")) q = q.where("zone_id", "in", who.zones.length ? who.zones : ["-"]);
   if (input.status?.length) q = q.where("status", "in", input.status as never);
   if (input.country) q = q.where("country", "=", input.country);
-  if (input.zoneId) q = q.where("zone_id", "=", input.zoneId);
   if (input.q) {
     const text = `%${input.q.trim().replace(/[%_\\]/g, "")}%`;
     q = q.where((eb) => eb.or([eb("name", "ilike", text), eb("org_number", "like", text), eb("code", "=", normalizeFleetCode(input.q!)), eb("fleet_id", "=", input.q!.trim())]));

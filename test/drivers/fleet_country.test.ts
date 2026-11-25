@@ -243,3 +243,23 @@ describe("BQ-FLEETCUR MF1: an owner moving his fleet to France and a Swedish dri
     expect(r.memberFleet).toBe(r.fleetId);
   });
 });
+
+describe("v0.18.161 review S4: the driver app gets no admin zone fields", () => {
+  it("GET /driver/fleet (owner), GET /driver/vehicles and POST /driver/vehicles carry no zoneId / country; the admin reads do", async () => {
+    const fleet = (await call(app, "GET", "/driver/fleet", owner)).json();
+    expect(fleet.fleet).not.toHaveProperty("zoneId");
+    for (const car of fleet.vehicles ?? []) expect(car).not.toHaveProperty("zoneId");
+    const cars = (await call(app, "GET", "/driver/vehicles", owner)).json().items as Record<string, unknown>[];
+    expect(cars.length).toBeGreaterThan(0);
+    for (const car of cars) {
+      expect(car).not.toHaveProperty("zoneId");
+      expect(car).not.toHaveProperty("country");
+    }
+    const added = await call(app, "POST", "/driver/vehicles", owner, { make: "Volvo", model: "V90", color: "Grey", seats: 4, year: 2023, plate: "FNC 161", fuel: "hybrid" });
+    expect(added.statusCode).toBe(201);
+    expect(added.json()).not.toHaveProperty("zoneId");
+    expect(added.json()).not.toHaveProperty("country");
+    const adminCar = (await call(app, "GET", "/admin/vehicles?q=FNC%20161", admin.headers)).json().items[0];
+    expect(adminCar).toMatchObject({ zoneId: expect.any(String), country: "SE" });
+  });
+});

@@ -604,16 +604,20 @@ export const vehicleView = (v: VehicleRow) => ({
 export async function vehicleFullView(ex: Executor, v: VehicleRow, viewer?: { driverId: string; owner: boolean }) {
   let inUse = false;
   let country: string | null = null;
+  // v0.18.161 (adminListFilters.carZones.carZone): the car's zone, its fleet's, else its driver's first zone, else null.
+  let zoneId: string | null = null;
   if (v.fleet_id) {
-    const fleet = await ex.selectFrom("fleets").select("country").where("fleet_id", "=", v.fleet_id).executeTakeFirst();
+    const fleet = await ex.selectFrom("fleets").select(["country", "zone_id"]).where("fleet_id", "=", v.fleet_id).executeTakeFirst();
     country = fleet?.country ?? null;
+    zoneId = fleet?.zone_id ?? null;
     if (v.driver_id) {
       const picker = await ex.selectFrom("drivers").select(["online_status", "vehicle_id"]).where("driver_id", "=", v.driver_id).executeTakeFirst();
       inUse = picker?.vehicle_id === v.vehicle_id && picker.online_status !== "offline";
     }
   } else if (v.driver_id) {
-    const owner = await ex.selectFrom("drivers").select("country").where("driver_id", "=", v.driver_id).executeTakeFirst();
+    const owner = await ex.selectFrom("drivers").select(["country", "zone_ids"]).where("driver_id", "=", v.driver_id).executeTakeFirst();
     country = owner?.country ?? null;
+    zoneId = owner?.zone_ids[0] ?? null;
   }
   const pick = viewer ? await pickability(ex, v, viewer.driverId, inUse) : undefined;
   // v0.18.3 (R2): the rules the car breaks now, for the admin's red warning and the fleet owner.
@@ -622,6 +626,8 @@ export async function vehicleFullView(ex: Executor, v: VehicleRow, viewer?: { dr
   const fit = !viewer || viewer.owner ? await fitCategories(ex, v, country) : undefined;
   return {
     ...vehicleView(v),
+    // v0.18.161 (adminListFilters.carZones.fields): Vehicle.zoneId / Vehicle.country on the admin's reads (no viewer).
+    ...(viewer ? {} : { zoneId, country }),
     ...(v.fleet_id ? { inUse } : {}),
     ...(ruleProblems.length > 0 ? { ruleProblems } : {}),
     ...(fit ? { fitCategories: fit } : {}),
@@ -641,12 +647,13 @@ export async function vehicleFullViews(ex: Executor, rows: VehicleRow[]): Promis
   const fleetIds = [...new Set(rows.map((v) => v.fleet_id).filter((id): id is string => id !== null))];
   const driverIds = [...new Set(rows.map((v) => v.driver_id).filter((id): id is string => id !== null))];
   // One after the other on purpose: a page never holds more than one pool connection (the pool is what runs out at load).
-  const fleets = fleetIds.length ? await ex.selectFrom("fleets").select(["fleet_id", "country"]).where("fleet_id", "in", fleetIds).execute() : [];
-  const people = driverIds.length ? await ex.selectFrom("drivers").select(["driver_id", "online_status", "vehicle_id", "country"]).where("driver_id", "in", driverIds).execute() : [];
+  const fleets = fleetIds.length ? await ex.selectFrom("fleets").select(["fleet_id", "country", "zone_id"]).where("fleet_id", "in", fleetIds).execute() : [];
+  const people = driverIds.length ? await ex.selectFrom("drivers").select(["driver_id", "online_status", "vehicle_id", "country", "zone_ids"]).where("driver_id", "in", driverIds).execute() : [];
   const documents = await documentSummariesOf(ex, "vehicle", rows.map((v) => v.vehicle_id));
   const fleetOf = new Map(fleets.map((f) => [f.fleet_id, f]));
   const personOf = new Map(people.map((d) => [d.driver_id, d]));
   const countryOf = (v: VehicleRow): string | null => (v.fleet_id ? fleetOf.get(v.fleet_id)?.country ?? null : v.driver_id ? personOf.get(v.driver_id)?.country ?? null : null);
+  const zoneOf = (v: VehicleRow): string | null => (v.fleet_id ? fleetOf.get(v.fleet_id)?.zone_id ?? null : v.driver_id ? personOf.get(v.driver_id)?.zone_ids[0] ?? null : null);
   const settings = await onboardingSettingsOf(ex, rows.map(countryOf).filter((c): c is string => Boolean(c)));
   return rows.map((v) => {
     const country = countryOf(v);
@@ -658,6 +665,8 @@ export async function vehicleFullViews(ex: Executor, rows: VehicleRow[]): Promis
     const fit = rules ? [...new Set([...rules.vehicles.categories.filter((r) => r.on).map((r) => r.category), ...EXTRA_CATEGORIES])].filter((c) => categoryProblem(car, rules, c) === null) : undefined;
     return {
       ...vehicleView(v),
+      zoneId: zoneOf(v),
+      country,
       ...(v.fleet_id ? { inUse } : {}),
       ...(ruleProblems.length > 0 ? { ruleProblems } : {}),
       ...(fit ? { fitCategories: fit } : {}),
@@ -748,7 +757,9 @@ export async function addVehicle(trx: Trx, driverId: string, body: unknown, now:
   }
   // A new car waits for an admin's review (status pending).
   const row = await trx.selectFrom("vehicles").selectAll().where("vehicle_id", "=", vehicleId).executeTakeFirstOrThrow();
-  return vehicleFullView(trx, row as unknown as VehicleRow);
+  // v0.18.161: Vehicle.zoneId / Vehicle.country are on the admin's reads only, not on the driver app's answer.
+  const { zoneId: _zoneId, country: _country, ...view } = await vehicleFullView(trx, row as unknown as VehicleRow);
+  return view;
 }
 
 /* ---------------------------------------------------------------- admin views */
