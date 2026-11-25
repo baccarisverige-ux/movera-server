@@ -110,7 +110,8 @@ Update the contract copy with `tools/sync_contract.sh v0.18.64` (the tag, never 
 
 - Test numbers (`src/auth/testPhones.ts`, owner decision 1) sign in with the fixed code `1234`, only outside
   production. Any other number is `403 forbidden`, reason `sign_in_restricted`, until an SMS provider exists.
-- Codes: 4 digits, 5 minutes, 5 tries, a new one after 30 s, at most 10 per number per hour. Only hashes are stored.
+- Codes: 4 digits, 60 seconds, 5 tries, a new one after 60 s, at most 10 per number per hour. Only hashes are stored.
+  The account e-mail change code lives 90 s, a new one after 90 s (contract 0.18.165 `auth.otp`, `auth.emailCode`).
 - Access token: 15-minute JWT (HS256, `JWT_SECRET`); its session is checked on every call, so sign-out works at once.
 - Refresh token: opaque, 30 days, rotated on every refresh. A token used twice ends the session, except the same
   token again within a minute (an answer lost on a bad connection).
