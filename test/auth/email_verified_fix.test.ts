@@ -155,7 +155,8 @@ describe("G30 fix round: the silent answer looks like a real start", () => {
     advance(11 * 60);
     for (let i = 0; i < 5; i++) expect((await post("/account/email/change", { email: `n${i}@example.se` }, me)).json()).toMatchObject({ reason: "reauth_required" });
     // Checking his own current address needs no recent sign-in, but each start counts: 5 now + 5 half an hour later.
-    for (let i = 0; i < 5; i++) expect((advance(91), await post("/account/email/change", { email: "own@example.se" }, me)).statusCode).toBe(200);
+    const fresh = await signIn(mine); // v0.18.165: the 91 s steps outlive the 15-minute token; signing in again changes no count
+    for (let i = 0; i < 5; i++) expect((advance(91), await post("/account/email/change", { email: "own@example.se" }, fresh)).statusCode).toBe(200);
     advance(30 * 60);
     let again = await signIn(mine); // the access token outlives neither half hour; signing in again changes no count
     for (let i = 0; i < 5; i++) expect((advance(91), await post("/account/email/change", { email: "own@example.se" }, again)).statusCode).toBe(200);
