@@ -14,12 +14,14 @@ let app: FastifyInstance;
 const clock = { now: new Date("2026-11-25T09:00:00Z") };
 let sup: { headers: Record<string, string> };
 let driverId = "";
+let H: Record<string, string> = {};
 
 beforeAll(async () => {
   database = await freshDatabase();
   app = await testWorld(database.db, database.url, clock);
   sup = await adminSession(app, database.db, "super", { now: clock.now });
   const h = (await signIn(app, TEST_PHONES[0]!, "driver")).headers;
+  H = h;
   const res = await call(app, "POST", "/driver/onboarding", h, { firstName: "Sarah", lastName: "Benali", dateOfBirth: "1988-04-01", email: "sarah@example.fr", country: "FR", cityId: "paris", language: "fr", accountType: "driver", termsAccepted: true });
   expect(res.statusCode, res.body).toBe(200);
   driverId = res.json().driverId;
@@ -68,5 +70,46 @@ describe("v0.18.164 seeded test documents have a placeholder file", () => {
       const bytes = openFile(key, { key_id: d.key_id!, iv: d.iv!, tag: d.tag!, ciphertext: d.ciphertext! });
       expect(bytes.subarray(1, 4).toString()).toBe("PNG");
     }
+  });
+});
+
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(200, 3)]);
+function upload(headers: Record<string, string>, type: string, key: string) {
+  const boundary = "----movera-164";
+  const payload = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\n${type}\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="doc.png"\r\nContent-Type: image/png\r\n\r\n`),
+    PNG,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return app.inject({ method: "POST", url: "/api/v1/driver/documents", headers: { ...headers, "content-type": `multipart/form-data; boundary=${boundary}`, "idempotency-key": key }, payload });
+}
+
+describe("v0.18.164 review: driver read, upload replay, company papers without a country", () => {
+  it("GET /driver/onboarding/settings raises FR category years to the age year; the admin read keeps the stored years", async () => {
+    const age = clock.now.getUTCFullYear() - 6;
+    // The seed test above may have made this phone the Swedish test driver; this check is about France.
+    await database.db.updateTable("drivers").set({ country: "FR" }).where("driver_id", "=", driverId).execute();
+    const driver = (await call(app, "GET", "/driver/onboarding/settings", H)).json();
+    expect(driver.vehicles.categories.find((r: { category: string }) => r.category === "economy").minYear).toBe(age);
+    const admin = (await call(app, "GET", "/admin/config/onboarding?country=FR", sup.headers)).json();
+    expect(admin.document.vehicles.categories.find((r: { category: string }) => r.category === "economy").minYear).toBe(2016);
+  });
+  it("the same Idempotency-Key replays the first upload: one document, one version", async () => {
+    const first = await upload(H, "driving_license", "fr164-replay-key-0001");
+    expect(first.statusCode, first.body).toBe(201);
+    const again = await upload(H, "driving_license", "fr164-replay-key-0001");
+    expect(again.statusCode, again.body).toBe(201);
+    expect(again.json().documentId).toBe(first.json().documentId);
+    const rows = await database.db.selectFrom("documents").select(["document_id", "version"]).where("driver_id", "=", driverId).where("type", "=", "driving_license").execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.version).toBe(first.json().version);
+  });
+  it("a driver with no country still uploads a company paper (owner fleet is stored as a driver document)", async () => {
+    await database.db.updateTable("drivers").set({ country: null }).where("driver_id", "=", driverId).execute();
+    const res = await upload(H, "rc_pro_insurance", "fr164-nocountry-0001");
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json().type).toBe("rc_pro_insurance");
+    await database.db.updateTable("drivers").set({ country: "FR" }).where("driver_id", "=", driverId).execute();
   });
 });

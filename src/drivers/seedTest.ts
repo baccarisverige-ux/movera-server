@@ -112,7 +112,9 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
     ];
     for (const doc of types) {
       // v0.18.164: a file document gets the placeholder file (when the server's document key is given).
-      const withFile = documentKey !== undefined && documentKind(doc.type) === "file";
+      // A tester's own upload is never replaced: only a document with no file yet gets the placeholder.
+      const had = await trx.selectFrom("documents").select("file_name").where("owner_kind", "=", doc.ownerKind).where("owner_id", "=", doc.ownerId).where("type", "=", doc.type).executeTakeFirst();
+      const withFile = documentKey !== undefined && documentKind(doc.type) === "file" && (had?.file_name ?? null) === null;
       const file = withFile ? { file_name: "placeholder.png", media_type: "image/png", file_size: PLACEHOLDER_PNG.length, uploaded_at: now } : {};
       const saved = await trx
         .insertInto("documents")

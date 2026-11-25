@@ -267,8 +267,8 @@ export function driverReadSettings(settings: OnboardingSettings, now: Date): Onb
   return { ...settings, vehicles: { ...settings.vehicles, categories: settings.vehicles.categories.map((r) => ({ ...r, minYear: Math.max(r.minYear, age) })) } };
 }
 
-const tooOldForAge = (car: CarFacts, settings: OnboardingSettings): boolean => {
-  const year = ageYear(settings, car);
+const tooOldForAge = (car: CarFacts, settings: OnboardingSettings, now: Date): boolean => {
+  const year = ageYear(settings, car, now);
   return year !== null && car.year < year;
 };
 
@@ -285,14 +285,14 @@ export function baseYear(settings: OnboardingSettings): number | null {
  * Why a car does not fit a category (contract.json#driverOnboarding.vehicleRules.problems), or null. v0.18.3 (R2): a
  * category with no rule (child_seat) is still held to the country's base year.
  */
-export function categoryProblem(car: CarFacts, settings: OnboardingSettings, category: string): string | null {
+export function categoryProblem(car: CarFacts, settings: OnboardingSettings, category: string, now: Date = new Date()): string | null {
   const rule = settings.vehicles.categories.find((r) => r.category === category);
   if (rule === undefined) {
     const base = baseYear(settings);
-    return (base !== null && car.year < base) || tooOldForAge(car, settings) ? "year_too_old" : null;
+    return (base !== null && car.year < base) || tooOldForAge(car, settings, now) ? "year_too_old" : null;
   }
   if (!rule.on) return "category_off";
-  if (car.year < rule.minYear || tooOldForAge(car, settings)) return "year_too_old";
+  if (car.year < rule.minYear || tooOldForAge(car, settings, now)) return "year_too_old";
   if (car.seats < rule.minSeats) return "too_few_seats";
   if (car.fuel === null) return SETTINGS.fuels.every((f) => rule.fuels.includes(f)) ? null : "fuel_required";
   if (!rule.fuels.includes(car.fuel)) return "fuel_not_allowed";
@@ -304,13 +304,13 @@ export function categoryProblem(car: CarFacts, settings: OnboardingSettings, cat
  * included), "car:year_too_old" for a car with no category below the base year, and "<extra>:extra_needs_ride" for an
  * extra without a ride category. Empty = the car fits.
  */
-export function carRuleProblems(car: CarFacts, settings: OnboardingSettings, categoryIds: readonly string[]): string[] {
+export function carRuleProblems(car: CarFacts, settings: OnboardingSettings, categoryIds: readonly string[], now: Date = new Date()): string[] {
   const problems = categoryIds.flatMap((c) => {
-    const problem = categoryProblem(car, settings, c);
+    const problem = categoryProblem(car, settings, c, now);
     return problem === null ? [] : [`${c}:${problem}`];
   });
   const base = baseYear(settings);
-  if (categoryIds.length === 0 && ((base !== null && car.year < base) || tooOldForAge(car, settings))) problems.push("car:year_too_old");
+  if (categoryIds.length === 0 && ((base !== null && car.year < base) || tooOldForAge(car, settings, now))) problems.push("car:year_too_old");
   if (!categoryIds.some((c) => !EXTRA_CATEGORIES.includes(c))) for (const c of categoryIds) problems.push(`${c}:extra_needs_ride`);
   return problems;
 }

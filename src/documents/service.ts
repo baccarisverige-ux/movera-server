@@ -195,7 +195,8 @@ export async function uploadDocument(trx: Trx, key: DocumentKey, driverId: strin
   // v0.18.5 (G2-D5.2): the content must be a real JPEG, PNG, HEIC or PDF; it is stored as what it is.
   const detected = sniffMediaType(upload.bytes);
   if (detected === null) throw badRequest("This file is not a photo or PDF.", "invalid_file_content");
-  const expected = info ? ownerKindOf(info) : ONBOARDING.documents.types[upload.type]!.owner;
+  // v0.18.164 (documents.ownerFleet): a company paper (owner fleet) is stored as a driver document, with or without a country.
+  const expected = info ? ownerKindOf(info) : ONBOARDING.documents.types[upload.type]!.owner === "vehicle" ? "vehicle" : "driver";
   let ownerKind: "driver" | "vehicle" = "driver";
   let ownerId = driverId;
   if (upload.ownerId !== undefined && upload.ownerId !== driverId) {
