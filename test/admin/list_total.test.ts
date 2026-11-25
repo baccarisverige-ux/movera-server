@@ -228,9 +228,11 @@ describe("L78-S: total on the first page of the 10 admin lists", () => {
     // dC works in Z002 and Z001: he is a Z001 driver, but his own cars are judged by his first zone, Z002.
     expect(await totals(z001Admin)).toEqual({ "/admin/trips": 3, "/admin/riders": 1, "/admin/drivers": 2, "/admin/fleets": 1, "/admin/vehicles": 10, "/admin/payments": 2, "/admin/refunds": 3, "/admin/payouts": 3, "/admin/tickets": 3, "/admin/incidents": 4 });
     expect((await get("/admin/vehicles?limit=1&zoneId=Z002", superAdmin)).json().total).toBe(12);
-    // A zone-limited admin naming a zone he does not cover gets nothing (vehicles never answered 403 for it).
-    const outside = (await get("/admin/vehicles?limit=1&zoneId=Z002", z001Admin)).json();
-    expect(outside).toMatchObject({ items: [], nextCursor: null, total: 0 });
+    // v0.18.161 (adminListFilters.carZones): a zone-limited admin naming a zone he does not cover is 403
+    // zone_out_of_scope, as on the other admin lists (it was an empty page before).
+    const outside = await get("/admin/vehicles?limit=1&zoneId=Z002", z001Admin);
+    expect(outside.statusCode).toBe(403);
+    expect(outside.json()).toMatchObject({ code: "forbidden", reason: "zone_out_of_scope" });
   });
 
   it("an empty query has total 0", async () => {

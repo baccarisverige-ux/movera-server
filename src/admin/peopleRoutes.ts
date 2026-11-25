@@ -23,6 +23,7 @@ import { audit } from "./audit.js";
 import { cursorOf, readCursor } from "./lists.js";
 import { firstPageTotal, TotalQuery, totalAfterPage, withTotal } from "./listTotal.js";
 import { maskDriverView } from "./masking.js";
+import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
 import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminUpdateVehicle } from "./vehicleActions.js";
 
 /** contract v0.5.3 §14 (admin side): fleets, driver detail, vehicles list and review, document review and file. */
@@ -33,8 +34,10 @@ const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Version = { expectedVersion: z.number().int().min(1) };
 const many = z.union([z.string(), z.array(z.string())]).optional().transform((v): string[] | undefined => (v === undefined ? undefined : Array.isArray(v) ? v : [v]));
 const Page = { cursor: z.string().max(512).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) };
-const FleetsQuery = z.object({ ...Page, ...TotalQuery, status: many, country: z.string().length(2).optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
-const VehiclesQuery = z.object({ ...Page, ...TotalQuery, status: many, driverId: ID.optional(), fleetId: ID.optional(), zoneId: ID.optional(), q: z.string().max(100).optional() });
+// v0.18.161 (contract.json#adminListFilters.carZones): both lists take zoneId / zoneIds / country like the other admin
+// lists (zoneFilter.ts): strict (an unknown key is 400 unknown_filter), a named zone outside the admin's is 403.
+const FleetsQuery = { ...Page, ...TotalQuery, status: many, q: z.string().max(100).optional(), ...ZoneFilterQuery };
+const VehiclesQuery = { ...Page, ...TotalQuery, status: many, driverId: ID.optional(), fleetId: ID.optional(), categoryId: z.string().regex(/^[a-z][a-z0-9_]{1,39}$/).optional(), q: z.string().max(100).optional(), ...ZoneFilterQuery };
 const FleetReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional() });
 const VersionBody = z.object(Version);
 const VehicleReviewBody = z.object({ ...Version, decision: z.enum(["approved", "rejected", "blocked"]), note: z.string().max(1000).optional(), categoryIds: z.array(z.string().regex(/^[a-z][a-z0-9_]{1,39}$/)).max(20).optional() });
@@ -55,7 +58,9 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
   /* ---- fleets */
   app.get(`${API_PREFIX}/admin/fleets`, async (request) => {
     const who = await authenticateAdmin(request, guard, "drivers.read");
-    return listFleets(deps.db, who, clean(parseBody(FleetsQuery, request.query)));
+    const query = parseQuery(FleetsQuery, request.query);
+    // country also keeps only fleets of that country (Fleet.country), as before v0.18.161.
+    return listFleets(deps.db, await narrowToZones(deps.db, who, query), clean({ ...withoutZoneFilter(query), country: query.country }));
   });
   app.get(`${API_PREFIX}/admin/fleets/:fleetId`, async (request) => {
     const who = await authenticateAdmin(request, guard, "drivers.read");
@@ -105,7 +110,8 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
   /* ---- vehicles */
   app.get(`${API_PREFIX}/admin/vehicles`, async (request) => {
     const who = await authenticateAdmin(request, guard, "drivers.read");
-    return listVehicles(deps.db, who, clean(parseBody(VehiclesQuery, request.query)));
+    const query = parseQuery(VehiclesQuery, request.query);
+    return listVehicles(deps.db, await narrowToZones(deps.db, who, query), clean(withoutZoneFilter(query)));
   });
   app.post(`${API_PREFIX}/admin/vehicles/:vehicleId/review`, async (request) => {
     const who = await authenticateAdmin(request, guard, "vehicles.edit");
@@ -164,15 +170,17 @@ async function zoneOfVehicle(ex: Executor, v: VehicleRow): Promise<string | null
  */
 const CAR_ZONE = sql<string | null>`(CASE WHEN vehicles.fleet_id IS NOT NULL THEN car_fleet.zone_id ELSE car_owner.zone_ids[1] END)`;
 
-async function listVehicles(ex: Executor, who: Principal, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; driverId?: string | undefined; fleetId?: string | undefined; zoneId?: string | undefined; q?: string | undefined; total?: boolean | undefined }) {
+async function listVehicles(ex: Executor, who: Principal, input: { cursor?: string | undefined; limit: number; status?: string[] | undefined; driverId?: string | undefined; fleetId?: string | undefined; categoryId?: string | undefined; q?: string | undefined; total?: boolean | undefined }) {
   let q = ex
     .selectFrom("vehicles")
     .leftJoin("fleets as car_fleet", "car_fleet.fleet_id", "vehicles.fleet_id")
     .leftJoin("drivers as car_owner", "car_owner.driver_id", "vehicles.driver_id")
     .selectAll("vehicles");
-  // A car with no zone (no fleet, no owner) is seen only by an all-zones admin, as before.
+  // A car with no zone (no fleet, no owner) is seen only by an all-zones admin with no filter, as before. v0.18.161
+  // (adminListFilters.carZones): zoneId / zoneIds / country arrive as the narrowed admin's zones (narrowToZones), so the
+  // filter is in the WHERE of the page and of its count, and a car with no zone (NULL) never matches a filter.
   if (!who.zones.includes("*")) q = q.where(sql<boolean>`${CAR_ZONE} = ANY(${sql.val(who.zones.length ? who.zones : ["-"])}::text[])`);
-  if (input.zoneId) q = q.where(sql<boolean>`${CAR_ZONE} = ${input.zoneId}`);
+  if (input.categoryId) q = q.where(sql<boolean>`${input.categoryId} = ANY(vehicles.category_ids)`);
   if (input.status?.length) q = q.where("vehicles.status", "in", input.status as never);
   if (input.driverId) q = q.where("vehicles.driver_id", "=", input.driverId);
   if (input.fleetId) q = q.where("vehicles.fleet_id", "=", input.fleetId);
