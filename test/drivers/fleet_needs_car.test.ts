@@ -9,7 +9,7 @@ import { call, signIn, testWorld } from "../support/world.js";
  * Contract v0.18.159 (contract.json#fleetNeedsCar; owner 2026-11-24, Rules decisions/driver-g2.md "Fleet owner must add a
  * car": "Why fleet owner after sign in don't know that he need to add car ?" and "No but in sheet must see that it's
  * missing to add car"; mockup PROPOSAL-fleet-add-car-2026-11-24.html approved): the fleet owner's red Home line
- * fleet_no_car from the first sign-in, whatever the fleet's status, and no fleet approval with zero cars while the
+ * fleet_no_car from the first sign-in while the fleet is not approved, and no fleet approval with zero cars while the
  * country's OnboardingSettings.fleetNeedsCarForApproval is on (default). Sweden and France.
  */
 
