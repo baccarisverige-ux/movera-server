@@ -83,12 +83,12 @@ describe("admin cars list, batched (SUP3 P7)", () => {
     expect(oneByOne).toBeGreaterThan(100);
   });
 
-  it("fleets page: adminFleetViews gives every fleet the view fleetView gives it alone, in 3 queries", async () => {
+  it("fleets page: adminFleetViews gives every fleet the view fleetView gives it alone, in 4 queries (v0.18.159: + the published onboarding settings of the page's countries)", async () => {
     const rows = (await database.db.selectFrom("fleets").selectAll().orderBy("created_at", "desc").orderBy("fleet_id", "desc").execute()) as never[];
     expect(rows.length).toBe(12);
     queries = 0;
     const views = await adminFleetViews(traced as never, rows);
-    expect(queries).toBe(3);
+    expect(queries).toBe(4);
     for (let i = 0; i < rows.length; i++) expect(views[i]).toEqual(await fleetView(traced as never, rows[i]!, "admin"));
     expect(views.some((v) => v.vehicleCount === 1)).toBe(true);
   });

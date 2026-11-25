@@ -1,4 +1,4 @@
--- v0.18.156 (owner 2026-11-23, Rules decisions/session-2026-11-06.md "2026-11-23 OWNER DECISION": the rider can adjust
+-- v0.18.160 (owner 2026-11-23, Rules decisions/session-2026-11-06.md "2026-11-23 OWNER DECISION": the rider can adjust
 -- the pickup up to 300 m for free): every published rider and driver document still on the old 200 m pickup move limit
 -- goes to 300, as the next version with a history row; drafts too. A zone the admin set to another value keeps it.
 -- A trip already booked keeps the value of its booking time (trips.booking_rules), so no trip row changes. Same pattern as
@@ -15,7 +15,7 @@ WITH changed AS (
   RETURNING doc, zone_id, version, document, published_at
 )
 INSERT INTO config_history (doc, zone_id, version, document, published_at, published_by, approved_by, note)
-  SELECT doc, zone_id, version, document, published_at, NULL, NULL, 'Free pickup move: limit 200 -> 300 m (owner 2026-11-23, contract v0.18.156, migration 0133)'
+  SELECT doc, zone_id, version, document, published_at, NULL, NULL, 'Free pickup move: limit 200 -> 300 m (owner 2026-11-23, contract v0.18.160, migration 0133)'
   FROM changed
   ON CONFLICT (doc, zone_id, version) DO NOTHING;
 UPDATE config_drafts

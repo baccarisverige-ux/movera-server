@@ -29,7 +29,7 @@ const C = contract as unknown as {
 export const REASONS = C.cancelReasons;
 export const DEFAULT_NO_SHOW_SHARE = C.configDefaults.noShowDriverSharePct;
 /** v0.18.7 (contract.json#pickupWaiting): the pickup move limit and the cancel-after-arrival rule, per zone, with their defaults. */
-// v0.18.156 (owner 2026-11-23 "free pickup move up to 300 m"): 300 from the contract (was 200); migration 0133 moves documents on 200.
+// v0.18.160 (owner 2026-11-23 "free pickup move up to 300 m"): 300 from the contract (was 200); migration 0133 moves documents on 200.
 export const DEFAULT_MAX_PICKUP_MOVE_METERS = C.configDefaults.maxPickupMoveMeters;
 export const DEFAULT_CANCEL_AFTER_ARRIVED_IS_NO_SHOW = C.configDefaults.cancelAfterArrivedIsNoShow;
 const PICKUP_MOVE_RANGE = C.pickupWaiting.pickupMove.range;

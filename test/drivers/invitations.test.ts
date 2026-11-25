@@ -56,6 +56,8 @@ beforeAll(async () => {
   boId = (await call(app, "POST", "/driver/onboarding", bo, details({ firstName: "Bo", lastName: "Ek", email: "bo@example.se", accountType: "driver", company: undefined, language: "en" }))).json().driverId;
   const fleet = (await call(app, "GET", "/driver/fleet", owner)).json().fleet;
   fleetId = fleet.fleetId;
+  // v0.18.159 (fleetNeedsCar): a fleet is approved only with at least one car.
+  expect((await call(app, "POST", "/driver/vehicles", owner, { make: "Volvo", model: "V60", color: "Black", seats: 4, year: 2022, plate: "FNC 200", fuel: "hybrid" })).statusCode).toBe(201);
   const review = await call(app, "POST", `/admin/fleets/${fleetId}/review`, admin.headers, { expectedVersion: fleet.version, decision: "approved" });
   fleetCode = review.json().code;
 });

@@ -61,7 +61,8 @@ describe("kept keys of a config save (v0.18.123, SF-F1-3)", () => {
     const stale = await put("country_rules", { expectedVersion: first.json().version, country: "SE", document: { ...base(), tips: [], calls: { on: false } } });
     expect(stale.statusCode).toBe(200);
     expect(stale.json().document).toMatchObject({ ...money, tips: [], calls: { on: false, adminCallRoles: ["super", "ops"], phoneProvider: "twilio" } });
-    expect([...stale.json().keptKeys].sort()).toEqual([...KEPT_KEYS.country_rules!].sort());
+    // v0.18.157: smsSignInOtherCountries is a kept key too, but this stored document never had it.
+    expect([...stale.json().keptKeys].sort()).toEqual([...KEPT_KEYS.country_rules!].filter((k) => k !== "smsSignInOtherCountries").sort());
     expect((await get("country_rules", "country=SE")).document).toMatchObject(money);
     expect((await lastAudit("config.draft"))["kept"]).toEqual(stale.json().keptKeys);
   });

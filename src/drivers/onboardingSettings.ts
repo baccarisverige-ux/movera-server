@@ -32,6 +32,8 @@ export type OnboardingSettings = {
   validMonths?: Record<string, number>;
   /** G30 v0.18.76 (owner Q6, contract.json#emailVerified.approvalSetting): a never-active driver needs a verified e-mail before approval; missing = false. */
   emailVerifiedForApproval?: boolean;
+  /** v0.18.159 (contract.json#fleetNeedsCar.setting, owner 2026-11-24): a fleet needs at least 1 car before approval; missing = true. */
+  fleetNeedsCarForApproval?: boolean;
 };
 export type DocumentGuide = { checklist?: LocalText[]; tips?: LocalText[] };
 
