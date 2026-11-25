@@ -130,12 +130,21 @@ type EmailStartOptions = { sender?: EmailSender | undefined; log?: ((code: strin
 const lastSend = new WeakMap<EmailSender, { accepted: boolean; ms: number }>();
 export const SILENT_WAIT_DEFAULT_MS = 400;
 export const SILENT_WAIT_MAX_MS = 5000;
+/**
+ * v0.18.165 (owner 2026-11-25 "Nn on laisse 60 seconde"): the code lives auth.otp.expiresSeconds (60 s), so the mail says
+ * "60 seconds", not "1 minutes"; a life of 2 minutes or more is still said in minutes.
+ */
+export function lifeText(lang: "sv" | "fr" | "en", seconds: number): string {
+  if (seconds < 120) return { sv: `${seconds} sekunder`, fr: `${seconds} secondes`, en: `${seconds} seconds` }[lang];
+  const minutes = Math.ceil(seconds / 60);
+  return { sv: `${minutes} minuter`, fr: `${minutes} minutes`, en: `${minutes} minutes` }[lang];
+}
 const CODE_TEXT = {
   subject: { sv: "Din Movera-kod", fr: "Votre code Movera", en: "Your Movera code" },
   text: {
-    sv: (code: string, minutes: number) => `Din Movera-kod är ${code}. Den gäller i ${minutes} minuter.\n\nBad du inte om den? Då kan du strunta i det här mejlet.`,
-    fr: (code: string, minutes: number) => `Votre code Movera est ${code}. Il est valable ${minutes} minutes.\n\nVous ne l’avez pas demandé ? Ignorez cet e-mail.`,
-    en: (code: string, minutes: number) => `Your Movera code is ${code}. It is valid for ${minutes} minutes.\n\nDid not ask for it? Ignore this e-mail.`,
+    sv: (code: string, seconds: number) => `Din Movera-kod är ${code}. Den gäller i ${lifeText("sv", seconds)}.\n\nBad du inte om den? Då kan du strunta i det här mejlet.`,
+    fr: (code: string, seconds: number) => `Votre code Movera est ${code}. Il est valable ${lifeText("fr", seconds)}.\n\nVous ne l’avez pas demandé ? Ignorez cet e-mail.`,
+    en: (code: string, seconds: number) => `Your Movera code is ${code}. It is valid for ${lifeText("en", seconds)}.\n\nDid not ask for it? Ignore this e-mail.`,
   },
 } as const;
 
@@ -181,7 +190,7 @@ export async function startEmailChange(db: Db, who: Who, email: string, now: Dat
         const lang = await noticeLanguage(db, { actor: who.actor, id: who.subjectId, language: account?.language ?? null });
         const started = performance.now();
         // A sender that throws counts as a failed send (never a server error, never 'sent').
-        const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, Math.ceil(OTP.expiresSeconds / 60)) }).catch(() => ({ accepted: false }));
+        const outcome = await options.sender.send({ to: value, subject: CODE_TEXT.subject[lang], text: CODE_TEXT.text[lang](code, OTP.expiresSeconds) }).catch(() => ({ accepted: false }));
         lastSend.set(options.sender, { accepted: outcome.accepted, ms: performance.now() - started });
         if (outcome.accepted) delivery = "sent";
       }
