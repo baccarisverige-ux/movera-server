@@ -122,6 +122,8 @@ export const documentSummary = (row: DocumentRow) => ({
   type: row.type,
   status: row.status,
   ...(row.expires_at ? { expiresAt: row.expires_at.toISOString() } : {}),
+  // v0.18.164 (documents.reviewNeedsFile): whether a file is stored, so the admin panel shows Open/Approve only then.
+  hasFile: row.file_name !== null,
 });
 
 /** DocumentSummary[] of one owner (a driver or a car), oldest first. */
@@ -131,7 +133,7 @@ export async function documentSummaries(ex: Executor, ownerKind: "driver" | "veh
 
 /** S06 F9: documentSummaries of many owners in two queries (the documents, then their waiting renewals). */
 export async function documentSummariesOf(ex: Executor, ownerKind: "driver" | "vehicle", ownerIds: string[]) {
-  const out = new Map<string, Array<ReturnType<typeof documentSummary> | { documentId: string; type: string; status: string; expiresAt?: string; renewalOf: string }>>();
+  const out = new Map<string, Array<ReturnType<typeof documentSummary> | { documentId: string; type: string; status: string; expiresAt?: string; renewalOf: string; hasFile: boolean }>>();
   if (ownerIds.length === 0) return out;
   const rows = await ex.selectFrom("documents").selectAll().where("owner_kind", "=", ownerKind).where("owner_id", "in", ownerIds).orderBy("created_at").orderBy("document_id").execute();
   const renewals = await renewalsOf(ex, rows.map((r) => r.document_id));
@@ -141,7 +143,7 @@ export async function documentSummariesOf(ex: Executor, ownerKind: "driver" | "v
     const own = documentSummary(r as DocumentRow);
     const list = out.get(r.owner_id) ?? [];
     list.push(own);
-    if (renewal) list.push({ documentId: renewal.renewal_id, type: r.type, status: renewal.status, ...(renewal.expires_at ? { expiresAt: renewal.expires_at.toISOString() } : {}), renewalOf: r.document_id });
+    if (renewal) list.push({ documentId: renewal.renewal_id, type: r.type, status: renewal.status, ...(renewal.expires_at ? { expiresAt: renewal.expires_at.toISOString() } : {}), renewalOf: r.document_id, hasFile: true });
     out.set(r.owner_id, list);
   }
   return out;
