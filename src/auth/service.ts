@@ -20,7 +20,7 @@ import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 import type { CodeSmsSender } from "../sms/elks.js";
 import { pokeAlerts } from "../alerts/detector.js";
-import { DAY_MS, SIGN_IN_SMS_KIND, SMS_CODE_LENGTH, SMS_NO_ANSWER, maskPhone, nearCap, signInSmsLastDay, signInSmsText, smsCountryOf, smsLanguage, smsSignInFor, storedSmsText } from "./smsSignIn.js";
+import { DAY_MS, SIGN_IN_SMS_KIND, SMS_CODE_LENGTH, SMS_NO_ANSWER, bucketSmsLastDay, callingCodeOfPhone, codeSmsLastDay, maskPhone, smsLastMinute, smsSignInOtherFor, nearCap, signInSmsText, smsBucketOf, smsLanguage, storedSmsText } from "./smsSignIn.js";
 
 /**
  * Phone sign-in for the rider and driver apps (contract v0.5.0 §8, contract.json#auth).
@@ -217,10 +217,12 @@ export async function requestOtp(
 
     const isTest = deps.testSignInEnabled && (await isTestPhone(trx, input.phone, input.app));
     // v0.18.133 (contract.json#smsSignIn.active): a real number only with an SMS sender, a served country's MOBILE
-    // number and that country's switch on; otherwise the same answer as ever.
-    const country = isTest ? null : smsCountryOf(input.phone);
-    const setting = !isTest && deps.signInSms !== undefined && country !== null ? await smsSignInFor(trx, country) : undefined;
-    if (!isTest && (country === null || setting === undefined || !setting.enabled)) {
+    // number and that country's switch on; otherwise the same answer as ever. v0.18.157 (smsSignIn.otherCountries): a
+    // mobile number of a country not served here goes by the one other-countries switch and cap instead.
+    const target = isTest || deps.signInSms === undefined ? null : await smsBucketOf(trx, input.phone, input.app);
+    const country = target?.bucket ?? null;
+    const setting = target?.setting;
+    if (!isTest && (target === null || setting === undefined || !setting.enabled)) {
       throw new ApiError("forbidden", "Sign-in is not open for this number yet.", { reason: "sign_in_restricted" });
     }
 
@@ -277,13 +279,29 @@ export async function requestOtp(
     let smsCount = 0;
     if (!isTest && country !== null && setting !== undefined) {
       await sql`SELECT pg_advisory_xact_lock(hashtext(${`sms-cap:${country}`}))`.execute(trx);
-      const day = await signInSmsLastDay(trx, country, now);
+      const day = await bucketSmsLastDay(trx, country, now);
       if (day.count >= setting.dailyCap) {
         capHit = true;
         const wait = day.oldest ? (day.oldest.getTime() + DAY_MS - now.getTime()) / 1000 : DAY_MS / 1000;
         throw new ApiError("unavailable", "We cannot send more SMS codes right now. Try again later.", { reason: "sms_daily_limit", retryAfterSeconds: Math.min(DAY_MS / 1000, Math.max(1, Math.ceil(wait))) });
       }
       smsCount = day.count + 1;
+      // v0.18.157 (contract.json#smsSignIn.otherCountries.guards, 46elks AIT advice): per calling code inside the
+      // other-countries bucket, and a burst limit per minute for every sign-in SMS of the server. Same answer.
+      const limitHit = (oldest: Date | null, windowMs: number) => {
+        capHit = true;
+        const wait = oldest ? (oldest.getTime() + windowMs - now.getTime()) / 1000 : windowMs / 1000;
+        return new ApiError("unavailable", "We cannot send more SMS codes right now. Try again later.", { reason: "sms_daily_limit", retryAfterSeconds: Math.min(windowMs / 1000, Math.max(1, Math.ceil(wait))) });
+      };
+      if (target?.other !== undefined) {
+        const code = callingCodeOfPhone(input.phone);
+        const perCode = await codeSmsLastDay(trx, code, now);
+        if (perCode.count >= target.other.perCodeDailyCap) throw limitHit(perCode.oldest, DAY_MS);
+      }
+      const perMinute = (await smsSignInOtherFor(trx)).perMinuteCap;
+      await sql`SELECT pg_advisory_xact_lock(hashtext('sms-burst'))`.execute(trx);
+      const minute = await smsLastMinute(trx, now);
+      if (minute.count >= perMinute) throw limitHit(minute.oldest, 60_000);
     }
 
     const sessionId = newId("otp", now.getTime());
@@ -317,7 +335,7 @@ export async function requestOtp(
     if (isTest || country === null || setting === undefined) return { challenge };
     // The SMS is booked with the code (same transaction) and handed to the SMS company after the commit, so no
     // database connection or lock waits on the company. The stored text has dots in place of the code.
-    const lang = smsLanguage(input.locale, country);
+    const lang = smsLanguage(input.locale, target?.country ?? null);
     const smsId = newId("sms", now.getTime());
     await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: input.phone, text: storedSmsText(lang), kind: SIGN_IN_SMS_KIND, status: "queued", provider: deps.signInSms!.name, created_at: now }).execute();
     return { challenge, sms: { smsId, sessionId, to: input.phone, text: signInSmsText(lang, code), atAlertLine: smsCount === nearCap(setting.dailyCap) || smsCount === setting.dailyCap } };
@@ -345,10 +363,10 @@ export const SILENT_SMS_WAIT_MAX_MS = 8000;
  * silent answer does not differ there either: 6 when an SMS would have gone out, else the test code's 4.
  */
 export async function silentSmsWait(deps: AuthDeps, phone: string, app: App): Promise<number> {
-  const country = deps.signInSms === undefined ? null : smsCountryOf(phone);
-  if (deps.signInSms === undefined || country === null) return OTP.codeLength;
+  if (deps.signInSms === undefined) return OTP.codeLength;
   if (deps.testSignInEnabled && (await isTestPhone(deps.db, phone, app))) return OTP.codeLength;
-  if (!(await smsSignInFor(deps.db, country)).enabled) return OTP.codeLength;
+  const target = await smsBucketOf(deps.db, phone, app);
+  if (target === null || !target.setting.enabled) return OTP.codeLength;
   const ms = Math.min(SILENT_SMS_WAIT_MAX_MS, lastSmsSendMs.get(deps.signInSms) ?? SILENT_SMS_WAIT_DEFAULT_MS);
   await new Promise((resolve) => setTimeout(resolve, ms));
   return SMS_CODE_LENGTH;
