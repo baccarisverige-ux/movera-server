@@ -466,6 +466,49 @@ function stripeKeyCauses(ctx: Ctx): Cause[] {
   });
 }
 
+/** v0.18.158 (contract.json#crashCatcher.alert): app crash kinds that alert (never a caught error, never the server). */
+const APP_CRASH_KINDS = ["dart_error", "native_crash", "freeze", "crash"] as const;
+const APP_CRASH_NEW_MS = 24 * 3600_000;
+
+/**
+ * v0.18.158 (crashCatcher.alert, kind app_crash, owner 2026-11-24 "Add to admin all kind of crash"): every open crash
+ * group of the rider or driver app first seen in the last 24 h whose count reached the kind's Important limit (default
+ * 1: a new crash type alerts at once), Critical from the Critical limit (default 20). One alert per group and country:
+ * the country of the latest report's zone (with that zone) when it sent one, else every country that has a zone (no zone).
+ */
+async function appCrashCauses(ctx: Ctx): Promise<Cause[]> {
+  const rows = await sql<{ error_id: string; app: string; kind: string; message: string; count: number; devices: string; zone_id: string | null }>`
+    SELECT g.error_id, g.app, g.kind, g.message, g.count,
+           (SELECT count(*) FROM error_group_devices d WHERE d.error_id = g.error_id) AS devices,
+           (SELECT t.body->>'zoneId' FROM telemetry t WHERE t.error_id = g.error_id ORDER BY t.at DESC LIMIT 1) AS zone_id
+      FROM error_groups g
+     WHERE g.status = 'open' AND g.app IN ('rider', 'driver') AND g.kind IN (${sql.join(APP_CRASH_KINDS.map((k) => sql.lit(k)))})
+       AND g.first_seen > ${new Date(ctx.now.getTime() - APP_CRASH_NEW_MS)}
+     ORDER BY g.first_seen`.execute(ctx.ex);
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  const out: Cause[] = [];
+  for (const g of rows.rows) {
+    const zone = g.zone_id !== null ? ctx.zones.get(g.zone_id) : undefined;
+    for (const country of zone ? [zone.country] : countries) {
+      const k = settingsOf(ctx, country).kind("app_crash");
+      if (!k.on) continue;
+      const level = levelFor(Number(g.count), k.limits, "up");
+      if (level === null) continue;
+      out.push({
+        key: `app_crash:${g.error_id}:${country}`,
+        kind: "app_crash",
+        country,
+        zoneId: zone ? zone.zone_id : null,
+        level,
+        title: T("New crash in the {0} app ({1}): {2}", [g.app, g.kind, g.message.slice(0, 160)]),
+        detail: T("{0} reports from {1} devices", [Number(g.count), Number(g.devices)]),
+        ref: {},
+      });
+    }
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ custom rules (owner A3) */
 
 async function metricValues(ctx: Ctx): Promise<(metric: string, zoneId: string) => number> {
@@ -589,6 +632,7 @@ async function findAll(ctx: Ctx): Promise<Cause[]> {
     ...(await moneyCauses(ctx)),
     ...(await riderCauses(ctx)),
     ...(await systemCauses(ctx)),
+    ...(await appCrashCauses(ctx)),
     ...(await ruleCauses(ctx)),
   ];
   // One cause key, one cause (a cause found twice keeps the first).

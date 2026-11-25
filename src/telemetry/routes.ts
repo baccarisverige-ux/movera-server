@@ -3,11 +3,12 @@ import { authenticate, authenticateAdmin, type Principal } from "../auth/guard.j
 import { schemaProblem } from "../contract/schemas.js";
 import type { Db } from "../db/db.js";
 import { z } from "zod";
+import { contract } from "../contract/contract.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { parseBody } from "../http/validate.js";
-import { listErrorGroups, recordError, setErrorStatus, type ErrorApp, type ErrorKind, type ErrorPlatform } from "./errors.js";
+import { ERROR_KINDS, listErrorGroups, listErrorReports, recordError, setErrorStatus, type ErrorApp, type ErrorKind, type ErrorPlatform } from "./errors.js";
 import { recordTelemetryNotStored } from "./load.js";
 import { scrub } from "./scrub.js";
 
@@ -26,6 +27,9 @@ export type TelemetryDeps = { db: Db; jwtSecret: string; clock?: () => Date; per
 
 export const TELEMETRY = { maxBodyBytes: 16 * 1024, perAddressPerMinute: 120, anonRowsPerMinute: 600, anonBytesPerMinute: 2 * 1024 * 1024, keepDays: 30 } as const;
 
+/** v0.18.158 (contract.json#crashCatcher.server.perDevicePerMinute): crash reports stored per device and minute. */
+export const CRASHES_PER_DEVICE_PER_MINUTE = (contract as unknown as { crashCatcher: { server: { perDevicePerMinute: number } } }).crashCatcher.server.perDevicePerMinute;
+
 const KINDS = [
   ["logs", "log", "TelemetryLog"],
   ["analytics", "analytics", "TelemetryEvent"],
@@ -41,7 +45,10 @@ const ErrorsQuery = z.object({
   platform: z.enum(["android", "ios", "web", "server"]).optional(),
   version: z.string().min(1).max(40).optional(),
   status: z.enum(["open", "fixed"]).optional(),
+  // v0.18.158 (contract.json#crashCatcher.admin.list)
+  kind: z.enum(ERROR_KINDS as [ErrorKind, ...ErrorKind[]]).optional(),
 });
+const ReportsQuery = z.object({ limit: z.coerce.number().int().min(1).max(50).default(20) });
 const ErrorStatusBody = z.object({ status: z.enum(["open", "fixed"]) });
 const ERROR_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -62,6 +69,17 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
   const anonRows = deps.anonRowsPerMinute ?? TELEMETRY.anonRowsPerMinute;
   const anonBytes = deps.anonBytesPerMinute ?? TELEMETRY.anonBytesPerMinute;
   const anon = { start: 0, rows: 0, bytes: 0, dropped: 0 };
+  // v0.18.158 (crashCatcher.server.perDevice): stored crash reports per device (account, else address), fixed 60 s window per copy.
+  const devices = new Map<string, { start: number; n: number }>();
+  const deviceAllows = (device: string, at: number): boolean => {
+    const w = devices.get(device);
+    if (w === undefined || at - w.start >= 60_000) {
+      if (devices.size > 10_000) devices.clear();
+      devices.set(device, { start: at, n: 1 });
+      return true;
+    }
+    return ++w.n <= CRASHES_PER_DEVICE_PER_MINUTE;
+  };
 
   const caller = async (request: FastifyRequest): Promise<Principal | null> => {
     if (request.headers.authorization === undefined) return null;
@@ -100,12 +118,18 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
         anon.rows += 1;
         anon.bytes += size;
       }
-      const clean = scrub(body) as Record<string, unknown>;
+      const clean = keepExactFields(body, scrub(body) as Record<string, unknown>);
       // v0.16.0: a crash report that names its app (or comes with a rider/driver token) and platform is grouped
       // for the admin's Crashes & errors. One without (an older app) is kept as before, ungrouped.
       const errorApp = kind === "crash" ? appOf(clean, who) : null;
       const platform = clean["platform"] as ErrorPlatform | undefined;
       if (errorApp !== null && platform !== undefined) {
+        const device = who !== null ? `${who.actor}:${who.subjectId}` : `ip:${request.ip}`;
+        // Over the per-device limit: 202 as always, nothing stored (the apps treat it as delivered).
+        if (!deviceAllows(device, at.getTime())) {
+          recordTelemetryNotStored(kind, size);
+          return reply.status(202).send();
+        }
         await recordError(deps.db, {
           app: errorApp,
           platform,
@@ -113,7 +137,7 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
           message: String(clean["error"]),
           stack: typeof clean["stack"] === "string" ? clean["stack"] : undefined,
           appVersion: typeof clean["appVersion"] === "string" ? clean["appVersion"] : undefined,
-          device: who !== null ? `${who.actor}:${who.subjectId}` : `ip:${request.ip}`,
+          device,
           body: clean,
           actor: who?.actor ?? null,
           subjectId: who?.subjectId ?? null,
@@ -141,7 +165,15 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
   app.get(`${API_PREFIX}/admin/errors`, async (request) => {
     await authenticateAdmin(request, guard);
     const q = parseBody(ErrorsQuery, request.query);
-    return listErrorGroups(deps.db, { cursor: q.cursor, limit: q.limit, app: q.app, platform: q.platform, version: q.version, status: q.status });
+    return listErrorGroups(deps.db, { cursor: q.cursor, limit: q.limit, app: q.app, platform: q.platform, version: q.version, status: q.status, kind: q.kind });
+  });
+  // v0.18.158 (contract.json#crashCatcher.admin.reports): the kept reports of one group, same permission as the list.
+  app.get(`${API_PREFIX}/admin/errors/:errorId/reports`, async (request) => {
+    await authenticateAdmin(request, guard);
+    const errorId = (request.params as { errorId: string }).errorId;
+    if (!ERROR_ID.test(errorId)) throw badRequest("Not a valid id.", "invalid_id");
+    const q = parseBody(ReportsQuery, request.query);
+    return listErrorReports(deps.db, errorId, q.limit);
   });
   app.patch(`${API_PREFIX}/admin/errors/:errorId`, async (request) => {
     const who = await authenticateAdmin(request, guard);
@@ -156,4 +188,32 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
     );
     return result.body;
   });
+}
+
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+const WIRE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * v0.18.158 (contract.json#crashCatcher; review M1): the phone pattern of the scrub also matches the date of an
+ * RFC 3339 time and long digit runs in ids, so a breadcrumb `at`, `occurredAt`, `tripId` and `zoneId` came out as
+ * "[phone]...". Those fields are put back exactly as sent when they are a real time or a wire id (they can hold
+ * nothing else); every free text (messages, breadcrumb messages) stays scrubbed.
+ */
+export function keepExactFields(body: unknown, clean: Record<string, unknown>): Record<string, unknown> {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return clean;
+  const raw = body as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...clean };
+  if (typeof raw["occurredAt"] === "string" && ISO_TIME.test(raw["occurredAt"])) out["occurredAt"] = raw["occurredAt"];
+  for (const key of ["tripId", "zoneId"]) {
+    const v = raw[key];
+    if (typeof v === "string" && WIRE_ID.test(v)) out[key] = v;
+  }
+  const crumbs = raw["breadcrumbs"];
+  if (Array.isArray(crumbs) && Array.isArray(out["breadcrumbs"])) {
+    out["breadcrumbs"] = (out["breadcrumbs"] as unknown[]).map((crumb, i) => {
+      const at = (crumbs[i] as { at?: unknown } | null)?.at;
+      return crumb !== null && typeof crumb === "object" && typeof at === "string" && ISO_TIME.test(at) ? { ...(crumb as object), at } : crumb;
+    });
+  }
+  return out;
 }

@@ -1,6 +1,7 @@
 import { followFloor } from "../riders/debtFloor.js";
 import { checkCountryCashOffers } from "../drivers/owes.js";
 import { pickupSpotsProblem } from "./pickupSpots.js";
+import { crashReportsProblem } from "./crashReports.js";
 import { oneStreamProblem } from "./oneStream.js";
 import { liveLocationProblem } from "../trips/liveLocation.js";
 import { appUpdateProblem } from "./appUpdate.js";
@@ -158,6 +159,11 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "rider_app_config" || doc === "driver_app_config") {
     const update = appUpdateProblem(document);
     if (update !== null) throw badRequest(`The ${doc} document is not valid: ${update}.`, "invalid_document");
+  }
+  // v0.18.158 (contract.json#crashCatcher.setting): crashReports.on is true or false in both app documents.
+  if (doc === "rider_app_config" || doc === "driver_app_config") {
+    const crashes = crashReportsProblem(document);
+    if (crashes !== null) throw badRequest(`The ${doc} document is not valid: ${crashes}.`, "invalid_document");
   }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");

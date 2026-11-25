@@ -24,6 +24,7 @@ import { draftForPreview, previewRoutes } from "./preview.js";
 import { scopeKey } from "./scope.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
 import { withShareTrip } from "./shareTrip.js";
+import { withCrashReports } from "./crashReports.js";
 import { withDriverProfile, zoneDriverProfile } from "../drivers/publicProfile.js";
 import { withOneStream } from "./oneStream.js";
 import { withLiveLocation } from "../trips/liveLocation.js";
@@ -134,6 +135,8 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     // v0.18.122 L20 stream (contract.json#driverOneStream.server): the driver app always gets realtime.oneStream (missing = false).
     if (doc === "driver_app_config") document = withOneStream(document);
     if (doc === "driver_app_config") document = { ...document, sosContactsSms: await sosSmsDriverConfig(deps.db, zone.country, deps.smsConnected === true) };
+    // v0.18.158 (contract.json#crashCatcher.setting): both apps always get crashReports.on (missing = on).
+    document = withCrashReports(document);
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);
   };
