@@ -1,4 +1,5 @@
 import { moneyText, type CurrencyCode } from "../../rules/money.js";
+import { recordRiderRating } from "../../drivers/publicProfile.js";
 import { blockPair, dontMatchSettings } from "../../blockedPairs/service.js";
 import { applyPersonRules, hasBadWord, ratingRules } from "../../admin/reviewRules.js";
 import { checkTags } from "../../admin/ratings.js";
@@ -242,7 +243,7 @@ export async function completeTrip(trx: Trx, who: { actor: "driver" | "admin"; s
 
 /* ---------------------------------------------------------------- ratings */
 
-type RatingBody = { stars?: number; tags?: string[]; comment?: string; skip?: boolean; tip?: Money; dontMatchAgain?: boolean };
+type RatingBody = { stars?: number; tags?: string[]; comment?: string; skip?: boolean; tip?: Money; dontMatchAgain?: boolean; review?: string; reviewName?: "first_name" | "anonymous" };
 
 export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subjectId: string }, tripId: string, body: unknown, now: Date): Promise<{ status: number; body: unknown }> {
   const problem = schemaProblem("RatingRequest", body);
@@ -286,6 +287,8 @@ export async function rateTrip(trx: Trx, who: { actor: "rider" | "driver"; subje
     if (who.actor === "rider" && trip.driver_id) {
       if (!badWord) await trx.updateTable("drivers").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("driver_id", "=", trip.driver_id).execute();
       await applyPersonRules(trx, "driver", trip.driver_id, country, rules, now);
+      // v0.18.155 (contract.json#driverProfile): compliment counts on write; a short review waits for an admin.
+      await recordRiderRating(trx, trip, { stars, tags, review: rating.review, reviewName: rating.reviewName }, badWord, now, hasBadWord(rating.review, rules));
     } else if (who.actor === "driver") {
       if (!badWord) await trx.updateTable("riders").set({ rating_sum: sql`rating_sum + ${stars}`, rating_count: sql`rating_count + 1` }).where("rider_id", "=", trip.rider_id).execute();
       await applyPersonRules(trx, "rider", trip.rider_id, country, rules, now);

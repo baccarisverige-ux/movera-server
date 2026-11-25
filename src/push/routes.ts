@@ -6,8 +6,8 @@ import type { PushConfigSource } from "./config.js";
 
 /**
  * GET /push/config?app=driver|rider (contract v0.18.3): no token; the public Firebase web settings or enabled false.
- * v0.18.105 (BQ-V43): `&platform=android` gives the Android app's public settings (androidConfig); `ios` is enabled
- * false until the APNs key exists; no platform or `web` is the v0.18.3 answer.
+ * v0.18.105 (BQ-V43): `&platform=android` gives the Android app's public settings (androidConfig); no platform or
+ * `web` is the v0.18.3 answer. v0.18.156: `ios` gives the iOS app's public settings (iosConfig).
  */
 export async function pushRoutes(app: FastifyInstance, deps: { config: PushConfigSource }): Promise<void> {
   const Query = z.object({ app: z.enum(["driver", "rider"]), platform: z.enum(["web", "android", "ios"]).optional() });

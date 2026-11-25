@@ -24,6 +24,8 @@ import { draftForPreview, previewRoutes } from "./preview.js";
 import { scopeKey } from "./scope.js";
 import { decideApproval, listApprovals } from "../admin/approvals.js";
 import { withShareTrip } from "./shareTrip.js";
+import { withCrashReports } from "./crashReports.js";
+import { withDriverProfile, zoneDriverProfile } from "../drivers/publicProfile.js";
 import { withOneStream } from "./oneStream.js";
 import { withLiveLocation } from "../trips/liveLocation.js";
 import { attachOfferFeed, offerHead } from "../dispatch/offerFeed.js";
@@ -126,10 +128,15 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     if (doc === "rider_app_config") document = withShareTrip(document);
     // v0.18.144 (contract.json#liveLocation.setting): liveLocation is always served with its three keys.
     if (doc === "rider_app_config") document = withLiveLocation(document);
+    // v0.18.155 (contract.json#driverProfile.setting): both apps get the zone's driverProfile { on, reviews } from its rider document.
+    if (doc === "rider_app_config") document = withDriverProfile(document);
+    if (doc === "driver_app_config") document = { ...document, driverProfile: await zoneDriverProfile(deps.db, zoneId) };
     // v0.18.101 §92 (contract.json#sosContactsSms.driverConfig): the switch of the zone's country and whether SMS can go.
     // v0.18.122 L20 stream (contract.json#driverOneStream.server): the driver app always gets realtime.oneStream (missing = false).
     if (doc === "driver_app_config") document = withOneStream(document);
     if (doc === "driver_app_config") document = { ...document, sosContactsSms: await sosSmsDriverConfig(deps.db, zone.country, deps.smsConnected === true) };
+    // v0.18.158 (contract.json#crashCatcher.setting): both apps always get crashReports.on (missing = on).
+    document = withCrashReports(document);
     // v0.7.1 (contract.json#categoryCatalog): label, sub-line and seats from the admin catalog; archived car types left out.
     return withCatalog(deps.db, document);
   };
@@ -205,7 +212,7 @@ export async function configRoutes(app: FastifyInstance, deps: ConfigDeps): Prom
     const result = await runIdempotent(
       deps.db,
       { actor: "admin", subjectId: who.subjectId, key: keyOf(request.headers["idempotency-key"]), method: "PUT", route: request.url.split("?")[0]!, body },
-      async (trx) => ({ status: 200, body: await putDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, document: body.document, adminId: who.subjectId, ...(body.removeKeys ? { removeKeys: body.removeKeys } : {}) }, now()) }),
+      async (trx) => ({ status: 200, body: await putDraft(trx, { doc, zoneId, expectedVersion: body.expectedVersion, document: body.document, adminId: who.subjectId, role: who.role, ...(body.removeKeys ? { removeKeys: body.removeKeys } : {}) }, now()) }),
     );
     return result.body;
   });

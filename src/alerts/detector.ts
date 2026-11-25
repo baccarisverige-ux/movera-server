@@ -4,7 +4,7 @@ import type { Db, Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
 import "./schema.js";
 import { LANE_LATE_LIMITS, LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
-import { nearCap, signInSmsLastDay, smsSignInFor } from "../auth/smsSignIn.js";
+import { OTHER_HOME, callingCodeOfPhone, nearCap, otherSmsLastDay, servedCountries, callingCodeOf, smsLastMinute, signInSmsLastDay, smsSignInFor, smsSignInOtherFor } from "../auth/smsSignIn.js";
 import { serverStripeStatus, type StripeOffReason } from "../payments/stripeKeys.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
@@ -409,6 +409,34 @@ async function smsCapCauses(ctx: Ctx): Promise<Cause[]> {
       out.push({ key: `system_health:sms_cap_near:${country}`, kind: "system_health", country, zoneId: null, level: "important", title: T("Sign-in SMS: {0} of {1} sent in the last 24 hours", [count, setting.dailyCap]), detail, ref: {} });
     }
   }
+  // v0.18.157 (contract.json#smsSignIn.otherCountries.alert): the one other-countries limit, in the home country's book.
+  if (countries.includes(OTHER_HOME) && settingsOf(ctx, OTHER_HOME).kind("system_health").on) {
+    const other = await smsSignInOtherFor(ctx.ex);
+    if (other.enabled) {
+      const { count } = await otherSmsLastDay(ctx.ex, ctx.now);
+      const detail = T("Raise the daily limit for other countries in Tips & limits (Sweden) if these are real people");
+      if (count >= other.dailyCap) {
+        out.push({ key: "system_health:sms_cap:other", kind: "system_health", country: OTHER_HOME, zoneId: null, level: "critical", title: T("Sign-in SMS limit for other countries reached: {0} of {1} in the last 24 hours. New sign-in codes for these numbers are stopped", [count, other.dailyCap]), detail, ref: {} });
+      } else if (count >= nearCap(other.dailyCap)) {
+        out.push({ key: "system_health:sms_cap_near:other", kind: "system_health", country: OTHER_HOME, zoneId: null, level: "important", title: T("Sign-in SMS to other countries: {0} of {1} sent in the last 24 hours", [count, other.dailyCap]), detail, ref: {} });
+      }
+    }
+    // v0.18.157 guards.alerts: a spike from one calling code (its own cap reached) and a burst of all sign-in SMS.
+    if (other.enabled) {
+      const prefixes = (await servedCountries(ctx.ex)).map(callingCodeOf).filter((p): p is string => p !== undefined);
+      const rows = await ctx.ex.selectFrom("sms_outbox").select("phone").where("kind", "in", ["sign_in_code", "sos_contact"]).where("status", "in", ["queued", "sent"]).where("created_at", ">", new Date(ctx.now.getTime() - 24 * 3_600_000)).execute();
+      const perCode = new Map<string, number>();
+      for (const { phone } of rows) if (!prefixes.some((p) => phone.startsWith(p))) perCode.set(callingCodeOfPhone(phone), (perCode.get(callingCodeOfPhone(phone)) ?? 0) + 1);
+      for (const [code, count] of perCode) {
+        if (count < other.perCodeDailyCap) continue;
+        out.push({ key: `system_health:sms_cap:other:${code}`, kind: "system_health", country: OTHER_HOME, zoneId: null, level: "important", title: T("Sign-in SMS spike to {0}: {1} of {2} in the last 24 hours. New codes for this calling code are stopped", [code, count, other.perCodeDailyCap]), detail: T("Check for SMS pumping; block the calling code in Tips & limits (Sweden) if these are not real people"), ref: {} });
+      }
+    }
+    const minute = await smsLastMinute(ctx.ex, ctx.now);
+    if (minute.count >= other.perMinuteCap) {
+      out.push({ key: "system_health:sms_burst", kind: "system_health", country: OTHER_HOME, zoneId: null, level: "critical", title: T("Sign-in SMS burst: the limit of {0} per minute was reached. New codes wait", [other.perMinuteCap]), detail: T("Check for SMS pumping; block the calling code in Tips & limits (Sweden) if these are not real people"), ref: {} });
+    }
+  }
   return out;
 }
 
@@ -436,6 +464,49 @@ function stripeKeyCauses(ctx: Ctx): Cause[] {
     if (!k.on) return [];
     return [{ key: `system_health:stripe_keys:${country}`, kind: "system_health", country, zoneId: null, level: k.level, title: T(title), detail: T("Fix the Stripe keys in the server settings and restart the server"), ref: {} }];
   });
+}
+
+/** v0.18.158 (contract.json#crashCatcher.alert): app crash kinds that alert (never a caught error, never the server). */
+const APP_CRASH_KINDS = ["dart_error", "native_crash", "freeze", "crash"] as const;
+const APP_CRASH_NEW_MS = 24 * 3600_000;
+
+/**
+ * v0.18.158 (crashCatcher.alert, kind app_crash, owner 2026-11-24 "Add to admin all kind of crash"): every open crash
+ * group of the rider or driver app first seen in the last 24 h whose count reached the kind's Important limit (default
+ * 1: a new crash type alerts at once), Critical from the Critical limit (default 20). One alert per group and country:
+ * the country of the latest report's zone (with that zone) when it sent one, else every country that has a zone (no zone).
+ */
+async function appCrashCauses(ctx: Ctx): Promise<Cause[]> {
+  const rows = await sql<{ error_id: string; app: string; kind: string; message: string; count: number; devices: string; zone_id: string | null }>`
+    SELECT g.error_id, g.app, g.kind, g.message, g.count,
+           (SELECT count(*) FROM error_group_devices d WHERE d.error_id = g.error_id) AS devices,
+           (SELECT t.body->>'zoneId' FROM telemetry t WHERE t.error_id = g.error_id ORDER BY t.at DESC LIMIT 1) AS zone_id
+      FROM error_groups g
+     WHERE g.status = 'open' AND g.app IN ('rider', 'driver') AND g.kind IN (${sql.join(APP_CRASH_KINDS.map((k) => sql.lit(k)))})
+       AND g.first_seen > ${new Date(ctx.now.getTime() - APP_CRASH_NEW_MS)}
+     ORDER BY g.first_seen`.execute(ctx.ex);
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  const out: Cause[] = [];
+  for (const g of rows.rows) {
+    const zone = g.zone_id !== null ? ctx.zones.get(g.zone_id) : undefined;
+    for (const country of zone ? [zone.country] : countries) {
+      const k = settingsOf(ctx, country).kind("app_crash");
+      if (!k.on) continue;
+      const level = levelFor(Number(g.count), k.limits, "up");
+      if (level === null) continue;
+      out.push({
+        key: `app_crash:${g.error_id}:${country}`,
+        kind: "app_crash",
+        country,
+        zoneId: zone ? zone.zone_id : null,
+        level,
+        title: T("New crash in the {0} app ({1}): {2}", [g.app, g.kind, g.message.slice(0, 160)]),
+        detail: T("{0} reports from {1} devices", [Number(g.count), Number(g.devices)]),
+        ref: {},
+      });
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ custom rules (owner A3) */
@@ -561,6 +632,7 @@ async function findAll(ctx: Ctx): Promise<Cause[]> {
     ...(await moneyCauses(ctx)),
     ...(await riderCauses(ctx)),
     ...(await systemCauses(ctx)),
+    ...(await appCrashCauses(ctx)),
     ...(await ruleCauses(ctx)),
   ];
   // One cause key, one cause (a cause found twice keeps the first).

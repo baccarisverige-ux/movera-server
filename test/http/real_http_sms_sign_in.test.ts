@@ -114,8 +114,10 @@ describe.each(["staging", "production"] as const)("real HTTP sign-in with SMS co
   });
 
   it("a number of a country that is off, and a number outside the served countries: 403 sign_in_restricted, answered", async () => {
+    // v0.18.157 (smsSignIn.otherCountries, owner 2026-11-24): in the RIDER app such numbers get a code by default
+    // (sms_other_countries.test.ts); the DRIVER app keeps the served countries only.
     for (const phone of ["+33639980001", "+4790000002"]) {
-      const asked = await call(base, "POST", "/api/v1/auth/otp/request", { phone, app: "rider" });
+      const asked = await call(base, "POST", "/api/v1/auth/otp/request", { phone, app: "driver" });
       expect(asked.status, phone).toBe(403);
       expect(json(asked).reason).toBe("sign_in_restricted");
     }

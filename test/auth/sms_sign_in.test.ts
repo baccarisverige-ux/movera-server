@@ -91,8 +91,10 @@ describe("nothing changes until BOTH the keys and the country switch are there",
   });
 
   it("a number outside +46 / +33 / +216 is sign_in_restricted; a country that is off stays off while another is on", async () => {
+    // v0.18.157 (contract.json#smsSignIn.otherCountries, owner 2026-11-24): the DRIVER app keeps the served countries
+    // only; the rider app's other-countries rule is tested in sms_other_countries.test.ts.
     for (const phone of ["+4790000001", "+12025550101", "+447700900001", "+3584000000001"]) {
-      expect((await request(phone)).json().reason, phone).toBe("sign_in_restricted");
+      expect((await request(phone, { app: "driver" })).json().reason, phone).toBe("sign_in_restricted");
     }
     expect((await request("+21620000001")).json().reason).toBe("sign_in_restricted");
     await setSmsSignIn(database.db, "FR", { enabled: false }, clock.now);
@@ -375,7 +377,10 @@ describe("the limits of the test sign-in hold for real numbers (each SMS asked f
     sms.sent.length = 0;
     await setSmsSignIn(database.db, "SE", { enabled: true, dailyCap: 5000 }, clock.now);
     const wifi = "203.0.113.77";
-    for (let i = 0; i < limits.codesPerAddressPerHour; i++) expect((await request(realSE(), {}, wifi)).statusCode, `number ${i}`).toBe(200);
+    for (let i = 0; i < limits.codesPerAddressPerHour; i++) {
+      expect((await request(realSE(), {}, wifi)).statusCode, `number ${i}`).toBe(200);
+      advance(3); // v0.18.157: stay under the per-minute burst limit (smsSignIn.otherCountries.guards.perMinuteCap)
+    }
     const pumped = await request(realSE(), {}, wifi);
     expect(pumped.statusCode).toBe(429);
     expect(pumped.json().reason).toBe("otp_too_many");

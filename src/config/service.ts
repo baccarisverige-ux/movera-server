@@ -1,6 +1,7 @@
 import { followFloor } from "../riders/debtFloor.js";
 import { checkCountryCashOffers } from "../drivers/owes.js";
 import { pickupSpotsProblem } from "./pickupSpots.js";
+import { crashReportsProblem } from "./crashReports.js";
 import { oneStreamProblem } from "./oneStream.js";
 import { liveLocationProblem } from "../trips/liveLocation.js";
 import { appUpdateProblem } from "./appUpdate.js";
@@ -15,7 +16,7 @@ import { arrivedDistanceProblem } from "../trips/ride/settings.js";
 import { geofenceProblem } from "../trips/ride/geofence.js";
 import { checkEmergencyNumbers } from "./emergencyNumbers.js";
 import { checkSosContactsSms } from "../safety/sosContactsSms.js";
-import { checkSmsSignIn } from "../auth/smsSignIn.js";
+import { checkSmsSignIn, checkSmsSignInOther, otherSettingIn } from "../auth/smsSignIn.js";
 import { registerApprovalHandler } from "../admin/approvals.js";
 import { audit } from "../admin/audit.js";
 import { contract } from "../contract/contract.js";
@@ -112,6 +113,8 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "country_rules") checkSosContactsSms(zone.kind, document);
   // v0.18.133 (contract.json#smsSignIn.setting): CountryRules.smsSignIn (country standard only; enabled, dailyCap).
   if (doc === "country_rules") checkSmsSignIn(zone.kind, document);
+  // v0.18.157 (contract.json#smsSignIn.otherCountries.setting): CountryRules.smsSignInOtherCountries (home standard only).
+  if (doc === "country_rules") checkSmsSignInOther(zone.kind, zone.country, document);
   // v0.18.86 J5b (contract.json#commissionSteps.validation): the steps have their own reason and details, so they are
   // checked before the schema (which would answer invalid_document); the warn rule is advisory and never refused here.
   if (doc === "pricing") {
@@ -156,6 +159,11 @@ export function checkDocument(doc: ConfigDoc, zone: Zone, document: unknown): vo
   if (doc === "rider_app_config" || doc === "driver_app_config") {
     const update = appUpdateProblem(document);
     if (update !== null) throw badRequest(`The ${doc} document is not valid: ${update}.`, "invalid_document");
+  }
+  // v0.18.158 (contract.json#crashCatcher.setting): crashReports.on is true or false in both app documents.
+  if (doc === "rider_app_config" || doc === "driver_app_config") {
+    const crashes = crashReportsProblem(document);
+    if (crashes !== null) throw badRequest(`The ${doc} document is not valid: ${crashes}.`, "invalid_document");
   }
   const problem = schemaProblem(SCHEMA[doc], document);
   if (problem !== null) throw badRequest(`The ${doc} document is not valid: ${problem}.`, "invalid_document");
@@ -222,7 +230,7 @@ async function lockDraftVersion(trx: Trx, doc: ConfigDoc, zoneId: string): Promi
 }
 
 /** PUT /admin/config/{doc}: replace the draft, inside the caller's transaction. */
-export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string; removeKeys?: readonly string[] }, now: Date): Promise<ConfigDraftView> {
+export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string; expectedVersion: number; document: unknown; adminId: string; removeKeys?: readonly string[]; role?: string }, now: Date): Promise<ConfigDraftView> {
   checkRemoveKeys(input.doc, input.removeKeys ?? []);
   const zone = await getScope(trx, input.zoneId);
   if (input.doc === "onboarding" && schemaProblem(SCHEMA.onboarding, input.document) === null) {
@@ -248,6 +256,15 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
   if (kept.length > 0) {
     input = { ...input, document: whole };
     checkDocument(input.doc, zone, input.document);
+  }
+  // v0.18.157 (contract.json#smsSignIn.otherCountries.setting): only a super admin changes the other-countries switch
+  // or limit (a save that leaves it as stored, or out, is fine for every admin with settings.edit).
+  // Fails closed: a save without a role (Restore, the seed) may not change it either; Restore keeps it (KEPT_ON_RESTORE).
+  if (input.doc === "country_rules" && input.role !== "super") {
+    const stored = otherSettingIn(current.document);
+    if (otherSettingIn(input.document) !== stored) {
+      throw new ApiError("forbidden", "Only a super admin can change SMS sign-in for numbers from other countries.", { reason: "super_admin_only" });
+    }
   }
   // v0.8.1 §6.5: tips, raise steps and driver bonus limits come from the scope's rules (its own, else the standard).
   const rules = await liveRules(trx, input.zoneId);
@@ -606,7 +623,8 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
 export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
   // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
   // v0.18.139 (pricingHistory.restoreKeeps): the monthly pay request (switch, day, payment link, minimum) stays too.
-  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "driverPayRequest", "riderFeeStripe"],
+  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "driverPayRequest", "riderFeeStripe", "smsSignInOtherCountries"],
+  // v0.18.157 (pricingHistory.restoreKeeps): the SMS sign-in for other countries stays too (super admins only change it).
   // v0.18.136 (pricingHistory.restoreKeeps): the Stripe rider fee switch stays too.
 };
 

@@ -24,7 +24,9 @@ export const MAX_VERSIONS_PER_GROUP = 20;
 
 export type ErrorApp = "driver" | "rider" | "server";
 export type ErrorPlatform = "android" | "ios" | "web" | "server";
-export type ErrorKind = "crash" | "error";
+/** v0.18.158 (contract.json#crashCatcher.kinds): dart_error, native_crash and freeze next to the v0.16.0 crash and error. */
+export type ErrorKind = "crash" | "error" | "dart_error" | "native_crash" | "freeze";
+export const ERROR_KINDS = (contract as unknown as { telemetry: { crashReport: { kinds: ErrorKind[] } } }).telemetry.crashReport.kinds;
 export type ErrorStatus = "open" | "fixed";
 
 export type ErrorReport = {
@@ -200,7 +202,7 @@ function view(r: GroupRow): ErrorGroupView {
   };
 }
 
-export type ErrorQuery = { cursor?: string | undefined; limit: number; app?: ErrorApp | undefined; platform?: ErrorPlatform | undefined; version?: string | undefined; status?: ErrorStatus | undefined };
+export type ErrorQuery = { cursor?: string | undefined; limit: number; app?: ErrorApp | undefined; platform?: ErrorPlatform | undefined; version?: string | undefined; status?: ErrorStatus | undefined; kind?: ErrorKind | undefined };
 
 /** GET /admin/errors: newest lastSeen first, cursor pages. */
 export async function listErrorGroups(ex: Executor, input: ErrorQuery): Promise<{ items: ErrorGroupView[]; nextCursor: string | null }> {
@@ -208,6 +210,7 @@ export async function listErrorGroups(ex: Executor, input: ErrorQuery): Promise<
   if (input.app !== undefined) query = query.where("g.app", "=", input.app);
   if (input.platform !== undefined) query = query.where("g.platform", "=", input.platform);
   if (input.status !== undefined) query = query.where("g.status", "=", input.status);
+  if (input.kind !== undefined) query = query.where("g.kind", "=", input.kind);
   if (input.version !== undefined) query = query.where(sql<boolean>`${input.version}::text = ANY(g.app_versions)`);
   if (input.cursor !== undefined) {
     const c = readCursor(input.cursor);
@@ -217,6 +220,56 @@ export async function listErrorGroups(ex: Executor, input: ErrorQuery): Promise<
   const page = rows.slice(0, input.limit);
   const last = page[page.length - 1];
   return { items: page.map(view), nextCursor: rows.length > input.limit && last ? cursorOf(last.last_seen, last.error_id) : null };
+}
+
+/** v0.18.158 (contract.json#crashCatcher.admin.reports): one kept report as the admin reads it. */
+export type ErrorReportView = {
+  at: string;
+  kind: ErrorKind;
+  appVersion?: string;
+  build?: string;
+  platform?: string;
+  osVersion?: string;
+  deviceModel?: string;
+  screen?: string;
+  tripId?: string;
+  zoneId?: string;
+  message: string;
+  stack?: string;
+  nativeReason?: { name: string; reason?: string };
+  freezeMs?: number;
+  breadcrumbs: { at: string; type: string; message: string }[];
+};
+
+const text = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
+
+function reportView(at: Date, body: Record<string, unknown>, groupKind: ErrorKind): ErrorReportView {
+  const kind = ERROR_KINDS.includes(body["kind"] as ErrorKind) ? (body["kind"] as ErrorKind) : groupKind;
+  const out: ErrorReportView = { at: at.toISOString(), kind, message: text(body["error"]) ?? "(no message)", breadcrumbs: [] };
+  for (const key of ["appVersion", "build", "platform", "osVersion", "deviceModel", "screen", "tripId", "zoneId", "stack"] as const) {
+    const value = text(body[key]);
+    if (value !== undefined) out[key] = value;
+  }
+  const native = body["nativeReason"];
+  if (typeof native === "object" && native !== null && typeof (native as { name?: unknown }).name === "string") {
+    const reason = text((native as { reason?: unknown }).reason);
+    out.nativeReason = { name: (native as { name: string }).name, ...(reason !== undefined ? { reason } : {}) };
+  }
+  if (typeof body["freezeMs"] === "number") out.freezeMs = body["freezeMs"];
+  if (Array.isArray(body["breadcrumbs"])) {
+    out.breadcrumbs = body["breadcrumbs"]
+      .filter((c): c is { at: string; type: string; message: string } => typeof c === "object" && c !== null && typeof c.at === "string" && typeof c.type === "string" && typeof c.message === "string")
+      .map((c) => ({ at: c.at, type: c.type, message: c.message }));
+  }
+  return out;
+}
+
+/** GET /admin/errors/{errorId}/reports: the group's kept reports, newest first (404 for an unknown group). */
+export async function listErrorReports(ex: Executor, errorId: string, limit: number): Promise<{ items: ErrorReportView[] }> {
+  const group = await ex.selectFrom("error_groups").select(["kind"]).where("error_id", "=", errorId).executeTakeFirst();
+  if (group === undefined) throw notFound("No such error group.");
+  const rows = await ex.selectFrom("telemetry").select(["at", "body"]).where("error_id", "=", errorId).orderBy("at", "desc").orderBy("telemetry_id", "desc").limit(limit).execute();
+  return { items: rows.map((r) => reportView(r.at, (typeof r.body === "string" ? JSON.parse(r.body) : r.body) as Record<string, unknown>, group.kind)) };
 }
 
 /** PATCH /admin/errors/{errorId}: open or fixed, audited. */
