@@ -8,7 +8,8 @@ import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, O
  */
 
 export type LatLng = { lat: number; lng: number };
-export type RouteLeg = { distanceMeters: number; durationSeconds: number; source: "osrm" | "estimate"; points?: LatLng[] };
+/** v0.18.163: "google" = Google Routes with live traffic (maps/googleRoutes.ts; never a shape). */
+export type RouteLeg = { distanceMeters: number; durationSeconds: number; source: "google" | "osrm" | "estimate"; points?: LatLng[]; polyline?: string };
 
 /**
  * S7 0.17 (owner W2 Q120 part 3): `shape: false` = the caller needs only the distance and the time (an ETA tick, the

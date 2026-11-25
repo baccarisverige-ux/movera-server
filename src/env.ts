@@ -2,6 +2,7 @@ import { z } from "zod";
 import { parseExtraTestPhones } from "./auth/testPhones.js";
 import { smsStartupWarnings } from "./sms/elks.js";
 import { stripeKeyStatus } from "./payments/stripeKeys.js";
+import { GOOGLE_PER_MINUTE_DEFAULT, GOOGLE_TIMEOUT_MS_DEFAULT } from "./maps/googleRoutes.js";
 import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./maps/osrmSettings.js";
 import { READ_RETRY_DEFAULTS } from "./realtime/retry.js";
 import { SESSION_CHECK_DEFAULT_MS, SESSION_CHECK_MAX_MS } from "./realtime/sessionWatch.js";
@@ -88,6 +89,13 @@ const schema = z.object({
   OSRM_BREAKER_COOLDOWN_SECONDS: z.coerce.number().int().min(1).max(3600).default(OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT),
   /** Google Places / Geocoding key for address search (owner decision 4). Unset: address search answers 503. */
   GOOGLE_MAPS_API_KEY: z.string().min(10).optional(),
+  /**
+   * v0.18.163 (contract.json#liveTraffic): the same key also asks Google Routes for trip times with live traffic. Knobs
+   * (defaults fine; no need to set them): how long one ask waits before OSRM takes it, and the per-copy cap of Google
+   * asks a minute (a cost cap; above it OSRM for the rest of the minute; 0 = no cap).
+   */
+  GOOGLE_ROUTES_TIMEOUT_MS: z.coerce.number().int().min(200).max(10_000).default(GOOGLE_TIMEOUT_MS_DEFAULT),
+  GOOGLE_ROUTES_PER_MINUTE: z.coerce.number().int().min(0).max(100_000).default(GOOGLE_PER_MINUTE_DEFAULT),
   /**
    * G30b (owner 2026-11-12 Q1, contract.json#emailVerified.delivery): Resend's API key for the e-mail change codes,
    * filled in Render's dashboard (never committed, never logged). Unset: no e-mail is sent, delivery pending_provider.

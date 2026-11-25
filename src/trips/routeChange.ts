@@ -1,3 +1,4 @@
+import { tripTimeRouter } from "../maps/liveTraffic.js";
 import { moneyText, type MoneyLike } from "../rules/money.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { commissionOf } from "../rules/commission.js";
@@ -148,7 +149,7 @@ export type RoutedQuote = { key: string; leg: RouteLeg };
 export class RouteInputsChanged extends Error {}
 export const ROUTE_QUOTE_TRIES = 3;
 
-export async function routeForQuote(ex: Executor, router: Router, riderId: string, tripId: string, body: unknown): Promise<RoutedQuote | null> {
+export async function routeForQuote(ex: Executor, roads: Router, riderId: string, tripId: string, body: unknown, traffic?: Router): Promise<RoutedQuote | null> {
   if (schemaProblem("RouteQuoteRequest", body) !== null) return null;
   const req = body as RouteQuoteBody;
   const trip = await ex.selectFrom("trips").selectAll().where("trip_id", "=", tripId).executeTakeFirst();
@@ -168,6 +169,8 @@ export async function routeForQuote(ex: Executor, router: Router, riderId: strin
     if (zone === null || !zone.open) return null;
   }
   const points = newRoutePoints(trip, req);
+  // v0.18.163 (contract.json#liveTraffic.uses): live traffic when the zone's setting is on.
+  const router = await tripTimeRouter(ex, trip.zone_id, { roads, ...(traffic ? { traffic } : {}) });
   // The price needs the distance and the time only, never the road's shape.
   return { key: legKey(points), leg: await router.route(points, { shape: false }) };
 }
@@ -178,9 +181,9 @@ export async function routeForQuote(ex: Executor, router: Router, riderId: strin
  * will replay it or refuse the key) skips the road of the first try; should `locked` run the work after all (the key
  * was swept in between), step 2 finds no road, throws RouteInputsChanged and the next try routes as usual.
  */
-export async function quoteOutsideLock<T>(db: Executor, router: Router, riderId: string, tripId: string, body: unknown, locked: (routed: RoutedQuote | null) => Promise<T>, options: { routeFirstTry?: boolean } = {}): Promise<T> {
+export async function quoteOutsideLock<T>(db: Executor, router: Router, riderId: string, tripId: string, body: unknown, locked: (routed: RoutedQuote | null) => Promise<T>, options: { routeFirstTry?: boolean; traffic?: Router } = {}): Promise<T> {
   for (let attempt = 1; ; attempt++) {
-    const routed = attempt === 1 && options.routeFirstTry === false ? null : await routeForQuote(db, router, riderId, tripId, body);
+    const routed = attempt === 1 && options.routeFirstTry === false ? null : await routeForQuote(db, router, riderId, tripId, body, options.traffic);
     try {
       return await locked(routed);
     } catch (error) {
@@ -293,6 +296,9 @@ async function applyChange(trx: Trx, trip: TripRow, change: RouteChange, answere
     commission_minor: commissionOf(total, quote.fare_lines, earnings, Number(trip.pickup_pay_minor ?? 0), Number(trip.driver_bonus_minor ?? 0)),
     distance_meters: quote.distance_meters,
     duration_seconds: quote.duration_seconds,
+    // v0.18.163: the new route has no stored polyline; the next ETA tick asks Google once (trips/etaRoute.ts).
+    route_polyline: null,
+    eta_route: null,
     planned_route: null,
     route_change: JSON.stringify({ ...change, status: "accepted", answeredAt: now.toISOString(), answeredBy }),
   }, now);
@@ -373,6 +379,9 @@ async function applyWhileSearching(trx: Trx, trip: TripRow, quote: { route_quote
       commission_minor: commissionOf(total, quote.fare_lines, earnings, Number(trip.pickup_pay_minor ?? 0), Number(trip.driver_bonus_minor ?? 0)),
       distance_meters: quote.distance_meters,
       duration_seconds: quote.duration_seconds,
+      // v0.18.163: the new route has no stored polyline; the next ETA tick asks Google once (trips/etaRoute.ts).
+      route_polyline: null,
+      eta_route: null,
       planned_route: null,
       route_change: JSON.stringify(done),
       search_step: null,

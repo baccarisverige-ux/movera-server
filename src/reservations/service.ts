@@ -572,7 +572,7 @@ export async function rescheduleTrip(trx: Trx, riderId: string, tripId: string, 
   const money = {
     pickup: JSON.stringify(quote.pickup), dropoff: JSON.stringify(quote.dropoff), stops: JSON.stringify(quote.stops ?? []), scheduled_at: quote.scheduled_at, category_id: quote.category_id,
     quote_id: quote.quote_id, quote_expires_at: quote.expires_at, fare_minor: quote.total_minor, fare_lines: JSON.stringify(quote.fare_lines), booked_fare_minor: quote.total_minor,
-    driver_earnings_minor: quote.driver_earnings_minor, distance_meters: quote.distance_meters, duration_seconds: quote.duration_seconds, surge_multiplier: quote.surge_multiplier,
+    driver_earnings_minor: quote.driver_earnings_minor, distance_meters: quote.distance_meters, duration_seconds: quote.duration_seconds, route_polyline: quote.route_polyline ?? null, eta_route: null, surge_multiplier: quote.surge_multiplier,
     price_extras: JSON.stringify(quote.price_extras ?? {}), pricing_version: quote.pricing_version, pricing_scope: quote.pricing_scope,
     commission_minor: commissionOf(Number(quote.total_minor), quote.fare_lines, Number(quote.driver_earnings_minor), 0, 0),
   };

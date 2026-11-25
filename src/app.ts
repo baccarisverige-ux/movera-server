@@ -1,3 +1,4 @@
+import { GoogleRoutesRouter, setLiveTrafficConfigured } from "./maps/googleRoutes.js";
 import { configureSessionCache } from "./auth/sessionCache.js";
 import { pricingRoutes } from "./pricing/routes.js";
 import { jobsHeartbeat } from "./jobs/heartbeat.js";
@@ -21,7 +22,7 @@ import { API_PREFIX } from "./http/prefix.js";
 import { authRoutes } from "./auth/routes.js";
 import { adminAuthRoutes } from "./admin/routes.js";
 import { configRoutes } from "./config/routes.js";
-import { EstimateRouter, OsrmRouter, type Router } from "./maps/routing.js";
+import { EstimateRouter, type Router } from "./maps/routing.js";
 import { quoteRoutes } from "./quotes/routes.js";
 import { mapsRoutes } from "./maps/routes.js";
 import { tripRoutes } from "./trips/routes.js";
@@ -74,7 +75,7 @@ const REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 /** B1.27: what a log line and a stored server error say for a request that matched no route (its path is never written). */
 const NO_ROUTE = "(no route)";
 
-export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; signInSms?: CodeSmsSender; healthDb?: Db; shed?: ShedOptions; stripe?: StripeApi | null };
+export type BuildOptions = { env: Env; logger?: boolean | { stream: NodeJS.WritableStream }; db?: Db; clock?: () => Date; router?: Router; traffic?: Router | null; places?: Places; hub?: NotificationHub; sms?: SmsProvider; providers?: Partial<Record<Provider, ProviderVerifier>>; push?: PushServices; translator?: Translator; email?: EmailSender; signInSms?: CodeSmsSender; healthDb?: Db; shed?: ShedOptions; stripe?: StripeApi | null };
 
 const READY_TIMEOUT_MS = 2000;
 const HEALTH_DB_TIMEOUT_MS = 1000;
@@ -116,7 +117,7 @@ async function timerBacklog(db: Db): Promise<Record<string, { parked: number; ov
 }
 const CORS_HEADERS = "Authorization, Content-Type, Idempotency-Key, X-Api-Version, X-Contract-Version, X-Request-Id, X-App-Version, X-App-Platform, Last-Event-ID, Accept, Accept-Language";
 
-export async function buildApp({ env, logger = true, db, clock, router, places, hub, sms, providers, push, translator, email, signInSms, healthDb, shed, stripe }: BuildOptions): Promise<FastifyInstance> {
+export async function buildApp({ env, logger = true, db, clock, router, traffic, places, hub, sms, providers, push, translator, email, signInSms, healthDb, shed, stripe }: BuildOptions): Promise<FastifyInstance> {
   // G34 P2: the health checks ask the database on their own small pool (main.ts, db.ts createHealthPool) when given, so a
   // full app pool is never reported as "database not reachable"; without one (tests, tools) they use the app's.
   const probeDb = healthDb ?? db;
@@ -356,20 +357,33 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     // v0.18.110 BQ-V44 (contract.json#bonusCampaigns): Admin › Drivers › Bonuses and the driver's Campaigns.
     await bonusRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await configRoutes(app, { db, jwtSecret, defaultZoneId: env.DEFAULT_ZONE_ID, smsConnected: sosSms !== undefined, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
-    const roads =
-      router ??
-      (env.OSRM_URL !== undefined
-        ? new OsrmRouter(env.OSRM_URL, env.OSRM_TIMEOUT_MS, (error) => app.log.warn({ err: error }, "OSRM unavailable; distance estimated"), {
-            failuresToOpen: env.OSRM_BREAKER_FAILURES,
-            coolDownMs: env.OSRM_BREAKER_COOLDOWN_SECONDS * 1000,
-            log: app.log,
-          })
-        : new EstimateRouter());
+    // v0.18.163 (owner 2026-11-25 "We cannot use data for open street map"): no OSRM any more, whatever OSRM_URL says
+    // (the variable is left as it is; OsrmRouter stays in maps/routing.ts, unused, Rule 21). Roads = the straight-line
+    // estimate; trip times come from Google live traffic (below) where the zone has it on.
+    const roads = router ?? new EstimateRouter();
+    // v0.18.163 (contract.json#liveTraffic): trip times with live traffic from Google Routes (the existing
+    // GOOGLE_MAPS_API_KEY, Routes API enabled on its project), falling back to the estimate. About 2 calls per trip
+    // (owner 2026-11-25): the quote (duration, distance, polyline), the driver's drive to the pickup after accept; the
+    // ETA during the trip is worked out along the stored polyline (trips/etaRoute.ts), with a new call only off the
+    // route or far behind. Tests pass `traffic` (null = none); an injected `router` alone means no Google.
+    const trafficRoads =
+      traffic !== undefined
+        ? (traffic ?? undefined)
+        : router === undefined && env.GOOGLE_MAPS_API_KEY !== undefined
+          ? new GoogleRoutesRouter(env.GOOGLE_MAPS_API_KEY, roads, {
+              timeoutMs: env.GOOGLE_ROUTES_TIMEOUT_MS,
+              perMinute: env.GOOGLE_ROUTES_PER_MINUTE,
+              log: app.log,
+            })
+          : undefined;
+    setLiveTrafficConfigured(trafficRoads !== undefined);
     // v0.18.7: the ETA timer (trips/eta.ts) routes with the same router as the quotes; main.ts reads it here.
+    // v0.18.163: main.ts hands `trafficRouter` to the leave-on-time check and the ETA ticks (trips/etaRoute.ts).
     app.decorate("router", roads);
-    await quoteRoutes(app, { db, jwtSecret, router: roads, ...(clock ? { clock } : {}) });
+    app.decorate("trafficRouter", trafficRoads ?? null);
+    await quoteRoutes(app, { db, jwtSecret, router: roads, ...(trafficRoads ? { traffic: trafficRoads } : {}), ...(clock ? { clock } : {}) });
     const search = places ?? (env.GOOGLE_MAPS_API_KEY !== undefined ? new CachedPlaces(new GooglePlaces(env.GOOGLE_MAPS_API_KEY)) : new NoPlaces());
-    await tripRoutes(app, { db, jwtSecret, router: roads, paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", nearbyCacheMs: env.NEARBY_CACHE_MS, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
+    await tripRoutes(app, { db, jwtSecret, router: roads, ...(trafficRoads ? { traffic: trafficRoads } : {}), paymentMethods: supportedPaymentMethods(env.PAYMENT_METHODS_PAUSED), currency: "SEK", nearbyCacheMs: env.NEARBY_CACHE_MS, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     // v0.18.136 (DRAFT, contract.json#stripeFees): one Stripe module (test or live keys); the rider fee is its first use.
     const payments = stripe !== undefined ? stripe : stripeFromEnv(env);
     // Live mode (contract.json#stripeFees.status): the admin status and the system_health alert read this copy's mode.
@@ -398,7 +412,7 @@ export async function buildApp({ env, logger = true, db, clock, router, places, 
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await financeRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) }); // v0.18.153 P29 driver income year (DAC7)
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
-    await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(env.OSRM_URL ? { osrmUrl: env.OSRM_URL } : {}), ...(clock ? { clock } : {}) });
+    await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(clock ? { clock } : {}) });
   }
 
   // Live outage 2026-11-17 (#268 post-mortem): the load-shedding hooks are part of EVERY built app, last (as main.ts

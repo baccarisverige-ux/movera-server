@@ -118,9 +118,12 @@ if (db !== undefined) {
   if (env.MOVERA_ENV !== "production") await seedTestPhones(db, testPhonesFor(env));
   await prepareTestWeek(db, env, app.log);
   // Owner (v0.18.19 leaveOnTime): booked rides start from the same live road-route ETA as normal rides.
+  // v0.18.163 (contract.json#liveTraffic.uses, owner "the cheapest method"): the leave-on-time check stays on the estimate
+  // (it runs every 2 minutes for up to 3 h); the ETA ticks get the Google router for their few calls (trips/etaRoute.ts).
+  const traffic = (app as unknown as { trafficRouter: Router | null }).trafficRouter;
   setLeaveRouter((app as unknown as { router: Router }).router);
   // Job 1 / stress H1 / B1.7: handlers and lanes (dispatch, trip GPS, general, housekeeping lanes) in jobs/workerConfig.ts.
-  const { handlers, lanes, parked } = buildWorkerConfig((app as unknown as { router: Router }).router, { timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES, housekeepingLanes: env.HOUSEKEEPING_LANES, tripLanes: env.TRIP_LANES });
+  const { handlers, lanes, parked } = buildWorkerConfig((app as unknown as { router: Router }).router, { timerLanes: env.TIMER_LANES, dispatchLanes: env.DISPATCH_LANES, housekeepingLanes: env.HOUSEKEEPING_LANES, tripLanes: env.TRIP_LANES }, traffic ?? undefined);
   worker = new TimerWorker(db, { ...parked, handlers, logger: app.log, pollMs: 200, lanes });
   worker.start();
   // S7 0.16 (owner W2 Q120 part 2): a committed write of a timer that is due at once (a new search's first round, the

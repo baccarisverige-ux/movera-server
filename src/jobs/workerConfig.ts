@@ -36,12 +36,12 @@ export const HOUSEKEEPING_LANE_KINDS: readonly string[] = [...HOUSEKEEPING_KINDS
  * B1.6b: `parked` = a parked trip or safety timer runs once more, and parking any timer raises the alert naming it at once.
  * B1.7: housekeeping on its own `housekeepingLanes` loops (HOUSEKEEPING_LANES, default 1), never on the general lanes.
  */
-export function buildWorkerConfig(router: Router, o: { timerLanes: number; dispatchLanes: number; housekeepingLanes?: number; tripLanes?: number }): { handlers: Record<string, TimerHandler>; lanes: TimerLane[]; parked: Pick<TimerWorkerOptions, "restartOnce" | "onParked"> } {
+export function buildWorkerConfig(router: Router, o: { timerLanes: number; dispatchLanes: number; housekeepingLanes?: number; tripLanes?: number }, traffic?: Router): { handlers: Record<string, TimerHandler>; lanes: TimerLane[]; parked: Pick<TimerWorkerOptions, "restartOnce" | "onParked"> } {
   const handlers: Record<string, TimerHandler> = {
     ...maintenanceHandlers, ...dispatchHandlers, [RADAR_ZONE_REPEAT]: radarZoneRepeatHandler, ...rideHandlers, ...callHandlers, ...pricingHandlers,
     [ALERT_SWEEP]: alertSweepHandler,
   };
-  handlers[TRIP_ETA] = etaHandler(router);
+  handlers[TRIP_ETA] = etaHandler(router, traffic);
   handlers[RIDE_CHECK_SCAN] = rideCheckScanHandler(router);
   const lanes = timerLanes({ dispatchKinds: [ROUND, WITHDRAW], tripKinds: [...TRIP_LANE_KINDS], timerLanes: o.timerLanes, dispatchLanes: o.dispatchLanes, housekeepingKinds: [...HOUSEKEEPING_LANE_KINDS], housekeepingLanes: o.housekeepingLanes ?? 1, tripLanes: o.tripLanes ?? 1 });
   return { handlers, lanes, parked: { restartOnce: RESTART_ONCE_KINDS, onParked: raiseParkedAlert } };

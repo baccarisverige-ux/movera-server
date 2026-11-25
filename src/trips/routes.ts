@@ -36,7 +36,7 @@ const NearbyQuery = z.object({ lat: z.coerce.number().min(-90).max(90), lng: z.c
 const RouteChangeBody = z.object({ expectedVersion: z.number().int().min(1), routeQuoteId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
 const RouteChangeAnswer = z.object({ expectedVersion: z.number().int().min(1), changeId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
 
-export type TripDeps = { db: Db; router?: Router; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date; telephony?: TelephonyProvider; nearbyCacheMs?: number };
+export type TripDeps = { db: Db; router?: Router; traffic?: Router; jwtSecret: string; paymentMethods: readonly string[]; currency: string; hub?: NotificationHub; clock?: () => Date; telephony?: TelephonyProvider; nearbyCacheMs?: number };
 
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const CancelBody = z.object({ expectedVersion: z.number().int().min(1), reasonCode: z.string().min(1), note: z.string().max(1000).optional() });
@@ -145,7 +145,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
       id,
       body,
       (routed) => runIdempotent(deps.db, asked, async (trx) => ({ status: 201, body: await quoteRouteChange(trx, routed, who.subjectId, id, body, now()) })),
-      { routeFirstTry },
+      { routeFirstTry, ...(deps.traffic ? { traffic: deps.traffic } : {}) },
     );
     return reply.status(result.status).send(result.body);
   });

@@ -5,6 +5,8 @@ import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.j
 import "./schema.js";
 import { LANE_LATE_LIMITS, LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
 import { OTHER_HOME, callingCodeOfPhone, nearCap, otherSmsLastDay, servedCountries, callingCodeOf, smsLastMinute, signInSmsLastDay, smsSignInFor, smsSignInOtherFor } from "../auth/smsSignIn.js";
+import { LIVE_TRAFFIC_ALERT_WINDOW_MS, liveTrafficConfigured } from "../maps/googleRoutes.js";
+import { liveTrafficOn } from "../maps/liveTraffic.js";
 import { serverStripeStatus, type StripeOffReason } from "../payments/stripeKeys.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
@@ -337,7 +339,7 @@ async function systemCauses(ctx: Ctx): Promise<Cause[]> {
   const parked = await sql<{ kind: string; n: string; refs: string[] }>`
     SELECT kind, count(*) AS n, (array_agg(ref_id ORDER BY ref_id))[1:${sql.lit(PARKED_REFS_SHOWN)}] AS refs
       FROM timers WHERE attempts >= ${MAX_ATTEMPTS} GROUP BY kind ORDER BY kind`.execute(ctx.ex);
-  const late = [...(await laneLateCauses(ctx)), ...(await smsCapCauses(ctx)), ...stripeKeyCauses(ctx)];
+  const late = [...(await laneLateCauses(ctx)), ...(await smsCapCauses(ctx)), ...stripeKeyCauses(ctx), ...(await liveTrafficCauses(ctx))];
   if (parked.rows.length === 0) return late;
   // No zone: one per country book (Super admins see alerts without a zone).
   const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
@@ -464,6 +466,46 @@ function stripeKeyCauses(ctx: Ctx): Cause[] {
     if (!k.on) return [];
     return [{ key: `system_health:stripe_keys:${country}`, kind: "system_health", country, zoneId: null, level: k.level, title: T(title), detail: T("Fix the Stripe keys in the server settings and restart the server"), ref: {} }];
   });
+}
+
+/**
+ * v0.18.163 (contract.json#liveTraffic.fallback): live traffic falls back. Read from the quotes themselves (every copy
+ * writes quotes.route_source, so this sees every copy, not only the one that runs the sweep): in a country where this
+ * server has the Google key, at least LIVE_TRAFFIC_ALERT_MIN quotes of the last 10 minutes in zones whose setting is on,
+ * and none of them from Google, is one system_health alert per country book. Solved by itself once Google answers
+ * again (a google quote) or nobody asks a price.
+ */
+export const LIVE_TRAFFIC_ALERT_MIN = 3;
+async function liveTrafficCauses(ctx: Ctx): Promise<Cause[]> {
+  if (!liveTrafficConfigured()) return [];
+  const since = new Date(ctx.now.getTime() - LIVE_TRAFFIC_ALERT_WINDOW_MS);
+  const rows = await ctx.ex
+    .selectFrom("quotes")
+    .select(["zone_id", "route_source"])
+    .select(sql<string>`count(*)`.as("n"))
+    .where("created_at", ">", since)
+    .groupBy(["zone_id", "route_source"])
+    .execute();
+  const perCountry = new Map<string, { other: number; google: number }>();
+  const onByZone = new Map<string, boolean>();
+  for (const row of rows) {
+    let on = onByZone.get(row.zone_id);
+    if (on === undefined) onByZone.set(row.zone_id, (on = await liveTrafficOn(ctx.ex, row.zone_id)));
+    if (!on) continue;
+    const country = countryOf(ctx, row.zone_id);
+    const c = perCountry.get(country) ?? { other: 0, google: 0 };
+    if (row.route_source === "google") c.google += Number(row.n);
+    else c.other += Number(row.n);
+    perCountry.set(country, c);
+  }
+  const out: Cause[] = [];
+  for (const [country, c] of perCountry) {
+    if (c.google > 0 || c.other < LIVE_TRAFFIC_ALERT_MIN) continue;
+    const k = settingsOf(ctx, country).kind("system_health");
+    if (!k.on) continue;
+    out.push({ key: `system_health:live_traffic:${country}`, kind: "system_health", country, zoneId: null, level: k.level, title: T("Live traffic is not available: trip times use roads without traffic"), detail: T("Check that the Routes API is enabled for the server's Google Maps key, and its billing"), ref: {} });
+  }
+  return out;
 }
 
 /** v0.18.158 (contract.json#crashCatcher.alert): app crash kinds that alert (never a caught error, never the server). */
