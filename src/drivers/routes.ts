@@ -14,7 +14,7 @@ import { parseBody } from "../http/validate.js";
 import { narrowToZones, parseQuery, ZoneFilterQuery } from "../admin/zoneFilter.js";
 import { addVehicle, driverView, getDriverProfile, liveDrivers, type MapBox, listVehicles, loadDriver, postLocations, setAvailability, tripTrace, updateDriverProfile } from "./service.js";
 import { setNextTrips } from "./presence.js";
-import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, startOwnCompany, submitOnboarding } from "./onboarding.js";
+import { fleetEarnings, getDriverFleet, leaveFleet, ownerRemoveDriver, recordJoinTry, setDriverCountry, startOwnCompany, submitOnboarding } from "./onboarding.js";
 import { listReminders } from "./reminders.js";
 import { listNotifications, NOTIFICATION_PAGE } from "../notifications/service.js";
 import { documentTypes, onboardingSettings } from "./onboardingSettings.js";
@@ -201,6 +201,11 @@ export async function driverRoutes(app: FastifyInstance, deps: DriverDeps): Prom
   app.post(`${API_PREFIX}/driver/onboarding`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
     return countingJoinTries(who.subjectId, async () => (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await submitOnboarding(trx, deps.invites, who.subjectId, request.body ?? {}, now()) }))).body);
+  });
+  // v0.18.162 (contract.json#driverCountryFirst.step): the first-sign-in country step.
+  app.put(`${API_PREFIX}/driver/country`, async (request) => {
+    const who = await authenticate(request, guard, ["driver"]);
+    return (await runIdempotent(deps.db, idem(request, who.subjectId), async (trx) => ({ status: 200, body: await setDriverCountry(trx, who.subjectId, request.body ?? {}, now()) }))).body;
   });
   app.get(`${API_PREFIX}/driver/fleet`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);

@@ -24,7 +24,7 @@ import { cursorOf, readCursor } from "./lists.js";
 import { firstPageTotal, TotalQuery, totalAfterPage, withTotal } from "./listTotal.js";
 import { maskDriverView } from "./masking.js";
 import { narrowToZones, parseQuery, withoutZoneFilter, ZoneFilterQuery } from "./zoneFilter.js";
-import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminUpdateVehicle } from "./vehicleActions.js";
+import { adminLinkVehicleDriver, adminReviewBank, adminSetDriverCategories, adminSetDriverCountry, adminUpdateVehicle } from "./vehicleActions.js";
 
 /** contract v0.5.3 §14 (admin side): fleets, driver detail, vehicles list and review, document review and file. */
 
@@ -137,6 +137,8 @@ export async function adminPeopleRoutes(app: FastifyInstance, deps: PeopleDeps):
   app.post(`${API_PREFIX}/admin/vehicles/:vehicleId/driver`, action(adminLinkVehicleDriver, "vehicles.edit", "vehicleId"));
   app.put(`${API_PREFIX}/admin/drivers/:driverId/categories`, action(adminSetDriverCategories, "vehicles.edit", "driverId"));
   app.post(`${API_PREFIX}/admin/drivers/:driverId/bank/review`, action(adminReviewBank, "documents.approve", "driverId"));
+  // v0.18.162 (contract.json#driverCountryFirst.adminSet): the only admin change of a driver's country.
+  app.post(`${API_PREFIX}/admin/drivers/:driverId/country`, action(adminSetDriverCountry, "drivers.activate", "driverId"));
 
   // v0.18.0 (owner items 8 and 13): the info session (or an admin's own admin_check type) marked held.
   app.post(`${API_PREFIX}/admin/drivers/:driverId/documents/:type/check`, async (request) => {

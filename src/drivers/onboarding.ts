@@ -14,7 +14,7 @@ import { audit } from "../admin/audit.js";
 import { firstPageTotal, totalAfterPage, withTotal } from "../admin/listTotal.js";
 import { maskFleetView, maskInvitationView } from "../admin/masking.js";
 import { ONBOARDING, COUNTRY_CURRENCY, COUNTRY_TIME_ZONE, ageAt, cityOf, makeFleetCode, normalizeFleetCode } from "./onboardingRules.js";
-import { driverView, loadDriver, releaseCar, vehicleFullView, type DriverRow } from "./service.js";
+import { driverView, loadDriver, releaseCar, rulesBrokenBy, vehicleFullView, type DriverRow, type VehicleRow } from "./service.js";
 import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from "./fleets.js";
 import { cancelFleetInvitations, fleetInvitationViews, requestJoin, type InviteDeps } from "./invitations.js";
 import { notify } from "../notifications/service.js";
@@ -171,6 +171,8 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
     throw new ApiError("invalid_transition", "Your details are already approved; ask support to change them.", { reason: "details_locked", projection: await driverView(trx, row, "driver", now) });
   }
   if (d.termsAccepted !== true) throw badRequest("Accept the terms to continue.", "terms_required");
+  // v0.18.162 (contract.json#driverCountryFirst.step.onboarding): the form may still carry another country before
+  // approval (older apps); the same fleet rules below apply, as on PUT /driver/country.
   const country = ONBOARDING.countries[d.country];
   if (country === undefined || !country.open) throw badRequest(`Movera is not open in ${d.country} yet.`, "country_not_open");
   const city = cityOf(d.country, d.cityId);
@@ -237,6 +239,90 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
     await requestJoin(trx, deps, driverId, d.fleetJoin, now, { quietIfPending: true });
   }
   return driverView(trx, await loadDriver(trx, driverId), "driver", now);
+}
+
+/* ---------------------------------------------------------------- the country (v0.18.162) */
+
+/** The zone and city a driver of `country` starts in: the country's first city (none for a country with no city yet). */
+function firstCityOf(country: string): { cityId: string; zoneId: string } | null {
+  const city = ONBOARDING.countries[country]?.cities[0];
+  return city ? { cityId: city.cityId, zoneId: city.zoneId } : null;
+}
+
+/**
+ * v0.18.162 (contract.json#driverCountryFirst): moves a driver to `country` under the fleet rules of BQ-FLEETCUR: a
+ * member keeps his fleet's country; an owner with other drivers cannot move; an owner alone moves the fleet. Locks the
+ * fleet before the driver (the one lock order, MF1). `admin` also resets the city and zones to the new country's.
+ */
+async function moveDriverCountry(trx: Trx, driverId: string, country: string, now: Date, mode: "step" | "admin", projection: (row: DriverRow) => Promise<unknown>) {
+  const peek = await loadDriver(trx, driverId);
+  const fleet = peek.fleet_id !== null ? await loadFleet(trx, peek.fleet_id, true) : null;
+  const row = await loadDriver(trx, driverId, true);
+  const first = firstCityOf(country);
+  let fleetMoved = false;
+  if (fleet !== null && fleet.country !== country) {
+    const others = fleet.owner_driver_id === driverId ? await trx.selectFrom("drivers").select("driver_id").where("fleet_id", "=", fleet.fleet_id).where("driver_id", "<>", driverId).executeTakeFirst() : { driver_id: driverId };
+    if (others !== undefined) throw new ApiError("conflict", "A fleet works in one country: the country cannot change while in a fleet.", { reason: "fleet_other_country", projection: await projection(row) });
+    if (first === null) throw badRequest(`Movera has no city in ${country} yet.`, "country_not_open");
+    await trx.updateTable("fleets").set({ country, city_id: first.cityId, zone_id: first.zoneId, version: fleet.version + 1, updated_at: now }).where("fleet_id", "=", fleet.fleet_id).execute();
+    fleetMoved = true;
+  }
+  const same = row.country === country;
+  if (same && !fleetMoved && (mode === "step" || row.zone_ids.every((z) => z === first?.zoneId))) return { row, changed: false, fleetMoved, from: row.country };
+  const zones = mode === "admin" || row.zone_ids.length === 0 ? (first ? [first.zoneId] : []) : row.zone_ids;
+  await trx
+    .updateTable("drivers")
+    .set({ country, zone_ids: zones, ...(mode === "admin" ? { city_id: first?.cityId ?? null } : {}), version: row.version + 1, updated_at: now })
+    .where("driver_id", "=", driverId)
+    .execute();
+  return { row: await loadDriver(trx, driverId), changed: true, fleetMoved, from: row.country };
+}
+
+/** PUT /driver/country (v0.18.162 driverCountryFirst.step): the first-sign-in country step, before approval only. */
+export async function setDriverCountry(trx: Trx, driverId: string, body: unknown, now: Date) {
+  const problem = schemaProblem("DriverCountryCommand", body);
+  if (problem !== null) throw badRequest(`The country is not valid: ${problem}.`, "invalid_body");
+  const { country } = body as { country: string };
+  if (ONBOARDING.countries[country]?.open !== true) throw badRequest(`Movera is not open in ${country} yet.`, "country_not_open");
+  const current = await loadDriver(trx, driverId);
+  if (current.account_status !== "pending" && current.account_status !== "on_hold") {
+    throw new ApiError("invalid_transition", "Your details are already approved; ask support to change your country.", { reason: "details_locked", projection: await driverView(trx, current, "driver", now) });
+  }
+  const moved = await moveDriverCountry(trx, driverId, country, now, "step", (r) => driverView(trx, r, "driver", now));
+  return driverView(trx, moved.row, "driver", now);
+}
+
+/**
+ * POST /admin/drivers/{driverId}/country (v0.18.162 driverCountryFirst.adminSet; drivers.edit): the only admin change of
+ * a driver's country. The caller checked the admin's zones; this checks the version, the trip, the fleet rules, puts an
+ * online driver offline, re-checks his cars against the new country's rules and writes the audit entry.
+ */
+export async function adminMoveDriverCountry(trx: Trx, who: { subjectId: string }, row: DriverRow, body: { expectedVersion: number; country: string; reason: string }, now: Date, projection: (row: DriverRow) => Promise<unknown>) {
+  if (ONBOARDING.countries[body.country] === undefined) throw badRequest(`${body.country} is not a Movera country.`, "country_not_open");
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await projection(row) });
+  const active = await trx.selectFrom("trips").select("trip_id").where("driver_id", "=", row.driver_id).where("status", "in", [...DRIVER_ASSIGNED]).where(NOT_HELD).executeTakeFirst();
+  if (active) throw new ApiError("invalid_transition", "The driver is on a trip; change his country after it.", { reason: "on_trip", projection: await projection(row) });
+  const moved = await moveDriverCountry(trx, row.driver_id, body.country, now, "admin", projection);
+  const carsBackToReview: string[] = [];
+  if (moved.changed || moved.fleetMoved) {
+    const fresh = moved.row;
+    if (["online", "going_online"].includes(fresh.online_status)) {
+      await trx.updateTable("drivers").set({ online_status: "offline", online_since: null }).where("driver_id", "=", fresh.driver_id).execute();
+      await markSetOffline(trx, fresh.driver_id, "admin", {}, now);
+      await scheduleTimer(trx, { kind: "withdraw_driver_offers", refId: fresh.driver_id, dueAt: now, payload: {} });
+    }
+    const owned = fresh.account_type === "fleet" && fresh.fleet_id !== null
+      ? trx.selectFrom("vehicles").selectAll().where("fleet_id", "=", fresh.fleet_id)
+      : trx.selectFrom("vehicles").selectAll().where("driver_id", "=", fresh.driver_id).where("fleet_id", "is", null);
+    for (const car of (await owned.where("status", "=", "approved").execute()) as unknown as VehicleRow[]) {
+      if ((await rulesBrokenBy(trx, car, body.country)).length === 0) continue;
+      await trx.updateTable("vehicles").set({ status: "pending", version: car.version + 1, updated_at: now }).where("vehicle_id", "=", car.vehicle_id).execute();
+      await trx.updateTable("drivers").set({ vehicle_id: null }).where("vehicle_id", "=", car.vehicle_id).execute();
+      carsBackToReview.push(car.vehicle_id);
+    }
+  }
+  await audit(trx, { adminId: who.subjectId, action: "driver.country", targetType: "driver", targetId: row.driver_id, zoneId: moved.row.zone_ids[0] ?? null, detail: { from: moved.from, to: body.country, reason: body.reason, fleetMoved: moved.fleetMoved, carsBackToReview }, at: now });
+  return loadDriver(trx, row.driver_id);
 }
 
 /* ---------------------------------------------------------------- joining and leaving */

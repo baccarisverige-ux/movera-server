@@ -165,6 +165,11 @@ describe("profile and cars", () => {
     expect(bad.json()).toMatchObject({ reason: "category_not_allowed" });
     const ok = await call(app, "PATCH", "/driver/profile", driver, { expectedVersion: me.version, categoryIds: ["economy"] });
     expect(ok.json()).toMatchObject({ categoryIds: ["economy"], version: me.version + 1 });
+    // v0.18.162 (driverCountryFirst.required): no car before a country (this seeded driver is already active, so the
+    // admin would set it; here the row is set directly).
+    const noCountry = await call(app, "POST", "/driver/vehicles", driver, { make: "Kia", model: "Niro", year: 2022, color: "White", plate: "xyz 789", seats: 4, categoryIds: ["electric"] });
+    expect(noCountry.json()).toMatchObject({ reason: "country_required" });
+    await database.db.updateTable("drivers").set({ country: "SE" }).where("driver_id", "=", driverId).execute();
     const car = await call(app, "POST", "/driver/vehicles", driver, { make: "Kia", model: "Niro", year: 2022, color: "White", plate: "xyz 789", seats: 4, categoryIds: ["electric"] });
     expect(car.statusCode).toBe(201);
     expect(car.json()).toMatchObject({ status: "pending", plate: "XYZ 789" });

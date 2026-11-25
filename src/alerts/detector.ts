@@ -532,6 +532,33 @@ async function carNoCountryCauses(ctx: Ctx): Promise<Cause[]> {
   return out;
 }
 
+/**
+ * v0.18.162 (alertDesk kind driver_no_country; contract.json#driverCountryFirst.oneTimeFix): a driver with no country who
+ * has data (an account type, a fleet, a car or a status past pending) or signed up over 24 h ago. One alert per driver
+ * and country, in every country that has a zone; solved when he has a country.
+ */
+async function driverNoCountryCauses(ctx: Ctx): Promise<Cause[]> {
+  const rows = await sql<{ driver_id: string; first_name: string | null; last_name: string | null }>`
+    SELECT d.driver_id, d.first_name, d.last_name
+      FROM drivers d
+     WHERE d.country IS NULL AND d.erased_at IS NULL
+       AND (d.account_type IS NOT NULL OR d.fleet_id IS NOT NULL OR d.account_status <> 'pending'
+            OR d.created_at < ${ctx.now}::timestamptz - interval '24 hours'
+            OR EXISTS (SELECT 1 FROM vehicles v WHERE v.driver_id = d.driver_id))
+     ORDER BY d.created_at, d.driver_id LIMIT 500`.execute(ctx.ex);
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  const out: Cause[] = [];
+  for (const d of rows.rows) {
+    const name = [d.first_name, d.last_name].filter(Boolean).join(" ") || d.driver_id;
+    for (const country of countries) {
+      const k = settingsOf(ctx, country).kind("driver_no_country");
+      if (!k.on) continue;
+      out.push({ key: `driver_no_country:${d.driver_id}:${country}`, kind: "driver_no_country", country, zoneId: null, level: k.level, title: T("Driver has no country: {0}", [name]), detail: T("Driver {0}", [d.driver_id]), ref: { driverId: d.driver_id } });
+    }
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ custom rules (owner A3) */
 
 async function metricValues(ctx: Ctx): Promise<(metric: string, zoneId: string) => number> {
@@ -657,6 +684,7 @@ async function findAll(ctx: Ctx): Promise<Cause[]> {
     ...(await systemCauses(ctx)),
     ...(await appCrashCauses(ctx)),
     ...(await carNoCountryCauses(ctx)),
+    ...(await driverNoCountryCauses(ctx)),
     ...(await ruleCauses(ctx)),
   ];
   // One cause key, one cause (a cause found twice keeps the first).

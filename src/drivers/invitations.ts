@@ -240,6 +240,13 @@ export async function attachInvitesToNewDriver(trx: Trx, driverId: string, phone
     const lang = pickNoticeLanguage(null, fleet.country);
     await notify(trx, { audience: "driver", subjectId: driverId, kind: KIND, title: words("invited_title", lang, ""), body: words("invited_body", lang, fleet.name), deepLink: "movera-driver://fleet/invitations", data: { invitationId: row.invitation_id, direction: "owner_invite" } }, now);
   }
+  // v0.18.162 (contract.json#driverCountryFirst.step.invited): invited by fleets of one country, he gets that country
+  // (and the first fleet's zone) at once and never sees the country step.
+  if (rows.length > 0) {
+    const fleets = await trx.selectFrom("fleets").select(["country", "zone_id"]).where("fleet_id", "in", rows.map((r) => r.fleet_id)).orderBy("created_at").execute();
+    const countries = new Set(fleets.map((f) => f.country));
+    if (countries.size === 1) await trx.updateTable("drivers").set({ country: fleets[0]!.country, zone_ids: [fleets[0]!.zone_id] }).where("driver_id", "=", driverId).where("country", "is", null).execute();
+  }
 }
 
 /**
