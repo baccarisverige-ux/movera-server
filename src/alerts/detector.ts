@@ -23,7 +23,7 @@ import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS,
 
 export const ALERT_SWEEP = "alert_sweep";
 
-type Ref = { tripId?: string; driverId?: string; riderId?: string; incidentId?: string; ticketId?: string; payoutId?: string; refundId?: string; ruleId?: string; documentId?: string };
+type Ref = { tripId?: string; driverId?: string; riderId?: string; incidentId?: string; ticketId?: string; payoutId?: string; refundId?: string; ruleId?: string; documentId?: string; vehicleId?: string };
 /** oldSince (v0.18.31, owner Q-Bj): an SOS / safety alert whose trip ended more than OLD_AFTER_MS ago — kept open, listed as old. */
 export type Cause = { key: string; kind: string; country: string; zoneId: string | null; level: Level; title: Text; detail?: Text; ref: Ref; oldSince?: Date };
 type Zone = { zone_id: string; country: string; time_zone: string; name: string };
@@ -518,15 +518,15 @@ async function carNoCountryCauses(ctx: Ctx): Promise<Cause[]> {
   const rows = await sql<{ vehicle_id: string; plate: string; driver_id: string | null }>`
     SELECT v.vehicle_id, v.plate, v.driver_id
       FROM vehicles v LEFT JOIN fleets f ON f.fleet_id = v.fleet_id LEFT JOIN drivers d ON d.driver_id = v.driver_id
-     WHERE (CASE WHEN v.fleet_id IS NOT NULL THEN f.country ELSE d.country END) IS NULL
-     ORDER BY v.created_at LIMIT 500`.execute(ctx.ex);
+     WHERE COALESCE(f.country, d.country) IS NULL
+     ORDER BY v.created_at, v.vehicle_id LIMIT 500`.execute(ctx.ex);
   const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
   const out: Cause[] = [];
   for (const car of rows.rows) {
     for (const country of countries) {
       const k = settingsOf(ctx, country).kind("car_no_country");
       if (!k.on) continue;
-      out.push({ key: `car_no_country:${car.vehicle_id}:${country}`, kind: "car_no_country", country, zoneId: null, level: k.level, title: T("Car with no country: {0}", [car.plate]), detail: T("Car {0}", [car.vehicle_id]), ref: car.driver_id ? { driverId: car.driver_id } : {} });
+      out.push({ key: `car_no_country:${car.vehicle_id}:${country}`, kind: "car_no_country", country, zoneId: null, level: k.level, title: T("Car with no country: {0}", [car.plate]), detail: T("Car {0}", [car.vehicle_id]), ref: { vehicleId: car.vehicle_id, ...(car.driver_id ? { driverId: car.driver_id } : {}) } });
     }
   }
   return out;

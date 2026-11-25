@@ -33,6 +33,7 @@ describe("car_no_country alert (v0.18.161)", () => {
     expect(rows.length).toBe(zoneCountries.length * 2);
     for (const r of rows) expect(r).toMatchObject({ state: "open", level: "important", zone_id: null });
     expect(new Set(rows.map((r) => r.title))).toEqual(new Set(["Car with no country: NC 001", "Car with no country: NC 003"]));
+    expect(new Set(rows.map((r) => (r.ref as { vehicleId?: string }).vehicleId))).toEqual(new Set(["veh_nc_001", "veh_nc_003"]));
     await sweep();
     expect((await alerts()).length).toBe(zoneCountries.length * 2);
     await db().updateTable("drivers").set({ country: "SE" }).where("driver_id", "=", lost).execute();
