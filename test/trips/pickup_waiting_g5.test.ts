@@ -238,7 +238,7 @@ describe("prices from the server: served config and TripProjection.terms (contra
     expect(driverCfg.waiting.byCategory.economy).toMatchObject({ perMin: { amountMinor: 1226, currency: "SEK" } });
     const riderCfg = (await call(app, "GET", "/rider/config?zoneId=Z001", rider)).json();
     expect(riderCfg.waiting).toMatchObject({ perMin: { amountMinor: 1226, currency: "SEK" }, noShowFee: { amountMinor: 6500, currency: "SEK" }, cancelAfterArrivedIsNoShow: true });
-    expect(riderCfg.booking.maxPickupMoveMeters).toBe(200);
+    expect(riderCfg.booking.maxPickupMoveMeters).toBe(300); // v0.18.160: owner 2026-11-23, free move up to 300 m (was 200)
     // v0.18.85 A1 (driver-g6.md:96 "Show price incl. fee"): the rider is served the price per minute with the 10 % app fee
     // (12,26 kr -> 13,49 kr, premium 16,90 kr + 12 % -> 18,93 kr); the driver document gets no such field.
     expect(riderCfg.waiting.perMinShown).toEqual({ amountMinor: 1349, currency: "SEK" });
@@ -275,7 +275,7 @@ describe("prices from the server: served config and TripProjection.terms (contra
       cancelRule: { freeMin: 2, type: "fixed", value: 3500, min: null, max: null },
       cancelDriverSharePct: 100,
       cancelAfterArrivedIsNoShow: true,
-      maxPickupMoveMeters: 200,
+      maxPickupMoveMeters: 300,
       // v0.18.8 (G6, additive): the applied waiting rules (none before arrive) and the free minutes at each stop.
       waitingRules: [],
       stopFreeWaitMin: 0,
@@ -510,12 +510,13 @@ describe("Q4 / status item 2: one road-route ETA every 30 s for both apps (contr
 });
 
 describe("status item 4: the pickup move limit is an admin setting the server checks (PATCH /trips/{tripId})", () => {
-  // About 150 m and 250 m north of Sergels torg.
+  // About 150 m, 250 m and 330 m north of Sergels torg (v0.18.160: the default is 300 m, so 250 m is free now).
   const NEAR = { address: "Near Sergels torg", lat: NORRMALM.lat + 0.00135, lng: NORRMALM.lng };
-  const FAR = { address: "Farther up", lat: NORRMALM.lat + 0.00225, lng: NORRMALM.lng };
+  const MID = { address: "250 m up", lat: NORRMALM.lat + 0.00225, lng: NORRMALM.lng };
+  const FAR = { address: "Farther up", lat: NORRMALM.lat + 0.003, lng: NORRMALM.lng };
   const FARTHER = { address: "Kungsträdgården", lat: NORRMALM.lat + 0.004, lng: NORRMALM.lng };
 
-  it("within 200 m: the pickup moves, version + 1, one pickup_moved event for the driver; the fare stays", async () => {
+  it("within 300 m (v0.18.160 default): the pickup moves, version + 1, one pickup_moved event for the driver; the fare stays", async () => {
     const { tripId, version } = await accepted();
     const before = await riderView(tripId);
     const res = await call(app, "PATCH", `/trips/${tripId}`, rider, { expectedVersion: version, pickup: NEAR });
@@ -525,16 +526,19 @@ describe("status item 4: the pickup move limit is an admin setting the server ch
     expect(last).toMatchObject({ kind: "pickup_moved", version: version + 1 });
     expect((last["projection"] as Doc)["pickup"]).toEqual(NEAR);
     expect((await driverView(tripId)).pickup).toEqual(NEAR);
+    // v0.18.160: 250 m from the booked pickup is free now (was refused at 200).
+    const mid = await call(app, "PATCH", `/trips/${tripId}`, rider, { expectedVersion: version + 1, pickup: MID });
+    expect(mid.statusCode, mid.body).toBe(200);
     // A second move is measured from the BOOKED pickup, not from the last move.
-    const again = await call(app, "PATCH", `/trips/${tripId}`, rider, { expectedVersion: version + 1, pickup: FAR });
-    expect(again.json()).toMatchObject({ code: "invalid_request", reason: "pickup_move_too_far", details: ["maxMeters=200", expect.stringMatching(/^meters=2[45]\d$/)] });
+    const again = await call(app, "PATCH", `/trips/${tripId}`, rider, { expectedVersion: version + 2, pickup: FAR });
+    expect(again.json()).toMatchObject({ code: "invalid_request", reason: "pickup_move_too_far", details: ["maxMeters=300", expect.stringMatching(/^meters=3[23]\d$/)] });
   });
 
   it("over the limit: 400 pickup_move_too_far with the limit; a bigger admin limit lets it through", async () => {
     // While searching (the dispatch round made offers: the version moved on).
     const { tripId } = await book();
     const version = (await riderView(tripId)).version as number;
-    expect((await call(app, "PATCH", `/trips/${tripId}`, rider, { expectedVersion: version, pickup: FAR })).json()).toMatchObject({ reason: "pickup_move_too_far", details: ["maxMeters=200", expect.stringMatching(/^meters=2[45]\d$/)] });
+    expect((await call(app, "PATCH", `/trips/${tripId}`, rider, { expectedVersion: version, pickup: FAR })).json()).toMatchObject({ reason: "pickup_move_too_far", details: ["maxMeters=300", expect.stringMatching(/^meters=3[23]\d$/)] });
     expect((await call(app, "POST", `/trips/${tripId}/cancel`, rider, { expectedVersion: version, reasonCode: "plans_changed" })).statusCode).toBe(200);
     const doc = driverDoc();
     (doc["booking"] as Doc)["maxPickupMoveMeters"] = 500;
