@@ -84,6 +84,20 @@ describe("GET /admin/errors?kind=", () => {
   });
 });
 
+describe("exact fields are not scrubbed (review M1)", () => {
+  it("keeps a digit-heavy tripId, zoneId, occurredAt and breadcrumb times; free text is still scrubbed", async () => {
+    const res = await crash({ error: "digits sample call +46 70 174 06 08", app: "driver", platform: "android", kind: "freeze", freezeMs: 6000, tripId: "trp_1234567890123456", zoneId: "Z12345678901", occurredAt: "2026-11-24T09:59:59.123Z", breadcrumbs: [{ at: "2026-11-24T09:59:50Z", type: "route", message: "/trip 0701740608" }] });
+    expect(res.statusCode).toBe(202);
+    const group = (await groups("?app=driver&kind=freeze")).find((g) => g.message.startsWith("digits sample"))!;
+    expect(group.message).not.toMatch(/174 06 08/);
+    const item = ((await reports(group.id)).json() as { items: Record<string, unknown>[] }).items[0]!;
+    expect(item).toMatchObject({ tripId: "trp_1234567890123456", zoneId: "Z12345678901" });
+    const crumb = (item["breadcrumbs"] as { at: string; message: string }[])[0]!;
+    expect(crumb.at).toBe("2026-11-24T09:59:50Z");
+    expect(crumb.message).not.toMatch(/0701740608/);
+  });
+});
+
 describe("GET /admin/errors/{errorId}/reports", () => {
   it("returns the kept reports newest first with stack, breadcrumbs, device, OS and native reason, scrubbed", async () => {
     const group = (await groups("?kind=native_crash"))[0]!;
@@ -107,6 +121,9 @@ describe("GET /admin/errors/{errorId}/reports", () => {
     });
     expect(String(items[1]!["stack"])).toContain("Home.build");
     expect((items[1]!["breadcrumbs"] as unknown[]).length).toBe(3);
+    // Review M1: times and ids come back exactly as sent; the breadcrumb message is still scrubbed.
+    expect((items[1]!["breadcrumbs"] as { at: string; message: string }[]).map((c) => c.at)).toEqual(crumbs.map((c) => c.at));
+    expect((items[1]!["breadcrumbs"] as { message: string }[])[1]!.message).toContain("[phone]");
     expect(JSON.stringify(items)).not.toMatch(/174 06 08/);
     expect(Date.parse(String(items[0]!["at"]))).toBeGreaterThan(Date.parse(String(items[1]!["at"])));
     expect(((await reports(group.id, "?limit=1")).json() as { items: unknown[] }).items.length).toBe(1);

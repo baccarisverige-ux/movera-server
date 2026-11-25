@@ -118,7 +118,7 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
         anon.rows += 1;
         anon.bytes += size;
       }
-      const clean = scrub(body) as Record<string, unknown>;
+      const clean = keepExactFields(body, scrub(body) as Record<string, unknown>);
       // v0.16.0: a crash report that names its app (or comes with a rider/driver token) and platform is grouped
       // for the admin's Crashes & errors. One without (an older app) is kept as before, ungrouped.
       const errorApp = kind === "crash" ? appOf(clean, who) : null;
@@ -188,4 +188,32 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
     );
     return result.body;
   });
+}
+
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+const WIRE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * v0.18.158 (contract.json#crashCatcher; review M1): the phone pattern of the scrub also matches the date of an
+ * RFC 3339 time and long digit runs in ids, so a breadcrumb `at`, `occurredAt`, `tripId` and `zoneId` came out as
+ * "[phone]...". Those fields are put back exactly as sent when they are a real time or a wire id (they can hold
+ * nothing else); every free text (messages, breadcrumb messages) stays scrubbed.
+ */
+export function keepExactFields(body: unknown, clean: Record<string, unknown>): Record<string, unknown> {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return clean;
+  const raw = body as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...clean };
+  if (typeof raw["occurredAt"] === "string" && ISO_TIME.test(raw["occurredAt"])) out["occurredAt"] = raw["occurredAt"];
+  for (const key of ["tripId", "zoneId"]) {
+    const v = raw[key];
+    if (typeof v === "string" && WIRE_ID.test(v)) out[key] = v;
+  }
+  const crumbs = raw["breadcrumbs"];
+  if (Array.isArray(crumbs) && Array.isArray(out["breadcrumbs"])) {
+    out["breadcrumbs"] = (out["breadcrumbs"] as unknown[]).map((crumb, i) => {
+      const at = (crumbs[i] as { at?: unknown } | null)?.at;
+      return crumb !== null && typeof crumb === "object" && typeof at === "string" && ISO_TIME.test(at) ? { ...(crumb as object), at } : crumb;
+    });
+  }
+  return out;
 }

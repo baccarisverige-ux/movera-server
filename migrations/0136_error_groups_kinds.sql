@@ -4,10 +4,10 @@
 -- VALID (no table scan under the lock) and validated after (light lock). Safe to run again: the old check is dropped
 -- IF EXISTS and the new one is added only when it is not there.
 ALTER TABLE error_groups DROP CONSTRAINT IF EXISTS error_groups_kind_check;
-DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'error_groups_kind_157') THEN ALTER TABLE error_groups ADD CONSTRAINT error_groups_kind_157 CHECK (kind IN ('crash', 'error', 'dart_error', 'native_crash', 'freeze')) NOT VALID; END IF; END $$;
-ALTER TABLE error_groups VALIDATE CONSTRAINT error_groups_kind_157;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'error_groups_kind_158') THEN ALTER TABLE error_groups ADD CONSTRAINT error_groups_kind_158 CHECK (kind IN ('crash', 'error', 'dart_error', 'native_crash', 'freeze')) NOT VALID; END IF; END $$;
+ALTER TABLE error_groups VALIDATE CONSTRAINT error_groups_kind_158;
 -- undo:
 -- (only when no group of a new kind is left)
--- ALTER TABLE error_groups DROP CONSTRAINT IF EXISTS error_groups_kind_157;
+-- ALTER TABLE error_groups DROP CONSTRAINT IF EXISTS error_groups_kind_158;
 -- ALTER TABLE error_groups ADD CONSTRAINT error_groups_kind_check CHECK (kind IN ('crash', 'error')) NOT VALID;
 -- ALTER TABLE error_groups VALIDATE CONSTRAINT error_groups_kind_check;
