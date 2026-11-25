@@ -8,4 +8,6 @@ UPDATE drivers d
        updated_at = now()
   FROM fleets f
  WHERE d.fleet_id = f.fleet_id AND d.country IS NULL;
--- undo: none needed (the country stays right; no column or constraint changed).
+-- undo: nothing to revert safely (no column or constraint changed; the members it set match their fleet and cannot be
+-- told apart afterwards). To list them: SELECT d.driver_id FROM drivers d JOIN fleets f ON f.fleet_id = d.fleet_id
+-- SELECT 1;
