@@ -253,7 +253,8 @@ export async function putDraft(trx: Trx, input: { doc: ConfigDoc; zoneId: string
   }
   // v0.18.157 (contract.json#smsSignIn.otherCountries.setting): only a super admin changes the other-countries switch
   // or limit (a save that leaves it as stored, or out, is fine for every admin with settings.edit).
-  if (input.doc === "country_rules" && input.role !== undefined && input.role !== "super") {
+  // Fails closed: a save without a role (Restore, the seed) may not change it either; Restore keeps it (KEPT_ON_RESTORE).
+  if (input.doc === "country_rules" && input.role !== "super") {
     const stored = otherSettingIn(current.document);
     if (otherSettingIn(input.document) !== stored) {
       throw new ApiError("forbidden", "Only a super admin can change SMS sign-in for numbers from other countries.", { reason: "super_admin_only" });
@@ -616,7 +617,8 @@ export async function configHistory(ex: Executor, doc: ConfigDoc, zoneId: string
 export const KEPT_ON_RESTORE: Partial<Record<ConfigDoc, readonly string[]>> = {
   // Owner 2026-11-17: the current call settings stay too (calls.adminCallRoles, calls.phoneProvider; dotted paths).
   // v0.18.139 (pricingHistory.restoreKeeps): the monthly pay request (switch, day, payment link, minimum) stays too.
-  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "driverPayRequest", "riderFeeStripe"],
+  country_rules: ["payoutMode", "payoutSchedule", "maxRiderDebt", "driverOwesLimit", "calls.adminCallRoles", "calls.phoneProvider", "driverPayRequest", "riderFeeStripe", "smsSignInOtherCountries"],
+  // v0.18.157 (pricingHistory.restoreKeeps): the SMS sign-in for other countries stays too (super admins only change it).
   // v0.18.136 (pricingHistory.restoreKeeps): the Stripe rider fee switch stays too.
 };
 

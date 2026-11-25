@@ -60,4 +60,21 @@ describe("PUT / publish country_rules with smsSignInOtherCountries", () => {
     expect(published.statusCode, published.body).toBeLessThan(300);
     expect(await smsSignInOtherFor(database.db)).toMatchObject({ enabled: false, dailyCap: 120 });
   });
+
+  it("Restore by an admin who is not a super admin keeps the live other-countries setting (pricingHistory.restoreKeeps)", async () => {
+    const sup = (await adminSession(app, database.db, "super", { now: clock.now })).headers;
+    const config = (await adminSession(app, database.db, "config", { now: clock.now })).headers;
+    const publish = async (other: unknown) => {
+      const put = await call(app, "PUT", "/admin/config/country_rules", sup, { expectedVersion: await draftVersion(sup), country: "SE", document: rules("SE", "SEK", other) });
+      expect(put.statusCode, put.body).toBe(200);
+      const pub = await call(app, "POST", "/admin/config/country_rules/publish", sup, { country: "SE", expectedVersion: put.json().version });
+      expect(pub.statusCode, pub.body).toBeLessThan(300);
+      return pub.json().version as number;
+    };
+    const wide = await publish({ enabled: true, dailyCap: 100_000, perCodeDailyCap: 100_000, perMinuteCap: 10_000, blockedCallingCodes: [] });
+    const tight = await publish({ enabled: false, dailyCap: 10, blockedCallingCodes: ["+882"] });
+    const restored = await call(app, "POST", "/admin/config/country_rules/restore", config, { country: "SE", expectedVersion: tight, version: wide });
+    expect(restored.statusCode, restored.body).toBeLessThan(300);
+    expect(await smsSignInOtherFor(database.db)).toMatchObject({ enabled: false, dailyCap: 10, blockedCallingCodes: ["+882"] });
+  });
 });

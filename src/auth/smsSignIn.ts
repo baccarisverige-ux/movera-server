@@ -92,7 +92,7 @@ export function smsCountryOf(phone: string): string | null {
 /**
  * Contract v0.18.157 (contract.json#smsSignIn.otherCountries; owner 2026-11-24 "SMS sign-in codes must work for ANY phone
  * number from ANY country"): one server-wide switch and daily limit for every number whose country is not SERVED here
- * (no published country standard). Kept on the home country standard (standard-SE), super admins only; default off.
+ * (no published country standard). Kept on the home country standard (standard-SE), super admins only; default on (rider app).
  */
 export const OTHER_HOME = SMS_SIGN_IN.otherCountries.homeCountry;
 export type OtherSetting = SmsSignInSetting & { perCodeDailyCap: number; perMinuteCap: number; blockedCallingCodes: string[] };
