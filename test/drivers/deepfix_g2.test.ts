@@ -87,6 +87,8 @@ beforeAll(async () => {
     ID[who] = res.json().driverId;
     if (p.accountType === "fleet") {
       FLEET[who] = res.json().fleet.fleetId;
+      // v0.18.159 (fleetNeedsCar): a fleet is approved only with at least one car.
+      expect((await call(app, "POST", "/driver/vehicles", H[who]!, { make: "Volvo", model: "V60", color: "Black", seats: 4, year: 2022, plate: `FNC ${p.phone}`, fuel: "hybrid" })).statusCode).toBe(201);
       const fleet = (await call(app, "GET", `/admin/fleets/${FLEET[who]}`, sup.headers)).json();
       const approved = await call(app, "POST", `/admin/fleets/${FLEET[who]}/review`, sup.headers, { expectedVersion: fleet.fleet?.version ?? fleet.version, decision: "approved" });
       expect(approved.statusCode, approved.body).toBe(200);

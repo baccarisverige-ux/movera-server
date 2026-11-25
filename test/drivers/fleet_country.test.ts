@@ -63,6 +63,8 @@ beforeAll(async () => {
   svenId = (await call(app, "POST", "/driver/onboarding", sven, details(swede))).json().driverId;
   const fleet = (await call(app, "GET", "/driver/fleet", owner)).json().fleet;
   seFleetId = fleet.fleetId;
+  // v0.18.159 (fleetNeedsCar): a fleet is approved only with at least one car.
+  expect((await call(app, "POST", "/driver/vehicles", owner, { make: "Volvo", model: "V60", color: "Black", seats: 4, year: 2022, plate: "FNC 100", fuel: "hybrid" })).statusCode).toBe(201);
   seCode = (await call(app, "POST", `/admin/fleets/${seFleetId}/review`, admin.headers, { expectedVersion: fleet.version, decision: "approved" })).json().code;
 });
 afterAll(async () => {
@@ -194,6 +196,7 @@ describe("BQ-FLEETCUR MF1: an owner moving his fleet to France and a Swedish dri
   async function race(phone: string, first: "owner" | "join") {
     const ownerHeaders = (await signIn(app, phone, "driver")).headers;
     const ownerId = (await call(app, "POST", "/driver/onboarding", ownerHeaders, details())).json().driverId as string;
+    await call(app, "POST", "/driver/vehicles", ownerHeaders, { make: "Volvo", model: "V60", color: "Black", seats: 4, year: 2022, plate: `FNC ${first}`, fuel: "hybrid" }); // v0.18.159 (fleetNeedsCar): a fleet is approved only with at least one car.
     const f = (await call(app, "GET", "/driver/fleet", ownerHeaders)).json().fleet;
     const code = (await call(app, "POST", `/admin/fleets/${f.fleetId}/review`, admin.headers, { expectedVersion: f.version, decision: "approved" })).json().code as string;
     const member = await insertDriver(database.db);
