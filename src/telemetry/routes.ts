@@ -27,7 +27,7 @@ export type TelemetryDeps = { db: Db; jwtSecret: string; clock?: () => Date; per
 
 export const TELEMETRY = { maxBodyBytes: 16 * 1024, perAddressPerMinute: 120, anonRowsPerMinute: 600, anonBytesPerMinute: 2 * 1024 * 1024, keepDays: 30 } as const;
 
-/** v0.18.157 (contract.json#crashCatcher.server.perDevicePerMinute): crash reports stored per device and minute. */
+/** v0.18.158 (contract.json#crashCatcher.server.perDevicePerMinute): crash reports stored per device and minute. */
 export const CRASHES_PER_DEVICE_PER_MINUTE = (contract as unknown as { crashCatcher: { server: { perDevicePerMinute: number } } }).crashCatcher.server.perDevicePerMinute;
 
 const KINDS = [
@@ -45,7 +45,7 @@ const ErrorsQuery = z.object({
   platform: z.enum(["android", "ios", "web", "server"]).optional(),
   version: z.string().min(1).max(40).optional(),
   status: z.enum(["open", "fixed"]).optional(),
-  // v0.18.157 (contract.json#crashCatcher.admin.list)
+  // v0.18.158 (contract.json#crashCatcher.admin.list)
   kind: z.enum(ERROR_KINDS as [ErrorKind, ...ErrorKind[]]).optional(),
 });
 const ReportsQuery = z.object({ limit: z.coerce.number().int().min(1).max(50).default(20) });
@@ -69,7 +69,7 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
   const anonRows = deps.anonRowsPerMinute ?? TELEMETRY.anonRowsPerMinute;
   const anonBytes = deps.anonBytesPerMinute ?? TELEMETRY.anonBytesPerMinute;
   const anon = { start: 0, rows: 0, bytes: 0, dropped: 0 };
-  // v0.18.157 (crashCatcher.server.perDevice): stored crash reports per device (account, else address), fixed 60 s window per copy.
+  // v0.18.158 (crashCatcher.server.perDevice): stored crash reports per device (account, else address), fixed 60 s window per copy.
   const devices = new Map<string, { start: number; n: number }>();
   const deviceAllows = (device: string, at: number): boolean => {
     const w = devices.get(device);
@@ -167,7 +167,7 @@ export async function telemetryRoutes(app: FastifyInstance, deps: TelemetryDeps)
     const q = parseBody(ErrorsQuery, request.query);
     return listErrorGroups(deps.db, { cursor: q.cursor, limit: q.limit, app: q.app, platform: q.platform, version: q.version, status: q.status, kind: q.kind });
   });
-  // v0.18.157 (contract.json#crashCatcher.admin.reports): the kept reports of one group, same permission as the list.
+  // v0.18.158 (contract.json#crashCatcher.admin.reports): the kept reports of one group, same permission as the list.
   app.get(`${API_PREFIX}/admin/errors/:errorId/reports`, async (request) => {
     await authenticateAdmin(request, guard);
     const errorId = (request.params as { errorId: string }).errorId;

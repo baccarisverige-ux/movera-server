@@ -6,7 +6,7 @@ import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /**
- * Contract v0.18.157 (contract.json#crashCatcher; owner 2026-11-24 "Add to admin all kind of crash"): the new kinds
+ * Contract v0.18.158 (contract.json#crashCatcher; owner 2026-11-24 "Add to admin all kind of crash"): the new kinds
  * dart_error / native_crash / freeze and fields, GET /admin/errors?kind=, GET /admin/errors/{errorId}/reports and the
  * per-device limit of stored crash reports. Rule 36: fails on main — kind native_crash is 400 there (the contract
  * copy lists crash | error), the error_groups kind check refuses it, there is no ?kind= and no reports route.
@@ -42,7 +42,7 @@ const crumbs = [
   { at: "2026-11-24T09:59:58Z", type: "lifecycle", message: "paused" },
 ];
 
-describe("crash catcher kinds and fields (v0.18.157)", () => {
+describe("crash catcher kinds and fields (v0.18.158)", () => {
   it("takes dart_error, native_crash and freeze with the new fields; the group carries the kind", async () => {
     for (const kind of ["dart_error", "native_crash", "freeze"]) {
       const res = await crash({

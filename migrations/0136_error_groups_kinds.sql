@@ -1,5 +1,5 @@
 -- movera: no-transaction
--- v0.18.157 (contract.json#crashCatcher.kinds; owner 2026-11-24 "Add to admin all kind of crash"): a crash group may
+-- v0.18.158 (contract.json#crashCatcher.kinds; owner 2026-11-24 "Add to admin all kind of crash"): a crash group may
 -- now be of kind dart_error, native_crash or freeze too (crash and error kept). Rule 46: the new CHECK is added NOT
 -- VALID (no table scan under the lock) and validated after (light lock). Safe to run again: the old check is dropped
 -- IF EXISTS and the new one is added only when it is not there.

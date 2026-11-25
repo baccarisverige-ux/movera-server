@@ -24,7 +24,7 @@ export const MAX_VERSIONS_PER_GROUP = 20;
 
 export type ErrorApp = "driver" | "rider" | "server";
 export type ErrorPlatform = "android" | "ios" | "web" | "server";
-/** v0.18.157 (contract.json#crashCatcher.kinds): dart_error, native_crash and freeze next to the v0.16.0 crash and error. */
+/** v0.18.158 (contract.json#crashCatcher.kinds): dart_error, native_crash and freeze next to the v0.16.0 crash and error. */
 export type ErrorKind = "crash" | "error" | "dart_error" | "native_crash" | "freeze";
 export const ERROR_KINDS = (contract as unknown as { telemetry: { crashReport: { kinds: ErrorKind[] } } }).telemetry.crashReport.kinds;
 export type ErrorStatus = "open" | "fixed";
@@ -222,7 +222,7 @@ export async function listErrorGroups(ex: Executor, input: ErrorQuery): Promise<
   return { items: page.map(view), nextCursor: rows.length > input.limit && last ? cursorOf(last.last_seen, last.error_id) : null };
 }
 
-/** v0.18.157 (contract.json#crashCatcher.admin.reports): one kept report as the admin reads it. */
+/** v0.18.158 (contract.json#crashCatcher.admin.reports): one kept report as the admin reads it. */
 export type ErrorReportView = {
   at: string;
   kind: ErrorKind;

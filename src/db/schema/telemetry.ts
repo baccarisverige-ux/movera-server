@@ -22,7 +22,7 @@ export interface ErrorGroupsTable {
   fingerprint: string;
   app: "driver" | "rider" | "server";
   platform: "android" | "ios" | "web" | "server";
-  /** v0.18.157 (contract.json#crashCatcher.kinds): dart_error, native_crash, freeze too (migration 0136). */
+  /** v0.18.158 (contract.json#crashCatcher.kinds): dart_error, native_crash, freeze too (migration 0136). */
   kind: "crash" | "error" | "dart_error" | "native_crash" | "freeze";
   message: string;
   top_frame: string | null;

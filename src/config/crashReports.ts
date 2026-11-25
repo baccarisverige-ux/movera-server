@@ -1,7 +1,7 @@
 import { contract } from "../contract/contract.js";
 
 /**
- * Contract v0.18.157 (contract.json#crashCatcher.setting; owner 2026-11-24 "Add to admin all kind of crash"): the zone's
+ * Contract v0.18.158 (contract.json#crashCatcher.setting; owner 2026-11-24 "Add to admin all kind of crash"): the zone's
  * switch for the apps' crash reports, RiderAppConfig.crashReports { on } and DriverAppConfig.crashReports { on }
  * (Admin Dispatch › Safety › Crash reports). Never saved = configDefaults.crashReportsOn (true). Served always.
  */

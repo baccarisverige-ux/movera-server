@@ -4,7 +4,7 @@ import { recordError } from "../../src/telemetry/errors.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /**
- * Contract v0.18.157 (contract.json#crashCatcher.alert, alertDesk kind app_crash; owner 2026-11-24 "Add to admin all
+ * Contract v0.18.158 (contract.json#crashCatcher.alert, alertDesk kind app_crash; owner 2026-11-24 "Add to admin all
  * kind of crash"): a NEW crash group of the rider or driver app is a server alert once its count reaches the kind's
  * Important limit (default 1); Critical from 20; solved when marked fixed or 24 h after it was first seen; the admin can
  * switch it off. Rule 36: fails on main — there is no app_crash cause.
@@ -27,7 +27,7 @@ const report = (message: string, kind: "dart_error" | "native_crash" | "freeze" 
 const settings = (country: string, doc: unknown) =>
   db().insertInto("admin_alert_book").values({ country, settings: JSON.stringify(doc), rules: "[]" } as never).onConflict((oc) => oc.column("country").doUpdateSet({ settings: JSON.stringify(doc) } as never)).execute();
 
-describe("app_crash alert (v0.18.157)", () => {
+describe("app_crash alert (v0.18.158)", () => {
   it("a new native crash group alerts at once in every country that has a zone, without a zone; no duplicate on the next sweep", async () => {
     const id = await report("NSInvalidArgumentException: invalid GOOGLE_APP_ID", "native_crash");
     await sweep();

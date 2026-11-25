@@ -8,7 +8,7 @@ import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
- * Contract v0.18.157 (contract.json#crashCatcher.setting; owner 2026-11-24 "Add to admin all kind of crash"): the
+ * Contract v0.18.158 (contract.json#crashCatcher.setting; owner 2026-11-24 "Add to admin all kind of crash"): the
  * per-zone switch crashReports { on } in both app documents, default on. Rule 36: fails on main — GET /rider/config and
  * GET /driver/config serve no crashReports and a non-boolean on is saved.
  */
@@ -29,8 +29,8 @@ afterAll(async () => {
   await database.drop();
 });
 
-describe("crash reports switch (v0.18.157)", () => {
-  it("documents published before v0.18.157 are served with crashReports.on true, to both apps", async () => {
+describe("crash reports switch (v0.18.158)", () => {
+  it("documents published before v0.18.158 are served with crashReports.on true, to both apps", async () => {
     const rider = (await signIn(app, TEST_PHONES[0]!, "rider")).headers;
     const driver = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
     expect((await call(app, "GET", "/rider/config?zoneId=Z001", rider)).json().crashReports).toEqual({ on: true });
