@@ -76,7 +76,8 @@ describe("v0.18.164 France documents", () => {
   it("FR insurance guide: RC Circulation with the plate and 'transport de personnes à titre onéreux'", () => {
     const g = typeInfo(defaultSettings("FR"), "insurance")?.guide;
     for (const l of ["fr", "en", "sv"] as const) expect(g?.checklist?.[0]?.[l]).toContain("transport de personnes à titre onéreux");
-    expect(g?.checklist?.[0]?.en).toContain("normal car insurance is not enough");
+    expect(g?.checklist?.[0]?.en).toContain("A normal insurance is not enough");
+    expect(g?.checklist).toHaveLength(1);
   });
   it("FR fleet = Uber FR: Kbis, REVTC, RC Pro, RIB; the ID once; URSSAF not required; macaron + 4 photos kept", () => {
     const fr = defaultSettings("FR");
