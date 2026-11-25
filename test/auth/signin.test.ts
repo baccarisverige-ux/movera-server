@@ -51,7 +51,7 @@ describe("requesting a code", () => {
     const res = await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider", locale: "sv" }, { "x-request-id": "req-otp-1" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body).toEqual({ requestId: "req-otp-1", sessionId: expect.stringMatching(/^otp_[0-9A-Z]{26}$/), expiresAt: new Date(clock.now.getTime() + 300_000).toISOString(), retryAfterSeconds: 30, codeLength: 4 });
+    expect(body).toEqual({ requestId: "req-otp-1", sessionId: expect.stringMatching(/^otp_[0-9A-Z]{26}$/), expiresAt: new Date(clock.now.getTime() + 60_000).toISOString(), retryAfterSeconds: 60, codeLength: 4 });
   });
 
   it("any other number is 403 forbidden, sign_in_restricted (no SMS in the test week)", async () => {
@@ -78,24 +78,39 @@ describe("requesting a code", () => {
     expect(res.json()).toMatchObject({ code: "invalid_request", reason });
   });
 
-  it("a new code within 30 s is 429 with Retry-After; after 30 s it works and replaces the first", async () => {
+  it("a new code within 60 s is 429 with Retry-After; after 60 s it works and replaces the first (v0.18.165, was 30 s)", async () => {
     const first = await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider" });
     advance(10);
     const tooSoon = await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider" });
     expect(tooSoon.statusCode).toBe(429);
-    expect(tooSoon.headers["retry-after"]).toBe("20");
+    expect(tooSoon.headers["retry-after"]).toBe("50");
     expect(tooSoon.json()).toMatchObject({ code: "rate_limited", reason: "otp_resend_too_soon", retryable: true });
-    advance(20);
+    advance(49);
+    expect((await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider" })).statusCode).toBe(429);
+    advance(1);
     const second = await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider" });
     expect(second.statusCode).toBe(200);
     const old = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: first.json().sessionId, code: TEST_CODE });
     expect(old.json()).toMatchObject({ code: "invalid_request", reason: "invalid_otp_session" });
   });
 
+  it("v0.18.165 (owner 2026-11-25): the code works at 59 s and is 410 otp_expired at 60 s, with no new code asked", async () => {
+    const first = await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider" });
+    advance(60);
+    const late = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: first.json().sessionId, code: TEST_CODE });
+    expect(late.statusCode).toBe(410);
+    expect(late.json()).toMatchObject({ code: "otp_expired" });
+    const again = await post("/auth/otp/request", { phone: RIDER_PHONE, app: "rider" });
+    expect(again.statusCode).toBe(200);
+    advance(59);
+    const inTime = await post("/auth/otp/verify", { phone: RIDER_PHONE, sessionId: again.json().sessionId, code: TEST_CODE });
+    expect(inTime.statusCode).toBe(200);
+  });
+
   it("at most 10 codes per number per hour", async () => {
     for (let i = 0; i < 10; i++) {
       expect((await post("/auth/otp/request", { phone: OTHER_TEST_PHONE, app: "driver" })).statusCode).toBe(200);
-      advance(31);
+      advance(61);
     }
     const res = await post("/auth/otp/request", { phone: OTHER_TEST_PHONE, app: "driver" });
     expect(res.statusCode).toBe(429);
