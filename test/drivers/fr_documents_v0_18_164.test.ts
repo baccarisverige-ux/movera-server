@@ -73,7 +73,7 @@ describe("v0.18.164 France documents", () => {
     expect(settingsProblems({ ...fr, documents: { ...fr.documents, driver: [...fr.documents.driver, "company_registration"] } })).toEqual([]);
     expect(settingsProblems({ ...fr, documents: { ...fr.documents, vehicle: [...fr.documents.vehicle, "rc_pro_insurance"] } })).toContain("documents.vehicle: rc_pro_insurance belongs to a person");
   });
-  it("FR insurance guide: RC Circulation with the plate and 'transport de personnes à titre onéreux'", () => {
+  it("FR insurance guide: the owner's one short line (plate + 'transport de personnes à titre onéreux'; details in the reject note)", () => {
     const g = typeInfo(defaultSettings("FR"), "insurance")?.guide;
     for (const l of ["fr", "en", "sv"] as const) expect(g?.checklist?.[0]?.[l]).toContain("transport de personnes à titre onéreux");
     expect(g?.checklist?.[0]?.en).toContain("A normal insurance is not enough");

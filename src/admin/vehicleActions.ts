@@ -179,7 +179,7 @@ export async function adminReviewBank(trx: Trx, who: Principal, driverId: string
   return reviewDocument(trx, who, renewal?.renewal_id ?? doc.document_id, { decision: body.decision, ...(body.note ? { note: body.note } : {}) }, now);
 }
 
-const CountryBody = z.object({ expectedVersion: z.number().int().min(1), country: z.string().regex(/^[A-Z]{2}$/), reason: z.string().max(500) });
+const CountryBody = z.object({ expectedVersion: z.number().int().min(1), country: z.string().regex(/^[A-Z]{2}$/), reason: z.string().max(500).optional() });
 
 /**
  * POST /admin/drivers/{driverId}/country (drivers.activate, v0.18.162 contract.json#driverCountryFirst.adminSet): the only
@@ -191,12 +191,13 @@ export async function adminSetDriverCountry(trx: Trx, who: Principal, driverId: 
   const all = who.zones.includes("*");
   if (!all && row.zone_ids.length > 0 && !row.zone_ids.some((z) => who.zones.includes(z))) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
   const body = parseBody(CountryBody, rawBody);
-  if (!body.reason.trim()) throw badRequest("Say why the country changes.", "reason_required");
+  const reason = (body.reason ?? "").trim();
+  if (!reason) throw badRequest("Say why the country changes.", "reason_required");
   if (!all) {
     const mine = await trx.selectFrom("zones").select("zone_id").where("country", "=", body.country).where("zone_id", "in", who.zones.length ? who.zones : ["-"]).executeTakeFirst();
     if (mine === undefined) throw new ApiError("forbidden", "You hold no zone in this country.", { reason: "zone_out_of_scope" });
   }
   const view = async (r: DriverRow) => maskDriverView(await driverView(trx, r, "admin", now), who);
-  const fresh = await adminMoveDriverCountry(trx, who, row, { ...body, reason: body.reason.trim() }, now, view);
+  const fresh = await adminMoveDriverCountry(trx, who, row.driver_id, { expectedVersion: body.expectedVersion, country: body.country, reason }, now, view);
   return view(fresh);
 }
