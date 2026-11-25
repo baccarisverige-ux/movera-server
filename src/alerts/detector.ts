@@ -1,4 +1,5 @@
 import { CURRENCY_CODES, exponentOf, moneyText, toMajorNumber, type CurrencyCode } from "../rules/money.js";
+import { ONBOARDING } from "../drivers/onboardingRules.js";
 import { sql } from "kysely";
 import type { Db, Executor, Trx } from "../db/db.js";
 import { scheduleTimer, type TimerHandler, MAX_ATTEMPTS } from "../jobs/timers.js";
@@ -546,7 +547,8 @@ async function driverNoCountryCauses(ctx: Ctx): Promise<Cause[]> {
             OR d.created_at < ${ctx.now}::timestamptz - interval '24 hours'
             OR EXISTS (SELECT 1 FROM vehicles v WHERE v.driver_id = d.driver_id))
      ORDER BY d.created_at, d.driver_id LIMIT 500`.execute(ctx.ex);
-  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  // Raised only in the open countries (a closed one, TN today, has no admin team to act yet).
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))].filter((c) => ONBOARDING.countries[c]?.open === true);
   const out: Cause[] = [];
   for (const d of rows.rows) {
     const name = [d.first_name, d.last_name].filter(Boolean).join(" ") || d.driver_id;
