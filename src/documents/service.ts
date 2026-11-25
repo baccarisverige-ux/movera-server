@@ -357,6 +357,11 @@ export async function reviewDocument(trx: Trx, who: { subjectId: string; zones: 
   if (renewal) return reviewRenewal(trx, who, renewal, body, now);
   const row = await loadForAdmin(trx, who, documentId, true);
   assertReason(body.decision, body.note);
+  // v0.18.164 (owner 2026-11-25 "Yes, fix all 3", upload safety): a file document with no file is never approved.
+  if (body.decision === "approved" && (await documentKindIn(trx, row)) === "file") {
+    const file = row.file_name === null ? undefined : await trx.selectFrom("document_files").select("document_id").where("document_id", "=", row.document_id).executeTakeFirst();
+    if (file === undefined) throw badRequest("This document has no file yet; it cannot be approved.", "no_file");
+  }
   const expiresAt = await approvalExpiry(trx, row, body, row.expires_at, now);
   await trx
     .updateTable("documents")
@@ -395,6 +400,12 @@ async function reviewRenewal(trx: Trx, who: { subjectId: string; zones: string[]
   await audit(trx, { adminId: who.subjectId, action: "document.review", targetType: "document", targetId: row.document_id, zoneId, detail, at: now });
   const fresh = await trx.selectFrom("documents").selectAll().where("document_id", "=", row.document_id).executeTakeFirstOrThrow();
   return documentView(fresh as DocumentRow, "admin");
+}
+
+/** v0.18.164: the kind of a document's type in its country (the country's custom type, else the contract's). */
+async function documentKindIn(trx: Trx, row: DocumentRow): Promise<string | undefined> {
+  const settings = await onboardingSettings(trx, await countryOfDocument(trx, row));
+  return typeInfo(settings, row.type)?.kind ?? documentKind(row.type);
 }
 
 /** The driver, or 404; 403 when he is outside the admin's zones. */

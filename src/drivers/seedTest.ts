@@ -1,7 +1,11 @@
 import { sql } from "kysely";
 import type { Trx } from "../db/db.js";
 import { newId } from "../ids.js";
-import { requiredDocuments } from "./onboardingRules.js";
+import { type DocumentKey, sealFile } from "../documents/files.js";
+import { documentKind, requiredDocuments } from "./onboardingRules.js";
+
+/** v0.18.164 (owner 2026-11-25 upload safety): a tiny placeholder PNG (1x1) so every seeded file document has a file. */
+const PLACEHOLDER_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
 /**
  * The test week's ready accounts (owner, 2026-10-25): activated drivers in one approved test fleet and active
@@ -39,7 +43,7 @@ export const DEFAULT_TEST_ACCOUNTS: TestAccounts = {
 };
 
 /** Creates or updates the test accounts; answers what was made. */
-export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAULT_TEST_ACCOUNTS, now: Date = new Date()) {
+export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAULT_TEST_ACCOUNTS, now: Date = new Date(), documentKey?: DocumentKey) {
   const owner = accounts.drivers.find((d) => d.owner);
   if (owner === undefined) throw new Error("The test fleet needs one driver marked owner");
   const driverIds = new Map<string, string>();
@@ -107,11 +111,19 @@ export async function seedTestAccounts(trx: Trx, accounts: TestAccounts = DEFAUL
       ...requiredDocuments(accounts.fleet.country, "vehicle").map((type) => ({ ownerKind: "vehicle" as const, ownerId: vehicleId, type })),
     ];
     for (const doc of types) {
-      await trx
+      // v0.18.164: a file document gets the placeholder file (when the server's document key is given).
+      const withFile = documentKey !== undefined && documentKind(doc.type) === "file";
+      const file = withFile ? { file_name: "placeholder.png", media_type: "image/png", file_size: PLACEHOLDER_PNG.length, uploaded_at: now } : {};
+      const saved = await trx
         .insertInto("documents")
-        .values({ document_id: newId("doc", now.getTime()), driver_id: driverId, owner_kind: doc.ownerKind, owner_id: doc.ownerId, type: doc.type, status: "approved", reviewed_at: now, reviewed_by: "seed", created_at: now, updated_at: now })
-        .onConflict((c) => c.columns(["owner_kind", "owner_id", "type"]).doUpdateSet({ status: "approved", reviewed_at: now, reviewed_by: "seed", updated_at: now }))
-        .execute();
+        .values({ document_id: newId("doc", now.getTime()), driver_id: driverId, owner_kind: doc.ownerKind, owner_id: doc.ownerId, type: doc.type, status: "approved", reviewed_at: now, reviewed_by: "seed", created_at: now, updated_at: now, ...file })
+        .onConflict((c) => c.columns(["owner_kind", "owner_id", "type"]).doUpdateSet({ status: "approved", reviewed_at: now, reviewed_by: "seed", updated_at: now, ...file }))
+        .returning("document_id")
+        .executeTakeFirstOrThrow();
+      if (withFile) {
+        const sealed = sealFile(documentKey, PLACEHOLDER_PNG);
+        await trx.insertInto("document_files").values({ document_id: saved.document_id, ...sealed }).onConflict((c) => c.column("document_id").doUpdateSet(sealed)).execute();
+      }
     }
   }
 

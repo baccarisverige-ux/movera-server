@@ -23,7 +23,13 @@ export type OnboardingSettings = {
   steps: Array<{ id: string; on: boolean; days: number }>;
   signUpReminders: { on: boolean; everyDays: number; stuckAfterDays: number };
   expiry: { warnDays: number[]; blockAtExpiry: boolean };
-  vehicles: { categories: CategoryRule[]; warnDays: number; autoHold: boolean; photosNeeded: boolean };
+  vehicles: {
+    categories: CategoryRule[]; warnDays: number; autoHold: boolean; photosNeeded: boolean;
+    /** v0.18.164 (vehicleRules.maxAge, owner 2026-11-25 FR "Moins de 6 ans"): oldest car in years, rolling; missing = no age rule. */
+    maxAgeYears?: number;
+    /** v0.18.164: hybrid and electric cars are exempt from maxAgeYears; missing = false. */
+    hybridElectricExempt?: boolean;
+  };
   customTypes?: CustomType[];
   texts?: Record<string, { name?: LocalText; help?: LocalText }>;
   /** v0.18.3 (R8): the upload guide per type, written by the admin. */
@@ -42,7 +48,7 @@ type SettingsContract = {
   stepIds: string[];
   fuels: Fuel[];
   photoTypes: string[];
-  limits: Record<"stepDays" | "remindEveryDays" | "stuckAfterDays" | "warnDays" | "vehicleWarnDays" | "minYear" | "minSeats" | "validMonths", [number, number]>;
+  limits: Record<"stepDays" | "remindEveryDays" | "stuckAfterDays" | "warnDays" | "vehicleWarnDays" | "minYear" | "minSeats" | "validMonths" | "maxAgeYears", [number, number]>;
 };
 
 export const SETTINGS = (contract as unknown as { driverOnboarding: { settings: SettingsContract } }).driverOnboarding.settings;
@@ -189,13 +195,15 @@ export function settingsProblems(document: unknown): string[] {
     else ids.add(c.id);
   }
   for (const key of Object.keys(d.texts ?? {})) if (types[key] === undefined) problems.push(`texts: ${key} is not a contract type`);
+  // v0.18.164 (documents.ownerFleet): a company paper has owner fleet; person and company lists accept driver or fleet, exactly as before.
+  const personOwner = (o: string) => (o === "vehicle" ? "vehicle" : "driver");
   for (const [scope, owner] of [["driver", "driver"], ["fleet", "driver"], ["vehicle", "vehicle"]] as const) {
     for (const type of d.documents[scope]) {
       const custom = customs.find((c) => c.id === type);
       if (custom) {
         if (custom.owner !== scope) problems.push(`documents.${scope}: ${type} is a ${custom.owner} document`);
       } else if (types[type] === undefined) problems.push(`documents.${scope}: unknown type ${type}`);
-      else if (types[type]!.owner !== owner) problems.push(`documents.${scope}: ${type} belongs to a ${types[type]!.owner === "vehicle" ? "car" : "person"}`);
+      else if (personOwner(types[type]!.owner) !== owner) problems.push(`documents.${scope}: ${type} belongs to a ${types[type]!.owner === "vehicle" ? "car" : "person"}`);
     }
     if (new Set(d.documents[scope]).size !== d.documents[scope].length) problems.push(`documents.${scope}: a type is listed twice`);
   }
@@ -219,6 +227,8 @@ export function settingsProblems(document: unknown): string[] {
     if (rule.on && rule.fuels.length === 0) problems.push(`vehicles.${rule.category}: allow at least one fuel`);
   }
   if (!within(d.vehicles.warnDays, SETTINGS.limits.vehicleWarnDays)) problems.push("vehicles.warnDays: 1 to 120");
+  if (d.vehicles.maxAgeYears !== undefined && !within(d.vehicles.maxAgeYears, SETTINGS.limits.maxAgeYears)) problems.push("vehicles.maxAgeYears: 1 to 30 years");
+  if (d.vehicles.hybridElectricExempt !== undefined && typeof d.vehicles.hybridElectricExempt !== "boolean") problems.push("vehicles.hybridElectricExempt: true or false");
   // v0.18.3 (R8, R9): guides and valid months only for types of the country.
   const known = (type: string) => types[type] !== undefined || ids.has(type);
   for (const type of Object.keys(d.guides ?? {})) if (!known(type)) problems.push(`guides: unknown type ${type}`);
@@ -232,6 +242,23 @@ export function settingsProblems(document: unknown): string[] {
 /* ---------------------------------------------------------------- car rules (item 11) */
 
 export type CarFacts = { year: number; seats: number; fuel: Fuel | null };
+
+/**
+ * v0.18.164 (contract.json#driverOnboarding.vehicleRules.maxAge): the oldest model year the country takes for this car
+ * now (current UTC year minus maxAgeYears), or null when the country has no age rule or the car is exempt (hybrid or
+ * electric with hybridElectricExempt on). Sweden and Tunisia have no maxAgeYears: null, behaviour unchanged.
+ */
+export function ageYear(settings: OnboardingSettings, car: Pick<CarFacts, "fuel">, now: Date = new Date()): number | null {
+  const years = settings.vehicles.maxAgeYears;
+  if (years === undefined || years === null) return null;
+  if (settings.vehicles.hybridElectricExempt === true && (car.fuel === "hybrid" || car.fuel === "electric")) return null;
+  return now.getUTCFullYear() - years;
+}
+
+const tooOldForAge = (car: CarFacts, settings: OnboardingSettings): boolean => {
+  const year = ageYear(settings, car);
+  return year !== null && car.year < year;
+};
 
 /** v0.18.3 (R2, vehicleRules.extraCategories): categories that only come on top of a ride category (child_seat). */
 export const EXTRA_CATEGORIES: readonly string[] = (contract as unknown as { driverOnboarding: { vehicleRules: { extraCategories: string[] } } }).driverOnboarding.vehicleRules.extraCategories;
@@ -250,10 +277,10 @@ export function categoryProblem(car: CarFacts, settings: OnboardingSettings, cat
   const rule = settings.vehicles.categories.find((r) => r.category === category);
   if (rule === undefined) {
     const base = baseYear(settings);
-    return base !== null && car.year < base ? "year_too_old" : null;
+    return (base !== null && car.year < base) || tooOldForAge(car, settings) ? "year_too_old" : null;
   }
   if (!rule.on) return "category_off";
-  if (car.year < rule.minYear) return "year_too_old";
+  if (car.year < rule.minYear || tooOldForAge(car, settings)) return "year_too_old";
   if (car.seats < rule.minSeats) return "too_few_seats";
   if (car.fuel === null) return SETTINGS.fuels.every((f) => rule.fuels.includes(f)) ? null : "fuel_required";
   if (!rule.fuels.includes(car.fuel)) return "fuel_not_allowed";
@@ -271,7 +298,7 @@ export function carRuleProblems(car: CarFacts, settings: OnboardingSettings, cat
     return problem === null ? [] : [`${c}:${problem}`];
   });
   const base = baseYear(settings);
-  if (categoryIds.length === 0 && base !== null && car.year < base) problems.push("car:year_too_old");
+  if (categoryIds.length === 0 && ((base !== null && car.year < base) || tooOldForAge(car, settings))) problems.push("car:year_too_old");
   if (!categoryIds.some((c) => !EXTRA_CATEGORIES.includes(c))) for (const c of categoryIds) problems.push(`${c}:extra_needs_ride`);
   return problems;
 }

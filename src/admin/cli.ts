@@ -6,6 +6,7 @@ import { changeAdminRole, createAdmin, createSetupLink } from "./auth.js";
 import { isAdminRole } from "./permissions.js";
 import { seedDriver } from "../drivers/service.js";
 import { seedTestAccounts } from "../drivers/seedTest.js";
+import { documentKeyFrom } from "../documents/files.js";
 import { seedSampleConfig } from "../config/seedConfig.js";
 import { summarize } from "./kpis.js";
 import { runKpiResum, totalsLine } from "./kpiResum.js";
@@ -79,7 +80,7 @@ if (command === "seed-test") {
   if (env.MOVERA_ENV === "production") throw new Error("seed-test is for staging and development only.");
   try {
     await migrate(pool);
-    const made = await db.transaction().execute((trx) => seedTestAccounts(trx));
+    const made = await db.transaction().execute((trx) => seedTestAccounts(trx, undefined, new Date(), env.DOCUMENT_FILES_KEY !== undefined || env.JWT_SECRET !== undefined ? documentKeyFrom(env, env.JWT_SECRET ?? "") : undefined));
     console.log(`test fleet ${made.fleetId} approved, code ${made.code}`);
     for (const d of made.drivers) console.log(`driver ${d.phone} active: ${d.driverId} (car ${d.vehicleId})`);
     for (const r of made.riders) console.log(`rider ${r.phone} active: ${r.riderId}`);

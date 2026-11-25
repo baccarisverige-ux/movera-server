@@ -114,7 +114,8 @@ describe("item 10 + note check: the onboarding settings document, per country, w
     });
     expect(se.document.vehicles.categories.find((r: { category: string }) => r.category === "economy")).toMatchObject({ minYear: 2015, minSeats: 4 });
     const fr = await settingsOf("FR");
-    expect(fr.document.documents).toEqual({ driver: ["terms", "info_session", "vtc_card", "driving_license", "national_id", "profile_photo"], fleet: ["company_registration", "vtc_register_certificate", "rc_pro_insurance", "urssaf_certificate", "national_id", "bank_statement"], vehicle: ["vehicle_registration", "insurance", "vtc_sticker"] });
+    expect(fr.document.documents).toEqual({ driver: ["terms", "info_session", "vtc_card", "driving_license", "national_id", "profile_photo"], fleet: ["company_registration", "vtc_register_certificate", "rc_pro_insurance", "bank_statement"], vehicle: ["vehicle_registration", "insurance", "vtc_sticker"] }); // v0.18.164 Uber FR
+    expect(fr.document.vehicles).toMatchObject({ maxAgeYears: 6, hybridElectricExempt: true });
     expect(fr.document.vehicles.categories.find((r: { category: string }) => r.category === "economy")).toMatchObject({ minYear: 2016 });
     expect(fr.document.vehicles.categories.find((r: { category: string }) => r.category === "premium")).toMatchObject({ minYear: 2022 });
     expect(fr.document.expiry).toEqual({ warnDays: [30, 7, 1], blockAtExpiry: true });
@@ -425,7 +426,8 @@ describe("item 7: Start my own company", () => {
     expect(res.json()).toMatchObject({ accountType: "fleet", accountStatus: "on_hold", fleet: { status: "pending" } });
     const lines = (await reminders("frConvert")).items.filter((i: { kind: string }) => i.kind === "document_needed").map((i: { documentType: string }) => i.documentType);
     expect(lines).not.toContain("national_id");
-    expect(lines.sort()).toEqual(["bank_statement", "company_registration", "rc_pro_insurance", "urssaf_certificate", "vtc_register_certificate"]);
+    // v0.18.164 (Uber FR): no URSSAF and no second ID in the FR fleet list.
+    expect(lines.sort()).toEqual(["bank_statement", "company_registration", "rc_pro_insurance", "vtc_register_certificate"]);
   });
 
   it("a member leaves his fleet when he starts his own", async () => {
@@ -490,7 +492,7 @@ describe("items 10, 11 and the note check: what the admin publishes is what the 
     const fleetCar = (await call(app, "GET", "/driver/vehicles", H.frOwner!)).json().items.find((v: { vehicleId: string }) => v.vehicleId === ID.frCar);
     expect(fleetCar.requiredDocuments).toEqual(["vehicle_registration", "insurance", "vtc_sticker"]);
     // v0.18.5 (G2-D5.3): checked when the admin gives the category.
-    const old = await call(app, "POST", "/driver/vehicles", H.frOwner!, { make: "Renault", model: "Talisman", year: 2018, color: "Grey", plate: "AA-003-FR", seats: 4, categoryIds: ["economy"] });
+    const old = await call(app, "POST", "/driver/vehicles", H.frOwner!, { make: "Renault", model: "Talisman", year: 2018, color: "Grey", plate: "AA-003-FR", seats: 4, fuel: "hybrid", categoryIds: ["economy"] }); // v0.18.164: hybrid, so only the stricter minYear applies (not the 6-year age)
     expect(old.statusCode).toBe(201);
     const give = await call(app, "POST", `/admin/vehicles/${old.json().vehicleId}/review`, sup.headers, { expectedVersion: 1, decision: "approved", categoryIds: ["economy"] });
     expect(give.json()).toMatchObject({ reason: "vehicle_rules_not_met", details: ["economy:year_too_old"] });
