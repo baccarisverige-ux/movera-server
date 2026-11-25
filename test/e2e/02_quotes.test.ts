@@ -88,17 +88,11 @@ describe("scenario 2: quote, category, pickup and destination validation, route 
       }
     });
 
-    it("POST /routes answers the OSRM route, and the estimate when OSRM is down", async () => {
+    it("v0.18.163 (owner: no OpenStreetMap): POST /routes answers the server's router; the OSRM proxy is not used", async () => {
       const route = { mode: "driving", from: { lat: PLACES.sergels.lat, lng: PLACES.sergels.lng }, to: { lat: PLACES.medborgar.lat, lng: PLACES.medborgar.lng } };
       const res = await rider.post("/routes", route);
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ distanceMeters: 8000, durationSeconds: 1080, provider: "osrm" });
-      osrm.set("down");
-      try {
-        expect((await rider.post("/routes", route)).body["provider"]).toBe("estimate");
-      } finally {
-        osrm.set({ distance: 8000, duration: 1080 });
-      }
+      expect(res.body).toMatchObject({ distanceMeters: 8000, durationSeconds: 1080 });
     });
   });
 

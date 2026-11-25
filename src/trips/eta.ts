@@ -13,11 +13,13 @@ import { headingTick } from "./headingCheck.js";
 import { takeBackLateBooked } from "./ride.js";
 import { statusTarget, TRIP_ETA } from "./etaNow.js";
 import { maybePushArriving } from "../notifications/tripPush.js";
+import { etaRouteBasis, isEtaRoutePrepared, prepareEtaRoute } from "./etaRoute.js";
+import { nextStopIndex, visitsOf } from "./ride/stopClock.js";
 
 /**
  * v0.18.7 (contract.json#pickupWaiting.eta, owner status item 2 and Q4 "same road-route ETA for both apps"): ONE ETA,
- * computed by the server every EVERY_SECONDS from the driver's latest position with the server's router (Movera's
- * OSRM, else the straight-line estimate), to the pickup from accept until the rider boards and to the drop-off from
+ * computed by the server every EVERY_SECONDS from the driver's latest position: v0.18.163 along the stored Google route
+ * where live traffic is on (trips/etaRoute.ts), else the straight-line estimate (no OSRM since v0.18.163), to the pickup from accept until the rider boards and to the drop-off from
  * boarding until the end. It is kept on the trip (trips.eta, TripProjection.eta on every read) and sent as a
  * kind=location event with etaSeconds + eta, so the rider, the driver and the admin all show the same number without
  * computing anything themselves. One durable timer per trip (kind TRIP_ETA), booked at accept, re-booked by each tick,
@@ -25,7 +27,7 @@ import { maybePushArriving } from "../notifications/tripPush.js";
  */
 
 type Place = { lat: number; lng: number };
-export type TripEta = { etaSeconds: number; distanceMeters: number; target: "pickup" | "dropoff"; at: string; source: "osrm" | "estimate" | "stale" };
+export type TripEta = { etaSeconds: number; distanceMeters: number; target: "pickup" | "dropoff"; at: string; source: "google" | "osrm" | "estimate" | "stale" };
 
 const PW = (contract as unknown as { pickupWaiting: { eta: { everySeconds: number; staleAfterSeconds: number } } }).pickupWaiting.eta;
 export { TRIP_ETA };
@@ -64,7 +66,7 @@ export async function stopEta(trx: Trx, tripId: string): Promise<void> {
 }
 
 /** One tick: route the driver's latest fix to the target, keep it on the trip, send it, book the next tick. */
-export function etaHandler(router: Router): TimerHandler {
+export function etaHandler(router: Router, traffic?: Router): TimerHandler {
   const handler: TimerHandler = async (trx, timer) => {
     // Job 1 (fix plan R1 b): the road route was asked before this transaction (prepare below); nothing here waits on OSRM.
     const routerNow = preparedRouter(timer.prepared);
@@ -94,9 +96,15 @@ export function etaHandler(router: Router): TimerHandler {
       eta = staleOf(previous, target, now);
     } else {
       const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
-      const routed = await routerNow.route([{ lat: fix.lat, lng: fix.lng }, to]);
+      // v0.18.163 (contract.json#liveTraffic.calls): with live traffic the tick follows the stored Google route
+      // (trips/etaRoute.ts, prepared outside the lock); else the router (the straight-line estimate) as before.
+      // Review #328 F6: only for the same target (the rider may have boarded meanwhile), and a route change that
+      // cleared the stored route in between is not written back over.
+      const followed = isEtaRoutePrepared(timer.prepared) && timer.prepared.target === target && timer.prepared.basis === etaRouteBasis(trip) ? timer.prepared : null;
+      const routed = followed !== null ? followed.leg : await routerNow.route([{ lat: fix.lat, lng: fix.lng }, to]);
       leg = routed;
       eta = { etaSeconds: Math.max(ETA_MIN_SECONDS, routed.durationSeconds), distanceMeters: routed.distanceMeters, target, at: now.toISOString(), source: routed.source };
+      if (followed !== null && followed.route !== null) await trx.updateTable("trips").set({ eta_route: JSON.stringify(followed.route) }).where("trip_id", "=", trip.trip_id).execute();
       // v0.18.13 (G5-8): the heading-to-pickup check runs with every tick to the pickup. v0.18.35 (owner Q-A, job 4): a
       // live trip is never taken back; only a late booked ride may be (then it is back in dispatch: no ETA to send).
       if (target === "pickup" && (await headingTick(trx, trip, { fix, leg, now }, takeBackLateBooked))) return;
@@ -116,6 +124,11 @@ export function etaHandler(router: Router): TimerHandler {
     const fix = await db.selectFrom("driver_locations").selectAll().where("driver_id", "=", trip.driver_id!).executeTakeFirst();
     if (!fix || isStaleFix(fix, timer.firedAt)) return null;
     const to = (target === "pickup" ? trip.pickup : trip.dropoff) as Place;
+    // v0.18.163: live traffic on → the stored Google route (a call only after accept, off the route or far behind).
+    const stops = (Array.isArray(trip.stops) ? (trip.stops as Place[]) : []).map((p) => ({ lat: p.lat, lng: p.lng }));
+    const next = target === "dropoff" ? nextStopIndex(stops.length, visitsOf({ stop_visits: trip.stop_visits })) : null;
+    const viaRoute = await prepareEtaRoute(db, trip, target, { lat: fix.lat, lng: fix.lng }, to, timer.firedAt, traffic, next === null ? [] : stops.slice(next));
+    if (viaRoute !== null) return viaRoute;
     // S7 0.17: an ETA tick needs the time and the distance only, never the road's shape.
     return prepareLegs(router, [[{ lat: fix.lat, lng: fix.lng }, to]], { shape: false });
   };

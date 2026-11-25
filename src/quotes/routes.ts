@@ -7,7 +7,8 @@ import type { Router } from "../maps/routing.js";
 import { markRiderSeen } from "../riders/presence.js";
 import { createQuotes, routeBeforeTransaction } from "./service.js";
 
-export type QuoteDeps = { db: Db; jwtSecret: string; router: Router; clock?: () => Date };
+/** v0.18.163 (contract.json#liveTraffic): `traffic` = Google live traffic (falls back to `router`), used when the zone's setting is on. */
+export type QuoteDeps = { db: Db; jwtSecret: string; router: Router; traffic?: Router; clock?: () => Date };
 
 export async function quoteRoutes(app: FastifyInstance, deps: QuoteDeps): Promise<void> {
   const guard = { db: deps.db, jwtSecret: deps.jwtSecret, ...(deps.clock ? { clock: deps.clock } : {}) };
@@ -18,7 +19,7 @@ export async function quoteRoutes(app: FastifyInstance, deps: QuoteDeps): Promis
     // A missing or bad key is refused before any route call, as before.
     readIdempotencyKey(key);
     // The route first, with no database connection held; then the short transaction.
-    const router = await routeBeforeTransaction(deps.router, request.body ?? {}, deps.db);
+    const router = await routeBeforeTransaction(deps.router, request.body ?? {}, deps.db, deps.traffic);
     const result = await runIdempotent(
       deps.db,
       { actor: "rider", subjectId: who.subjectId, key, method: "POST", route: request.url.split("?")[0]!, body: request.body ?? null },

@@ -50,7 +50,9 @@ export interface QuotesTable {
   stops: JsonDefault<unknown[]>;
   distance_meters: number;
   duration_seconds: number;
-  route_source: "osrm" | "estimate";
+  route_source: "google" | "osrm" | "estimate";
+  /** v0.18.163 (migration 0138): Google's encoded polyline of the quoted route; null when estimated. */
+  route_polyline: ColumnType<string | null, string | null | undefined, string | null>;
   /** numeric comes back as a string. */
   surge_multiplier: ColumnType<string, number | string | undefined, number | string>;
   /** v0.6.0: babySeats, childSeats, airportPickup, airportDropoff, fixedRouteId as the rider sent them. */

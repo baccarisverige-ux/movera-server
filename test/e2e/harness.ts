@@ -1,3 +1,4 @@
+import { OsrmRouter } from "../../src/maps/routing.js";
 import type { CodeSmsSender } from "../../src/sms/elks.js";
 import { ADMIN_EVENTS_CHANNEL } from "../../src/realtime/adminEvents.js";
 import { TEST_CODE } from "../../src/auth/service.js";
@@ -54,6 +55,10 @@ export const BOOTSTRAP_EMAIL = "owner@movera.test";
 
 /** poolMax: the server gets its own pool of this size (the test's own reads keep the default pool). */
 /** env: extra server environment (e.g. a production-size write limit, B1.22). */
+/**
+ * v0.18.163 (owner 2026-11-25 "We cannot use data for open street map"): the server no longer builds an OSRM router from
+ * OSRM_URL. These scenarios keep their fake road (8 km / 18 min) by handing the server a router on the fake, test only.
+ */
 export type SimOptions = { router?: Router; osrmUrl?: string; now?: Date; poolMax?: number; env?: Record<string, string>; /** v0.18.101: a fake SMS company (none = "SMS not connected"). */ sms?: SmsProvider; /** v0.18.151: a fake sign-in SMS sender (the 46elks keys set). */ signInSms?: CodeSmsSender };
 
 let keyCounter = 0;
@@ -105,7 +110,7 @@ export class Sim {
     sim.hub = new NotificationHub(sim.database.url, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL]);
     await sim.hub.start();
     if (options.poolMax !== undefined) sim.serverDb = createDb(createPool(sim.database.url, options.poolMax));
-    sim.app = await buildApp({ env, logger: false, db: sim.serverDb ?? db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : {}), ...(options.sms ? { sms: options.sms } : {}), ...(options.signInSms ? { signInSms: options.signInSms } : {}) });
+    sim.app = await buildApp({ env, logger: false, db: sim.serverDb ?? db, clock: () => sim.clock.now, hub: sim.hub, ...(options.router ? { router: options.router } : options.osrmUrl ? { router: new OsrmRouter(options.osrmUrl) } : {}), ...(options.sms ? { sms: options.sms } : {}), ...(options.signInSms ? { signInSms: options.signInSms } : {}) });
     // Phase 7: every HTTP response's route, status and server time (Fastify's elapsedTime), for the timing budgets
     // (15_timing.test.ts). E2E_TIMING_OUT=<file> also appends them as JSON lines for the timing report.
     const timingOut = process.env.E2E_TIMING_OUT;

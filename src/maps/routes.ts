@@ -6,7 +6,10 @@ import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { PlacesUnavailable, type Places } from "./places.js";
-import type { LatLng, Router } from "./routing.js";
+import { EstimateRouter, type LatLng, type Router } from "./routing.js";
+import { decodePolyline } from "./polyline.js";
+import { etaTarget } from "../trips/eta.js";
+import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { zoneAt } from "../config/zoneLookup.js";
 import { countryLanguage } from "../notifications/noticeLanguage.js";
 
@@ -141,7 +144,19 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
     recent.push(now);
     navCalls.set(who.subjectId, recent);
 
-    if (deps.osrmUrl === undefined) throw new ApiError("unavailable", "Navigation routes are not available yet.", { reason: "routing_unavailable", retryAfterSeconds: 60 });
+    if (deps.osrmUrl === undefined) {
+      // v0.18.163 (contract.json#liveTraffic.navigation; owner "no OpenStreetMap", "about 2 Google calls per trip"):
+      // the driver's route line NEVER calls Google. On his active trip it is the stored Google route the ETA follows
+      // (trips.eta_route, else the booked quote route to the drop-off); the ETA tick alone asks Google again, under the
+      // off-route / late rule. No stored route (or no trip): the straight line through the asked points.
+      const points = pairs.map((pair) => {
+        const [lng, lat] = pair.split(",").map(Number);
+        return { lat: lat!, lng: lng! };
+      });
+      const stored = await storedDriverRoute(deps.db, who.subjectId);
+      const line = stored ?? { ...(await new EstimateRouter().route(points)), points };
+      return reply.status(200).send({ code: "Ok", routes: [{ distance: line.distanceMeters, duration: line.durationSeconds, geometry: { type: "LineString", coordinates: line.points!.map((p) => [p.lng, p.lat]) }, legs: [] }], waypoints: [] });
+    }
     const params = new URLSearchParams();
     for (const name of ["overview", "steps", "annotations", "alternatives"]) if (query[name] !== undefined) params.set(name, String(query[name]));
     params.set("geometries", "geojson");
@@ -156,4 +171,26 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
     if (data.code === "NoRoute") return reply.status(200).send({ code: "NoRoute", routes: [] });
     return reply.status(200).send(data);
   });
+}
+
+/**
+ * v0.18.163 (contract.json#liveTraffic.navigation): the driver's active trip's stored Google route for the current leg
+ * (to the pickup, or to the drop-off), or null. No network call.
+ */
+export async function storedDriverRoute(db: Db, driverId: string): Promise<{ distanceMeters: number; durationSeconds: number; points: LatLng[] } | null> {
+  const trips = await db.selectFrom("trips").select(["status", "driver_id", "eta_route", "route_polyline", "distance_meters", "duration_seconds"]).where("driver_id", "=", driverId).where("status", "not in", [...TERMINAL] as TripStatus[]).orderBy("created_at", "desc").limit(3).execute();
+  for (const trip of trips) {
+    const target = etaTarget(trip);
+    if (target === null) continue;
+    const r = trip.eta_route as { target?: string; polyline?: string; meters?: number; seconds?: number } | null;
+    if (r && r.target === target && typeof r.polyline === "string") {
+      const points = decodePolyline(r.polyline);
+      if (points.length >= 2) return { distanceMeters: Math.round(r.meters ?? 0), durationSeconds: Math.round(r.seconds ?? 0), points };
+    }
+    if (target === "dropoff" && trip.route_polyline) {
+      const points = decodePolyline(trip.route_polyline);
+      if (points.length >= 2) return { distanceMeters: trip.distance_meters ?? 0, durationSeconds: trip.duration_seconds ?? 0, points };
+    }
+  }
+  return null;
 }

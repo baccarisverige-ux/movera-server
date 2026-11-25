@@ -174,6 +174,7 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
         cancellation: null,
         distance_meters: quote.distance_meters,
         duration_seconds: quote.duration_seconds,
+        route_polyline: quote.route_polyline ?? null,
         surge_multiplier: quote.surge_multiplier,
         price_extras: JSON.stringify(quote.price_extras ?? {}),
         pricing_version: quote.pricing_version,

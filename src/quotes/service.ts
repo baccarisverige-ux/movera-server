@@ -4,6 +4,7 @@ import { checkTripLength, checkWindow } from "../reservations/service.js";
 import { checkMaxStops, maxStopsOf } from "../trips/onTripSettings.js";
 import { contract } from "../contract/contract.js";
 import type { Db, Executor, Trx } from "../db/db.js";
+import { tripTimeRouter } from "../maps/liveTraffic.js";
 import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { newId } from "../ids.js";
@@ -50,6 +51,10 @@ export type QuoteView = {
   surge?: { multiplier: number; until?: string };
   /** v0.18.30 (contract.json#smallFixes.quotePickupTime, owner Q8): the booked pickup time; null on a live quote. */
   pickupAt: string | null;
+  /** v0.18.163 (contract.json#liveTraffic.quote). */
+  tripSeconds: number;
+  tripMeters: number;
+  routeSource: "google" | "osrm" | "estimate";
   /** S5 J8 (contract v0.18.84 debtModel.quoteInfo): the rider's debt in the quote's currency, information only. */
   walletDebt?: { amountMinor: number; currency: string };
 };
@@ -86,7 +91,8 @@ export async function samePointWarning(trx: Trx, zoneId: string, body: Pick<Quot
  * router hands createQuotes that same leg for the same points (or the same error at the same step), so the answer,
  * the stored quote and the idempotency behaviour are unchanged; any other points still go to the real router.
  */
-export async function routeBeforeTransaction(router: Router, request: unknown, ex: Executor): Promise<Router> {
+export async function routeBeforeTransaction(roads: Router, request: unknown, ex: Executor, traffic?: Router): Promise<Router> {
+  let router = roads;
   if (schemaProblem("QuoteRequest", request) !== null) return router;
   const body = request as QuoteRequest;
   // Q120 follow-up SF-1 (Rules REMINDERS 137): what createQuotes refuses on the zone before it routes (no open zone at
@@ -95,6 +101,8 @@ export async function routeBeforeTransaction(router: Router, request: unknown, e
   // 400 too_many_stops (the schema has no upper limit on stops). Plain reads, no transaction.
   const zone = await zoneAt(ex, body.pickup);
   if (zone === null || !zone.open || body.stops.length > (await maxStopsOf(ex, zone.zoneId))) return router;
+  // v0.18.163 (contract.json#liveTraffic.setting): live traffic when the zone's dispatch setting is on (default SE, FR).
+  router = await tripTimeRouter(ex, zone.zoneId, { roads, ...(traffic ? { traffic } : {}) });
   const wanted = legKey(quotePoints(body));
   const result: { leg: RouteLeg } | { error: unknown } = await router.route(quotePoints(body)).then(
     (leg) => ({ leg }),
@@ -185,6 +193,7 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
         distance_meters: leg.distanceMeters,
         duration_seconds: leg.durationSeconds,
         route_source: leg.source,
+        route_polyline: leg.polyline ?? null,
         surge_multiplier: fare.surgeMultiplier,
         price_extras: JSON.stringify(extras),
         currency: fare.total.currency,
@@ -210,6 +219,10 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
       stops: body.stops,
       surgeMultiplier: fare.surgeMultiplier,
       pickupAt: kind === "scheduled" ? new Date(body.scheduledAt!).toISOString() : null,
+      // v0.18.163 (contract.json#liveTraffic.quote): the drive time and distance this price used, and where they came from.
+      tripSeconds: leg.durationSeconds,
+      tripMeters: leg.distanceMeters,
+      routeSource: leg.source,
       ...(fare.surgeMultiplier > 1 ? { surge: { multiplier: fare.surgeMultiplier, ...(surge.until ? { until: surge.until } : {}) } } : {}),
       ...walletDebt,
     });
