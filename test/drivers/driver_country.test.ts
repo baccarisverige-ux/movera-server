@@ -11,8 +11,8 @@ import { call, signIn, testWorld } from "../support/world.js";
 
 /**
  * Contract v0.18.162 (contract.json#driverCountryFirst; owner 2026-11-25 "Yes"): the country is picked first
- * (PUT /driver/country), no car without a country (409 country_required), the details form cannot carry another
- * country (409 country_locked), the admin change (POST /admin/drivers/{id}/country: reason, scope, fleet rules, cars
+ * (PUT /driver/country), no car without a country (409 country_required), a changed country moves the zone too, the
+ * admin change (POST /admin/drivers/{id}/country: reason, scope, fleet rules, cars
  * re-checked, audit) and the alert driver_no_country.
  */
 let database: TestDatabase;
@@ -52,9 +52,10 @@ describe("v0.18.162 driver country first", () => {
     expect(saved.json().country).toBe("FR");
     const r = await row(saved.json().driverId);
     expect(r.zone_ids).toEqual(["FR-PC"]);
-    // Changed on the step before approval (an older app's form may still send another country), then the form goes
-    // through and a car can be added.
+    // Changed on the step before approval: the zone and city follow the new country (M1), then the form goes through
+    // and a car can be added.
     expect((await call(app, "PUT", "/driver/country", me, { country: "SE" })).statusCode).toBe(200);
+    expect(await row(saved.json().driverId)).toMatchObject({ country: "SE", zone_ids: ["Z001"], city_id: "stockholm_lan" });
     expect((await call(app, "POST", "/driver/onboarding", me, details())).statusCode).toBe(200);
     expect((await call(app, "POST", "/driver/vehicles", me, car("DC 101"))).statusCode).toBe(201);
   });
@@ -81,6 +82,12 @@ describe("v0.18.162 driver country first", () => {
     expect(fleet).toMatchObject({ country: "FR", city_id: "paris", zone_id: "FR-PC" });
     const entry = await db().selectFrom("admin_audit").selectAll().where("action", "=", "driver.country").where("target_id", "=", d.driverId).executeTakeFirstOrThrow();
     expect(entry.detail).toMatchObject({ from: "SE", to: "FR", reason: "Works in Paris", fleetMoved: true });
+    // A missing reason is reason_required; the same country again writes no second audit entry; TN (no city) is refused.
+    const fv = (await row(d.driverId)).version;
+    expect((await call(app, "POST", `/admin/drivers/${d.driverId}/country`, admin.headers, { expectedVersion: fv, country: "FR" })).json()).toMatchObject({ reason: "reason_required" });
+    expect((await call(app, "POST", `/admin/drivers/${d.driverId}/country`, admin.headers, { expectedVersion: fv, country: "FR", reason: "again" })).statusCode).toBe(200);
+    expect((await db().selectFrom("admin_audit").selectAll().where("action", "=", "driver.country").where("target_id", "=", d.driverId).execute()).length).toBe(1);
+    expect((await call(app, "POST", `/admin/drivers/${d.driverId}/country`, admin.headers, { expectedVersion: fv, country: "TN", reason: "x" })).json()).toMatchObject({ reason: "country_not_open" });
   });
 
   it("a fleet member cannot be moved away from his fleet's country; a zone admin of another country is refused", async () => {
