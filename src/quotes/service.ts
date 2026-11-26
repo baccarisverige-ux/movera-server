@@ -55,6 +55,8 @@ export type QuoteView = {
   tripSeconds: number;
   tripMeters: number;
   routeSource: "google" | "osrm" | "estimate";
+  /** v0.18.167 (contract.json#googleRouteLine): the stored Google polyline, only when routeSource is google. */
+  routePolyline?: string;
   /** S5 J8 (contract v0.18.84 debtModel.quoteInfo): the rider's debt in the quote's currency, information only. */
   walletDebt?: { amountMinor: number; currency: string };
 };
@@ -223,6 +225,9 @@ export async function createQuotes(trx: Trx, deps: { router: Router }, riderId: 
       tripSeconds: leg.durationSeconds,
       tripMeters: leg.distanceMeters,
       routeSource: leg.source,
+      // v0.18.167 (contract.json#googleRouteLine, owner 2026-11-26 "Oui, corriger"): the Google route this price used, so
+      // the rider map draws it; the polyline the one quote call already stored, never a new call. Only when from Google.
+      ...(leg.source === "google" && leg.polyline ? { routePolyline: leg.polyline } : {}),
       ...(fare.surgeMultiplier > 1 ? { surge: { multiplier: fare.surgeMultiplier, ...(surge.until ? { until: surge.until } : {}) } } : {}),
       ...walletDebt,
     });
