@@ -48,6 +48,10 @@ export function offerView(offer: NonNullable<OfferRow>, trip: TripRow): Record<s
     pickupMeters: offer.pickup_meters,
     tripSeconds: trip.duration_seconds ?? 0,
     tripMeters: trip.distance_meters ?? 0,
+    // v0.18.169 (contract.json#offerRouteLine, owner 2026-11-26 "Route in driver !!"): the trip's stored Google route
+    // (from its quote, no new call), so the offer card draws the road; only while the offer is open (closed offers and
+    // their feed events stay small). Never in the push (offerPush.ts reads ids only).
+    ...(offer.status === "open" && trip.route_polyline ? { routePolyline: trip.route_polyline } : {}),
     ...(trip.scheduled_at ? { scheduledAt: trip.scheduled_at.toISOString() } : {}),
     // v0.18.19 (owner): a booked ride's offer always carries the reservation badge flag (Exclusive and Radar alike).
     ...(trip.kind === "scheduled" ? { reservation: true } : {}),
