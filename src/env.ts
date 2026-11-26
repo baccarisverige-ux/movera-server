@@ -216,6 +216,8 @@ const schema = z.object({
    * FCM push and serves GET /push/config. Unset or unusable: push is off, nothing else changes. Never logged.
    */
   FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
+  /** Review of #337: HMAC key for the hashed driver/rider id in push failure lines. Unset: a plain hash. Never logged. */
+  PUSH_LOG_HASH_KEY: z.string().min(16).optional(),
   CORS_ORIGINS: z
     .string()
     .optional()

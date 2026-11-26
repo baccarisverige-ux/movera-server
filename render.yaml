@@ -47,6 +47,9 @@ services:
       # Push (contract v0.18.3 R7): the Firebase service account JSON; filled in Render's dashboard (never committed).
       - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
+      # Review of #337: HMAC key for the hashed driver/rider id in push failure log lines; filled in Render's dashboard (never committed).
+      - key: PUSH_LOG_HASH_KEY
+        sync: false
       # G30b (owner Q1): Resend's API key for the e-mail change codes; filled in Render's dashboard (never committed).
       - key: RESEND_API_KEY
         sync: false

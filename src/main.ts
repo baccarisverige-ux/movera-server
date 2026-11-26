@@ -131,7 +131,7 @@ if (db !== undefined) {
   if (hub !== undefined) wakeTimersOn(hub, worker);
   // Push (contract v0.18.3 R7): every bell notice also goes to the phone, after its command committed.
   if (push.sender !== undefined) {
-    pusher = new PushDispatcher(db, push.sender, { logger: app.log });
+    pusher = new PushDispatcher(db, push.sender, { logger: app.log, hashKey: env.PUSH_LOG_HASH_KEY });
     onNotify(() => pusher?.kick());
     pusher.start();
     app.log.info("push sending is on");

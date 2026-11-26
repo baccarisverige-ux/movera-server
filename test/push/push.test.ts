@@ -129,6 +129,9 @@ describe("FCM sender (unit)", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("THIRD_PARTY_AUTH_ERROR");
     expect(lines[0]).toContain("APNs auth key");
+    // Review of #337: the line names the app when the dispatcher knows it.
+    expect(await sender.send({ token: "j", platform: "ios", app: "rider", title: "T", body: "B", data: {} })).toBe("retry");
+    expect(lines[1]).toContain("of the rider app");
   });
 
   it("classifies FCM errors: unregistered / invalid token = remove, 429 / 5xx / 401 = retry, others = failed", () => {
@@ -235,6 +238,28 @@ describe("push dispatcher (database)", () => {
     const text = JSON.stringify(lines);
     expect(text).not.toContain("secret-token-xyz");
     expect(text).not.toContain("rid_log");
+  });
+
+  it("review of #337: with PUSH_LOG_HASH_KEY the id hash is an HMAC; a sweep failure line is scrubbed", async () => {
+    const lines: { data: Record<string, unknown>; message: string }[] = [];
+    const logger = { warn: (data: object, message: string) => lines.push({ data: data as Record<string, unknown>, message }) };
+    pusher = new PushDispatcher(database.db, sender, { clock: () => clock.now, sleep: async () => {}, logger, hashKey: "k".repeat(32) });
+    await device("tok-hmac", "driver", "drv_hmac");
+    sender.script.set("tok-hmac", ["failed"]);
+    await notify(database.db, { audience: "driver", subjectId: "drv_hmac", kind: "vehicle_approved", title: "t", body: "b" }, clock.now);
+    await pusher.sweep();
+    expect(lines[0]!.data).toMatchObject({ app: "driver", subjectHash: subjectHash("driver", "drv_hmac", "k".repeat(32)) });
+    expect(subjectHash("driver", "drv_hmac", "k".repeat(32))).not.toBe(subjectHash("driver", "drv_hmac"));
+    expect(sender.sent.at(-1)).toMatchObject({ app: "driver" });
+    const broken = new PushDispatcher(database.db, { send: async () => "sent" }, { logger, sweepMs: 60_000 });
+    (broken as unknown as { sweep: () => Promise<number> }).sweep = async () => {
+      throw new Error("invalid input for +46701234567 at someone@example.com");
+    };
+    await (broken as unknown as { sweepSafely: () => Promise<void> }).sweepSafely();
+    const sweepLine = JSON.stringify(lines.at(-1));
+    expect(lines.at(-1)!.message).toBe("push sweep failed");
+    expect(sweepLine).not.toContain("+46701234567");
+    expect(sweepLine).not.toContain("someone@example.com");
   });
 
   it("respects the rider's consents.rideUpdates false (the bell notice is still there)", async () => {
