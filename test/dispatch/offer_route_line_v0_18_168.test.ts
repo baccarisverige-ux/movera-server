@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { offerView, type OfferRow } from "../../src/dispatch/runtime/offers.js";
 import type { TripRow } from "../../src/db/tripLog.js";
 
-// v0.18.169 (contract.json#offerRouteLine, owner 2026-11-26 "Route in driver !!"): an open offer carries the trip's
+// v0.18.168 (contract.json#offerRouteLine, owner 2026-11-26 "Route in driver !!"): an open offer carries the trip's
 // stored Google route (trips.route_polyline, from its quote; no new call); a closed one, or a trip without one, does not.
 const LINE = "_p~iF~ps|U_ulLnnqC_mqNvxq`@";
 const offer = (status: string) =>
@@ -18,7 +18,7 @@ const trip = (routePolyline: string | null) =>
     kind: "live", route_polyline: routePolyline,
   }) as unknown as TripRow;
 
-describe("Offer.routePolyline (v0.18.169)", () => {
+describe("Offer.routePolyline (v0.18.168)", () => {
   it("an open offer carries the trip's stored Google route", () => {
     expect(offerView(offer("open"), trip(LINE))).toMatchObject({ routePolyline: LINE, tripSeconds: 3600 });
   });
