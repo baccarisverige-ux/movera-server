@@ -258,6 +258,12 @@ export function settingsProblems(document: unknown): string[] {
     if (!(SIGNUP_V2.signUpFields.fields as string[]).includes(field)) problems.push(`signUpFields: unknown field ${field}`);
     else if (sw.required && !sw.on) problems.push(`signUpFields.${field}: a required field must be on`);
   }
+  // Follow-up 2026-11-26 (review of v0.18.166): the date of birth may be off only when the personnummer (which holds
+  // it) is on and required, so every driver still gives a birth date.
+  if (d.signUpFields && typeof d.country === "string") {
+    const fields = signUpFieldsOf(d as OnboardingSettings);
+    if (!fields.dateOfBirth.on && !(fields.personalNumber.on && fields.personalNumber.required)) problems.push("signUpFields.dateOfBirth: may be off only when personalNumber is on and required");
+  }
   if (d.twoSidedTypes !== undefined) {
     if (new Set(d.twoSidedTypes).size !== d.twoSidedTypes.length) problems.push("twoSidedTypes: a type is listed twice");
     for (const type of d.twoSidedTypes) {
