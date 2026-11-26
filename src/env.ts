@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parseExtraTestPhones } from "./auth/testPhones.js";
 import { smsStartupWarnings } from "./sms/elks.js";
+import { infobipStartupWarnings } from "./sms/providers.js";
 import { stripeKeyStatus } from "./payments/stripeKeys.js";
 import { GOOGLE_PER_MINUTE_DEFAULT, GOOGLE_TIMEOUT_MS_DEFAULT } from "./maps/googleRoutes.js";
 import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./maps/osrmSettings.js";
@@ -109,6 +110,14 @@ const schema = z.object({
    */
   ELKS_API_USERNAME: z.string().optional(),
   ELKS_API_PASSWORD: z.string().optional(),
+  /**
+   * Contract v0.18.168 (contract.json#smsProviders.serverKeys): Infobip, the first SMS company (46elks above is the
+   * backup). INFOBIP_BASE_URL is the account's own API address (xxxxx.api.infobip.com); INFOBIP_API_KEY is sent as
+   * `Authorization: App <key>`. Filled in Render's dashboard by the owner (never committed, never logged). Read leniently:
+   * half set or a wrong address only skips Infobip with a start-up warning (sms/providers.ts).
+   */
+  INFOBIP_BASE_URL: z.string().optional(),
+  INFOBIP_API_KEY: z.string().optional(),
   /** The SMS sender name (3-11 letters and digits). Unset or not usable: contract.json#smsSignIn.sender ("Movera"). */
   SMS_SENDER_NAME: z.string().optional(),
   /**
@@ -365,6 +374,7 @@ export function startupWarnings(env: Env): string[] {
     out.push("MOVERA_TURN_URLS and MOVERA_TURN_SECRET are not set: in-app calls work only on open networks (no TURN relay).");
   }
   out.push(...smsStartupWarnings(env));
+  out.push(...infobipStartupWarnings(env));
   // Live mode (contract.json#stripeFees.keys): a Stripe key setup mistake is named (the reason only, never a key).
   const stripe = stripeKeyStatus(env);
   if (stripe.mode === "off" && stripe.reason !== "no_keys") out.push(`Stripe keys are not usable (${stripe.reason}): card payments are off.`);

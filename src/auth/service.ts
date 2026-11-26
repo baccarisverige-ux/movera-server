@@ -18,7 +18,7 @@ import { countryLimitsFor, countryOfPhone } from "../config/countryLimits.js";
 import { NOT_HELD } from "../reservations/view.js";
 import { DRIVER_ASSIGNED } from "../rules/transitions.js";
 import { noticeLanguage, pickNoticeLanguage } from "../notifications/noticeLanguage.js";
-import type { CodeSmsSender } from "../sms/elks.js";
+import type { CodeSmsOutcome, CodeSmsSender, SmsCompany } from "../sms/elks.js";
 import { pokeAlerts } from "../alerts/detector.js";
 import { DAY_MS, SIGN_IN_SMS_KIND, SMS_CODE_LENGTH, SMS_NO_ANSWER, bucketSmsLastDay, callingCodeOfPhone, codeSmsLastDay, maskPhone, smsLastMinute, smsSignInOtherFor, nearCap, signInSmsText, smsBucketOf, smsLanguage, storedSmsText } from "./smsSignIn.js";
 
@@ -338,7 +338,7 @@ export async function requestOtp(
     const lang = smsLanguage(input.locale, target?.country ?? null);
     const smsId = newId("sms", now.getTime());
     await trx.insertInto("sms_outbox").values({ sms_id: smsId, phone: input.phone, text: storedSmsText(lang), kind: SIGN_IN_SMS_KIND, status: "queued", provider: deps.signInSms!.name, created_at: now }).execute();
-    return { challenge, sms: { smsId, sessionId, to: input.phone, text: signInSmsText(lang, code), atAlertLine: smsCount === nearCap(setting.dailyCap) || smsCount === setting.dailyCap } };
+    return { challenge, sms: { smsId, sessionId, to: input.phone, text: signInSmsText(lang, code), order: setting.providerOrder, atAlertLine: smsCount === nearCap(setting.dailyCap) || smsCount === setting.dailyCap } };
   }).catch(async (error: unknown) => {
     // The refusal rolled its transaction back; the admin alert is asked for on its own (smsSignIn.alert).
     if (capHit) await pokeAlerts(deps.db, now).catch(() => undefined);
@@ -372,7 +372,7 @@ export async function silentSmsWait(deps: AuthDeps, phone: string, app: App): Pr
   return SMS_CODE_LENGTH;
 }
 
-type PendingSms = { smsId: string; sessionId: string; to: string; text: string; atAlertLine: boolean };
+type PendingSms = { smsId: string; sessionId: string; to: string; text: string; order: readonly SmsCompany[]; atAlertLine: boolean };
 
 /**
  * contract.json#smsSignIn.delivery: one try. Accepted: the row is `sent`. Anything else: the row is `failed`, the code
@@ -381,18 +381,22 @@ type PendingSms = { smsId: string; sessionId: string; to: string; text: string; 
  */
 async function deliverSignInSms(deps: AuthDeps, sms: PendingSms, now: Date): Promise<void> {
   const began = Date.now();
-  const outcome = await deps.signInSms!.send({ to: sms.to, text: sms.text }).catch(() => ({ accepted: false }) as { accepted: boolean; status?: number; ref?: string });
+  // v0.18.168 (contract.json#smsProviders.fallback): the country's company order; the sender tries the next one only
+  // when the first did not take the SMS. sms_outbox.provider and the log say which company was used (never the code).
+  const outcome = await deps.signInSms!.send({ to: sms.to, text: sms.text, order: sms.order }).catch(() => ({ accepted: false }) as CodeSmsOutcome);
+  const provider = outcome.provider ?? deps.signInSms!.name;
   lastSmsSendMs.set(deps.signInSms!, Date.now() - began);
   if (outcome.accepted) {
-    await deps.db.updateTable("sms_outbox").set({ status: "sent", provider_ref: outcome.ref ?? null, sent_at: now }).where("sms_id", "=", sms.smsId).execute();
+    await deps.db.updateTable("sms_outbox").set({ status: "sent", provider, provider_ref: outcome.ref ?? null, sent_at: now }).where("sms_id", "=", sms.smsId).execute();
+    if (outcome.backup === true) deps.warn?.({ smsId: sms.smsId, provider }, "sign-in SMS sent by the backup SMS company");
     if (sms.atAlertLine) await pokeAlerts(deps.db, now).catch(() => undefined);
     return;
   }
   await deps.db.transaction().execute(async (trx) => {
-    await trx.updateTable("sms_outbox").set({ status: "failed", error: outcome.status !== undefined ? `http_${outcome.status}` : SMS_NO_ANSWER }).where("sms_id", "=", sms.smsId).execute();
+    await trx.updateTable("sms_outbox").set({ status: "failed", provider, error: outcome.status !== undefined ? `http_${outcome.status}` : SMS_NO_ANSWER }).where("sms_id", "=", sms.smsId).execute();
     await trx.updateTable("otp_sessions").set({ consumed_at: now }).where("session_id", "=", sms.sessionId).where("consumed_at", "is", null).execute();
   });
-  deps.warn?.({ smsId: sms.smsId, to: maskPhone(sms.to), provider: deps.signInSms!.name, ...(outcome.status !== undefined ? { status: outcome.status } : {}) }, "sign-in SMS not sent");
+  deps.warn?.({ smsId: sms.smsId, to: maskPhone(sms.to), provider, ...(outcome.status !== undefined ? { status: outcome.status } : {}) }, "sign-in SMS not sent");
   throw new ApiError("unavailable", "We could not send the SMS. Check the number and try again.", { reason: "sms_not_sent", retryAfterSeconds: OTP.retryAfterSeconds });
 }
 

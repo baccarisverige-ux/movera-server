@@ -59,7 +59,7 @@ const request = (phone: string, extra: Record<string, unknown> = {}) =>
 
 describe("numbers from other countries (a Tunisian and a German visitor in Sweden)", () => {
   it("default ON for the rider app (owner 2026-11-24): never saved, a +216 and a +49 number get a code; the driver app does not", async () => {
-    expect(smsSignInOtherOf(undefined)).toEqual({ enabled: true, dailyCap: 50, perCodeDailyCap: 10, perMinuteCap: 30, blockedCallingCodes: [] });
+    expect(smsSignInOtherOf(undefined)).toEqual({ enabled: true, dailyCap: 50, perCodeDailyCap: 10, perMinuteCap: 30, blockedCallingCodes: [], providerOrder: ["infobip", "46elks"] });
     for (const phone of [tn(), de()]) expect((await request(phone)).statusCode, phone).toBe(200);
     const driver = await request(de(), { app: "driver" });
     expect(driver.statusCode).toBe(403);

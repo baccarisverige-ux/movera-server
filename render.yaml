@@ -56,6 +56,12 @@ services:
         sync: false
       - key: ELKS_API_PASSWORD
         sync: false
+      # Contract v0.18.168 (smsProviders): Infobip, the first SMS company (46elks above = backup). The account's own
+      # API address (xxxxx.api.infobip.com) and its API key. Set by the owner in Render's dashboard; never committed.
+      - key: INFOBIP_BASE_URL
+        sync: false
+      - key: INFOBIP_API_KEY
+        sync: false
       # Contract v0.18.151 (sosContactsSms.send): "on" also sends the SOS emergency-contact SMS through those keys;
       # unset = off (the default). Set by the owner in Render's dashboard.
       - key: SOS_CONTACTS_SMS_SEND

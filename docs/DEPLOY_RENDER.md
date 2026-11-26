@@ -17,6 +17,11 @@ week change the plans to `starter` (server) and `basic-256mb` (database). The lo
      say "codes cannot be sent yet"). Optional `EMAIL_FROM` (default `Movera <onboarding@resend.dev>`, which reaches
      only the Resend account owner's own address until an own domain is added in Resend) and `EMAIL_SEND_TIMEOUT_MS`
      (default 5000).
+   - `INFOBIP_BASE_URL` and `INFOBIP_API_KEY` (contract v0.18.168 `smsProviders`): Infobip, the first SMS company. The
+     base URL is the account's own API address shown in the Infobip portal (like `xxxxx.api.infobip.com`); the key is an
+     Infobip API key with SMS rights (sent as `Authorization: App <key>`). Both set = Infobip sends first and 46elks
+     (below) is the backup when Infobip does not take an SMS; only one company with keys = that one alone. The sender name
+     (`SMS_SENDER_NAME`, default `Movera`) must be allowed by Infobip for each country (alphanumeric sender registration).
    - `ELKS_API_USERNAME` and `ELKS_API_PASSWORD` (contract v0.18.133 `smsSignIn`): the 46elks API username and
      password for the sign-in code SMS. Without BOTH no SMS is ever sent and every number that is not a test number is
      `sign_in_restricted`, as before. With both, a country still needs its admin switch (Pricing › Tips & limits ›

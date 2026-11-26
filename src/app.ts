@@ -52,7 +52,8 @@ import { TELEMETRY, telemetryRoutes } from "./telemetry/routes.js";
 import { notificationRoutes } from "./notifications/routes.js";
 import type { SmsProvider } from "./sms/sms.js";
 import { emailSenderFrom, type EmailSender } from "./email/resend.js";
-import { signInSmsFrom, sosContactsProviderFrom, type CodeSmsSender } from "./sms/elks.js";
+import { sosContactsProviderFrom, type CodeSmsSender } from "./sms/elks.js";
+import { smsSenderFrom } from "./sms/providers.js";
 import { SMS_SIGN_IN } from "./auth/smsSignIn.js";
 import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
@@ -335,7 +336,8 @@ export async function buildApp({ env, logger = true, db, clock, router, traffic,
     // v0.18.133 (contract.json#smsSignIn): the sign-in code SMS goes out through 46elks only when BOTH keys are set
     // (tests inject a fake); without a sender every real number stays sign_in_restricted. The country switch is the
     // second condition (auth/smsSignIn.ts). `sms` (fleet invitations) is unchanged; the SOS contacts SMS use it only with the switch below (v0.18.151).
-    const codeSms = signInSms ?? signInSmsFrom(env, SMS_SIGN_IN.sender);
+    // v0.18.168 (contract.json#smsProviders): Infobip first, 46elks as backup, each only with its keys.
+    const codeSms = signInSms ?? smsSenderFrom(env, SMS_SIGN_IN.sender);
     // v0.18.151 (contract.json#sosContactsSms.send): the SOS contacts SMS use the sign-in sender only with the server
     // switch on (default off); a test's injected `sms` stays as it is.
     const sosSms = sms ?? sosContactsProviderFrom(env.SOS_CONTACTS_SMS_SEND, codeSms);

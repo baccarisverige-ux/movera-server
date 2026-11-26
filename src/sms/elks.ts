@@ -12,8 +12,13 @@ import type { SmsProvider } from "./sms.js";
  * no test calls 46elks.
  */
 
-export type CodeSms = { to: string; text: string };
-export type CodeSmsOutcome = { accepted: boolean; status?: number; ref?: string };
+/** v0.18.168 (contract.json#smsProviders.providers): the SMS companies, in the default order. */
+export const SMS_COMPANIES = ["infobip", "46elks"] as const;
+export type SmsCompany = (typeof SMS_COMPANIES)[number];
+/** `order` (v0.18.168): the companies to try, first first (the country's providerOrder); missing = the default order. */
+export type CodeSms = { to: string; text: string; order?: readonly SmsCompany[] };
+/** `provider` (v0.18.168): the company that took the SMS, or the last one tried; `backup`: an earlier one did not take it. */
+export type CodeSmsOutcome = { accepted: boolean; status?: number; ref?: string; provider?: string; backup?: boolean };
 export interface CodeSmsSender {
   readonly name: string;
   /** Hands one SMS to the SMS company; never throws. */
@@ -60,7 +65,10 @@ export function elksSender(options: { username: string; password: string; from: 
 type ElksEnv = Pick<Env, "ELKS_API_USERNAME" | "ELKS_API_PASSWORD" | "SMS_SENDER_NAME">;
 const set = (value: string | undefined): string | undefined => (value !== undefined && value.trim() !== "" ? value.trim() : undefined);
 
-/** The sender the environment asks for: 46elks when BOTH keys are set, else none (every real number stays sign_in_restricted). */
+/**
+ * The 46elks sender the environment asks for: when BOTH keys are set, else none. Since v0.18.168 the server's sign-in
+ * sender is sms/providers.ts#smsSenderFrom (Infobip first, this one as backup), which uses this for the 46elks part.
+ */
 export function signInSmsFrom(env: ElksEnv, defaultSender: string): CodeSmsSender | undefined {
   const username = set(env.ELKS_API_USERNAME);
   const password = set(env.ELKS_API_PASSWORD);

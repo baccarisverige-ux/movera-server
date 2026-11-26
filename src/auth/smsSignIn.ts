@@ -2,6 +2,8 @@ import { contract } from "../contract/contract.js";
 import type { Executor } from "../db/db.js";
 import { ApiError } from "../http/errors.js";
 import { pickNoticeLanguage, type Lang } from "../notifications/noticeLanguage.js";
+import type { SmsCompany } from "../sms/elks.js";
+import { DEFAULT_SMS_ORDER, providerOrderOk } from "../sms/providers.js";
 
 /**
  * Contract v0.18.133 (contract.json#smsSignIn; owner 2026-11-19 "Yes, build it now (Rec.)", Rules
@@ -39,7 +41,10 @@ export const SIGN_IN_SMS_KIND = "sign_in_code";
 export const SOS_CONTACT_SMS_KIND = "sos_contact";
 const CAP_KINDS = [SIGN_IN_SMS_KIND, SOS_CONTACT_SMS_KIND];
 export const DAY_MS = 24 * 3_600_000;
-export type SmsSignInSetting = { enabled: boolean; dailyCap: number };
+/** providerOrder (v0.18.168, contract.json#smsProviders.setting): the SMS companies to try, first first. */
+export type SmsSignInSetting = { enabled: boolean; dailyCap: number; providerOrder: SmsCompany[] };
+const orderOf = (value: unknown): SmsCompany[] => (providerOrderOk(value) ? [...value] : [...DEFAULT_SMS_ORDER]);
+const ORDER_BAD = (name: string) => `${name}.providerOrder must be 1 or 2 different SMS companies (infobip, 46elks).`;
 
 const capOk = (value: unknown): value is number => {
   const [lo, hi] = SMS_SIGN_IN.dailyCapRange;
@@ -49,9 +54,9 @@ const capOk = (value: unknown): value is number => {
 /** CountryRules.smsSignIn as stored; anything missing or wrong reads as the default (off, the default cap). */
 export function smsSignInOf(rules: unknown): SmsSignInSetting {
   const raw = (rules as { smsSignIn?: unknown } | null | undefined)?.smsSignIn;
-  const value = (raw && typeof raw === "object" ? raw : {}) as { enabled?: unknown; dailyCap?: unknown };
+  const value = (raw && typeof raw === "object" ? raw : {}) as { enabled?: unknown; dailyCap?: unknown; providerOrder?: unknown };
   // Only the exact boolean true switches it on (fail closed).
-  return { enabled: value.enabled === true, dailyCap: capOk(value.dailyCap) ? value.dailyCap : DEFAULTS.dailyCap };
+  return { enabled: value.enabled === true, dailyCap: capOk(value.dailyCap) ? value.dailyCap : DEFAULTS.dailyCap, providerOrder: orderOf(value.providerOrder) };
 }
 
 /** The live setting of a country (its standard country_rules). Read from the table, never from a cache: a switch-off holds at once. */
@@ -68,7 +73,8 @@ export function checkSmsSignIn(zoneKind: string, document: unknown): void {
   const bad = (message: string) => new ApiError("invalid_request", message, { reason: "invalid_document" });
   if (!value || typeof value !== "object" || Array.isArray(value)) throw bad("smsSignIn must be an object.");
   const v = value as Record<string, unknown>;
-  for (const key of Object.keys(v)) if (key !== "enabled" && key !== "dailyCap") throw bad(`smsSignIn has no ${key.slice(0, 40)}.`);
+  for (const key of Object.keys(v)) if (key !== "enabled" && key !== "dailyCap" && key !== "providerOrder") throw bad(`smsSignIn has no ${key.slice(0, 40)}.`);
+  if ("providerOrder" in v && !providerOrderOk(v["providerOrder"])) throw bad(ORDER_BAD("smsSignIn"));
   if ("enabled" in v && typeof v["enabled"] !== "boolean") throw bad("smsSignIn.enabled must be true or false.");
   if ("dailyCap" in v && !capOk(v["dailyCap"])) throw bad(`smsSignIn.dailyCap must be a whole number from ${SMS_SIGN_IN.dailyCapRange[0]} to ${SMS_SIGN_IN.dailyCapRange[1]}.`);
 }
@@ -120,6 +126,7 @@ export function smsSignInOtherOf(rules: unknown): OtherSetting {
     perCodeDailyCap: inRange(value["perCodeDailyCap"], OC.perCodeDailyCapRange) ? value["perCodeDailyCap"] : OTHER_DEFAULTS.perCodeDailyCap,
     perMinuteCap: inRange(value["perMinuteCap"], OC.perMinuteCapRange) ? value["perMinuteCap"] : OTHER_DEFAULTS.perMinuteCap,
     blockedCallingCodes: blockedOk(value["blockedCallingCodes"]) ? value["blockedCallingCodes"] : [...OTHER_DEFAULTS.blockedCallingCodes],
+    providerOrder: orderOf(value["providerOrder"]),
   };
 }
 
@@ -139,7 +146,8 @@ export function checkSmsSignInOther(zoneKind: string, zoneCountry: string, docum
   const bad = (message: string) => new ApiError("invalid_request", message, { reason: "invalid_document" });
   if (!value || typeof value !== "object" || Array.isArray(value)) throw bad("smsSignInOtherCountries must be an object.");
   const v = value as Record<string, unknown>;
-  for (const key of Object.keys(v)) if (!["enabled", "dailyCap", "perCodeDailyCap", "perMinuteCap", "blockedCallingCodes"].includes(key)) throw bad(`smsSignInOtherCountries has no ${key.slice(0, 40)}.`);
+  for (const key of Object.keys(v)) if (!["enabled", "dailyCap", "perCodeDailyCap", "perMinuteCap", "blockedCallingCodes", "providerOrder"].includes(key)) throw bad(`smsSignInOtherCountries has no ${key.slice(0, 40)}.`);
+  if ("providerOrder" in v && !providerOrderOk(v["providerOrder"])) throw bad(ORDER_BAD("smsSignInOtherCountries"));
   if ("perCodeDailyCap" in v && !inRange(v["perCodeDailyCap"], OC.perCodeDailyCapRange)) throw bad(`smsSignInOtherCountries.perCodeDailyCap must be a whole number from ${OC.perCodeDailyCapRange[0]} to ${OC.perCodeDailyCapRange[1]}.`);
   if ("perMinuteCap" in v && !inRange(v["perMinuteCap"], OC.perMinuteCapRange)) throw bad(`smsSignInOtherCountries.perMinuteCap must be a whole number from ${OC.perMinuteCapRange[0]} to ${OC.perMinuteCapRange[1]}.`);
   if ("blockedCallingCodes" in v && !blockedOk(v["blockedCallingCodes"])) throw bad("smsSignInOtherCountries.blockedCallingCodes must be up to 50 different calling codes like +882.");

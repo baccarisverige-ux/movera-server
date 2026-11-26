@@ -572,11 +572,11 @@ describe("CountryRules.smsSignIn (the admin setting)", () => {
   it("reads as off with the default limit unless it is exactly valid", () => {
     const defaults = (contract as unknown as { configDefaults: { smsSignIn: { enabled: boolean; dailyCap: number } } }).configDefaults.smsSignIn;
     expect(defaults.enabled).toBe(false);
-    expect(smsSignInOf(null)).toEqual({ enabled: false, dailyCap: defaults.dailyCap });
-    expect(smsSignInOf({})).toEqual({ enabled: false, dailyCap: defaults.dailyCap });
-    expect(smsSignInOf({ smsSignIn: { enabled: 1, dailyCap: 5 } })).toEqual({ enabled: false, dailyCap: defaults.dailyCap });
-    expect(smsSignInOf({ smsSignIn: { enabled: true, dailyCap: 1_000_000 } })).toEqual({ enabled: true, dailyCap: defaults.dailyCap });
-    expect(smsSignInOf({ smsSignIn: { enabled: true, dailyCap: 50 } })).toEqual({ enabled: true, dailyCap: 50 });
+    expect(smsSignInOf(null)).toEqual({ enabled: false, dailyCap: defaults.dailyCap, providerOrder: ["infobip", "46elks"] });
+    expect(smsSignInOf({})).toEqual({ enabled: false, dailyCap: defaults.dailyCap, providerOrder: ["infobip", "46elks"] });
+    expect(smsSignInOf({ smsSignIn: { enabled: 1, dailyCap: 5 } })).toEqual({ enabled: false, dailyCap: defaults.dailyCap, providerOrder: ["infobip", "46elks"] });
+    expect(smsSignInOf({ smsSignIn: { enabled: true, dailyCap: 1_000_000 } })).toEqual({ enabled: true, dailyCap: defaults.dailyCap, providerOrder: ["infobip", "46elks"] });
+    expect(smsSignInOf({ smsSignIn: { enabled: true, dailyCap: 50 } })).toEqual({ enabled: true, dailyCap: 50, providerOrder: ["infobip", "46elks"] });
   });
 
   it("is refused on a zone, with a wrong value, or with another key", () => {
