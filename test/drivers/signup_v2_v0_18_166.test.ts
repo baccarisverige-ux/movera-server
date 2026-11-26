@@ -64,6 +64,16 @@ describe("v0.18.166 sign-up v2", () => {
     expect(problems).toEqual(expect.arrayContaining(["signUpFields.address: a required field must be on", "signUpFields: unknown field nickname", "twoSidedTypes: a type is listed twice", "twoSidedTypes: info_session is not a file"]));
   });
 
+  it("follow-up: the date of birth may be off only with the personnummer on and required", () => {
+    const rule = "signUpFields.dateOfBirth: may be off only when personalNumber is on and required";
+    // Sweden's defaults (birth date off, personnummer on + required) pass.
+    expect(settingsProblems({ ...defaultSettings("SE"), signUpFields: { dateOfBirth: { on: false, required: false } } })).not.toContain(rule);
+    expect(settingsProblems({ ...defaultSettings("SE"), signUpFields: { personalNumber: { on: true, required: false } } })).toContain(rule);
+    expect(settingsProblems({ ...defaultSettings("SE"), signUpFields: { personalNumber: { on: false, required: false } } })).toContain(rule);
+    expect(settingsProblems({ ...defaultSettings("FR"), signUpFields: { dateOfBirth: { on: false, required: false } } })).toContain(rule);
+    expect(settingsProblems({ ...defaultSettings("FR"), signUpFields: { dateOfBirth: { on: true, required: false } } })).not.toContain(rule);
+  });
+
   it("PUT /driver/country takes the Région; an unknown one is invalid_city", async () => {
     const me = (await signIn(app, TEST_PHONES[0]!, "driver")).headers;
     expect((await call(app, "PUT", "/driver/country", me, { country: "SE", cityId: "paris" })).json()).toMatchObject({ reason: "invalid_city" });
