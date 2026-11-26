@@ -7,7 +7,7 @@ import { readEnv } from "../../src/env.js";
 import { notify, onNotify } from "../../src/notifications/service.js";
 import { pushServicesFrom } from "../../src/push/config.js";
 import { classifyFcmError, FcmSender, GoogleAccessTokens, parseServiceAccount, signAssertion, type FetchLike, type PushMessage, type PushSender, type SendResult } from "../../src/push/fcm.js";
-import { PushDispatcher } from "../../src/push/dispatcher.js";
+import { PushDispatcher, subjectHash } from "../../src/push/dispatcher.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 
 /** Contract v0.18.3 §28 (owner decision R7): push through FCM HTTP v1, with a fake Google and a fake clock. */
@@ -219,6 +219,22 @@ describe("push dispatcher (database)", () => {
     expect(sender.sent.filter((m) => m.token === "dead")).toHaveLength(1);
     const left = await database.db.selectFrom("push_devices").select("token").where("subject_id", "=", "drv_c").execute();
     expect(left.map((r) => r.token).sort()).toEqual(["broken", "flaky"]);
+  });
+
+  it("follow-up 2026-11-26: a failed push logs the app and a hash of the id, never the token or the raw id", async () => {
+    const lines: { data: Record<string, unknown>; message: string }[] = [];
+    pusher = new PushDispatcher(database.db, sender, { clock: () => clock.now, sleep: async () => {}, logger: { warn: (data, message) => lines.push({ data: data as Record<string, unknown>, message }) } });
+    await device("secret-token-xyz", "rider", "rid_log");
+    sender.script.set("secret-token-xyz", ["failed"]);
+    await notify(database.db, { audience: "rider", subjectId: "rid_log", kind: "driver_arrived", title: "t", body: "b" }, clock.now);
+    await pusher.sweep();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.data).toMatchObject({ app: "rider", subjectHash: subjectHash("rider", "rid_log"), result: "failed" });
+    expect(subjectHash("rider", "rid_log")).toMatch(/^[0-9a-f]{16}$/);
+    expect(subjectHash("driver", "rid_log")).not.toBe(subjectHash("rider", "rid_log"));
+    const text = JSON.stringify(lines);
+    expect(text).not.toContain("secret-token-xyz");
+    expect(text).not.toContain("rid_log");
   });
 
   it("respects the rider's consents.rideUpdates false (the bell notice is still there)", async () => {
