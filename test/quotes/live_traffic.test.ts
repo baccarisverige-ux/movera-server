@@ -21,7 +21,10 @@ const clock = { now: new Date("2026-11-25T08:00:00Z") };
 const SECRET = "live-traffic-test-secret".padEnd(48, "t");
 const roads: Router = { route: async (_p: LatLng[]): Promise<RouteLeg> => ({ distanceMeters: 8000, durationSeconds: 780, source: "osrm" }) };
 let googleUp = true;
-const traffic: Router = { route: async (p: LatLng[]): Promise<RouteLeg> => (googleUp ? { distanceMeters: 8100, durationSeconds: 1560, source: "google", points: p } : { ...(await roads.route(p)), source: "estimate" }) };
+// v0.18.167: Google's own documented example polyline; `withLine` false = a Google answer without one.
+const LINE = "_p~iF~ps|U_ulLnnqC_mqNvxq`@";
+let withLine = false;
+const traffic: Router = { route: async (p: LatLng[]): Promise<RouteLeg> => (googleUp ? { distanceMeters: 8100, durationSeconds: 1560, source: "google", points: p, ...(withLine ? { polyline: LINE } : {}) } : { ...(await roads.route(p)), source: "estimate" }) };
 const NORRMALM = { address: "Sergels torg", lat: 59.3326, lng: 18.0649 };
 const SODERMALM = { address: "Medborgarplatsen", lat: 59.3143, lng: 18.0735 };
 
@@ -53,6 +56,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   googleUp = true;
+  withLine = false;
   await database.db.deleteFrom("quotes").execute();
   await setDispatch(null);
 });
@@ -91,6 +95,28 @@ describe("live traffic (v0.18.163)", () => {
     expect(q).toMatchObject({ tripSeconds: 1560, tripMeters: 8100, routeSource: "google" });
     const stored = await database.db.selectFrom("quotes").selectAll().where("quote_id", "=", q.quoteId).executeTakeFirstOrThrow();
     expect(stored).toMatchObject({ duration_seconds: 1560, distance_meters: 8100, route_source: "google" });
+  });
+
+  it("v0.18.167 Quote.routePolyline: the stored Google line on every quote of the list, only when routeSource is google", async () => {
+    withLine = true;
+    const res = await quote({ pickup: NORRMALM, dropoff: SODERMALM, stops: [] });
+    expect(res.statusCode, res.body).toBe(201);
+    const quotes = res.json().quotes as Array<{ quoteId: string; routeSource: string; routePolyline?: string }>;
+    expect(quotes.length).toBeGreaterThan(0);
+    for (const q of quotes) expect(q).toMatchObject({ routeSource: "google", routePolyline: LINE });
+    const stored = await database.db.selectFrom("quotes").select(["route_polyline"]).where("quote_id", "=", quotes[0]!.quoteId).executeTakeFirstOrThrow();
+    expect(stored.route_polyline).toBe(LINE);
+    // A Google answer without a line, the zone's setting off (roads) and Google down (estimate): no routePolyline.
+    withLine = false;
+    expect((await quote({ pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0]).not.toHaveProperty("routePolyline");
+    withLine = true;
+    await setDispatch({ liveTraffic: { on: false } });
+    expect((await quote({ pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0]).not.toHaveProperty("routePolyline");
+    await setDispatch(null);
+    googleUp = false;
+    const down = (await quote({ pickup: NORRMALM, dropoff: SODERMALM, stops: [], categoryIds: ["economy"] })).json().quotes[0];
+    expect(down.routeSource).toBe("estimate");
+    expect(down).not.toHaveProperty("routePolyline");
   });
 
   it("tripTimeRouter (quotes, the leave-on-time check, the route-change price): traffic when on, roads when off or none", async () => {
