@@ -35,9 +35,9 @@ describe("46elks sender", () => {
 
   it("a network error or a time-out is not accepted and never throws", async () => {
     const failing = elksSender({ username: "u", password: "p", from: "Movera", fetcher: fakeFetch([], () => Promise.reject(new Error("ECONNRESET to +46701740608"))) });
-    expect(await failing.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false });
+    expect(await failing.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false, maybeSent: true });
     const slow = elksSender({ username: "u", password: "p", from: "Movera", timeoutMs: 30, fetcher: ((_url: unknown, init?: RequestInit) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))))) as typeof fetch });
-    expect(await slow.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false });
+    expect(await slow.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false, maybeSent: true });
   });
 
   it("an accepted answer without a usable id still counts as accepted (no ref)", async () => {

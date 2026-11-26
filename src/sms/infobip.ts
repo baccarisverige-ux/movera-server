@@ -1,5 +1,5 @@
 import type { CodeSmsSender } from "./elks.js";
-import { SMS_SEND_TIMEOUT_MS } from "./elks.js";
+import { SMS_SEND_TIMEOUT_MS, failedSend } from "./elks.js";
 
 /**
  * Contract v0.18.168 (contract.json#smsProviders.infobip; owner 2026-11-26 "Am going to change company sms to infobip",
@@ -56,8 +56,8 @@ export function infobipSender(options: { origin: string; apiKey: string; from: s
         if (first?.status?.groupName === "REJECTED") return { accepted: false, status: response.status };
         const id = first?.messageId;
         return { accepted: true, status: response.status, ...(typeof id === "string" && REF.test(id) ? { ref: id } : {}) };
-      } catch {
-        return { accepted: false };
+      } catch (error) {
+        return failedSend(error);
       }
     },
   };

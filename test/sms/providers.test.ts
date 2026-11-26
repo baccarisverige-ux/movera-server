@@ -57,9 +57,11 @@ describe("Infobip sender", () => {
 
   it("a network error or a time-out is not accepted and never throws", async () => {
     const failing = infobipSender({ origin: "https://x.api.infobip.com", apiKey: "k", from: "Movera", fetcher: fakeFetch([], () => Promise.reject(new Error("ECONNRESET"))) });
-    expect(await failing.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false });
+    expect(await failing.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false, maybeSent: true });
+    const refused = infobipSender({ origin: "https://x.api.infobip.com", apiKey: "k", from: "Movera", fetcher: fakeFetch([], () => Promise.reject(Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }))) });
+    expect(await refused.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false });
     const slow = infobipSender({ origin: "https://x.api.infobip.com", apiKey: "k", from: "Movera", timeoutMs: 30, fetcher: ((_u: unknown, init?: RequestInit) => new Promise((_r, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))))) as typeof fetch });
-    expect(await slow.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false });
+    expect(await slow.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false, maybeSent: true });
   });
 
   it("takes the account address with or without https://, refuses anything else", () => {
@@ -89,13 +91,21 @@ describe("company order and backup", () => {
     expect(elks.sent).toHaveLength(0);
   });
 
-  it.each<[string, CodeSmsOutcome[] | "throw"]>([["5xx", [{ accepted: false, status: 503 }]], ["auth", [{ accepted: false, status: 401 }]], ["time-out / network", [{ accepted: false }]], ["a throwing sender", "throw"]])("Infobip failed (%s): the same SMS goes once to 46elks", async (_label, answer) => {
+  it.each<[string, CodeSmsOutcome[] | "throw"]>([["5xx", [{ accepted: false, status: 503 }]], ["auth", [{ accepted: false, status: 401 }]], ["no connection at all", [{ accepted: false }]]])("Infobip failed (%s): the same SMS goes once to 46elks", async (_label, answer) => {
     const infobip = fake("infobip", answer);
     const elks = fake("46elks", [{ accepted: true, status: 200, ref: "e1" }]);
     const out = await chainSender({ infobip, "46elks": elks })!.send({ to: "+46701740608", text: CODE_TEXT, order: IB_FIRST });
     expect(out).toEqual({ accepted: true, status: 200, ref: "e1", provider: "46elks", backup: true });
     expect(elks.sent).toEqual([{ to: "+46701740608", text: CODE_TEXT }]);
     expect(infobip.sent).toHaveLength(1);
+  });
+
+  it.each<[string, CodeSmsOutcome[] | "throw"]>([["a time-out", [{ accepted: false, maybeSent: true }]], ["a throwing sender", "throw"]])("Infobip may have sent it (%s): 46elks is NOT asked (never two SMS for one code)", async (_label, answer) => {
+    const infobip = fake("infobip", answer);
+    const elks = fake("46elks", [{ accepted: true }]);
+    const out = await chainSender({ infobip, "46elks": elks })!.send({ to: "+46701740608", text: CODE_TEXT, order: IB_FIRST });
+    expect(out).toMatchObject({ accepted: false, provider: "infobip", maybeSent: true });
+    expect(elks.sent).toHaveLength(0);
   });
 
   it("both failed: not accepted, the last company is named, each was tried once", async () => {

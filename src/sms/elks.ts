@@ -18,7 +18,18 @@ export type SmsCompany = (typeof SMS_COMPANIES)[number];
 /** `order` (v0.18.168): the companies to try, first first (the country's providerOrder); missing = the default order. */
 export type CodeSms = { to: string; text: string; order?: readonly SmsCompany[] };
 /** `provider` (v0.18.168): the company that took the SMS, or the last one tried; `backup`: an earlier one did not take it. */
-export type CodeSmsOutcome = { accepted: boolean; status?: number; ref?: string; provider?: string; backup?: boolean };
+export type CodeSmsOutcome = { accepted: boolean; status?: number; ref?: string; provider?: string; backup?: boolean; maybeSent?: boolean };
+
+/**
+ * v0.18.168 (contract.json#smsProviders.fallback): a send that failed with no answer may still have gone out (a
+ * time-out, or a connection cut after the request was written). Only an error before anything was sent (the name did not
+ * resolve, the connection was refused) is a sure "not sent". `maybeSent` stops the backup company: never two SMS for one code.
+ */
+const SURELY_NOT_SENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+export function failedSend(error: unknown): CodeSmsOutcome {
+  const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+  return typeof code === "string" && SURELY_NOT_SENT.has(code) ? { accepted: false } : { accepted: false, maybeSent: true };
+}
 export interface CodeSmsSender {
   readonly name: string;
   /** Hands one SMS to the SMS company; never throws. */
@@ -55,8 +66,8 @@ export function elksSender(options: { username: string; password: string; from: 
           await response.body?.cancel().catch(() => undefined);
         }
         return { accepted, status: response.status, ...(ref !== undefined ? { ref } : {}) };
-      } catch {
-        return { accepted: false };
+      } catch (error) {
+        return failedSend(error);
       }
     },
   };
