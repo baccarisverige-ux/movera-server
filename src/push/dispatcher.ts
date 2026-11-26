@@ -1,7 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { sql } from "kysely";
 import type { Db } from "../db/db.js";
 import { riderPushAlwaysSent } from "../notifications/tripPush.js";
+import { scrubText } from "../telemetry/scrub.js";
 import type { PushSender, SendResult } from "./fcm.js";
 
 /**
@@ -13,14 +14,22 @@ import type { PushSender, SendResult } from "./fcm.js";
  * off, the server was down) are marked and not sent.
  */
 
-/** A short one-way hash of a driver/rider id for logs (follow-up 2026-11-26). */
-export const subjectHash = (audience: string, subjectId: string): string => createHash("sha256").update(`movera-push-subject:${audience}:${subjectId}`).digest("hex").slice(0, 16);
+/**
+ * A short one-way hash of a driver/rider id for logs (follow-up 2026-11-26). With [key] (PUSH_LOG_HASH_KEY, review of
+ * #337) it is an HMAC, so nobody holding only the logs can test guessed ids; without it a plain salted SHA-256.
+ */
+export const subjectHash = (audience: string, subjectId: string, key?: string): string => {
+  const input = `movera-push-subject:${audience}:${subjectId}`;
+  return (key ? createHmac("sha256", key).update(input) : createHash("sha256").update(input)).digest("hex").slice(0, 16);
+};
 
 export type PushLogger = { warn: (data: object, message: string) => void; info?: (data: object, message: string) => void };
 
 export type DispatcherOptions = {
   clock?: () => Date;
   logger?: PushLogger;
+  /** PUSH_LOG_HASH_KEY: the HMAC key of [subjectHash] in failure lines (never logged). */
+  hashKey?: string;
   /** Wait before the one retry of a device. */
   retryDelayMs?: number;
   /** How often the sweep runs without a kick. */
@@ -96,7 +105,7 @@ export class PushDispatcher {
     try {
       await this.sweep();
     } catch (error) {
-      this.options.logger?.warn({ err: { message: (error as Error).message } }, "push sweep failed");
+      this.options.logger?.warn({ err: { message: scrubText(String((error as Error)?.message ?? error)) } }, "push sweep failed");
     }
   }
 
@@ -167,7 +176,7 @@ export class PushDispatcher {
     const ttlSeconds = row.push_until === null ? undefined : Math.max(1, Math.ceil((new Date(row.push_until).getTime() - now.getTime()) / 1000));
     await Promise.all(
       devices.map(async (device) => {
-        const message = { token: device.token, platform: device.platform, title: row.title, body: row.body, data, ...(sound ? { sound } : {}), ...(ttlSeconds ? { ttlSeconds } : {}) };
+        const message = { token: device.token, platform: device.platform, app: row.audience, title: row.title, body: row.body, data, ...(sound ? { sound } : {}), ...(ttlSeconds ? { ttlSeconds } : {}) };
         let result: SendResult = await this.sender.send(message);
         if (result === "retry" && !this.stopped) {
           await this.sleep(this.options.retryDelayMs ?? 2000);
@@ -177,7 +186,7 @@ export class PushDispatcher {
           await this.db.deleteFrom("push_devices").where("token", "=", device.token).where("actor", "=", row.audience).execute();
         } else if (result !== "sent") {
           // Follow-up 2026-11-26: which app and a hash of whose id (never the token or the raw id).
-          this.options.logger?.warn({ notificationId: row.notification_id, kind: row.kind, app: row.audience, subjectHash: subjectHash(row.audience, row.subject_id), platform: device.platform, result }, "push not delivered to one device");
+          this.options.logger?.warn({ notificationId: row.notification_id, kind: row.kind, app: row.audience, subjectHash: subjectHash(row.audience, row.subject_id, this.options.hashKey), platform: device.platform, result }, "push not delivered to one device");
         }
       }),
     );

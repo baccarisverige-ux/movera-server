@@ -88,6 +88,8 @@ export type PushMessage = {
   sound?: "offer" | "none";
   /** v0.18.6: seconds the push is still useful (until the offer runs out). */
   ttlSeconds?: number;
+  /** Which app the device is (logs only, never sent to FCM; review of #337). */
+  app?: "driver" | "rider";
 };
 
 const NATIVE = (contract as unknown as { driverOffers: { push: { native: { androidChannel: string; androidQuietChannel: string; soundFile: string; iosSound: string } } } }).driverOffers.push.native;
@@ -179,7 +181,7 @@ export class FcmSender implements PushSender {
     if (res.status === 200) return "sent";
     const text = await res.text().catch(() => "");
     if (res.status === 401 && message.platform === "ios") {
-      this.warn?.(`FCM answered 401 for an iOS device (${text.includes("THIRD_PARTY_AUTH_ERROR") ? "THIRD_PARTY_AUTH_ERROR: " : ""}APNs refused): check the APNs auth key for this iOS app in Firebase › Project settings › Cloud Messaging`);
+      this.warn?.(`FCM answered 401 for an iOS device${message.app ? ` of the ${message.app} app` : ""} (${text.includes("THIRD_PARTY_AUTH_ERROR") ? "THIRD_PARTY_AUTH_ERROR: " : ""}APNs refused): check the APNs auth key for this iOS app in Firebase › Project settings › Cloud Messaging`);
     }
     return classifyFcmError(res.status, text, () => this.tokens.invalidate());
   }
