@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { sql } from "kysely";
 import type { Db } from "../db/db.js";
 import { riderPushAlwaysSent } from "../notifications/tripPush.js";
@@ -11,6 +12,9 @@ import type { PushSender, SendResult } from "./fcm.js";
  * before the commit. One retry per device; tokens FCM calls dead are removed. Notices older than MAX_AGE_MS (push was
  * off, the server was down) are marked and not sent.
  */
+
+/** A short one-way hash of a driver/rider id for logs (follow-up 2026-11-26). */
+export const subjectHash = (audience: string, subjectId: string): string => createHash("sha256").update(`movera-push-subject:${audience}:${subjectId}`).digest("hex").slice(0, 16);
 
 export type PushLogger = { warn: (data: object, message: string) => void; info?: (data: object, message: string) => void };
 
@@ -172,7 +176,8 @@ export class PushDispatcher {
         if (result === "dead_token") {
           await this.db.deleteFrom("push_devices").where("token", "=", device.token).where("actor", "=", row.audience).execute();
         } else if (result !== "sent") {
-          this.options.logger?.warn({ notificationId: row.notification_id, kind: row.kind, platform: device.platform, result }, "push not delivered to one device");
+          // Follow-up 2026-11-26: which app and a hash of whose id (never the token or the raw id).
+          this.options.logger?.warn({ notificationId: row.notification_id, kind: row.kind, app: row.audience, subjectHash: subjectHash(row.audience, row.subject_id), platform: device.platform, result }, "push not delivered to one device");
         }
       }),
     );
