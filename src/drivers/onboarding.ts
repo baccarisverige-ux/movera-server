@@ -19,7 +19,7 @@ import { coversFleet, loadFleet, ownedFleet, type Admin, type FleetRow } from ".
 import { cancelFleetInvitations, fleetInvitationViews, requestJoin, type InviteDeps } from "./invitations.js";
 import { notify } from "../notifications/service.js";
 import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
-import { onboardingSettings, onboardingSettingsOf, type OnboardingSettings } from "./onboardingSettings.js";
+import { onboardingSettings, onboardingSettingsOf, signUpFieldsOf, type OnboardingSettings } from "./onboardingSettings.js";
 
 export { loadFleet, ownedFleet } from "./fleets.js";
 
@@ -151,6 +151,10 @@ type OnboardingBody = {
   country: string;
   cityId: string;
   language: string;
+  /** v0.18.166 (signupV2): Sweden. */
+  personalNumber?: string;
+  taxiLicenseNumber?: string;
+  address?: { street: string; postalCode: string; city: string };
   accountType: "driver" | "fleet";
   termsAccepted: boolean;
   company?: { name: string; orgNumber: string; address: string };
@@ -183,6 +187,7 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d.dateOfBirth) || Number.isNaN(born.getTime()) || born.toISOString().slice(0, 10) !== d.dateOfBirth || born.getUTCFullYear() < 1900) throw badRequest("The date of birth is not a date.", "invalid_date_of_birth");
   if (ageAt(d.dateOfBirth, now) < ONBOARDING.minAge) throw badRequest(`Drivers must be at least ${ONBOARDING.minAge}.`, "under_age");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email)) throw badRequest("The e-mail is not valid.", "invalid_email");
+  const extra = signUpExtras(d, signUpFieldsOf(await onboardingSettings(trx, d.country)));
   if (d.accountType === "fleet" && d.company === undefined) throw badRequest("A fleet account names its company.", "company_required");
   if (row.account_type !== null && row.account_type !== d.accountType) {
     throw badRequest("The account type cannot change; ask support.", "account_type_locked");
@@ -213,6 +218,7 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
       country: d.country,
       city_id: d.cityId,
       language: d.language,
+      ...extra,
       account_type: d.accountType,
       zone_ids: [city.zoneId],
       terms_accepted_at: row.terms_accepted_at ?? now,
@@ -241,11 +247,62 @@ export async function submitOnboarding(trx: Trx, deps: InviteDeps, driverId: str
   return driverView(trx, await loadDriver(trx, driverId), "driver", now);
 }
 
+/** v0.18.166 (signupV2.personalNumber.format): the Luhn check over the 10 digits after the century. */
+export function personalNumberOk(pn: string): boolean {
+  const digits = pn.replace("-", "").slice(2);
+  let sum = 0;
+  for (let i = 0; i < 10; i++) {
+    let v = Number(digits[i]) * (i % 2 === 0 ? 2 : 1);
+    if (v > 9) v -= 9;
+    sum += v;
+  }
+  return sum % 10 === 0;
+}
+
+/** v0.18.166 (signupV2.address.shape): the address trimmed; an empty or too long part is 400 invalid_address. */
+export function addressOf(a: { street: string; postalCode: string; city: string }): { street: string; postalCode: string; city: string } {
+  const out = { street: a.street.trim(), postalCode: a.postalCode.trim(), city: a.city.trim() };
+  if (!out.street || out.street.length > 200 || !out.postalCode || out.postalCode.length > 20 || !out.city || out.city.length > 100) throw badRequest("The address is not complete.", "invalid_address");
+  return out;
+}
+
+/**
+ * v0.18.166 (contract.json#signupV2.signUpFields / personalNumber / taxiLicenseNumber): checks the country's sign-up
+ * fields and returns the columns to save. A field that is off is ignored (never stored); a required one missing is 400
+ * field_required with details [field].
+ */
+type Extras = { personal_number?: string; taxi_license_number?: string | null; address_street?: string; address_postal_code?: string; address_city?: string };
+function signUpExtras(d: OnboardingBody, fields: ReturnType<typeof signUpFieldsOf>): Extras {
+  for (const f of ["personalNumber", "taxiLicenseNumber", "address"] as const) {
+    const value = f === "address" ? d.address?.street.trim() : d[f]?.trim();
+    if (fields[f].on && fields[f].required && !value) throw new ApiError("invalid_request", "Fill in every required field.", { reason: "field_required", details: [f] });
+  }
+  const out: Extras = {};
+  if (fields.address.on && d.address !== undefined) {
+    const a = addressOf(d.address);
+    out.address_street = a.street; out.address_postal_code = a.postalCode; out.address_city = a.city;
+  }
+  if (fields.personalNumber.on && d.personalNumber !== undefined) {
+    const raw = d.personalNumber.trim();
+    const pn = /^\d{12}$/.test(raw) ? `${raw.slice(0, 8)}-${raw.slice(8)}` : raw;
+    const born = `${pn.slice(0, 4)}-${pn.slice(4, 6)}-${pn.slice(6, 8)}`;
+    if (!/^\d{8}-\d{4}$/.test(pn) || born !== d.dateOfBirth || !personalNumberOk(pn)) throw badRequest("The personal number is not valid.", "invalid_personal_number");
+    out.personal_number = pn;
+  }
+  if (fields.taxiLicenseNumber.on && d.taxiLicenseNumber !== undefined) {
+    const t = d.taxiLicenseNumber.trim();
+    if (!/^[\p{L}\p{N}][\p{L}\p{N} -]{0,29}$/u.test(t)) throw badRequest("The taxi licence number is not valid.", "invalid_taxi_license_number");
+    out.taxi_license_number = t;
+  }
+  return out;
+}
+
 /* ---------------------------------------------------------------- the country (v0.18.162) */
 
 /** The zone and city a driver of `country` starts in: the country's first city (none for a country with no city yet). */
-function firstCityOf(country: string): { cityId: string; zoneId: string } | null {
-  const city = ONBOARDING.countries[country]?.cities[0];
+function firstCityOf(country: string, cityId?: string): { cityId: string; zoneId: string } | null {
+  // v0.18.166 (signupV2.regionStep): the Région picked on the info screen, else the first city.
+  const city = cityId !== undefined ? cityOf(country, cityId) : ONBOARDING.countries[country]?.cities[0];
   return city ? { cityId: city.cityId, zoneId: city.zoneId } : null;
 }
 
@@ -256,13 +313,14 @@ function firstCityOf(country: string): { cityId: string; zoneId: string } | null
  * change sets the city and zones to the new country's first city (so the admin lists by country follow at once); the
  * same country only fills a missing zone.
  */
-async function moveDriverCountry(trx: Trx, driverId: string, country: string, now: Date, check: (row: DriverRow) => Promise<void>, projection: (row: DriverRow) => Promise<unknown>) {
+async function moveDriverCountry(trx: Trx, driverId: string, country: string, now: Date, check: (row: DriverRow) => Promise<void>, projection: (row: DriverRow) => Promise<unknown>, cityId?: string) {
   const peek = await loadDriver(trx, driverId);
   const fleet = peek.fleet_id !== null ? await loadFleet(trx, peek.fleet_id, true) : null;
   const row = await loadDriver(trx, driverId, true);
   await check(row);
-  const first = firstCityOf(country);
+  const first = firstCityOf(country, cityId);
   if (first === null) throw badRequest(`Movera has no city in ${country} yet.`, "country_not_open");
+  const cityPicked = cityId !== undefined && row.city_id !== cityId;
   let fleetMoved = false;
   if (fleet !== null && fleet.country !== country) {
     const others = fleet.owner_driver_id === driverId ? await trx.selectFrom("drivers").select("driver_id").where("fleet_id", "=", fleet.fleet_id).where("driver_id", "<>", driverId).executeTakeFirst() : { driver_id: driverId };
@@ -271,8 +329,8 @@ async function moveDriverCountry(trx: Trx, driverId: string, country: string, no
     fleetMoved = true;
   }
   const same = row.country === country;
-  if (same && !fleetMoved && row.zone_ids.length > 0) return { row, changed: false, fleetMoved, from: row.country };
-  const set = same && !fleetMoved ? { zone_ids: [first.zoneId] } : { country, zone_ids: [first.zoneId], city_id: first.cityId };
+  if (same && !fleetMoved && !cityPicked && row.zone_ids.length > 0) return { row, changed: false, fleetMoved, from: row.country };
+  const set = same && !fleetMoved && !cityPicked ? { zone_ids: [first.zoneId] } : { country, zone_ids: [first.zoneId], city_id: first.cityId };
   await trx.updateTable("drivers").set({ ...set, version: row.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
   return { row: await loadDriver(trx, driverId), changed: true, fleetMoved, from: row.country };
 }
@@ -281,14 +339,15 @@ async function moveDriverCountry(trx: Trx, driverId: string, country: string, no
 export async function setDriverCountry(trx: Trx, driverId: string, body: unknown, now: Date) {
   const problem = schemaProblem("DriverCountryCommand", body);
   if (problem !== null) throw badRequest(`The country is not valid: ${problem}.`, "invalid_body");
-  const { country } = body as { country: string };
+  const { country, cityId } = body as { country: string; cityId?: string };
   if (ONBOARDING.countries[country]?.open !== true) throw badRequest(`Movera is not open in ${country} yet.`, "country_not_open");
+  if (cityId !== undefined && cityOf(country, cityId) === undefined) throw badRequest("Choose a region of your country.", "invalid_city");
   const view = (r: DriverRow) => driverView(trx, r, "driver", now);
   const moved = await moveDriverCountry(trx, driverId, country, now, async (row) => {
     if (row.account_status !== "pending" && row.account_status !== "on_hold") {
       throw new ApiError("invalid_transition", "Your details are already approved; ask support to change your country.", { reason: "details_locked", projection: await view(row) });
     }
-  }, view);
+  }, view, cityId);
   return view(moved.row);
 }
 

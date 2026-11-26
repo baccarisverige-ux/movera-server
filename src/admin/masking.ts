@@ -28,6 +28,11 @@ export function maskEmail(email: string): string {
   return `${email.slice(0, 1)}${DOT}${DOT}${DOT}@${domain}`;
 }
 
+/** v0.18.166 (signupV2.personalNumber.stored): `1990••••-••••` for 19900517-1234. */
+export function maskPersonalNumber(personalNumber: string): string {
+  return `${personalNumber.slice(0, 4)}${DOT.repeat(4)}-${DOT.repeat(4)}`;
+}
+
 /** `1990` for 1990-05-17: the year only. */
 export function maskDateOfBirth(dateOfBirth: string): string {
   return dateOfBirth.slice(0, 4);
@@ -65,7 +70,11 @@ export function maskRiderView<T extends View>(view: T, who: Perms): T {
 /** Driver for an admin: phone (when present), email and dateOfBirth masked without drivers.viewSensitive. */
 export function maskDriverView<T extends View>(view: T, who: Perms): T {
   if (!adminMasksDrivers(who)) return view;
-  return maskFields(view, [["phone", maskPhone], ["email", maskEmail], ["dateOfBirth", maskDateOfBirth]]) as T;
+  const out = maskFields(view, [["phone", maskPhone], ["email", maskEmail], ["dateOfBirth", maskDateOfBirth], ["personalNumber", maskPersonalNumber]]);
+  // v0.18.166 (signupV2.address.shape): the street masked, postal code and city as they are.
+  const address = view["address"] as { street?: unknown } | undefined;
+  if (address && typeof address.street === "string") return { ...out, address: { ...address, street: `${address.street.slice(0, 1)}${DOT.repeat(3)}` }, sensitiveMasked: true } as unknown as T;
+  return out as T;
 }
 
 /** Fleet for an admin: ownerEmail masked without drivers.viewSensitive. */

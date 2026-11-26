@@ -10,7 +10,7 @@ import { driverPhotoUrl } from "../../src/trips/driverPhoto.js";
 import { newId } from "../../src/ids.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
-import { insertTrip } from "../support/seed.js";
+import { insertTrip, signup } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
@@ -79,10 +79,10 @@ beforeAll(async () => {
   sup = await adminSession(app, database.db, "super", { now: clock.now });
   for (const [who, p] of Object.entries(PEOPLE) as Array<[Who, (typeof PEOPLE)[Who]]>) {
     H[who] = (await signIn(app, TEST_PHONES[p.phone]!, "driver")).headers;
-    const res = await call(app, "POST", "/driver/onboarding", H[who]!, {
+    const res = await call(app, "POST", "/driver/onboarding", H[who]!, signup({
       firstName: p.firstName, lastName: p.lastName, dateOfBirth: "1988-04-01", email: p.email, country: p.country, cityId: p.cityId, language: p.language,
       accountType: p.accountType, termsAccepted: true, ...("orgNumber" in p ? { company: { name: `${p.lastName} Trafik`, orgNumber: p.orgNumber, address: "Gatan 1" } } : {}),
-    });
+    }));
     expect(res.statusCode, res.body).toBe(200);
     ID[who] = res.json().driverId;
     if (p.accountType === "fleet") {
@@ -210,8 +210,11 @@ describe("D3: the rider sees the driver's approved photo, never another", () => 
       expect(ok.headers["cache-control"]).toBe("private, no-store");
       expect(Buffer.compare(ok.rawPayload, JPEG)).toBe(0);
       expect((await get(other.headers)).statusCode).toBe(404);
-      // A new photo waiting for review never shows: the approved one stays.
-      await upload(driver, { type: "profile_photo" }, PNG, "image/png");
+      // A new photo waiting for review never shows: the approved one stays. v0.18.166 (signupV2.profilePhoto.locked, owner
+      // 2026-11-26 "Peut pas"): the driver cannot even send one now (409 profile_photo_locked); a renewal already waiting stays hidden.
+      const locked = await uploadRaw(driver, { type: "profile_photo" }, PNG, "image/png");
+      expect(locked.statusCode).toBe(409);
+      expect(locked.json()).toMatchObject({ reason: "profile_photo_locked" });
       expect((await get(rider.headers)).headers["content-type"]).toBe("image/jpeg");
       await database.db.updateTable("trips").set({ status: "completed" }).where("trip_id", "=", tripId).execute();
       expect((await get(rider.headers)).statusCode).toBe(404);

@@ -219,7 +219,7 @@ async function eraseOne(trx: Trx, a: Due, now: Date): Promise<Record<string, num
     // Privacy Q2 open (FLAGGED): first_name / last_name stay for the money records (payouts, earnings point at the id).
     await trx
       .updateTable("drivers")
-      .set({ phone: placeholder, email: null, email_verified_at: null, date_of_birth: null, home_area: null, offline_note: null, online_status: "offline", online_since: null, erased_at: now, updated_at: now })
+      .set({ phone: placeholder, email: null, email_verified_at: null, date_of_birth: null, personal_number: null, taxi_license_number: null, address_street: null, address_postal_code: null, address_city: null, home_area: null, offline_note: null, online_status: "offline", online_since: null, erased_at: now, updated_at: now })
       .where("driver_id", "=", a.id)
       .where("erased_at", "is", null)
       .execute();

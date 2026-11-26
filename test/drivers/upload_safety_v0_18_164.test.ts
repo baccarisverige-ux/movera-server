@@ -1,3 +1,4 @@
+import { signup } from "../support/seed.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
@@ -22,7 +23,7 @@ beforeAll(async () => {
   sup = await adminSession(app, database.db, "super", { now: clock.now });
   const h = (await signIn(app, TEST_PHONES[0]!, "driver")).headers;
   H = h;
-  const res = await call(app, "POST", "/driver/onboarding", h, { firstName: "Sarah", lastName: "Benali", dateOfBirth: "1988-04-01", email: "sarah@example.fr", country: "FR", cityId: "paris", language: "fr", accountType: "driver", termsAccepted: true });
+  const res = await call(app, "POST", "/driver/onboarding", h, signup({ firstName: "Sarah", lastName: "Benali", dateOfBirth: "1988-04-01", email: "sarah@example.fr", country: "FR", cityId: "paris", language: "fr", accountType: "driver", termsAccepted: true }));
   expect(res.statusCode, res.body).toBe(200);
   driverId = res.json().driverId;
 });

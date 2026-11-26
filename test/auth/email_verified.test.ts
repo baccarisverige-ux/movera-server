@@ -1,3 +1,4 @@
+import { signup } from "../support/seed.js";
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -88,7 +89,7 @@ const onboarding = (token: string, address: string) =>
     method: "POST",
     url: "/api/v1/driver/onboarding",
     headers: { ...json(token), "idempotency-key": `g30-key-${String(++keys).padStart(8, "0")}` },
-    payload: { firstName: "Nils", lastName: "Ny", dateOfBirth: "1988-04-01", email: address, country: "SE", cityId: "stockholm_lan", language: "sv", accountType: "driver", termsAccepted: true },
+    payload: signup({ firstName: "Nils", lastName: "Ny", dateOfBirth: "1988-04-01", email: address, country: "SE", cityId: "stockholm_lan", language: "sv", accountType: "driver", termsAccepted: true }),
   });
 
 describe("G30: e-mail saved only after a code check", () => {

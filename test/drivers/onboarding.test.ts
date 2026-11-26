@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
-import { approveDriverDocuments, approveVehicleDocuments } from "../support/seed.js";
+import { approveDriverDocuments, approveVehicleDocuments, signup } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /** contract v0.5.3 §14: the details screen, fleets with a join code (an invitation the owner accepts), fleet cars, documents, the admin side. */
@@ -78,20 +78,20 @@ describe("the details screen", () => {
   });
 
   it("refuses a closed country, a too young driver, a fleet without a company, missing terms", async () => {
-    const closed = await call(app, "POST", "/driver/onboarding", owner, details({ country: "TN", cityId: "tunis" }));
+    const closed = await call(app, "POST", "/driver/onboarding", owner, signup(details({ country: "TN", cityId: "tunis" })));
     expect(closed.json()).toMatchObject({ code: "invalid_request", reason: "country_not_open" });
-    const young = await call(app, "POST", "/driver/onboarding", owner, details({ dateOfBirth: "2006-01-01" }));
+    const young = await call(app, "POST", "/driver/onboarding", owner, signup(details({ dateOfBirth: "2006-01-01" })));
     expect(young.json()).toMatchObject({ reason: "under_age" });
-    const noCompany = await call(app, "POST", "/driver/onboarding", owner, details({ company: undefined }));
+    const noCompany = await call(app, "POST", "/driver/onboarding", owner, signup(details({ company: undefined })));
     expect(noCompany.json()).toMatchObject({ reason: "company_required" });
-    const noTerms = await call(app, "POST", "/driver/onboarding", owner, details({ termsAccepted: false }));
+    const noTerms = await call(app, "POST", "/driver/onboarding", owner, signup(details({ termsAccepted: false })));
     expect(noTerms.statusCode).toBe(400);
-    const badCity = await call(app, "POST", "/driver/onboarding", owner, details({ cityId: "paris" }));
+    const badCity = await call(app, "POST", "/driver/onboarding", owner, signup(details({ cityId: "paris" })));
     expect(badCity.json()).toMatchObject({ reason: "invalid_city" });
   });
 
   it("a fleet account: details saved, on hold, the company pending, the terms approved, the documents listed", async () => {
-    const res = await call(app, "POST", "/driver/onboarding", owner, details());
+    const res = await call(app, "POST", "/driver/onboarding", owner, signup(details()));
     expect(res.statusCode).toBe(200);
     const d = res.json();
     ownerId = d.driverId;
@@ -128,7 +128,7 @@ describe("the details screen", () => {
 
   // v0.18.0 owner item 13 ("Yes, same as Sweden"): France has the info session too.
   it("a driver account in France: its own documents; no fleet yet, no cars", async () => {
-    const res = await call(app, "POST", "/driver/onboarding", member, details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", country: "FR", cityId: "paris", language: "fr", accountType: "driver", company: undefined }));
+    const res = await call(app, "POST", "/driver/onboarding", member, signup(details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", country: "FR", cityId: "paris", language: "fr", accountType: "driver", company: undefined })));
     expect(res.statusCode).toBe(200);
     memberId = res.json().driverId;
     expect(res.json()).toMatchObject({ accountStatus: "on_hold", accountType: "driver", zoneIds: ["FR-PC"], requiredDocuments: ["terms", "info_session", "vtc_card", "driving_license", "national_id", "profile_photo"] });
@@ -187,7 +187,7 @@ describe("joining the fleet", () => {
     const french = await call(app, "POST", "/driver/fleet/join", member, { code: fleetCode, ownerName: "Fredrik Åkesson", ownerEmail: "fredrik@example.se" });
     expect(french.statusCode).toBe(409);
     expect(french.json()).toMatchObject({ code: "conflict", reason: "fleet_other_country" });
-    const moved = await call(app, "POST", "/driver/onboarding", member, details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", language: "fr", accountType: "driver", company: undefined }));
+    const moved = await call(app, "POST", "/driver/onboarding", member, signup(details({ firstName: "Karim", lastName: "Ben Ali", email: "karim@example.fr", language: "fr", accountType: "driver", company: undefined })));
     expect(moved.statusCode).toBe(200);
     expect(moved.json()).toMatchObject({ country: "SE", zoneIds: ["Z001"] });
   });
@@ -223,7 +223,7 @@ describe("joining the fleet", () => {
   });
 
   it("stops after ten tries in an hour", async () => {
-    await call(app, "POST", "/driver/onboarding", second, details({ firstName: "Lina", lastName: "Berg", email: "lina@example.se", accountType: "driver", company: undefined }));
+    await call(app, "POST", "/driver/onboarding", second, signup(details({ firstName: "Lina", lastName: "Berg", email: "lina@example.se", accountType: "driver", company: undefined })));
     let last;
     for (let i = 0; i < 11; i++) last = await call(app, "POST", "/driver/fleet/join", second, { code: "MV-BBBBB", ownerName: "x", ownerEmail: "x@example.se" });
     expect(last!.statusCode).toBe(429);

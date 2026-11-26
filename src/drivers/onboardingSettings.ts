@@ -40,7 +40,29 @@ export type OnboardingSettings = {
   emailVerifiedForApproval?: boolean;
   /** v0.18.159 (contract.json#fleetNeedsCar.setting, owner 2026-11-24): a fleet needs at least 1 car before approval; missing = true. */
   fleetNeedsCarForApproval?: boolean;
+  /** v0.18.166 (contract.json#signupV2.signUpFields): which sign-up fields are shown / required; missing = the contract defaults. */
+  signUpFields?: Partial<Record<SignUpField, FieldSwitch>>;
+  /** v0.18.166 (signupV2.twoSided): document types photographed recto + verso; missing = the contract defaults. */
+  twoSidedTypes?: string[];
 };
+export type SignUpField = "dateOfBirth" | "personalNumber" | "taxiLicenseNumber" | "language" | "address";
+export type FieldSwitch = { on: boolean; required: boolean };
+type SignupV2 = { signUpFields: { fields: SignUpField[]; defaults: Record<string, Record<SignUpField, FieldSwitch>> }; twoSided: { defaults: Record<string, string[]> } };
+export const SIGNUP_V2 = (contract as unknown as { signupV2: SignupV2 }).signupV2;
+const NO_FIELD: FieldSwitch = { on: false, required: false };
+
+/** v0.18.166: a country's sign-up fields, the admin's switches over the contract defaults (unknown country: date of birth + language). */
+export function signUpFieldsOf(settings: OnboardingSettings): Record<SignUpField, FieldSwitch> {
+  const base = SIGNUP_V2.signUpFields.defaults[settings.country] ?? { dateOfBirth: { on: true, required: true }, personalNumber: NO_FIELD, taxiLicenseNumber: NO_FIELD, language: { on: true, required: true }, address: { on: true, required: true } };
+  const out = {} as Record<SignUpField, FieldSwitch>;
+  for (const f of SIGNUP_V2.signUpFields.fields) out[f] = settings.signUpFields?.[f] ?? base[f] ?? NO_FIELD;
+  return out;
+}
+
+/** v0.18.166: the document types taken recto + verso in a country. */
+export function twoSidedTypesOf(settings: OnboardingSettings): string[] {
+  return settings.twoSidedTypes ?? SIGNUP_V2.twoSided.defaults[settings.country] ?? [];
+}
 export type DocumentGuide = { checklist?: LocalText[]; tips?: LocalText[] };
 
 type SettingsContract = {
@@ -231,6 +253,20 @@ export function settingsProblems(document: unknown): string[] {
   if (d.vehicles.hybridElectricExempt !== undefined && typeof d.vehicles.hybridElectricExempt !== "boolean") problems.push("vehicles.hybridElectricExempt: true or false");
   // v0.18.3 (R8, R9): guides and valid months only for types of the country.
   const known = (type: string) => types[type] !== undefined || ids.has(type);
+  // v0.18.166 (signupV2): a required field must be on; recto/verso only for file types of the country, once each.
+  for (const [field, sw] of Object.entries(d.signUpFields ?? {})) {
+    if (!(SIGNUP_V2.signUpFields.fields as string[]).includes(field)) problems.push(`signUpFields: unknown field ${field}`);
+    else if (sw.required && !sw.on) problems.push(`signUpFields.${field}: a required field must be on`);
+  }
+  if (d.twoSidedTypes !== undefined) {
+    if (new Set(d.twoSidedTypes).size !== d.twoSidedTypes.length) problems.push("twoSidedTypes: a type is listed twice");
+    for (const type of d.twoSidedTypes) {
+      const custom = customs.find((c) => c.id === type);
+      const kind = custom ? custom.kind : types[type]?.kind;
+      if (kind === undefined) problems.push(`twoSidedTypes: unknown type ${type}`);
+      else if (kind !== "file") problems.push(`twoSidedTypes: ${type} is not a file`);
+    }
+  }
   for (const type of Object.keys(d.guides ?? {})) if (!known(type)) problems.push(`guides: unknown type ${type}`);
   for (const [type, months] of Object.entries(d.validMonths ?? {})) {
     if (!known(type)) problems.push(`validMonths: unknown type ${type}`);

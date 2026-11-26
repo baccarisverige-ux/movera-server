@@ -5,7 +5,7 @@ import { requestJoin } from "../../src/drivers/invitations.js";
 import { fleetEarnings, submitOnboarding } from "../../src/drivers/onboarding.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
-import { insertDriver } from "../support/seed.js";
+import { insertDriver, signup } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
@@ -58,9 +58,9 @@ beforeAll(async () => {
   pierre = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
   sven = (await signIn(app, TEST_PHONES[2]!, "driver")).headers;
   admin = await adminSession(app, database.db, "super", { now: clock.now });
-  await call(app, "POST", "/driver/onboarding", owner, details());
-  pierreId = (await call(app, "POST", "/driver/onboarding", pierre, details(french))).json().driverId;
-  svenId = (await call(app, "POST", "/driver/onboarding", sven, details(swede))).json().driverId;
+  await call(app, "POST", "/driver/onboarding", owner, signup(details()));
+  pierreId = (await call(app, "POST", "/driver/onboarding", pierre, signup(details(french)))).json().driverId;
+  svenId = (await call(app, "POST", "/driver/onboarding", sven, signup(details(swede)))).json().driverId;
   const fleet = (await call(app, "GET", "/driver/fleet", owner)).json().fleet;
   seFleetId = fleet.fleetId;
   // v0.18.159 (fleetNeedsCar): a fleet is approved only with at least one car.
@@ -134,14 +134,14 @@ describe("BQ-FLEETCUR: a driver joins only a fleet of his own country", () => {
     const pending = (await call(app, "GET", "/driver/fleet/invitations", owner)).json().items.find((i: { driverId?: string; status: string }) => i.driverId === svenId && i.status === "pending");
     expect((await call(app, "POST", `/driver/fleet/invitations/${pending.invitationId}/accept`, owner)).statusCode).toBe(200);
     expect(await fleetOf(svenId)).toBe(seFleetId);
-    const moved = await call(app, "POST", "/driver/onboarding", sven, details({ ...swede, country: "FR", cityId: "paris", language: "fr" }));
+    const moved = await call(app, "POST", "/driver/onboarding", sven, signup(details({ ...swede, country: "FR", cityId: "paris", language: "fr" })));
     expect(moved.statusCode).toBe(409);
     expect(moved.json()).toMatchObject({ code: "conflict", reason: "fleet_other_country" });
     expect((await database.db.selectFrom("drivers").select("country").where("driver_id", "=", svenId).executeTakeFirstOrThrow()).country).toBe("SE");
   });
 
   it("the owner cannot move his fleet to another country while it has a driver", async () => {
-    const moved = await call(app, "POST", "/driver/onboarding", owner, details({ country: "FR", cityId: "paris", language: "fr" }));
+    const moved = await call(app, "POST", "/driver/onboarding", owner, signup(details({ country: "FR", cityId: "paris", language: "fr" })));
     expect(moved.statusCode).toBe(409);
     expect(moved.json()).toMatchObject({ code: "conflict", reason: "fleet_other_country" });
     expect((await database.db.selectFrom("fleets").select("country").where("fleet_id", "=", seFleetId).executeTakeFirstOrThrow()).country).toBe("SE");
@@ -192,10 +192,10 @@ describe("BQ-FLEETCUR: fleet earnings count only the fleet's currency", () => {
 
 describe("BQ-FLEETCUR MF1: an owner moving his fleet to France and a Swedish driver joining never both win", () => {
   const deps = {} as never;
-  const ownerToFrance = (ownerId: string) => (trx: Parameters<typeof submitOnboarding>[0]) => submitOnboarding(trx, deps, ownerId, details({ email: "fredrik@example.se", country: "FR", cityId: "paris", language: "fr" }), clock.now);
+  const ownerToFrance = (ownerId: string) => (trx: Parameters<typeof submitOnboarding>[0]) => submitOnboarding(trx, deps, ownerId, signup(details({ email: "fredrik@example.se", country: "FR", cityId: "paris", language: "fr" })), clock.now);
   async function race(phone: string, first: "owner" | "join") {
     const ownerHeaders = (await signIn(app, phone, "driver")).headers;
-    const ownerId = (await call(app, "POST", "/driver/onboarding", ownerHeaders, details())).json().driverId as string;
+    const ownerId = (await call(app, "POST", "/driver/onboarding", ownerHeaders, signup(details()))).json().driverId as string;
     await call(app, "POST", "/driver/vehicles", ownerHeaders, { make: "Volvo", model: "V60", color: "Black", seats: 4, year: 2022, plate: `FNC ${first}`, fuel: "hybrid" }); // v0.18.159 (fleetNeedsCar): a fleet is approved only with at least one car.
     const f = (await call(app, "GET", "/driver/fleet", ownerHeaders)).json().fleet;
     const code = (await call(app, "POST", `/admin/fleets/${f.fleetId}/review`, admin.headers, { expectedVersion: f.version, decision: "approved" })).json().code as string;

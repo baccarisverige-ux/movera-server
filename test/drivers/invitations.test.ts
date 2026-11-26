@@ -1,3 +1,4 @@
+import { signup } from "../support/seed.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
@@ -51,9 +52,9 @@ beforeAll(async () => {
   anna = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
   bo = (await signIn(app, TEST_PHONES[2]!, "driver")).headers;
   admin = await adminSession(app, database.db, "super", { now: clock.now });
-  await call(app, "POST", "/driver/onboarding", owner, details());
-  annaId = (await call(app, "POST", "/driver/onboarding", anna, details({ firstName: "Anna", lastName: "Lind", email: "anna@example.se", accountType: "driver", company: undefined }))).json().driverId;
-  boId = (await call(app, "POST", "/driver/onboarding", bo, details({ firstName: "Bo", lastName: "Ek", email: "bo@example.se", accountType: "driver", company: undefined, language: "en" }))).json().driverId;
+  await call(app, "POST", "/driver/onboarding", owner, signup(details()));
+  annaId = (await call(app, "POST", "/driver/onboarding", anna, signup(details({ firstName: "Anna", lastName: "Lind", email: "anna@example.se", accountType: "driver", company: undefined })))).json().driverId;
+  boId = (await call(app, "POST", "/driver/onboarding", bo, signup(details({ firstName: "Bo", lastName: "Ek", email: "bo@example.se", accountType: "driver", company: undefined, language: "en" })))).json().driverId;
   const fleet = (await call(app, "GET", "/driver/fleet", owner)).json().fleet;
   fleetId = fleet.fleetId;
   // v0.18.159 (fleetNeedsCar): a fleet is approved only with at least one car.
@@ -161,7 +162,7 @@ describe("a number without an account", () => {
     const mine = (await call(app, "GET", "/driver/fleet/invitations", newcomer)).json();
     expect(mine.items).toEqual([expect.objectContaining({ invitationId, driverId: fresh.driverId, status: "pending" })]);
     expect((await notices(newcomer)).items).toEqual([expect.objectContaining({ kind: "fleet_invitation", data: { invitationId, direction: "owner_invite" } })]);
-    await call(app, "POST", "/driver/onboarding", newcomer, details({ firstName: "Nils", lastName: "Ny", email: "nils@example.se", accountType: "driver", company: undefined }));
+    await call(app, "POST", "/driver/onboarding", newcomer, signup(details({ firstName: "Nils", lastName: "Ny", email: "nils@example.se", accountType: "driver", company: undefined })));
     expect((await me(newcomer)).pendingFleetInvitations).toBe(1);
     const detail = (await call(app, "GET", `/admin/fleets/${fleetId}`, admin.headers)).json();
     expect(detail.invitations).toEqual([expect.objectContaining({ invitationId, driverName: "Nils Ny", phone: TEST_PHONES[3] })]);
