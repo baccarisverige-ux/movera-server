@@ -6,7 +6,7 @@ import { infobipOrigin, infobipSender } from "./infobip.js";
 /**
  * Contract v0.18.168 (contract.json#smsProviders; owner 2026-11-26 "Am going to change company sms to infobip", then
  * "Infobip + 46elks en secours (Recommandé)"): the server's SMS sender tries the companies in order (the country's
- * providerOrder, default Infobip then 46elks), one try each. When a company took the SMS no other is asked (never two
+ * providerOrder, default 46elks then Infobip: owner 2026-11-26 "Keep 46elks working primary until we fix Infobip"), one try each. When a company took the SMS no other is asked (never two
  * SMS for one code); when it did not (time-out, broken connection, refusal, error answer, wrong key) the same SMS goes
  * once to the next company that has keys. A company without keys is skipped; only one with keys = that one alone; none
  * = no sender (every real number stays sign_in_restricted, as before). Never throws.

@@ -12118,14 +12118,14 @@
   },
   "smsProviders": {
     "since": "0.18.168",
-    "note": "v0.18.168 (SMS company Infobip, 46elks as backup; owner 2026-11-26 \"Am going to change company sms to infobip\", then \"Infobip + 46elks en secours (Recommandé)\"; Rule 0; X-Api-Version stays `0.5`; additive, optional; no migration; follows v0.18.167): the sign-in code SMS (contract.json#smsSignIn) and the SOS contacts SMS (contract.json#sosContactsSms.send) go out through Infobip first and through 46elks only when Infobip did not take the SMS. The order can be changed per country by an admin for the sign-in codes; the SOS contacts SMS use defaultOrder.",
+    "note": "v0.18.168 (SMS company Infobip, 46elks as backup; owner 2026-11-26 \"Am going to change company sms to infobip\", then \"Infobip + 46elks en secours (Recommandé)\"; Rule 0; X-Api-Version stays `0.5`; additive, optional; no migration; follows v0.18.167): the sign-in code SMS (contract.json#smsSignIn) and the SOS contacts SMS (contract.json#sosContactsSms.send) go out through two companies, one try each, the second only when the first did not take the SMS. Default order: 46elks first, Infobip as backup (owner 2026-11-26 \"Keep 46elks working primary until we fix Infobip\"); Infobip is used only when its keys are set. The order can be changed per country by an admin for the sign-in codes; the SOS contacts SMS use defaultOrder.",
     "providers": [
       "infobip",
       "46elks"
     ],
     "defaultOrder": [
-      "infobip",
-      "46elks"
+      "46elks",
+      "infobip"
     ],
     "serverKeys": {
       "infobip": [
@@ -12144,6 +12144,6 @@
     "logs": "sms_outbox.provider is the company that took the SMS (infobip or 46elks), or the last one tried when none did. The log line says which company was used and whether a backup was needed, never the number, the text or the code.",
     "driver": "Driver app: no change (the sign-in screen and its answers are the same).",
     "rider": "Rider app: no change (the sign-in screen and its answers are the same).",
-    "admin": "Admin › Pricing › Tips & limits per country: \"SMS company order\" on both SMS cards (Infobip then 46elks by default, or the other way, or one alone), with an i text."
+    "admin": "Admin › Pricing › Tips & limits per country: \"SMS company order\" on both SMS cards (46elks then Infobip by default, or the other way, or one alone), with an i text."
   }
 }

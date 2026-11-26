@@ -67,7 +67,7 @@ const set = (value: string | undefined): string | undefined => (value !== undefi
 
 /**
  * The 46elks sender the environment asks for: when BOTH keys are set, else none. Since v0.18.168 the server's sign-in
- * sender is sms/providers.ts#smsSenderFrom (Infobip first, this one as backup), which uses this for the 46elks part.
+ * sender is sms/providers.ts#smsSenderFrom (46elks first by default, Infobip as backup when its keys are set), which uses this for the 46elks part.
  */
 export function signInSmsFrom(env: ElksEnv, defaultSender: string): CodeSmsSender | undefined {
   const username = set(env.ELKS_API_USERNAME);

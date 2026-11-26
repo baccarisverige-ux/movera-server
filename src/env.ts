@@ -111,8 +111,8 @@ const schema = z.object({
   ELKS_API_USERNAME: z.string().optional(),
   ELKS_API_PASSWORD: z.string().optional(),
   /**
-   * Contract v0.18.168 (contract.json#smsProviders.serverKeys): Infobip, the first SMS company (46elks above is the
-   * backup). INFOBIP_BASE_URL is the account's own API address (xxxxx.api.infobip.com); INFOBIP_API_KEY is sent as
+   * Contract v0.18.168 (contract.json#smsProviders.serverKeys): Infobip, the backup SMS company (46elks above stays
+   * first by default). INFOBIP_BASE_URL is the account's own API address (xxxxx.api.infobip.com); INFOBIP_API_KEY is sent as
    * `Authorization: App <key>`. Filled in Render's dashboard by the owner (never committed, never logged). Read leniently:
    * half set or a wrong address only skips Infobip with a start-up warning (sms/providers.ts).
    */

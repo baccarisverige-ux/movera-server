@@ -50,7 +50,8 @@ beforeEach(async () => {
   infobip.next = { accepted: true, status: 200 };
   elks.next = { accepted: true, status: 200 };
   logLines.length = 0;
-  await setSmsSignIn(database.db, "SE", { enabled: true }, clock.now);
+  // Infobip first here (the owner may pick it per country); the default (46elks first) is tested below.
+  await setSmsSignIn(database.db, "SE", { enabled: true, providerOrder: ["infobip", "46elks"] }, clock.now);
 });
 
 const request = (phone: string) => app.inject({ method: "POST", url: "/api/v1/auth/otp/request", remoteAddress: `198.51.100.${n % 250}`, headers: { "content-type": "application/json" }, payload: { phone, app: "rider" } });
@@ -91,6 +92,14 @@ describe("Infobip first, 46elks as backup", () => {
     const log = logLines.join("\n");
     expect(log).not.toContain(codeOf(infobip.sent[0]!));
     expect(log).not.toContain(phone);
+  });
+
+  it("never saved: the default is 46elks first, Infobip never asked when 46elks took it (owner: keep 46elks primary)", async () => {
+    await setSmsSignIn(database.db, "SE", { enabled: true }, clock.now);
+    const phone = realSE();
+    expect((await request(phone)).statusCode).toBe(200);
+    expect(infobip.sent).toHaveLength(0);
+    expect(await row(phone)).toMatchObject({ status: "sent", provider: "46elks" });
   });
 
   it("the country's providerOrder is followed (46elks first, or 46elks alone)", async () => {

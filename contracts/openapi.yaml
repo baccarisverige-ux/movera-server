@@ -27315,8 +27315,8 @@ components:
               maxItems: 2
               uniqueItems: true
               default:
-              - infobip
               - 46elks
+              - infobip
               description: 'v0.18.168 (contract.json#smsProviders): CountryRules.smsSignIn.providerOrder (country standard)
                 and CountryRules.smsSignInOtherCountries.providerOrder (home country standard, super admins, the numbers of
                 every other country): 1 or 2 different values of providers, first tried first. Missing or wrong = defaultOrder.
@@ -27606,8 +27606,8 @@ components:
               maxItems: 2
               uniqueItems: true
               default:
-              - infobip
               - 46elks
+              - infobip
               description: 'v0.18.168 (contract.json#smsProviders): CountryRules.smsSignIn.providerOrder (country standard)
                 and CountryRules.smsSignInOtherCountries.providerOrder (home country standard, super admins, the numbers of
                 every other country): 1 or 2 different values of providers, first tried first. Missing or wrong = defaultOrder.

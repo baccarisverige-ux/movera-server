@@ -5,7 +5,7 @@ import { INFOBIP_SMS_PATH, infobipOrigin, infobipSender } from "../../src/sms/in
 import { DEFAULT_SMS_ORDER, chainSender, infobipSenderFrom, infobipStartupWarnings, providerOrderOk, smsSenderFrom } from "../../src/sms/providers.js";
 import { checkSmsSignIn, checkSmsSignInOther, smsSignInOf, smsSignInOtherOf } from "../../src/auth/smsSignIn.js";
 
-/** Contract v0.18.168 (contract.json#smsProviders): Infobip first, 46elks as backup. No test calls a real SMS company. */
+/** Contract v0.18.168 (contract.json#smsProviders): two companies, one as backup; default 46elks first (owner 2026-11-26 "Keep 46elks working primary until we fix Infobip"). No test calls a real SMS company. */
 
 type Call = { url: string; init: RequestInit };
 const fakeFetch = (calls: Call[], answer: () => Response | Promise<Response>): typeof fetch => (async (url: unknown, init?: RequestInit) => {
@@ -25,6 +25,7 @@ const fake = (name: string, answers: CodeSmsOutcome[] | "throw"): CodeSmsSender 
     },
   };
 };
+const IB_FIRST = ["infobip", "46elks"] as const;
 const base = { MOVERA_ENV: "development" } as Record<string, string>;
 
 describe("Infobip sender", () => {
@@ -69,14 +70,20 @@ describe("Infobip sender", () => {
 });
 
 describe("company order and backup", () => {
-  it("default order is Infobip then 46elks", () => {
-    expect(DEFAULT_SMS_ORDER).toEqual(["infobip", "46elks"]);
+  it("default order is 46elks then Infobip (owner: keep 46elks primary)", async () => {
+    expect(DEFAULT_SMS_ORDER).toEqual(["46elks", "infobip"]);
+    const infobip = fake("infobip", [{ accepted: true }]);
+    const elks = fake("46elks", [{ accepted: true }]);
+    const chain = chainSender({ infobip, "46elks": elks })!;
+    expect(chain.name).toBe("46elks");
+    expect((await chain.send({ to: "+46701740608", text: "x" })).provider).toBe("46elks");
+    expect(infobip.sent).toHaveLength(0);
   });
 
   it("Infobip took it: 46elks is never asked (no double send)", async () => {
     const infobip = fake("infobip", [{ accepted: true, status: 200, ref: "i1" }]);
     const elks = fake("46elks", [{ accepted: true, status: 200, ref: "e1" }]);
-    const out = await chainSender({ infobip, "46elks": elks })!.send({ to: "+46701740608", text: CODE_TEXT });
+    const out = await chainSender({ infobip, "46elks": elks })!.send({ to: "+46701740608", text: CODE_TEXT, order: IB_FIRST });
     expect(out).toEqual({ accepted: true, status: 200, ref: "i1", provider: "infobip" });
     expect(infobip.sent).toHaveLength(1);
     expect(elks.sent).toHaveLength(0);
@@ -85,7 +92,7 @@ describe("company order and backup", () => {
   it.each<[string, CodeSmsOutcome[] | "throw"]>([["5xx", [{ accepted: false, status: 503 }]], ["auth", [{ accepted: false, status: 401 }]], ["time-out / network", [{ accepted: false }]], ["a throwing sender", "throw"]])("Infobip failed (%s): the same SMS goes once to 46elks", async (_label, answer) => {
     const infobip = fake("infobip", answer);
     const elks = fake("46elks", [{ accepted: true, status: 200, ref: "e1" }]);
-    const out = await chainSender({ infobip, "46elks": elks })!.send({ to: "+46701740608", text: CODE_TEXT });
+    const out = await chainSender({ infobip, "46elks": elks })!.send({ to: "+46701740608", text: CODE_TEXT, order: IB_FIRST });
     expect(out).toEqual({ accepted: true, status: 200, ref: "e1", provider: "46elks", backup: true });
     expect(elks.sent).toEqual([{ to: "+46701740608", text: CODE_TEXT }]);
     expect(infobip.sent).toHaveLength(1);
@@ -94,7 +101,7 @@ describe("company order and backup", () => {
   it("both failed: not accepted, the last company is named, each was tried once", async () => {
     const infobip = fake("infobip", [{ accepted: false, status: 500 }]);
     const elks = fake("46elks", [{ accepted: false, status: 402 }]);
-    expect(await chainSender({ infobip, "46elks": elks })!.send({ to: "+46701740608", text: "x" })).toEqual({ accepted: false, status: 402, provider: "46elks", backup: true });
+    expect(await chainSender({ infobip, "46elks": elks })!.send({ to: "+46701740608", text: "x", order: IB_FIRST })).toEqual({ accepted: false, status: 402, provider: "46elks", backup: true });
     expect(infobip.sent).toHaveLength(1);
     expect(elks.sent).toHaveLength(1);
   });
@@ -126,7 +133,7 @@ describe("server keys (names only)", () => {
     expect(smsSenderFrom(readEnv(base), "Movera")).toBeUndefined();
     expect(smsSenderFrom(readEnv({ ...base, ...ib }), "Movera")?.name).toBe("infobip");
     expect(smsSenderFrom(readEnv({ ...base, ...el }), "Movera")?.name).toBe("46elks");
-    expect(smsSenderFrom(readEnv({ ...base, ...ib, ...el }), "Movera")?.name).toBe("infobip");
+    expect(smsSenderFrom(readEnv({ ...base, ...ib, ...el }), "Movera")?.name).toBe("46elks");
     expect(smsSenderFrom(readEnv({ ...base, INFOBIP_BASE_URL: "abc.api.infobip.com" }), "Movera")).toBeUndefined();
     expect(smsSenderFrom(readEnv({ ...base, INFOBIP_BASE_URL: "http://abc.api.infobip.com", INFOBIP_API_KEY: "k", ...el }), "Movera")?.name).toBe("46elks");
   });
@@ -152,11 +159,11 @@ describe("server keys (names only)", () => {
 
 describe("providerOrder setting", () => {
   it("reads the default when missing or wrong, the stored order when right", () => {
-    expect(smsSignInOf({}).providerOrder).toEqual(["infobip", "46elks"]);
+    expect(smsSignInOf({}).providerOrder).toEqual(["46elks", "infobip"]);
     expect(smsSignInOf({ smsSignIn: { providerOrder: ["46elks"] } }).providerOrder).toEqual(["46elks"]);
-    expect(smsSignInOf({ smsSignIn: { providerOrder: ["twilio"] } }).providerOrder).toEqual(["infobip", "46elks"]);
+    expect(smsSignInOf({ smsSignIn: { providerOrder: ["twilio"] } }).providerOrder).toEqual(["46elks", "infobip"]);
     expect(smsSignInOtherOf({ smsSignInOtherCountries: { providerOrder: ["46elks", "infobip"] } }).providerOrder).toEqual(["46elks", "infobip"]);
-    expect(smsSignInOtherOf({}).providerOrder).toEqual(["infobip", "46elks"]);
+    expect(smsSignInOtherOf({}).providerOrder).toEqual(["46elks", "infobip"]);
   });
 
   it("PUT refuses a wrong order", () => {

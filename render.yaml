@@ -56,7 +56,7 @@ services:
         sync: false
       - key: ELKS_API_PASSWORD
         sync: false
-      # Contract v0.18.168 (smsProviders): Infobip, the first SMS company (46elks above = backup). The account's own
+      # Contract v0.18.168 (smsProviders): Infobip, the backup SMS company (46elks above stays first by default). The account's own
       # API address (xxxxx.api.infobip.com) and its API key. Set by the owner in Render's dashboard; never committed.
       - key: INFOBIP_BASE_URL
         sync: false
