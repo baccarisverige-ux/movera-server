@@ -1,3 +1,4 @@
+import { signup } from "../support/seed.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
@@ -49,10 +50,10 @@ beforeAll(async () => {
   sup = await adminSession(app, database.db, "super", { now: clock.now });
   for (const [who, p] of Object.entries(PEOPLE) as Array<[Who, (typeof PEOPLE)[Who]]>) {
     H[who] = (await signIn(app, TEST_PHONES[p.phone]!, "driver")).headers;
-    const res = await call(app, "POST", "/driver/onboarding", H[who]!, {
+    const res = await call(app, "POST", "/driver/onboarding", H[who]!, signup({
       firstName: p.firstName, lastName: p.lastName, dateOfBirth: "1988-04-01", email: p.email, country: p.country, cityId: p.cityId, language: p.language,
       accountType: p.accountType, termsAccepted: true, ...("orgNumber" in p ? { company: { name: `${p.lastName} Trafik`, orgNumber: p.orgNumber, address: "Gatan 1" } } : {}),
-    });
+    }));
     expect(res.statusCode, res.body).toBe(200);
     ID[who] = res.json().driverId;
     if (p.accountType === "fleet") FLEET[who] = res.json().fleet.fleetId;

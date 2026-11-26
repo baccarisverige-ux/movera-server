@@ -105,3 +105,21 @@ export async function approveFleetDocuments(db: Db, ownerId: string, only?: stri
   const row = await db.selectFrom("drivers").select("country").where("driver_id", "=", ownerId).executeTakeFirstOrThrow();
   await approveDriverDocuments(db, ownerId, only ?? requiredDocuments(row.country, "fleet"));
 }
+
+/**
+ * v0.18.166 (contract.json#signupV2): the sign-up fields SE and FR require by default, added to a POST /driver/onboarding
+ * body that does not carry them: the address, and for Sweden a personnummer matching dateOfBirth (valid Luhn digit).
+ */
+export function signup<T>(body: T): T {
+  const b = body as Record<string, unknown>;
+  if (b === null || typeof b !== "object") return body;
+  const out: Record<string, unknown> = { address: { street: "Storgatan 1", postalCode: "111 22", city: "Stockholm" }, ...b };
+  const dob = typeof b["dateOfBirth"] === "string" ? (b["dateOfBirth"] as string) : "";
+  if (b["country"] === "SE" && b["personalNumber"] === undefined && /^\d{4}-\d{2}-\d{2}$/.test(dob)) {
+    const nine = `${dob.replace(/-/g, "").slice(2)}123`;
+    let sum = 0;
+    for (let i = 0; i < 9; i++) { let v = Number(nine[i]) * (i % 2 === 0 ? 2 : 1); if (v > 9) v -= 9; sum += v; }
+    out["personalNumber"] = `${dob.replace(/-/g, "")}-123${(10 - (sum % 10)) % 10}`;
+  }
+  return out as T;
+}

@@ -84,6 +84,12 @@ export type DriverRow = {
   account_type: "driver" | "fleet" | null;
   last_name: string;
   date_of_birth: Date | null;
+  /** v0.18.166 (signupV2, migration 0139). */
+  personal_number?: string | null;
+  taxi_license_number?: string | null;
+  address_street?: string | null;
+  address_postal_code?: string | null;
+  address_city?: string | null;
   email: string | null;
   email_verified_at?: Date | null;
   first_activated_at?: Date | null;
@@ -225,6 +231,10 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     ...(row.last_name ? { lastName: row.last_name } : {}),
     ...(dob ? { dateOfBirth: dob instanceof Date ? dob.toISOString().slice(0, 10) : String(dob) } : {}),
     ...(row.email ? { email: row.email } : {}),
+    // v0.18.166 (signupV2): the Swedish sign-up fields (personalNumber masked for an admin without drivers.viewSensitive).
+    ...(row.personal_number ? { personalNumber: row.personal_number } : {}),
+    ...(row.taxi_license_number ? { taxiLicenseNumber: row.taxi_license_number } : {}),
+    ...(row.address_street && row.address_postal_code && row.address_city ? { address: { street: row.address_street, postalCode: row.address_postal_code, city: row.address_city } } : {}),
     // G30 v0.18.76 (contract.json#emailVerified.field): when the current e-mail was proven; never masked.
     ...(row.email && row.email_verified_at ? { emailVerifiedAt: row.email_verified_at.toISOString() } : {}),
     ...(row.country ? { country: row.country } : {}),

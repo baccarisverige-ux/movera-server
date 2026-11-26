@@ -6,7 +6,7 @@ import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { sweepAlerts } from "../../src/alerts/detector.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
-import { insertDriver } from "../support/seed.js";
+import { insertDriver, signup } from "../support/seed.js";
 import { call, signIn, testWorld } from "../support/world.js";
 
 /**
@@ -56,14 +56,14 @@ describe("v0.18.162 driver country first", () => {
     // and a car can be added.
     expect((await call(app, "PUT", "/driver/country", me, { country: "SE" })).statusCode).toBe(200);
     expect(await row(saved.json().driverId)).toMatchObject({ country: "SE", zone_ids: ["Z001"], city_id: "stockholm_lan" });
-    expect((await call(app, "POST", "/driver/onboarding", me, details())).statusCode).toBe(200);
+    expect((await call(app, "POST", "/driver/onboarding", me, signup(details()))).statusCode).toBe(200);
     expect((await call(app, "POST", "/driver/vehicles", me, car("DC 101"))).statusCode).toBe(201);
   });
 
   it("admin change: reason required, fleet owner alone moves his fleet, cars re-checked, audit; approved driver cannot use the step", async () => {
     const me = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
     await call(app, "PUT", "/driver/country", me, { country: "SE" });
-    const d = (await call(app, "POST", "/driver/onboarding", me, details({ email: "b@example.se", company: { name: "B AB", orgNumber: "556677-0001", address: "Gatan 2" } }))).json();
+    const d = (await call(app, "POST", "/driver/onboarding", me, signup(details({ email: "b@example.se", company: { name: "B AB", orgNumber: "556677-0001", address: "Gatan 2" } })))).json();
     expect((await call(app, "POST", "/driver/vehicles", me, car("DC 200"))).statusCode).toBe(201);
     await db().updateTable("vehicles").set({ status: "approved" }).where("plate", "=", "DC 200").execute();
     await db().updateTable("drivers").set({ account_status: "active" }).where("driver_id", "=", d.driverId).execute();
@@ -93,7 +93,7 @@ describe("v0.18.162 driver country first", () => {
   it("a fleet member cannot be moved away from his fleet's country; a zone admin of another country is refused", async () => {
     const owner = (await signIn(app, TEST_PHONES[2]!, "driver")).headers;
     await call(app, "PUT", "/driver/country", owner, { country: "SE" });
-    const o = (await call(app, "POST", "/driver/onboarding", owner, details({ email: "c@example.se", company: { name: "C AB", orgNumber: "556677-0002", address: "Gatan 3" } }))).json();
+    const o = (await call(app, "POST", "/driver/onboarding", owner, signup(details({ email: "c@example.se", company: { name: "C AB", orgNumber: "556677-0002", address: "Gatan 3" } })))).json();
     const member = (await signIn(app, TEST_PHONES[3]!, "driver")).headers;
     const m = (await call(app, "PUT", "/driver/country", member, { country: "SE" })).json();
     const fleetId = (await row(o.driverId)).fleet_id!;

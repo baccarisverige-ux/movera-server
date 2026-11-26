@@ -35,6 +35,14 @@ export interface DriversTable {
   deletion_requested_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   erased_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   date_of_birth: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** v0.18.166 (signupV2, migration 0139): Swedish personnummer YYYYMMDD-XXXX; masked for admins without drivers.viewSensitive. */
+  personal_number: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.166 (signupV2, migration 0139): the number on the Taxiförarlegitimation. */
+  taxi_license_number: ColumnType<string | null, string | null | undefined, string | null>;
+  /** v0.18.166 (signupV2.address, migration 0139): the home address (DAC7, invoices). */
+  address_street: ColumnType<string | null, string | null | undefined, string | null>;
+  address_postal_code: ColumnType<string | null, string | null | undefined, string | null>;
+  address_city: ColumnType<string | null, string | null | undefined, string | null>;
   email: ColumnType<string | null, string | null | undefined, string | null>;
   /** G30 v0.18.76 (migration 0099): when the current e-mail was proven (code or Apple / Google); null = Not verified. */
   email_verified_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;

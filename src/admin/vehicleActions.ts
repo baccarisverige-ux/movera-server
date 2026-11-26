@@ -9,7 +9,7 @@ import { vehicleCountry, vehicleDocumentBlockers } from "../drivers/readiness.js
 import { driverView, loadDriver, vehicleFullView, type DriverRow, type VehicleRow } from "../drivers/service.js";
 import { audit } from "./audit.js";
 import { maskDriverView } from "./masking.js";
-import { adminMoveDriverCountry } from "../drivers/onboarding.js";
+import { addressOf, adminMoveDriverCountry } from "../drivers/onboarding.js";
 
 /**
  * Contract v0.18.0 (contract.json#driverOnboarding.adminActions; owner rule "every admin item of the group must work
@@ -200,4 +200,26 @@ export async function adminSetDriverCountry(trx: Trx, who: Principal, driverId: 
   const view = async (r: DriverRow) => maskDriverView(await driverView(trx, r, "admin", now), who);
   const fresh = await adminMoveDriverCountry(trx, who, row.driver_id, { expectedVersion: body.expectedVersion, country: body.country, reason }, now, view);
   return view(fresh);
+}
+
+const AddressBody = z.object({ expectedVersion: z.number().int().min(1), address: z.object({ street: z.string().max(200), postalCode: z.string().max(20), city: z.string().max(100) }).strict(), reason: z.string().max(500) }).strict();
+
+/**
+ * POST /admin/drivers/{driverId}/address (drivers.activate, v0.18.166 contract.json#signupV2.address.adminEdit; owner
+ * 2026-11-26 "Oui, ajouter l'adresse (Recommandé)"): the admin changes a driver's home address, with a reason; the
+ * audit entry driver.address keeps the reason only (no address text).
+ */
+export async function adminSetDriverAddress(trx: Trx, who: Principal, driverId: string, rawBody: unknown, now: Date) {
+  const peek = await loadDriver(trx, driverId);
+  if (!who.zones.includes("*") && peek.zone_ids.length > 0 && !peek.zone_ids.some((z) => who.zones.includes(z))) throw new ApiError("forbidden", "This driver is outside your zones.", { reason: "zone_out_of_scope" });
+  const body = parseBody(AddressBody, rawBody);
+  const reason = body.reason.trim();
+  if (!reason) throw badRequest("Say why the address changes.", "reason_required");
+  const address = addressOf(body.address);
+  const view = async (r: DriverRow) => maskDriverView(await driverView(trx, r, "admin", now), who);
+  const row = await loadDriver(trx, driverId, true);
+  if (row.version !== body.expectedVersion) throw new ApiError("version_mismatch", "The driver changed since you last saw them.", { projection: await view(row) });
+  await trx.updateTable("drivers").set({ address_street: address.street, address_postal_code: address.postalCode, address_city: address.city, version: row.version + 1, updated_at: now }).where("driver_id", "=", driverId).execute();
+  await audit(trx, { adminId: who.subjectId, action: "driver.address", targetType: "driver", targetId: driverId, zoneId: row.zone_ids[0] ?? null, detail: { reason }, at: now });
+  return view(await loadDriver(trx, driverId));
 }

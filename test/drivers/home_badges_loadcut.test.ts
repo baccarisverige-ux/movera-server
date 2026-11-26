@@ -1,3 +1,4 @@
+import { signup } from "../support/seed.js";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TEST_PHONES } from "../../src/auth/testPhones.js";
@@ -22,9 +23,9 @@ beforeAll(async () => {
   app = await testWorld(database.db, database.url, clock);
   for (const [who, phone, country, cityId] of [["se", 1, "SE", "stockholm_lan"], ["fr", 4, "FR", "paris"]] as const) {
     H[who] = (await signIn(app, TEST_PHONES[phone]!, "driver")).headers;
-    const res = await call(app, "POST", "/driver/onboarding", H[who]!, {
+    const res = await call(app, "POST", "/driver/onboarding", H[who]!, signup({
       firstName: "Omar", lastName: "Said", dateOfBirth: "1988-04-01", email: `${who}@example.com`, country, cityId, language: "sv", accountType: "driver", termsAccepted: true,
-    });
+    }));
     expect(res.statusCode, res.body).toBe(200);
   }
   // A driver who has not sent his details yet (no country).

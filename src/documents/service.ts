@@ -220,6 +220,8 @@ export async function uploadDocument(trx: Trx, key: DocumentKey, driverId: strin
   // v0.18.5 (G2-D1, documentRenewal): an approved (or expired) document is never touched by an upload; the new file
   // waits as its renewal (one per document, a new upload replaces it) until an admin approves it.
   if (existing && (existing.status === "approved" || existing.status === "expired")) {
+    // v0.18.166 (signupV2.profilePhoto.locked, owner 2026-11-26 "Peut pas"): an approved profile photo is changed only by support.
+    if (upload.type === "profile_photo") throw new ApiError("invalid_transition", "Your profile photo is approved; contact support to change it.", { reason: "profile_photo_locked" });
     const sealed = sealFile(key, upload.bytes);
     const fields = { status: "in_review" as const, expires_at: expiresAt, file_name: upload.fileName.slice(0, 200), media_type: detected, file_size: upload.bytes.length, uploaded_at: now, reviewed_at: null, reviewed_by: null, review_note: null, updated_at: now, ...sealed };
     const prev = await trx.selectFrom("document_renewals").select(["renewal_id", "version"]).where("document_id", "=", existing.document_id).forUpdate().executeTakeFirst();
