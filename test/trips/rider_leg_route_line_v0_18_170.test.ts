@@ -4,6 +4,7 @@ import { TEST_PHONES } from "../../src/auth/testPhones.js";
 import { tripProjection } from "../../src/trips/projection.js";
 import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
+import { insertDriver } from "../support/seed.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
 // v0.18.170 (contract.json#riderLegRouteLine; owner approved "rider Waiting/on-trip road line from the stored Google
@@ -19,12 +20,13 @@ let app: FastifyInstance;
 const clock = { now: new Date("2026-11-27T10:00:00Z") };
 let rider: Record<string, string>;
 let driverId: string;
+let driverHeaders: Record<string, string>;
 
 beforeAll(async () => {
   database = await freshDatabase();
   app = await testWorld(database.db, database.url, clock);
-  await signIn(app, TEST_PHONES[1]!, "driver");
-  driverId = (await database.db.selectFrom("drivers").select("driver_id").executeTakeFirstOrThrow()).driver_id;
+  driverHeaders = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+  driverId = (await database.db.selectFrom("drivers").select("driver_id").where("phone", "=", TEST_PHONES[1]!).executeTakeFirstOrThrow()).driver_id;
 });
 afterAll(async () => {
   await app.close();
@@ -96,5 +98,32 @@ describe("TripProjection.legRoute (v0.18.170)", () => {
     for (const e of events) expect(e.projection).not.toHaveProperty("legRoute");
     const list = (await call(app, "GET", "/rider/trips", rider)).json().items as Array<Record<string, unknown>>;
     for (const t of list) expect(t).not.toHaveProperty("legRoute");
+  });
+
+  it("a driver who leaves takes his route with him: the next driver's pickup leg never shows the old line (review SHOULD)", async () => {
+    const tripId = await book();
+    await put(tripId, "driver_to_pickup", etaRoute("pickup", PICKUP_LINE));
+    const version = (await database.db.selectFrom("trips").select("version").where("trip_id", "=", tripId).executeTakeFirstOrThrow()).version;
+    driverHeaders = (await signIn(app, TEST_PHONES[1]!, "driver")).headers;
+    const left = await call(app, "POST", `/trips/${tripId}/cancel`, driverHeaders, { expectedVersion: Number(version), reasonCode: "vehicle_issue_before_start" });
+    expect(left.statusCode).toBe(200);
+    const row = await database.db.selectFrom("trips").select(["driver_id", "eta_route"]).where("trip_id", "=", tripId).executeTakeFirstOrThrow();
+    expect(row.driver_id).toBeNull();
+    expect(row.eta_route).toBeNull();
+    // The next driver accepts: until his own ETA tick stores his route, the rider gets no line at all.
+    const next = await insertDriver(database.db);
+    await database.db.updateTable("trips").set({ status: "accepted", driver_id: next }).where("trip_id", "=", tripId).execute();
+    for (const body of await reads(tripId)) expect(body).not.toHaveProperty("legRoute");
+  });
+
+  it("never in a rider command answer (cancel)", async () => {
+    const tripId = await book();
+    await put(tripId, "driver_to_pickup", etaRoute("pickup", PICKUP_LINE));
+    const before = (await call(app, "GET", `/rides/${tripId}`, rider)).json() as Record<string, unknown>;
+    expect(before).toMatchObject({ legRoute: { target: "pickup" } });
+    const res = await call(app, "POST", `/rides/${tripId}/cancel`, rider, { expectedVersion: before["version"], reasonCode: "plans_changed" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).not.toHaveProperty("legRoute");
+    expect(res.json()).not.toHaveProperty("routePolyline");
   });
 });
