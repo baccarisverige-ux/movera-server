@@ -134,6 +134,19 @@ describe("FCM sender (unit)", () => {
     expect(lines[1]).toContain("of the rider app");
   });
 
+  it("review of #340: PushMessage.app (log only) never reaches the FCM request body", () => {
+    const base = { token: "t", title: "T", body: "B", data: { kind: "trip_message" }, app: "driver" as const };
+    for (const message of [
+      { ...base, platform: "web" as const },
+      { ...base, platform: "android" as const, sound: "offer" as const, ttlSeconds: 30 },
+      { ...base, platform: "ios" as const, sound: "none" as const },
+      { ...base, platform: "ios" as const },
+      { ...base, platform: "android" as const },
+    ]) {
+      expect(JSON.stringify(FcmSender.body(message))).not.toContain('"app":');
+    }
+  });
+
   it("classifies FCM errors: unregistered / invalid token = remove, 429 / 5xx / 401 = retry, others = failed", () => {
     expect(classifyFcmError(404, JSON.stringify({ error: { status: "NOT_FOUND", details: [{ errorCode: "UNREGISTERED" }] } }))).toBe("dead_token");
     expect(classifyFcmError(400, JSON.stringify({ error: { status: "INVALID_ARGUMENT", message: "The registration token is not a valid FCM registration token" } }))).toBe("dead_token");
