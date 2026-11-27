@@ -1,6 +1,6 @@
 {
   "contract": "movera",
-  "version": "0.18.169",
+  "version": "0.18.170",
   "note": "Canonical cross-app contract for Rider, Driver and Admin. Frontend-only today; a future single backend implements it. Every app ships an identical copy under contracts/ and runs contract tests against it.",
   "wire": {
     "ids": {
@@ -12133,6 +12133,15 @@
     "findingExit": "The rider's Finding driver screen leaves on any status past searching, completed included (offered is still searching and stays on Finding, contract.json#bookedRideSeen.searchSeen): every tripStatus.driverAssigned status (accepted, driver_to_pickup, arrived, rider_onboard, in_trip, approaching_dropoff) opens Waiting for driver, which then moves a rider_onboard, in_trip or approaching_dropoff trip on to its restored on-trip view; a completed status (completed, payment processing or settled, rating pending) opens Ride completed, the same screen a cold restore shows (never treated as the rider's cancel, never kept in History as cancelled); any other terminal status shows its end sheet. A cancel the server refuses (409 invalid_transition) on a tripStatus.driverAssigned or completed trip moves the rider on the same way and never starts the search again.",
     "rider": "Finding driver draws TripProjection.routePolyline first, then the Quote.routePolyline it kept from booking, then the road-route request (POST /routes); the line is kept with the saved ride so a reopen draws it at once, and is forgotten at sign-out with the quote lines. Movera colours only (#12201C, #2FBF5B).",
     "driver": "Driver app: not affected (Offer.routePolyline, contract.json#offerRouteLine, is unchanged; the driver projection never carries this field).",
+    "admin": "Admin: not affected (no setting; the admin projection never carries this field)."
+  },
+  "riderLegRouteLine": {
+    "since": "0.18.170",
+    "note": "v0.18.170 (the rider's waiting-for-driver and on-trip maps draw the stored Google road line; owner approved the job \"rider Waiting/on-trip road line from the stored Google route, 0 extra Google calls\" (the rider's Waiting for driver and on-trip maps asked POST /routes, which answers a straight line); Rule 0; X-Api-Version stays `0.5`; additive, optional; no migration; follows v0.18.169): the server already keeps the Google route the live ETA follows (trips.eta_route, contract.json#liveTraffic.calls); the rider's own trip reads now carry it as TripProjection.legRoute, beside TripProjection.routePolyline (contract.json#riderTripRouteLine).",
+    "trip": "TripProjection.legRoute {target, polyline}: the stored Google route of the trip's current leg, the same one the live ETA follows and the driver's GET /routes/driving/{coordinates} draws (trips.eta_route). target is pickup (driver position to the pickup, while the driver is coming: accepted, driver_to_pickup; none while he waits at the pickup (arrived)) or dropoff (on trip: rider_onboard, in_trip, approaching_dropoff, after a re-route from the driver's position through the stops still ahead); polyline is the Google encoded polyline (precision 5). Sent only in the rider's own trip reads, GET /trips/{tripId} (rider caller; also its deprecated alias GET /rides/{rideId}) and GET /rider/trips/active, and only when its target is the trip's current leg; never in command answers; absent while no driver holds the trip, once the trip is in a terminal status (completed carries no line), when the ETA has no stored Google route yet (live traffic off, Google did not answer, the first tick has not run), to the driver and admin, in realtime events and from an older server.",
+    "calls": "No extra Google call: it is the route the live ETA's own calls stored (about 2 per trip, contract.json#liveTraffic.calls). POST /routes is unchanged.",
+    "rider": "Waiting for driver draws legRoute (target pickup) as the driver-to-pickup line; the on-trip map draws legRoute (target dropoff) when sent, else TripProjection.routePolyline, else the road-route request (POST /routes) as before. A legRoute whose target is not the screen's leg is not drawn. Movera colours only (#12201C, #2FBF5B).",
+    "driver": "Driver app: not affected (the driver projection never carries this field; its map keeps GET /routes/driving, contract.json#liveTraffic.navigation).",
     "admin": "Admin: not affected (no setting; the admin projection never carries this field)."
   }
 }

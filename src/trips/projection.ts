@@ -8,6 +8,7 @@ import { contract } from "../contract/contract.js";
 import { debtOf } from "../rules/commission.js";
 import { cancelPreviewOf } from "./cancelPreview.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
+import { statusTarget } from "./etaNow.js";
 
 /**
  * TripProjection (contract §2) from a trips row, per viewer: the rider never sees the driver's money
@@ -283,6 +284,16 @@ function headingField(row: TripRow, now: Date): Record<string, unknown> {
   return view ? { headingCheck: view } : {};
 }
 
+/** v0.18.170 (contract.json#riderLegRouteLine): trips.eta_route when it is for the trip's current leg; no network call. */
+function riderLegRoute(row: TripRow): { target: "pickup" | "dropoff"; polyline: string } | null {
+  // The leg the live ETA follows (contract.json#liveTraffic.calls): to the pickup, or to the drop-off; none while
+  // waiting at the pickup or with no driver.
+  const target = row.driver_id && !TERMINAL.has(row.status as TripStatus) ? statusTarget(row.status) : null;
+  const r = row.eta_route as { target?: unknown; polyline?: unknown } | null;
+  if (target === null || !r || r.target !== target || typeof r.polyline !== "string" || r.polyline.length === 0) return null;
+  return { target, polyline: r.polyline };
+}
+
 /**
  * `routeLine` (v0.18.169, contract.json#riderTripRouteLine): set only by the rider's own trip reads (GET /rides/{id},
  * GET /rider/trips/active); the rider view then carries the trip's stored Google route while the trip has not ended.
@@ -461,6 +472,14 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   // reopen. Rider reads only and only until the trip ended; never driver/admin, never realtime (events store the
   // admin projection).
   if (viewer === "rider" && overrides.routeLine && row.route_polyline && !TERMINAL.has(row.status as TripStatus)) projection["routePolyline"] = row.route_polyline;
+  // v0.18.170 (contract.json#riderLegRouteLine; owner approved "rider Waiting/on-trip road line from the stored Google
+  // route, 0 extra Google calls"): the stored Google route of the current leg (trips.eta_route, the one the live ETA
+  // follows), so Waiting for driver and the on-trip map draw the road. Same gate as routePolyline, and only when its
+  // target is the trip's current leg.
+  if (viewer === "rider" && overrides.routeLine) {
+    const leg = riderLegRoute(row);
+    if (leg) projection["legRoute"] = leg;
+  }
   if (viewer === "driver") return hidePinFromDriver(projection);
   return viewer === "rider" ? hideDriverMoney(projection) : projection;
 }

@@ -113,6 +113,8 @@ export async function acceptOffer(trx: Trx, driverId: string, offerId: string, e
       driver_summary: JSON.stringify(summary),
       rider_summary: JSON.stringify(riderSummary),
       eta: null,
+      // v0.18.170 review: the ETA route starts again with this driver (no line from a previous one).
+      eta_route: null,
       search_step: null,
       // Where the driver started from: the rider cancel "came closer" check measures against it.
       accept_pickup_meters: offer.pickup_meters,

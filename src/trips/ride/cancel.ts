@@ -211,6 +211,8 @@ export async function backToDispatch(trx: Trx, trip: TripRow, input: { command: 
       // v0.18.7 (Q1, Q4): the next driver gets his own rider summary at accept; the ETA starts again with him.
       rider_summary: null,
       eta: null,
+      // v0.18.170 review: his stored Google route leaves with him (the rider never sees the old driver's line).
+      eta_route: null,
       // Checker round 1 (H1): the PIN state belongs to one driver; a new driver gets a fresh PIN (the rider sees the new one).
       pin_verified_at: null,
       pin_attempts: 0,

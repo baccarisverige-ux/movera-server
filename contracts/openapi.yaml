@@ -1,11 +1,11 @@
-# Movera API v0.18.169 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
+# Movera API v0.18.170 — generated from contract.json (+ CONTRACT.md §7). PROPOSED; no backend exists.
 openapi: 3.1.0
 info:
   title: Movera API
-  version: 0.18.169
+  version: 0.18.170
   description: '**Proposed contract — no backend exists yet.** One future backend serves the Rider (Flutter), Driver (Flutter)
     and Admin (React/TS) apps. Source of truth for names, enums, transitions, realtime and errors is `contract.json` + `CONTRACT.md`
-    v0.18.169 in this folder; this file must agree with them.
+    v0.18.170 in this folder; this file must agree with them.
 
 
     Wire rules: ids match `^[A-Za-z0-9_-]{1,64}$`; times are RFC 3339 UTC with `Z`; durations are integer seconds; money is
@@ -84,7 +84,7 @@ tags:
 - name: Admin · Finance
 x-contract:
   name: movera
-  version: 0.18.169
+  version: 0.18.170
   source: contract.json
 paths:
   /auth/otp/request:
@@ -23347,6 +23347,37 @@ components:
             cancel, never kept in History as cancelled); any other terminal status shows its end sheet. A cancel the server
             refuses (409 invalid_transition) on a tripStatus.driverAssigned or completed trip moves the rider on the same
             way and never starts the search again.'
+        legRoute:
+          type: object
+          description: 'v0.18.170 (contract.json#riderLegRouteLine): TripProjection.legRoute {target, polyline}: the stored
+            Google route of the trip''s current leg, the same one the live ETA follows and the driver''s GET /routes/driving/{coordinates}
+            draws (trips.eta_route). target is pickup (driver position to the pickup, while the driver is coming: accepted,
+            driver_to_pickup; none while he waits at the pickup (arrived)) or dropoff (on trip: rider_onboard, in_trip, approaching_dropoff,
+            after a re-route from the driver''s position through the stops still ahead); polyline is the Google encoded polyline
+            (precision 5). Sent only in the rider''s own trip reads, GET /trips/{tripId} (rider caller; also its deprecated
+            alias GET /rides/{rideId}) and GET /rider/trips/active, and only when its target is the trip''s current leg; never
+            in command answers; absent while no driver holds the trip, once the trip is in a terminal status (completed carries
+            no line), when the ETA has no stored Google route yet (live traffic off, Google did not answer, the first tick
+            has not run), to the driver and admin, in realtime events and from an older server. No extra Google call: it is
+            the route the live ETA''s own calls stored (about 2 per trip, contract.json#liveTraffic.calls). POST /routes is
+            unchanged. Waiting for driver draws legRoute (target pickup) as the driver-to-pickup line; the on-trip map draws
+            legRoute (target dropoff) when sent, else TripProjection.routePolyline, else the road-route request (POST /routes)
+            as before. A legRoute whose target is not the screen''s leg is not drawn. Movera colours only (#12201C, #2FBF5B).'
+          required:
+          - target
+          - polyline
+          properties:
+            target:
+              type: string
+              enum:
+              - pickup
+              - dropoff
+              description: 'pickup: driver position to the pickup; dropoff: to the drop-off through the stops still ahead.'
+            polyline:
+              type: string
+              minLength: 1
+              description: Google encoded polyline (precision 5).
+          additionalProperties: false
     DriverSilentAlert:
       type: object
       description: 'v0.7.0: documents the server''s alert of 2026-10-26: no position for 30 min with the rider on board; the
