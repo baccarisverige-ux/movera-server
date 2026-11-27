@@ -241,7 +241,7 @@ export async function tripRoutes(app: FastifyInstance, deps: TripDeps): Promise<
   app.get(`${API_PREFIX}/rider/trips/active`, async (request, reply) => {
     const who = await authenticate(request, guard, ["rider"]);
     const trip = await activeTrip(deps.db, who.subjectId);
-    return trip === undefined ? reply.status(204).send() : withDriverPosition(deps.db, trip, tripProjection(trip, "rider"));
+    return trip === undefined ? reply.status(204).send() : withDriverPosition(deps.db, trip, tripProjection(trip, "rider", { routeLine: true }));
   });
 
   app.get(`${API_PREFIX}/rider/trips`, async (request) => {

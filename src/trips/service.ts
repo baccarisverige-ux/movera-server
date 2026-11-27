@@ -214,7 +214,7 @@ export async function getTrip(ex: Executor, tripId: string, who: MessageWho, now
   // Step 25 (Q34): an admin reads a trip (and its live events) only with trips.read and the trip's zone.
   assertAdminTripScope(who, trip, "trips.read");
   // v0.18.113 BQ-S13 (contract.json#inAppCalls.callOpenUntil): the call window after a completed drop-off.
-  return withDriverPosition(ex, trip, await withCallOpenUntil(ex, trip, tripProjection(trip, who.actor, { now })), now);
+  return withDriverPosition(ex, trip, await withCallOpenUntil(ex, trip, tripProjection(trip, who.actor, { now, routeLine: who.actor === "rider" })), now);
 }
 
 /**

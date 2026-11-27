@@ -7,6 +7,7 @@ import { chargedSecondsAt } from "./ride/waitingClock.js";
 import { contract } from "../contract/contract.js";
 import { debtOf } from "../rules/commission.js";
 import { cancelPreviewOf } from "./cancelPreview.js";
+import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 
 /**
  * TripProjection (contract §2) from a trips row, per viewer: the rider never sees the driver's money
@@ -282,7 +283,11 @@ function headingField(row: TripRow, now: Date): Record<string, unknown> {
   return view ? { headingCheck: view } : {};
 }
 
-export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number; now?: Date } = {}): Record<string, unknown> {
+/**
+ * `routeLine` (v0.18.169, contract.json#riderTripRouteLine): set only by the rider's own trip reads (GET /rides/{id},
+ * GET /rider/trips/active); the rider view then carries the trip's stored Google route while the trip has not ended.
+ */
+export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequence?: number; now?: Date; routeLine?: boolean } = {}): Record<string, unknown> {
   const currency = row.currency;
   const lines = (row.fare_lines as Array<{ code: string; amount: Money }>) ?? [];
   const terms = tripTerms(row);
@@ -451,6 +456,11 @@ export function tripProjection(row: TripRow, viewer: Viewer, overrides: { sequen
   if (viewer !== "driver" && row.search_step && ["searching", "offered", "expired"].includes(row.status)) projection["searchStep"] = row.search_step;
   // Admins only: the driver sent no position for 30 minutes with the rider on board (owner decision 2026-10-26).
   if (viewer === "admin" && row.driver_silent_alert) projection["driverSilentAlert"] = row.driver_silent_alert;
+  // v0.18.169 (contract.json#riderTripRouteLine, owner 2026-11-27 "App rider blocked here", "Oui, corriger"): the
+  // trip's stored Google route (from its quote, no new call), so the rider's Finding map keeps the road after a
+  // reopen. Rider reads only and only until the trip ended; never driver/admin, never realtime (events store the
+  // admin projection).
+  if (viewer === "rider" && overrides.routeLine && row.route_polyline && !TERMINAL.has(row.status as TripStatus)) projection["routePolyline"] = row.route_polyline;
   if (viewer === "driver") return hidePinFromDriver(projection);
   return viewer === "rider" ? hideDriverMoney(projection) : projection;
 }
