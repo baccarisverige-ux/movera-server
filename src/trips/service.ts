@@ -175,6 +175,8 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
         distance_meters: quote.distance_meters,
         duration_seconds: quote.duration_seconds,
         route_polyline: quote.route_polyline ?? null,
+        // v0.18.171 (contract.json#googleRoadLines.calls): the quote's Google call counts as the trip's first.
+        google_route_calls: quote.route_source === "google" ? 1 : 0,
         surge_multiplier: quote.surge_multiplier,
         price_extras: JSON.stringify(quote.price_extras ?? {}),
         pricing_version: quote.pricing_version,

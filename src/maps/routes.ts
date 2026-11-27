@@ -6,8 +6,9 @@ import { schemaProblem } from "../contract/schemas.js";
 import { ApiError, badRequest } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { PlacesUnavailable, type Places } from "./places.js";
-import { EstimateRouter, type LatLng, type Router } from "./routing.js";
+import type { LatLng, Router } from "./routing.js";
 import { decodePolyline } from "./polyline.js";
+import { driverRoadLine, RoadLineCache } from "./roadLines.js";
 import { etaTarget } from "../trips/eta.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { zoneAt } from "../config/zoneLookup.js";
@@ -15,7 +16,8 @@ import { countryLanguage } from "../notifications/noticeLanguage.js";
 
 /** contract §10: /locations/autocomplete, /geocode, /reverse-geocode, /routes, /routes/driving/{coordinates}. Read-only: no Idempotency-Key. */
 
-export type MapsDeps = { db: Db; jwtSecret: string; places: Places; router: Router; osrmUrl?: string; clock?: () => Date };
+/** v0.18.171 (contract.json#googleRoadLines): `traffic` = the Google router (app.ts trafficRoads) for the driver's road line. */
+export type MapsDeps = { db: Db; jwtSecret: string; places: Places; router: Router; traffic?: Router; osrmUrl?: string; clock?: () => Date };
 
 const LANGUAGES = ["sv", "en", "fr"];
 const NAV_PER_MINUTE = 30;
@@ -34,6 +36,7 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
   // One provider session per rider: typing then picking a suggestion is billed as one search.
   const sessions = new Map<string, string>();
   const navCalls = new Map<string, number[]>();
+  const roadLineCache = new RoadLineCache();
 
   async function language(request: FastifyRequest, actor: string, subjectId: string): Promise<string> {
     const header = request.headers["accept-language"];
@@ -153,9 +156,10 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
         const [lng, lat] = pair.split(",").map(Number);
         return { lat: lat!, lng: lng! };
       });
-      const stored = await storedDriverRoute(deps.db, who.subjectId);
-      const line = stored ?? { ...(await new EstimateRouter().route(points)), points };
-      return reply.status(200).send({ code: "Ok", routes: [{ distance: line.distanceMeters, duration: line.durationSeconds, geometry: { type: "LineString", coordinates: line.points!.map((p) => [p.lng, p.lat]) }, legs: [] }], waypoints: [] });
+      // v0.18.171 (contract.json#googleRoadLines.navigation, replaces the text above): the stored Google route cut at
+      // the car, or one Google call off it (maps/roadLines.ts); code stays Ok (owner Q1), `source` says which.
+      const line = await driverRoadLine(deps.db, who.subjectId, points, deps.clock?.() ?? new Date(), deps.traffic, roadLineCache);
+      return reply.status(200).send({ code: "Ok", routes: [{ distance: line.distanceMeters, duration: line.durationSeconds, geometry: { type: "LineString", coordinates: line.points.map((p) => [p.lng, p.lat]) }, legs: [] }], waypoints: [], source: line.source });
     }
     const params = new URLSearchParams();
     for (const name of ["overview", "steps", "annotations", "alternatives"]) if (query[name] !== undefined) params.set(name, String(query[name]));

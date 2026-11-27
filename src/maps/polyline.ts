@@ -88,3 +88,30 @@ export function alongRoute(route: LatLng[], at: LatLng): { offMeters: number; re
   for (let k = best.i + 1; k < seg.length; k++) remaining += seg[k]!;
   return { offMeters: best.off, remainingMeters: remaining };
 }
+
+/**
+ * v0.18.171 (contract.json#googleRoadLines.navigation): the route from the point on it nearest `at` to its end, with
+ * how far `at` is off it and the metres left. The first point is that nearest point (on the segment), so the driver's
+ * line starts at the car, not back at where the route was asked.
+ */
+export function cutFrom(route: LatLng[], at: LatLng): { points: LatLng[]; offMeters: number; remainingMeters: number } {
+  if (route.length < 2) return { points: [...route], ...alongRoute(route, at) };
+  let best = { off: Infinity, i: 0, t: 0 };
+  for (let i = 1; i < route.length; i++) {
+    const [ax, ay] = toXY(route[i - 1]!, at);
+    const [bx, by] = toXY(route[i]!, at);
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2));
+    const off = Math.hypot(ax + t * dx, ay + t * dy);
+    if (off < best.off) best = { off, i: i - 1, t };
+  }
+  const a = route[best.i]!;
+  const b = route[best.i + 1]!;
+  const start = { lat: a.lat + (b.lat - a.lat) * best.t, lng: a.lng + (b.lng - a.lng) * best.t };
+  const rest = route.slice(best.i + 1);
+  const points = best.t >= 1 ? rest : [start, ...rest];
+  const { remainingMeters } = alongRoute(route, at);
+  return { points: points.length >= 2 ? points : [start, route[route.length - 1]!], offMeters: best.off, remainingMeters };
+}

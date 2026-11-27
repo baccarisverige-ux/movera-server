@@ -17,7 +17,15 @@ export function liveTrafficDefault(country: string | null | undefined): boolean 
   return country != null && LIVE_TRAFFIC_DEFAULT_ON.includes(country);
 }
 
-export type LiveTrafficSettings = { on: boolean } & Recall;
+/**
+ * v0.18.171 (contract.json#googleRoadLines.setting; owner 2026-11-27 "4 Google calls per trip, the quote included", range
+ * 1-4, the admin may only lower it): DispatchDocument.liveTraffic.roadLines { on, maxCallsPerTrip }.
+ */
+export const MAX_CALLS_PER_TRIP_DEFAULT = 4;
+export const MAX_CALLS_PER_TRIP_RANGE = [1, 4] as const;
+export type RoadLines = { on: boolean; maxCallsPerTrip: number };
+
+export type LiveTrafficSettings = { on: boolean; roadLines: RoadLines } & Recall;
 
 /** The zone's setting with the re-call thresholds; a missing or out-of-range value reads as its default. */
 export async function liveTrafficSettings(ex: Executor, zoneId: string): Promise<LiveTrafficSettings> {
@@ -33,7 +41,15 @@ export async function liveTrafficSettings(ex: Executor, zoneId: string): Promise
     const zone = await ex.selectFrom("zones").select("country").where("zone_id", "=", zoneId).executeTakeFirst();
     on = liveTrafficDefault(zone?.country ?? null);
   }
-  return { on: on as boolean, offRouteMeters: pick("offRouteMeters"), offRouteSeconds: pick("offRouteSeconds"), behindMinutes: pick("behindMinutes") };
+  const rl = (typeof lt["roadLines"] === "object" && lt["roadLines"] !== null ? lt["roadLines"] : {}) as Record<string, unknown>;
+  const max = rl["maxCallsPerTrip"];
+  const [lo, hi] = MAX_CALLS_PER_TRIP_RANGE;
+  const roadLines: RoadLines = {
+    // `on` follows liveTraffic.on unless set; never on while live traffic itself is off.
+    on: (on as boolean) && (typeof rl["on"] === "boolean" ? rl["on"] : true),
+    maxCallsPerTrip: typeof max === "number" && Number.isInteger(max) && max >= lo && max <= hi ? max : MAX_CALLS_PER_TRIP_DEFAULT,
+  };
+  return { on: on as boolean, roadLines, offRouteMeters: pick("offRouteMeters"), offRouteSeconds: pick("offRouteSeconds"), behindMinutes: pick("behindMinutes") };
 }
 
 export async function liveTrafficOn(ex: Executor, zoneId: string): Promise<boolean> {

@@ -1,4 +1,5 @@
 import { contract } from "../contract/contract.js";
+import type { GoogleCallBudget } from "./googleBudget.js";
 import { OSRM_BREAKER_COOLDOWN_SECONDS_DEFAULT, OSRM_BREAKER_FAILURES_DEFAULT, OSRM_TIMEOUT_MS_DEFAULT } from "./osrmSettings.js";
 
 /**
@@ -17,7 +18,11 @@ export type RouteLeg = { distanceMeters: number; durationSeconds: number; source
  * smaller answer, the same distance and time) and the leg has no `points`. Default (true): the full shape, as before
  * (the trip's line on the map, the ride check's planned route).
  */
-export type RouteOptions = { shape?: boolean };
+export type RouteOptions = {
+  shape?: boolean;
+  /** v0.18.171 (contract.json#googleRoadLines.dailyBudget): which daily share a Google call counts on (default: a quote). */
+  budget?: GoogleCallBudget;
+};
 
 export interface Router {
   route(points: LatLng[], options?: RouteOptions): Promise<RouteLeg>;

@@ -106,7 +106,9 @@ export async function routeBeforeTransaction(roads: Router, request: unknown, ex
   // v0.18.163 (contract.json#liveTraffic.setting): live traffic when the zone's dispatch setting is on (default SE, FR).
   router = await tripTimeRouter(ex, zone.zoneId, { roads, ...(traffic ? { traffic } : {}) });
   const wanted = legKey(quotePoints(body));
-  const result: { leg: RouteLeg } | { error: unknown } = await router.route(quotePoints(body)).then(
+  // v0.18.171 (contract.json#googleRoadLines.dailyBudget): a Google call here counts on the quotes' share, by country.
+  const country = router === traffic ? (await ex.selectFrom("zones").select("country").where("zone_id", "=", zone.zoneId).executeTakeFirst())?.country : undefined;
+  const result: { leg: RouteLeg } | { error: unknown } = await router.route(quotePoints(body), { budget: { kind: "quote", ...(country ? { country } : {}) } }).then(
     (leg) => ({ leg }),
     (error: unknown) => ({ error }),
   );

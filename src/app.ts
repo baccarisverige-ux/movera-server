@@ -24,6 +24,8 @@ import { adminAuthRoutes } from "./admin/routes.js";
 import { configRoutes } from "./config/routes.js";
 import { EstimateRouter, type Router } from "./maps/routing.js";
 import { quoteRoutes } from "./quotes/routes.js";
+import { googleBudgetRoutes } from "./maps/budgetRoutes.js";
+import { dbDailyGuard } from "./maps/googleBudget.js";
 import { mapsRoutes } from "./maps/routes.js";
 import { tripRoutes } from "./trips/routes.js";
 import { chatRoutes } from "./chat/routes.js";
@@ -374,6 +376,8 @@ export async function buildApp({ env, logger = true, db, clock, router, traffic,
               timeoutMs: env.GOOGLE_ROUTES_TIMEOUT_MS,
               perMinute: env.GOOGLE_ROUTES_PER_MINUTE,
               log: app.log,
+              // v0.18.171 (contract.json#googleRoadLines.dailyBudget): the daily budget across copies and countries.
+              daily: dbDailyGuard(db, clock),
             })
           : undefined;
     setLiveTrafficConfigured(trafficRoads !== undefined);
@@ -412,7 +416,9 @@ export async function buildApp({ env, logger = true, db, clock, router, traffic,
     await realDataRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await financeRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) }); // v0.18.153 P29 driver income year (DAC7)
     await adminEventRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
-    await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(clock ? { clock } : {}) });
+    // v0.18.171 (contract.json#googleRoadLines): the driver's road line may ask Google (trafficRoads); POST /routes stays on `roads`.
+    await mapsRoutes(app, { db, jwtSecret, places: search, router: roads, ...(trafficRoads ? { traffic: trafficRoads } : {}), ...(clock ? { clock } : {}) });
+    await googleBudgetRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
   }
 
   // Live outage 2026-11-17 (#268 post-mortem): the load-shedding hooks are part of EVERY built app, last (as main.ts
