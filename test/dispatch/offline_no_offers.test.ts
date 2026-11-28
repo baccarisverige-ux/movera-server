@@ -9,7 +9,6 @@ import { driverPerformance } from "../../src/drivers/performance.js";
 import { countsAsIgnored } from "../../src/dispatch/autoOffline.js";
 import { lockAndRecheck } from "../../src/dispatch/runtime/candidates.js";
 import { TimerWorker } from "../../src/jobs/timers.js";
-import { adminSession } from "../support/admin.js";
 import { freshDatabase, type TestDatabase } from "../support/db.js";
 import { call, NORRMALM, SODERMALM, signIn, testWorld } from "../support/world.js";
 
@@ -67,7 +66,6 @@ async function book() {
   return trip.tripId as string;
 }
 const openOffers = async (key: "A" | "B" | "C") => (await call(app, "GET", "/driver/offers", drivers[key].headers)).json().items;
-const tripOf = async (tripId: string, headers = rider) => (await call(app, "GET", `/trips/${tripId}`, headers)).json();
 
 beforeEach(async () => {
   await everyoneOnline();
