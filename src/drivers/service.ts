@@ -24,6 +24,7 @@ import { RIDERS_ONLINE_WINDOW_SECONDS, ridersOnlineByZone } from "../riders/pres
 import { onDriverPosition } from "../airportQueue/service.js";
 import { etaOnPosition } from "../trips/etaNow.js";
 import { countFixes } from "../bonuses/counting.js";
+import { preferredAreasView } from "../areas/service.js";
 
 /**
  * Drivers: profile, going online and offline, and location (contract §2 Driver, §3.3, §4, §12). A driver can be
@@ -66,6 +67,8 @@ export type DriverRow = {
   driver_id: string;
   /** v0.18.17 (owner BL-Q4). */
   home_area?: unknown;
+  /** v0.18.172 (contract.json#preferredAreas). */
+  preferred_area_ids?: string[];
   payout_hold_at?: Date | null;
   payout_hold_reason?: string | null;
   payout_hold_by?: string | null;
@@ -254,6 +257,9 @@ export async function driverView(ex: Executor, row: DriverRow, viewer: "driver" 
     ...(active ? { activeTripId: active.trip_id } : {}),
     // v0.18.17 (owner BL-Q4): the driver's home area, set in the driver app; admins see it too.
     ...(row.home_area ? { homeArea: row.home_area } : {}),
+    // v0.18.172 (contract.json#preferredAreas.driverView): his preferred areas (ids + names); admins see them too.
+    preferredAreaIds: row.preferred_area_ids ?? [],
+    preferredAreas: await preferredAreasView(ex, row.preferred_area_ids ?? [], row.language ?? null),
     ...(row.scheduled_rides ? { scheduledRides: row.scheduled_rides } : {}),
     // v0.18.4 (G3-R2): the driver is told when his latest position is outside all his zones (no trips there).
     ...(viewer === "driver" ? await areaView(ex, row) : {}),
