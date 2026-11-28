@@ -10,6 +10,7 @@ import type { IdempotencyKeysTable, TimersTable, TestPhonesTable, SignInWaitlist
 import type { AdminsTable, AdminSetupLinksTable, AdminSignInFailuresTable, ConfigDraftsTable, ConfigLiveTable, ConfigHistoryTable, ApprovalsTable, AdminAuditTable, AdminLiveEventsTable, AdminLivePrunedTable, KpiDaysTable, ContentItemsTable } from "./admin.js";
 import type { ZonesTable, SurgeSamplesTable, QuotesTable, SurgeSchedulesTable, SmartSurgeStateTable, CategoriesTable, GoogleRouteCallsDailyTable, GoogleRoutesBudgetTable } from "./pricing.js";
 import type { SearchesTable, OffersTable, OfferEventsTable, DispatchControlsTable, DispatchEventsTable, DispatchPresetsTable, DriverGroupsTable, RadarZonesTable, RadarZoneRulesTable, RadarZoneSendsTable, AreaEventsTable, ReservationPolicyTable, AirportQueueAreasTable, AirportQueueEntriesTable } from "./dispatch.js";
+import type { AreasTable, AreaSeedRunsTable } from "./areas.js";
 import type { BonusCampaignsTable, BonusProgressTable, BonusTripsCountedTable, BonusRiderDaysTable } from "./bonuses.js";
 import type { RiderFeesTable, EarningsEntriesTable, PayoutsTable, WalletEntriesTable, RefundsTable } from "./payments.js";
 import type { SupportTicketsTable, SupportSettingsTable, AdminAlertBookTable, AdminAlertRecordsTable, AdminAlertQuietTable, AdminIncidentSettingsTable, ReviewRulesTable, ReviewPeopleTable, TicketMessagesTable, IncidentsTable, IncidentEventsTable } from "./support.js";
@@ -31,6 +32,8 @@ export interface Database {
   trips: TripsTable;
   google_route_calls_daily: GoogleRouteCallsDailyTable;
   google_routes_budget: GoogleRoutesBudgetTable;
+  areas: AreasTable;
+  area_seed_runs: AreaSeedRunsTable;
   trip_events: TripEventsTable;
   trip_messages: TripMessagesTable;
   trip_message_translations: TripMessageTranslationsTable;

@@ -53,6 +53,8 @@ export interface DriversTable {
   language: ColumnType<string | null, string | null | undefined, string | null>;
   /** v0.18.17 (owner BL-Q4): HomeArea { lat, lng, label? }. */
   home_area: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.172 (contract.json#preferredAreas, migration 0141): area ids; order only, never visibility. */
+  preferred_area_ids: Generated<string[]>;
   terms_accepted_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   fleet_id: ColumnType<string | null, string | null | undefined, string | null>;
   fleet_linked_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;

@@ -59,6 +59,7 @@ import { SMS_SIGN_IN } from "./auth/smsSignIn.js";
 import multipart from "@fastify/multipart";
 import { dispatchRoutes } from "./dispatch/routes.js";
 import { reservationRoutes } from "./reservations/routes.js";
+import { areaRoutes } from "./areas/routes.js";
 import { dispatchToolRoutes } from "./dispatch/toolRoutes.js";
 import { shareRoutes, SHARE_LIMITS } from "./safety/shareRoutes.js";
 import { isSharePath, registerLoadShedding, setShareHeaders, type ShedOptions } from "./http/shed.js";
@@ -408,6 +409,8 @@ export async function buildApp({ env, logger = true, db, clock, router, traffic,
     await adminSessionRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await dispatchRoutes(app, { db, jwtSecret, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}) });
     await reservationRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
+    // v0.18.172 (contract.json#preferredAreas): driver preferred areas + admin area list.
+    await areaRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     // v0.18.6 §32 (owner G4-F2..F6): the admin's Dispatch tools and the driver's events.
     await dispatchToolRoutes(app, { db, jwtSecret, ...(clock ? { clock } : {}) });
     await safetyRoutes(app, { db, jwtSecret, rideCheckAppMaxPerTrip: env.RIDE_CHECK_APP_MAX_PER_TRIP, ...(hub ? { hub } : {}), ...(clock ? { clock } : {}), ...(sosSms ? { sms: sosSms } : {}), warn: (data, message) => app.log.warn(data, message) });

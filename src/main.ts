@@ -6,6 +6,7 @@ import { SMART_SURGE_CHECK, ensurePricingTimers } from "./pricing/surge.js";
 import { buildApp } from "./app.js";
 import { createDb, createHealthPool, createPool, poolOptionsFrom, type Db } from "./db/db.js";
 import { migrate } from "./db/migrate.js";
+import { seedAreas } from "./areas/seed.js";
 import { guardProcess, waitForDatabase } from "./db/ready.js";
 import { readEnv, startupWarnings } from "./env.js";
 import { seedTestPhones, testPhonesFor } from "./auth/testPhones.js";
@@ -58,6 +59,12 @@ if (env.DATABASE_URL !== undefined) {
   // B1.4: the migration connection drops the statement limit and uses DATABASE_MIGRATION_LOCK_TIMEOUT_MS instead.
   if (env.MIGRATE_ON_START) await migrate(pool, undefined, { lockTimeoutMs: env.DATABASE_MIGRATION_LOCK_TIMEOUT_MS });
   db = createDb(pool);
+  // v0.18.172 (contract.json#preferredAreas.seed): the area rows in the image, right after migrate, same gate. A wrong
+  // checksum or row count throws here and the server does not start.
+  if (env.MIGRATE_ON_START) {
+    const seeded = await seedAreas(db);
+    console.warn(seeded.skipped ? "areas seed: already seeded" : "areas seed: upserted", JSON.stringify({ rows: seeded.rows, manifest: seeded.manifestSha.slice(0, 12) }));
+  }
   healthDb = createDb(createHealthPool(env.DATABASE_URL));
   hub = new NotificationHub(env.DATABASE_LISTEN_URL ?? env.DATABASE_URL, [TRIP_EVENTS_CHANNEL, CONFIG_CHANNEL, OFFER_EVENTS_CHANNEL, INCIDENT_EVENTS_CHANNEL, DISPATCH_EVENTS_CHANNEL, ADMIN_EVENTS_CHANNEL, TIMER_DUE_CHANNEL, LIVE_LOCATION_CHANNEL, AIRPORT_QUEUE_CHANNEL, SESSION_REVOKED_CHANNEL], { warn: (data, message) => warn(Object.assign(new Error(message), data)) });
   // S4 B1.16 Q-B13 (owner W1 Q78 "Do not count it"): this copy writes its LISTEN outage windows, so an Exclusive that

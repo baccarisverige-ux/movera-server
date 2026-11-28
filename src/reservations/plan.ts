@@ -55,6 +55,8 @@ export type ReservationSettings = {
   noDriverStopAfterMin: number;
   /** v0.18.81 B1.34 (contract.json#bookLater.riderCap, owner Q94 "A) Yes", 2026-11-13: default 3): booked rides a rider may hold that have not ended. */
   maxOpenPerRider: number;
+  /** v0.18.172 (contract.json#preferredAreas.maxPerDriver): the most preferred areas one driver may keep (1-30, default 10). */
+  preferredAreasMax: number;
   rideTypes: Record<RideTypeKey, RideTypeTimes>;
 };
 
@@ -116,6 +118,7 @@ export function reservationSettings(raw: unknown): ReservationSettings {
     takeBackUntilMinBeforePickup: num(r["takeBackUntilMinBeforePickup"], 0, 180, d.takeBackUntilMinBeforePickup),
     noDriverStopAfterMin: num(r["noDriverStopAfterMin"], 1, 240, d.noDriverStopAfterMin),
     maxOpenPerRider: num(r["maxOpenPerRider"], 1, 50, d.maxOpenPerRider),
+    preferredAreasMax: num(r["preferredAreasMax"], 1, 30, d.preferredAreasMax),
     rideTypes,
   };
 }

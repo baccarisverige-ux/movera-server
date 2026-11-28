@@ -47,6 +47,7 @@ const ASSIGNED = ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "i
 import { TIMER, RESERVATION_TIMER_KINDS } from "./timerKinds.js";
 import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
 import { heardAgainAt, outageGraceMinutes } from "../drivers/presence.js";
+import { preferredMatcher } from "../areas/service.js";
 export { TIMER, RESERVATION_TIMER_KINDS };
 
 /** What the trip keeps (trips.reservation). */
@@ -422,12 +423,15 @@ async function itemOf(ex: Executor, trip: TripRow, s: ReservationSettings): Prom
 
 /** GET /driver/reservations?scope=open|accepted (contract.json#bookLater.driver.list). */
 export async function driverReservations(ex: Executor, driverId: string, scope: "open" | "accepted", now: Date): Promise<{ items: Record<string, unknown>[]; nextCursor: null }> {
-  const driver = await ex.selectFrom("drivers").select("zone_ids").where("driver_id", "=", driverId).executeTakeFirstOrThrow();
+  const driver = await ex.selectFrom("drivers").select(["zone_ids", "preferred_area_ids"]).where("driver_id", "=", driverId).executeTakeFirstOrThrow();
+  // v0.18.172 (contract.json#preferredAreas.order): a ride is preferred when its pickup lies in one of his active areas.
+  const inPreferred = await preferredMatcher(ex, driver.preferred_area_ids ?? []);
   if (scope === "accepted") {
     const rows = await ex.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("kind", "=", "scheduled").where("status", "=", "accepted").orderBy("scheduled_at").execute();
     const items = [];
     // v0.18.32 (bookedRideSeen.leaveNowName): his own accepted rides carry the rider's first name for the leave-now popup.
-    for (const row of rows) items.push({ ...(await itemOf(ex, row, await settingsFor(ex, row.zone_id))), riderFirstName: riderFirstNameOf(row) });
+    // v0.18.172: his own rides keep their time order; they carry inPreferredArea for the label only.
+    for (const row of rows) items.push({ ...(await itemOf(ex, row, await settingsFor(ex, row.zone_id))), riderFirstName: riderFirstNameOf(row), inPreferredArea: inPreferred(row.pickup as { lat: number; lng: number }) });
     return { items, nextCursor: null };
   }
   const zones = driver.zone_ids;
@@ -442,9 +446,11 @@ export async function driverReservations(ex: Executor, driverId: string, scope: 
     if (stateOf(row)?.mode !== "list") continue;
     const s = settings.get(row.zone_id)!;
     if ((await listedDrivers(ex, row, s, now, { onlyDriverId: driverId })).length === 0) continue;
-    items.push(await itemOf(ex, row, s));
+    items.push({ ...(await itemOf(ex, row, s)), inPreferredArea: inPreferred(row.pickup as { lat: number; lng: number }) });
   }
-  return { items, nextCursor: null };
+  // v0.18.172 (contract.json#preferredAreas.order): preferred first, then the rest, each group keeping the scheduled_at
+  // order above (a stable sort). Visibility is unchanged: the same rides as before (the same 200 rows), only reordered.
+  return { items: [...items.filter((i) => i.inPreferredArea), ...items.filter((i) => !i.inPreferredArea)], nextCursor: null };
 }
 
 async function lockScheduled(trx: Trx, tripId: string): Promise<TripRow> {
