@@ -158,7 +158,7 @@ export async function mapsRoutes(app: FastifyInstance, deps: MapsDeps): Promise<
       });
       // v0.18.171 (contract.json#googleRoadLines.navigation, replaces the text above): the stored Google route cut at
       // the car, or one Google call off it (maps/roadLines.ts); code stays Ok (owner Q1), `source` says which.
-      const line = await driverRoadLine(deps.db, who.subjectId, points, deps.clock?.() ?? new Date(), deps.traffic, roadLineCache);
+      const line = await driverRoadLine(deps.db, who.subjectId, points, deps.clock?.() ?? new Date(), deps.traffic, roadLineCache, app.log);
       return reply.status(200).send({ code: "Ok", routes: [{ distance: line.distanceMeters, duration: line.durationSeconds, geometry: { type: "LineString", coordinates: line.points.map((p) => [p.lng, p.lat]) }, legs: [] }], waypoints: [], source: line.source });
     }
     const params = new URLSearchParams();

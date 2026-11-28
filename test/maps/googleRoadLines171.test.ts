@@ -89,6 +89,24 @@ describe("GET /routes/driving road lines (v0.18.171)", () => {
     expect(after.google_route_calls).toBe(before.google_route_calls);
   });
 
+  it("a DB error in the daily budget: stored, 0 calls, status 200 (review #345)", async () => {
+    const { tripId } = await w.accepted();
+    const before = await w.trip(tripId);
+    const off = { lat: MID.lat, lng: MID.lng + eastDeg(120) };
+    await w.moveTo(off);
+    w.wait(61);
+    w.google.calls = 0;
+    await w.database.db.schema.alterTable("google_routes_budget").renameTo("google_routes_budget_gone").execute();
+    try {
+      const body = await w.nav(off);
+      expect(body).toMatchObject({ code: "Ok", source: "stored" });
+      expect(w.google.calls).toBe(0);
+    } finally {
+      await w.database.db.schema.alterTable("google_routes_budget_gone").renameTo("google_routes_budget").execute();
+    }
+    expect((await w.trip(tripId)).google_route_calls).toBe(before.google_route_calls);
+  });
+
   it("no active trip: 0 calls and nothing written", async () => {
     const off = { lat: MID.lat, lng: MID.lng + eastDeg(120) };
     await w.moveTo(off);

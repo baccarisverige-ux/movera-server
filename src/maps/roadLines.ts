@@ -86,7 +86,7 @@ function cut(stored: { points: LatLng[]; meters: number; seconds: number }, orig
   return { source: "stored", points: c.points, distanceMeters: Math.round(c.remainingMeters), durationSeconds: speed > 0 ? Math.round(c.remainingMeters / speed) : 0, offMeters: c.offMeters };
 }
 
-export async function driverRoadLine(db: Db, driverId: string, asked: LatLng[], now: Date, traffic: Router | undefined, cache: RoadLineCache): Promise<RoadLine> {
+export async function driverRoadLine(db: Db, driverId: string, asked: LatLng[], now: Date, traffic: Router | undefined, cache: RoadLineCache, log?: { warn(data: Record<string, unknown>, message: string): void }): Promise<RoadLine> {
   const active = await ownActiveLeg(db, driverId);
   if (active === null) return straight(asked);
   const { trip, target } = active;
@@ -114,7 +114,15 @@ export async function driverRoadLine(db: Db, driverId: string, asked: LatLng[], 
   const ask: GoogleCallBudget = { kind: "road_line", stage: target === "pickup" && asRoute(trip.eta_route)?.target !== "pickup" ? "pickup" : "reroute" };
   const country = await zoneCountry(db, trip.zone_id);
   if (country !== undefined) ask.country = country;
-  if (!(await googleBudgetOpen(db, ask, now))) return fallback();
+  // Review #345: a DB error in the budget tables answers stored or estimate, no Google call, never an error answer.
+  let open: boolean;
+  try {
+    open = await googleBudgetOpen(db, ask, now);
+  } catch {
+    log?.warn({ googleRoutes: "daily_budget_error", kind: "road_line" }, "Google Routes daily budget check failed");
+    open = false;
+  }
+  if (!open) return fallback();
 
   // The leg's target, through the stops still ahead (as the ETA tick asks).
   const to = (target === "pickup" ? trip.pickup : trip.dropoff) as LatLng;
