@@ -8,7 +8,7 @@ import type { TelemetryTable, ErrorGroupsTable, ErrorGroupDevicesTable } from ".
 import type { TripsTable, TripEventsTable, TripCallsTable, CompletePreviewsTable, TripLocationsTable, TripGapRoadsTable, TripSharesTable, TripMessagesTable, TripMessageTranslationsTable, RatingsTable, RideChecksTable, RouteQuotesTable, AdminTripNotesTable, BlockedPairsTable, TripStreamPresenceTable } from "./trips.js";
 import type { IdempotencyKeysTable, TimersTable, TestPhonesTable, SignInWaitlistTable, SignInWaitlistAsksTable, OtpSessionsTable, EmailChangesTable, AccountChangeStartsTable, OutboundNoticesTable, AuthSessionsTable, RefreshTokensTable, PushDevicesTable, NotificationsTable, SmsOutboxTable, AuthProviderLinksTable, AuthLinkTokensTable } from "./auth.js";
 import type { AdminsTable, AdminSetupLinksTable, AdminSignInFailuresTable, ConfigDraftsTable, ConfigLiveTable, ConfigHistoryTable, ApprovalsTable, AdminAuditTable, AdminLiveEventsTable, AdminLivePrunedTable, KpiDaysTable, ContentItemsTable } from "./admin.js";
-import type { ZonesTable, SurgeSamplesTable, QuotesTable, SurgeSchedulesTable, SmartSurgeStateTable, CategoriesTable } from "./pricing.js";
+import type { ZonesTable, SurgeSamplesTable, QuotesTable, SurgeSchedulesTable, SmartSurgeStateTable, CategoriesTable, GoogleRouteCallsDailyTable, GoogleRoutesBudgetTable } from "./pricing.js";
 import type { SearchesTable, OffersTable, OfferEventsTable, DispatchControlsTable, DispatchEventsTable, DispatchPresetsTable, DriverGroupsTable, RadarZonesTable, RadarZoneRulesTable, RadarZoneSendsTable, AreaEventsTable, ReservationPolicyTable, AirportQueueAreasTable, AirportQueueEntriesTable } from "./dispatch.js";
 import type { BonusCampaignsTable, BonusProgressTable, BonusTripsCountedTable, BonusRiderDaysTable } from "./bonuses.js";
 import type { RiderFeesTable, EarningsEntriesTable, PayoutsTable, WalletEntriesTable, RefundsTable } from "./payments.js";
@@ -29,6 +29,8 @@ export interface Database {
   driver_compliment_counts: DriverComplimentCountsTable;
   driver_reviews: DriverReviewsTable;
   trips: TripsTable;
+  google_route_calls_daily: GoogleRouteCallsDailyTable;
+  google_routes_budget: GoogleRoutesBudgetTable;
   trip_events: TripEventsTable;
   trip_messages: TripMessagesTable;
   trip_message_translations: TripMessageTranslationsTable;

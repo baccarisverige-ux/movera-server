@@ -20,7 +20,7 @@ export const fixedRouter: Router = { route: async (_points: LatLng[]) => ({ dist
 /** The test server's JWT secret (also the HMAC key of the rider's nearby cars, src/riders/nearby.ts). */
 export const WORLD_JWT_SECRET = "world-test-secret".padEnd(48, "w");
 
-export async function testWorld(db: Db, url: string, clock: { now: Date }, extra: { translator?: Translator; stripe?: StripeApi | null; hub?: NotificationHub } = {}) {
+export async function testWorld(db: Db, url: string, clock: { now: Date }, extra: { translator?: Translator; stripe?: StripeApi | null; hub?: NotificationHub; traffic?: Router | null } = {}) {
   await seedTestPhones(db);
   const pricing = JSON.parse(readFileSync(`${CONTRACTS_DIR}/fixtures/config/pricing_document.json`, "utf8"));
   await db.insertInto("config_live").values({ doc: "pricing", zone_id: "Z001", version: 1, document: JSON.stringify(pricing), published_at: clock.now, published_by: null }).execute();

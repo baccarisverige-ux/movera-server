@@ -38,6 +38,14 @@ function withSos(out: Record<string, unknown>, side: "rider" | "driver"): Record
   return typeof out["status"] === "string" ? { ...out, sosAvailable: statuses.includes(out["status"]) } : out;
 }
 
+/** TripEta without legRoute (the driver's and the admin's copy of a location event). */
+export function withoutLegRoute(eta: unknown): unknown {
+  if (typeof eta !== "object" || eta === null || !("legRoute" in eta)) return eta;
+  const { legRoute: _l, ...rest } = eta as Record<string, unknown>;
+  void _l;
+  return rest;
+}
+
 /**
  * `hideMessage` (v0.18.5 G9, contract.json#chat.appStorage.afterTrip): once the trip is terminal the rider and the driver
  * get the message events without their text; the admin's trip details keep it.
@@ -55,7 +63,8 @@ export function eventEnvelope(row: Selectable<TripEventsTable>, viewer: Viewer, 
     ...(row.location ? { location: row.location } : {}),
     ...(row.eta_seconds !== null ? { etaSeconds: row.eta_seconds } : {}),
     // v0.18.7 (contract.json#pickupWaiting.eta): the ETA tick's TripEta.
-    ...(row.eta ? { eta: row.eta } : {}),
+    // v0.18.171 (contract.json#googleRoadLines.riderEvent): eta.legRoute is the rider's only (streams and GET events).
+    ...(row.eta ? { eta: viewer === "rider" ? row.eta : withoutLegRoute(row.eta) } : {}),
     ...(row.cancel_fee ? { cancelFee: row.cancel_fee } : {}),
     ...(row.message && !options.hideMessage ? { message: row.message } : {}),
     // v0.18.38 §62: call events carry the CallView as `call`, call_signal the relayed signal as `signal`.

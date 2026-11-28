@@ -109,3 +109,20 @@ export interface CategoriesTable {
   archive_reason: string | null;
   updated_at: Generated<Date>;
 }
+
+/** v0.18.171 (migration 0140, contract.json#googleRoadLines.dailyBudget): Google Routes calls per America/Los_Angeles day. */
+export interface GoogleRouteCallsDailyTable {
+  day: ColumnType<string, string, string>;
+  country: string;
+  kind: "quote" | "road_line";
+  calls: Generated<number>;
+}
+
+/** v0.18.171 (migration 0140): the one global budget row (no row = the defaults). */
+export interface GoogleRoutesBudgetTable {
+  id: Generated<boolean>;
+  daily_limit: number;
+  quotes_per_day: number;
+  updated_at: Date;
+  updated_by: string | null;
+}

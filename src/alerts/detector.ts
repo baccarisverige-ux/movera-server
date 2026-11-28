@@ -8,6 +8,7 @@ import { LANE_LATE_LIMITS, LOUD_PARKED_KINDS } from "../jobs/parkedKinds.js";
 import { OTHER_HOME, callingCodeOfPhone, nearCap, otherSmsLastDay, servedCountries, callingCodeOf, smsLastMinute, signInSmsLastDay, smsSignInFor, smsSignInOtherFor } from "../auth/smsSignIn.js";
 import { LIVE_TRAFFIC_ALERT_WINDOW_MS, liveTrafficConfigured } from "../maps/googleRoutes.js";
 import { liveTrafficOn } from "../maps/liveTraffic.js";
+import { googleUse, readGoogleBudget } from "../maps/googleBudget.js";
 import { serverStripeStatus, type StripeOffReason } from "../payments/stripeKeys.js";
 import { AlertSettings, hhmm, levelFor, METRIC_UNITS, render, rulesOf, SWEEP_MS, type Level, type Text } from "./kinds.js";
 
@@ -340,7 +341,7 @@ async function systemCauses(ctx: Ctx): Promise<Cause[]> {
   const parked = await sql<{ kind: string; n: string; refs: string[] }>`
     SELECT kind, count(*) AS n, (array_agg(ref_id ORDER BY ref_id))[1:${sql.lit(PARKED_REFS_SHOWN)}] AS refs
       FROM timers WHERE attempts >= ${MAX_ATTEMPTS} GROUP BY kind ORDER BY kind`.execute(ctx.ex);
-  const late = [...(await laneLateCauses(ctx)), ...(await smsCapCauses(ctx)), ...stripeKeyCauses(ctx), ...(await liveTrafficCauses(ctx))];
+  const late = [...(await laneLateCauses(ctx)), ...(await smsCapCauses(ctx)), ...stripeKeyCauses(ctx), ...(await liveTrafficCauses(ctx)), ...(await googleBudgetCauses(ctx))];
   if (parked.rows.length === 0) return late;
   // No zone: one per country book (Super admins see alerts without a zone).
   const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
@@ -509,6 +510,35 @@ async function liveTrafficCauses(ctx: Ctx): Promise<Cause[]> {
     out.push({ key: `system_health:live_traffic:${country}`, kind: "system_health", country, zoneId: null, level: k.level, title: T("Live traffic is not available: trip times are estimated (straight line)"), detail: T("Check that the Routes API is enabled for the server's Google Maps key, and its billing"), ref: {} });
   }
   return out;
+}
+
+/**
+ * v0.18.171 (contract.json#googleRoadLines.budgetAlert, "warning" = level important): the global Google budget, in every country book
+ * (the budget is one for all countries): warning once today's road-line calls (America/Los_Angeles day, all countries
+ * together) reach the road-line share, critical once all calls reach the daily limit. A new Pacific day starts at 0,
+ * so the alert turns solved by itself then.
+ */
+async function googleBudgetCauses(ctx: Ctx): Promise<Cause[]> {
+  const budget = await readGoogleBudget(ctx.ex);
+  const use = await googleUse(ctx.ex, ctx.now);
+  const share = Math.max(0, budget.dailyLimit - budget.quotesPerDay);
+  const critical = use.quotes + use.roadLines >= budget.dailyLimit;
+  if (!critical && !(share > 0 && use.roadLines >= share)) return [];
+  const countries = [...new Set([...ctx.zones.values()].map((z) => z.country))];
+  return countries.flatMap((country): Cause[] => {
+    const k = settingsOf(ctx, country).kind("system_health");
+    if (!k.on) return [];
+    return [{
+      key: `system_health:google_routes_budget:${country}`,
+      kind: "system_health",
+      country,
+      zoneId: null,
+      level: critical ? "critical" : "important",
+      title: critical ? T("Google Routes daily limit reached ({0} calls): prices and road lines are estimated until midnight Pacific time", [budget.dailyLimit]) : T("Google road lines used their daily share ({0} calls): driver lines are estimated until midnight Pacific time", [share]),
+      detail: T("Today {0}: {1} price calls, {2} road-line calls (all countries)", [use.day, use.quotes, use.roadLines]),
+      ref: {},
+    }];
+  });
 }
 
 /** v0.18.158 (contract.json#crashCatcher.alert): app crash kinds that alert (never a caught error, never the server). */

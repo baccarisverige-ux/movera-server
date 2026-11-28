@@ -91,6 +91,8 @@ export interface TripsTable {
   route_polyline: ColumnType<string | null, string | null | undefined, string | null>;
   /** v0.18.163 (migration 0138): the route the ETA follows now (trips/etaRoute.ts EtaRoute). */
   eta_route: ColumnType<unknown, string | null | undefined, string | null>;
+  /** v0.18.171 (migration 0140, contract.json#googleRoadLines.counter): Google Routes calls of this trip, the quote included. */
+  google_route_calls: Generated<number>;
   /** v0.18.13 (G5-8): the latest heading-to-pickup check. */
   heading_check: ColumnType<unknown, string | null | undefined, string | null>;
   /** v0.18.17 (contract.json#bookLater): the booked ride's plan (reservations/service.ts ReservationState). */

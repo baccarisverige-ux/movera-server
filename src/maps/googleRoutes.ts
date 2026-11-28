@@ -1,5 +1,6 @@
 import { decodePolyline } from "./polyline.js";
 import type { LatLng, RouteLeg, RouteOptions, Router } from "./routing.js";
+import type { DailyGuard } from "./googleBudget.js";
 
 /**
  * v0.18.163 (contract.json#liveTraffic, owner 2026-11-25 "Google trafic réel": an offer said 13 min where Google Maps
@@ -29,6 +30,11 @@ export type GoogleRoutesOptions = {
   /** Google asks per minute on this copy (0 = no cap). Above it: the estimate for the rest of the minute. */
   perMinute?: number;
   log?: Log;
+  /**
+   * v0.18.171 (contract.json#googleRoadLines.dailyBudget): the daily budget across all copies and countries (in the DB,
+   * maps/googleBudget.ts). Refused = the fallback, as for the per-minute cap. Absent = no daily budget.
+   */
+  daily?: DailyGuard;
   fetch?: typeof fetch;
   now?: () => number;
 };
@@ -91,6 +97,23 @@ export class GoogleRoutesRouter implements Router {
       this.probing = true;
     }
     try {
+      // Review #345: the daily guard (DB) is not Google. Its error never feeds the breaker and is logged on its own;
+      // a quote then fails open (still asks Google), a road line takes the fallback.
+      const kind = options.budget?.kind ?? "quote";
+      if (this.options.daily !== undefined) {
+        let allowed: boolean;
+        try {
+          allowed = await this.options.daily.take(options.budget ?? { kind: "quote" });
+        } catch {
+          this.options.log?.warn({ googleRoutes: "daily_budget_error", kind }, "Google Routes daily budget check failed");
+          allowed = kind === "quote";
+          if (!allowed) return await this.fallback.route(points, options);
+        }
+        if (!allowed) {
+          this.options.log?.info({ googleRoutes: "daily_budget", kind }, "Google Routes daily budget used; estimate");
+          return await this.fallback.route(points, options);
+        }
+      }
       const leg = await this.ask(points);
       this.succeeded();
       return leg;
@@ -135,7 +158,16 @@ export class GoogleRoutesRouter implements Router {
       const name = (error as { name?: string } | null)?.name;
       throw new GoogleRoutesError(name === "TimeoutError" || name === "AbortError" ? "timeout" : "network");
     }
-    if (!response.ok) throw new GoogleRoutesError(`status_${response.status}`);
+    if (!response.ok) {
+      // v0.18.171 (contract.json#googleRoadLines.quotaExceeded): HTTP 429 or a RESOURCE_EXHAUSTED body is Google's
+      // quota; logged by name, then the usual fallback. Only the status words are read (never the request or the key).
+      const text = await response.text().catch(() => "");
+      if (response.status === 429 || text.includes("RESOURCE_EXHAUSTED")) {
+        this.options.log?.warn({ googleRoutes: "quota_exceeded", status: response.status }, "google_routes.quota_exceeded");
+        throw new GoogleRoutesError("quota_exceeded");
+      }
+      throw new GoogleRoutesError(`status_${response.status}`);
+    }
     const json = (await response.json().catch(() => null)) as { routes?: Array<{ duration?: unknown; distanceMeters?: unknown; polyline?: { encodedPolyline?: unknown } }> } | null;
     const best = json?.routes?.[0];
     const seconds = parseGoogleDuration(best?.duration);

@@ -13,7 +13,8 @@ import { headingTick } from "./headingCheck.js";
 import { takeBackLateBooked } from "./ride.js";
 import { statusTarget, TRIP_ETA } from "./etaNow.js";
 import { maybePushArriving } from "../notifications/tripPush.js";
-import { etaRouteBasis, isEtaRoutePrepared, prepareEtaRoute } from "./etaRoute.js";
+import { asRoute, etaRouteBasis, followRoute, isEtaRoutePrepared, prepareEtaRoute, releaseRouteCall, routeHash, storeCountedRoute, type EtaRoutePrepared } from "./etaRoute.js";
+import { liveTrafficSettings } from "../maps/liveTraffic.js";
 import { nextStopIndex, visitsOf } from "./ride/stopClock.js";
 
 /**
@@ -28,6 +29,8 @@ import { nextStopIndex, visitsOf } from "./ride/stopClock.js";
 
 type Place = { lat: number; lng: number };
 export type TripEta = { etaSeconds: number; distanceMeters: number; target: "pickup" | "dropoff"; at: string; source: "google" | "osrm" | "estimate" | "stale" };
+/** v0.18.171 (contract.json#googleRoadLines.riderEvent): the leg's route, on the location event only (the rider's copy). */
+export type TripEtaLegRoute = { target: "pickup" | "dropoff"; polyline: string };
 
 const PW = (contract as unknown as { pickupWaiting: { eta: { everySeconds: number; staleAfterSeconds: number } } }).pickupWaiting.eta;
 export { TRIP_ETA };
@@ -89,6 +92,7 @@ export function etaHandler(router: Router, traffic?: Router): TimerHandler {
     const previous = trip.eta as TripEta | null;
     let eta: TripEta;
     let leg: { distanceMeters: number; durationSeconds: number } | null = null;
+    let legRoute: TripEtaLegRoute | undefined;
     if (isStaleFix(fix, now)) {
       if (target === "pickup" && (await headingTick(trx, trip, { fix: null, leg: null, now }, takeBackLateBooked))) return;
       // No fresh position: nothing new to route; the apps keep the last number and see it is old (source stale).
@@ -100,18 +104,40 @@ export function etaHandler(router: Router, traffic?: Router): TimerHandler {
       // (trips/etaRoute.ts, prepared outside the lock); else the router (the straight-line estimate) as before.
       // Review #328 F6: only for the same target (the rider may have boarded meanwhile), and a route change that
       // cleared the stored route in between is not written back over.
-      const followed = isEtaRoutePrepared(timer.prepared) && timer.prepared.target === target && timer.prepared.basis === etaRouteBasis(trip) ? timer.prepared : null;
+      const prepared = isEtaRoutePrepared(timer.prepared) ? timer.prepared : null;
+      let followed: EtaRoutePrepared | null = prepared !== null && prepared.target === target && prepared.basis === etaRouteBasis(trip) ? prepared : null;
+      // A claimed Google slot whose answer is not used here is given back.
+      if (prepared?.called && followed === null) await releaseRouteCall(trx, trip.trip_id);
+      // Review #345 M2: the trip changed under the tick (GET /routes/driving stored a route meanwhile): follow the route
+      // the locked trip now holds for this target, with no network call, instead of the estimate.
+      const held = asRoute(trip.eta_route);
+      if (followed === null && prepared !== null && prepared.target === target && held !== null && held.target === target) {
+        const settings = await liveTrafficSettings(trx, trip.zone_id);
+        if (settings.on) {
+          const f = followRoute(held, { lat: fix.lat, lng: fix.lng }, now, settings);
+          followed = { kind: "eta_route", target, basis: etaRouteBasis(trip), route: f.route, leg: { distanceMeters: f.remainingMeters, durationSeconds: f.remainingSeconds, source: "google" } };
+        }
+      }
       const routed = followed !== null ? followed.leg : await routerNow.route([{ lat: fix.lat, lng: fix.lng }, to]);
       leg = routed;
       eta = { etaSeconds: Math.max(ETA_MIN_SECONDS, routed.durationSeconds), distanceMeters: routed.distanceMeters, target, at: now.toISOString(), source: routed.source };
-      if (followed !== null && followed.route !== null) await trx.updateTable("trips").set({ eta_route: JSON.stringify(followed.route) }).where("trip_id", "=", trip.trip_id).execute();
+      if (followed !== null && followed.route !== null) {
+        // v0.18.171 (googleRoadLines.riderEvent): a route the rider has not been sent yet rides on this event once.
+        const hash = routeHash(followed.route);
+        const route = followed.route.sent === hash ? followed.route : { ...followed.route, sent: hash };
+        // v0.18.171 (googleRoadLines.counter): a new Google answer is stored with the trip's counter in ONE update.
+        const stored = followed.called ? await storeCountedRoute(trx, trip, route, trip.driver_id!) : (await trx.updateTable("trips").set({ eta_route: JSON.stringify(route) }).where("trip_id", "=", trip.trip_id).execute(), true);
+        if (followed.called && !stored) await releaseRouteCall(trx, trip.trip_id);
+        if (stored && followed.route.sent !== hash) legRoute = { target: route.target, polyline: route.polyline };
+      }
       // v0.18.13 (G5-8): the heading-to-pickup check runs with every tick to the pickup. v0.18.35 (owner Q-A, job 4): a
       // live trip is never taken back; only a late booked ride may be (then it is back in dispatch: no ETA to send).
       if (target === "pickup" && (await headingTick(trx, trip, { fix, leg, now }, takeBackLateBooked))) return;
     }
     await trx.updateTable("trips").set({ eta: JSON.stringify(eta) }).where("trip_id", "=", trip.trip_id).execute();
     // A location event (no version change) with the ETA: the apps' gate never replaces the projection with it (§4).
-    await appendTripEvent(trx, { tripId: trip.trip_id, kind: "location", version: trip.version, occurredAt: now, location: fixView(fix), etaSeconds: eta.etaSeconds, eta });
+    // trips.eta never carries legRoute; the stored event does, and only the rider's copy shows it (realtime/events.ts).
+    await appendTripEvent(trx, { tripId: trip.trip_id, kind: "location", version: trip.version, occurredAt: now, location: fixView(fix), etaSeconds: eta.etaSeconds, eta: legRoute ? { ...eta, legRoute } : eta });
     // v0.18.13 (contract.json#riderTripPush): "your driver is almost there", once per driver.
     if (target === "pickup" && leg !== null) await maybePushArriving(trx, trip, eta.etaSeconds, now);
   };
