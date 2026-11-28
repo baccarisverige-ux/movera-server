@@ -418,6 +418,9 @@ async function itemOf(ex: Executor, trip: TripRow, s: ReservationSettings): Prom
     // Live test HIGH 2 (v0.18.19): the list row carries the reservation (changeAsk for "Keep it at the new time?",
     // leaveAt for the start countdown), as the trip read does.
     reservation: reservationView(trip, "driver"),
+    // v0.18.179 (contract.json#reservationRouteLine): the trip's stored Google polyline (from its booking quote), so the
+    // Bokade resor card and Bokningsdetaljer draw the real road route; 0 Google calls. Absent without a stored route.
+    ...(trip.route_polyline ? { routePolyline: trip.route_polyline } : {}),
   };
 }
 
