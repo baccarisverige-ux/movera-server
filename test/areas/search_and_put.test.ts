@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { seedAreas } from "../../src/areas/seed.js";
 import { PLACES, Sim, type Driver, type Json } from "../e2e/harness.js";
@@ -80,8 +81,9 @@ describe("PUT /driver/preferred-areas", () => {
     expect(res.status).toBe(400);
   });
   it("the same Idempotency-Key replays the first answer", async () => {
-    const a = await sim.request("PUT", "/driver/preferred-areas", driver.token, { areaIds: ["SE-K-0184"] }, { key: "0d6f3a52-6c0e-4c11-9b55-1f2a3b4c5d6e" });
-    const b = await sim.request("PUT", "/driver/preferred-areas", driver.token, { areaIds: ["SE-K-0184"] }, { key: "0d6f3a52-6c0e-4c11-9b55-1f2a3b4c5d6e" });
+    const replayKey = randomUUID();
+    const a = await sim.request("PUT", "/driver/preferred-areas", driver.token, { areaIds: ["SE-K-0184"] }, { key: replayKey });
+    const b = await sim.request("PUT", "/driver/preferred-areas", driver.token, { areaIds: ["SE-K-0184"] }, { key: replayKey });
     expect(a.status).toBe(200);
     expect(b.body["preferredAreaIds"]).toEqual(a.body["preferredAreaIds"]);
   });
