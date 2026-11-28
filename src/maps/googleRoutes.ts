@@ -97,9 +97,22 @@ export class GoogleRoutesRouter implements Router {
       this.probing = true;
     }
     try {
-      if (this.options.daily !== undefined && !(await this.options.daily.take(options.budget ?? { kind: "quote" }))) {
-        this.options.log?.info({ googleRoutes: "daily_budget", kind: options.budget?.kind ?? "quote" }, "Google Routes daily budget used; estimate");
-        return await this.fallback.route(points, options);
+      // Review #345: the daily guard (DB) is not Google. Its error never feeds the breaker and is logged on its own;
+      // a quote then fails open (still asks Google), a road line takes the fallback.
+      const kind = options.budget?.kind ?? "quote";
+      if (this.options.daily !== undefined) {
+        let allowed: boolean;
+        try {
+          allowed = await this.options.daily.take(options.budget ?? { kind: "quote" });
+        } catch {
+          this.options.log?.warn({ googleRoutes: "daily_budget_error", kind }, "Google Routes daily budget check failed");
+          allowed = kind === "quote";
+          if (!allowed) return await this.fallback.route(points, options);
+        }
+        if (!allowed) {
+          this.options.log?.info({ googleRoutes: "daily_budget", kind }, "Google Routes daily budget used; estimate");
+          return await this.fallback.route(points, options);
+        }
       }
       const leg = await this.ask(points);
       this.succeeded();

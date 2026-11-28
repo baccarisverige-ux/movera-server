@@ -14,7 +14,8 @@ import { EstimateRouter, haversineKm, type LatLng, type Router } from "./routing
  * v0.18.171 (contract.json#googleRoadLines.navigation / trust / offRouteRule / calls / spacing / atCap; owner 2026-11-27
  * "Google on key screens"): the driver's road line for GET /routes/driving.
  *  - Only the caller's OWN active trip leg is routed and written; the origin is the asked first point only within 150 m
- *    of his stored position (at most 120 s old), else that stored position. No leg or no position: the straight line.
+ *    of his stored position (at most 120 s old), else that stored position. No leg: the straight line; no (fresh)
+ *    position: the stored route cut from the asked point (stored), else the straight line.
  *  - On the stored Google route (within a fixed 50 m): that route, cut at the car, no call (source stored).
  *  - Off it (or none): one Google call, under the trip cap (the quote included), the 60 s rule (eta_route.at, in the DB)
  *    and the daily road-line budget; stored as trips.eta_route with the counter in ONE update (source google).
@@ -90,12 +91,13 @@ export async function driverRoadLine(db: Db, driverId: string, asked: LatLng[], 
   if (active === null) return straight(asked);
   const { trip, target } = active;
   const fix = await db.selectFrom("driver_locations").select(["lat", "lng", "received_at"]).where("driver_id", "=", driverId).executeTakeFirst();
-  if (!fix || now.getTime() - fix.received_at.getTime() > STALE_AFTER_SECONDS * 1000) return straight(asked);
-  const at = { lat: fix.lat, lng: fix.lng };
   const first = asked[0]!;
+  const stored = storedLeg(trip, target);
+  // No position, or one older than 120 s (review #345): the stored line cut from the asked point, no call, nothing written.
+  if (!fix || now.getTime() - fix.received_at.getTime() > STALE_AFTER_SECONDS * 1000) return stored !== null ? strip(cut(stored, first)) : straight(asked);
+  const at = { lat: fix.lat, lng: fix.lng };
   const origin = haversineKm(first, at) * 1000 <= TRUST_METERS ? first : at;
 
-  const stored = storedLeg(trip, target);
   const onLine = stored !== null ? cut(stored, origin) : null;
   if (onLine !== null && onLine.offMeters <= OFF_ROUTE_METERS) return strip(onLine);
   const fallback = async () => (onLine !== null ? strip(onLine) : straight([origin, ...asked.slice(1)]));

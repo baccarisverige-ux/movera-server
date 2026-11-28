@@ -58,14 +58,35 @@ describe("GET /routes/driving road lines (v0.18.171)", () => {
     expect(w.google.calls).toBe(1);
   });
 
-  it("an asked point 400 m from the stored fix: the stored fix is used", async () => {
-    await w.accepted();
+  it("an asked point 400 m from the stored fix: the Google call starts at the stored fix", async () => {
+    const { tripId } = await w.accepted();
+    const fix = { lat: MID.lat, lng: MID.lng + eastDeg(120) };
+    await w.moveTo(fix);
+    // Past the 60 s rule, so the trust rule (not the spacing) decides the origin.
+    const stored = (await w.trip(tripId)).eta_route as Record<string, unknown>;
+    await w.database.db.updateTable("trips").set({ eta_route: JSON.stringify({ ...stored, at: new Date(w.clock.now.getTime() - 61_000).toISOString() }) }).where("trip_id", "=", tripId).execute();
     w.google.calls = 0;
-    await w.moveTo(MID);
-    const body = await w.nav({ lat: MID.lat, lng: MID.lng + eastDeg(400) });
-    expect(body.source).toBe("stored");
+    w.google.asked = [];
+    const body = await w.nav({ lat: fix.lat, lng: fix.lng + eastDeg(400) });
+    expect(body.source).toBe("google");
+    expect(w.google.calls).toBe(1);
+    expect(metres(w.google.asked[0]![0]!, fix)).toBeLessThan(1);
+    expect(metres(first(body), fix)).toBeLessThan(1);
+  });
+
+  it("driver position older than 120 s: the stored line cut from the asked point, 0 calls, nothing written", async () => {
+    const { tripId } = await w.accepted();
+    const before = await w.trip(tripId);
+    w.google.calls = 0;
+    w.wait(200);
+    const asked = { lat: MID.lat, lng: MID.lng + eastDeg(120) };
+    const body = await w.nav(asked);
+    expect(body).toMatchObject({ code: "Ok", source: "stored" });
     expect(w.google.calls).toBe(0);
     expect(metres(first(body), MID)).toBeLessThan(5);
+    const after = await w.trip(tripId);
+    expect(after.eta_route).toEqual(before.eta_route);
+    expect(after.google_route_calls).toBe(before.google_route_calls);
   });
 
   it("no active trip: 0 calls and nothing written", async () => {

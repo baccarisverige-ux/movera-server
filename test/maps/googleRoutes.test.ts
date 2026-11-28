@@ -50,6 +50,21 @@ describe("GoogleRoutesRouter", () => {
     expect(JSON.stringify([log.warn.mock.calls, log.info.mock.calls])).not.toContain(KEY);
   });
 
+  it("a daily-guard (DB) error: a quote still asks Google, a road line takes the estimate, the breaker never opens (review #345)", async () => {
+    const log = logs();
+    const fetch = vi.fn(async () => ok());
+    const daily = { take: vi.fn(async () => { throw new Error("relation google_route_calls_daily is locked"); }) };
+    const router = new GoogleRoutesRouter(KEY, osrm, { fetch: fetch as unknown as typeof globalThis.fetch, log, daily, failuresToOpen: 5 });
+    for (let i = 0; i < 7; i += 1) expect(await router.route([A, B])).toMatchObject({ source: "google" });
+    expect(fetch).toHaveBeenCalledTimes(7);
+    for (let i = 0; i < 7; i += 1) expect(await router.route([A, B], { budget: { kind: "road_line", stage: "reroute" } })).toMatchObject({ source: "estimate" });
+    expect(fetch).toHaveBeenCalledTimes(7);
+    expect(router.state).toBe("closed");
+    expect(log.warn).toHaveBeenCalledWith({ googleRoutes: "daily_budget_error", kind: "quote" }, expect.any(String));
+    expect(log.warn).toHaveBeenCalledWith({ googleRoutes: "daily_budget_error", kind: "road_line" }, expect.any(String));
+    expect(log.warn).not.toHaveBeenCalledWith(expect.objectContaining({ googleRoutes: "fallback" }), expect.any(String));
+  });
+
   it("opens the breaker after the failures in a row, probes after the cool-down and closes on an answer", async () => {
     let t = 0;
     let down = true;
