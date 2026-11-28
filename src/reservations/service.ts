@@ -46,6 +46,7 @@ const ASSIGNED = ["accepted", "driver_to_pickup", "arrived", "rider_onboard", "i
 
 import { TIMER, RESERVATION_TIMER_KINDS } from "./timerKinds.js";
 import { pickNoticeLanguage } from "../notifications/noticeLanguage.js";
+import { checkPriceChange } from "../quotes/priceChangeAsk.js";
 import { heardAgainAt, outageGraceMinutes } from "../drivers/presence.js";
 import { preferredMatcher } from "../areas/service.js";
 export { TIMER, RESERVATION_TIMER_KINDS };
@@ -561,7 +562,7 @@ export async function startReservation(trx: Trx, driverId: string, tripId: strin
 /* ---------------------------------------------------------------- rider */
 
 /** POST /trips/{tripId}/reschedule (contract.json#bookLater.rider.change). */
-export async function rescheduleTrip(trx: Trx, riderId: string, tripId: string, body: { quoteId: string; expectedVersion: number }, now: Date): Promise<TripRow> {
+export async function rescheduleTrip(trx: Trx, riderId: string, tripId: string, body: { quoteId: string; expectedVersion: number; agreedQuoteId?: string; priceAccepted?: boolean }, now: Date): Promise<TripRow> {
   const trip = await lockTrip(trx, tripId).catch(() => undefined);
   if (!trip || trip.rider_id !== riderId) throw new ApiError("not_found", "No such trip.", { reason: "trip_not_found" });
   expectVersion(trip, body.expectedVersion, "rider");
@@ -574,6 +575,8 @@ export async function rescheduleTrip(trx: Trx, riderId: string, tripId: string, 
   if (quote.expires_at.getTime() <= now.getTime()) throw new ApiError("conflict", "This price expired. Ask for a new one.", { reason: "quote_expired" });
   if (quote.kind !== "scheduled" || quote.scheduled_at === null) throw badRequest("A booked ride changes to another booked time.", "quote_mismatch");
   if (quote.zone_id !== trip.zone_id) throw badRequest("The new pickup is in another area. Cancel and book again.", "quote_mismatch");
+  // v0.18.174 (contract.json#priceChangeAsk): the booked ride's re-quote asks on any rise, books a drop silently.
+  await checkPriceChange(trx, riderId, quote, body);
   await checkWindow(trx, quote.zone_id, quote.scheduled_at, now);
   const money = {
     pickup: JSON.stringify(quote.pickup), dropoff: JSON.stringify(quote.dropoff), stops: JSON.stringify(quote.stops ?? []), scheduled_at: quote.scheduled_at, category_id: quote.category_id,

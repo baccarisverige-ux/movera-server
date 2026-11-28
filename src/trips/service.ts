@@ -33,6 +33,7 @@ import { withCallOpenUntil } from "../calls/openUntil.js";
 import type { CallSettings } from "../calls/settings.js";
 import { assertAdminTripScope, type MessageWho } from "./messages.js";
 import { refuseOldApp, type AppClient } from "../config/appUpdate.js";
+import { checkPriceChange } from "../quotes/priceChangeAsk.js";
 
 /** Trip requests, reads and the rider's cancel (contract §3, §7). */
 
@@ -52,6 +53,9 @@ type CreateTrip = {
   notes?: string;
   /** v0.18.33 (owner Q6): the per-ride wallet switch; missing = on. */
   walletFirst?: boolean;
+  /** v0.18.174 (contract.json#priceChangeAsk): the quote the rider saw, and whether he accepted a higher fresh price. */
+  agreedQuoteId?: string;
+  priceAccepted?: boolean;
 };
 
 const samePlace = (a: Place, b: Place) => Math.abs(a.lat - b.lat) < 1e-7 && Math.abs(a.lng - b.lng) < 1e-7;
@@ -95,6 +99,9 @@ export async function createTrip(trx: Trx, riderId: string, request: unknown, op
     sameExtras(quote.price_extras, request as Record<string, unknown>);
   if (asksSeatOutsideChildSeat(request as Record<string, unknown>, body.categoryId)) throw badRequest(`${body.categoryId} has no child seat; book Child Seat.`, "seat_not_offered");
   if (!matches) throw badRequest("The ride does not match its price. Ask for a new one.", "quote_mismatch");
+  // v0.18.174 (contract.json#priceChangeAsk): any rise over the agreed price is asked (409 price_changed_ask), a drop
+  // books silently; the fare below stays quote.total_minor (the fresh server row).
+  await checkPriceChange(trx, riderId, quote, body);
   // v0.18.9 (contract.json#onTrip.maxStops): the zone's max now (an admin may have lowered it since the quote).
   await checkMaxStops(trx, quote.zone_id, body.stops.length);
   // v0.18.44 §67 (contract.json#sameAddress): the zone's minTripMeters now (an admin may have raised it since the quote).

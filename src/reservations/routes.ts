@@ -6,6 +6,7 @@ import { ApiError } from "../http/errors.js";
 import { API_PREFIX } from "../http/prefix.js";
 import { runIdempotent } from "../http/idempotency.js";
 import { parseBody } from "../http/validate.js";
+import { contract } from "../contract/contract.js";
 import { tripProjection } from "../trips/projection.js";
 import { driverView } from "../drivers/service.js";
 import { reservationPolicy, saveReservationPolicy } from "./policy.js";
@@ -18,7 +19,15 @@ export type ReservationDeps = { db: Db; jwtSecret: string; clock?: () => Date };
 const ID = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const Version = z.object({ expectedVersion: z.number().int().min(1).optional() });
 const Release = z.object({ reasonCode: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), note: z.string().max(1000).optional() });
-const Reschedule = z.object({ quoteId: ID, expectedVersion: z.number().int().min(1) });
+// v0.18.174 (contract.json#priceChangeAsk): agreedQuoteId + priceAccepted; a client amount is refused (noClientAmount).
+const NO_CLIENT_AMOUNT = (contract as unknown as { priceChangeAsk: { noClientAmount: { fields: string[] } } }).priceChangeAsk.noClientAmount.fields;
+const Reschedule = z
+  .object({ quoteId: ID, expectedVersion: z.number().int().min(1), agreedQuoteId: ID.optional(), priceAccepted: z.boolean().optional() })
+  .passthrough()
+  .superRefine((value, ctx) => {
+    for (const field of NO_CLIENT_AMOUNT) if (field in value) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: "a price is never sent by the app" });
+  })
+  .transform(({ quoteId, expectedVersion, agreedQuoteId, priceAccepted }) => ({ quoteId, expectedVersion, agreedQuoteId, priceAccepted }));
 const AdminBody = z.object({ expectedVersion: z.number().int().min(1), reason: z.string().max(500).optional() });
 
 const keyOf = (request: FastifyRequest) => {
