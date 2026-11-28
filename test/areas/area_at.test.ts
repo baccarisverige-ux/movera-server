@@ -6,7 +6,7 @@ import { PLACES, Sim, type Driver, type Json } from "../e2e/harness.js";
 import { PT } from "./area_points.js";
 
 /**
- * v0.18.172 (contract.json#preferredAreas.at; plan §2.6 area_at): GET /driver/areas/at answers the smallest active area of
+ * v0.18.172 (contract.json#preferredAreas.at; plan §2.6 area_at): POST /driver/areas/at { lat, lng } answers the smallest active area of
  * the driver's zones that holds the point (a district beats its kommun, an arrondissement beats Paris and 75, a commune
  * beats its département); no area = 200 { area: null, containing: [] }; bad point = 400 invalid_point; nothing written,
  * and the point is never in the log at any level (GM edit 2).
@@ -23,10 +23,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await sim.stop();
 });
-const at = async (p: { lat: number; lng: number }) => driver.get(`/driver/areas/at?lat=${p.lat}&lng=${p.lng}`);
+const at = async (p: { lat: number; lng: number }) => driver.post("/driver/areas/at", p);
 const ids = (b: Json) => (b["containing"] as Json[]).map((a) => a["areaId"]);
 
-describe("GET /driver/areas/at", () => {
+describe("POST /driver/areas/at", () => {
   it("a point in Södermalm: the district, then its kommun", async () => {
     const res = await at(PT.medborgarplatsen);
     expect(res.status).toBe(200);
@@ -63,11 +63,14 @@ describe("GET /driver/areas/at", () => {
     await sim.db.updateTable("drivers").set({ zone_ids: ["Z001", "FR-PC"] }).where("driver_id", "=", driver.id).execute();
   });
   it("a bad or missing lat / lng is 400 invalid_point", async () => {
-    for (const q of ["", "?lat=59.3", "?lng=18", "?lat=abc&lng=18", "?lat=91&lng=18", "?lat=59&lng=181", "?lat=&lng="]) {
-      const res = await driver.get(`/driver/areas/at${q}`);
-      expect(res.status, q).toBe(400);
+    for (const body of [{}, { lat: 59.3 }, { lng: 18 }, { lat: "59", lng: 18 }, { lat: 91, lng: 18 }, { lat: 59, lng: 181 }, { lat: null, lng: null }, { lat: 59.3, lng: 18, address: "Klockarvägen 37" }]) {
+      const res = await driver.post("/driver/areas/at", body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
       expect(res.body).toMatchObject({ code: "invalid_request", reason: "invalid_point" });
     }
+  });
+  it("the old GET with the point in the URL does not exist (GM: never in the URL)", async () => {
+    expect((await driver.get("/driver/areas/at?lat=59.3143&lng=18.0735")).status).toBe(404);
   });
   it("writes nothing to the database", async () => {
     const counts = async () => (await sim.db.selectFrom("areas").select((eb) => eb.fn.countAll<string>().as("n")).executeTakeFirstOrThrow()).n + "/" + (await sim.db.selectFrom("drivers").select(["preferred_area_ids", "home_area"]).where("driver_id", "=", driver.id).executeTakeFirstOrThrow()).preferred_area_ids.join(",");
@@ -82,10 +85,11 @@ describe("GET /driver/areas/at", () => {
     const env = { ...sim.env, LOG_LEVEL: "trace" as const };
     const app = await buildApp({ env, logger: { stream }, db: sim.db, clock: () => sim.clock.now });
     try {
-      const ok = await app.inject({ method: "GET", url: "/api/v1/driver/areas/at?lat=59.31437&lng=18.07357", headers: { authorization: `Bearer ${driver.token}`, "x-api-version": "0.5" } });
+      const headers = { authorization: `Bearer ${driver.token}`, "x-api-version": "0.5", "content-type": "application/json" };
+      const ok = await app.inject({ method: "POST", url: "/api/v1/driver/areas/at", headers, payload: { lat: 59.31437, lng: 18.07357 } });
       expect(ok.statusCode, ok.body).toBe(200);
       expect(ok.json()["area"]["areaId"]).toBe("SE-SDO-SODERMALM");
-      const bad = await app.inject({ method: "GET", url: "/api/v1/driver/areas/at?lat=59.31437&lng=999.07357", headers: { authorization: `Bearer ${driver.token}`, "x-api-version": "0.5" } });
+      const bad = await app.inject({ method: "POST", url: "/api/v1/driver/areas/at", headers, payload: { lat: 59.31437, lng: 999.07357 } });
       expect(bad.statusCode).toBe(400);
     } finally {
       await app.close();

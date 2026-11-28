@@ -1,7 +1,7 @@
 {
   "note": "v0.18.172 preferred areas: written by tools/areas/build_areas.py; the boot seed checks every sha256 and the row count per country.",
   "files": {
-    "se.geojson": "42aab896cd11e703ba2d6fd5542104c04bd8796dfc0e99f4f8cd44a9a22f60c0",
+    "se.geojson": "00dd204124000dc60fdf264c8eafd5890fb1e394d34564c93ce2f0d45f77195d",
     "fr.geojson": "6ac8659c77889a3e81b2bc04c1815ac50cfb13a5f23187ff4353fcf840c5abd5"
   },
   "rows": {

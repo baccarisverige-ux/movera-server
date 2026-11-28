@@ -44,15 +44,15 @@ export async function areaRoutes(app: FastifyInstance, deps: AreaDeps): Promise<
     return searchAreas(deps.db, driver.zone_ids, query.q, query.limit, driver.language);
   });
 
-  // The point is read, used and dropped: never stored, never written to the log at any level (GM edit 2), no Google call.
-  app.get(`${API_PREFIX}/driver/areas/at`, async (request) => {
+  // The point is read, used and dropped: in the BODY, never in the URL (GM 2026-11-28); never stored, never written to the
+  // log at any level (GM edit 2), no Google call. A read: no Idempotency-Key needed.
+  const Point = z.object({ lat: z.number().finite().min(-90).max(90), lng: z.number().finite().min(-180).max(180) }).strict();
+  app.post(`${API_PREFIX}/driver/areas/at`, async (request) => {
     const who = await authenticate(request, guard, ["driver"]);
-    const raw = (request.query ?? {}) as Record<string, unknown>;
-    const num = (v: unknown) => (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : NaN);
-    const lat = num(raw["lat"]), lng = num(raw["lng"]);
-    if (!(lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)) throw new ApiError("invalid_request", "lat and lng must be numbers (-90..90, -180..180).", { reason: "invalid_point" });
+    const parsed = Point.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError("invalid_request", "lat and lng must be numbers (-90..90, -180..180).", { reason: "invalid_point" });
     const driver = await driverOf(deps.db, who.subjectId);
-    return areaAt(deps.db, driver.zone_ids, lat, lng, driver.language);
+    return areaAt(deps.db, driver.zone_ids, parsed.data.lat, parsed.data.lng, driver.language);
   });
 
   app.put(`${API_PREFIX}/driver/preferred-areas`, async (request) => {

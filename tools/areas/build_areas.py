@@ -29,8 +29,9 @@ KOMMUN = {"0114": "Upplands Väsby", "0115": "Vallentuna", "0117": "Österåker"
           "0182": "Nacka", "0183": "Sundbyberg", "0184": "Solna", "0186": "Lidingö", "0187": "Vaxholm", "0188": "Norrtälje",
           "0191": "Sigtuna", "0192": "Nynäshamn"}
 # The 11 stadsdelsområden of Stockholms stad since 2023-07-01 (names are facts). Each RegSO 2025 of kommun 0180, by its
-# regsonamn, to the district it lies in. Hand-made from the stadsdelar of each district; to be checked against the city's
-# basområdeslistan (NOT checked in this build: start.stockholm not reachable from the build session).
+# regsonamn, to the district it lies in. Checked against Stockholms stad's official stadsdelsnämnd outlines 2023
+# (dataportalen.stockholm.se, Stadskartans_Stadsdelsnamnder_2023.zip) with --check-official: every RegSO's largest share
+# must fall in its tagged district (2026-11-28: Enskededalen moved to Skarpnäck; no other mismatch).
 DISTRICTS = ["Norra innerstaden", "Kungsholmen", "Södermalm", "Järva", "Bromma", "Hässelby-Vällingby", "Enskede-Årsta-Vantör",
              "Skarpnäck", "Farsta", "Hägersten-Älvsjö", "Skärholmen"]
 _D = {
@@ -45,9 +46,9 @@ _D = {
                "Nockebyhov-Olovslund", "Norra Ängby", "Södra Ängby", "Riksby-Åkeshov", "Smedslätten", "Stora Mossen", "Traneberg", "Ulvsunda",
                "Ulvsunda Industriområde", "Ålsten", "Åkeslund", "Äppelviken"],
     "Hässelby-Vällingby": ["Hässelby Gård", "Hässelby Strand", "Hässelby Villastad", "Grimsta", "Kälvesta", "Nälsta", "Råcksta", "Vinsta", "Vällingby"],
-    "Enskede-Årsta-Vantör": ["Enskede Gård", "Enskededalen", "Enskedefältet", "Gamla Enskede", "Johanneshov", "Stureby", "Årsta", "Östberga",
+    "Enskede-Årsta-Vantör": ["Enskede Gård", "Enskedefältet", "Gamla Enskede", "Johanneshov", "Stureby", "Årsta", "Östberga",
                              "Bandhagen", "Högdalen", "Rågsved", "Hagsätra", "Örby"],
-    "Skarpnäck": ["Bagarmossen", "Björkhagen", "Hammarbyhöjden", "Kärrtorp", "Norra Skarpnäcks Gård", "Sydvästra Skarpnäcks gård-Orhem",
+    "Skarpnäck": ["Bagarmossen", "Björkhagen", "Enskededalen", "Hammarbyhöjden", "Kärrtorp", "Norra Skarpnäcks Gård", "Sydvästra Skarpnäcks gård-Orhem",
                   "Östra Skarpnäcks gård-Flaten-Skrubba"],
     "Farsta": ["Farsta", "Fagersjö", "Gubbängen", "Hökarängen", "Larsboda", "Sköndal", "Svedmyra", "Tallkrogen", "Västra Farsta Strand-Farstanäset",
                "Östra Farsta Strand"],
@@ -61,9 +62,12 @@ SE_SOURCE = ("SCB RegSO 2025", "CC0", 2025)
 FR_SOURCE = ("IGN ADMIN EXPRESS COG CARTO", "Licence Ouverte 2.0", None)
 
 
+class BuildError(Exception):
+    pass
+
+
 def fail(msg):
-    print("build_areas: FAIL:", msg, file=sys.stderr)
-    sys.exit(1)
+    raise BuildError(msg)
 
 
 def key(name):
@@ -77,13 +81,15 @@ def slug(name):
     return key(name).upper().replace(" ", "-")
 
 
-def check_districts(regso_0180):
+def check_districts(regso_0180, district_of=None, districts=None):
+    district_of = DISTRICT_OF if district_of is None else district_of
+    districts = DISTRICTS if districts is None else districts
     names = [f["properties"]["regsonamn"] for f in regso_0180]
-    unknown = sorted(set(names) - set(DISTRICT_OF))
+    unknown = sorted(set(names) - set(district_of))
     if unknown: fail(f"RegSO of 0180 tagged to no district: {unknown}")
-    missing = sorted(set(DISTRICT_OF) - set(names))
+    missing = sorted(set(district_of) - set(names))
     if missing: fail(f"district list names a RegSO that does not exist: {missing}")
-    bad = sorted(set(_D) - set(DISTRICTS)) + sorted(set(DISTRICTS) - set(_D))
+    bad = sorted(set(district_of.values()) - set(districts)) + sorted(set(districts) - set(district_of.values()))
     if bad: fail(f"district names do not match the 11: {bad}")
     dup = [n for n in set(names) if names.count(n) > 1]
     if dup: fail(f"RegSO names not unique in 0180: {dup}")
@@ -218,6 +224,51 @@ def build(src, out):
     print(f"build_areas: SE {len(se)} rows, FR {len(fr)} rows; Stockholm districts gap {gap:.5%}, outside {extra:.5%}")
 
 
+def verify_manifest(out):
+    """The written files still match manifest.json (sha256 of each file, row count per country)."""
+    manifest = json.load(open(os.path.join(out, "manifest.json"), encoding="utf-8"))
+    counts = {}
+    for name, sha in manifest["files"].items():
+        body = open(os.path.join(out, name), "rb").read()
+        if hashlib.sha256(body).hexdigest() != sha: fail(f"{name}: checksum does not match manifest.json")
+        for f in json.loads(body)["features"]:
+            c = f["properties"]["country"]; counts[c] = counts.get(c, 0) + 1
+    if counts != manifest["rows"]: fail(f"row counts {counts} != manifest.json {manifest['rows']}")
+
+
+def check_official(src, official_dir):
+    """Every RegSO of 0180 lies mostly (largest share) in the official stadsdelsnämnd outline of its tagged district."""
+    import glob
+    import shapefile
+    from pyproj import Transformer
+    t = Transformer.from_crs(3011, 4326, always_xy=True).transform
+    r = shapefile.Reader(glob.glob(os.path.join(official_dir, "*.shp"))[0][:-4], encoding="utf-8")
+    trim = {"Kungsholmens": "Kungsholmen", "Skärholmens": "Skärholmen", "Skarpnäcks": "Skarpnäck", "Södermalms": "Södermalm",
+            "Enskede-Årsta-Vantörs": "Enskede-Årsta-Vantör", "Norra innerstadens": "Norra innerstaden"}
+    sdn = {trim.get(rec[0], rec[0]): shapely.transform(shape(sh.__geo_interface__), lambda xy: __import__("numpy").column_stack(t(xy[:, 0], xy[:, 1]))).buffer(0)
+           for sh, rec in zip(r.shapes(), r.records())}
+    if set(sdn) != set(DISTRICTS): fail(f"official districts {sorted(sdn)} != the 11")
+    regso = [f for f in json.load(open(os.path.join(src, "regso01.json"), encoding="utf-8"))["features"] if f["properties"]["kommunkod"] == "0180"]
+    bad = []
+    for f in regso:
+        g = shape(f["geometry"]).buffer(0)
+        share = {d: g.intersection(p).area / g.area for d, p in sdn.items()}
+        best = max(share, key=share.get)
+        if best != DISTRICT_OF[f["properties"]["regsonamn"]]: bad.append((f["properties"]["regsonamn"], DISTRICT_OF[f["properties"]["regsonamn"]], best))
+    if bad: fail(f"RegSO tagged to another district than the city's outline: {bad}")
+    return len(regso)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3: fail("usage: build_areas.py <download dir> <out dir>")
-    build(sys.argv[1], sys.argv[2])
+    try:
+        if len(sys.argv) == 4 and sys.argv[1] == "--check-official":
+            print("build_areas: official check OK,", check_official(sys.argv[2], sys.argv[3]), "RegSO")
+        elif len(sys.argv) == 3 and sys.argv[1] == "--verify":
+            verify_manifest(sys.argv[2]); print("build_areas: manifest OK")
+        elif len(sys.argv) == 3:
+            build(sys.argv[1], sys.argv[2])
+        else:
+            fail("usage: build_areas.py <download dir> <out dir> | --verify <out dir> | --check-official <download dir> <official shp dir>")
+    except BuildError as error:
+        print("build_areas: FAIL:", error, file=sys.stderr)
+        sys.exit(1)

@@ -99,6 +99,9 @@ jobs:
           cache: npm
       - name: File size ratchet (Rule 25)
         run: python3 tools/size_ratchet.py --self-test && python3 tools/size_ratchet.py
+      # v0.18.172: the area build tool's failure paths (unmatched name, gap/overlap, wrong checksum).
+      - name: Area build tool tests
+        run: python3 -m pip install --quiet 'shapely==2.1.2' && python3 -m unittest discover -s tools/areas -p 'test_*.py'
       - run: npm ci
       - run: npm run contract:verify
       # Owner rule 46 (step 58): new migration files must not lock a table and must carry an undo step.

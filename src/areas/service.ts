@@ -63,7 +63,7 @@ async function geometryOf(ex: Executor, heads: { area_id: string; updated_at: Da
 const bboxSize = (b: AreaBbox) => (b.north - b.south) * (b.east - b.west);
 
 /**
- * GET /driver/areas/at: the smallest active area of his zones that holds the point (lowest areaRank, then the smallest
+ * POST /driver/areas/at { lat, lng }: the smallest active area of his zones that holds the point (lowest areaRank, then the smallest
  * bounding box), and every matching area, smallest first. The point is never stored and never logged.
  */
 export async function areaAt(ex: Executor, zoneIds: string[], lat: number, lng: number, language: string | null) {
