@@ -3,7 +3,8 @@ import type { TripRow } from "../db/tripLog.js";
 import { STALE_AFTER_SECONDS } from "../drivers/service.js";
 import { TERMINAL, type TripStatus } from "../rules/transitions.js";
 import { etaTarget } from "../trips/eta.js";
-import { asRoute, storeCountedRoute, tooSoon, zoneCountry, type EtaRoute } from "../trips/etaRoute.js";
+import { NOT_HELD } from "../reservations/view.js";
+import { asRoute, claimRouteCall, releaseRouteCall, storeCountedRoute, tooSoon, zoneCountry, type EtaRoute } from "../trips/etaRoute.js";
 import { nextStopIndex, visitsOf } from "../trips/ride/stopClock.js";
 import { googleBudgetOpen, type GoogleCallBudget } from "./googleBudget.js";
 import { liveTrafficSettings } from "./liveTraffic.js";
@@ -18,7 +19,7 @@ import { EstimateRouter, haversineKm, type LatLng, type Router } from "./routing
  *    position: the stored route cut from the asked point (stored), else the straight line.
  *  - On the stored Google route (within a fixed 50 m): that route, cut at the car, no call (source stored).
  *  - Off it (or none): one Google call, under the trip cap (the quote included), the 60 s rule (eta_route.at, in the DB)
- *    and the daily road-line budget; stored as trips.eta_route with the counter in ONE update (source google).
+ *    and the daily road-line budget; the slot claimed before the call, then stored as trips.eta_route (source google).
  *  - Otherwise: the stored route cut (stored), else the straight line (estimate). Always code Ok, status 200.
  */
 export const OFF_ROUTE_METERS = 50;
@@ -56,9 +57,10 @@ const straight = async (points: LatLng[]): Promise<RoadLine> => {
   return { source: "estimate", points, distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds };
 };
 
+/** Review #345 M1: never a ride queued behind the current one, nor a booked ride held for later (NOT_HELD). */
 /** The caller's own active trip with a leg to drive (to the pickup, or to the drop-off), or null. */
 async function ownActiveLeg(db: Db, driverId: string): Promise<{ trip: TripRow; target: "pickup" | "dropoff" } | null> {
-  const trips = await db.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("status", "not in", [...TERMINAL] as TripStatus[]).orderBy("created_at", "desc").limit(3).execute();
+  const trips = await db.selectFrom("trips").selectAll().where("driver_id", "=", driverId).where("status", "not in", [...TERMINAL] as TripStatus[]).where(NOT_HELD).orderBy("created_at", "desc").limit(3).execute();
   for (const trip of trips) {
     const target = etaTarget(trip);
     if (target !== null) return { trip, target };
@@ -129,12 +131,17 @@ export async function driverRoadLine(db: Db, driverId: string, asked: LatLng[], 
   const stops = (Array.isArray(trip.stops) ? (trip.stops as LatLng[]) : []).map((p) => ({ lat: p.lat, lng: p.lng }));
   const next = target === "dropoff" ? nextStopIndex(stops.length, visitsOf({ stop_visits: trip.stop_visits })) : null;
   const via = next === null ? [] : stops.slice(next);
+  // Review #345 S1: the trip-cap slot is claimed BEFORE the call, so parallel asks never pass the cap.
+  if (!(await claimRouteCall(db, trip.trip_id, driverId, cap))) return fallback();
   const leg = await traffic.route([origin, ...via, { lat: to.lat, lng: to.lng }], { budget: ask });
-  if (leg.source !== "google" || !leg.polyline) return fallback();
+  if (leg.source !== "google" || !leg.polyline) {
+    await releaseRouteCall(db, trip.trip_id);
+    return fallback();
+  }
   const previous = asRoute(trip.eta_route);
   const route: EtaRoute = { target, polyline: leg.polyline, meters: leg.distanceMeters, seconds: leg.durationSeconds, at: now.toISOString(), offSince: null, calls: (previous?.calls ?? 0) + 1 };
   // ONE update: the route and the trip counter, only if the trip still holds what this was worked out from.
-  await storeCountedRoute(db, trip, route, cap);
+  if (!(await storeCountedRoute(db, trip, route, driverId))) await releaseRouteCall(db, trip.trip_id);
   const points = leg.points && leg.points.length >= 2 ? leg.points : decodePolyline(leg.polyline);
   const line: RoadLine = { source: "google", points, distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds };
   cache.put(key, line, now.getTime());

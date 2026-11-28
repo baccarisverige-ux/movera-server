@@ -50,18 +50,34 @@ export async function zoneCountry(ex: Executor, zoneId: string): Promise<string 
 }
 
 /**
- * v0.18.171 (contract.json#googleRoadLines.counter): store a NEW Google route and count the call in ONE update, only if
- * the trip still holds the route it was worked out from and is under the cap. GET /routes/driving and the ETA tick both
- * write this way, so only one of them wins the same need; the other writes and counts nothing. True = stored.
+ * v0.18.171 (contract.json#googleRoadLines.counter; review #345 S1): claim one of the trip's Google slots BEFORE the
+ * call, in ONE update under the cap and only for the trip's own driver, so parallel askers can never pass the cap.
+ * True = claimed. A call that then brings nothing stored gives the slot back (releaseRouteCall).
  */
-export async function storeCountedRoute(ex: Executor, trip: Pick<TripRow, "trip_id" | "eta_route" | "route_polyline">, route: EtaRoute, cap: number): Promise<boolean> {
+export async function claimRouteCall(ex: Executor, tripId: string, driverId: string, cap: number): Promise<boolean> {
+  const result = await ex.updateTable("trips").set({ google_route_calls: sql`google_route_calls + 1` }).where("trip_id", "=", tripId).where("driver_id", "=", driverId).where("google_route_calls", "<", cap).executeTakeFirst();
+  return Number(result.numUpdatedRows) === 1;
+}
+
+/** Gives a claimed slot back (Google did not answer, or the answer lost the write). */
+export async function releaseRouteCall(ex: Executor, tripId: string): Promise<void> {
+  await ex.updateTable("trips").set({ google_route_calls: sql`greatest(google_route_calls - 1, 0)` }).where("trip_id", "=", tripId).execute();
+}
+
+/**
+ * v0.18.171 (contract.json#googleRoadLines.counter): store a NEW Google route (its slot already claimed with
+ * claimRouteCall), only if the trip still holds the route it was worked out from and the caller is still its driver
+ * (review #345 S2). GET /routes/driving and the ETA tick both write this way, so only one of them wins the same need;
+ * the other writes nothing and gives its slot back. True = stored.
+ */
+export async function storeCountedRoute(ex: Executor, trip: Pick<TripRow, "trip_id" | "eta_route" | "route_polyline">, route: EtaRoute, driverId: string): Promise<boolean> {
   const result = await ex
     .updateTable("trips")
-    .set({ eta_route: JSON.stringify(route), google_route_calls: sql`google_route_calls + 1` })
+    .set({ eta_route: JSON.stringify(route) })
     .where("trip_id", "=", trip.trip_id)
+    .where("driver_id", "=", driverId)
     .where(sql<boolean>`eta_route IS NOT DISTINCT FROM ${trip.eta_route === null || trip.eta_route === undefined ? null : JSON.stringify(trip.eta_route)}::jsonb`)
     .where(sql<boolean>`route_polyline IS NOT DISTINCT FROM ${trip.route_polyline ?? null}::text`)
-    .where("google_route_calls", "<", cap)
     .executeTakeFirst();
   return Number(result.numUpdatedRows) === 1;
 }
@@ -69,7 +85,7 @@ export async function storeCountedRoute(ex: Executor, trip: Pick<TripRow, "trip_
 /** Closer than this to the end of the route: no new Google call (review #328 F3). */
 export const NEAR_END_METERS = 50;
 
-/** `called`: the route is a NEW Google answer of this tick, stored with the counter (storeCountedRoute) under `cap`. */
+/** `called`: the route is a NEW Google answer of this tick; its slot is claimed (claimRouteCall), the handler stores it or gives the slot back. */
 export type EtaRoutePrepared = { kind: "eta_route"; target: "pickup" | "dropoff"; basis: string; route: EtaRoute | null; leg: { distanceMeters: number; durationSeconds: number; source: "google" | "estimate" }; called?: boolean; cap?: number };
 
 export const asRoute = (value: unknown): EtaRoute | null => {
@@ -120,7 +136,15 @@ export async function prepareEtaRoute(ex: Executor, trip: TripRow, target: "pick
   const ask: GoogleCallBudget = { kind: "road_line", stage: route === null && target === "pickup" ? "pickup" : "reroute" };
   const country = await zoneCountry(ex, trip.zone_id);
   if (country !== undefined) ask.country = country;
-  const held = (trip.google_route_calls ?? 0) >= cap || tooSoon(trip.eta_route, target, now) || !(await googleBudgetOpen(ex, ask, now));
+  // Review #345 S5: a DB error in the budget tables holds the call (no Google), never fails the tick.
+  const budgetOpen = async () => {
+    try {
+      return await googleBudgetOpen(ex, ask, now);
+    } catch {
+      return false;
+    }
+  };
+  const held = (trip.google_route_calls ?? 0) >= cap || tooSoon(trip.eta_route, target, now) || !(await budgetOpen()) || trip.driver_id === null || !(await claimRouteCall(ex, trip.trip_id, trip.driver_id, cap));
   if (held) {
     if (followed !== null) return { kind: "eta_route", target, basis, route: followed.route, leg: { distanceMeters: followed.remainingMeters, durationSeconds: followed.remainingSeconds, source: "google" } };
     const estimate = await new EstimateRouter().route([fix, ...via, to]);
@@ -129,6 +153,7 @@ export async function prepareEtaRoute(ex: Executor, trip: TripRow, target: "pick
   const calls = (route?.calls ?? asRoute(trip.eta_route)?.calls ?? 0) + 1;
   // Review #328 F4: to the drop-off through the stops still ahead, so a trip with stops is not "off the route" at once.
   const leg = await traffic.route([fix, ...via, to], { shape: false, budget: ask });
+  if (leg.source !== "google" || !leg.polyline) await releaseRouteCall(ex, trip.trip_id);
   if (leg.source === "google" && leg.polyline) {
     return { kind: "eta_route", target, basis, route: { target, polyline: leg.polyline, meters: leg.distanceMeters, seconds: leg.durationSeconds, at: now.toISOString(), offSince: null, calls }, leg: { distanceMeters: leg.distanceMeters, durationSeconds: leg.durationSeconds, source: "google" }, called: true, cap };
   }

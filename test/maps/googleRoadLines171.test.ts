@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { encodePolyline } from "../../src/maps/polyline.js";
 import { haversineKm } from "../../src/maps/routing.js";
@@ -105,6 +106,74 @@ describe("GET /routes/driving road lines (v0.18.171)", () => {
       await w.database.db.schema.alterTable("google_routes_budget_gone").renameTo("google_routes_budget").execute();
     }
     expect((await w.trip(tripId)).google_route_calls).toBe(before.google_route_calls);
+  });
+
+  it("an asked point 100 m from the stored fix (trusted): the Google call starts at the asked point", async () => {
+    const { tripId } = await w.accepted();
+    const fix = { lat: MID.lat, lng: MID.lng + eastDeg(120) };
+    await w.moveTo(fix);
+    const stored = (await w.trip(tripId)).eta_route as Record<string, unknown>;
+    await w.database.db.updateTable("trips").set({ eta_route: JSON.stringify({ ...stored, at: new Date(w.clock.now.getTime() - 61_000).toISOString() }) }).where("trip_id", "=", tripId).execute();
+    w.google.calls = 0;
+    w.google.asked = [];
+    const asked = { lat: fix.lat, lng: fix.lng + eastDeg(100) };
+    const body = await w.nav(asked);
+    expect(body.source).toBe("google");
+    expect(w.google.calls).toBe(1);
+    expect(metres(w.google.asked[0]![0]!, asked)).toBeLessThan(1);
+  });
+
+  it("a ride queued behind the current trip A: A's stored line, 0 calls (review #345 M1)", async () => {
+    const { tripId } = await w.accepted();
+    await w.database.db.insertInto("riders").values({ rider_id: "rider_queued_345", phone: "+46700000345" }).onConflict((oc) => oc.doNothing()).execute();
+    await w.database.db.executeQuery(sql`insert into trips select (jsonb_populate_record(null::trips, to_jsonb(t) || jsonb_build_object('trip_id', gen_random_uuid()::text, 'rider_id', 'rider_queued_345', 'next_after_trip_id', t.trip_id, 'created_at', t.created_at + interval '1 minute', 'eta_route', null, 'quote_id', null))).* from trips t where t.trip_id = ${tripId}`.compile(w.database.db));
+    w.google.calls = 0;
+    const near = { lat: MID.lat, lng: MID.lng + eastDeg(30) };
+    await w.moveTo(near);
+    w.wait(61);
+    const body = await w.nav(near);
+    expect(body.source).toBe("stored");
+    expect(w.google.calls).toBe(0);
+    expect(metres(first(body), MID)).toBeLessThan(5);
+  });
+
+  it("a free driver holding a booked ride for later: estimate, 0 calls, nothing written (review #345 M1)", async () => {
+    const { tripId } = await w.accepted();
+    await w.database.db.updateTable("trips").set({ kind: "scheduled", reservation: JSON.stringify({ held: true }) }).where("trip_id", "=", tripId).execute();
+    const before = await w.trip(tripId);
+    w.google.calls = 0;
+    const off = { lat: MID.lat, lng: MID.lng + eastDeg(120) };
+    await w.moveTo(off);
+    w.wait(61);
+    const body = await w.nav(off);
+    expect(body).toMatchObject({ code: "Ok", source: "estimate" });
+    expect(w.google.calls).toBe(0);
+    const after = await w.trip(tripId);
+    expect(after.eta_route).toEqual(before.eta_route);
+    expect(after.google_route_calls).toBe(before.google_route_calls);
+  });
+
+  it("the ETA tick follows the route GET /routes/driving stored during the tick, no estimate (review #345 M2)", async () => {
+    const { tripId } = await w.accepted();
+    const stored = (await w.trip(tripId)).eta_route as Record<string, unknown>;
+    // A stored route with 0 s makes the tick ask Google again (speed 0), past the 60 s rule.
+    await w.database.db.updateTable("trips").set({ eta_route: JSON.stringify({ ...stored, seconds: 0, at: new Date(w.clock.now.getTime() - 61_000).toISOString() }) }).where("trip_id", "=", tripId).execute();
+    const callsBefore = (await w.trip(tripId)).google_route_calls;
+    const now = { lat: MID.lat, lng: MID.lng };
+    const winner = { target: "pickup", polyline: encodePolyline([now, { lat: w.NORRMALM.lat, lng: w.NORRMALM.lng }]), meters: 650, seconds: 130, at: w.clock.now.toISOString(), offSince: null, calls: 2 };
+    w.google.calls = 0;
+    w.google.during = async () => {
+      await w.database.db.updateTable("trips").set({ eta_route: JSON.stringify(winner) }).where("trip_id", "=", tripId).execute();
+    };
+    await w.moveTo(now);
+    await w.advance(30);
+    w.google.during = undefined;
+    const after = await w.trip(tripId);
+    expect(w.google.calls).toBe(1);
+    expect((after.eta as { source: string }).source).toBe("google");
+    expect((after.eta_route as { polyline: string }).polyline).toBe(winner.polyline);
+    // The tick's own claimed slot was given back: only the winner's write counts.
+    expect(after.google_route_calls).toBe(callsBefore);
   });
 
   it("no active trip: 0 calls and nothing written", async () => {

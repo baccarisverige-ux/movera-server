@@ -110,6 +110,8 @@ export function adminCoversZone(who: Principal, zoneId: string): boolean {
 export async function adminCoversAllCountries(ex: Executor, who: Principal): Promise<boolean> {
   if (who.zones.includes("*")) return true;
   const zones = await ex.selectFrom("zones").select(["zone_id", "country"]).execute();
+  // Review #345 S4: no zones at all proves nothing.
+  if (zones.length === 0) return false;
   const countries = new Set(zones.map((z) => z.country));
   const covered = new Set(zones.filter((z) => who.zones.includes(z.zone_id)).map((z) => z.country));
   return [...countries].every((c) => covered.has(c));
