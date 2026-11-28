@@ -5,3 +5,7 @@
 fd05a4b1293adc7ca81a05f7474c91a4402753eb:test/email/resend.test.ts:generic-api-key:25
 e19665145a328914b610127018cd37b19bc702dd:test/email/resend.test.ts:generic-api-key:25
 580871c067683210994e0bb73d5d44a654690416:test/email/resend.test.ts:generic-api-key:25
+# 2026-11-28 (0.18.172): a FAKE idempotency key (a fixed UUID, not a secret) in test/areas/search_and_put.test.ts:83-84
+# of commit fc03d13 only; the file now uses randomUUID(). Only these exact fingerprints are ignored.
+fc03d13b2fa3158a204cdab019f4d648b323fb7d:test/areas/search_and_put.test.ts:generic-api-key:83
+fc03d13b2fa3158a204cdab019f4d648b323fb7d:test/areas/search_and_put.test.ts:generic-api-key:84
